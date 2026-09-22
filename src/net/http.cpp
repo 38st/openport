@@ -121,7 +121,9 @@ struct HttpClient::Impl {
 
     if (url.tls) {
       auto stream = std::make_unique<TlsStream>(io, tls_context);
-      if (SSL_set_tlsext_host_name(stream->native_handle(), url.host.c_str()) != 1) {
+      // SSL_set_tlsext_host_name is a macro with a C-style cast; call what it expands to.
+      if (SSL_ctrl(stream->native_handle(), SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
+                   const_cast<char*>(url.host.c_str())) != 1) {
         throw std::runtime_error("TLS: cannot set SNI host name");
       }
       stream->set_verify_callback(ssl::host_name_verification(url.host));

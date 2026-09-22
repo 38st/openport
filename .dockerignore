@@ -1,0 +1,7 @@
+build*/
+.venv/
+.git/
+web/node_modules/
+web/dist/
+var/
+**/.DS_Store

@@ -1,0 +1,43 @@
+# OpenPort in one container: the C++ engine and the web terminal it serves.
+#
+#   docker build -t openport .
+#   docker run --rm -p 8080:8080 openport                              # Cboe delayed, no key
+#   docker run --rm -p 8080:8080 -e DATABENTO_API_KEY openport --provider databento --symbols SPX,SPY
+
+FROM node:26-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+FROM ubuntu:24.04 AS build
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake ninja-build ca-certificates \
+      libboost-dev libssl-dev zlib1g-dev libzstd-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY CMakeLists.txt ./
+COPY cmake cmake
+COPY include include
+COPY src src
+COPY apps apps
+COPY tests tests
+COPY bench bench
+RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DOPENPORT_BUILD_TESTS=OFF -DOPENPORT_BUILD_BENCHMARKS=OFF \
+    && cmake --build build --target openportd openport-probe
+
+FROM ubuntu:24.04
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates libssl3t64 zlib1g libzstd1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --home /nonexistent openport
+COPY --from=build /src/build/apps/openportd /src/build/apps/openport-probe /usr/local/bin/
+COPY --from=web /web/dist /usr/share/openport/web
+USER openport
+EXPOSE 8080
+ENTRYPOINT ["openportd", "--address", "0.0.0.0", "--web-root", "/usr/share/openport/web"]
+CMD ["--provider", "cboe", "--symbols", "SPX,SPY,QQQ"]

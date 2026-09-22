@@ -7,7 +7,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
   target_compile_options(openport_options INTERFACE
     -Wall -Wextra -Wpedantic
     -Wshadow -Wnon-virtual-dtor -Wold-style-cast -Wcast-align
-    -Woverloaded-virtual -Wnull-dereference -Wdouble-promotion
+    -Woverloaded-virtual -Wdouble-promotion
+    # GCC reports false positives inside Boost.Asio templates with this one.
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wnull-dereference>
     -Wformat=2 -Wimplicit-fallthrough -Wmisleading-indentation)
   if(OPENPORT_WERROR)
     target_compile_options(openport_options INTERFACE -Werror)
