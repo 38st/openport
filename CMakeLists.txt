@@ -16,7 +16,7 @@ endif()
 
 option(OPENPORT_BUILD_TESTS "Build the unit tests" ON)
 option(OPENPORT_BUILD_BENCHMARKS "Build the benchmarks" ON)
-option(OPENPORT_BUILD_DAEMON "Build openportd (needs Boost and OpenSSL)" ON)
+option(OPENPORT_BUILD_PROVIDERS "Build the provider adapters and apps (needs Boost, OpenSSL, zlib)" ON)
 option(OPENPORT_BUILD_PYTHON "Build the Python bindings" OFF)
 option(OPENPORT_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(OPENPORT_NATIVE "Tune code generation for the build machine's CPU" OFF)
@@ -37,7 +37,7 @@ if(OPENPORT_BUILD_BENCHMARKS)
   add_subdirectory(bench)
 endif()
 
-if(OPENPORT_BUILD_DAEMON AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/apps/CMakeLists.txt")
+if(OPENPORT_BUILD_PROVIDERS)
   add_subdirectory(apps)
 endif()
 
