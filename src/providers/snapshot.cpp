@@ -67,7 +67,8 @@ ChainFilter::ChainFilter(const md::Subscription& subscription, md::Date today, d
 bool ChainFilter::admits(const md::OptionContract& contract) const {
   if (contract.expiry < today_) return false;
   if (limit_expiries_ && !expiries_.contains(contract.expiry)) return false;
-  if (strike_window_ > 0.0 && spot_ > 0.0 && std::abs(contract.strike / spot_ - 1.0) > strike_window_) {
+  if (strike_window_ > 0.0 && spot_ > 0.0 &&
+      std::abs(contract.strike / spot_ - 1.0) > strike_window_ + 1e-12) {
     return false;
   }
   return true;

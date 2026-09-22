@@ -18,8 +18,10 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/cboe_test.cpp
     providers/massive_test.cpp
     providers/thetadata_test.cpp
+    server/api_test.cpp
   )
-  target_link_libraries(openport_tests PRIVATE openport::providers)
+  target_link_libraries(openport_tests PRIVATE openport::providers openport::server
+                        nlohmann_json::nlohmann_json)
   if(OPENPORT_WITH_DATABENTO)
     target_sources(openport_tests PRIVATE providers/databento_test.cpp)
   endif()

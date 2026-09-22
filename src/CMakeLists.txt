@@ -46,3 +46,16 @@ if(OPENPORT_BUILD_PROVIDERS)
     target_compile_definitions(openport_providers PUBLIC OPENPORT_WITH_DATABENTO)
   endif()
 endif()
+
+if(OPENPORT_BUILD_PROVIDERS)
+  # The engine thread, JSON API and HTTP/WebSocket server behind openportd.
+  add_library(openport_server
+    server/engine.cpp
+    server/api.cpp
+    server/web_server.cpp
+  )
+  add_library(openport::server ALIAS openport_server)
+  target_link_libraries(openport_server
+    PUBLIC openport::core openport::net
+    PRIVATE nlohmann_json::nlohmann_json openport::options)
+endif()
