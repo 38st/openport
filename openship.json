@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openship.io/openship.schema.json",
+  "framework": "docker",
+  "runtime": "docker",
+  "port": 8080
+}
