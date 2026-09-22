@@ -2,7 +2,6 @@ add_library(openport_core
   pricing/black.cpp
   pricing/implied_vol.cpp
   pricing/binomial.cpp
-  pricing/inverse.cpp
 )
 add_library(openport::core ALIAS openport_core)
 
