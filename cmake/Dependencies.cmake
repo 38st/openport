@@ -4,8 +4,33 @@
 # and checksum so every build sees the same code. Boost and OpenSSL are large,
 # so they come from the system package manager (Homebrew or apt).
 
+# Homebrew installs OpenSSL keg-only; point CMake at it on macOS. This has to happen
+# before anything (including databento-cpp) looks for OpenSSL.
+if(APPLE AND NOT OPENSSL_ROOT_DIR)
+  foreach(prefix /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3)
+    if(EXISTS "${prefix}/include/openssl/ssl.h")
+      set(OPENSSL_ROOT_DIR "${prefix}")
+      break()
+    endif()
+  endforeach()
+endif()
+
 include(FetchContent)
 set(FETCHCONTENT_QUIET ON)
+
+if(OPENPORT_BUILD_PROVIDERS AND OPENPORT_WITH_DATABENTO)
+  # Databento's official client. It downloads a prebuilt libdbn_c for the platform and
+  # brings nlohmann_json with it, so it has to come before our own copy below.
+  find_package(zstd CONFIG QUIET)
+  FetchContent_Declare(databento
+    URL https://github.com/databento/databento-cpp/archive/refs/tags/v0.68.0.tar.gz
+    URL_HASH SHA256=de8ff21cffce4003e55b7067146f7301ba6cc9677925cbf86449b2b87018ac51
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SYSTEM)
+  set(DATABENTO_ENABLE_UNIT_TESTING OFF CACHE INTERNAL "")
+  set(DATABENTO_ENABLE_EXAMPLES OFF CACHE INTERNAL "")
+  FetchContent_MakeAvailable(databento)
+endif()
 
 FetchContent_Declare(nlohmann_json
   URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
@@ -27,7 +52,10 @@ FetchContent_Declare(simdjson
 
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(SIMDJSON_DEVELOPER_MODE OFF CACHE INTERNAL "")
-FetchContent_MakeAvailable(nlohmann_json unordered_dense simdjson)
+if(NOT TARGET nlohmann_json::nlohmann_json)
+  FetchContent_MakeAvailable(nlohmann_json)
+endif()
+FetchContent_MakeAvailable(unordered_dense simdjson)
 
 if(OPENPORT_BUILD_TESTS)
   FetchContent_Declare(googletest
@@ -53,20 +81,12 @@ if(OPENPORT_BUILD_BENCHMARKS)
 endif()
 
 if(OPENPORT_BUILD_PROVIDERS)
-  # Homebrew installs OpenSSL keg-only; point CMake at it on macOS.
-  if(APPLE AND NOT OPENSSL_ROOT_DIR)
-    foreach(prefix /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3)
-      if(EXISTS "${prefix}/include/openssl/ssl.h")
-        set(OPENSSL_ROOT_DIR "${prefix}")
-        break()
-      endif()
-    endforeach()
-  endif()
   find_package(OpenSSL 3 REQUIRED)
   find_package(Boost 1.83 CONFIG REQUIRED)
   find_package(ZLIB REQUIRED)
   find_package(Threads REQUIRED)
 endif()
+
 
 if(OPENPORT_BUILD_PYTHON)
   find_package(Python 3.10 COMPONENTS Interpreter Development.Module REQUIRED)

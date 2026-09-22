@@ -33,4 +33,10 @@ if(OPENPORT_BUILD_PROVIDERS)
   target_link_libraries(openport_providers
     PUBLIC openport::core openport::net
     PRIVATE simdjson::simdjson openport::options)
+
+  if(OPENPORT_WITH_DATABENTO)
+    target_sources(openport_providers PRIVATE providers/databento.cpp)
+    target_link_libraries(openport_providers PUBLIC databento::databento)
+    target_compile_definitions(openport_providers PUBLIC OPENPORT_WITH_DATABENTO)
+  endif()
 endif()
