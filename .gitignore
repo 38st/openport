@@ -1,0 +1,24 @@
+# Build output
+/build*/
+/out/
+compile_commands.json
+.cache/
+
+# Python
+/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Web
+/web/node_modules/
+/web/dist/
+
+# Runtime data (journals, audit logs, downloaded market data)
+/var/
+/data/downloads/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

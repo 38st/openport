@@ -1,0 +1,46 @@
+cmake_minimum_required(VERSION 3.25)
+
+project(openport
+  VERSION 0.1.0
+  DESCRIPTION "Options pricing, volatility surfaces, matching and real-time risk"
+  LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+option(OPENPORT_BUILD_TESTS "Build the unit tests" ON)
+option(OPENPORT_BUILD_BENCHMARKS "Build the benchmarks" ON)
+option(OPENPORT_BUILD_DAEMON "Build openportd (needs Boost and OpenSSL)" ON)
+option(OPENPORT_BUILD_PYTHON "Build the Python bindings" OFF)
+option(OPENPORT_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(OPENPORT_NATIVE "Tune code generation for the build machine's CPU" OFF)
+option(OPENPORT_WERROR "Treat compiler warnings as errors" OFF)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(CompilerOptions)
+include(Dependencies)
+
+add_subdirectory(src)
+
+if(OPENPORT_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
+if(OPENPORT_BUILD_BENCHMARKS)
+  add_subdirectory(bench)
+endif()
+
+if(OPENPORT_BUILD_DAEMON AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/apps/CMakeLists.txt")
+  add_subdirectory(apps)
+endif()
+
+if(OPENPORT_BUILD_PYTHON)
+  add_subdirectory(python)
+endif()
