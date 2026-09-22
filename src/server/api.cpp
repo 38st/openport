@@ -238,13 +238,16 @@ json surface_json(const UnderlyingMetrics& m, std::size_t max_expiries, double w
     json points = json::array();
     for (const auto& row : slice.strikes) {
       if (!std::isfinite(row.iv) || !in_window(row.strike, m.spot, window)) continue;
+      // Smiles are read off the out-of-the-money side. Quotes whose spread is more than
+      // half their price (0.05 bid, 0.15 offer far in the wings) imply almost any vol,
+      // so they are left out of the picture rather than drawn as spikes.
+      const auto& otm = row.strike >= slice.forward.forward ? row.call : row.put;
+      if (!(otm.bid > 0.0) || !(otm.ask - otm.bid <= 0.5 * otm.mid)) continue;
       points.push_back({{"strike", row.strike},
                         {"k", sig(std::log(row.strike / slice.forward.forward), 6)},
                         {"iv", sig(row.iv)},
-                        {"bid_iv", sig(row.strike >= slice.forward.forward ? row.call.bid_iv
-                                                                          : row.put.bid_iv)},
-                        {"ask_iv", sig(row.strike >= slice.forward.forward ? row.call.ask_iv
-                                                                          : row.put.ask_iv)}});
+                        {"bid_iv", sig(otm.bid_iv)},
+                        {"ask_iv", sig(otm.ask_iv)}});
     }
     expiries.push_back({{"id", expiry_id(slice)},
                         {"expiry", md::format_date(slice.expiry)},

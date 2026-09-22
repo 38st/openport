@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* Palette shared with Gambit: a near-black terminal with semantic state colours. */
+@theme {
+  --font-sans: "Geist Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --color-background: hsl(0 0% 4%);
+  --color-foreground: hsl(0 0% 98%);
+  --color-panel: hsl(0 0% 6%);
+  --color-raised: hsl(0 0% 9%);
+  --color-border: hsl(0 0% 15%);
+  --color-muted: hsl(0 0% 60%);
+  --color-faint: hsl(0 0% 38%);
+  --color-accent: hsl(142 70% 45%);
+
+  --color-live: hsl(145 68% 48%);
+  --color-stale: hsl(217 84% 62%);
+  --color-warn: hsl(42 92% 57%);
+  --color-danger: hsl(351 76% 62%);
+  --color-bullish: hsl(150 62% 49%);
+  --color-bearish: hsl(351 76% 62%);
+  --color-gex-positive: hsl(178 52% 50%);
+  --color-gex-negative: hsl(257 59% 65%);
+
+  --animate-flash-up: flash-up 700ms ease-out;
+  --animate-flash-down: flash-down 700ms ease-out;
+
+  /* A live value moved: a brief semantic wash that fades back to the panel. */
+  @keyframes flash-up {
+    from {
+      background-color: hsl(150 62% 49% / 0.3);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  @keyframes flash-down {
+    from {
+      background-color: hsl(351 76% 62% / 0.3);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  ::selection {
+    background: hsl(142 70% 45% / 0.35);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,46 @@
+export interface LinearScale {
+  (x: number): number
+  invert(y: number): number
+  domain: [number, number]
+  range: [number, number]
+}
+
+export function linear(domain: [number, number], range: [number, number]): LinearScale {
+  const [d0, d1] = domain
+  const [r0, r1] = range
+  const span = d1 - d0 || 1
+  const scale = ((x: number) => r0 + ((x - d0) / span) * (r1 - r0)) as LinearScale
+  scale.invert = (y: number) => d0 + ((y - r0) / (r1 - r0 || 1)) * span
+  scale.domain = domain
+  scale.range = range
+  return scale
+}
+
+/// Round tick positions (1, 2, 2.5 or 5 times a power of ten) covering [min, max].
+export function niceTicks(min: number, max: number, count = 5): number[] {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return []
+  if (min === max) return [min]
+  const raw = (max - min) / Math.max(1, count)
+  const power = 10 ** Math.floor(Math.log10(raw))
+  const step = ([1, 2, 2.5, 5, 10].map((m) => m * power).find((s) => s >= raw) ?? 10 * power)
+  const start = Math.ceil(min / step) * step
+  const ticks: number[] = []
+  for (let t = start; t <= max + step * 1e-9; t += step) ticks.push(Number(t.toPrecision(12)))
+  return ticks
+}
+
+export function extent(values: Iterable<number | null | undefined>): [number, number] | null {
+  let lo = Infinity
+  let hi = -Infinity
+  for (const v of values) {
+    if (v == null || !Number.isFinite(v)) continue
+    if (v < lo) lo = v
+    if (v > hi) hi = v
+  }
+  return lo <= hi ? [lo, hi] : null
+}
+
+export function pad([lo, hi]: [number, number], fraction = 0.05): [number, number] {
+  const span = hi - lo || Math.abs(hi) || 1
+  return [lo - span * fraction, hi + span * fraction]
+}
