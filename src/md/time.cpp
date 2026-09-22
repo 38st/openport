@@ -64,7 +64,7 @@ Timestamp now() noexcept {
 }
 
 std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexcept {
-  // YYYY-MM-DD[ T]HH:MM:SS, optionally followed by a fraction or suffix we ignore.
+  // YYYY-MM-DD[ T]HH:MM:SS[.fraction]; anything after that (a zone suffix) is ignored.
   Date date;
   int hour = 0;
   int minute = 0;
@@ -82,8 +82,21 @@ std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexce
       minute > 59 || second > 60) {
     return std::nullopt;
   }
-  if (zone == Zone::NewYork) return new_york_to_utc(date, hour, minute, second);
-  return (days_since_epoch(date) * 86'400 + hour * 3'600 + minute * 60 + second) * kNanosPerSecond;
+  // Optional fraction of a second, up to nanoseconds: ".123" or ".123456789".
+  Timestamp fraction = 0;
+  if (text.size() > 20 && text[19] == '.') {
+    Timestamp scale = kNanosPerSecond;
+    for (std::size_t i = 20; i < text.size() && i < 29; ++i) {
+      if (text[i] < '0' || text[i] > '9') break;
+      scale /= 10;
+      fraction += (text[i] - '0') * scale;
+    }
+  }
+  const Timestamp whole =
+      zone == Zone::NewYork
+          ? new_york_to_utc(date, hour, minute, second)
+          : (days_since_epoch(date) * 86'400 + hour * 3'600 + minute * 60 + second) * kNanosPerSecond;
+  return whole + fraction;
 }
 
 std::string format_date(Date date) {

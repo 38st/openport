@@ -9,7 +9,7 @@
 namespace {
 
 using openport::net::gunzip;
-using openport::net::parse_https_url;
+using openport::net::parse_url;
 
 std::string gzip(const std::string& text) {
   z_stream zs{};
@@ -39,21 +39,29 @@ TEST(Http, GunzipRejectsCorruptInput) {
   EXPECT_THROW((void)gunzip("not gzip at all"), std::runtime_error);
 }
 
-TEST(Http, ParsesHttpsUrls) {
-  const auto url = parse_https_url("https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json");
+TEST(Http, ParsesUrls) {
+  const auto url = parse_url("https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json");
   ASSERT_TRUE(url);
+  EXPECT_TRUE(url->tls);
   EXPECT_EQ(url->host, "cdn.cboe.com");
   EXPECT_EQ(url->port, "443");
   EXPECT_EQ(url->target, "/api/global/delayed_quotes/options/_SPX.json");
 
-  const auto with_port = parse_https_url("https://localhost:8443?a=1");
+  const auto with_port = parse_url("https://localhost:8443?a=1");
   ASSERT_TRUE(with_port);
   EXPECT_EQ(with_port->host, "localhost");
   EXPECT_EQ(with_port->port, "8443");
   EXPECT_EQ(with_port->target, "/?a=1");
 
-  EXPECT_FALSE(parse_https_url("http://insecure.example.com/"));
-  EXPECT_FALSE(parse_https_url("https://"));
+  const auto local = parse_url("http://127.0.0.1:25503/v3/option/snapshot/quote?symbol=SPY");
+  ASSERT_TRUE(local);
+  EXPECT_FALSE(local->tls);
+  EXPECT_EQ(local->port, "25503");
+  EXPECT_EQ(local->target, "/v3/option/snapshot/quote?symbol=SPY");
+  EXPECT_EQ(parse_url("http://example.com")->port, "80");
+
+  EXPECT_FALSE(parse_url("ftp://example.com/"));
+  EXPECT_FALSE(parse_url("https://"));
 }
 
 }  // namespace

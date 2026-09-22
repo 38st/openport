@@ -5,23 +5,17 @@
 #include <ranges>
 #include <simdjson.h>
 
-#include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdio>
-#include <iterator>
 #include <set>
 #include <stdexcept>
+#include <utility>
 
 #include "openport/md/contract.hpp"
 #include "openport/net/http.hpp"
 
 namespace openport::providers {
 namespace {
-
-// Cboe serves index chains under a leading underscore.
-constexpr std::array<std::string_view, 9> kIndexSymbols = {"SPX", "XSP", "NDX", "XND", "RUT",
-                                                           "MRUT", "VIX", "DJX", "OEX"};
 
 /// Reads a numeric field that Cboe sometimes sends as null or omits.
 double number_or_zero(simdjson::ondemand::object& object, std::string_view key) {
@@ -36,15 +30,11 @@ std::string text_or_empty(simdjson::ondemand::object& object, std::string_view k
   return std::string(value);
 }
 
-bool changed(double a, double b) noexcept { return a != b; }
-
 }  // namespace
 
 std::string cboe_chain_url(std::string_view underlying) {
-  const bool index =
-      std::find(kIndexSymbols.begin(), kIndexSymbols.end(), underlying) != kIndexSymbols.end();
   std::string url = "https://cdn.cboe.com/api/global/delayed_quotes/options/";
-  if (index) url += '_';
+  if (md::is_index_underlying(underlying)) url += '_';
   url += underlying;
   url += ".json";
   return url;
@@ -65,8 +55,8 @@ CboeChain parse_cboe_chain(std::string_view json) {
   if (doc["data"].get_object().get(data) != simdjson::SUCCESS) {
     throw std::runtime_error("Cboe chain: missing data object");
   }
-  // On-demand parsing reads fields in document order, so take them in the order
-  // Cboe writes them: the options array first, then the underlying's fields.
+  // On-demand parsing is fastest when fields are read in document order, so take
+  // them in the order Cboe writes them: the options array first, then the underlying.
   simdjson::ondemand::array options;
   if (data["options"].get_array().get(options) != simdjson::SUCCESS) {
     throw std::runtime_error("Cboe chain: missing options array");
@@ -96,12 +86,6 @@ CboeChain parse_cboe_chain(std::string_view json) {
   return chain;
 }
 
-CboeDelayedProvider::CboeDelayedProvider() : CboeDelayedProvider(Options{}) {}
-
-CboeDelayedProvider::CboeDelayedProvider(Options options) : options_(options) {}
-
-CboeDelayedProvider::~CboeDelayedProvider() { stop(); }
-
 md::Capabilities CboeDelayedProvider::capabilities() const noexcept {
   md::Capabilities caps;
   caps.realtime = false;
@@ -114,61 +98,25 @@ md::Capabilities CboeDelayedProvider::capabilities() const noexcept {
   return caps;
 }
 
-void CboeDelayedProvider::start(const md::Subscription& subscription, md::EventSink& sink) {
-  stop();
-  stopping_ = false;
-  thread_ = std::thread(&CboeDelayedProvider::run, this, subscription, &sink);
-}
+std::string CboeDelayedProvider::poll(net::HttpClient& http, const std::string& underlying,
+                                      const md::Subscription& subscription, md::EventSink& sink) {
+  const net::HttpResponse response = http.get(cboe_chain_url(underlying), {}, options_.timeout);
+  if (response.status != 200) throw std::runtime_error("HTTP " + std::to_string(response.status));
 
-void CboeDelayedProvider::stop() {
-  {
-    const std::lock_guard lock(wake_mutex_);
-    stopping_ = true;
-  }
-  wake_.notify_all();
-  if (thread_.joinable()) thread_.join();
-}
+  const auto parse_started = std::chrono::steady_clock::now();
+  const CboeChain chain = parse_cboe_chain(response.body);
+  const auto parse_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - parse_started)
+                            .count();
+  publish_chain(chain, subscription, sink);
 
-bool CboeDelayedProvider::sleep_for(std::chrono::seconds duration) {
-  std::unique_lock lock(wake_mutex_);
-  return !wake_.wait_for(lock, duration, [this] { return stopping_.load(); });
-}
-
-void CboeDelayedProvider::run(md::Subscription subscription, md::EventSink* sink) {
-  sink->publish(md::ProviderStatus{md::now(), md::FeedState::Connecting, "Cboe delayed quotes"});
-  net::HttpsClient http;
-  while (!stopping_) {
-    for (const std::string& underlying : subscription.underlyings) {
-      if (stopping_) break;
-      try {
-        const net::HttpResponse response = http.get(cboe_chain_url(underlying), {}, options_.timeout);
-        if (response.status != 200) {
-          sink->publish(md::ProviderStatus{md::now(), md::FeedState::Error,
-                                           underlying + ": HTTP " + std::to_string(response.status)});
-          continue;
-        }
-        const auto parse_started = std::chrono::steady_clock::now();
-        const CboeChain chain = parse_cboe_chain(response.body);
-        const auto parse_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                                  std::chrono::steady_clock::now() - parse_started)
-                                  .count();
-        publish_chain(chain, subscription, *sink);
-
-        char message[192];
-        std::snprintf(message, sizeof message,
-                      "%s: %zu options, %.2f MB in %.0f ms, parsed in %.1f ms", underlying.c_str(),
-                      chain.options.size(), static_cast<double>(response.wire_bytes) / 1e6,
-                      static_cast<double>(response.elapsed.count()) / 1e3,
-                      static_cast<double>(parse_us) / 1e3);
-        sink->publish(md::ProviderStatus{md::now(), md::FeedState::Delayed, message});
-      } catch (const std::exception& error) {
-        sink->publish(md::ProviderStatus{md::now(), md::FeedState::Error,
-                                         underlying + ": " + error.what()});
-      }
-    }
-    if (!sleep_for(options_.poll_interval)) break;
-  }
-  sink->publish(md::ProviderStatus{md::now(), md::FeedState::Stopped, "Cboe delayed quotes"});
+  char summary[192];
+  std::snprintf(summary, sizeof summary, "cboe %s: %zu options, %.2f MB in %.0f ms, parsed in %.1f ms",
+                underlying.c_str(), chain.options.size(),
+                static_cast<double>(response.wire_bytes) / 1e6,
+                static_cast<double>(response.elapsed.count()) / 1e3,
+                static_cast<double>(parse_us) / 1e3);
+  return summary;
 }
 
 void CboeDelayedProvider::publish_chain(const CboeChain& chain,
@@ -178,59 +126,30 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   const md::Timestamp ts =
       chain.as_of - std::chrono::duration_cast<std::chrono::nanoseconds>(kDelay).count();
 
-  std::string underlying_symbol = chain.symbol;
-  if (!underlying_symbol.empty() && underlying_symbol.front() == '^') underlying_symbol.erase(0, 1);
-  sink.publish(md::UnderlyingQuote{underlying_symbol, ts, chain.bid, chain.ask, chain.price});
+  std::string underlying = chain.symbol;
+  if (!underlying.empty() && underlying.front() == '^') underlying.erase(0, 1);
+  sink.publish(md::UnderlyingQuote{underlying, ts, chain.bid, chain.ask, chain.price});
 
-  // Optional filters: the nearest N expiries and a strike window around spot.
+  std::vector<std::pair<const CboeOption*, md::OptionContract>> contracts;
+  contracts.reserve(chain.options.size());
   std::set<md::Date> expiries;
-  if (subscription.max_expiries > 0) {
-    const md::Date today = md::date_from_days(chain.as_of / md::kNanosPerDay);
-    for (const CboeOption& option : chain.options) {
-      if (auto contract = md::parse_osi(option.symbol); contract && contract->expiry >= today) {
-        expiries.insert(contract->expiry);
-      }
-    }
-    while (expiries.size() > static_cast<std::size_t>(subscription.max_expiries)) {
-      expiries.erase(std::prev(expiries.end()));
+  for (const CboeOption& option : chain.options) {
+    if (std::optional<md::OptionContract> contract = md::parse_osi(option.symbol)) {
+      expiries.insert(contract->expiry);
+      contracts.emplace_back(&option, std::move(*contract));
     }
   }
+  const ChainFilter filter(subscription, md::date_from_days(chain.as_of / md::kNanosPerDay),
+                           chain.price, expiries);
 
-  for (const CboeOption& option : chain.options) {
-    std::optional<md::OptionContract> contract = md::parse_osi(option.symbol);
-    if (!contract) continue;
-    if (subscription.max_expiries > 0 && !expiries.contains(contract->expiry)) continue;
-    if (subscription.strike_window > 0.0 && chain.price > 0.0 &&
-        std::abs(contract->strike / chain.price - 1.0) > subscription.strike_window) {
-      continue;
-    }
-
-    auto [it, inserted] = ids_.try_emplace(option.symbol, static_cast<md::InstrumentId>(ids_.size()));
-    const md::InstrumentId id = it->second;
-    if (inserted) {
-      published_.emplace_back();
-      sink.publish(md::ContractDefinition{id, std::move(*contract)});
-    }
-    Published& last = published_[id];
-
-    if (changed(last.bid, option.bid) || changed(last.ask, option.ask) ||
-        changed(last.bid_size, option.bid_size) || changed(last.ask_size, option.ask_size)) {
-      sink.publish(md::OptionQuote{id, ts, option.bid, option.ask, option.bid_size, option.ask_size});
-      last.bid = option.bid;
-      last.ask = option.ask;
-      last.bid_size = option.bid_size;
-      last.ask_size = option.ask_size;
-    }
-    if (changed(last.open_interest, option.open_interest)) {
-      sink.publish(md::OpenInterest{id, ts, option.open_interest});
-      last.open_interest = option.open_interest;
-    }
-    if (option.iv > 0.0 && (changed(last.iv, option.iv) || changed(last.delta, option.delta))) {
-      sink.publish(md::VendorGreeks{id, ts, option.iv, option.delta, option.gamma, option.vega,
-                                    option.theta, option.rho});
-      last.iv = option.iv;
-      last.delta = option.delta;
-    }
+  for (auto& [option, contract] : contracts) {
+    if (!filter.admits(contract)) continue;
+    const md::InstrumentId id = publisher_.define(option->symbol, std::move(contract), sink);
+    publisher_.quote(id, ts, option->bid, option->ask, option->bid_size, option->ask_size, sink);
+    publisher_.open_interest(id, ts, option->open_interest, sink);
+    publisher_.greeks(md::VendorGreeks{id, ts, option->iv, option->delta, option->gamma,
+                                       option->vega, option->theta, option->rho},
+                      sink);
   }
 }
 

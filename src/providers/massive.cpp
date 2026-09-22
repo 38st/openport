@@ -1,0 +1,228 @@
+#include "openport/providers/massive.hpp"
+
+// simdjson 4.6 names std::ranges::input_range under C++20 without including <ranges>.
+#include <ranges>
+#include <simdjson.h>
+
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#include <set>
+#include <stdexcept>
+#include <utility>
+
+#include "openport/md/contract.hpp"
+#include "openport/net/http.hpp"
+
+namespace openport::providers {
+namespace {
+
+using simdjson::ondemand::object;
+using simdjson::ondemand::value;
+
+double as_double(value v) {
+  double out = 0.0;
+  if (v.get_double().get(out) != simdjson::SUCCESS || !std::isfinite(out)) return 0.0;
+  return out;
+}
+
+std::string as_string(value v) {
+  std::string_view out;
+  if (v.get_string().get(out) != simdjson::SUCCESS) return {};
+  return std::string(out);
+}
+
+md::Timestamp as_nanos(value v) {
+  std::int64_t out = 0;
+  if (v.get_int64().get(out) == simdjson::SUCCESS) return out;
+  return static_cast<md::Timestamp>(as_double(v));
+}
+
+// Fields are visited in whatever order Massive sends them, and any may be missing.
+MassiveContract parse_contract(object result, MassivePage& page) {
+  MassiveContract c;
+  for (auto field : result) {
+    const std::string_view key = field.unescaped_key();
+    value v = field.value();
+    if (key == "details") {
+      for (auto detail : v.get_object()) {
+        const std::string_view name = detail.unescaped_key();
+        if (name == "ticker") {
+          c.symbol = as_string(detail.value());
+          if (c.symbol.starts_with("O:")) c.symbol.erase(0, 2);
+        } else if (name == "exercise_style") {
+          c.european = as_string(detail.value()) == "european";
+        } else if (name == "shares_per_contract") {
+          c.multiplier = as_double(detail.value());
+        }
+      }
+    } else if (key == "greeks") {
+      for (auto greek : v.get_object()) {
+        const std::string_view name = greek.unescaped_key();
+        const double x = as_double(greek.value());
+        if (name == "delta") c.delta = x;
+        if (name == "gamma") c.gamma = x;
+        if (name == "theta") c.theta = x;
+        if (name == "vega") c.vega = x;
+      }
+    } else if (key == "implied_volatility") {
+      c.iv = as_double(v);
+    } else if (key == "last_quote") {
+      c.has_quote = true;
+      for (auto quote : v.get_object()) {
+        const std::string_view name = quote.unescaped_key();
+        if (name == "bid") c.bid = as_double(quote.value());
+        if (name == "ask") c.ask = as_double(quote.value());
+        if (name == "bid_size") c.bid_size = as_double(quote.value());
+        if (name == "ask_size") c.ask_size = as_double(quote.value());
+        if (name == "last_updated") c.quote_ts = as_nanos(quote.value());
+        if (name == "timeframe") c.realtime = as_string(quote.value()) == "REAL-TIME";
+      }
+    } else if (key == "open_interest") {
+      c.has_open_interest = true;
+      c.open_interest = as_double(v);
+    } else if (key == "underlying_asset") {
+      for (auto asset : v.get_object()) {
+        const std::string_view name = asset.unescaped_key();
+        if (name == "price") page.underlying_price = as_double(asset.value());
+        if (name == "last_updated") page.underlying_ts = as_nanos(asset.value());
+      }
+    }
+  }
+  return c;
+}
+
+}  // namespace
+
+std::string massive_chain_url(std::string_view base_url, std::string_view underlying) {
+  std::string url(base_url);
+  url += "/v3/snapshot/options/";
+  if (md::is_index_underlying(underlying)) url += "I:";
+  url += underlying;
+  url += "?limit=250";
+  return url;
+}
+
+MassivePage parse_massive_chain_page(std::string_view json) {
+  simdjson::ondemand::parser parser;
+  const simdjson::padded_string padded(json);
+  simdjson::ondemand::document doc = parser.iterate(padded);
+
+  MassivePage page;
+  std::string status;
+  std::string error;
+  for (auto field : doc.get_object()) {
+    const std::string_view key = field.unescaped_key();
+    if (key == "results") {
+      for (object result : field.value().get_array()) {
+        MassiveContract contract = parse_contract(result, page);
+        if (!contract.symbol.empty()) page.contracts.push_back(std::move(contract));
+      }
+    } else if (key == "next_url") {
+      page.next_url = as_string(field.value());
+    } else if (key == "status") {
+      status = as_string(field.value());
+    } else if (key == "error" || key == "message") {
+      error = as_string(field.value());
+    }
+  }
+  if (status == "ERROR" || status == "NOT_AUTHORIZED") {
+    throw std::runtime_error("Massive: " + (error.empty() ? status : error));
+  }
+  return page;
+}
+
+MassiveProvider::MassiveProvider(Options options)
+    : PollingProvider(options.poll_interval), options_(std::move(options)) {
+  if (options_.api_key.empty()) {
+    throw std::invalid_argument("massive: an API key is required (set MASSIVE_API_KEY)");
+  }
+}
+
+md::Capabilities MassiveProvider::capabilities() const noexcept {
+  md::Capabilities caps;
+  caps.realtime = true;  // plan-dependent: the feed status reports Live or Delayed
+  caps.quotes = true;
+  caps.trades = false;
+  caps.open_interest = true;
+  caps.vendor_greeks = true;
+  caps.history = false;
+  return caps;
+}
+
+std::string MassiveProvider::poll(net::HttpClient& http, const std::string& underlying,
+                                  const md::Subscription& subscription, md::EventSink& sink) {
+  // The key goes in a header rather than the URL, so it never lands in a log line.
+  const net::Headers headers{{"Authorization", "Bearer " + options_.api_key}};
+  std::vector<MassiveContract> contracts;
+  double underlying_price = 0.0;
+  md::Timestamp underlying_ts = 0;
+  std::size_t pages = 0;
+  const auto started = std::chrono::steady_clock::now();
+
+  std::string url = massive_chain_url(options_.base_url, underlying);
+  while (!url.empty()) {
+    const net::HttpResponse response = http.get(url, headers, options_.timeout);
+    if (response.status == 401 || response.status == 403) {
+      throw std::runtime_error("the API key was rejected, or the plan does not include options");
+    }
+    if (response.status == 429) {
+      throw std::runtime_error("rate limited: the plan's request limit is too low to poll whole chains");
+    }
+    if (response.status != 200) throw std::runtime_error("HTTP " + std::to_string(response.status));
+
+    MassivePage page = parse_massive_chain_page(response.body);
+    if (page.underlying_price > 0.0) {
+      underlying_price = page.underlying_price;
+      underlying_ts = page.underlying_ts;
+    }
+    for (MassiveContract& contract : page.contracts) contracts.push_back(std::move(contract));
+    url = std::move(page.next_url);
+    if (++pages > 2000) throw std::runtime_error("pagination did not end");
+  }
+
+  publish_chain(underlying, contracts, underlying_price, underlying_ts, subscription, sink);
+  char summary[192];
+  std::snprintf(summary, sizeof summary, "massive %s: %zu options in %zu pages, %.0f ms",
+                underlying.c_str(), contracts.size(), pages,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+                    .count());
+  return summary;
+}
+
+void MassiveProvider::publish_chain(const std::string& underlying,
+                                    const std::vector<MassiveContract>& contracts,
+                                    double underlying_price, md::Timestamp underlying_ts,
+                                    const md::Subscription& subscription, md::EventSink& sink) {
+  sink.publish(md::UnderlyingQuote{underlying, underlying_ts, 0.0, 0.0, underlying_price});
+
+  std::vector<std::pair<const MassiveContract*, md::OptionContract>> parsed;
+  parsed.reserve(contracts.size());
+  std::set<md::Date> expiries;
+  bool any_realtime = false;
+  for (const MassiveContract& c : contracts) {
+    std::optional<md::OptionContract> contract = md::parse_osi(c.symbol);
+    if (!contract) continue;
+    if (c.european) contract->style = pricing::ExerciseStyle::European;
+    if (c.multiplier > 0.0) contract->multiplier = c.multiplier;
+    expiries.insert(contract->expiry);
+    any_realtime = any_realtime || c.realtime;
+    parsed.emplace_back(&c, std::move(*contract));
+  }
+  realtime_ = any_realtime;
+
+  const ChainFilter filter(subscription, md::date_from_days(md::now() / md::kNanosPerDay),
+                           underlying_price, expiries);
+  constexpr double kUnpublished = std::numeric_limits<double>::quiet_NaN();
+  for (auto& [c, contract] : parsed) {
+    if (!filter.admits(contract)) continue;
+    const md::InstrumentId id = publisher_.define(c->symbol, std::move(contract), sink);
+    if (c->has_quote) publisher_.quote(id, c->quote_ts, c->bid, c->ask, c->bid_size, c->ask_size, sink);
+    if (c->has_open_interest) publisher_.open_interest(id, c->quote_ts, c->open_interest, sink);
+    publisher_.greeks(md::VendorGreeks{id, c->quote_ts, c->iv, c->delta, c->gamma, c->vega, c->theta,
+                                       kUnpublished},
+                      sink);
+  }
+}
+
+}  // namespace openport::providers

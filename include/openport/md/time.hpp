@@ -49,7 +49,8 @@ struct Date {
 
 enum class Zone : std::uint8_t { Utc, NewYork };
 
-/// Parses "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS" as a wall-clock time in `zone`.
+/// Parses "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS", with an optional fraction
+/// of a second ("...:42.123"), as a wall-clock time in `zone`.
 [[nodiscard]] std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexcept;
 
 /// "YYYY-MM-DD".

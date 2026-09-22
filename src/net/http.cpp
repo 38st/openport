@@ -22,21 +22,26 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace ssl = asio::ssl;
 using tcp = asio::ip::tcp;
-using Stream = beast::ssl_stream<beast::tcp_stream>;
+using TlsStream = beast::ssl_stream<beast::tcp_stream>;
 
 constexpr std::size_t kMaxBody = 512u * 1024 * 1024;
 constexpr std::string_view kUserAgent = "OpenPort/0.1 (+https://github.com/38st/openport)";
 
 }  // namespace
 
-std::optional<Url> parse_https_url(std::string_view url) {
-  constexpr std::string_view scheme = "https://";
-  if (!url.starts_with(scheme)) return std::nullopt;
-  url.remove_prefix(scheme.size());
+std::optional<Url> parse_url(std::string_view url) {
+  Url out;
+  if (url.starts_with("https://")) {
+    url.remove_prefix(8);
+  } else if (url.starts_with("http://")) {
+    url.remove_prefix(7);
+    out.tls = false;
+  } else {
+    return std::nullopt;
+  }
 
   const std::size_t path_start = url.find_first_of("/?");
   const std::string_view authority = url.substr(0, path_start);
-  Url out;
   if (path_start == std::string_view::npos) {
     out.target = "/";
   } else {
@@ -46,7 +51,7 @@ std::optional<Url> parse_https_url(std::string_view url) {
   const std::size_t colon = authority.rfind(':');
   if (colon == std::string_view::npos) {
     out.host = authority;
-    out.port = "443";
+    out.port = out.tls ? "443" : "80";
   } else {
     out.host = authority.substr(0, colon);
     out.port = authority.substr(colon + 1);
@@ -55,25 +60,37 @@ std::optional<Url> parse_https_url(std::string_view url) {
   return out;
 }
 
-struct HttpsClient::Impl {
+struct HttpClient::Impl {
   asio::io_context io;
-  ssl::context tls{ssl::context::tls_client};
-  std::unique_ptr<Stream> stream;
-  std::string host;
-  std::string port;
+  ssl::context tls_context{ssl::context::tls_client};
+  // Exactly one of these is open at a time.
+  std::unique_ptr<TlsStream> tls;
+  std::unique_ptr<beast::tcp_stream> plain;
+  Url connected;
   beast::flat_buffer buffer;
 
   Impl() {
-    tls.set_verify_mode(ssl::verify_peer);
-    tls.set_default_verify_paths();
+    tls_context.set_verify_mode(ssl::verify_peer);
+    tls_context.set_default_verify_paths();
     // OpenSSL's compiled-in trust store is not always populated; add the platform bundle.
     for (const char* bundle : {"/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"}) {
       if (std::filesystem::exists(bundle)) {
         boost::system::error_code ignored;
-        tls.load_verify_file(bundle, ignored);
+        tls_context.load_verify_file(bundle, ignored);
         break;
       }
     }
+  }
+
+  [[nodiscard]] bool open() const noexcept { return tls || plain; }
+
+  [[nodiscard]] bool connected_to(const Url& url) const noexcept {
+    return open() && connected.tls == url.tls && connected.host == url.host &&
+           connected.port == url.port;
+  }
+
+  [[nodiscard]] beast::tcp_stream& tcp_layer() {
+    return tls ? beast::get_lowest_layer(*tls) : *plain;
   }
 
   // Beast only enforces tcp_stream timeouts on asynchronous operations, so every
@@ -88,39 +105,50 @@ struct HttpsClient::Impl {
   }
 
   void close() noexcept {
-    if (!stream) return;
+    if (!open()) return;
     boost::system::error_code ignored;
-    beast::get_lowest_layer(*stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
-    beast::get_lowest_layer(*stream).socket().close(ignored);
-    stream.reset();
+    tcp_layer().socket().shutdown(tcp::socket::shutdown_both, ignored);
+    tcp_layer().socket().close(ignored);
+    tls.reset();
+    plain.reset();
     buffer.clear();
   }
 
   void connect(const Url& url, std::chrono::seconds timeout) {
     close();
-    auto fresh = std::make_unique<Stream>(io, tls);
-    if (SSL_set_tlsext_host_name(fresh->native_handle(), url.host.c_str()) != 1) {
-      throw std::runtime_error("TLS: cannot set SNI host name");
-    }
-    fresh->set_verify_callback(ssl::host_name_verification(url.host));
-
     tcp::resolver resolver(io);
     const auto endpoints = resolver.resolve(url.host, url.port);
-    auto& tcp_stream = beast::get_lowest_layer(*fresh);
-    tcp_stream.expires_after(timeout);
-    run([&](auto done) {
-      tcp_stream.async_connect(endpoints, [done](boost::system::error_code ec,
-                                                 const tcp::endpoint&) { done(ec); });
-    });
-    tcp_stream.expires_after(timeout);
-    run([&](auto done) { fresh->async_handshake(ssl::stream_base::client, done); });
 
-    stream = std::move(fresh);
-    host = url.host;
-    port = url.port;
+    if (url.tls) {
+      auto stream = std::make_unique<TlsStream>(io, tls_context);
+      if (SSL_set_tlsext_host_name(stream->native_handle(), url.host.c_str()) != 1) {
+        throw std::runtime_error("TLS: cannot set SNI host name");
+      }
+      stream->set_verify_callback(ssl::host_name_verification(url.host));
+      auto& layer = beast::get_lowest_layer(*stream);
+      layer.expires_after(timeout);
+      run([&](auto done) {
+        layer.async_connect(endpoints,
+                            [done](boost::system::error_code ec, const tcp::endpoint&) { done(ec); });
+      });
+      layer.expires_after(timeout);
+      run([&](auto done) { stream->async_handshake(ssl::stream_base::client, done); });
+      tls = std::move(stream);
+    } else {
+      auto stream = std::make_unique<beast::tcp_stream>(io);
+      stream->expires_after(timeout);
+      run([&](auto done) {
+        stream->async_connect(endpoints,
+                              [done](boost::system::error_code ec, const tcp::endpoint&) { done(ec); });
+      });
+      plain = std::move(stream);
+    }
+    connected = url;
   }
 
-  HttpResponse request(const Url& url, const Headers& headers, std::chrono::seconds timeout) {
+  template <typename Stream>
+  HttpResponse exchange(Stream& stream, const Url& url, const Headers& headers,
+                        std::chrono::seconds timeout) {
     http::request<http::empty_body> req{http::verb::get, url.target, 11};
     req.set(http::field::host, url.host);
     req.set(http::field::user_agent, kUserAgent);
@@ -128,21 +156,19 @@ struct HttpsClient::Impl {
     for (const auto& [name, value] : headers) req.set(name, value);
 
     const auto started = std::chrono::steady_clock::now();
-    auto& tcp_stream = beast::get_lowest_layer(*stream);
-    tcp_stream.expires_after(timeout);
+    tcp_layer().expires_after(timeout);
     run([&](auto done) {
-      http::async_write(*stream, req,
-                        [done](boost::system::error_code ec, std::size_t) { done(ec); });
+      http::async_write(stream, req, [done](boost::system::error_code ec, std::size_t) { done(ec); });
     });
 
     http::response_parser<http::string_body> parser;
     parser.body_limit(kMaxBody);
-    tcp_stream.expires_after(timeout);
+    tcp_layer().expires_after(timeout);
     run([&](auto done) {
-      http::async_read(*stream, buffer, parser,
+      http::async_read(stream, buffer, parser,
                        [done](boost::system::error_code ec, std::size_t) { done(ec); });
     });
-    tcp_stream.expires_never();
+    tcp_layer().expires_never();
 
     auto response = parser.release();
     HttpResponse out;
@@ -155,18 +181,22 @@ struct HttpsClient::Impl {
     if (!response.keep_alive()) close();
     return out;
   }
+
+  HttpResponse request(const Url& url, const Headers& headers, std::chrono::seconds timeout) {
+    return tls ? exchange(*tls, url, headers, timeout) : exchange(*plain, url, headers, timeout);
+  }
 };
 
-HttpsClient::HttpsClient() : impl_(std::make_unique<Impl>()) {}
+HttpClient::HttpClient() : impl_(std::make_unique<Impl>()) {}
 
-HttpsClient::~HttpsClient() { impl_->close(); }
+HttpClient::~HttpClient() { impl_->close(); }
 
-HttpResponse HttpsClient::get(std::string_view url, const Headers& headers,
-                              std::chrono::seconds timeout) {
-  const std::optional<Url> parsed = parse_https_url(url);
-  if (!parsed) throw std::runtime_error("not an https URL: " + std::string(url));
+HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
+                             std::chrono::seconds timeout) {
+  const std::optional<Url> parsed = parse_url(url);
+  if (!parsed) throw std::runtime_error("not an http(s) URL: " + std::string(url));
 
-  const bool reusing = impl_->stream && impl_->host == parsed->host && impl_->port == parsed->port;
+  const bool reusing = impl_->connected_to(*parsed);
   try {
     if (!reusing) impl_->connect(*parsed, timeout);
     return impl_->request(*parsed, headers, timeout);

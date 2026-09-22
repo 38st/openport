@@ -17,9 +17,9 @@ struct IndexRoot {
 };
 
 // Cash-settled, European-style index option roots.
-constexpr std::array<IndexRoot, 14> kIndexRoots{{
+constexpr std::array<IndexRoot, 13> kIndexRoots{{
     {"SPX", "SPX", Settlement::AM},   {"SPXW", "SPX", Settlement::PM},
-    {"SPXPM", "SPX", Settlement::PM}, {"XSP", "XSP", Settlement::PM},
+    {"XSP", "XSP", Settlement::PM},
     {"NDX", "NDX", Settlement::AM},   {"NDXP", "NDX", Settlement::PM},
     {"XND", "XND", Settlement::PM},   {"RUT", "RUT", Settlement::AM},
     {"RUTW", "RUT", Settlement::PM},  {"MRUT", "MRUT", Settlement::PM},
@@ -28,6 +28,22 @@ constexpr std::array<IndexRoot, 14> kIndexRoots{{
 }};
 
 }  // namespace
+
+bool is_index_underlying(std::string_view underlying) {
+  for (const IndexRoot& index : kIndexRoots) {
+    if (index.underlying == underlying) return true;
+  }
+  return false;
+}
+
+std::vector<std::string> option_roots(std::string_view underlying) {
+  std::vector<std::string> roots;
+  for (const IndexRoot& index : kIndexRoots) {
+    if (index.underlying == underlying) roots.emplace_back(index.root);
+  }
+  if (roots.empty()) roots.emplace_back(underlying);
+  return roots;
+}
 
 RootConventions conventions_for_root(std::string_view root) {
   for (const IndexRoot& index : kIndexRoots) {

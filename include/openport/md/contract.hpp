@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "openport/md/time.hpp"
 #include "openport/pricing/binomial.hpp"
@@ -46,6 +47,14 @@ struct RootConventions {
 /// their own AM/PM settlement. Every other root is treated as an American equity
 /// option on the root without any adjustment digits ("SPY1" -> "SPY").
 [[nodiscard]] RootConventions conventions_for_root(std::string_view root);
+
+/// True for cash-settled index underlyings (SPX, NDX, RUT, VIX, ...). Providers
+/// often name these differently from stocks: "_SPX" at Cboe, "I:SPX" at Massive.
+[[nodiscard]] bool is_index_underlying(std::string_view underlying);
+
+/// Every OCC root an underlying's options trade under: SPX -> {"SPX", "SPXW"},
+/// SPY -> {"SPY"}.
+[[nodiscard]] std::vector<std::string> option_roots(std::string_view underlying);
 
 /// Parses an OSI symbol, padded ("SPXW  261005P07405000") or compact
 /// ("SPXW261005P07405000"). Returns nullopt for anything malformed.

@@ -4,6 +4,8 @@
 #include <string>
 
 #include "openport/providers/cboe.hpp"
+#include "openport/providers/massive.hpp"
+#include "openport/providers/thetadata.hpp"
 #ifdef OPENPORT_WITH_DATABENTO
 #include "openport/providers/databento.hpp"
 #endif
@@ -17,6 +19,12 @@ std::string option_or(const md::ProviderConfig& config, const std::string& key,
   return it == config.options.end() ? fallback : it->second;
 }
 
+std::chrono::seconds seconds_option(const md::ProviderConfig& config, const std::string& key,
+                                    std::chrono::seconds fallback) {
+  const auto it = config.options.find(key);
+  return it == config.options.end() ? fallback : std::chrono::seconds(std::stoi(it->second));
+}
+
 }  // namespace
 
 std::vector<std::string_view> provider_names() {
@@ -25,13 +33,15 @@ std::vector<std::string_view> provider_names() {
 #ifdef OPENPORT_WITH_DATABENTO
       "databento",
 #endif
+      "massive",
+      "thetadata",
   };
 }
 
 std::unique_ptr<md::Provider> make_provider(const md::ProviderConfig& config) {
   if (config.name == "cboe") {
     CboeDelayedProvider::Options options;
-    options.poll_interval = std::chrono::seconds(std::stoi(option_or(config, "poll_seconds", "15")));
+    options.poll_interval = seconds_option(config, "poll_seconds", options.poll_interval);
     return std::make_unique<CboeDelayedProvider>(options);
   }
 #ifdef OPENPORT_WITH_DATABENTO
@@ -50,6 +60,19 @@ std::unique_ptr<md::Provider> make_provider(const md::ProviderConfig& config) {
     return std::make_unique<DatabentoProvider>(std::move(options));
   }
 #endif
+  if (config.name == "massive") {
+    MassiveProvider::Options options;
+    options.api_key = config.api_key;
+    options.base_url = option_or(config, "base_url", options.base_url);
+    options.poll_interval = seconds_option(config, "poll_seconds", options.poll_interval);
+    return std::make_unique<MassiveProvider>(std::move(options));
+  }
+  if (config.name == "thetadata") {
+    ThetaDataProvider::Options options;
+    options.base_url = option_or(config, "base_url", options.base_url);
+    options.poll_interval = seconds_option(config, "poll_seconds", options.poll_interval);
+    return std::make_unique<ThetaDataProvider>(std::move(options));
+  }
   throw std::invalid_argument("unknown provider: " + config.name);
 }
 

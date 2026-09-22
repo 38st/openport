@@ -160,8 +160,8 @@ int main(int argc, char** argv) {
 
     const auto& [expiry, strikes] = *chain.expiries.begin();
     std::printf("  nearest expiry %s\n", md::format_date(expiry).c_str());
-    std::printf("  %21s  %-8s %10s  %21s  %-8s\n", "call bid / ask", "cboe iv", "strike",
-                "put bid / ask", "cboe iv");
+    std::printf("  %21s  %-8s %10s  %21s  %-8s\n", "call bid / ask", "vendor iv", "strike",
+                "put bid / ask", "vendor iv");
     auto atm = strikes.lower_bound(chain.price);
     for (int back = 0; back < 3 && atm != strikes.begin(); ++back) --atm;
     int shown = 0;

@@ -50,6 +50,13 @@ TEST(Contract, AdjustedRootsMapToTheirUnderlying) {
   EXPECT_EQ(c->underlying, "SPY");
 }
 
+TEST(Contract, KnowsIndexUnderlyingsAndTheirRoots) {
+  EXPECT_TRUE(openport::md::is_index_underlying("SPX"));
+  EXPECT_FALSE(openport::md::is_index_underlying("SPY"));
+  EXPECT_EQ(openport::md::option_roots("SPX"), (std::vector<std::string>{"SPX", "SPXW"}));
+  EXPECT_EQ(openport::md::option_roots("SPY"), (std::vector<std::string>{"SPY"}));
+}
+
 TEST(Contract, RejectsMalformedSymbols) {
   EXPECT_FALSE(parse_osi(""));
   EXPECT_FALSE(parse_osi("SPXW261005X07405000"));  // not C or P

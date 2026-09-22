@@ -1,0 +1,103 @@
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <set>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+#include "openport/md/provider.hpp"
+
+namespace openport::net {
+class HttpClient;
+}
+
+/// Building blocks for providers that deliver whole-chain snapshots on request
+/// (Cboe, Massive, ThetaData) rather than a stream of updates.
+namespace openport::providers {
+
+/// Turns successive snapshots of a chain into events: each contract is defined
+/// once, then only values that changed since the previous snapshot are published.
+class SnapshotPublisher {
+ public:
+  /// Returns the contract's id, publishing its definition the first time `key`
+  /// (any provider-stable identifier, usually the OSI symbol) is seen.
+  md::InstrumentId define(const std::string& key, md::OptionContract contract, md::EventSink& sink);
+
+  void quote(md::InstrumentId id, md::Timestamp ts, double bid, double ask, double bid_size,
+             double ask_size, md::EventSink& sink);
+  void open_interest(md::InstrumentId id, md::Timestamp ts, double contracts, md::EventSink& sink);
+  void greeks(const md::VendorGreeks& greeks, md::EventSink& sink);
+
+  [[nodiscard]] std::size_t size() const noexcept { return last_.size(); }
+
+ private:
+  struct Last {
+    double bid = -1.0;
+    double ask = -1.0;
+    double bid_size = -1.0;
+    double ask_size = -1.0;
+    double open_interest = -1.0;
+    double iv = -1.0;
+    double delta = -2.0;
+  };
+
+  std::unordered_map<std::string, md::InstrumentId> ids_;
+  std::vector<Last> last_;
+};
+
+/// A subscription's optional filters (nearest N expiries, strikes near spot)
+/// evaluated against one snapshot.
+class ChainFilter {
+ public:
+  /// `expiries` are all expiries present in the snapshot; `today` drops expired ones.
+  ChainFilter(const md::Subscription& subscription, md::Date today, double spot,
+              const std::set<md::Date>& expiries);
+
+  [[nodiscard]] bool admits(const md::OptionContract& contract) const;
+
+ private:
+  double spot_;
+  double strike_window_;
+  bool limit_expiries_;
+  md::Date today_;
+  std::set<md::Date> expiries_;
+};
+
+/// Runs `poll()` for every subscription on a background thread at a fixed interval.
+/// Derived classes must call `stop()` in their own destructor, before their members
+/// (which `poll()` uses) are destroyed.
+class PollingProvider : public md::Provider {
+ public:
+  void start(const md::Subscription& subscription, md::EventSink& sink) final;
+  void stop() final;
+
+ protected:
+  explicit PollingProvider(std::chrono::seconds interval) : interval_(interval) {}
+
+  /// Fetches and publishes one snapshot of `underlying`. Throws on failure; the
+  /// loop reports the error and carries on with the next underlying.
+  /// Returns a one-line summary for the status message.
+  virtual std::string poll(net::HttpClient& http, const std::string& underlying,
+                           const md::Subscription& subscription, md::EventSink& sink) = 0;
+
+  /// Status to report after a successful poll: Live or Delayed.
+  [[nodiscard]] virtual md::FeedState healthy_state() const noexcept = 0;
+
+ private:
+  void run(md::Subscription subscription, md::EventSink* sink);
+  bool sleep(std::chrono::seconds duration);
+
+  std::chrono::seconds interval_;
+  std::thread thread_;
+  std::atomic<bool> stopping_{false};
+  std::mutex wake_mutex_;
+  std::condition_variable wake_;
+};
+
+}  // namespace openport::providers

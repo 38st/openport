@@ -41,6 +41,9 @@ TEST(Time, ParsesUtcAndNewYorkWallClock) {
             "2026-09-22T19:48:44.000Z");
   EXPECT_EQ(format_timestamp(*parse_datetime("2026-09-22T15:33:42", Zone::NewYork)),
             "2026-09-22T19:33:42.000Z");
+  EXPECT_EQ(format_timestamp(*parse_datetime("2026-09-22T15:33:42.125", Zone::NewYork)),
+            "2026-09-22T19:33:42.125Z");
+  EXPECT_EQ(*parse_datetime("2026-09-22 19:48:44.000000001", Zone::Utc) % 1'000'000'000, 1);
   EXPECT_FALSE(parse_datetime("2026-09-22", Zone::Utc));
   EXPECT_FALSE(parse_datetime("2026/09/22 19:48:44", Zone::Utc));
   EXPECT_FALSE(parse_datetime("2026-13-22 19:48:44", Zone::Utc));

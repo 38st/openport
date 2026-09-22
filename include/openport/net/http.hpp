@@ -12,13 +12,14 @@
 namespace openport::net {
 
 struct Url {
+  bool tls = true;     ///< https (true) or http (false)
   std::string host;
-  std::string port;    ///< "443" unless the URL says otherwise
+  std::string port;    ///< "443" / "80" unless the URL says otherwise
   std::string target;  ///< path and query
 };
 
-/// Parses "https://host[:port][/path][?query]". Only https is accepted.
-[[nodiscard]] std::optional<Url> parse_https_url(std::string_view url);
+/// Parses "http[s]://host[:port][/path][?query]".
+[[nodiscard]] std::optional<Url> parse_url(std::string_view url);
 
 struct HttpResponse {
   int status = 0;
@@ -29,17 +30,18 @@ struct HttpResponse {
 
 using Headers = std::vector<std::pair<std::string, std::string>>;
 
-/// A blocking HTTPS client. It keeps the TLS connection to the last host alive
-/// between requests, asks for gzip and decompresses it, verifies certificates
-/// against the system trust store, and enforces a timeout on every step.
+/// A blocking HTTP/1.1 client for http and https URLs. It keeps the connection to
+/// the last host alive between requests, asks for gzip and decompresses it,
+/// verifies TLS certificates against the system trust store, and enforces a
+/// timeout on every step.
 ///
 /// Not thread-safe: give each thread its own client.
-class HttpsClient {
+class HttpClient {
  public:
-  HttpsClient();
-  ~HttpsClient();
-  HttpsClient(const HttpsClient&) = delete;
-  HttpsClient& operator=(const HttpsClient&) = delete;
+  HttpClient();
+  ~HttpClient();
+  HttpClient(const HttpClient&) = delete;
+  HttpClient& operator=(const HttpClient&) = delete;
 
   /// Throws std::runtime_error on network, TLS or timeout failures. HTTP error
   /// statuses are returned, not thrown.

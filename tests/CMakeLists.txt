@@ -14,6 +14,8 @@ if(OPENPORT_BUILD_PROVIDERS)
   target_sources(openport_tests PRIVATE
     net/http_test.cpp
     providers/cboe_test.cpp
+    providers/massive_test.cpp
+    providers/thetadata_test.cpp
   )
   target_link_libraries(openport_tests PRIVATE openport::providers)
   if(OPENPORT_WITH_DATABENTO)

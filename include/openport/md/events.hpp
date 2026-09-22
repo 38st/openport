@@ -47,7 +47,9 @@ struct OpenInterest {
 /// Implied volatility and Greeks as published by the provider, converted to one set
 /// of units: iv as a decimal (0.18), gamma per $1 of underlying, vega per vol point,
 /// theta per calendar day, rho per 1% of rate, all per unit of underlying (not per
-/// contract). Kept only for comparison with OpenPort's own numbers.
+/// contract). A field is NaN when the provider does not publish it, or publishes it
+/// in units that are not documented. Kept only for comparison with OpenPort's own
+/// numbers.
 struct VendorGreeks {
   InstrumentId id = 0;
   Timestamp ts = 0;

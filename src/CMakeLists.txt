@@ -27,7 +27,10 @@ if(OPENPORT_BUILD_PROVIDERS)
   # One adapter per market-data provider.
   add_library(openport_providers
     providers/factory.cpp
+    providers/snapshot.cpp
     providers/cboe.cpp
+    providers/massive.cpp
+    providers/thetadata.cpp
   )
   add_library(openport::providers ALIAS openport_providers)
   target_link_libraries(openport_providers

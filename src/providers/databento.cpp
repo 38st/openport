@@ -7,7 +7,6 @@
 #include <databento/live_threaded.hpp>
 #include <databento/record.hpp>
 
-#include <array>
 #include <chrono>
 #include <optional>
 #include <stdexcept>
@@ -18,19 +17,6 @@ namespace openport::providers {
 namespace {
 
 namespace db = databento;
-
-struct RootFamily {
-  std::string_view underlying;
-  std::array<std::string_view, 2> roots;
-};
-
-// Index underlyings whose options trade under more than one OCC root.
-constexpr std::array<RootFamily, 4> kMultiRoot{{
-    {"SPX", {"SPX", "SPXW"}},
-    {"NDX", {"NDX", "NDXP"}},
-    {"RUT", {"RUT", "RUTW"}},
-    {"VIX", {"VIX", "VIXW"}},
-}};
 
 /// Databento prices are fixed-point integers in units of 1e-9.
 [[nodiscard]] double price(std::int64_t fixed) noexcept {
@@ -45,12 +31,9 @@ constexpr std::array<RootFamily, 4> kMultiRoot{{
 }  // namespace
 
 std::vector<std::string> databento_parent_symbols(std::string_view underlying) {
-  for (const RootFamily& family : kMultiRoot) {
-    if (family.underlying == underlying) {
-      return {std::string(family.roots[0]) + ".OPT", std::string(family.roots[1]) + ".OPT"};
-    }
-  }
-  return {std::string(underlying) + ".OPT"};
+  std::vector<std::string> symbols = md::option_roots(underlying);
+  for (std::string& symbol : symbols) symbol += ".OPT";
+  return symbols;
 }
 
 void DatabentoMapper::on_record(const db::Record& record) {
