@@ -5,6 +5,9 @@ add_library(openport_core
   pricing/binomial.cpp
   md/time.cpp
   md/contract.cpp
+  analytics/chain_book.cpp
+  analytics/forward.cpp
+  analytics/chain_analytics.cpp
 )
 add_library(openport::core ALIAS openport_core)
 target_include_directories(openport_core PUBLIC

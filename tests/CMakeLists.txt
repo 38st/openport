@@ -4,6 +4,8 @@ add_executable(openport_tests
   pricing/binomial_test.cpp
   md/time_test.cpp
   md/contract_test.cpp
+  analytics/forward_test.cpp
+  analytics/chain_analytics_test.cpp
 )
 target_link_libraries(openport_tests PRIVATE openport::options GTest::gtest_main)
 target_include_directories(openport_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
