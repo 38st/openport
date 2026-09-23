@@ -28,6 +28,12 @@ class SnapshotPublisher {
   /// Returns the contract's id, publishing its definition the first time `key`
   /// (any provider-stable identifier, usually the OSI symbol) is seen.
   md::InstrumentId define(const std::string& key, md::OptionContract contract, md::EventSink& sink);
+  [[nodiscard]] bool known(const std::string& key) const { return ids_.contains(key); }
+
+  /// Call only after a complete snapshot. Quotes absent from it must stop pricing;
+  /// a failed fetch or partial pagination must never retire the previous chain.
+  void finish(const std::string& underlying, const std::set<md::InstrumentId>& seen,
+              md::Timestamp ts, md::EventSink& sink);
 
   void quote(md::InstrumentId id, md::Timestamp ts, double bid, double ask, double bid_size,
              double ask_size, md::EventSink& sink);
@@ -38,6 +44,7 @@ class SnapshotPublisher {
 
  private:
   struct Last {
+    std::string underlying;
     double bid = -1.0;
     double ask = -1.0;
     double bid_size = -1.0;
@@ -76,6 +83,11 @@ class PollingProvider : public md::Provider {
  public:
   void start(const md::Subscription& subscription, md::EventSink& sink) final;
   void stop() final;
+
+  /// Runs one poll and reports its underlying's outcome. Call without the background
+  /// loop running; an injectable HTTP client also permits deterministic replay.
+  void poll_once(net::HttpClient& http, const std::string& underlying,
+                 const md::Subscription& subscription, md::EventSink& sink);
 
  protected:
   explicit PollingProvider(std::chrono::seconds interval) : interval_(interval) {}

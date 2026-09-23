@@ -26,6 +26,7 @@ struct OptionContract {
   pricing::ExerciseStyle style = pricing::ExerciseStyle::American;
   Settlement settlement = Settlement::PM;
   double multiplier = 100.0;
+  bool standard = true;  ///< false for adjusted deliverables that vanilla analytics cannot price
 
   /// 21-character OSI symbol: root padded to six, YYMMDD, C or P, then the strike
   /// times 1000 in eight digits. For example "SPXW  261005P07405000".
@@ -41,10 +42,11 @@ struct RootConventions {
   std::string underlying;
   pricing::ExerciseStyle style = pricing::ExerciseStyle::American;
   Settlement settlement = Settlement::PM;
+  bool standard = true;
 };
 
-/// Index roots (SPX, SPXW, NDX, RUT, VIX, ...) are European and cash-settled, with
-/// their own AM/PM settlement. Every other root is treated as an American equity
+/// Index roots have their own exercise style and AM/PM settlement. Every other
+/// root is treated as an American equity
 /// option on the root without any adjustment digits ("SPY1" -> "SPY").
 [[nodiscard]] RootConventions conventions_for_root(std::string_view root);
 

@@ -1,13 +1,14 @@
 #include "openport/providers/databento.hpp"
 
+#include <chrono>
+#include <condition_variable>
 #include <databento/constants.hpp>
 #include <databento/dbn.hpp>
 #include <databento/enums.hpp>
 #include <databento/live.hpp>
 #include <databento/live_threaded.hpp>
 #include <databento/record.hpp>
-
-#include <chrono>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 
@@ -25,10 +26,33 @@ namespace db = databento;
 }
 
 [[nodiscard]] md::Timestamp nanos(db::UnixNanos ts) noexcept {
-  return static_cast<md::Timestamp>(ts.time_since_epoch().count());
+  const auto value = ts.time_since_epoch().count();
+  if (value == db::kUndefTimestamp ||
+      value > static_cast<std::uint64_t>(std::numeric_limits<md::Timestamp>::max()))
+    return 0;
+  return static_cast<md::Timestamp>(value);
 }
 
 }  // namespace
+
+bool DatabentoRecovery::recover(const std::function<void()>& reconnect,
+                                const std::function<void()>& resubscribe,
+                                const std::function<bool(std::chrono::seconds)>& wait,
+                                const std::function<void(const std::string&)>& report) {
+  while (failures_ < 8) {
+    const auto delay = std::chrono::seconds(std::min(1u << failures_++, 30u));
+    if (!wait(delay)) return false;
+    try {
+      reconnect();
+      resubscribe();
+      return true;
+    } catch (const std::exception& error) {
+      report(std::string("reconnect failed: ") + error.what());
+    }
+  }
+  report("reconnect failure budget exhausted");
+  return false;
+}
 
 std::vector<std::string> databento_parent_symbols(std::string_view underlying) {
   std::vector<std::string> symbols = md::option_roots(underlying);
@@ -48,7 +72,7 @@ void DatabentoMapper::on_record(const db::Record& record) {
   } else if (const auto* stat = record.GetIf<db::StatMsg>()) {
     on_statistic(*stat);
   } else if (const auto* error = record.GetIf<db::ErrorMsg>()) {
-    sink_.publish(md::ProviderStatus{md::now(), md::FeedState::Error, error->Err()});
+    sink_.publish(md::ProviderStatus{md::now(), md::FeedState::Error, error->Err(), {}});
   }
 }
 
@@ -64,7 +88,10 @@ void DatabentoMapper::on_definition(const db::InstrumentDefMsg& def) {
 
   const auto [it, inserted] =
       ids_.try_emplace(def.hd.instrument_id, static_cast<md::InstrumentId>(ids_.size()));
-  if (inserted) sink_.publish(md::ContractDefinition{it->second, std::move(*contract)});
+  if (inserted) {
+    underlyings_.push_back(contract->underlying);
+    sink_.publish(md::ContractDefinition{it->second, std::move(*contract)});
+  }
 }
 
 bool DatabentoMapper::lookup(std::uint32_t databento_id, md::InstrumentId& id) {
@@ -77,22 +104,47 @@ bool DatabentoMapper::lookup(std::uint32_t databento_id, md::InstrumentId& id) {
   return true;
 }
 
+void DatabentoMapper::report_live(md::InstrumentId id) {
+  const auto& symbol = underlyings_[id];
+  if (live_underlyings_.insert(symbol).second) {
+    sink_.publish(md::ProviderStatus{md::now(), md::FeedState::Live,
+                                     "Databento " + symbol + ": receiving quotes", symbol});
+  }
+}
+
 void DatabentoMapper::on_cbbo(const db::CbboMsg& msg) {
   md::InstrumentId id = 0;
   if (!lookup(msg.hd.instrument_id, id)) return;
+  const auto ts = nanos(msg.ts_recv);
+  if (ts <= 0) {
+    live_underlyings_.erase(underlyings_[id]);
+    sink_.publish(md::ProviderStatus{md::now(), md::FeedState::Error,
+                                     "Databento " + underlyings_[id] + ": invalid CBBO ts_recv",
+                                     underlyings_[id]});
+    return;
+  }
   const auto& level = msg.levels[0];
-  sink_.publish(md::OptionQuote{id, nanos(msg.hd.ts_event), price(level.bid_px), price(level.ask_px),
+  sink_.publish(md::OptionQuote{id, ts, price(level.bid_px), price(level.ask_px),
                                 static_cast<double>(level.bid_sz),
                                 static_cast<double>(level.ask_sz)});
+  report_live(id);
 }
 
 void DatabentoMapper::on_cmbp1(const db::Cmbp1Msg& msg) {
   md::InstrumentId id = 0;
   if (!lookup(msg.hd.instrument_id, id)) return;
+  if (nanos(msg.hd.ts_event) <= 0) {
+    live_underlyings_.erase(underlyings_[id]);
+    sink_.publish(md::ProviderStatus{md::now(), md::FeedState::Error,
+                                     "Databento " + underlyings_[id] + ": invalid CMBP-1 ts_event",
+                                     underlyings_[id]});
+    return;
+  }
   const auto& level = msg.levels[0];
   sink_.publish(md::OptionQuote{id, nanos(msg.hd.ts_event), price(level.bid_px), price(level.ask_px),
                                 static_cast<double>(level.bid_sz),
                                 static_cast<double>(level.ask_sz)});
+  report_live(id);
 }
 
 void DatabentoMapper::on_trade(const db::TradeMsg& msg) {
@@ -110,13 +162,30 @@ void DatabentoMapper::on_statistic(const db::StatMsg& msg) {
 }
 
 struct DatabentoProvider::Session {
-  explicit Session(md::EventSink& out) : sink(out), mapper(out) {}
+  Session(md::EventSink& out, std::vector<std::string> symbols)
+      : sink(out), mapper(out), underlyings(std::move(symbols)) {}
+
+  void status(md::FeedState state, const std::string& message) {
+    for (const auto& symbol : underlyings) {
+      sink.publish(
+          md::ProviderStatus{md::now(), state, "Databento " + symbol + ": " + message, symbol});
+    }
+  }
+
+  bool wait(std::chrono::seconds delay) {
+    std::unique_lock lock(wake_mutex);
+    return !wake.wait_for(lock, delay, [this] { return stopping.load(); });
+  }
 
   md::EventSink& sink;
   DatabentoMapper mapper;
   std::optional<db::LiveThreaded> client;
   std::atomic<bool> stopping{false};
-  int restarts = 0;
+  std::vector<std::string> underlyings;
+  DatabentoRecovery recovery;
+  std::mutex client_mutex;
+  std::mutex wake_mutex;
+  std::condition_variable wake;
 };
 
 DatabentoProvider::DatabentoProvider(Options options) : options_(std::move(options)) {
@@ -141,15 +210,16 @@ md::Capabilities DatabentoProvider::capabilities() const noexcept {
 void DatabentoProvider::start(const md::Subscription& subscription, md::EventSink& sink) {
   stop();
   const std::lock_guard lock(mutex_);
-  auto session = std::make_unique<Session>(sink);
+  auto session = std::make_unique<Session>(sink, subscription.underlyings);
 
   std::vector<std::string> symbols;
   for (const std::string& underlying : subscription.underlyings) {
     for (std::string& symbol : databento_parent_symbols(underlying)) symbols.push_back(std::move(symbol));
   }
 
-  sink.publish(md::ProviderStatus{md::now(), md::FeedState::Connecting, "Databento OPRA"});
-  session->client.emplace(db::LiveThreaded::Builder()
+  session->status(md::FeedState::Connecting, "OPRA");
+  auto builder = db::LiveThreaded::Builder();
+  session->client.emplace(bound_databento_waits(builder)
                               .SetKey(options_.api_key)
                               .SetDataset(db::Dataset::OpraPillar)
                               .BuildThreaded());
@@ -167,21 +237,34 @@ void DatabentoProvider::start(const md::Subscription& subscription, md::EventSin
   if (options_.trades) session->client->Subscribe(symbols, db::Schema::Trades, db::SType::Parent);
 
   Session* raw = session.get();
-  md::EventSink* out = &sink;
   session->client->Start(
-      [out](db::Metadata&&) {
-        out->publish(md::ProviderStatus{md::now(), md::FeedState::Live, "Databento OPRA"});
+      [raw](db::Metadata&&) {
+        raw->status(md::FeedState::Connecting, "metadata received; waiting for quotes");
       },
       [raw](const db::Record& record) {
         if (raw->stopping) return db::KeepGoing::Stop;
+        if (const auto* error = record.GetIf<db::ErrorMsg>()) {
+          raw->mapper.reset_health();
+          raw->status(md::FeedState::Error, error->Err());
+          return db::KeepGoing::Continue;
+        }
+        raw->recovery.on_record();
         raw->mapper.on_record(record);
         return db::KeepGoing::Continue;
       },
-      [raw, out](const std::exception& error) {
-        out->publish(md::ProviderStatus{md::now(), md::FeedState::Error, error.what()});
-        // Reconnect after transient failures, but do not hammer the gateway (or a bad key).
-        if (raw->stopping || ++raw->restarts > 5) return db::LiveThreaded::ExceptionAction::Stop;
-        return db::LiveThreaded::ExceptionAction::Restart;
+      [raw](const std::exception& error) {
+        const std::lock_guard lock(raw->client_mutex);
+        if (raw->stopping) return db::LiveThreaded::ExceptionAction::Stop;
+        auto report = [raw](const std::string& message) {
+          raw->status(md::FeedState::Error, message);
+        };
+        report(error.what());
+        raw->mapper.reset_health();
+        const bool recovered = raw->recovery.recover(
+            [raw] { raw->client->Reconnect(); }, [raw] { raw->client->Resubscribe(); },
+            [raw](std::chrono::seconds delay) { return raw->wait(delay); }, report);
+        return recovered && !raw->stopping ? db::LiveThreaded::ExceptionAction::Restart
+                                           : db::LiveThreaded::ExceptionAction::Stop;
       });
   session_ = std::move(session);
 }
@@ -189,9 +272,19 @@ void DatabentoProvider::start(const md::Subscription& subscription, md::EventSin
 void DatabentoProvider::stop() {
   const std::lock_guard lock(mutex_);
   if (!session_) return;
-  session_->stopping = true;
-  session_->client.reset();  // closes the connection and joins the client's thread
-  session_->sink.publish(md::ProviderStatus{md::now(), md::FeedState::Stopped, "Databento OPRA"});
+  {
+    const std::lock_guard wake_lock(session_->wake_mutex);
+    session_->stopping = true;
+  }
+  session_->wake.notify_all();
+  std::optional<db::LiveThreaded> client;
+  {
+    // Let an in-flight recovery finish before moving the SDK object it uses.
+    const std::lock_guard client_lock(session_->client_mutex);
+    client = std::move(session_->client);
+  }
+  client.reset();  // joins the SDK thread before the session and sink can disappear
+  session_->status(md::FeedState::Stopped, "OPRA");
   session_.reset();
 }
 

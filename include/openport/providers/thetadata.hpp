@@ -3,6 +3,7 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "openport/providers/snapshot.hpp"
@@ -25,6 +26,7 @@ struct ThetaRow {
   double open_interest = 0.0;     // open_interest
   double implied_vol = 0.0;       // greeks_implied_volatility
   double underlying_price = 0.0;  // greeks_implied_volatility
+  md::Timestamp underlying_ts = 0;  ///< spot's clock, independent of the option quote
 };
 
 /// Parses a ThetaData v3 snapshot response requested with format=ndjson.
@@ -72,7 +74,7 @@ class ThetaDataProvider final : public PollingProvider {
 
   Options options_;
   SnapshotPublisher publisher_;
-  int polls_ = 0;
+  std::unordered_map<std::string, int> polls_;
 };
 
 }  // namespace openport::providers

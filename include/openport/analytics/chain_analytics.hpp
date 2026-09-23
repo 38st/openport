@@ -44,6 +44,7 @@ struct StrikeMetrics {
 struct SliceMetrics {
   md::Date expiry;
   md::Timestamp expiry_time = 0;
+  std::string root;
   double years = 0.0;
   ForwardEstimate forward;
   double atm_iv = kNaN;

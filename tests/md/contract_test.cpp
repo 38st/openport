@@ -48,6 +48,7 @@ TEST(Contract, AdjustedRootsMapToTheirUnderlying) {
   ASSERT_TRUE(c);
   EXPECT_EQ(c->root, "SPY1");
   EXPECT_EQ(c->underlying, "SPY");
+  EXPECT_FALSE(c->standard);
 }
 
 TEST(Contract, KnowsIndexUnderlyingsAndTheirRoots) {
@@ -55,6 +56,19 @@ TEST(Contract, KnowsIndexUnderlyingsAndTheirRoots) {
   EXPECT_FALSE(openport::md::is_index_underlying("SPY"));
   EXPECT_EQ(openport::md::option_roots("SPX"), (std::vector<std::string>{"SPX", "SPXW"}));
   EXPECT_EQ(openport::md::option_roots("SPY"), (std::vector<std::string>{"SPY"}));
+}
+
+TEST(Contract, OexAndXeoShareAnUnderlyingButKeepTheirExerciseStyles) {
+  const auto oex = parse_osi("OEX261016C03000000");
+  const auto xeo = parse_osi("XEO261016C03000000");
+  ASSERT_TRUE(oex && xeo);
+  EXPECT_EQ(oex->style, ExerciseStyle::American);
+  EXPECT_EQ(xeo->style, ExerciseStyle::European);
+  EXPECT_EQ(oex->settlement, Settlement::PM);
+  EXPECT_EQ(xeo->settlement, Settlement::PM);
+  EXPECT_EQ(oex->underlying, "OEX");
+  EXPECT_EQ(xeo->underlying, "OEX");
+  EXPECT_EQ(openport::md::option_roots("OEX"), (std::vector<std::string>{"OEX", "XEO"}));
 }
 
 TEST(Contract, RejectsMalformedSymbols) {

@@ -88,6 +88,7 @@ CboeChain parse_cboe_chain(std::string_view json) {
 
 md::Capabilities CboeDelayedProvider::capabilities() const noexcept {
   md::Capabilities caps;
+  caps.poll_interval = options_.poll_interval;
   caps.realtime = false;
   caps.delay = kDelay;
   caps.quotes = true;
@@ -142,15 +143,18 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   const ChainFilter filter(subscription, md::date_from_days(chain.as_of / md::kNanosPerDay),
                            chain.price, expiries);
 
+  std::set<md::InstrumentId> seen;
   for (auto& [option, contract] : contracts) {
-    if (!filter.admits(contract)) continue;
+    if (!publisher_.known(option->symbol) && !filter.admits(contract)) continue;
     const md::InstrumentId id = publisher_.define(option->symbol, std::move(contract), sink);
+    seen.insert(id);
     publisher_.quote(id, ts, option->bid, option->ask, option->bid_size, option->ask_size, sink);
     publisher_.open_interest(id, ts, option->open_interest, sink);
     publisher_.greeks(md::VendorGreeks{id, ts, option->iv, option->delta, option->gamma,
                                        option->vega, option->theta, option->rho},
                       sink);
   }
+  publisher_.finish(underlying, seen, ts, sink);
 }
 
 }  // namespace openport::providers

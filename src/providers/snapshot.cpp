@@ -12,9 +12,21 @@ md::InstrumentId SnapshotPublisher::define(const std::string& key, md::OptionCon
   const auto [it, inserted] = ids_.try_emplace(key, static_cast<md::InstrumentId>(last_.size()));
   if (inserted) {
     last_.emplace_back();
+    last_.back().underlying = contract.underlying;
     sink.publish(md::ContractDefinition{it->second, std::move(contract)});
   }
   return it->second;
+}
+
+void SnapshotPublisher::finish(const std::string& underlying,
+                               const std::set<md::InstrumentId>& seen, md::Timestamp ts,
+                               md::EventSink& sink) {
+  for (std::size_t i = 0; i < last_.size(); ++i) {
+    const auto id = static_cast<md::InstrumentId>(i);
+    if (last_[i].underlying == underlying && !seen.contains(id)) {
+      quote(id, ts, 0.0, 0.0, 0.0, 0.0, sink);
+    }
+  }
 }
 
 void SnapshotPublisher::quote(md::InstrumentId id, md::Timestamp ts, double bid, double ask,
@@ -96,22 +108,34 @@ bool PollingProvider::sleep(std::chrono::seconds duration) {
 
 void PollingProvider::run(md::Subscription subscription, md::EventSink* sink) {
   const std::string label(name());
-  sink->publish(md::ProviderStatus{md::now(), md::FeedState::Connecting, label});
+  for (const auto& underlying : subscription.underlyings) {
+    sink->publish(md::ProviderStatus{md::now(), md::FeedState::Connecting, label + " " + underlying,
+                                     underlying});
+  }
   net::HttpClient http;
   while (!stopping_) {
     for (const std::string& underlying : subscription.underlyings) {
       if (stopping_) break;
-      try {
-        std::string summary = poll(http, underlying, subscription, *sink);
-        sink->publish(md::ProviderStatus{md::now(), healthy_state(), std::move(summary)});
-      } catch (const std::exception& error) {
-        sink->publish(md::ProviderStatus{md::now(), md::FeedState::Error,
-                                         label + " " + underlying + ": " + error.what()});
-      }
+      poll_once(http, underlying, subscription, *sink);
     }
     if (!sleep(interval_)) break;
   }
-  sink->publish(md::ProviderStatus{md::now(), md::FeedState::Stopped, label});
+  for (const auto& underlying : subscription.underlyings) {
+    sink->publish(md::ProviderStatus{md::now(), md::FeedState::Stopped, label + " " + underlying,
+                                     underlying});
+  }
+}
+
+void PollingProvider::poll_once(net::HttpClient& http, const std::string& underlying,
+                                const md::Subscription& subscription, md::EventSink& sink) {
+  try {
+    std::string summary = poll(http, underlying, subscription, sink);
+    sink.publish(md::ProviderStatus{md::now(), healthy_state(), std::move(summary), underlying});
+  } catch (const std::exception& error) {
+    sink.publish(md::ProviderStatus{md::now(), md::FeedState::Error,
+                                    std::string(name()) + " " + underlying + ": " + error.what(),
+                                    underlying});
+  }
 }
 
 }  // namespace openport::providers

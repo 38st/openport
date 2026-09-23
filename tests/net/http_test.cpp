@@ -39,6 +39,17 @@ TEST(Http, GunzipRejectsCorruptInput) {
   EXPECT_THROW((void)gunzip("not gzip at all"), std::runtime_error);
 }
 
+TEST(Http, GunzipRejectsExpansionBeyond256MiB) {
+  const auto compressed = gzip(std::string(256 * 1024 * 1024 + 1, 'x'));
+  EXPECT_THROW((void)gunzip(compressed), std::runtime_error);
+}
+
+TEST(Http, GunzipAcceptsExactlyTheDecompressionLimit) {
+  EXPECT_EQ(openport::net::kMaxDecompressedBytes, 256u * 1024 * 1024);
+  const auto compressed = gzip(std::string(openport::net::kMaxDecompressedBytes, 'x'));
+  EXPECT_EQ(gunzip(compressed).size(), openport::net::kMaxDecompressedBytes);
+}
+
 TEST(Http, ParsesUrls) {
   const auto url = parse_url("https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json");
   ASSERT_TRUE(url);

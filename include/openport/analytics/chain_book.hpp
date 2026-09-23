@@ -5,6 +5,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "openport/md/events.hpp"
@@ -42,6 +43,7 @@ struct StrikePair {
 struct ExpirySlice {
   md::Date expiry;
   md::Timestamp expiry_time = 0;
+  std::string root;  ///< OEX/XEO disambiguation when settlement time alone is not unique
   std::map<double, StrikePair> strikes;
 };
 
@@ -50,7 +52,8 @@ struct UnderlyingBook {
   double spot = 0.0;
   md::Timestamp spot_ts = 0;
   md::Timestamp data_time = 0;  ///< latest market-data timestamp seen for this underlying
-  std::map<md::Timestamp, ExpirySlice> expiries;  ///< keyed by expiry instant
+  // OEX and XEO settle together but must not form mixed-exercise strike pairs.
+  std::map<std::pair<md::Timestamp, pricing::ExerciseStyle>, ExpirySlice> expiries;
   std::uint64_t version = 0;                      ///< bumped on every change
 };
 
@@ -68,6 +71,7 @@ class ChainBook {
   }
 
   [[nodiscard]] std::size_t contracts() const noexcept { return defined_count_; }
+  [[nodiscard]] std::size_t nonstandard_contracts() const noexcept { return nonstandard_count_; }
 
  private:
   void on_definition(const md::ContractDefinition& e);
@@ -77,6 +81,7 @@ class ChainBook {
   std::vector<OptionState> options_;
   std::vector<bool> defined_;
   std::size_t defined_count_ = 0;
+  std::size_t nonstandard_count_ = 0;
   std::map<std::string, UnderlyingBook> underlyings_;
 };
 

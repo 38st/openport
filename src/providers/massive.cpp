@@ -44,8 +44,13 @@ MassiveContract parse_contract(object result, MassivePage& page) {
   for (auto field : result) {
     const std::string_view key = field.unescaped_key();
     value v = field.value();
+    object nested;
+    if ((key == "details" || key == "greeks" || key == "last_quote" || key == "underlying_asset") &&
+        v.get_object().get(nested) != simdjson::SUCCESS) {
+      continue;  // Missing objects describe unavailable data, not a failed snapshot.
+    }
     if (key == "details") {
-      for (auto detail : v.get_object()) {
+      for (auto detail : nested) {
         const std::string_view name = detail.unescaped_key();
         if (name == "ticker") {
           c.symbol = as_string(detail.value());
@@ -57,7 +62,7 @@ MassiveContract parse_contract(object result, MassivePage& page) {
         }
       }
     } else if (key == "greeks") {
-      for (auto greek : v.get_object()) {
+      for (auto greek : nested) {
         const std::string_view name = greek.unescaped_key();
         const double x = as_double(greek.value());
         if (name == "delta") c.delta = x;
@@ -69,7 +74,7 @@ MassiveContract parse_contract(object result, MassivePage& page) {
       c.iv = as_double(v);
     } else if (key == "last_quote") {
       c.has_quote = true;
-      for (auto quote : v.get_object()) {
+      for (auto quote : nested) {
         const std::string_view name = quote.unescaped_key();
         if (name == "bid") c.bid = as_double(quote.value());
         if (name == "ask") c.ask = as_double(quote.value());
@@ -82,7 +87,7 @@ MassiveContract parse_contract(object result, MassivePage& page) {
       c.has_open_interest = true;
       c.open_interest = as_double(v);
     } else if (key == "underlying_asset") {
-      for (auto asset : v.get_object()) {
+      for (auto asset : nested) {
         const std::string_view name = asset.unescaped_key();
         if (name == "price") page.underlying_price = as_double(asset.value());
         if (name == "last_updated") page.underlying_ts = as_nanos(asset.value());
@@ -111,9 +116,11 @@ MassivePage parse_massive_chain_page(std::string_view json) {
   MassivePage page;
   std::string status;
   std::string error;
+  bool has_results = false;
   for (auto field : doc.get_object()) {
     const std::string_view key = field.unescaped_key();
     if (key == "results") {
+      has_results = true;
       for (object result : field.value().get_array()) {
         MassiveContract contract = parse_contract(result, page);
         if (!contract.symbol.empty()) page.contracts.push_back(std::move(contract));
@@ -129,6 +136,7 @@ MassivePage parse_massive_chain_page(std::string_view json) {
   if (status == "ERROR" || status == "NOT_AUTHORIZED") {
     throw std::runtime_error("Massive: " + (error.empty() ? status : error));
   }
+  if (!has_results) throw std::runtime_error("Massive: missing results array; snapshot incomplete");
   return page;
 }
 
@@ -141,7 +149,8 @@ MassiveProvider::MassiveProvider(Options options)
 
 md::Capabilities MassiveProvider::capabilities() const noexcept {
   md::Capabilities caps;
-  caps.realtime = true;  // plan-dependent: the feed status reports Live or Delayed
+  caps.realtime_plan_dependent = true;  // the feed status reports the actual entitlement
+  caps.poll_interval = options_.poll_interval;
   caps.quotes = true;
   caps.trades = false;
   caps.open_interest = true;
@@ -183,10 +192,11 @@ std::string MassiveProvider::poll(net::HttpClient& http, const std::string& unde
 
   publish_chain(underlying, contracts, underlying_price, underlying_ts, subscription, sink);
   char summary[192];
-  std::snprintf(summary, sizeof summary, "massive %s: %zu options in %zu pages, %.0f ms",
-                underlying.c_str(), contracts.size(), pages,
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
-                    .count());
+  std::snprintf(
+      summary, sizeof summary, "massive %s: %s, %zu options in %zu pages, %.0f ms",
+      underlying.c_str(), realtime_ ? "live" : "delayed", contracts.size(), pages,
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
+          .count());
   return summary;
 }
 
@@ -199,30 +209,39 @@ void MassiveProvider::publish_chain(const std::string& underlying,
   std::vector<std::pair<const MassiveContract*, md::OptionContract>> parsed;
   parsed.reserve(contracts.size());
   std::set<md::Date> expiries;
-  bool any_realtime = false;
+  bool any_quote = false;
+  bool all_realtime = true;
   for (const MassiveContract& c : contracts) {
     std::optional<md::OptionContract> contract = md::parse_osi(c.symbol);
     if (!contract) continue;
     if (c.european) contract->style = pricing::ExerciseStyle::European;
     if (c.multiplier > 0.0) contract->multiplier = c.multiplier;
     expiries.insert(contract->expiry);
-    any_realtime = any_realtime || c.realtime;
+    if (c.has_quote) {
+      any_quote = true;
+      all_realtime = all_realtime && c.realtime;
+    }
     parsed.emplace_back(&c, std::move(*contract));
   }
-  realtime_ = any_realtime;
+  realtime_ = any_quote && all_realtime;
 
   const ChainFilter filter(subscription, md::date_from_days(md::now() / md::kNanosPerDay),
                            underlying_price, expiries);
   constexpr double kUnpublished = std::numeric_limits<double>::quiet_NaN();
+  std::set<md::InstrumentId> seen;
   for (auto& [c, contract] : parsed) {
-    if (!filter.admits(contract)) continue;
+    if (!publisher_.known(c->symbol) && !filter.admits(contract)) continue;
     const md::InstrumentId id = publisher_.define(c->symbol, std::move(contract), sink);
+    seen.insert(id);
     if (c->has_quote) publisher_.quote(id, c->quote_ts, c->bid, c->ask, c->bid_size, c->ask_size, sink);
+    else
+      publisher_.quote(id, underlying_ts, 0.0, 0.0, 0.0, 0.0, sink);
     if (c->has_open_interest) publisher_.open_interest(id, c->quote_ts, c->open_interest, sink);
     publisher_.greeks(md::VendorGreeks{id, c->quote_ts, c->iv, c->delta, c->gamma, c->vega, c->theta,
                                        kUnpublished},
                       sink);
   }
+  publisher_.finish(underlying, seen, underlying_ts, sink);
 }
 
 }  // namespace openport::providers

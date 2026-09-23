@@ -212,25 +212,32 @@ HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
 }
 
 std::string gunzip(std::string_view compressed) {
+  if (compressed.size() > std::numeric_limits<uInt>::max()) {
+    throw std::runtime_error("gzip: compressed input too large");
+  }
   z_stream zs{};
   if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK) throw std::runtime_error("gzip: init failed");
+  struct EndInflate {
+    z_stream& stream;
+    ~EndInflate() { inflateEnd(&stream); }
+  } end{zs};
   zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(compressed.data()));
   zs.avail_in = static_cast<uInt>(compressed.size());
 
   std::string out;
-  out.resize(compressed.size() * 8 + 1024);
+  char chunk[64 * 1024];
   int status = Z_OK;
   while (status == Z_OK) {
-    if (zs.total_out >= out.size()) out.resize(out.size() * 2);
-    zs.next_out = reinterpret_cast<Bytef*>(out.data() + zs.total_out);
-    const std::size_t space = out.size() - zs.total_out;
-    zs.avail_out = static_cast<uInt>(std::min<std::size_t>(space, std::numeric_limits<uInt>::max()));
+    zs.next_out = reinterpret_cast<Bytef*>(chunk);
+    zs.avail_out = sizeof chunk;
     status = inflate(&zs, Z_NO_FLUSH);
+    const std::size_t produced = sizeof chunk - zs.avail_out;
+    if (produced > kMaxDecompressedBytes - out.size()) {
+      throw std::runtime_error("gzip: decompressed output exceeds 256 MiB");
+    }
+    out.append(chunk, produced);
   }
-  const std::size_t produced = zs.total_out;
-  inflateEnd(&zs);
   if (status != Z_STREAM_END) throw std::runtime_error("gzip: corrupt or truncated stream");
-  out.resize(produced);
   return out;
 }
 

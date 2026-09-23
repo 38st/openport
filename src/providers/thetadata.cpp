@@ -100,6 +100,8 @@ std::vector<ThetaRow> parse_theta_rows(std::string_view ndjson) {
         row.implied_vol = as_double(v);
       } else if (key == "underlying_price") {
         row.underlying_price = as_double(v);
+      } else if (key == "underlying_timestamp") {
+        row.underlying_ts = md::parse_datetime(as_view(v), md::Zone::NewYork).value_or(0);
       }
     }
     if (!row.root.empty() && has_right && row.strike > 0.0) rows.push_back(std::move(row));
@@ -110,6 +112,7 @@ std::vector<ThetaRow> parse_theta_rows(std::string_view ndjson) {
 md::Capabilities ThetaDataProvider::capabilities() const noexcept {
   md::Capabilities caps;
   caps.realtime = true;
+  caps.poll_interval = options_.poll_interval;
   caps.quotes = true;
   caps.trades = false;
   caps.open_interest = true;
@@ -139,18 +142,27 @@ std::vector<ThetaRow> ThetaDataProvider::fetch(net::HttpClient& http, std::strin
 std::string ThetaDataProvider::poll(net::HttpClient& http, const std::string& underlying,
                                     const md::Subscription& subscription, md::EventSink& sink) {
   const auto started = std::chrono::steady_clock::now();
-  const bool refresh_open_interest = polls_++ % options_.open_interest_every == 0;
+  int& polls = polls_[underlying];
+  const bool refresh_open_interest = polls == 0;
+  polls = (polls + 1) % std::max(1, options_.open_interest_every);
 
   std::vector<ThetaRow> quotes;
   std::vector<ThetaRow> implied_vols;
   std::vector<ThetaRow> open_interest;
+  std::string degraded;
+  auto auxiliary = [&](std::string_view endpoint, const std::string& root,
+                       std::vector<ThetaRow>& rows) {
+    try {
+      for (ThetaRow& row : fetch(http, endpoint, root)) rows.push_back(std::move(row));
+    } catch (const std::exception& error) {
+      degraded += "; degraded " + root + " " + std::string(endpoint) + ": " + error.what();
+    }
+  };
   for (const std::string& root : md::option_roots(underlying)) {
     for (ThetaRow& row : fetch(http, "quote", root)) quotes.push_back(std::move(row));
-    for (ThetaRow& row : fetch(http, "greeks_implied_volatility", root)) {
-      implied_vols.push_back(std::move(row));
-    }
+    auxiliary("greeks/implied_volatility", root, implied_vols);
     if (refresh_open_interest) {
-      for (ThetaRow& row : fetch(http, "open_interest", root)) open_interest.push_back(std::move(row));
+      auxiliary("open_interest", root, open_interest);
     }
   }
   publish_chain(underlying, quotes, implied_vols, open_interest, subscription, sink);
@@ -160,7 +172,7 @@ std::string ThetaDataProvider::poll(net::HttpClient& http, const std::string& un
                 underlying.c_str(), quotes.size(), implied_vols.size(),
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started)
                     .count());
-  return summary;
+  return std::string(summary) + degraded;
 }
 
 void ThetaDataProvider::publish_chain(const std::string& underlying,
@@ -172,9 +184,9 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
   double spot = 0.0;
   md::Timestamp spot_ts = 0;
   for (const ThetaRow& row : implied_vols) {
-    if (row.underlying_price > 0.0 && row.ts >= spot_ts) {
+    if (row.underlying_price > 0.0 && row.underlying_ts > 0 && row.underlying_ts >= spot_ts) {
       spot = row.underlying_price;
-      spot_ts = row.ts;
+      spot_ts = row.underlying_ts;
     }
   }
   if (spot > 0.0) sink.publish(md::UnderlyingQuote{underlying, spot_ts, 0.0, 0.0, spot});
@@ -191,6 +203,7 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
     contract.underlying = conventions.underlying;
     contract.style = conventions.style;
     contract.settlement = conventions.settlement;
+    contract.standard = conventions.standard;
     contract.expiry = row.expiry;
     contract.strike = row.strike;
     contract.type = row.type;
@@ -198,11 +211,13 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
   };
 
   std::map<Key, md::InstrumentId> ids;
+  std::set<md::InstrumentId> seen;
   for (const ThetaRow& row : quotes) {
     md::OptionContract contract = contract_of(row);
-    if (!filter.admits(contract)) continue;
     const std::string symbol = contract.osi_symbol();
+    if (!publisher_.known(symbol) && !filter.admits(contract)) continue;
     const md::InstrumentId id = publisher_.define(symbol, std::move(contract), sink);
+    seen.insert(id);
     ids.emplace(key_of(row), id);
     publisher_.quote(id, row.ts, row.bid, row.ask, row.bid_size, row.ask_size, sink);
   }
@@ -220,6 +235,7 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
     const auto it = ids.find(key_of(row));
     if (it != ids.end()) publisher_.open_interest(it->second, row.ts, row.open_interest, sink);
   }
+  publisher_.finish(underlying, seen, md::now(), sink);
 }
 
 }  // namespace openport::providers

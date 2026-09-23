@@ -130,4 +130,29 @@ TEST(Cboe, IndexChainsUseAnUnderscore) {
             "https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json");
 }
 
+TEST(Cboe, UpdatesKnownContractsOutsideTheWindowAndRetiresOnlyTheirUnderlying) {
+  providers::CboeDelayedProvider provider;
+  auto chain = providers::parse_cboe_chain(kChain);
+  Collector sink;
+  md::Subscription sub;
+  sub.strike_window = 0.01;
+  provider.publish_chain(chain, sub, sink);
+  sink.events.clear();
+  chain.price = 10000;
+  chain.options[0].bid = 42;
+  provider.publish_chain(chain, sub, sink);
+  ASSERT_EQ(sink.all<md::OptionQuote>().size(), 1u);
+  EXPECT_EQ(sink.all<md::OptionQuote>()[0].bid, 42);
+  sink.events.clear();
+  auto other = chain;
+  other.symbol = "SPY";
+  other.options.clear();
+  provider.publish_chain(other, sub, sink);
+  EXPECT_TRUE(sink.all<md::OptionQuote>().empty());
+  chain.options.clear();
+  provider.publish_chain(chain, sub, sink);
+  ASSERT_EQ(sink.all<md::OptionQuote>().size(), 2u);
+  for (const auto& q : sink.all<md::OptionQuote>()) EXPECT_EQ(q.bid + q.ask, 0);
+}
+
 }  // namespace

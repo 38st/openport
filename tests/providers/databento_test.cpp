@@ -38,6 +38,7 @@ void stamp(Msg& msg, db::RType rtype, std::uint32_t instrument_id, std::uint64_t
   msg.hd.rtype = rtype;
   msg.hd.instrument_id = instrument_id;
   msg.hd.ts_event = at(ts);
+  if constexpr (requires { msg.ts_recv; }) msg.ts_recv = at(ts);
 }
 
 db::InstrumentDefMsg definition(std::uint32_t id, const char* raw_symbol, db::InstrumentClass cls) {
@@ -138,6 +139,113 @@ TEST(Databento, DropsRecordsForUndefinedInstrumentsAndHandlesEmptySides) {
   ASSERT_EQ(quotes.size(), 1u);
   EXPECT_DOUBLE_EQ(quotes[0].bid, 0.0);
   EXPECT_DOUBLE_EQ(quotes[0].ask, 0.05);
+}
+
+TEST(Databento, CbboUsesReceiveTimeAndRejectsUndefinedTimestamps) {
+  Collector sink;
+  providers::DatabentoMapper mapper(sink);
+  auto def = definition(99, "SPY   261016C00800000", db::InstrumentClass::Call);
+  feed(mapper, def);
+  db::CbboMsg quote{};
+  stamp(quote, db::RType::Cbbo1S, 99, db::kUndefTimestamp);
+  quote.ts_recv = at(1'790'000'000'000'000'000);
+  feed(mapper, quote);
+  ASSERT_EQ(sink.all<md::OptionQuote>().size(), 1u);
+  EXPECT_EQ(sink.all<md::OptionQuote>()[0].ts, 1'790'000'000'000'000'000);
+  sink.events.clear();
+  quote.ts_recv = at(db::kUndefTimestamp);
+  feed(mapper, quote);
+  EXPECT_TRUE(sink.all<md::OptionQuote>().empty());
+  quote.ts_recv = at(std::uint64_t{1} << 63);
+  feed(mapper, quote);
+  EXPECT_TRUE(sink.all<md::OptionQuote>().empty());
+  EXPECT_EQ(sink.all<md::ProviderStatus>().back().underlying, "SPY");
+  db::Cmbp1Msg cmbp{};
+  stamp(cmbp, db::RType::Cmbp1, 99, 123);
+  cmbp.ts_recv = at(456);
+  feed(mapper, cmbp);
+  ASSERT_EQ(sink.all<md::OptionQuote>().size(), 1u);
+  EXPECT_EQ(sink.all<md::OptionQuote>()[0].ts, 123);
+}
+
+TEST(Databento, ReconnectsBeforeResubscribingAndResetsBudgetOnlyOnRecords) {
+  providers::DatabentoRecovery recovery;
+  std::vector<std::string> calls;
+  std::vector<int> delays;
+  auto reconnect = [&] { calls.push_back("reconnect"); };
+  auto subscribe = [&] { calls.push_back("subscribe"); };
+  auto wait = [&](std::chrono::seconds delay) {
+    delays.push_back(static_cast<int>(delay.count()));
+    return true;
+  };
+  auto report = [&](const std::string& error) { calls.push_back(error); };
+  for (int i = 0; i < 8; ++i) EXPECT_TRUE(recovery.recover(reconnect, subscribe, wait, report));
+  EXPECT_EQ(delays, (std::vector<int>{1, 2, 4, 8, 16, 30, 30, 30}));
+  for (std::size_t i = 0; i < 16; i += 2) {
+    EXPECT_EQ(calls[i], "reconnect");
+    EXPECT_EQ(calls[i + 1], "subscribe");
+  }
+  EXPECT_FALSE(recovery.recover(reconnect, subscribe, wait, report));
+  EXPECT_EQ(calls.back(), "reconnect failure budget exhausted");
+  recovery.on_record();
+  EXPECT_TRUE(recovery.recover(reconnect, subscribe, wait, report));
+  EXPECT_EQ(delays.back(), 1);
+}
+
+TEST(Databento, RecoveryHandlesReconnectFailuresAndCanBeInterrupted) {
+  providers::DatabentoRecovery recovery;
+  int attempts = 0;
+  int subscriptions = 0;
+  std::vector<std::string> errors;
+  auto reconnect = [&] {
+    if (++attempts < 3) throw std::runtime_error("offline");
+  };
+  auto subscribe = [&] { ++subscriptions; };
+  auto report = [&](const std::string& error) { errors.push_back(error); };
+  EXPECT_TRUE(recovery.recover(reconnect, subscribe, [](auto) { return true; }, report));
+  EXPECT_EQ(attempts, 3);
+  EXPECT_EQ(subscriptions, 1);
+  EXPECT_EQ(errors.size(), 2u);
+  EXPECT_FALSE(recovery.recover(reconnect, subscribe, [](auto) { return false; }, report));
+  EXPECT_EQ(attempts, 3);
+}
+
+TEST(Databento, ConfiguresFiniteConnectAndAuthenticationTimeouts) {
+  struct Builder {
+    struct Timeouts {
+      std::chrono::seconds connect{0};
+      std::chrono::seconds auth{0};
+    } timeouts;
+    Builder& SetTimeoutConf(Timeouts value) {
+      timeouts = value;
+      return *this;
+    }
+  } builder;
+  providers::bound_databento_waits(builder);
+  EXPECT_EQ(builder.timeouts.connect, std::chrono::seconds(5));
+  EXPECT_EQ(builder.timeouts.auth, std::chrono::seconds(5));
+}
+
+TEST(Databento, QuotesReportLiveOnlyForTheirUnderlyingAfterReconnect) {
+  Collector sink;
+  providers::DatabentoMapper mapper(sink);
+  auto spx = definition(1, "SPXW  261016C05000000", db::InstrumentClass::Call);
+  auto spy = definition(2, "SPY   261016C00500000", db::InstrumentClass::Call);
+  feed(mapper, spx);
+  feed(mapper, spy);
+  db::CbboMsg quote{};
+  stamp(quote, db::RType::Cbbo1S, 2, 123);
+  feed(mapper, quote);
+  auto statuses = sink.all<md::ProviderStatus>();
+  ASSERT_EQ(statuses.size(), 1u);
+  EXPECT_EQ(statuses[0].underlying, "SPY");
+  EXPECT_EQ(statuses[0].state, md::FeedState::Live);
+  sink.events.clear();
+  mapper.reset_health();
+  feed(mapper, quote);
+  statuses = sink.all<md::ProviderStatus>();
+  ASSERT_EQ(statuses.size(), 1u);
+  EXPECT_EQ(statuses[0].underlying, "SPY");
 }
 
 }  // namespace

@@ -25,6 +25,7 @@ struct ApiResponse {
 ///   GET /api/underlyings/{symbol}/surface[?expiries=12][&window=0.2]
 /// Expiry ids are the date plus settlement, e.g. "2026-10-16AM", because SPX
 /// (morning settlement) and SPXW (afternoon) can expire on the same day.
+/// OEX and XEO additionally carry -OEX or -XEO to distinguish exercise styles.
 [[nodiscard]] ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source);
 
 /// The small message pushed to every WebSocket client each second, so the UI knows

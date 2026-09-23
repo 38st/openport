@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -17,6 +18,14 @@
 
 namespace openport::server {
 
+struct UnderlyingHealth {
+  md::FeedState state = md::FeedState::Connecting;
+  std::string message;
+  md::Timestamp last_success = 0;  ///< local receipt time, never the delayed market-data clock
+  std::string last_error;
+  md::Timestamp last_error_time = 0;
+};
+
 /// A consistent picture of the feed and the engine for the status endpoint.
 struct EngineStatus {
   std::string provider;
@@ -28,7 +37,9 @@ struct EngineStatus {
   double events_per_second = 0.0;
   double analytics_ms = 0.0;  ///< time the last analytics pass took
   std::size_t contracts = 0;
+  std::size_t nonstandard_contracts = 0;
   md::Timestamp started = 0;
+  std::map<std::string, UnderlyingHealth> underlyings;
 };
 
 /// Read-only view of the engine's results. The HTTP API depends only on this, so it
@@ -52,6 +63,7 @@ class Engine final : public MetricsSource {
   struct Options {
     std::chrono::milliseconds analytics_interval{1000};
     analytics::AnalyticsOptions analytics;
+    std::function<md::Timestamp()> clock = md::now;
   };
 
   Engine(md::Provider& provider, md::Subscription subscription, Options options);
@@ -70,6 +82,7 @@ class Engine final : public MetricsSource {
  private:
   void run();
   void refresh_analytics();
+  void update_health(const md::Event& event);
 
   md::Provider& provider_;
   md::Subscription subscription_;

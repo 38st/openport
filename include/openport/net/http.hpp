@@ -39,21 +39,24 @@ using Headers = std::vector<std::pair<std::string, std::string>>;
 class HttpClient {
  public:
   HttpClient();
-  ~HttpClient();
+  virtual ~HttpClient();
   HttpClient(const HttpClient&) = delete;
   HttpClient& operator=(const HttpClient&) = delete;
 
   /// Throws std::runtime_error on network, TLS or timeout failures. HTTP error
   /// statuses are returned, not thrown.
-  HttpResponse get(std::string_view url, const Headers& headers = {},
-                   std::chrono::seconds timeout = std::chrono::seconds(30));
+  virtual HttpResponse get(std::string_view url, const Headers& headers = {},
+                           std::chrono::seconds timeout = std::chrono::seconds(30));
 
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-/// Decompresses a complete gzip stream. Throws std::runtime_error if it is corrupt.
+inline constexpr std::size_t kMaxDecompressedBytes = 256 * 1024 * 1024;
+
+/// Decompresses a complete gzip stream. Rejects corrupt streams and expansion
+/// beyond kMaxDecompressedBytes so a small response cannot exhaust memory.
 [[nodiscard]] std::string gunzip(std::string_view compressed);
 
 }  // namespace openport::net

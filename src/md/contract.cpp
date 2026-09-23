@@ -14,17 +14,28 @@ struct IndexRoot {
   std::string_view root;
   std::string_view underlying;
   Settlement settlement;
+  ExerciseStyle style = ExerciseStyle::European;
 };
 
-// Cash-settled, European-style index option roots.
-constexpr std::array<IndexRoot, 13> kIndexRoots{{
-    {"SPX", "SPX", Settlement::AM},   {"SPXW", "SPX", Settlement::PM},
+// Cash-settled index roots. Cboe specifies closing settlement for both OEX and
+// XEO; OEX allows early exercise, while XEO is European-style.
+// https://www.cboe.com/tradable_products/sp_100/sp_100_options/oex_specifications
+// https://www.cboe.com/tradable_products/sp_100/sp_100_options/xeo_specifications
+constexpr std::array<IndexRoot, 14> kIndexRoots{{
+    {"SPX", "SPX", Settlement::AM},
+    {"SPXW", "SPX", Settlement::PM},
     {"XSP", "XSP", Settlement::PM},
-    {"NDX", "NDX", Settlement::AM},   {"NDXP", "NDX", Settlement::PM},
-    {"XND", "XND", Settlement::PM},   {"RUT", "RUT", Settlement::AM},
-    {"RUTW", "RUT", Settlement::PM},  {"MRUT", "MRUT", Settlement::PM},
-    {"VIX", "VIX", Settlement::AM},   {"VIXW", "VIX", Settlement::AM},
-    {"DJX", "DJX", Settlement::AM},   {"XEO", "OEX", Settlement::AM},
+    {"NDX", "NDX", Settlement::AM},
+    {"NDXP", "NDX", Settlement::PM},
+    {"XND", "XND", Settlement::PM},
+    {"RUT", "RUT", Settlement::AM},
+    {"RUTW", "RUT", Settlement::PM},
+    {"MRUT", "MRUT", Settlement::PM},
+    {"VIX", "VIX", Settlement::AM},
+    {"VIXW", "VIX", Settlement::AM},
+    {"DJX", "DJX", Settlement::AM},
+    {"OEX", "OEX", Settlement::PM, ExerciseStyle::American},
+    {"XEO", "OEX", Settlement::PM},
 }};
 
 }  // namespace
@@ -48,7 +59,7 @@ std::vector<std::string> option_roots(std::string_view underlying) {
 RootConventions conventions_for_root(std::string_view root) {
   for (const IndexRoot& index : kIndexRoots) {
     if (index.root == root) {
-      return {std::string(index.underlying), ExerciseStyle::European, index.settlement};
+      return {std::string(index.underlying), index.style, index.settlement};
     }
   }
   // Equity and ETF options; adjusted contracts carry a trailing digit ("SPY1").
@@ -56,7 +67,7 @@ RootConventions conventions_for_root(std::string_view root) {
   while (underlying.size() > 1 && std::isdigit(static_cast<unsigned char>(underlying.back()))) {
     underlying.remove_suffix(1);
   }
-  return {std::string(underlying), ExerciseStyle::American, Settlement::PM};
+  return {std::string(underlying), ExerciseStyle::American, Settlement::PM, underlying == root};
 }
 
 std::string OptionContract::osi_symbol() const {
@@ -106,6 +117,7 @@ std::optional<OptionContract> parse_osi(std::string_view symbol) {
   contract.underlying = conventions.underlying;
   contract.style = conventions.style;
   contract.settlement = conventions.settlement;
+  contract.standard = conventions.standard;
   contract.expiry = Date{2000 + static_cast<int>(yy), static_cast<int>(mm), static_cast<int>(dd)};
   contract.strike = static_cast<double>(strike) / 1000.0;
   contract.type = right == 'C' ? pricing::OptionType::Call : pricing::OptionType::Put;

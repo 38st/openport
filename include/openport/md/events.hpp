@@ -93,6 +93,7 @@ struct ProviderStatus {
   Timestamp ts = 0;
   FeedState state = FeedState::Connecting;
   std::string message;
+  std::string underlying;  ///< empty only for provider-wide failures
 };
 
 using Event = std::variant<ContractDefinition, OptionQuote, OptionTrade, OpenInterest,

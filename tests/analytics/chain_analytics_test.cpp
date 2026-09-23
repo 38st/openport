@@ -95,4 +95,37 @@ TEST(ChainBook, KeepsAmAndPmSettledExpiriesApart) {
   EXPECT_EQ(book.option(7), nullptr);
 }
 
+TEST(ChainBook, AdjustedContractsCannotReplaceStandardStrikePairs) {
+  ChainBook book;
+  book.apply(md::ContractDefinition{0, *md::parse_osi("SPY261218C00500000")});
+  book.apply(md::ContractDefinition{1, *md::parse_osi("SPY1261218C00500000")});
+  book.apply(md::OptionQuote{1, 10, 1.0, 2.0, 1, 1});
+  const auto& spy = book.underlyings().at("SPY");
+  ASSERT_EQ(spy.expiries.size(), 1u);
+  EXPECT_EQ(spy.expiries.begin()->second.strikes.at(500).call, 0u);
+  EXPECT_EQ(spy.data_time, 0);
+  EXPECT_EQ(book.nonstandard_contracts(), 1u);
+  book.apply(md::ContractDefinition{1, *md::parse_osi("SPY1261218C00500000")});
+  EXPECT_EQ(book.nonstandard_contracts(), 1u);
+}
+
+TEST(ChainBook, OexAndXeoDoNotOverwriteOrPairAcrossExerciseStyles) {
+  ChainBook book;
+  book.apply(md::ContractDefinition{0, *md::parse_osi("OEX261016C03000000")});
+  book.apply(md::ContractDefinition{1, *md::parse_osi("XEO261016P03000000")});
+  book.apply(md::ContractDefinition{2, *md::parse_osi("XEO261016C03000000")});
+  const auto& slices = book.underlyings().at("OEX").expiries;
+  ASSERT_EQ(slices.size(), 2u);
+  for (const auto& [key, slice] : slices) {
+    const auto pair = slice.strikes.at(3000);
+    if (slice.root == "OEX") {
+      EXPECT_EQ(pair.call, 0u);
+      EXPECT_EQ(pair.put, analytics::kNoInstrument);
+    } else {
+      EXPECT_EQ(pair.call, 2u);
+      EXPECT_EQ(pair.put, 1u);
+    }
+  }
+}
+
 }  // namespace

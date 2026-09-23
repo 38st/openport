@@ -15,6 +15,9 @@ namespace openport::md {
 /// features to offer, instead of showing empty panels.
 struct Capabilities {
   bool realtime = false;
+  bool realtime_plan_dependent =
+      false;  ///< entitlement is reported by FeedState, not promised here
+  std::chrono::seconds poll_interval{0};  ///< zero for streaming feeds
   std::chrono::seconds delay{0};  ///< how far behind the market the data is
   bool quotes = true;
   bool trades = false;

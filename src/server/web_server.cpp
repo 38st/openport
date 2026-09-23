@@ -8,13 +8,136 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
+#include <charconv>
 #include <deque>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
 
+#include "openport/server/web_policy.hpp"
+
 namespace openport::server {
+
+StaticFile resolve_static_file(const std::filesystem::path& root, std::string_view target) {
+  target = target.substr(0, target.find('?'));
+  if (target.empty() || target.front() != '/') return {400, {}, "path must start with one slash"};
+  target.remove_prefix(1);
+  std::filesystem::path relative;
+  while (!target.empty()) {
+    const auto slash = target.find('/');
+    const auto encoded = target.substr(0, slash);
+    if (encoded.empty()) return {400, {}, "absolute or empty path component"};
+    std::string component;
+    for (std::size_t i = 0; i < encoded.size(); ++i) {
+      char c = encoded[i];
+      if (c == '%') {
+        if (i + 2 >= encoded.size()) return {400, {}, "malformed path escape"};
+        unsigned int byte = 0;
+        const auto [end, ec] =
+            std::from_chars(encoded.data() + i + 1, encoded.data() + i + 3, byte, 16);
+        if (ec != std::errc{} || end != encoded.data() + i + 3) {
+          return {400, {}, "malformed path escape"};
+        }
+        c = static_cast<char>(byte);
+        i += 2;
+      }
+      if (c == '/' || c == '\\' || c == '\0') return {400, {}, "forbidden path separator or NUL"};
+      component += c;
+    }
+    const std::filesystem::path part(component);
+    if (component == ".." || part.has_root_path()) return {400, {}, "forbidden path component"};
+    relative /= part;
+    if (slash == std::string_view::npos) break;
+    target.remove_prefix(slash + 1);
+  }
+
+  std::error_code ec;
+  const auto canonical_root = std::filesystem::canonical(root, ec);
+  if (ec || !std::filesystem::is_directory(canonical_root, ec)) {
+    return {404, {}, "web root is unavailable"};
+  }
+  auto resolve = [&](const std::filesystem::path& path) -> StaticFile {
+    const auto file = std::filesystem::weakly_canonical(canonical_root / path, ec);
+    if (ec) return {403, {}, "cannot resolve path safely"};
+    auto component = file.begin();
+    for (const auto& root_component : canonical_root) {
+      if (component == file.end() || *component++ != root_component) {
+        return {403, {}, "path escapes web root"};
+      }
+    }
+    if (!std::filesystem::is_regular_file(file, ec)) return {404, {}, "not a regular file"};
+    return {200, file, {}};
+  };
+  if (relative.empty()) relative = "index.html";
+  StaticFile file = resolve(relative);
+  if (file.status != 404 || relative.has_extension()) return file;
+  // Only missing client-side routes get the shell; directories and special files do not.
+  const bool exists = std::filesystem::exists(canonical_root / relative, ec);
+  if (ec || exists) return file;
+  return resolve("index.html");
+}
+
+bool websocket_origin_allowed(std::optional<std::string_view> origin, std::string_view host) {
+  if (!origin) return true;
+  const auto scheme = origin->find("://");
+  if (scheme == std::string_view::npos) return false;
+  const auto protocol = origin->substr(0, scheme);
+  if (protocol != "http" && protocol != "https") return false;
+  const auto authority = origin->substr(scheme + 3);
+  auto normalize = [protocol](std::string_view value) -> std::optional<std::string> {
+    if (value.empty() || value.find_first_of("/@\\?#% \t\r\n") != std::string_view::npos ||
+        value.find('\0') != std::string_view::npos)
+      return std::nullopt;
+    const auto colon = value.rfind(':');
+    const bool has_port =
+        colon != std::string_view::npos && (value.front() != '[' || colon > value.find(']'));
+    unsigned int port = protocol == "https" ? 443 : 80;
+    auto name = value;
+    if (has_port) {
+      name = value.substr(0, colon);
+      const auto text = value.substr(colon + 1);
+      const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), port);
+      if (ec != std::errc{} || end != text.data() + text.size() || port == 0 || port > 65535) {
+        return std::nullopt;
+      }
+    }
+    if (name.empty()) return std::nullopt;
+    if (name.front() == '[') {
+      boost::system::error_code ec;
+      if (name.back() != ']') return std::nullopt;
+      boost::asio::ip::make_address_v6(std::string(name.substr(1, name.size() - 2)), ec);
+      if (ec) return std::nullopt;
+    } else {
+      for (const unsigned char c : name) {
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '-' || c == '.'))
+          return std::nullopt;
+      }
+    }
+    std::string normalized(name);
+    for (char& c : normalized)
+      if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    return normalized + ":" + std::to_string(port);
+  };
+  const auto source = normalize(authority);
+  const auto destination = normalize(host);
+  return source && destination && *source == *destination;
+}
+
+std::unique_ptr<WebSocketSlots::Lease> WebSocketSlots::acquire() {
+  auto count = active_.load();
+  do {
+    if (count >= kWebSocketSessionMax) return nullptr;
+  } while (!active_.compare_exchange_weak(count, count + 1));
+  try {
+    return std::unique_ptr<Lease>(new Lease(*this));
+  } catch (...) {
+    --active_;
+    throw;
+  }
+}
+
 namespace {
 
 namespace asio = boost::asio;
@@ -46,6 +169,7 @@ class Hub {
  public:
   void add(std::weak_ptr<WsSession> session) {
     const std::lock_guard lock(mutex_);
+    std::erase_if(sessions_, [](const auto& weak) { return weak.expired(); });
     sessions_.push_back(std::move(session));
   }
 
@@ -58,7 +182,10 @@ class Hub {
 
 class WsSession : public std::enable_shared_from_this<WsSession> {
  public:
-  WsSession(tcp::socket&& socket, Hub& hub) : ws_(std::move(socket)), hub_(hub) {}
+  WsSession(tcp::socket&& socket, Hub& hub, std::unique_ptr<WebSocketSlots::Lease> slot)
+      : ws_(std::move(socket)), hub_(hub), slot_(std::move(slot)) {
+    ws_.read_message_max(kWebSocketMessageMax);
+  }
 
   void accept(http::request<http::string_body> request) {
     ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
@@ -119,6 +246,7 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   websocket::stream<beast::tcp_stream> ws_;
   beast::flat_buffer buffer_;
   Hub& hub_;
+  std::unique_ptr<WebSocketSlots::Lease> slot_;
   std::deque<std::shared_ptr<const std::string>> queue_;
   bool open_ = false;
 };
@@ -137,6 +265,7 @@ struct Shared {
   std::filesystem::path web_root;
   ApiHandler api;
   Hub hub;
+  WebSocketSlots slots;
 };
 
 class HttpSession : public std::enable_shared_from_this<HttpSession> {
@@ -164,12 +293,36 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
 
     if (websocket::is_upgrade(request)) {
       if (request.target() == "/ws") {
+        const auto origin = request.find(http::field::origin);
+        const auto origin_value = origin == request.end()
+                                      ? std::nullopt
+                                      : std::optional<std::string_view>(origin->value());
+        if (request.count(http::field::origin) > 1 || request.count(http::field::host) != 1 ||
+            !websocket_origin_allowed(origin_value, request[http::field::host])) {
+          return reject_upgrade(request, http::status::forbidden,
+                                "WebSocket Origin does not match Host");
+        }
+        auto slot = shared_.slots.acquire();
+        if (!slot)
+          return reject_upgrade(request, http::status::service_unavailable,
+                                "WebSocket session limit reached");
         stream_.expires_never();
-        std::make_shared<WsSession>(stream_.release_socket(), shared_.hub)->accept(std::move(request));
+        std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot))
+            ->accept(std::move(request));
       }
       return;
     }
     respond(handle(std::move(request)));
+  }
+
+  void reject_upgrade(const http::request<http::string_body>& request, http::status status,
+                      std::string reason) {
+    http::response<http::string_body> response{status, request.version()};
+    response.set(http::field::content_type, "text/plain; charset=utf-8");
+    response.keep_alive(false);
+    response.body() = std::move(reason);
+    response.prepare_payload();
+    respond(http::message_generator(std::move(response)));
   }
 
   http::message_generator handle(http::request<http::string_body>&& request) {
@@ -185,7 +338,6 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
                                                  request.version()};
       response.set(http::field::content_type, "application/json");
       response.set(http::field::cache_control, "no-store");
-      response.set(http::field::access_control_allow_origin, "*");
       response.keep_alive(request.keep_alive());
       response.body() = std::move(api.body);
       response.prepare_payload();
@@ -207,25 +359,10 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
     if (request.method() != http::verb::get && request.method() != http::verb::head) {
       return text(http::status::method_not_allowed, "method not allowed\n");
     }
-    if (const std::size_t q = target.find('?'); q != std::string::npos) target.resize(q);
-    if (target.empty() || target.front() != '/' || target.find("..") != std::string::npos) {
-      return text(http::status::bad_request, "bad path\n");
-    }
-    if (target == "/") target = "/index.html";
-
-    std::filesystem::path file = shared_.web_root / target.substr(1);
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(file, ec)) {
-      // Client-side routes ("/chain/SPX") are served the app shell.
-      if (std::filesystem::path(target).has_extension()) {
-        return text(http::status::not_found, "not found\n");
-      }
-      file = shared_.web_root / "index.html";
-      if (!std::filesystem::is_regular_file(file, ec)) {
-        return text(http::status::not_found,
-                    "web terminal not built: run `npm run build` in web/, or pass --web-root\n");
-      }
-    }
+    const StaticFile resolved = resolve_static_file(shared_.web_root, target);
+    if (resolved.status != 200)
+      return text(static_cast<http::status>(resolved.status), resolved.reason);
+    const auto& file = resolved.path;
 
     beast::error_code open_error;
     http::file_body::value_type body;

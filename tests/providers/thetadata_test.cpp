@@ -5,6 +5,8 @@
 #include <cmath>
 #include <vector>
 
+#include "support/http_stub.hpp"
+
 namespace {
 
 using namespace openport;
@@ -83,6 +85,135 @@ TEST(ThetaData, MergesQuotesImpliedVolsAndOpenInterest) {
   const auto spot = sink.all<md::UnderlyingQuote>();
   ASSERT_EQ(spot.size(), 1u);
   EXPECT_DOUBLE_EQ(spot[0].last, 7777.27);
+  EXPECT_EQ(md::format_timestamp(spot[0].ts), "2026-09-22T19:33:42.100Z");
+}
+
+TEST(ThetaData, UsesTheDocumentedIvRoute) {
+  providers::ThetaDataProvider provider;
+  test::HttpStub http;
+  http.respond = [](std::string_view url) -> net::HttpResponse {
+    if (url.find("/snapshot/quote?") != std::string_view::npos) return {200, std::string(kQuotes)};
+    if (url.find("/snapshot/greeks/implied_volatility?") != std::string_view::npos) {
+      return {200, std::string(kImpliedVols)};
+    }
+    if (url.find("/snapshot/open_interest?") != std::string_view::npos) return {200, {}};
+    return {404, "unknown endpoint"};
+  };
+  Collector sink;
+  provider.poll_once(http, "SPX", {}, sink);
+  EXPECT_FALSE(sink.all<md::VendorGreeks>().empty());
+  ASSERT_EQ(sink.all<md::ProviderStatus>().size(), 1u);
+  EXPECT_EQ(sink.all<md::ProviderStatus>()[0].state, md::FeedState::Live);
+  EXPECT_EQ(sink.all<md::ProviderStatus>()[0].underlying, "SPX");
+}
+
+TEST(ThetaData, AuxiliaryFailuresPreserveQuotesAndReportDegradation) {
+  providers::ThetaDataProvider provider;
+  test::HttpStub http;
+  http.respond = [](std::string_view url) -> net::HttpResponse {
+    if (url.find("/snapshot/quote?") != std::string_view::npos) return {200, std::string(kQuotes)};
+    return {503, "unavailable"};
+  };
+  Collector sink;
+  provider.poll_once(http, "SPX", {}, sink);
+  EXPECT_EQ(sink.all<md::OptionQuote>().size(), 3u);
+  const auto status = sink.all<md::ProviderStatus>();
+  ASSERT_EQ(status.size(), 1u);
+  EXPECT_EQ(status[0].state, md::FeedState::Live);
+  EXPECT_NE(status[0].message.find("degraded SPX greeks/implied_volatility"), std::string::npos);
+  EXPECT_NE(status[0].message.find("open_interest"), std::string::npos);
+  EXPECT_NE(status[0].message.find("HTTP 503"), std::string::npos);
+}
+
+TEST(ThetaData, RefreshesOpenInterestIndependentlyForEachUnderlying) {
+  providers::ThetaDataProvider provider({.open_interest_every = 2});
+  test::HttpStub http;
+  http.respond = [](std::string_view) -> net::HttpResponse { return {200, {}}; };
+  Collector sink;
+  for (int i = 0; i < 3; ++i) {
+    provider.poll_once(http, "SPY", {}, sink);
+    provider.poll_once(http, "QQQ", {}, sink);
+  }
+  for (const std::string symbol : {"SPY", "QQQ"}) {
+    std::size_t count = 0;
+    for (const auto& url : http.urls) {
+      if (url.find("/open_interest?symbol=" + symbol) != std::string::npos) ++count;
+    }
+    EXPECT_EQ(count, 2u) << symbol;
+  }
+}
+
+TEST(ThetaData, SelectsSpotByUnderlyingTimestampAndIgnoresMissingClocks) {
+  auto rows = providers::parse_theta_rows(kImpliedVols);
+  ASSERT_EQ(rows.size(), 1u);
+  const auto expected = rows[0].underlying_ts;
+  auto older_spot = rows[0];
+  older_spot.ts += md::kNanosPerSecond;
+  older_spot.underlying_ts -= md::kNanosPerSecond;
+  older_spot.underlying_price = 100;
+  rows.push_back(older_spot);
+  older_spot.underlying_ts = 0;
+  rows.push_back(older_spot);
+  providers::ThetaDataProvider provider;
+  Collector sink;
+  provider.publish_chain("SPX", {}, rows, {}, {}, sink);
+  const auto spots = sink.all<md::UnderlyingQuote>();
+  ASSERT_EQ(spots.size(), 1u);
+  EXPECT_EQ(spots[0].ts, expected);
+  EXPECT_EQ(spots[0].last, 7777.27);
+}
+
+TEST(ThetaData, KnownContractsSurviveExpiryFilterDriftAndMissingQuotesAreRetired) {
+  providers::ThetaDataProvider provider;
+  providers::ThetaRow row;
+  row.root = "SPY";
+  row.expiry = {2099, 12, 18};
+  row.strike = 500;
+  row.bid = 5;
+  row.ask = 6;
+  md::Subscription sub;
+  sub.max_expiries = 1;
+  Collector sink;
+  provider.publish_chain("SPY", {row}, {}, {}, sub, sink);
+  sink.events.clear();
+  auto earlier = row;
+  earlier.expiry = {2099, 11, 20};
+  row.bid = 5.5;
+  provider.publish_chain("SPY", {row, earlier}, {}, {}, sub, sink);
+  const auto quotes = sink.all<md::OptionQuote>();
+  ASSERT_EQ(quotes.size(), 2u);
+  EXPECT_EQ(quotes[0].id, 0u);
+  EXPECT_EQ(quotes[0].bid, 5.5);
+  sink.events.clear();
+  provider.publish_chain("SPY", {}, {}, {}, sub, sink);
+  ASSERT_EQ(sink.all<md::OptionQuote>().size(), 2u);
+  for (const auto& quote : sink.all<md::OptionQuote>()) EXPECT_EQ(quote.bid + quote.ask, 0);
+}
+
+TEST(ThetaData, AdjustedRootsAreMarkedNonstandard) {
+  providers::ThetaDataProvider provider;
+  auto row = providers::parse_theta_rows(kQuotes)[0];
+  row.root = "SPY1";
+  Collector sink;
+  provider.publish_chain("SPY", {row}, {}, {}, {}, sink);
+  ASSERT_EQ(sink.all<md::ContractDefinition>().size(), 1u);
+  EXPECT_FALSE(sink.all<md::ContractDefinition>()[0].contract.standard);
+}
+
+TEST(ThetaData, AFailedQuoteRootDoesNotRetireTheLastCompleteSnapshot) {
+  providers::ThetaDataProvider provider;
+  Collector sink;
+  provider.publish_chain("SPX", providers::parse_theta_rows(kQuotes), {}, {}, {}, sink);
+  sink.events.clear();
+  test::HttpStub http;
+  http.respond = [](std::string_view url) -> net::HttpResponse {
+    if (url.find("/quote?symbol=SPXW") != std::string_view::npos) return {503, "offline"};
+    return {200, {}};
+  };
+  provider.poll_once(http, "SPX", {}, sink);
+  EXPECT_TRUE(sink.all<md::OptionQuote>().empty());
+  ASSERT_EQ(sink.all<md::ProviderStatus>().size(), 1u);
+  EXPECT_EQ(sink.all<md::ProviderStatus>()[0].state, md::FeedState::Error);
 }
 
 }  // namespace

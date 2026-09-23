@@ -1,11 +1,12 @@
 #include "openport/server/api.hpp"
 
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <set>
 
 #include "openport/analytics/chain_analytics.hpp"
 #include "openport/net/http.hpp"
@@ -20,6 +21,9 @@ using nlohmann::json;
 /// Serves analytics computed once from the synthetic chain.
 class StubSource final : public server::MetricsSource {
  public:
+  explicit StubSource(analytics::UnderlyingMetrics metrics)
+      : metrics_(std::make_shared<const analytics::UnderlyingMetrics>(std::move(metrics))) {}
+
   StubSource() {
     test::SyntheticChain chain;
     metrics_ = std::make_shared<const analytics::UnderlyingMetrics>(
@@ -30,9 +34,9 @@ class StubSource final : public server::MetricsSource {
     status_.feed_message = "cboe SPX: 82 options";
   }
 
-  std::vector<std::string> symbols() const override { return {"SPX"}; }
+  std::vector<std::string> symbols() const override { return {metrics_->symbol}; }
   std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string& symbol) const override {
-    return symbol == "SPX" ? metrics_ : nullptr;
+    return symbol == metrics_->symbol ? metrics_ : nullptr;
   }
   server::EngineStatus status() const override { return status_; }
 
@@ -110,12 +114,44 @@ TEST(Api, ErrorsAreJson) {
   EXPECT_EQ(post.status, 405);
 }
 
+TEST(Api, RejectsMalformedAndOutOfRangeNumbers) {
+  StubSource source;
+  for (const std::string value : {"", "0", "501", "-1", "1.5", "1e2", "nan", "inf",
+                                  "999999999999999999999999", "8junk", " 8"}) {
+    EXPECT_TRUE(
+        get(source, "/api/underlyings/SPX/exposure?expiries=" + value, 400).contains("error"));
+  }
+  for (const std::string value : {"", "-0.1", "1.01", "nan", "inf", "1e999", "0.1junk", " 0.1"}) {
+    EXPECT_TRUE(get(source, "/api/underlyings/SPX/chain?window=" + value, 400).contains("error"));
+  }
+  EXPECT_FALSE(get(source, "/api/underlyings/SPX/surface?expiries=500&window=1").contains("error"));
+  EXPECT_FALSE(get(source, "/api/underlyings/SPX/chain?expiries=1&window=0").contains("error"));
+  EXPECT_TRUE(get(source, "/api/underlyings/SPX/chain?window=2&window=0.5", 400).contains("error"));
+  EXPECT_TRUE(get(source, "/api/underlyings/SPX/chain?window=1e-999", 400).contains("error"));
+}
+
 TEST(Api, TickMessageCarriesVersions) {
   StubSource source;
   const json tick = json::parse(server::tick_message(source));
   EXPECT_EQ(tick["type"], "tick");
   EXPECT_EQ(tick["underlyings"][0]["symbol"], "SPX");
   EXPECT_TRUE(tick["underlyings"][0]["version"].is_number());
+}
+
+TEST(Api, OexAndXeoHaveDistinctPmExpiryIds) {
+  analytics::ChainBook book;
+  book.apply(md::ContractDefinition{0, *md::parse_osi("OEX261016C03000000")});
+  book.apply(md::ContractDefinition{1, *md::parse_osi("XEO261016C03000000")});
+  book.apply(md::UnderlyingQuote{"OEX", 1, 0, 0, 3000});
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 12, 0);
+  StubSource source(analytics::analyze(book.underlyings().at("OEX"), book, as_of));
+  const auto summary = get(source, "/api/underlyings/OEX/summary");
+  ASSERT_EQ(summary["expiries"].size(), 2u);
+  std::set<std::string> ids;
+  for (const auto& expiry : summary["expiries"]) ids.insert(expiry["id"].get<std::string>());
+  EXPECT_EQ(ids, (std::set<std::string>{"2026-10-16PM-OEX", "2026-10-16PM-XEO"}));
+  for (const auto& id : ids)
+    EXPECT_EQ(get(source, "/api/underlyings/OEX/chain?expiry=" + id)["expiry"]["id"], id);
 }
 
 TEST(WebServer, ServesTheApiAndTheAppShellOverHttp) {

@@ -19,6 +19,8 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/massive_test.cpp
     providers/thetadata_test.cpp
     server/api_test.cpp
+    server/web_policy_test.cpp
+    server/engine_test.cpp
   )
   target_link_libraries(openport_tests PRIVATE openport::providers openport::server
                         nlohmann_json::nlohmann_json)

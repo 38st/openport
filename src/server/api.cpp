@@ -1,11 +1,14 @@
 #include "openport/server/api.hpp"
 
-#include <nlohmann/json.hpp>
-
+#include <charconv>
 #include <cmath>
 #include <map>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
+#include <sstream>
 #include <string>
+#include <type_traits>
 
 namespace openport::server {
 namespace {
@@ -40,7 +43,8 @@ std::string settlement_of(const SliceMetrics& slice) {
 }
 
 std::string expiry_id(const SliceMetrics& slice) {
-  return md::format_date(slice.expiry) + settlement_of(slice);
+  return md::format_date(slice.expiry) + settlement_of(slice) +
+         (slice.root.empty() ? "" : "-" + slice.root);
 }
 
 json expiry_json(const SliceMetrics& slice) {
@@ -83,29 +87,39 @@ json option_json(const analytics::OptionMetrics& o) {
   };
 }
 
-std::map<std::string, std::string> parse_query(std::string_view query) {
+std::optional<std::map<std::string, std::string>> parse_query(std::string_view query) {
   std::map<std::string, std::string> out;
   while (!query.empty()) {
     const std::size_t amp = query.find('&');
     const std::string_view pair = query.substr(0, amp);
     const std::size_t eq = pair.find('=');
-    out[std::string(pair.substr(0, eq))] =
-        eq == std::string_view::npos ? std::string() : std::string(pair.substr(eq + 1));
+    const auto [it, inserted] = out.emplace(
+        std::string(pair.substr(0, eq)),
+        eq == std::string_view::npos ? std::string() : std::string(pair.substr(eq + 1)));
+    if (!inserted) return std::nullopt;
     if (amp == std::string_view::npos) break;
     query.remove_prefix(amp + 1);
   }
   return out;
 }
 
-double number_or(const std::map<std::string, std::string>& query, const std::string& key,
-                 double fallback) {
+template <typename T>
+bool bounded_number(const std::map<std::string, std::string>& query, const std::string& key,
+                    T minimum, T maximum, T& value) {
   const auto it = query.find(key);
-  if (it == query.end()) return fallback;
-  try {
-    return std::stod(it->second);
-  } catch (const std::exception&) {
-    return fallback;
+  if (it == query.end()) return true;
+  const auto& text = it->second;
+  if constexpr (std::is_integral_v<T>) {
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc{} || end != text.data() + text.size()) return false;
+  } else {
+    // Apple's pinned libc++ lacks floating-point from_chars. A classic-locale,
+    // non-skipping stream still requires the entire value to be one number.
+    std::istringstream input(text);
+    input.imbue(std::locale::classic());
+    if (!(input >> std::noskipws >> value) || !input.eof()) return false;
   }
+  return std::isfinite(value) && value >= minimum && value <= maximum;
 }
 
 ApiResponse ok(const json& body) { return {200, body.dump()}; }
@@ -119,23 +133,50 @@ bool in_window(double strike, double spot, double window) {
   return !(window > 0.0) || !(spot > 0.0) || std::abs(strike / spot - 1.0) <= window + 1e-12;
 }
 
+json underlyings_json(const MetricsSource& source, const EngineStatus& status, bool details) {
+  json underlyings = json::array();
+  std::set<std::string> symbols;
+  for (const auto& symbol : source.symbols()) symbols.insert(symbol);
+  for (const auto& [symbol, health] : status.underlyings) symbols.insert(symbol);
+  for (const std::string& symbol : symbols) {
+    json item{{"symbol", symbol}, {"spot", nullptr}, {"as_of", nullptr}, {"version", 0}};
+    if (details) {
+      item["expiries"] = 0;
+      item["options"] = 0;
+    }
+    if (const auto health = status.underlyings.find(symbol); health != status.underlyings.end()) {
+      const auto& h = health->second;
+      item["state"] = md::to_string(h.state);
+      item["message"] = h.message;
+      item["last_success"] =
+          h.last_success > 0 ? json(md::format_timestamp(h.last_success)) : json(nullptr);
+      item["last_error"] = h.last_error.empty() ? json(nullptr) : json(h.last_error);
+      item["last_error_time"] =
+          h.last_error_time > 0 ? json(md::format_timestamp(h.last_error_time)) : json(nullptr);
+    }
+    const auto m = source.metrics(symbol);
+    if (m) {
+      item["spot"] = price(m->spot);
+      item["as_of"] = md::format_timestamp(m->as_of);
+      item["version"] = m->version;
+      if (details) {
+        item["expiries"] = m->slices.size();
+        item["options"] = m->options_priced;
+      }
+    }
+    underlyings.push_back(std::move(item));
+  }
+  return underlyings;
+}
+
 json status_json(const MetricsSource& source) {
   const EngineStatus s = source.status();
-  json underlyings = json::array();
-  for (const std::string& symbol : source.symbols()) {
-    const auto m = source.metrics(symbol);
-    if (!m) continue;
-    underlyings.push_back({{"symbol", symbol},
-                           {"spot", price(m->spot)},
-                           {"as_of", md::format_timestamp(m->as_of)},
-                           {"version", m->version},
-                           {"expiries", m->slices.size()},
-                           {"options", m->options_priced}});
-  }
   return {
       {"provider",
        {{"name", s.provider},
         {"realtime", s.capabilities.realtime},
+        {"realtime_plan_dependent", s.capabilities.realtime_plan_dependent},
+        {"poll_interval_seconds", s.capabilities.poll_interval.count()},
         {"delay_seconds", s.capabilities.delay.count()},
         {"trades", s.capabilities.trades},
         {"open_interest", s.capabilities.open_interest},
@@ -143,13 +184,15 @@ json status_json(const MetricsSource& source) {
       {"feed",
        {{"state", md::to_string(s.feed_state)},
         {"message", s.feed_message},
-        {"updated", s.feed_updated > 0 ? json(md::format_timestamp(s.feed_updated)) : json(nullptr)}}},
-      {"underlyings", underlyings},
+        {"updated",
+         s.feed_updated > 0 ? json(md::format_timestamp(s.feed_updated)) : json(nullptr)}}},
+      {"underlyings", underlyings_json(source, s, true)},
       {"engine",
        {{"events", s.events},
         {"events_per_second", sig(s.events_per_second, 4)},
         {"analytics_ms", sig(s.analytics_ms, 4)},
         {"contracts", s.contracts},
+        {"nonstandard_contracts", s.nonstandard_contracts},
         {"uptime_seconds", s.started > 0 ? (md::now() - s.started) / md::kNanosPerSecond : 0}}},
   };
 }
@@ -270,8 +313,18 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   const std::string_view target = request.target;
   const std::size_t question = target.find('?');
   const std::string_view path = target.substr(0, question);
-  const auto query = parse_query(question == std::string_view::npos ? std::string_view{}
-                                                                    : target.substr(question + 1));
+  const auto parsed = parse_query(question == std::string_view::npos ? std::string_view{}
+                                                                     : target.substr(question + 1));
+  if (!parsed) return error(400, "duplicate query parameter");
+  const auto& query = *parsed;
+  int expiries = 8;
+  double window = 0.0;
+  if (!bounded_number(query, "expiries", 1, 500, expiries)) {
+    return error(400, "expiries must be an integer in [1, 500]");
+  }
+  if (!bounded_number(query, "window", 0.0, 1.0, window)) {
+    return error(400, "window must be a finite number in [0, 1]");
+  }
 
   if (path == "/api/status") return ok(status_json(source));
 
@@ -284,7 +337,6 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
 
   const auto metrics = source.metrics(symbol);
   if (!metrics) return error(404, "no data for " + symbol + " yet");
-  const auto expiries = static_cast<std::size_t>(std::max(1.0, number_or(query, "expiries", 8)));
 
   if (view == "summary") return ok(summary_json(*metrics));
   if (view == "chain") {
@@ -297,31 +349,25 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
       }
     }
     if (!slice) return error(404, "no expiry " + (it == query.end() ? "" : it->second));
-    return ok(chain_json(*metrics, *slice, number_or(query, "window", 0.0)));
+    return ok(chain_json(*metrics, *slice, window));
   }
-  if (view == "exposure") return ok(exposure_json(*metrics, expiries, number_or(query, "window", 0.08)));
-  if (view == "surface") return ok(surface_json(*metrics, expiries, number_or(query, "window", 0.2)));
+  if (view == "exposure")
+    return ok(exposure_json(*metrics, expiries, query.contains("window") ? window : 0.08));
+  if (view == "surface")
+    return ok(surface_json(*metrics, expiries, query.contains("window") ? window : 0.2));
   return error(404, "unknown view " + std::string(view));
 }
 
 std::string tick_message(const MetricsSource& source) {
   const EngineStatus s = source.status();
-  json underlyings = json::array();
-  for (const std::string& symbol : source.symbols()) {
-    const auto m = source.metrics(symbol);
-    if (!m) continue;
-    underlyings.push_back({{"symbol", symbol},
-                           {"spot", price(m->spot)},
-                           {"as_of", md::format_timestamp(m->as_of)},
-                           {"version", m->version}});
-  }
   return json{{"type", "tick"},
               {"feed", {{"state", md::to_string(s.feed_state)}, {"message", s.feed_message}}},
-              {"underlyings", underlyings},
+              {"underlyings", underlyings_json(source, s, false)},
               {"engine",
                {{"events_per_second", sig(s.events_per_second, 4)},
                 {"analytics_ms", sig(s.analytics_ms, 4)},
-                {"contracts", s.contracts}}}}
+                {"contracts", s.contracts},
+                {"nonstandard_contracts", s.nonstandard_contracts}}}}
       .dump();
 }
 

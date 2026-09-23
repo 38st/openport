@@ -58,23 +58,29 @@ void ChainBook::on_definition(const md::ContractDefinition& e) {
     defined_.resize(e.id + 1, false);
   }
   if (!defined_[e.id]) ++defined_count_;
+  if (defined_[e.id] && !options_[e.id].contract.standard) --nonstandard_count_;
+  if (!e.contract.standard) ++nonstandard_count_;
   defined_[e.id] = true;
 
   OptionState& state = options_[e.id];
   state.contract = e.contract;
   state.expiry_time = e.contract.expiry_time();
+  // Adjusted deliverables must never overwrite a vanilla contract at the same strike.
+  if (!state.contract.standard) return;
 
   UnderlyingBook& book = underlyings_[e.contract.underlying];
   book.symbol = e.contract.underlying;
-  ExpirySlice& slice = book.expiries[state.expiry_time];
+  ExpirySlice& slice = book.expiries[{state.expiry_time, e.contract.style}];
   slice.expiry = e.contract.expiry;
   slice.expiry_time = state.expiry_time;
+  if (e.contract.root == "OEX" || e.contract.root == "XEO") slice.root = e.contract.root;
   StrikePair& pair = slice.strikes[e.contract.strike];
   (e.contract.type == pricing::OptionType::Call ? pair.call : pair.put) = e.id;
   ++book.version;
 }
 
 void ChainBook::touch(const OptionState& state, md::Timestamp ts) {
+  if (!state.contract.standard) return;
   UnderlyingBook& book = underlyings_[state.contract.underlying];
   if (ts > book.data_time) book.data_time = ts;
   ++book.version;

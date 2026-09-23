@@ -123,8 +123,8 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
   };
   std::vector<Fitted> fitted;
   std::vector<double> long_rates;
-  for (const auto& [expiry_time, slice] : book.expiries) {
-    const double years = md::years_between(as_of, expiry_time);
+  for (const auto& [key, slice] : book.expiries) {
+    const double years = md::years_between(as_of, slice.expiry_time);
     if (!(years > 0.0)) continue;
 
     std::vector<ParityPoint> points;
@@ -176,6 +176,7 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     SliceMetrics sm;
     sm.expiry = slice.expiry;
     sm.expiry_time = slice.expiry_time;
+    sm.root = slice.root;
     sm.years = years;
     sm.forward = f.forward;
     if (!sm.forward.ok) {
