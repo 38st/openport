@@ -45,6 +45,14 @@ struct Date {
 /// (EDT) occurrence. Uses the post-2007 US DST rules.
 [[nodiscard]] Timestamp new_york_to_utc(Date date, int hour, int minute, int second = 0) noexcept;
 
+/// An instant as New York wall-clock time: its local date and the seconds since
+/// local midnight.
+struct NewYorkTime {
+  Date date;
+  int seconds = 0;
+};
+[[nodiscard]] NewYorkTime new_york_time(Timestamp ts) noexcept;
+
 /// Year fraction between two instants on an ACT/365 basis.
 [[nodiscard]] constexpr double years_between(Timestamp from, Timestamp to) noexcept {
   // Preserve nanosecond differences when subtraction fits; only intervals

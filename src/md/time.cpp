@@ -221,6 +221,11 @@ LocalTime local_time(Timestamp ts) {
 }
 }  // namespace
 
+NewYorkTime new_york_time(Timestamp ts) noexcept {
+  const auto local = local_time(ts);
+  return {local.date, static_cast<int>(local.seconds)};
+}
+
 MarketSession market_session(Timestamp ts) {
   const auto [date, days, rem] = local_time(ts);
   MarketSession result;

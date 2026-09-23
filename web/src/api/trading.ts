@@ -32,6 +32,7 @@ export function useTradingQueries() {
 export const useAccount = () => useQuery(useOptions().account)
 export const usePortfolio = () => useQuery(useOptions().portfolio)
 export const useAllOrders = () => useQuery(useOptions().allOrders)
+export const useOpenOrders = () => useQuery(useOptions().orders)
 export const useFills = () => useQuery(useOptions().fills)
 export const useRisk = () => useQuery(useOptions().risk)
 export const useTrades = (attempt: "current" | "all" = "current") => useQuery(useOptions().trades(attempt))

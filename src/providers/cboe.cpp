@@ -7,8 +7,10 @@
 #include <simdjson.h>
 // clang-format on
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -33,7 +35,172 @@ std::string text_or_empty(simdjson::ondemand::object& object, std::string_view k
   return std::string(value);
 }
 
+/// A number Cboe may send as a JSON number or as a string ("7770.810000").
+double loose_number(simdjson::ondemand::object& object, std::string_view key) {
+  simdjson::ondemand::value value;
+  if (object[key].get(value) != simdjson::SUCCESS) return 0.0;
+  simdjson::ondemand::json_type type;
+  if (value.type().get(type) != simdjson::SUCCESS) return 0.0;
+  double number = 0.0;
+  const auto status = type == simdjson::ondemand::json_type::string
+                          ? value.get_double_in_string().get(number)
+                          : value.get_double().get(number);
+  return status == simdjson::SUCCESS && std::isfinite(number) ? number : 0.0;
+}
+
+/// Oldest first, one bar per start; a later row for the same start wins.
+std::vector<md::Bar> ordered(std::vector<md::Bar> bars) {
+  std::stable_sort(bars.begin(), bars.end(),
+                   [](const md::Bar& a, const md::Bar& b) { return a.start < b.start; });
+  std::vector<md::Bar> out;
+  out.reserve(bars.size());
+  for (const auto& bar : bars) {
+    if (!out.empty() && out.back().start == bar.start)
+      out.back() = bar;
+    else
+      out.push_back(bar);
+  }
+  return out;
+}
+
+simdjson::ondemand::array chart_rows(simdjson::ondemand::document& doc, const char* what) {
+  simdjson::ondemand::array rows;
+  if (doc["data"].get_array().get(rows) != simdjson::SUCCESS)
+    throw std::runtime_error(std::string("Cboe ") + what + " chart: missing data array");
+  return rows;
+}
+
 }  // namespace
+
+std::string cboe_chart_url(std::string_view underlying, CboeChart chart) {
+  std::string url = "https://cdn.cboe.com/api/global/delayed_quotes/charts/";
+  url += chart == CboeChart::Intraday ? "intraday/" : "historical/";
+  if (md::is_index_underlying(underlying)) url += '_';
+  url += underlying;
+  url += ".json";
+  return url;
+}
+
+std::vector<md::Bar> parse_cboe_intraday(std::string_view json) {
+  simdjson::ondemand::parser parser;
+  const simdjson::padded_string padded(json);
+  simdjson::ondemand::document doc = parser.iterate(padded);
+  std::vector<md::Bar> bars;
+  for (simdjson::ondemand::object row : chart_rows(doc, "intraday")) {
+    const auto closes = md::parse_datetime(text_or_empty(row, "datetime"), md::Zone::NewYork);
+    simdjson::ondemand::object prices;
+    if (!closes || row["price"].get_object().get(prices) != simdjson::SUCCESS) continue;
+    const md::Bar bar{*closes - md::kNanosPerMinute, loose_number(prices, "open"),
+                      loose_number(prices, "high"), loose_number(prices, "low"),
+                      loose_number(prices, "close")};
+    if (md::valid_bar(bar)) bars.push_back(bar);
+  }
+  return ordered(std::move(bars));
+}
+
+std::vector<md::Bar> parse_cboe_daily(std::string_view json) {
+  simdjson::ondemand::parser parser;
+  const simdjson::padded_string padded(json);
+  simdjson::ondemand::document doc = parser.iterate(padded);
+  std::vector<md::Bar> bars;
+  for (simdjson::ondemand::object row : chart_rows(doc, "daily")) {
+    const std::string text = text_or_empty(row, "date");
+    md::Date day;
+    char tail = 0;
+    if (std::sscanf(text.c_str(), "%4d-%2d-%2d%c", &day.year, &day.month, &day.day, &tail) != 3 ||
+        !md::valid_date(day))
+      continue;
+    const md::Timestamp open = md::new_york_to_utc(day, 9, 30);
+    const md::Bar bar{open, loose_number(row, "open"), loose_number(row, "high"),
+                      loose_number(row, "low"), loose_number(row, "close")};
+    if (open != md::kInvalidTimestamp && md::valid_bar(bar)) bars.push_back(bar);
+  }
+  return ordered(std::move(bars));
+}
+
+CboeChartHistory::CboeChartHistory(std::vector<std::string> underlyings, Sink sink, Options options)
+    : underlyings_(std::move(underlyings)), sink_(std::move(sink)), options_(std::move(options)) {}
+
+void CboeChartHistory::start() {
+  stop();
+  stopping_ = false;
+  thread_ = std::thread(&CboeChartHistory::run, this);
+}
+
+void CboeChartHistory::stop() {
+  {
+    const std::lock_guard lock(wake_mutex_);
+    stopping_ = true;
+  }
+  wake_.notify_all();
+  if (thread_.joinable()) thread_.join();
+}
+
+void CboeChartHistory::run() {
+  net::HttpClient http;
+  while (!stopping_) {
+    const md::Timestamp next = poll_once(http);
+    const md::Timestamp wait =
+        std::clamp<md::Timestamp>(next - options_.clock(), md::kNanosPerSecond, md::kNanosPerMinute);
+    std::unique_lock lock(wake_mutex_);
+    if (wake_.wait_for(lock, std::chrono::nanoseconds(wait), [this] { return stopping_.load(); }))
+      break;
+  }
+}
+
+md::Timestamp CboeChartHistory::poll_once(net::HttpClient& http) {
+  md::Timestamp next = std::numeric_limits<md::Timestamp>::max();
+  for (const auto& underlying : underlyings_) {
+    for (const auto chart : {CboeChart::Intraday, CboeChart::Daily}) {
+      const auto key = std::pair{underlying, chart};
+      md::Timestamp& due = due_[key];
+      const md::Timestamp now = options_.clock();
+      if (stopping_) return now;
+      if (due <= now) {
+        const auto seconds = [](std::chrono::seconds s) { return s.count() * md::kNanosPerSecond; };
+        const bool active = md::market_session(now).open ||
+                            md::market_session(now - 30 * md::kNanosPerMinute).open;
+        due = now + seconds(chart == CboeChart::Daily ? options_.daily_interval
+                            : active                   ? options_.session_interval
+                                                       : options_.idle_interval);
+        std::string failure;
+        try {
+          const auto response =
+              http.get(cboe_chart_url(underlying, chart), {}, options_.timeout, &stopping_);
+          if (response.status == 403 || response.status == 404) {
+            due = now + seconds(options_.missing_interval);
+            failure = "Cboe publishes no chart (HTTP " + std::to_string(response.status) + ")";
+          } else if (response.status != 200) {
+            failure = "HTTP " + std::to_string(response.status);
+          } else {
+            auto bars = chart == CboeChart::Intraday ? parse_cboe_intraday(response.body)
+                                                     : parse_cboe_daily(response.body);
+            sink_(underlying, chart, std::move(bars));
+          }
+        } catch (const std::exception& error) {
+          if (stopping_) return now;
+          failure = error.what();
+          due = now + seconds(std::min(options_.session_interval, options_.daily_interval));
+        }
+        const std::lock_guard lock(error_mutex_);
+        if (failure.empty())
+          errors_.erase(key);
+        else
+          errors_[key] = "cboe " + underlying +
+                         (chart == CboeChart::Intraday ? " minute bars: " : " daily bars: ") + failure;
+      }
+      next = std::min(next, due);
+    }
+  }
+  return next;
+}
+
+std::string CboeChartHistory::error() const {
+  const std::lock_guard lock(error_mutex_);
+  std::string out;
+  for (const auto& [key, message] : errors_) out += (out.empty() ? "" : "\n") + message;
+  return out;
+}
 
 std::string cboe_chain_url(std::string_view underlying) {
   std::string url = "https://cdn.cboe.com/api/global/delayed_quotes/options/";

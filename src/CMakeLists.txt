@@ -83,6 +83,7 @@ endif()
 if(OPENPORT_BUILD_PROVIDERS)
   # The engine thread, JSON API and HTTP/WebSocket server behind openportd.
   add_library(openport_server
+    server/candles.cpp
     server/engine.cpp
     server/paper_engine.cpp
     server/paper_api.cpp

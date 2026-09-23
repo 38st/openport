@@ -38,6 +38,11 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 ///   GET /api/underlyings/{symbol}/chain?expiry={id}[&window=0.1]
 ///   GET /api/underlyings/{symbol}/exposure[?expiries=8][&window=0.08]
 ///   GET /api/underlyings/{symbol}/surface[?expiries=12][&window=0.2]
+///   GET /api/underlyings/{symbol}/candles[?interval=5m][&limit=500]
+/// Candles: {symbol, interval, bars: [{t, o, h, l, c}]}, oldest first, where t is
+/// the bar's start in Unix seconds of market-data time; interval is 1m, 5m, 15m,
+/// 30m, 1h (starting at half past) or 1d (starting at the 09:30 ET open), and
+/// limit (1-5000) keeps the most recent bars. See CandleStore for their sources.
 /// Expiry ids are the date plus settlement, e.g. "2026-10-16AM", because SPX
 /// (morning settlement) and SPXW (afternoon) can expire on the same day.
 /// OEX and XEO additionally carry -OEX or -XEO to distinguish exercise styles.

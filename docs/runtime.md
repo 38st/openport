@@ -204,6 +204,38 @@ Reproduce without network access:
 Recording uses the existing system zstd dependency, including when the Databento
 adapter is disabled; no additional Docker packages are required.
 
+## Price history
+
+The chart on Trade reads `GET /api/underlyings/{symbol}/candles` from two sources:
+
+- **The engine's own spot.** Every analysis adds the spot it priced with to a
+  one-minute bar, stamped with the time of that price: the underlying's print time
+  when spot is a quote, the option data's market time when it is inferred from
+  parity. Delayed feeds therefore land on the minute the price was traded, not the
+  minute it arrived, and an index frozen at its close adds nothing overnight while
+  its parity spot moves with the global session.
+- **Cboe's free chart files.** `openportd` fetches the latest regular session's
+  one-minute bars (every minute while a session is open or just closed, every 15
+  minutes otherwise) and the daily history (hourly) for each symbol. An official
+  minute replaces a sampled one and later samples never change it. Cboe labels a
+  minute bar by the minute it closes; OpenPort keys bars by the minute they open.
+  Symbols Cboe does not chart (HTTP 403 or 404) are retried hourly. `--no-history`
+  turns the fetch off.
+
+Coarser intervals group minutes: 5, 15 and 30 minutes from the top of the hour,
+and hours from half past, so the first hourly bar starts at the 09:30 ET open.
+Daily bars are Cboe's; a session it has not published yet is built from its
+regular-hours minutes (09:30 to the close, 13:00 on early-close days).
+
+Finished minutes persist in `--candle-dir` (default `~/.openport/candles`), one
+`SYMBOL.csv` per underlying with `start seconds,open,high,low,close,source` lines,
+where the source is `o` for official and `s` for sampled and a later line for the
+same minute wins. The directory keeps the last ten days of minutes; files are
+compacted on startup and whenever superseded lines outnumber current ones. Daily
+bars are refetched rather than stored. A replay keeps its bars in memory and never
+fetches history, so a recorded day's prices do not mix with live ones. Storage
+failures are printed and never stop the engine.
+
 ## Probe readiness
 
 Polling providers need one completed snapshot for **each** requested underlying.

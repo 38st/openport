@@ -6,6 +6,8 @@
 #include <tuple>
 #include <vector>
 
+#include "support/http_stub.hpp"
+
 namespace {
 
 using namespace openport;
@@ -233,5 +235,98 @@ TEST(Cboe, OptionMarketTimeTracksEachProductsSessionsAndNeverRunsPastDelayedTime
       }
     }
   }
+}
+
+// Cboe's chart files: intraday prices are numbers, daily prices are strings.
+constexpr std::string_view kIntraday = R"({"timestamp": "2026-09-22 20:14:23", "symbol": "_SPX", "data": [
+  {"datetime": "2026-09-22T09:32:00", "sequence_number": 2,
+   "price": {"open": 7772.9399, "high": 7779.8799, "low": 7772.8999, "close": 7779.1499},
+   "volume": {"stock_volume": 0, "total_options_volume": 25886}},
+  {"datetime": "2026-09-22T09:31:00", "sequence_number": 1,
+   "price": {"open": 7770.8101, "high": 7773.5801, "low": 7769.6001, "close": 7772.6499}},
+  {"datetime": "2026-09-22T09:33:00", "price": {"open": 0, "high": 0, "low": 0, "close": 0}},
+  {"datetime": "not a time", "price": {"open": 1, "high": 1, "low": 1, "close": 1}},
+  {"datetime": "2026-09-22T09:34:00", "price": {"open": "7779.5", "high": "7780.68", "low": "7778.11", "close": "7779.2"}}
+]})";
+
+constexpr std::string_view kDaily = R"({"timestamp": "2026-09-23 02:02:04", "symbol": "_SPX", "data": [
+  {"date": "1975-01-02", "volume": "0.0", "open": "0.000000", "high": "70.920000", "low": "68.650000", "close": "70.230000"},
+  {"date": "2026-09-22", "volume": "0.0", "open": "7770.810000", "high": "7782.190000", "low": "7756.260000", "close": "7764.640000"},
+  {"date": "2026-09-21", "volume": "0.0", "open": "7692.830000", "high": "7779.220000", "low": "7691.190000", "close": "7764.700000"},
+  {"date": "2026-02-30", "open": "1", "high": "1", "low": "1", "close": "1"}
+]})";
+
+TEST(CboeCharts, UrlsFollowTheChainConvention) {
+  EXPECT_EQ(providers::cboe_chart_url("SPX", providers::CboeChart::Intraday),
+            "https://cdn.cboe.com/api/global/delayed_quotes/charts/intraday/_SPX.json");
+  EXPECT_EQ(providers::cboe_chart_url("SPY", providers::CboeChart::Daily),
+            "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/SPY.json");
+}
+
+TEST(CboeCharts, IntradayBarsStartAMinuteBeforeTheirLabel) {
+  const auto bars = providers::parse_cboe_intraday(kIntraday);
+  ASSERT_EQ(bars.size(), 3u);
+  EXPECT_EQ(bars[0], (md::Bar{md::new_york_to_utc({2026, 9, 22}, 9, 30), 7770.8101, 7773.5801,
+                              7769.6001, 7772.6499}));
+  EXPECT_EQ(bars[1].start, md::new_york_to_utc({2026, 9, 22}, 9, 31));
+  EXPECT_EQ(bars[2], (md::Bar{md::new_york_to_utc({2026, 9, 22}, 9, 33), 7779.5, 7780.68, 7778.11,
+                              7779.2}));
+  EXPECT_THROW((void)providers::parse_cboe_intraday(R"({"data": {}})"), std::runtime_error);
+}
+
+TEST(CboeCharts, DailyBarsStartAtTheOpenAndSkipRowsWithoutOne) {
+  const auto bars = providers::parse_cboe_daily(kDaily);
+  ASSERT_EQ(bars.size(), 2u);
+  EXPECT_EQ(bars[0], (md::Bar{md::new_york_to_utc({2026, 9, 21}, 9, 30), 7692.83, 7779.22, 7691.19,
+                              7764.70}));
+  EXPECT_EQ(bars[1].start, md::new_york_to_utc({2026, 9, 22}, 9, 30));
+  EXPECT_EQ(bars[1].close, 7764.64);
+  EXPECT_THROW((void)providers::parse_cboe_daily("{}"), std::runtime_error);
+}
+
+TEST(CboeCharts, HistoryFetchesWhatIsDueAndBacksOffFromMissingFiles) {
+  md::Timestamp clock = md::new_york_to_utc({2026, 9, 22}, 11, 0);  // regular session
+  std::vector<std::tuple<std::string, providers::CboeChart, std::size_t>> received;
+  providers::CboeChartHistory::Options options;
+  options.clock = [&] { return clock; };
+  providers::CboeChartHistory history(
+      {"SPX", "XYZ"},
+      [&](const std::string& symbol, providers::CboeChart chart, std::vector<md::Bar> bars) {
+        received.emplace_back(symbol, chart, bars.size());
+      },
+      options);
+  test::HttpStub http;
+  http.respond = [](std::string_view url) {
+    if (url.find("XYZ") != std::string_view::npos) return net::HttpResponse{403, "denied"};
+    if (url.find("intraday") != std::string_view::npos) return net::HttpResponse{200, std::string(kIntraday)};
+    return net::HttpResponse{200, std::string(kDaily)};
+  };
+  auto next = history.poll_once(http);
+  EXPECT_EQ(http.urls.size(), 4u);
+  ASSERT_EQ(received.size(), 2u);
+  EXPECT_EQ(received[0], std::make_tuple(std::string("SPX"), providers::CboeChart::Intraday, std::size_t{3}));
+  EXPECT_EQ(received[1], std::make_tuple(std::string("SPX"), providers::CboeChart::Daily, std::size_t{2}));
+  EXPECT_EQ(next, clock + md::kNanosPerMinute);
+  EXPECT_NE(history.error().find("cboe XYZ minute bars: Cboe publishes no chart (HTTP 403)"), std::string::npos);
+
+  // A minute later only the session's minute bars are due; XYZ waits an hour.
+  clock += md::kNanosPerMinute;
+  next = history.poll_once(http);
+  EXPECT_EQ(http.urls.size(), 5u);
+  EXPECT_EQ(http.urls.back(), providers::cboe_chart_url("SPX", providers::CboeChart::Intraday));
+
+  // Overnight the minute bars refresh every 15 minutes; a bad document is an error, not a crash.
+  clock = md::new_york_to_utc({2026, 9, 22}, 22, 0);
+  http.respond = [](std::string_view) { return net::HttpResponse{200, "{}"}; };
+  next = history.poll_once(http);
+  EXPECT_EQ(next, clock + md::kNanosPerMinute) << "a failure retries after a minute";
+  EXPECT_NE(history.error().find("cboe SPX minute bars: Cboe intraday chart: missing data array"), std::string::npos);
+  http.respond = [](std::string_view url) {
+    return net::HttpResponse{200, std::string(url.find("intraday") != std::string_view::npos ? kIntraday : kDaily)};
+  };
+  clock += md::kNanosPerMinute;
+  next = history.poll_once(http);
+  EXPECT_EQ(history.error().find("SPX"), std::string::npos) << history.error();
+  EXPECT_EQ(next, clock + 15 * md::kNanosPerMinute);
 }
 }  // namespace

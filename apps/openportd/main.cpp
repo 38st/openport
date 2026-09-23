@@ -18,11 +18,13 @@
 #include <filesystem>
 #include <optional>
 #include <locale>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "openport/providers/cboe.hpp"
 #include "openport/providers/factory.hpp"
 #include "openport/providers/options.hpp"
 #include "openport/server/api.hpp"
@@ -46,6 +48,8 @@ struct Settings {
   unsigned short port = 8080;
   std::filesystem::path web_root;
   std::filesystem::path record_file;
+  std::optional<std::filesystem::path> candle_dir;
+  bool history = true;
   bool paper_enabled = true;
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
@@ -65,7 +69,7 @@ int usage(const char* error = nullptr) {
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
-      "                 [--no-paper] [--write-token TOKEN]\n\n"
+      "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n\n"
       "paper: durable European index paper trading; cash 100000, fee 0.65\n"
       "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
@@ -75,6 +79,9 @@ int usage(const char* error = nullptr) {
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
       "record: create a new compressed event file (existing files are never overwritten)\n"
+      "charts: one-minute bars persist in --candle-dir (default ~/.openport/candles; replay\n"
+      "        keeps them in memory); Cboe's free delayed chart history backfills them\n"
+      "        unless --no-history (always off for replay)\n"
       "replay: --option file=PATH [--option speed=1|10|60|max] [--option loop=on|off]\n"
       "providers:");
   for (auto name : providers::provider_names()) {
@@ -132,6 +139,7 @@ int run(int argc, char** argv) {
     const bool has_value = i + 1 < argc;
     if (arg == "--help" || arg == "-h") return usage();
     if (arg == "--no-paper") { settings.paper_enabled = false; continue; }
+    if (arg == "--no-history") { settings.history = false; continue; }
     if (!has_value) return usage(("missing value for " + arg).c_str());
     const std::string value = argv[++i];
     if (arg == "--provider") {
@@ -163,6 +171,9 @@ int run(int argc, char** argv) {
     } else if (arg == "--record") {
       if (value.empty()) return usage("--record requires a nonempty path");
       settings.record_file = value;
+    } else if (arg == "--candle-dir") {
+      if (value.empty()) return usage("--candle-dir requires a nonempty path");
+      settings.candle_dir = value;
     } else if (arg == "--web-root") {
       settings.web_root = value;
     } else if (arg == "--expiries") {
@@ -194,7 +205,19 @@ int run(int argc, char** argv) {
   providers::validate_subscription(settings.provider.name, settings.subscription);
   auto provider = providers::make_provider(settings.provider);
 
+  // A replay's market times are in the past: its bars must not mix with live history.
+  const bool replay = settings.provider.name == "replay";
+  server::CandleStore::Options candle_options;
+  if (settings.candle_dir)
+    candle_options.directory = *settings.candle_dir;
+  else if (const auto* home = std::getenv("HOME"); home && !replay)
+    candle_options.directory = std::filesystem::path(home) / ".openport/candles";
+  const auto candles = std::make_shared<server::CandleStore>(candle_options);
+  if (const auto error = candles->error(); !error.empty())
+    std::fprintf(stderr, "openportd: %s\n", error.c_str());
+
   server::Engine::Options engine_options;
+  engine_options.candles = candles;
   engine_options.analytics.fallback_rate = settings.rate;
   engine_options.record_file = settings.record_file;
   engine_options.paper_enabled = settings.paper_enabled;
@@ -207,6 +230,18 @@ int run(int argc, char** argv) {
   engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins});
   server::Engine engine(*provider, settings.subscription, engine_options);
   engine.start();
+  std::unique_ptr<providers::CboeChartHistory> history;
+  if (settings.history && !replay) {
+    history = std::make_unique<providers::CboeChartHistory>(
+        settings.subscription.underlyings,
+        [candles](const std::string& symbol, providers::CboeChart chart, std::vector<md::Bar> bars) {
+          if (chart == providers::CboeChart::Intraday)
+            candles->merge_minutes(symbol, bars);
+          else
+            candles->merge_days(symbol, bars);
+        });
+    history->start();
+  }
   const auto trading_status = engine.status().trading;
   if (trading_status.reason.starts_with("JOURNAL_LOCKED:"))
     std::fprintf(stderr, "openportd: %s\n", trading_status.reason.c_str());
@@ -229,18 +264,24 @@ int run(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
   std::string recording_error;
+  std::string history_error;
+  std::string candle_error;
+  auto report = [](const std::string& error, std::string& reported) {
+    if (!error.empty() && error != reported) std::fprintf(stderr, "openportd: %s\n", error.c_str());
+    reported = error;
+  };
   while (!g_stop) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     web.broadcast(server::tick_message(engine));
-    const auto error = engine.recording_error();
-    if (!error.empty() && error != recording_error) {
-      recording_error = error;
-      std::fprintf(stderr, "openportd: %s\n", error.c_str());
-    }
+    report(engine.recording_error(), recording_error);
+    if (history) report(history->error(), history_error);
+    report(candles->error(), candle_error);
   }
   std::printf("\nshutting down\n");
   web.stop();
+  if (history) history->stop();
   engine.stop();
+  candles->flush();
   if (!settings.record_file.empty()) {
     const auto stats = engine.recording_stats();
     const double count = static_cast<double>(stats.events);

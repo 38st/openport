@@ -17,6 +17,7 @@
 #include "openport/md/event_queue.hpp"
 #include "openport/md/provider.hpp"
 #include "openport/md/recording.hpp"
+#include "openport/server/candles.hpp"
 #include "openport/server/paper.hpp"
 
 namespace openport::server {
@@ -62,6 +63,8 @@ class MetricsSource {
   [[nodiscard]] virtual EngineStatus status() const = 0;
   [[nodiscard]] virtual md::Timestamp wall_time() const { return md::now(); }
   [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view() const { return {}; }
+  /// Price history for charts; nullptr when this source keeps none.
+  [[nodiscard]] virtual const CandleStore* candles() const { return nullptr; }
   /// False means unavailable or full. Completion runs on the engine thread;
   /// network callers must dispatch it onto their own executor.
   virtual bool post_trading(TradingCommand, TradingCompletion) { return false; }
@@ -84,6 +87,8 @@ class Engine final : public MetricsSource {
     analytics::AnalyticsOptions analytics;
     std::filesystem::path record_file;
     md::RecordingSink::Options recording;
+    /// Receives the spot of every analysis, stamped with the time of its price.
+    std::shared_ptr<CandleStore> candles;
     std::function<md::Timestamp()> clock = md::now;
     /// Monotonic cadence for publishing receipt timestamps, independent of wall-clock jumps.
     std::function<std::chrono::steady_clock::time_point()> monotonic_clock =
@@ -110,6 +115,7 @@ class Engine final : public MetricsSource {
   [[nodiscard]] EngineStatus status() const override;
   [[nodiscard]] md::Timestamp wall_time() const override { return options_.clock(); }
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view() const override;
+  [[nodiscard]] const CandleStore* candles() const override { return options_.candles.get(); }
   bool post_trading(TradingCommand command, TradingCompletion completion) override;
   [[nodiscard]] md::RecordingStats recording_stats() const;
   [[nodiscard]] std::string recording_error() const;

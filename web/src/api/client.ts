@@ -1,4 +1,4 @@
-import type { Chain, ExposureMatrix, Status, Summary, Surface } from "./types"
+import type { CandleInterval, Candles, Chain, ExposureMatrix, Status, Summary, Surface } from "./types"
 import type { Account, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradesResponse, WriteMode } from "./trading-types"
 import { writeToken } from "../lib/write-token"
 
@@ -77,4 +77,6 @@ export const api = {
     get<ExposureMatrix>(`${underlying(symbol)}/exposure?expiries=${expiries}&window=${window}`, signal),
   surface: (symbol: string, expiries: number, window: number, signal?: AbortSignal) =>
     get<Surface>(`${underlying(symbol)}/surface?expiries=${expiries}&window=${window}`, signal),
+  candles: (symbol: string, interval: CandleInterval, limit: number, signal?: AbortSignal) =>
+    get<Candles>(`${underlying(symbol)}/candles?interval=${interval}&limit=${limit}`, signal),
 }

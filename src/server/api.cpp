@@ -488,6 +488,27 @@ json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
                     {"monotone_adjusted", ssvi.monotone_adjusted}, {"fit_ms", ssvi.fit_ms}}}};
 }
 
+ApiResponse candles_response(const MetricsSource& source, const std::string& symbol,
+                             const std::map<std::string, std::string>& query) {
+  const auto symbols = source.symbols();
+  if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end())
+    return error(404, "no data for " + symbol + " yet");
+  const auto requested = query.find("interval");
+  const auto interval = parse_bar_interval(requested == query.end() ? "5m" : requested->second);
+  if (!interval) return error(400, "interval must be 1m, 5m, 15m, 30m, 1h or 1d");
+  int limit = 500;
+  if (!bounded_number(query, "limit", 1, 5000, limit))
+    return error(400, "limit must be an integer in [1, 5000]");
+  json bars = json::array();
+  if (const auto* store = source.candles()) {
+    for (const md::Bar& bar : store->bars(symbol, *interval, static_cast<std::size_t>(limit)))
+      bars.push_back({{"t", bar.start / md::kNanosPerSecond}, {"o", price(bar.open)},
+                      {"h", price(bar.high)}, {"l", price(bar.low)}, {"c", price(bar.close)}});
+  }
+  return ok({{"symbol", symbol}, {"interval", std::string(to_string(*interval))},
+             {"bars", std::move(bars)}});
+}
+
 }  // namespace
 
 ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
@@ -519,6 +540,8 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   const std::string_view view =
       slash == std::string_view::npos ? "summary" : rest.substr(slash + 1);
 
+  // History can arrive before the first analysis.
+  if (view == "candles") return candles_response(source, symbol, query);
   const auto metrics = source.metrics(symbol);
   if (!metrics) return error(404, "no data for " + symbol + " yet");
 

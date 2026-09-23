@@ -350,4 +350,22 @@ TEST(Engine, EuropeanCurveReachesAmericanInSamePassAndRefreshesUnchangedChain) {
                   engine.metrics("QQQ")->slices[0].years,
               .05, 1e-9);
 }
+
+TEST(Engine, SamplesEachAnalysedSpotAtThePriceTimeForCharts) {
+  CurveProvider provider;
+  server::Engine::Options options;
+  options.analytics_interval = std::chrono::milliseconds(1);
+  options.candles = std::make_shared<server::CandleStore>();
+  server::Engine engine(provider, {{"QQQ", "SPX", "XSP"}}, options);
+  engine.start();
+  ASSERT_TRUE(eventually([&] { return engine.metrics("SPX") != nullptr; }));
+  EXPECT_EQ(engine.candles(), options.candles.get());
+  const auto bars = options.candles->bars("SPX", server::BarInterval::Minute, 10);
+  ASSERT_EQ(bars.size(), 1u);
+  EXPECT_EQ(bars[0], (md::Bar{md::new_york_to_utc({2026, 9, 22}, 16, 0), 100, 100, 100, 100}));
+  const auto response =
+      server::handle_api({"GET", "/api/underlyings/SPX/candles?interval=1m"}, engine);
+  EXPECT_EQ(response.status, 200);
+  EXPECT_EQ(nlohmann::json::parse(response.body)["bars"].size(), 1u);
+}
 }  // namespace

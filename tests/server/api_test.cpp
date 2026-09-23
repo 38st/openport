@@ -47,10 +47,49 @@ class StubSource final : public server::MetricsSource {
   server::EngineStatus status_;
 };
 
-json get(const StubSource& source, const std::string& target, int expected_status = 200) {
+json get(const server::MetricsSource& source, const std::string& target, int expected_status = 200) {
   const server::ApiResponse response = server::handle_api({"GET", target}, source);
   EXPECT_EQ(response.status, expected_status) << target << " -> " << response.body;
   return json::parse(response.body);
+}
+
+/// Price history only, as before the first analysis has run.
+class CandleSource final : public server::MetricsSource {
+ public:
+  std::vector<std::string> symbols() const override { return {"SPX"}; }
+  std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string&) const override {
+    return nullptr;
+  }
+  server::EngineStatus status() const override { return {}; }
+  const server::CandleStore* candles() const override { return &store; }
+  server::CandleStore store;
+};
+
+TEST(Api, CandlesServeStoredBarsBeforeTheFirstAnalysis) {
+  CandleSource source;
+  const auto open = md::new_york_to_utc({2026, 9, 22}, 9, 30);
+  source.store.merge_minutes("SPX", {{open, 7770.81, 7773.58, 7769.6, 7772.65},
+                                     {open + md::kNanosPerMinute, 7772.94, 7779.88, 7772.9, 7779.15}});
+  auto body = get(source, "/api/underlyings/SPX/candles?interval=1m");
+  EXPECT_EQ(body["symbol"], "SPX");
+  EXPECT_EQ(body["interval"], "1m");
+  ASSERT_EQ(body["bars"].size(), 2u);
+  EXPECT_EQ(body["bars"][0], (json{{"t", open / md::kNanosPerSecond}, {"o", 7770.81}, {"h", 7773.58},
+                                   {"l", 7769.6}, {"c", 7772.65}}));
+  body = get(source, "/api/underlyings/SPX/candles?limit=1");
+  EXPECT_EQ(body["interval"], "5m");
+  ASSERT_EQ(body["bars"].size(), 1u);
+  EXPECT_EQ(body["bars"][0]["o"], 7770.81);
+  EXPECT_EQ(body["bars"][0]["h"], 7779.88);
+  EXPECT_EQ(body["bars"][0]["c"], 7779.15);
+  get(source, "/api/underlyings/SPX/candles?interval=2m", 400);
+  get(source, "/api/underlyings/SPX/candles?limit=0", 400);
+  get(source, "/api/underlyings/SPX/candles?limit=5001", 400);
+  get(source, "/api/underlyings/QQQ/candles", 404);
+  get(source, "/api/underlyings/SPX/summary", 404);
+  // A source without a store has no bars.
+  StubSource plain;
+  EXPECT_TRUE(get(plain, "/api/underlyings/SPX/candles?interval=1d")["bars"].empty());
 }
 
 TEST(Api, StatusDescribesProviderFeedAndUnderlyings) {

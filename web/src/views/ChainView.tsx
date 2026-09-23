@@ -11,6 +11,7 @@ import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format
 import { matchingPayload } from "../lib/payload"
 import { americanApproximation, rateSourceHint } from "../lib/model"
 import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
+import { PriceChart } from "../components/PriceChart"
 import { StrategyTicket } from "../components/StrategyTicket"
 import { MAX_LEGS, strategyLabel, toggleLeg, type StrategyLeg } from "../lib/strategy"
 import { Dialog } from "../components/Dialog"
@@ -136,6 +137,8 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
           />
         </div>
       )}
+
+      <PriceChart symbol={symbol} spot={data?.spot ?? summaryData.spot} expiry={e ?? null} />
 
       <div className={docked && (ticket || strategyOpen) ? "grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]" : ""}>
       <Panel

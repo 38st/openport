@@ -263,3 +263,8 @@ export interface Tick {
   engine: EngineMetrics
   market?: MarketSession | null
 }
+
+export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "1h" | "1d"
+/** One OHLC bar; t is its start in Unix seconds of market-data time. */
+export interface Candle { t: number; o: number; h: number; l: number; c: number }
+export interface Candles { symbol: string; interval: CandleInterval; bars: Candle[] }

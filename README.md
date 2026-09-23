@@ -37,7 +37,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
   their payoff at expiry, and buying power nets them: a credit spread holds its width
   and a calendar its debit, not a naked requirement. Positions can be closed together
   as one order.
-  The Dashboard charts equity against the target and floor; Trade docks an order ticket
+  The Dashboard charts equity against the target and floor; Trade charts the underlying
+  (one-minute to daily candles, backfilled from Cboe's free history) with your strikes,
+  armed triggers and the selected expiry's expected move on it, and docks an order ticket
   beside the chain; Positions adds Greeks, limits, a spot × vol scenario grid and a
   kill switch; Orders, a Journal (P&L calendar, win rate, profit factor, reports by hold
   time, weekday and month) and Rules complete the account.
@@ -132,7 +134,8 @@ Common flags: `--symbols SPX,SPY`, `--expiries N` (nearest N expiries), `--windo
 (strikes within ±F of spot), `--poll-seconds N`, `--rate R` (the assumed rate when no
 index curve is available), `--address`, `--port`, `--web-root`, `--allowed-origin`,
 `--record FILE`, `--paper-journal`, `--plan`, `--paper-cash`, `--paper-fee`, `--no-paper`,
-`--write-token`, and
+`--write-token`, `--candle-dir DIR` and `--no-history` (see
+[price history](docs/runtime.md#price-history)), and
 `--option KEY=VALUE` for provider settings such as `quotes=cmbp-1` for Databento. Every
 value is range-checked; see the [runtime notes](docs/runtime.md) for details.
 
@@ -209,6 +212,7 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 | `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks and early-exercise premium |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
 | `GET /api/underlyings/{symbol}/surface?expiries=12` | Smile points per expiry |
+| `GET /api/underlyings/{symbol}/candles?interval=5m` | OHLC bars at 1m, 5m, 15m, 30m, 1h or 1d, oldest first |
 | `WS /ws` | A small tick each second with versions, so clients refetch only what changed |
 
 Expiry ids are the date plus settlement, for example `2026-10-16AM`.
@@ -266,6 +270,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Funded phase in the engine: locking drawdown floors, qualifying days and payouts
 - [x] Multi-leg orders (spreads, condors, calendars) with spread-aware buying power
 - [x] Paper trading for American equity and ETF options (cash settlement at intrinsic)
+- [x] Underlying chart with positions, triggers and the expected move
 - [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session
 - [ ] P&L attribution by delta, gamma, vega and theta

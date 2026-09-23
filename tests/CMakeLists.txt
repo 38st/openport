@@ -28,6 +28,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/massive_test.cpp
     providers/thetadata_test.cpp
     server/api_test.cpp
+    server/candles_test.cpp
     server/web_policy_test.cpp
     server/engine_test.cpp
     server/paper_test.cpp
