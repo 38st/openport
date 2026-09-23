@@ -119,7 +119,7 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
   EXPECT_EQ(count, original.recording_stats().events);
   EXPECT_GT(count, original.status().events);  // records survive downstream coalescing
   EXPECT_TRUE(reader.diagnostic().empty());
-  providers::ReplayProvider replay({.file = file.path, .speed = 0});
+  providers::ReplayProvider replay({.file = file.path, .speed = 0, .loop = false, .clock = {}});
   options.record_file.clear();
   options.clock = [] { return md::now(); };  // deliberately a different wall clock
   server::Engine replayed(replay, {{"SPX"}}, options);

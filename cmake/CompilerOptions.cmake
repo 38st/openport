@@ -10,6 +10,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     -Woverloaded-virtual -Wdouble-promotion
     # GCC reports false positives inside Boost.Asio templates with this one.
     $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wnull-dereference>
+    # GCC's flow analysis flags members of inactive std::variant alternatives when a
+    # variant is moved (GCC bug 80635 and relatives); Clang still checks
+    # uninitialised use on every build.
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-maybe-uninitialized>
     -Wformat=2 -Wimplicit-fallthrough -Wmisleading-indentation)
   if(OPENPORT_WERROR)
     target_compile_options(openport_options INTERFACE -Werror)

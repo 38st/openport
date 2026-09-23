@@ -222,8 +222,12 @@ TEST(Recording, TruncatedLastFrameRecoversEveryCompleteRecordIncludingInsideTheF
       test::exact_event(events[recovered++], record->event);
     }
     EXPECT_FALSE(reader.diagnostic().empty());
-    if (size > original.size() / 2) EXPECT_GT(recovered, 10000u);
-    if (size == original.size() - 1) EXPECT_EQ(recovered, events.size());
+    if (size > original.size() / 2) {
+      EXPECT_GT(recovered, 10000u);
+    }
+    if (size == original.size() - 1) {
+      EXPECT_EQ(recovered, events.size());
+    }
   }
   replace(file.path, original);
   md::RecordingReader complete(file.path);

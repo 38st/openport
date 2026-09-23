@@ -128,7 +128,7 @@ TEST(Replay, FiltersEverySymbolScopedEventAndKeepsGapsAcrossFilteredEvents) {
 TEST(Replay, UnknownSymbolsFailSynchronouslyAndListAvailableSymbols) {
   test::RecordingFile file;
   test::record_events(file.path, session());
-  providers::ReplayProvider replay({.file = file.path});
+  providers::ReplayProvider replay({.file = file.path, .speed = 1, .loop = false, .clock = {}});
   test::EventCollector sink;
   try {
     replay.start({{"QQQ"}}, sink);
@@ -179,7 +179,7 @@ TEST(Replay, StopInterruptsHoursLongWaitAtEveryPacedSpeedAndMaxLoop) {
   };
   test::record_events(file.path, session(), test::recording_header(), recording);
   for (int speed : {1, 10, 60, 0}) {
-    providers::ReplayProvider replay({.file = file.path, .speed = speed, .loop = true});
+    providers::ReplayProvider replay({.file = file.path, .speed = speed, .loop = true, .clock = {}});
     test::EventCollector sink;
     replay.start({{"SPX"}}, sink);
     ASSERT_TRUE(test::recording_eventually([&] { return !sink.snapshot().empty(); }));
@@ -214,7 +214,7 @@ TEST(Replay, EmptyFileTerminatesEvenWhenLoopingAndUndefinedContractsFailClosed) 
     test::RecordingFile file;
     test::record_events(file.path, undefined ? std::vector<md::Event>{md::OptionQuote{42}}
                                              : std::vector<md::Event>{});
-    providers::ReplayProvider replay({.file = file.path, .speed = 0, .loop = true});
+    providers::ReplayProvider replay({.file = file.path, .speed = 0, .loop = true, .clock = {}});
     test::EventCollector sink;
     replay.start({{"SPX"}}, sink);
     ASSERT_TRUE(test::recording_eventually([&] { return ended(sink); }));
