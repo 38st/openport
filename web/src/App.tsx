@@ -4,6 +4,7 @@ import { useLive } from "./api/live"
 import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
 import { Header } from "./components/Header"
+import { ReplayBanner } from "./components/ReplayBanner"
 import { Sidebar, viewLabels } from "./components/Sidebar"
 import { Empty } from "./components/ui"
 import { payoutsVisible } from "./lib/payouts"
@@ -16,6 +17,7 @@ import { JournalView } from "./views/JournalView"
 import { OrdersView } from "./views/OrdersView"
 import { PayoutsView } from "./views/PayoutsView"
 import { PositionsView } from "./views/PositionsView"
+import { ReplayView } from "./views/ReplayView"
 import { RulesView } from "./views/RulesView"
 import { TradeView } from "./views/TradeView"
 
@@ -72,6 +74,7 @@ export function App() {
     : view === "rules" ? <RulesView />
     : view === "payouts" ? <PayoutsView />
     : view === "engine" ? <EngineView />
+    : view === "replay" ? <ReplayView />
     : !symbol ? (
       <Empty>
         <div className="text-center">
@@ -85,6 +88,7 @@ export function App() {
     <div className="flex min-h-full">
       <Sidebar view={view} onView={(next) => navigate({ view: next })} open={menu} onClose={closeMenu} />
       <div className="flex min-w-0 flex-1 flex-col">
+        <ReplayBanner />
         <Header symbol={symbol} onSymbol={(s) => navigate({ symbol: s, expiry: null })} onMenu={() => setMenu(true)} />
         <main className="min-w-0 flex-1 p-3 lg:p-5">{content}</main>
         <footer className="border-t border-border px-4 py-2 text-[11px] text-faint">

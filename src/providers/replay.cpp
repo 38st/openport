@@ -48,13 +48,78 @@ ReplayClock::TimePoint advance(ReplayClock::TimePoint deadline, md::Timestamp pr
 }
 }  // namespace
 
+bool ReplayProvider::valid_speed(int speed) noexcept {
+  for (const int allowed : {0, 1, 2, 5, 10, 30, 60, 120, 300})
+    if (speed == allowed) return true;
+  return false;
+}
+
 ReplayProvider::ReplayProvider(Options options)
     : options_(std::move(options)),
       reader_(options_.file),
-      name_("replay (" + reader_.header().provider + ")") {
-  if (options_.speed != 0 && options_.speed != 1 && options_.speed != 10 && options_.speed != 60)
-    throw std::invalid_argument("replay: speed must be 1, 10, 60 or max");
+      name_("replay (" + reader_.header().provider + ")"),
+      speed_(options_.speed) {
+  if (!valid_speed(options_.speed))
+    throw std::invalid_argument("replay: speed must be max, 1, 2, 5, 10, 30, 60, 120 or 300");
   if (!options_.clock) options_.clock = std::make_shared<SystemReplayClock>();
+}
+
+void ReplayProvider::wake() {
+  interrupted_ = true;
+  { const std::lock_guard lock(control_mutex_); }
+  control_.notify_all();
+  options_.clock->interrupt();
+}
+
+void ReplayProvider::set_speed(int speed) {
+  if (!valid_speed(speed))
+    throw std::invalid_argument("replay: speed must be max, 1, 2, 5, 10, 30, 60, 120 or 300");
+  speed_ = speed;
+  wake();
+}
+
+void ReplayProvider::set_paused(bool paused) {
+  // A pause starts when it is asked for, however soon the replay notices.
+  if (paused && !paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
+  paused_ = paused;
+  wake();
+}
+
+void ReplayProvider::skip() {
+  skip_ = true;
+  wake();
+}
+
+bool ReplayProvider::pace(ReplayClock::TimePoint& deadline) {
+  while (!stopping_.load()) {
+    if (paused_.load()) {
+      std::unique_lock lock(control_mutex_);
+      control_.wait(lock, [&] { return !paused_.load() || stopping_.load(); });
+      lock.unlock();
+      if (stopping_.load()) return false;
+      // Time spent paused does not count against the gap.
+      const auto since = ReplayClock::TimePoint(ReplayClock::TimePoint::duration(paused_at_.load()));
+      const auto away = std::max(ReplayClock::TimePoint::duration::zero(), options_.clock->now() - since);
+      if (deadline < ReplayClock::TimePoint::max() - away) deadline += away;
+      continue;
+    }
+    const int speed = speed_.load();
+    if (speed == 0 || skip_.exchange(false)) {
+      deadline = options_.clock->now();
+      return true;
+    }
+    interrupted_ = false;
+    if (stopping_.load() || paused_.load()) continue;
+    if (options_.clock->wait_until(deadline, interrupted_)) return true;
+    if (stopping_.load()) return false;
+    // A control changed during the wait: the loop applies a pause or skip, and a
+    // new speed stretches or shrinks what is left of the wait.
+    const int next = speed_.load();
+    const auto now = options_.clock->now();
+    if (next != speed && next != 0 && deadline != ReplayClock::TimePoint::max() && deadline > now)
+      deadline = now + (deadline - now) / next * speed;
+  }
+  return false;
 }
 ReplayProvider::~ReplayProvider() {
   stop();
@@ -81,7 +146,7 @@ void ReplayProvider::start(const md::Subscription& subscription, md::EventSink& 
 void ReplayProvider::stop() {
   if (thread_.joinable()) {
     stopping_ = true;
-    options_.clock->interrupt();
+    wake();
     thread_.join();
   }
 }
@@ -100,7 +165,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
         auto record = reader_.next();
         if (!record) break;
         if (previous)
-          deadline = advance(deadline, *previous, record->received, options_.speed, remainder);
+          deadline = advance(deadline, *previous, record->received, speed_.load(), remainder);
         previous = record->received;
         const bool include = std::visit(
             [&](const auto& e) {
@@ -121,8 +186,9 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
             },
             record->event);
         if (!include) continue;
-        if (options_.speed != 0 && !options_.clock->wait_until(deadline, stopping_)) break;
+        if (!pace(deadline)) break;
         if (stopping_.load()) break;
+        time_ = record->received;
         sink.publish(std::move(record->event));
         any = true;
       }
@@ -130,10 +196,11 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
       if (!reader_.diagnostic().empty()) {
         sink.publish(md::ProviderStatus{md::now(), md::FeedState::Stopped,
                                         name_ + ": " + reader_.diagnostic(), ""});
+        finished_ = true;
         return;  // A damaged input must never loop as though it were complete.
       }
       if (!options_.loop || !any) break;
-      if (options_.speed != 0 && !options_.clock->wait_until(deadline, stopping_)) break;
+      if (!pace(deadline)) break;
       reader_.rewind();
     } while (!stopping_.load());
     sink.publish(md::ProviderStatus{md::now(), md::FeedState::Stopped,
@@ -143,6 +210,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
     sink.publish(
         md::ProviderStatus{md::now(), md::FeedState::Error, name_ + ": " + error.what(), ""});
   }
+  finished_ = true;
 }
 
 }  // namespace openport::providers

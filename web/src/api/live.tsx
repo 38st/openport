@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { api } from "./client"
 import { connectLive, type Connection } from "./connection"
 import { activeAccount, MAIN_ACCOUNT, useActiveAccount } from "../lib/active-account"
-import type { AccountBrief, Status, Tick, UnderlyingSnapshot, UnderlyingStatus } from "./types"
+import { dataSource, useDataSource, type DataSource } from "../lib/data-source"
+import type { AccountBrief, ReplayState, Status, Tick, UnderlyingSnapshot, UnderlyingStatus } from "./types"
 
 export type { Connection } from "./connection"
 
@@ -15,6 +16,10 @@ interface Live {
   accounts: AccountBrief[]
   account: string
   switchAccount: (id: string) => void
+  /** Whether the terminal shows the live feed or the replay running beside it, and that replay. */
+  source: DataSource
+  replay: ReplayState | null
+  switchSource: (source: DataSource) => void
   status: Status | undefined
   tick: Tick | null
   connection: Connection
@@ -27,7 +32,8 @@ interface Live {
 const LiveContext = createContext<Live | null>(null)
 
 export function liveState(status: Status | undefined, tick: Tick | null, connection: Connection, accountScope = 0,
-  account = MAIN_ACCOUNT, switchAccount: (id: string) => void = () => {}): Live {
+  account = MAIN_ACCOUNT, switchAccount: (id: string) => void = () => {},
+  source: DataSource = "live", replay: ReplayState | null = null, switchSource: (source: DataSource) => void = () => {}): Live {
   const connectedTick = connection === "open" ? tick : null
   const accounts = connectedTick?.accounts ?? status?.accounts ?? []
   const main = connectedTick?.trading === undefined ? status?.trading : connectedTick.trading
@@ -40,6 +46,9 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
     accounts,
     account,
     switchAccount,
+    source,
+    replay,
+    switchSource,
     status,
     tick: connectedTick,
     connection,
@@ -57,20 +66,26 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
 export function LiveProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [tick, setTick] = useState<Tick | null>(null)
+  const [replayTick, setReplayTick] = useState<Tick | null>(null)
+  const replaySeen = useRef(0)
   const [connection, setConnection] = useState<Connection>("connecting")
   const [accountScope, setAccountScope] = useState(0)
   const account = useActiveAccount()
+  const source = useDataSource()
 
   useEffect(() => {
     const scheme = window.location.protocol === "https:" ? "wss" : "ws"
     return connectLive(`${scheme}://${window.location.host}/ws`, queryClient, setTick, (next) => {
       setConnection(next)
       setAccountScope((scope) => scope + 1)
+    }, (next) => {
+      if (next) replaySeen.current = Date.now()
+      setReplayTick(next)
     })
   }, [queryClient])
 
   const status = useQuery({
-    queryKey: ["status"],
+    queryKey: ["status", source],
     queryFn: ({ signal }) => api.status(signal),
     refetchInterval: connection === "open" ? 10_000 : 2_000,
   })
@@ -80,14 +95,28 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     activeAccount.set(id)
     setAccountScope((scope) => scope + 1)
   }, [])
-  // Fall back to the main account when the active one is gone (or the server keeps only one).
-  const known = tick?.accounts ?? status.data?.accounts ?? (status.data ? [] : undefined)
+  // Everything cached came from the other source: drop it, and remount account views.
+  const switchSource = useCallback((next: DataSource) => {
+    if (dataSource.get() === next) return
+    dataSource.set(next)
+    queryClient.removeQueries()
+    setAccountScope((scope) => scope + 1)
+  }, [queryClient])
+  // A replay that stopped, here or in another window, returns the terminal to the live feed.
   useEffect(() => {
-    if (known && account !== MAIN_ACCOUNT && !known.some((a) => a.id === account)) switchAccount(MAIN_ACCOUNT)
-  }, [known, account, switchAccount])
+    if (source !== "replay") return
+    const timer = setInterval(() => { if (Date.now() - replaySeen.current > 5_000) switchSource("live") }, 1_000)
+    return () => clearInterval(timer)
+  }, [source, switchSource])
+  // Fall back to the main account when the active one is gone (or the server keeps only one).
+  const known = tick?.accounts ?? (source === "live" ? status.data?.accounts ?? (status.data ? [] : undefined) : undefined)
+  useEffect(() => {
+    if (source === "live" && known && account !== MAIN_ACCOUNT && !known.some((a) => a.id === account)) switchAccount(MAIN_ACCOUNT)
+  }, [source, known, account, switchAccount])
   const value = useMemo<Live>(
-    () => liveState(status.data, tick, connection, accountScope, account, switchAccount),
-    [status.data, tick, connection, accountScope, account, switchAccount],
+    () => liveState(status.data, source === "replay" ? replayTick : tick, connection, accountScope,
+      source === "replay" ? MAIN_ACCOUNT : account, switchAccount, source, replayTick?.replay ?? null, switchSource),
+    [status.data, tick, replayTick, connection, accountScope, account, switchAccount, source, switchSource],
   )
   return <LiveContext value={value}>{children}</LiveContext>
 }

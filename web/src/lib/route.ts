@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react"
 
-export const views = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts", "smile", "exposure", "engine"] as const
+export const views = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts", "smile", "exposure", "replay", "engine"] as const
 export type View = (typeof views)[number]
 /** Sidebar order; keys 1-7 switch between them. */
 export const primaryViews = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts"] as const satisfies readonly View[]

@@ -1,6 +1,7 @@
-import type { CandleInterval, Candles, Chain, ExposureMatrix, Status, Summary, Surface } from "./types"
+import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
 import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderChange, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradesResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
+import { dataSource } from "../lib/data-source"
 import { writeToken } from "../lib/write-token"
 
 export class ApiError extends Error {
@@ -40,7 +41,12 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-const get = <T,>(path: string, signal?: AbortSignal) => request<T>(path, { signal, headers: { Accept: "application/json" } })
+/** On the replay every route is the replay's: /api/X becomes /api/replay/X. Replay controls stay put. */
+function routed(path: string): string {
+  if (dataSource.get() !== "replay" || path === "/api/replay" || path.startsWith("/api/replay?")) return path
+  return path.replace(/^\/api\//, "/api/replay/")
+}
+const get = <T,>(path: string, signal?: AbortSignal) => request<T>(routed(path), { signal, headers: { Accept: "application/json" } })
 function write<T>(path: string, method: "POST" | "PUT" | "DELETE", mode: WriteMode, body?: unknown) {
   const headers: Record<string, string> = { Accept: "application/json", "Content-Type": "application/json" }
   if (mode === "disabled") return Promise.reject(new ApiError(403, "Trading writes are disabled by the server.", "WRITE_DISABLED"))
@@ -49,14 +55,16 @@ function write<T>(path: string, method: "POST" | "PUT" | "DELETE", mode: WriteMo
     if (!token) return Promise.reject(new ApiError(403, "Enter a write token to continue.", "WRITE_TOKEN_REQUIRED"))
     headers.Authorization = `Bearer ${token}`
   }
-  return request<T>(path, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
+  return request<T>(routed(path), { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
 }
 
 const underlying = (symbol: string) => `/api/underlyings/${encodeURIComponent(symbol)}`
 /** Trading routes act on the active account; the main one needs no parameter. */
 function scoped(path: string): string {
   const account = activeAccount.get()
-  return account === MAIN_ACCOUNT ? path : `${path}${path.includes("?") ? "&" : "?"}account=${encodeURIComponent(account)}`
+  // A replay has one account of its own.
+  if (account === MAIN_ACCOUNT || dataSource.get() === "replay") return path
+  return `${path}${path.includes("?") ? "&" : "?"}account=${encodeURIComponent(account)}`
 }
 
 export const api = {
@@ -88,6 +96,11 @@ export const api = {
     get<ExposureMatrix>(`${underlying(symbol)}/exposure?expiries=${expiries}&window=${window}`, signal),
   surface: (symbol: string, expiries: number, window: number, signal?: AbortSignal) =>
     get<Surface>(`${underlying(symbol)}/surface?expiries=${expiries}&window=${window}`, signal),
+  replay: (signal?: AbortSignal) => get<ReplayListing>("/api/replay", signal),
+  startReplay: (file: string, speed: number, mode: WriteMode) => write<{ replay: ReplayState }>("/api/replay", "POST", mode, { file, speed }),
+  controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean }, mode: WriteMode) =>
+    write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),
+  stopReplay: (mode: WriteMode) => write<{ replay: null }>("/api/replay", "DELETE", mode),
   candles: (symbol: string, interval: CandleInterval, limit: number, signal?: AbortSignal) =>
     get<Candles>(`${underlying(symbol)}/candles?interval=${interval}&limit=${limit}`, signal),
 }

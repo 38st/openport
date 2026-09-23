@@ -49,8 +49,10 @@ terminal. Your API keys, your data and your trades stay on your machine.
   beside the chain; Positions adds Greeks, limits, a spot × vol scenario grid and a
   kill switch; Orders, a Journal (P&L calendar, win rate, profit factor, reports by hold
   time, weekday and month) and Rules complete the account.
-- **Record and replay**: save any provider's feed to a file and play it back later with
-  its original market times, for demos at night and reproducible bug reports.
+- **Record and replay**: record every session (`--record-dir`) and trade any recorded day
+  again from the Replay page, beside the live feed: its own practice account and chart on
+  the recording's clock, at 1× to 300× or as fast as possible, with pause and skip. Any
+  provider's recording also replays as the whole feed, for demos and bug reports.
 - **Engine**: feed health per underlying, trading session, queue and analytics timing.
 - Light and dark themes, keyboard shortcuts (number keys switch pages, arrows step
   expiries).
@@ -140,7 +142,8 @@ Common flags: `--symbols SPX,SPY`, `--expiries N` (nearest N expiries), `--windo
 (strikes within ±F of spot), `--poll-seconds N`, `--rate R` (the assumed rate when no
 index curve is available), `--address`, `--port`, `--web-root`, `--allowed-origin`,
 `--record FILE`, `--paper-journal`, `--plan`, `--paper-cash`, `--paper-fee`, `--no-paper`,
-`--write-token`, `--candle-dir DIR` and `--no-history` (see
+`--write-token`, `--record-dir DIR` (see [replaying](docs/runtime.md#replaying-in-the-terminal)),
+`--candle-dir DIR` and `--no-history` (see
 [price history](docs/runtime.md#price-history)), and
 `--option KEY=VALUE` for provider settings such as `quotes=cmbp-1` for Databento. Every
 value is range-checked; see the [runtime notes](docs/runtime.md) for details.
@@ -229,7 +232,8 @@ with `POST /api/orders`, `PUT` and `DELETE /api/orders/{id}` (change or cancel),
 `POST /api/orders/cancel` and `POST /api/positions/close` (cancel all, flatten),
 `PUT /api/risk/limits`, `POST /api/risk/kill` and `POST /api/account/reset`. Accounts
 are listed and created at `/api/accounts`; every trading route takes `?account=ID`
-for one other than the main account. The web terminal uses exactly
+for one other than the main account. `/api/replay` lists, starts and controls a replay,
+and `/api/replay/X` is route `/api/X` on it. The web terminal uses exactly
 these routes, so anything it does can be scripted. An order takes one contract, or
 `legs` for a strategy; this calendar buys the later put and sells the nearer one at a
 net debit of at most 6.60:
@@ -284,6 +288,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Strategies as positions: grouped legs, close and roll, journal by strategy
 - [x] Risk graph, probability of profit and expected move on the tickets
 - [x] Multiple named accounts trading side by side
+- [x] Market replay: trade a recorded day with speed controls beside the live feed
 - [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session
 - [ ] P&L attribution by delta, gamma, vega and theta

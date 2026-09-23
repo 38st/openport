@@ -11,7 +11,7 @@ import { Badge, Meter, toneOf, toneText } from "./ui"
 
 export const viewLabels: Record<View, string> = {
   dashboard: "Dashboard", chain: "Trade", positions: "Positions", orders: "Orders", journal: "Journal",
-  rules: "Rules", payouts: "Payouts", smile: "Volatility", exposure: "Exposure", engine: "Status",
+  rules: "Rules", payouts: "Payouts", smile: "Volatility", exposure: "Exposure", replay: "Replay", engine: "Status",
 }
 
 const icons: Partial<Record<View, ReactNode>> = {
@@ -22,6 +22,7 @@ const icons: Partial<Record<View, ReactNode>> = {
   journal: <path d="M4 5h16v15H4zM4 10h16M9 3v4m6-4v4" />,
   rules: <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Zm-3 9 2 2 4-4" />,
   payouts: <path d="M3 7h18v11H3zM3 11h18M7 15h4m6 0h.01M6 7l9-3 1 3" />,
+  replay: <path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v3h3M10 9l5 3-5 3z" />,
   engine: <path d="M3 12h4l3-8 4 16 3-8h4" />,
 }
 function Icon({ view }: { view: View }) {
@@ -135,6 +136,7 @@ export function Sidebar({ view, onView, open, onClose }: { view: View; onView: (
           </div>
           <div className="space-y-0.5">
             <div className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-faint">System</div>
+            {link("replay")}
             {link("engine")}
           </div>
         </nav>

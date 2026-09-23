@@ -260,10 +260,36 @@ export interface Surface {
   calendar_violations?: { earlier: string; later: string; k: number; vol_points?: number; tolerance_vol_points?: number }[]
 }
 
+/** The replay running beside the live feed: its recording, speed and clock. */
+export interface ReplayState {
+  file: string
+  provider: string
+  symbols: string[]
+  started: string | null
+  delay_seconds: number
+  speed: number
+  paused: boolean
+  finished: boolean
+  /** The replay's clock: when the latest event it played was first received. */
+  time: string | null
+}
+export interface ReplayRecording {
+  file: string
+  bytes: number
+  provider?: string
+  symbols?: string[]
+  started?: string | null
+  delay_seconds?: number
+  error?: string
+}
+export interface ReplayListing { directory: string; recordings: ReplayRecording[]; replay: ReplayState | null }
+
 export interface Tick {
   trading?: TradingStatus | null
   accounts?: AccountBrief[] | null
-  type: "tick"
+  /** Replay ticks carry the replay's state. */
+  replay?: ReplayState
+  type: "tick" | "replay_tick"
   feed: { state: FeedState; message: string }
   underlyings: UnderlyingSnapshot[]
   engine: EngineMetrics

@@ -69,6 +69,24 @@ Record any provider before the engine's coalescing queue:
 ```
 
 Both CLIs accept `--record FILE`; the probe also accepts repeated `--option KEY=VALUE`.
+`openportd --record-dir DIR` records each run to its own file there, named by provider
+and UTC start time (`cboe-2026-09-23T184820Z.oprec`). A delayed Cboe session records at
+roughly 16 bytes per quote change after compression; budget a few hundred megabytes a
+day for SPX, SPY and QQQ during regular hours.
+
+### Replaying in the terminal
+
+A running `openportd` replays recordings beside its live feed, one at a time. The
+Replay page (or `/api/replay`) lists the files in `--record-dir` (default
+`~/.openport/recordings`), starts one at 1, 2, 5, 10, 30, 60, 120 or 300 times real
+time or as fast as possible, and pauses, resumes, changes speed or skips a gap such
+as an overnight close while it plays. Each replay has its own engine, an in-memory
+practice account and chart history, all on the replay's clock: the recorded receipt
+times, so sessions, the feed delay and paper-trading gates behave as they did that
+day (a recording of a stalled feed replays as stalled). "Trade this replay" points
+every page at it, `/api/X` becoming `/api/replay/X`, until "Back to live"; the live
+accounts keep trading meanwhile. Stopping the replay discards its account. Recording
+names are plain file names inside the directory; anything else is refused.
 Files are created exclusively with mode 0600: an existing pathname, including a
 symlink, fails at startup and is never overwritten. Parent directories must exist.
 The original provider name, capabilities, subscription and engine start wall time

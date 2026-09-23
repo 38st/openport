@@ -8,6 +8,7 @@
 // API keys come from the environment (DATABENTO_API_KEY, MASSIVE_API_KEY) and never
 // leave this machine except to authenticate with that provider.
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -30,6 +31,7 @@
 #include "openport/server/api.hpp"
 #include "openport/server/engine.hpp"
 #include "openport/server/plans.hpp"
+#include "openport/server/replay_host.hpp"
 #include "openport/server/web_server.hpp"
 #include "openport/server/web_policy.hpp"
 
@@ -48,6 +50,7 @@ struct Settings {
   unsigned short port = 8080;
   std::filesystem::path web_root;
   std::filesystem::path record_file;
+  std::filesystem::path record_dir;
   std::optional<std::filesystem::path> candle_dir;
   bool history = true;
   bool paper_enabled = true;
@@ -67,7 +70,7 @@ int usage(const char* error = nullptr) {
       stderr,
       "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
-      "                 [--record FILE] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
+      "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n\n"
       "paper: durable European index paper trading; cash 100000, fee 0.65; more named\n"
@@ -79,7 +82,9 @@ int usage(const char* error = nullptr) {
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
-      "record: create a new compressed event file (existing files are never overwritten)\n"
+      "record: create a new compressed event file (existing files are never overwritten);\n"
+      "        --record-dir names one per run by provider and start time there, and the\n"
+      "        web terminal replays recordings from it (default ~/.openport/recordings)\n"
       "charts: one-minute bars persist in --candle-dir (default ~/.openport/candles; replay\n"
       "        keeps them in memory); Cboe's free delayed chart history backfills them\n"
       "        unless --no-history (always off for replay)\n"
@@ -172,6 +177,9 @@ int run(int argc, char** argv) {
     } else if (arg == "--record") {
       if (value.empty()) return usage("--record requires a nonempty path");
       settings.record_file = value;
+    } else if (arg == "--record-dir") {
+      if (value.empty()) return usage("--record-dir requires a nonempty path");
+      settings.record_dir = value;
     } else if (arg == "--candle-dir") {
       if (value.empty()) return usage("--candle-dir requires a nonempty path");
       settings.candle_dir = value;
@@ -208,6 +216,13 @@ int run(int argc, char** argv) {
 
   // A replay's market times are in the past: its bars must not mix with live history.
   const bool replay = settings.provider.name == "replay";
+  // Each run records to its own file, named by provider and UTC start time.
+  if (!settings.record_dir.empty() && settings.record_file.empty()) {
+    std::filesystem::create_directories(settings.record_dir);
+    auto stamp = md::format_timestamp(md::now()).substr(0, 19);  // 2026-09-23T20:15:30
+    stamp.erase(std::remove(stamp.begin(), stamp.end(), ':'), stamp.end());
+    settings.record_file = settings.record_dir / (settings.provider.name + "-" + stamp + "Z.oprec");
+  }
   server::CandleStore::Options candle_options;
   if (settings.candle_dir)
     candle_options.directory = *settings.candle_dir;
@@ -249,9 +264,18 @@ int run(int argc, char** argv) {
   const auto trading_status = engine.status().trading;
   if (trading_status.reason.starts_with("JOURNAL_LOCKED:"))
     std::fprintf(stderr, "openportd: %s\n", trading_status.reason.c_str());
+  // Recorded days replay beside the live feed, each with its own paper account.
+  server::ReplayHost::Options replay_options;
+  replay_options.engine = engine_options;
+  if (!settings.record_dir.empty())
+    replay_options.recordings = settings.record_dir;
+  else if (const auto* home = std::getenv("HOME"))
+    replay_options.recordings = std::filesystem::path(home) / ".openport/recordings";
+  server::ReplayHost replays(replay_options);
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
-      [&engine](const server::ApiRequest& request, server::ApiCompletion complete) {
+      [&engine, &replays](const server::ApiRequest& request, server::ApiCompletion complete) {
+        if (replays.handle(request, complete)) return;
         server::handle_api_async(request, engine, std::move(complete));
       }, settings.allowed_origins, settings.write_token);
   web.start(settings.threads);
@@ -277,12 +301,14 @@ int run(int argc, char** argv) {
   while (!g_stop) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     web.broadcast(server::tick_message(engine));
+    if (auto tick = replays.tick(); !tick.empty()) web.broadcast(tick);
     report(engine.recording_error(), recording_error);
     if (history) report(history->error(), history_error);
     report(candles->error(), candle_error);
   }
   std::printf("\nshutting down\n");
   web.stop();
+  replays.stop();
   if (history) history->stop();
   engine.stop();
   candles->flush();

@@ -89,10 +89,12 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/paper_api.cpp
     server/plans.cpp
     server/api.cpp
+    server/replay_host.cpp
     server/web_server.cpp
   )
   add_library(openport::server ALIAS openport_server)
-  target_link_libraries(openport_server PUBLIC openport::recording openport::trading)
+  # Replays run the replay provider beside the live feed.
+  target_link_libraries(openport_server PUBLIC openport::recording openport::trading openport::providers)
   target_link_libraries(openport_server
     PUBLIC openport::core openport::net
     PRIVATE nlohmann_json::nlohmann_json openport::options)

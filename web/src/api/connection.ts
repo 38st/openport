@@ -9,6 +9,7 @@ export function connectLive(
   queryClient: QueryClient,
   onTick: (tick: Tick | null) => void,
   onConnection: (connection: Connection) => void,
+  onReplayTick: (tick: Tick | null) => void = () => {},
 ) {
   let socket: WebSocket | null = null
   let retry = 0
@@ -33,10 +34,12 @@ export function connectLive(
       if (disposed || socket !== current) return
       const message = JSON.parse(event.data) as Tick
       if (message.type === "tick") onTick(message)
+      else if (message.type === "replay_tick") onReplayTick(message)
     }
     current.onclose = () => {
       if (disposed || socket !== current) return
       onTick(null)
+      onReplayTick(null)
       onConnection("closed")
       void queryClient.invalidateQueries({ queryKey: ["status"] })
       timer = setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++))
