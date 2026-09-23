@@ -39,7 +39,7 @@ struct TradingView {
 };
 
 struct TradingCommand {
-  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount };
+  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout };
   Kind kind = Kind::Submit;
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
@@ -50,6 +50,10 @@ struct TradingCommand {
   trading::Money settlement;
   trading::Money initial_cash;   ///< ResetAccount: the new starting balance.
   trading::AccountRules rules;   ///< ResetAccount: the new attempt's rules.
+  /// ResetAccount: a plan name whose evaluation the current attempt must have
+  /// passed (funded presets); empty for no requirement.
+  std::string required_pass;
+  trading::Money amount;         ///< Payout: the withdrawal.
 };
 
 struct TradingReply {

@@ -826,16 +826,35 @@ TEST(PaperPlans, PresetsListExactRules) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());
   const auto plans = read(engine, "/api/plans")["plans"];
-  ASSERT_EQ(plans.size(), 7);
+  ASSERT_EQ(plans.size(), 13);
   EXPECT_EQ(plans[0]["id"], "practice");
   EXPECT_EQ(plans[0]["rules"]["profit_target"], nullptr);
   EXPECT_EQ(plans[0]["rules"]["buying_power"], true);
+  EXPECT_EQ(plans[0]["unlocked_by"], nullptr);
   const auto intraday = plans[3];
   EXPECT_EQ(intraday["id"], "intraday-100k");
   EXPECT_EQ(intraday["name"], "Intraday 100K");
   EXPECT_EQ(intraday["initial_cash"], "100000.00");
-  EXPECT_EQ(intraday["rules"], json({{"plan", "Intraday 100K"}, {"profit_target", "10000.00"}, {"max_drawdown", "5000.00"},
-      {"drawdown_mode", "intraday"}, {"buy_only", true}, {"buying_power", true}, {"expiry_cutoff_seconds", 300}}));
+  EXPECT_EQ(intraday["rules"], json({{"plan", "Intraday 100K"}, {"phase", "evaluation"}, {"profit_target", "10000.00"},
+      {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", nullptr}, {"buy_only", true},
+      {"buying_power", true}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
+  const auto funded = plans[9];
+  EXPECT_EQ(funded["id"], "funded-intraday-100k");
+  EXPECT_EQ(funded["name"], "Funded Intraday 100K");
+  EXPECT_EQ(funded["unlocked_by"], "intraday-100k");
+  EXPECT_EQ(funded["initial_cash"], "100000.00");
+  EXPECT_EQ(funded["rules"], json({{"plan", "Funded Intraday 100K"}, {"phase", "funded"}, {"profit_target", nullptr},
+      {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", "100000.00"}, {"buy_only", true},
+      {"buying_power", true}, {"expiry_cutoff_seconds", 300},
+      {"payouts", {{"qualifying_profit", "200.00"}, {"qualifying_days", 8}, {"withdrawal_percent", 50},
+                   {"split_percent", 80}, {"minimum", "1000.00"},
+                   {"caps", {"2000.00", "3000.00", "4000.00", "6000.00"}}}}}));
+  EXPECT_EQ(plans[7]["rules"]["payouts"]["qualifying_profit"], "100.00");
+  EXPECT_EQ(plans[8]["rules"]["payouts"]["qualifying_profit"], "150.00");
+  EXPECT_EQ(plans[10]["id"], "funded-eod-25k");
+  EXPECT_EQ(plans[10]["rules"]["payouts"]["qualifying_profit"], "100.00");
+  EXPECT_EQ(plans[10]["rules"]["drawdown_mode"], "end_of_day");
+  EXPECT_EQ(plans[10]["rules"]["buy_only"], false);
   const auto eod = plans[4];
   EXPECT_EQ(eod["id"], "eod-25k");
   EXPECT_EQ(eod["rules"]["profit_target"], "3000.00");
@@ -944,6 +963,70 @@ TEST_F(PaperEngine, CustomDrawdownBreachLiquidatesWithSystemOrders) {
   EXPECT_EQ(read(*engine, "/api/portfolio")["cash"], "9978.70");
   EXPECT_EQ(json::parse(server::tick_message(*engine))["trading"]["evaluation"], "failed");
   expect_error(write(*engine, "POST", "/api/orders", order(market, "after", "4.20")), 422, "EVALUATION_CLOSED");
+  engine->stop();
+}
+
+TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
+  seed();
+  EXPECT_EQ(read(*engine, "/api/account")["payout"], nullptr);
+  expect_error(write(*engine, "POST", "/api/account/payout", {{"amount", "10.00"}}), 422, "PAYOUT_UNAVAILABLE");
+  expect_error(write(*engine, "POST", "/api/account/payout", {{"amount", "ten"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/account/payout", {{"amount", "1.001"}}), 422, "INVALID_PAYOUT");
+  expect_error(write(*engine, "POST", "/api/account/payout", {{"amount", "10.00"}, {"to", "bank"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "skip"}}), 422, "PLAN_LOCKED");
+
+  // Pass an evaluation named like the preset, then the funded plan unlocks.
+  const json rules{{"plan", "Intraday 25K"}, {"profit_target", "5.00"}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
+                   {"buy_only", false}, {"buying_power", false}, {"expiry_cutoff_seconds", 0}};
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", rules}, {"reason", "eval"}}).status, 200);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
+  quote("4.40", "4.60");
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["evaluation"]["status"] == "passed"; }));
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "funded"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  const auto account = json::parse(reset.body);
+  EXPECT_EQ(account["rules"]["phase"], "funded");
+  EXPECT_EQ(account["rules"]["lock_balance"], "25000.00");
+  EXPECT_EQ(account["evaluation"]["target_equity"], nullptr);
+  EXPECT_EQ(account["evaluation"]["floor"], "23750.00");
+  EXPECT_EQ(account["evaluation"]["floor_locked"], false);
+  EXPECT_EQ(account["evaluation"]["qualifying_days"], 0);
+  EXPECT_TRUE(account["evaluation"]["payouts"].empty());
+  EXPECT_EQ(account["attempts"][1]["status"], "passed");
+  const auto payout = account["payout"];
+  EXPECT_EQ(payout["eligible"], false);
+  EXPECT_EQ(payout["blocked"]["code"], "PAYOUT_NOT_ELIGIBLE");
+  EXPECT_EQ(payout["blocked"]["actual"], 0);
+  EXPECT_EQ(payout["blocked"]["limit"], 8);
+  EXPECT_EQ(payout["number"], 1);
+  EXPECT_EQ(payout["flat"], true);
+  EXPECT_EQ(payout["required_days"], 8);
+  EXPECT_EQ(payout["qualifying_profit"], "100.00");
+  EXPECT_EQ(payout["profit"], "0.00");
+  EXPECT_EQ(payout["maximum"], "0.00");
+  EXPECT_EQ(payout["minimum"], "250.00");
+  EXPECT_EQ(payout["cap"], "500.00");
+  EXPECT_EQ(payout["split_percent"], 80);
+  const auto refused = write(*engine, "POST", "/api/account/payout", {{"amount", "250.00"}});
+  expect_error(refused, 422, "PAYOUT_NOT_ELIGIBLE");
+  EXPECT_EQ(json::parse(refused.body)["error"]["limit"], 8);
+  // A funded account is not a pass: another funded reset needs a new pass.
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "again"}}), 422, "PLAN_LOCKED");
+
+  json custom = rules;
+  custom["phase"] = "funded";
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}}), 400, "INVALID_REQUEST");
+  custom["payouts"] = {{"qualifying_profit", "50"}, {"qualifying_days", 0}, {"withdrawal_percent", 50}, {"split_percent", 80},
+                       {"minimum", "10"}, {"caps", json::array()}};
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}}), 400, "INVALID_REQUEST");
+  custom["payouts"]["qualifying_days"] = 3;
+  custom["lock_balance"] = "10000";
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}}), 422, "INVALID_RULES");
+  custom["profit_target"] = nullptr;
+  const auto custom_reset = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}});
+  ASSERT_EQ(custom_reset.status, 200) << custom_reset.body;
+  EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["qualifying_days"], 3);
+  EXPECT_EQ(json::parse(custom_reset.body)["payout"]["cap"], nullptr);
   engine->stop();
 }
 

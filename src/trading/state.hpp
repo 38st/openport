@@ -61,15 +61,38 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Exposure, dollar_delta, dollar_gamma_1pct, ve
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExposureLimits, dollar_delta, vega)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Limits, max_order_contracts, price_band_absolute, price_band_relative, aggregate, per_underlying, underlying_overrides, max_daily_loss, max_quote_age, max_valuation_age)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioConfig, spot_percent, vol_points, vol_floor)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AccountRules, plan, profit_target, max_drawdown, drawdown_mode, buy_only, buying_power, expiry_cutoff)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PayoutRules, qualifying_profit, qualifying_days, withdrawal_percent, split_percent, minimum, caps)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(AccountRules, plan, profit_target, max_drawdown, drawdown_mode, buy_only, buying_power, expiry_cutoff, phase, lock_balance, payouts)
+inline void from_json(const Json& j, AccountRules& r) {
+  j.at("plan").get_to(r.plan); j.at("profit_target").get_to(r.profit_target); j.at("max_drawdown").get_to(r.max_drawdown);
+  j.at("drawdown_mode").get_to(r.drawdown_mode); j.at("buy_only").get_to(r.buy_only); j.at("buying_power").get_to(r.buying_power);
+  j.at("expiry_cutoff").get_to(r.expiry_cutoff);
+  added_field(j, "phase", r.phase); added_field(j, "lock_balance", r.lock_balance); added_field(j, "payouts", r.payouts);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules)
 inline void from_json(const Json& j, SessionConfig& c) {
   j.at("initial_cash").get_to(c.initial_cash); j.at("fee_per_contract").get_to(c.fee_per_contract);
   j.at("limits").get_to(c.limits); j.at("scenarios").get_to(c.scenarios);
   added_field(j, "rules", c.rules);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(EvaluationDay, day, open_equity, close_equity, peak, floor)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Evaluation, attempt, started, starting_balance, peak, floor, status, decided_at, decided_equity, decision, first_order, first_fill, day, day_open_equity, day_close_equity, days)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(EvaluationDay, day, open_equity, close_equity, peak, floor, realised, qualifying)
+inline void from_json(const Json& j, EvaluationDay& d) {
+  j.at("day").get_to(d.day); j.at("open_equity").get_to(d.open_equity); j.at("close_equity").get_to(d.close_equity);
+  j.at("peak").get_to(d.peak); j.at("floor").get_to(d.floor);
+  added_field(j, "realised", d.realised); added_field(j, "qualifying", d.qualifying);
+}
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Payout, number, time, day, amount, trader_share, balance)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Evaluation, attempt, started, starting_balance, peak, floor, status, decided_at, decided_equity, decision, first_order, first_fill, day, day_open_equity, day_close_equity, days, floor_locked, day_open_realised, qualifying_days, cycle_started, payouts)
+inline void from_json(const Json& j, Evaluation& e) {
+  j.at("attempt").get_to(e.attempt); j.at("started").get_to(e.started); j.at("starting_balance").get_to(e.starting_balance);
+  j.at("peak").get_to(e.peak); j.at("floor").get_to(e.floor); j.at("status").get_to(e.status);
+  j.at("decided_at").get_to(e.decided_at); j.at("decided_equity").get_to(e.decided_equity); j.at("decision").get_to(e.decision);
+  j.at("first_order").get_to(e.first_order); j.at("first_fill").get_to(e.first_fill); j.at("day").get_to(e.day);
+  j.at("day_open_equity").get_to(e.day_open_equity); j.at("day_close_equity").get_to(e.day_close_equity); j.at("days").get_to(e.days);
+  added_field(j, "floor_locked", e.floor_locked); added_field(j, "day_open_realised", e.day_open_realised);
+  added_field(j, "qualifying_days", e.qualifying_days); added_field(j, "cycle_started", e.cycle_started);
+  added_field(j, "payouts", e.payouts);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AttemptSummary, attempt, plan, started, ended, starting_balance, final_equity, status, decision, first_order, first_fill)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Closure, symbol, quantity, price, time, kind, after_fill)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(BuyingPower, available, reserved, short_requirement)

@@ -23,12 +23,40 @@ const char* status_name(EvaluationStatus status) {
   constexpr const char* names[] = {"active", "passed", "failed"};
   return names[static_cast<int>(status)];
 }
+json payout_rules_json(const PayoutRules& p) {
+  json caps = json::array();
+  for (const auto cap : p.caps) caps.push_back(cap.str());
+  return {{"qualifying_profit", p.qualifying_profit.str()}, {"qualifying_days", p.qualifying_days},
+          {"withdrawal_percent", p.withdrawal_percent}, {"split_percent", p.split_percent},
+          {"minimum", p.minimum.str()}, {"caps", caps}};
+}
 json rules_json(const AccountRules& r) {
-  return {{"plan", nullable(r.plan)}, {"profit_target", positive(r.profit_target)},
-          {"max_drawdown", positive(r.max_drawdown)},
+  const bool funded = r.phase == Phase::Funded;
+  return {{"plan", nullable(r.plan)}, {"phase", funded ? "funded" : "evaluation"},
+          {"profit_target", positive(r.profit_target)}, {"max_drawdown", positive(r.max_drawdown)},
           {"drawdown_mode", r.drawdown_mode == DrawdownMode::Intraday ? "intraday" : "end_of_day"},
+          {"lock_balance", positive(r.lock_balance)},
           {"buy_only", r.buy_only}, {"buying_power", r.buying_power},
-          {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond}};
+          {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
+          {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
+}
+json decision_json(const Decision& d) {
+  if (d.ok()) return nullptr;
+  return {{"code", to_string(d.code)}, {"message", d.message},
+          {"actual", d.actual ? number(*d.actual) : json(nullptr)}, {"limit", d.limit ? number(*d.limit) : json(nullptr)}};
+}
+/// The next payout's requirements, or null outside the funded phase.
+json payout_json(const TradingView& view) {
+  const auto& r = view.config.rules;
+  const auto q = payout_quote(*view.snapshot, r);
+  if (!q.funded) return nullptr;
+  return {{"eligible", q.blocked.ok()}, {"blocked", decision_json(q.blocked)}, {"number", q.number},
+          {"active", q.active}, {"flat", q.flat}, {"qualifying_days", q.qualifying_days},
+          {"required_days", q.required_days}, {"qualifying_profit", r.payouts.qualifying_profit.str()},
+          {"profit", q.profit.str()},
+          {"withdrawable", q.withdrawable.str()}, {"cap", money(q.cap)}, {"maximum", q.maximum.str()},
+          {"minimum", q.minimum.str()}, {"trader_share", q.trader_share.str()},
+          {"withdrawal_percent", r.payouts.withdrawal_percent}, {"split_percent", r.payouts.split_percent}};
 }
 json buying_power_json(const BuyingPower& power) {
   return {{"available", power.available.str()}, {"reserved", power.reserved.str()},
@@ -155,7 +183,12 @@ json account_json(const TradingView& view) {
   for (const auto& d : e.days)
     days.push_back({{"day", md::format_date(d.day)}, {"open_equity", d.open_equity.str()},
                     {"close_equity", d.close_equity.str()}, {"peak", d.peak.str()},
-                    {"floor", floor ? json(d.floor.str()) : json(nullptr)}});
+                    {"floor", floor ? json(d.floor.str()) : json(nullptr)},
+                    {"realised", d.realised.str()}, {"qualifying", d.qualifying}});
+  json payouts = json::array();
+  for (const auto& p : e.payouts)
+    payouts.push_back({{"number", p.number}, {"time", md::format_timestamp(p.time)}, {"day", md::format_date(p.day)}, {"amount", p.amount.str()},
+                       {"trader_share", p.trader_share.str()}, {"balance", p.balance.str()}});
   json attempts = json::array();
   for (const auto& a : s.attempts)
     attempts.push_back({{"attempt", a.attempt}, {"plan", nullable(a.plan)}, {"started", md::format_timestamp(a.started)},
@@ -177,8 +210,11 @@ json account_json(const TradingView& view) {
               {"decided_equity", decided ? json(e.decided_equity.str()) : json(nullptr)},
               {"decision", nullable(e.decision)},
               {"day", md::format_date(e.day)}, {"day_open_equity", e.day_open_equity.str()},
-              {"day_close_equity", e.day_close_equity.str()}, {"days", days}}},
+              {"day_close_equity", e.day_close_equity.str()}, {"days", days},
+              {"floor_locked", floor && e.floor_locked}, {"qualifying_days", e.qualifying_days},
+              {"cycle_started", md::format_timestamp(e.cycle_started)}, {"payouts", payouts}}},
           {"buying_power", buying_power_json(s.buying_power)},
+          {"payout", payout_json(view)},
           {"attempts", attempts}};
 }
 json trades_json(const TradingView& view, std::string_view status, bool current_only) {
@@ -235,7 +271,8 @@ json plans_json() {
   json plans = json::array();
   for (const auto& p : plan_presets())
     plans.push_back({{"id", p.id}, {"name", p.name}, {"summary", p.summary},
-                     {"initial_cash", p.initial_cash.str()}, {"rules", rules_json(p.rules)}});
+                     {"initial_cash", p.initial_cash.str()}, {"rules", rules_json(p.rules)},
+                     {"unlocked_by", nullable(p.unlocked_by)}});
   return {{"plans", plans}};
 }
 json exposure_limits(const ExposureLimits& limits) {
@@ -317,7 +354,8 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       for (auto id : reply.cancelled_orders) body["cancelled_orders"].push_back(std::to_string(id));
       break;
     case TradingCommand::Kind::Settle: body["position_closed"] = true; break;
-    case TradingCommand::Kind::ResetAccount: body = account_json(view); break;
+    case TradingCommand::Kind::ResetAccount:
+    case TradingCommand::Kind::Payout: body = account_json(view); break;
   }
   return {status, body.dump()};
 }
@@ -409,10 +447,40 @@ bool boolean_field(const json& j, const char* key) {
   if (!j.at(key).is_boolean()) throw std::invalid_argument(std::string(key) + " must be a boolean");
   return j.at(key).get<bool>();
 }
+PayoutRules parse_payout_rules(const json& j) {
+  fields(j, {"qualifying_profit", "qualifying_days", "withdrawal_percent", "split_percent", "minimum", "caps"});
+  PayoutRules p;
+  p.qualifying_profit = decimal_field(j, "qualifying_profit");
+  p.qualifying_days = integer_field(j, "qualifying_days");
+  if (p.qualifying_days < 1) throw std::invalid_argument("qualifying_days must be at least 1");
+  p.withdrawal_percent = integer_field(j, "withdrawal_percent");
+  p.split_percent = integer_field(j, "split_percent");
+  p.minimum = decimal_field(j, "minimum");
+  const auto& caps = j.at("caps");
+  if (!caps.is_array() || caps.size() > 64) throw std::invalid_argument("caps must be an array of at most 64 amounts");
+  for (const auto& cap : caps) {
+    if (!cap.is_string()) throw std::invalid_argument("caps must be decimal strings");
+    try { p.caps.push_back(Money::parse(cap.get<std::string>())); }
+    catch (const TradingError& e) { throw std::invalid_argument(std::string("caps: ") + e.what()); }
+  }
+  return p;
+}
 /// Custom rules: nullable money for an absent target/drawdown, like rules_json.
+/// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
-  fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"}, {"plan"});
+  fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
+         {"plan", "phase", "lock_balance", "payouts"});
   AccountRules rules;
+  if (j.contains("phase")) {
+    const auto phase = string_field(j, "phase");
+    if (phase != "evaluation" && phase != "funded") throw std::invalid_argument("phase must be evaluation or funded");
+    rules.phase = phase == "funded" ? Phase::Funded : Phase::Evaluation;
+  }
+  const bool payouts = j.contains("payouts") && !j.at("payouts").is_null();
+  if (payouts != (rules.phase == Phase::Funded))
+    throw std::invalid_argument("payouts are required for the funded phase and forbidden otherwise");
+  if (payouts) rules.payouts = parse_payout_rules(j.at("payouts"));
+  if (j.contains("lock_balance") && !j.at("lock_balance").is_null()) rules.lock_balance = decimal_field(j, "lock_balance");
   if (j.contains("plan") && !j.at("plan").is_null()) rules.plan = string_field(j, "plan");
   auto optional_money = [&](const char* key) { return j.at(key).is_null() ? Money{} : decimal_field(j, key); };
   rules.profit_target = optional_money("profit_target");
@@ -497,6 +565,7 @@ TradingCommand parse_command(const ApiRequest& request) {
       if (!plan) throw std::invalid_argument("Unknown plan; see GET /api/plans");
       command.initial_cash = plan->initial_cash;
       command.rules = plan->rules;
+      if (!plan->unlocked_by.empty()) command.required_pass = find_plan(plan->unlocked_by)->name;
     } else {
       if (!body.contains("initial_cash") || !body.contains("rules"))
         throw std::invalid_argument("Provide a plan, or both initial_cash and rules");
@@ -504,6 +573,10 @@ TradingCommand parse_command(const ApiRequest& request) {
       if (command.initial_cash <= Money{}) throw std::invalid_argument("initial_cash must be positive");
       command.rules = parse_rules(body.at("rules"));
     }
+  } else if (request.target == "/api/account/payout") {
+    fields(body, {"amount"});
+    command.kind = TradingCommand::Kind::Payout;
+    command.amount = decimal_field(body, "amount");
   } else {
     fields(body, {"symbol", "value"});
     command.kind = TradingCommand::Kind::Settle;
@@ -583,7 +656,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   if (request.method == "GET") { complete(handle_api(request, source)); return; }
   const bool route = (request.method == "POST" && (request.target == "/api/orders" ||
       request.target == "/api/risk/kill" || request.target == "/api/settlements" ||
-      request.target == "/api/account/reset")) ||
+      request.target == "/api/account/reset" || request.target == "/api/account/payout")) ||
       (request.method == "PUT" && request.target == "/api/risk/limits") ||
       (request.method == "DELETE" && request.target.starts_with("/api/orders/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }

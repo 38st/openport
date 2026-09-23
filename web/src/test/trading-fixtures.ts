@@ -64,15 +64,18 @@ export const risk: Risk = {
 
 export const account: Account = {
   account_version: "17", time,
-  rules: { plan: "Intraday 100K", profit_target: "10000.00", max_drawdown: "5000.00", drawdown_mode: "intraday", buy_only: true, buying_power: true, expiry_cutoff_seconds: 300 },
+  rules: { plan: "Intraday 100K", phase: "evaluation", profit_target: "10000.00", max_drawdown: "5000.00", drawdown_mode: "intraday",
+    lock_balance: null, buy_only: true, buying_power: true, expiry_cutoff_seconds: 300, payouts: null },
   evaluation: {
     enabled: true, attempt: 2, status: "active", started: "2026-09-21T14:00:00Z", starting_balance: "100000.00", equity: "100267.50",
     marked: true, valuation_complete: true, profit: "267.50", peak: "100300.00", floor: "95300.00", drawdown_buffer: "4967.50",
     target_equity: "110000.00", target_remaining: "9732.50", decided_at: null, decided_equity: null, decision: null,
     day: "2026-09-23", day_open_equity: "100100.00", day_close_equity: "100267.50",
-    days: [{ day: "2026-09-22", open_equity: "100000.00", close_equity: "100100.00", peak: "100300.00", floor: "95300.00" }],
+    days: [{ day: "2026-09-22", open_equity: "100000.00", close_equity: "100100.00", peak: "100300.00", floor: "95300.00", realised: "100.00", qualifying: false }],
+    floor_locked: false, qualifying_days: 0, cycle_started: "2026-09-21T14:00:00Z", payouts: [],
   },
   buying_power: { available: "99078.70", reserved: "0.00", short_requirement: "0.00" },
+  payout: null,
   attempts: [{ attempt: 1, plan: "Practice", started: "2026-09-20T14:00:00Z", ended: "2026-09-21T14:00:00Z", starting_balance: "100000.00", final_equity: "99500.00", status: "active", decision: null }],
 }
 const trade: Trade = {
@@ -89,6 +92,34 @@ export const trades: Trade[] = [
 ]
 export const plans: Plan[] = [
   { id: "practice", name: "Practice", summary: "No target or drawdown. Buying power applies.", initial_cash: "100000.00",
-    rules: { plan: "Practice", profit_target: null, max_drawdown: null, drawdown_mode: "intraday", buy_only: false, buying_power: true, expiry_cutoff_seconds: 0 } },
-  { id: "intraday-100k", name: "Intraday 100K", summary: "Buy-only single-leg options.", initial_cash: "100000.00", rules: account.rules },
+    rules: { plan: "Practice", phase: "evaluation", profit_target: null, max_drawdown: null, drawdown_mode: "intraday", lock_balance: null,
+      buy_only: false, buying_power: true, expiry_cutoff_seconds: 0, payouts: null }, unlocked_by: null },
+  { id: "intraday-100k", name: "Intraday 100K", summary: "Buy-only single-leg options.", initial_cash: "100000.00", rules: account.rules, unlocked_by: null },
+  { id: "funded-intraday-100k", name: "Funded Intraday 100K", summary: "Unlocked by passing Intraday 100K.", initial_cash: "100000.00",
+    rules: { ...account.rules, plan: "Funded Intraday 100K", phase: "funded", profit_target: null, lock_balance: "100000.00",
+      payouts: { qualifying_profit: "200.00", qualifying_days: 8, withdrawal_percent: 50, split_percent: 80, minimum: "1000.00",
+        caps: ["2000.00", "3000.00", "4000.00", "6000.00"] } }, unlocked_by: "intraday-100k" },
 ]
+/** A funded account after one payout, three qualifying days into its second cycle. */
+export const fundedAccount: Account = {
+  ...account,
+  rules: plans[2]!.rules,
+  evaluation: {
+    ...account.evaluation, attempt: 3, starting_balance: "100000.00", equity: "106050.00", profit: "6050.00", peak: "107500.00",
+    floor: "100000.00", drawdown_buffer: "6050.00", target_equity: null, target_remaining: null, floor_locked: true,
+    day: "2026-09-25", day_open_equity: "106050.00", day_close_equity: "106050.00",
+    days: [
+      { day: "2026-09-22", open_equity: "106000.00", close_equity: "105500.00", peak: "107500.00", floor: "100000.00", realised: "1500.00", qualifying: true },
+      { day: "2026-09-23", open_equity: "105500.00", close_equity: "105800.00", peak: "107500.00", floor: "100000.00", realised: "300.00", qualifying: true },
+      { day: "2026-09-24", open_equity: "105800.00", close_equity: "106050.00", peak: "107500.00", floor: "100000.00", realised: "250.00", qualifying: true },
+    ],
+    qualifying_days: 3, cycle_started: "2026-09-22T18:00:00Z",
+    payouts: [{ number: 1, time: "2026-09-22T18:00:00Z", day: "2026-09-22", amount: "2000.00", trader_share: "1600.00", balance: "107500.00" }],
+  },
+  payout: {
+    eligible: false, blocked: { code: "PAYOUT_NOT_ELIGIBLE", message: "Not enough qualifying days in this payout cycle", actual: 3, limit: 8 },
+    number: 2, active: true, flat: true, qualifying_days: 3, required_days: 8, qualifying_profit: "200.00",
+    profit: "6050.00", withdrawable: "3025.00", cap: "3000.00", maximum: "3000.00", minimum: "1000.00", trader_share: "2400.00",
+    withdrawal_percent: 50, split_percent: 80,
+  },
+}

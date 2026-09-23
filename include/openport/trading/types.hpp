@@ -25,10 +25,10 @@ enum class Reason {
   UNKNOWN_ORDER, ORDER_TERMINAL, INVALID_LIMITS, INVALID_TIME, INVALID_SCENARIO,
   INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED,
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
-  OCO_FILLED, POSITION_CLOSED
+  OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::POSITION_CLOSED;
+inline constexpr Reason kLastReason = Reason::PLAN_LOCKED;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -186,6 +186,21 @@ struct ScenarioConfig {
 /// How often the trailing drawdown floor may rise. Breaches are always
 /// monitored on every transaction; the mode only controls the ratchet.
 enum class DrawdownMode { Intraday, EndOfDay };
+/// An evaluation passes on its target; a funded account pays out instead.
+enum class Phase { Evaluation, Funded };
+
+/// Funded-account withdrawals. A qualifying day ends with at least
+/// `qualifying_profit` of net realised profit; each payout needs
+/// `qualifying_days` of them since the previous one. Percentages are whole
+/// numbers so every amount stays exact.
+struct PayoutRules {
+  Money qualifying_profit;
+  std::int64_t qualifying_days = 0;
+  std::int64_t withdrawal_percent = 50;  ///< Share of profit one payout may take.
+  std::int64_t split_percent = 80;       ///< Trader's share of each payout.
+  Money minimum;
+  std::vector<Money> caps;  ///< Per payout number; the last repeats; empty is uncapped.
+};
 
 /// Evaluation-account rules. The defaults describe an unrestricted paper
 /// account: no target, no drawdown floor, any side, no buying-power check.
@@ -197,6 +212,9 @@ struct AccountRules {
   bool buy_only = false;      ///< Sells may only reduce existing long positions.
   bool buying_power = false;  ///< Enforce cash buying power, with naked-short requirements.
   Timestamp expiry_cutoff = 0;  ///< Auto-close this long before contract expiry; zero disables.
+  Phase phase = Phase::Evaluation;
+  Money lock_balance;         ///< Once the floor reaches it, the floor stops trailing; zero disables.
+  PayoutRules payouts;        ///< Funded phase only.
   [[nodiscard]] bool evaluation() const { return profit_target > Money{} || max_drawdown > Money{}; }
 };
 
@@ -214,7 +232,9 @@ struct SessionConfig {
 [[nodiscard]] bool valid_quote(const QuoteObservation& quote);
 [[nodiscard]] bool valid_valuation(const Valuation& valuation);
 void validate_limits(const Limits& limits);
-/// Money amounts nonnegative, cutoff within [0, 1 day), plan name at most 64 bytes.
+/// Money amounts nonnegative, cutoff within [0, 1 day), plan name at most 64 bytes,
+/// payout percentages 0-100 with positive caps; a funded phase has no profit
+/// target and needs at least one qualifying day.
 void validate_rules(const AccountRules& rules);
 
 }  // namespace openport::trading

@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react"
 import { useLive } from "../api/live"
-import { useAccount, useTrades } from "../api/trading"
+import { useAccount, usePlans, useTrades } from "../api/trading"
 import type { Account, Trade, TradingStatus } from "../api/trading-types"
 import { LineChart, type Reference, type Series } from "../charts/LineChart"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
-import { Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
+import { Check, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { money, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { contractLabel, formatDuration } from "../lib/journal"
+import { unlockedFundedPlan } from "../lib/payouts"
 import { useRoute } from "../lib/route"
 import { formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
 
@@ -51,8 +52,10 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const account = useAccount()
   const trades = useTrades("current")
   const { underlyings } = useLive()
+  const plans = usePlans()
   const [, navigate] = useRoute()
-  const [resetting, setResetting] = useState(false)
+  // null: closed; "": open without a preselected plan.
+  const [resetting, setResetting] = useState<string | null>(null)
   const data = account.data
   const chart = useMemo(() => (data ? equitySeries(data) : null), [data])
   if (account.error) return <TradingError error={account.error} />
@@ -66,13 +69,16 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const bufferShare = e.drawdown_buffer != null ? ratio(e.drawdown_buffer, floorRange) : null
   const today = subtractMoney(e.equity, e.day_open_equity)
   const recent = (trades.data?.trades ?? []).filter((t) => t.status === "closed").slice(0, 5)
+  const funded = r.phase === "funded"
+  const payout = data.payout
+  const unlocked = unlockedFundedPlan(plans.data?.plans ?? [], data)
 
   return (
     <div className="min-w-0 space-y-4">
       <PageHeader
         title={<span className="flex flex-wrap items-center gap-2">Dashboard {evaluationBadge(data, r.plan)}</span>}
         subtitle={<>{r.plan ?? "Paper account"} · attempt {e.attempt} · started {timestampET(e.started)}</>}>
-        <button type="button" className="trade-button" onClick={() => setResetting(true)} disabled={!trading.enabled}>
+        <button type="button" className="trade-button" onClick={() => setResetting("")} disabled={!trading.enabled}>
           {e.enabled ? "New attempt" : "Start an evaluation"}
         </button>
       </PageHeader>
@@ -80,11 +86,15 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
       {e.status !== "active" && (
         <div role="status" className={`rounded-lg border p-4 ${e.status === "passed" ? "border-bullish/50 bg-bullish/5" : "border-bearish/50 bg-bearish/5"}`}>
           <div className={`font-medium ${e.status === "passed" ? "text-bullish" : "text-bearish"}`}>
-            {e.status === "passed" ? "Evaluation passed" : "Evaluation failed"}
+            {e.status === "passed" ? "Evaluation passed" : funded ? "Funded account closed" : "Evaluation failed"}
           </div>
           <p className="mt-1 text-sm">{e.decision}</p>
           <p className="mt-1 text-xs text-muted">Decided {timestampET(e.decided_at)}. Positions are closed and new orders are refused until you start a new attempt.</p>
-          <button type="button" className="trade-button mt-3" onClick={() => setResetting(true)}>Start a new attempt</button>
+          {unlocked && <p className="mt-2 text-sm">Your <strong>{unlocked.name}</strong> account is unlocked: the same size and drawdown, no profit target, and payouts from your profits.</p>}
+          <div className="mt-3 flex flex-wrap gap-2">
+            {unlocked && <button type="button" className="trade-button border-bullish/60" onClick={() => setResetting(unlocked.id)} disabled={!trading.enabled}>Start {unlocked.name}</button>}
+            <button type="button" className="trade-button" onClick={() => setResetting("")} disabled={!trading.enabled}>Start a new attempt</button>
+          </div>
         </div>
       )}
       {!e.enabled && (
@@ -103,19 +113,22 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
           <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-muted">
             <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--chart-1)]" />Equity</span>
             {e.target_equity != null && <span className="flex items-center gap-1.5"><span className="h-0 w-4 border-t border-dashed border-bullish" />Profit target</span>}
-            {e.floor != null && <span className="flex items-center gap-1.5"><span className="h-0 w-4 border-t border-dashed border-bearish" />Drawdown floor ({r.drawdown_mode === "intraday" ? "trails intraday" : "trails at the close"})</span>}
+            {e.floor != null && <span className="flex items-center gap-1.5"><span className="h-0 w-4 border-t border-dashed border-bearish" />Drawdown floor ({e.floor_locked ? "locked" : r.drawdown_mode === "intraday" ? "trails intraday" : "trails at the close"})</span>}
           </div>
         </Panel>
         <div className="grid min-w-0 grid-cols-2 gap-3 xl:grid-cols-1">
           <Tile label="Net P&L" value={signedMoney(profit)} tone={toneOf(profit)}
             detail={`${signedPercent(ratio(profit, e.starting_balance), 2)} of starting balance`} />
-          <Tile label="Profit target" value={target ? formatMoney(e.target_equity) : "None"}
+          {payout ? <Tile label="Next payout" value={payout.eligible ? formatMoney(payout.maximum) : `${payout.qualifying_days} / ${payout.required_days} days`}
+            detail={payout.eligible ? `Available now · ${formatMoney(payout.trader_share)} to you` : `Qualifying days · ${formatMoney(payout.qualifying_profit, 0)}+ net each`}
+            meter={{ value: payout.qualifying_days / payout.required_days, tone: "positive", label: "Qualifying days toward the next payout" }} />
+          : <Tile label="Profit target" value={target ? formatMoney(e.target_equity) : "None"}
             detail={target ? `${formatMoney(e.target_remaining)} to go · ${Math.max(0, (targetProgress ?? 0) * 100).toFixed(1)}%` : "Practice has no target"}
-            meter={target ? { value: targetProgress, tone: "positive", label: "Progress to profit target" } : undefined} />
+            meter={target ? { value: targetProgress, tone: "positive", label: "Progress to profit target" } : undefined} />}
           <Tile label="Equity" value={formatMoney(e.equity)} detail={`Peak ${formatMoney(e.peak)} · today ${signedMoney(today)}`} />
           <Tile label="Drawdown floor" value={e.floor != null ? formatMoney(e.floor) : "None"}
             tone={bufferShare != null && bufferShare < 0.25 ? "negative" : "neutral"}
-            detail={e.floor != null ? `${formatMoney(e.drawdown_buffer)} buffer` : "Practice has no floor"}
+            detail={e.floor != null ? `${formatMoney(e.drawdown_buffer)} buffer${e.floor_locked ? " · locked" : ""}` : "Practice has no floor"}
             meter={bufferShare != null ? { value: bufferShare, tone: bufferShare < 0.25 ? "negative" : bufferShare < 0.5 ? "warn" : "positive", label: "Buffer above the drawdown floor" } : undefined} />
         </div>
       </div>
@@ -143,6 +156,8 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             <ul className="space-y-1.5 text-sm">
               <Check ok={toneOf(profit) !== "negative"} label="Current P&L" value={signedMoney(profit)} tone={toneOf(profit)} />
               {target && <Check ok={e.status === "passed"} label="Remaining to target" value={formatMoney(e.target_remaining)} />}
+              {payout && <Check ok={payout.qualifying_days >= payout.required_days} label="Qualifying days this cycle" value={`${payout.qualifying_days} of ${payout.required_days}`} />}
+              {payout && <Check ok={payout.eligible} label={payout.eligible ? "Payout available now" : "Next payout, once eligible"} value={`up to ${formatMoney(payout.maximum)}`} />}
               {e.floor != null && <Check ok={e.status !== "failed"} label="Drawdown left" value={formatMoney(e.drawdown_buffer)} />}
               <Check ok label="Starting balance" value={formatMoney(e.starting_balance)} />
               <Check ok label="Peak equity" value={formatMoney(e.peak)} />
@@ -180,22 +195,8 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
           ) : <p className="text-sm text-muted">This is the first attempt on this account.</p>}
         </Panel>
       </div>
-      {resetting && <ResetDialog trading={trading} attempt={e.attempt} onClose={() => setResetting(false)} />}
+      {resetting != null && <ResetDialog trading={trading} attempt={e.attempt} initial={resetting || undefined} onClose={() => setResetting(null)} />}
     </div>
-  )
-}
-
-function Check({ ok, label, value, tone = "neutral" }: { ok: boolean; label: string; value?: string; tone?: ReturnType<typeof toneOf> }) {
-  return (
-    <li className="flex items-center justify-between gap-3">
-      <span className="flex min-w-0 items-center gap-2">
-        <svg viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 ${ok ? "text-bullish" : "text-faint"}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-          <circle cx="8" cy="8" r="6.5" />{ok && <path d="m5 8 2 2 4-4" />}
-        </svg>
-        <span className="min-w-0 text-muted">{label}</span>
-      </span>
-      {value && <span className={`shrink-0 tabular ${toneText[tone]}`}>{value}</span>}
-    </li>
   )
 }
 

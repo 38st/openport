@@ -1,11 +1,12 @@
 import { useState, type ReactNode } from "react"
 import { useLive } from "../api/live"
 import { useAccount, usePlans, useRisk } from "../api/trading"
-import type { Account, TradingStatus } from "../api/trading-types"
+import type { Account, Plan, TradingStatus } from "../api/trading-types"
 import { ResetDialog } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
+import { lockReason, payoutCap } from "../lib/payouts"
 import { formatMoney } from "../lib/trading"
 
 function Rule({ title, children }: { title: string; children: ReactNode }) {
@@ -20,15 +21,30 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
   const r = account.rules
   const e = account.evaluation
   const minutes = Math.round(r.expiry_cutoff_seconds / 60)
+  const p = r.payouts
+  const funded = r.phase === "funded"
   return [
-    { title: "Profit target", body: r.profit_target
+    funded ? { title: "Funded account", body: <>There is no profit target: trade the account and withdraw from its profits under the payout rules below.
+        The account stays open until equity touches the drawdown floor.</> }
+    : { title: "Profit target", body: r.profit_target
       ? <>Pass by reaching <strong className="text-foreground">{formatMoney(e.target_equity)}</strong> equity, {formatMoney(r.profit_target)} above your {formatMoney(e.starting_balance)} starting balance. There is no time limit and no minimum number of trading days. Once you pass, positions are closed and the attempt is complete.</>
       : "This account has no profit target." },
     { title: "Trailing drawdown", body: r.max_drawdown
-      ? <>Equity may never touch the floor, now <strong className="text-foreground">{formatMoney(e.floor)}</strong>: {formatMoney(r.max_drawdown)} below your highest equity ({formatMoney(e.peak)}).
-        {r.drawdown_mode === "intraday" ? " The floor rises with every new equity high during the session." : " The floor rises only once a day, from each day's closing equity."} It never moves down.
-        Breaches are checked on every update in both modes; touching the floor fails the attempt and closes every position.</>
+      ? <>Equity may never touch the floor, now <strong className="text-foreground">{formatMoney(e.floor)}</strong>{e.floor_locked
+          ? <>. It has locked at {formatMoney(r.lock_balance)} and no longer trails.</>
+          : <>: {formatMoney(r.max_drawdown)} below your highest equity ({formatMoney(e.peak)}).
+            {r.drawdown_mode === "intraday" ? " The floor rises with every new equity high during the session." : " The floor rises only once a day, from each day's closing equity."} It never moves down.
+            {r.lock_balance && <> Once it reaches {formatMoney(r.lock_balance)} it locks there and stops trailing.</>}</>}{" "}
+        Breaches are checked on every update in both modes; touching the floor {funded ? "closes the funded account" : "fails the attempt"} and closes every position.</>
       : "This account has no drawdown floor." },
+    ...(p ? [{ title: "Payouts", body: <>
+        A payout needs <strong className="text-foreground">{p.qualifying_days} qualifying days</strong> since the previous one: days that end with at least {formatMoney(p.qualifying_profit)} of net realised profit, after fees.
+        Request it with no open positions or working orders. Each payout may take up to {p.withdrawal_percent}% of the profit above your {formatMoney(e.starting_balance)} starting balance,
+        at least {formatMoney(p.minimum)}{p.caps.length ? <> and at most {p.caps.map((cap, i) => `${formatMoney(cap, 0)} for payout ${i + 1}${i === p.caps.length - 1 && i > 0 ? " and later" : ""}`).join(", ")}</> : null}; you keep {p.split_percent}%.
+        Each finished day counts once, toward the payout cycle in progress when it closes.
+        A withdrawal is not a loss: the day's starting equity {r.lock_balance ? "and a floor that has not locked yet move" : "moves"} down with it.
+        {payoutCap(p.caps, e.payouts.length + 1) && <> Your next payout is number {e.payouts.length + 1}, capped at {formatMoney(payoutCap(p.caps, e.payouts.length + 1))}.</>}
+      </> }] : []),
     { title: "Strategies", body: r.buy_only
       ? "Buy-only: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells."
       : "Any single-leg strategy: buy or sell calls and puts. Short options hold a naked requirement against buying power." },
@@ -64,27 +80,55 @@ function Rules({ trading }: { trading: TradingStatus }) {
       <Panel title={<span className="flex items-center gap-2">{data.rules.plan ?? "Paper account"} {evaluationBadge(data, data.rules.plan)}</span>}>
         {ruleText(data, trading.fee_per_contract, risk?.limits.max_daily_loss).map((rule) => <Rule key={rule.title} title={rule.title}>{rule.body}</Rule>)}
       </Panel>
-      <Panel title="Plans">
-        <TradingError error={plans.error} />
-        {plans.data ? <div className="max-w-full overflow-x-auto" tabIndex={0} role="region" aria-label="Plans">
-          <table className="w-full text-left text-xs whitespace-nowrap">
-            <thead className="text-[11px] uppercase tracking-wide text-muted"><tr>
-              {["Plan", "Starting balance", "Profit target", "Trailing drawdown", "Floor moves", "Strategies", "Expiry auto-close", ""].map((h) => <th key={h} className="px-2 py-2 font-normal">{h}</th>)}
-            </tr></thead>
-            <tbody>{plans.data.plans.map((p) => <tr key={p.id} className="border-t border-border/40">
-              <td className="px-2 py-2"><div className="font-medium">{p.name}</div><div className="max-w-72 truncate text-[11px] text-muted" title={p.summary}>{p.summary}</div></td>
-              <td className="px-2 py-2 tabular">{formatMoney(p.initial_cash, 0)}</td>
-              <td className="px-2 py-2 tabular">{p.rules.profit_target ? formatMoney(p.rules.profit_target, 0) : "—"}</td>
-              <td className="px-2 py-2 tabular">{p.rules.max_drawdown ? formatMoney(p.rules.max_drawdown, 0) : "—"}</td>
-              <td className="px-2 py-2">{p.rules.max_drawdown ? (p.rules.drawdown_mode === "intraday" ? "Every new high" : "At each close") : "—"}</td>
-              <td className="px-2 py-2">{p.rules.buy_only ? "Buy only" : "Any"}</td>
-              <td className="px-2 py-2">{p.rules.expiry_cutoff_seconds ? `${Math.round(p.rules.expiry_cutoff_seconds / 60)} min before` : "—"}</td>
-              <td className="px-2 py-2 text-right"><button type="button" className="trade-button" disabled={!trading.enabled} onClick={() => setStart(p.id)}>Start</button></td>
-            </tr>)}</tbody>
-          </table>
-        </div> : <p className="text-sm text-muted">Loading plans…</p>}
-      </Panel>
+      <TradingError error={plans.error} />
+      {plans.data ? <>
+        <Panel title="Evaluation plans">
+          <PlanTable label="Evaluation plans" plans={plans.data.plans.filter((p) => p.rules.phase !== "funded")} columns={[
+            ["Profit target", (p) => p.rules.profit_target ? formatMoney(p.rules.profit_target, 0) : "—", true],
+            ["Trailing drawdown", (p) => p.rules.max_drawdown ? formatMoney(p.rules.max_drawdown, 0) : "—", true],
+            ["Floor moves", (p) => p.rules.max_drawdown ? (p.rules.drawdown_mode === "intraday" ? "Every new high" : "At each close") : "—"],
+            ["Strategies", (p) => p.rules.buy_only ? "Buy only" : "Any"],
+            ["Expiry auto-close", (p) => p.rules.expiry_cutoff_seconds ? `${Math.round(p.rules.expiry_cutoff_seconds / 60)} min before` : "—"],
+          ]} lock={() => null} enabled={trading.enabled} onStart={setStart} />
+        </Panel>
+        <Panel title="Funded accounts">
+          <PlanTable label="Funded accounts" plans={plans.data.plans.filter((p) => p.rules.phase === "funded")} columns={[
+            ["Trailing drawdown", (p) => p.rules.max_drawdown
+              ? `${formatMoney(p.rules.max_drawdown, 0)} ${p.rules.drawdown_mode === "intraday" ? "intraday" : "at close"}` : "—"],
+            ["Floor locks at", (p) => p.rules.lock_balance ? formatMoney(p.rules.lock_balance, 0) : "—", true],
+            ["Strategies", (p) => p.rules.buy_only ? "Buy only" : "Any"],
+            ["Payout after", (p) => p.rules.payouts ? `${p.rules.payouts.qualifying_days} days of ${formatMoney(p.rules.payouts.qualifying_profit, 0)}+` : "—"],
+            ["Your share", (p) => p.rules.payouts ? `${p.rules.payouts.split_percent}%` : "—"],
+          ]} lock={(p) => lockReason(p, plans.data.plans, data)} enabled={trading.enabled} onStart={setStart} />
+        </Panel>
+      </> : !plans.error && <p className="text-sm text-muted">Loading plans…</p>}
       {start && <ResetDialog trading={trading} attempt={data.evaluation.attempt} initial={start} onClose={() => setStart(null)} />}
+    </div>
+  )
+}
+
+function PlanTable({ label, plans, columns, lock, enabled, onStart }: {
+  /** Header, cell and whether the column holds figures. */
+  label: string; plans: Plan[]; columns: [string, (plan: Plan) => ReactNode, boolean?][]
+  lock: (plan: Plan) => string | null; enabled: boolean; onStart: (id: string) => void
+}) {
+  return (
+    <div className="max-w-full overflow-x-auto" tabIndex={0} role="region" aria-label={label}>
+      <table className="w-full text-left text-xs whitespace-nowrap">
+        <thead className="text-[11px] uppercase tracking-wide text-muted"><tr>
+          {["Plan", "Starting balance", ...columns.map(([header]) => header), ""].map((h) => <th key={h} className="px-2 py-2 font-normal">{h}</th>)}
+        </tr></thead>
+        <tbody>{plans.map((p) => {
+          const locked = lock(p)
+          return <tr key={p.id} className="border-t border-border/40">
+            <td className="px-2 py-2"><div className="font-medium">{p.name}</div><div className="max-w-64 truncate text-[11px] text-muted" title={p.summary}>{p.summary}</div></td>
+            <td className="px-2 py-2 tabular">{formatMoney(p.initial_cash, 0)}</td>
+            {columns.map(([header, cell, numeric]) => <td key={header} className={`px-2 py-2 ${numeric ? "tabular" : ""}`}>{cell(p)}</td>)}
+            <td className="px-2 py-2 text-right"><button type="button" className="trade-button" title={locked ?? undefined}
+              disabled={!enabled || locked != null} onClick={() => onStart(p.id)}>{locked ? "Locked" : "Start"}</button></td>
+          </tr>
+        })}</tbody>
+      </table>
     </div>
   )
 }

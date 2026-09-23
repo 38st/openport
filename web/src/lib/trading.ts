@@ -50,6 +50,27 @@ export function subtractMoney(a: Money | null | undefined, b: Money | null | und
   const scale = Math.max(x.scale, y.scale)
   return decimalString(x.units * 10n ** BigInt(scale - x.scale) - y.units * 10n ** BigInt(scale - y.scale), scale)
 }
+/** Exact sign of a - b: -1, 0 or 1; null when either is not a decimal. */
+export function compareMoney(a: Money | null | undefined, b: Money | null | undefined): -1 | 0 | 1 | null {
+  const difference = decimal(subtractMoney(a, b))
+  return difference == null ? null : difference.units < 0n ? -1 : difference.units > 0n ? 1 : 0
+}
+/** Exact whole-number percentage of an amount, e.g. a payout split. */
+export function percentOfMoney(value: Money | null | undefined, percent: number): Money | null {
+  const parsed = decimal(value)
+  return parsed && Number.isSafeInteger(percent) ? decimalString(parsed.units * BigInt(percent), parsed.scale + 2) : null
+}
+/** Exact sum of decimal strings; invalid values are skipped. */
+export function sumMoney(values: Money[]): Money {
+  let units = 0n, scale = 2
+  for (const value of values) {
+    const parsed = decimal(value)
+    if (!parsed) continue
+    if (parsed.scale > scale) { units *= 10n ** BigInt(parsed.scale - scale); scale = parsed.scale }
+    units += parsed.units * 10n ** BigInt(scale - parsed.scale)
+  }
+  return decimalString(units, scale)
+}
 export const sideFromCell = (cell: "bid" | "ask"): Side => cell === "bid" ? "sell" : "buy"
 
 /** Preserve typed off-tick precision for server validation; pad cents for display. */

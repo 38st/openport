@@ -68,6 +68,7 @@ export const api = {
     get<TradesResponse>(`/api/trades?status=${status}&attempt=${attempt}`, signal),
   plans: (signal?: AbortSignal) => get<PlansResponse>("/api/plans", signal),
   resetAccount: (request: ResetRequest, mode: WriteMode) => write<Account>("/api/account/reset", "POST", mode, request),
+  requestPayout: (amount: Money, mode: WriteMode) => write<Account>("/api/account/payout", "POST", mode, { amount }),
   status: (signal?: AbortSignal) => get<Status>("/api/status", signal),
   summary: (symbol: string, signal?: AbortSignal) => get<Summary>(`${underlying(symbol)}/summary`, signal),
   chain: (symbol: string, expiry: string, window: number, signal?: AbortSignal) =>

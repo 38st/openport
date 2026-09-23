@@ -106,6 +106,7 @@ TEST(TradingEvaluation, JournalsCreatedAtTimeZeroStartAtTheFirstMarketTime) {
   EXPECT_EQ(s.snapshot()->evaluation.started, 0);
   f.seed(s);
   EXPECT_EQ(s.snapshot()->evaluation.started, f.time);
+  EXPECT_EQ(s.snapshot()->evaluation.cycle_started, f.time);
   ASSERT_TRUE(s.roll_day(f.time).decision.ok());
   const auto e = s.snapshot()->evaluation;
   EXPECT_TRUE(e.days.empty());  // 1969-12-31 was a placeholder, not a trading day

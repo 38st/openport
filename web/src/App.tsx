@@ -12,6 +12,7 @@ import { DashboardView } from "./views/DashboardView"
 import { EngineView } from "./views/EngineView"
 import { JournalView } from "./views/JournalView"
 import { OrdersView } from "./views/OrdersView"
+import { PayoutsView } from "./views/PayoutsView"
 import { PositionsView } from "./views/PositionsView"
 import { RulesView } from "./views/RulesView"
 import { TradeView } from "./views/TradeView"
@@ -30,7 +31,7 @@ export function App() {
 
   useEffect(() => { document.title = `${viewLabels[view]} · OpenPort` }, [view])
 
-  // 1-6 switch pages; left/right step through expiries on the chain.
+  // 1-7 switch pages; left/right step through expiries on the chain.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null
@@ -64,6 +65,7 @@ export function App() {
     : view === "orders" ? <OrdersView />
     : view === "journal" ? <JournalView />
     : view === "rules" ? <RulesView />
+    : view === "payouts" ? <PayoutsView />
     : view === "engine" ? <EngineView />
     : !symbol ? (
       <Empty>

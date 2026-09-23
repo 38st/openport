@@ -57,6 +57,10 @@ void Ledger::settle(const std::string& symbol, Money intrinsic) {
   positions_.erase(it);
   account_ = next;
 }
+void Ledger::withdraw(Money amount) {
+  if (amount <= Money{}) throw TradingError(Reason::INVALID_PAYOUT, "Withdrawal must be positive");
+  account_.cash = account_.cash - amount;
+}
 Ledger Ledger::restore(Account account, std::map<std::string, Position> positions) {
   for (const auto& [symbol, p] : positions) {
     if (!eligible(p.contract).ok() || p.contract.osi_symbol() != symbol || p.quantity == 0 ||

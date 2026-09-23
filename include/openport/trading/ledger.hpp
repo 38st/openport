@@ -28,6 +28,8 @@ class Ledger {
   void fill(const md::OptionContract& contract, Quantity signed_quantity, Money price, Money fee);
   /// Settlement is accounting, never subject to order risk limits. No fee.
   void settle(const std::string& symbol, Money intrinsic);
+  /// Cash leaves the account (a payout); realised P&L is unchanged.
+  void withdraw(Money amount);
   /// Validated journal outcomes only; public for independent outcome consumers.
   static Ledger restore(Account account, std::map<std::string, Position> positions);
  private:

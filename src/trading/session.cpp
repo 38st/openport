@@ -216,8 +216,19 @@ std::optional<Money> marked_equity(const TradingSnapshot& snapshot) {
   for (const auto& p : snapshot.positions) if (!p.market_value) return std::nullopt;
   return snapshot.equity;
 }
-Money floor_for(const AccountRules& rules, Money peak) {
-  return rules.max_drawdown > Money{} ? peak - rules.max_drawdown : Money{};
+/// The trailing floor, peak - max drawdown. With a lock balance it stops once
+/// it reaches that level and stays there (`locked` latches).
+Money floor_for(const AccountRules& rules, Money peak, bool& locked) {
+  if (rules.max_drawdown <= Money{}) return {};
+  if (rules.lock_balance > Money{} && (locked || peak - rules.max_drawdown >= rules.lock_balance)) {
+    locked = true;
+    return rules.lock_balance;
+  }
+  return peak - rules.max_drawdown;
+}
+Money net_realised(const State& s) { return s.ledger.account().realised - s.ledger.account().fees; }
+Money whole_cents(Money value) {
+  return value > Money{} ? Money::from_micros(value.micros() / 10'000 * 10'000) : Money{};
 }
 std::string dollars(Money value) { return (value < Money{} ? "-$" + (-value).str() : "$" + value.str()); }
 Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
@@ -226,7 +237,9 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.started = s.time;
   e.starting_balance = s.ledger.account().cash;
   e.peak = e.starting_balance;
-  e.floor = floor_for(s.config.rules, e.peak);
+  e.floor = floor_for(s.config.rules, e.peak, e.floor_locked);
+  e.day_open_realised = net_realised(s);
+  e.cycle_started = s.time;
   e.first_order = static_cast<OrderId>(s.orders.size() + 1);
   e.first_fill = s.fills.size() + 1;
   e.day = s.day;
@@ -583,12 +596,14 @@ void monitor_rules(State& s, Events& events) {
   // A journal created before any market data starts at time zero; the attempt
   // begins at the first real market time instead.
   if (e.started == 0 && s.time > 0) e.started = s.time;
+  // Likewise the first payout cycle; journals from before payouts start it here too.
+  if (e.cycle_started == 0) e.cycle_started = e.started;
   if (const auto equity = marked_equity(snapshot_of(s))) {
     if (local_date(s.time) == e.day) e.day_close_equity = *equity;
     if (rules.evaluation() && e.status == EvaluationStatus::Active) {
       if (rules.drawdown_mode == DrawdownMode::Intraday && *equity > e.peak) {
         e.peak = *equity;
-        e.floor = floor_for(rules, e.peak);
+        e.floor = floor_for(rules, e.peak, e.floor_locked);
       }
       const auto target = e.starting_balance + rules.profit_target;
       if (rules.max_drawdown > Money{} && *equity <= e.floor) {
@@ -622,6 +637,40 @@ void require_reason(const std::string& reason) {
     throw TradingError(Reason::INVALID_REASON, "An explicit nonblank reason is required");
 }
 }  // namespace
+
+PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
+  const auto& p = rules.payouts;
+  const auto& e = s.evaluation;
+  PayoutQuote q;
+  q.number = e.payouts.size() + 1;
+  q.funded = rules.phase == Phase::Funded && p.qualifying_days > 0;
+  q.active = e.status == EvaluationStatus::Active;
+  q.flat = s.positions.empty() && s.open_orders.empty();
+  q.qualifying_days = e.qualifying_days;
+  q.required_days = p.qualifying_days;
+  q.profit = s.equity - e.starting_balance;
+  q.withdrawable = whole_cents(q.profit > Money{} ? q.profit.prorate(p.withdrawal_percent, 100) : Money{});
+  if (!p.caps.empty()) q.cap = p.caps.at(std::min<std::size_t>(q.number, p.caps.size()) - 1);
+  q.maximum = q.cap ? std::min(q.withdrawable, *q.cap) : q.withdrawable;
+  // Touching the floor fails the account; an unlocked floor moves down with the
+  // withdrawal, a locked one does not.
+  if (rules.max_drawdown > Money{} && e.floor_locked)
+    q.maximum = std::min(q.maximum, whole_cents(s.equity - e.floor - Money::from_micros(10'000)));
+  q.minimum = p.minimum;
+  q.trader_share = q.maximum.prorate(p.split_percent, 100);
+  auto block = [&](Reason code, std::string message, std::optional<double> actual = {}, std::optional<double> limit = {}) {
+    if (q.blocked.ok()) q.blocked = {code, std::move(message), actual, limit, "aggregate"};
+  };
+  if (!q.funded) block(Reason::PAYOUT_UNAVAILABLE, "Payouts are available on funded accounts");
+  if (!q.active) block(Reason::PAYOUT_UNAVAILABLE, "The funded account is closed");
+  if (!q.flat) block(Reason::PAYOUT_NOT_ELIGIBLE, "Close every position and working order before requesting a payout");
+  if (static_cast<std::int64_t>(q.qualifying_days) < q.required_days)
+    block(Reason::PAYOUT_NOT_ELIGIBLE, "Not enough qualifying days in this payout cycle",
+          static_cast<double>(q.qualifying_days), static_cast<double>(q.required_days));
+  if (q.maximum <= Money{} || q.maximum < q.minimum)
+    block(Reason::PAYOUT_NOT_ELIGIBLE, "The payout available is below the minimum", q.maximum.dollars(), q.minimum.dollars());
+  return q;
+}
 
 struct TradingSession::Impl {
   State state;
@@ -867,19 +916,59 @@ CommandResult TradingSession::roll_day(Timestamp time) {
     if (rules.evaluation() && e.status == EvaluationStatus::Active &&
         rules.drawdown_mode == DrawdownMode::EndOfDay && e.day_close_equity > e.peak) {
       e.peak = e.day_close_equity;
-      e.floor = floor_for(rules, e.peak);
+      e.floor = floor_for(rules, e.peak, e.floor_locked);
     }
     // A placeholder date from before the attempt started is not a trading day.
+    // On a funded account, a day with enough net realised profit counts once,
+    // toward the payout cycle in progress when it closes.
     if (e.started > 0 && e.day >= local_date(e.started)) {
-      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor});
+      const auto realised = net_realised(s) - e.day_open_realised;
+      const auto& payouts = rules.payouts;
+      const bool qualifying = rules.phase == Phase::Funded && e.status == EvaluationStatus::Active &&
+          payouts.qualifying_days > 0 && realised >= payouts.qualifying_profit && realised > Money{};
+      if (qualifying) ++e.qualifying_days;
+      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying});
       event(events, "evaluation_day", e.days.back());
     }
+    e.day_open_realised = net_realised(s);
     e.day = day;
     e.day_open_equity = snapshot.equity;
     e.day_close_equity = snapshot.equity;
     s.start_equity = snapshot.equity;
     s.day = day;
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
+  if (amount <= Money{} || amount.micros() % 10'000 != 0)
+    throw TradingError(Reason::INVALID_PAYOUT, "Payout amount must be a positive whole number of cents");
+  return impl_->transact(time, "payout", [&](State& s, Events& events) {
+    const auto& rules = s.config.rules;
+    auto& e = s.evaluation;
+    const auto snapshot = snapshot_of(s);
+    const auto quote = payout_quote(snapshot, rules);
+    auto reject = [&](std::string message, Money limit) {
+      return CommandResult{{Reason::INVALID_PAYOUT, std::move(message), amount.dollars(), limit.dollars(), "aggregate"}, {}, 0};
+    };
+    if (!quote.blocked.ok()) return CommandResult{quote.blocked, {}, 0};
+    if (amount < quote.minimum) return reject("Below the minimum payout", quote.minimum);
+    if (amount > quote.maximum) return reject("Above the maximum for this payout", quote.maximum);
+    const Money equity = snapshot.equity;  // Flat, so this is cash.
+    s.ledger.withdraw(amount);
+    // The trading day in progress takes the withdrawal, even after its date
+    // ends and before rollover, so its P&L and an end-of-day ratchet ignore it.
+    s.start_equity = s.start_equity - amount;
+    e.day_open_equity = e.day_open_equity - amount;
+    e.day_close_equity = e.day_close_equity - amount;
+    if (!e.floor_locked) {
+      e.peak = e.peak - amount;
+      e.floor = floor_for(rules, e.peak, e.floor_locked);
+    }
+    e.payouts.push_back({quote.number, s.time, e.day, amount, amount.prorate(rules.payouts.split_percent, 100), equity});
+    e.qualifying_days = 0;
+    e.cycle_started = s.time;
+    event(events, "payout", e.payouts.back());
     return CommandResult{};
   });
 }
@@ -966,6 +1055,8 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
       e.day = s.day;
       e.day_open_equity = s.start_equity;
       e.day_close_equity = impl->snapshot->equity;
+      e.day_open_realised = net_realised(s);  // Unknown for the day in progress; count from here.
+      e.cycle_started = e.started;
       s.evaluation = std::move(e);
       auto snapshot = std::make_shared<TradingSnapshot>(*impl->snapshot);
       snapshot->evaluation = s.evaluation;

@@ -17,17 +17,76 @@ export interface TradingStatus {
   /** Null without a target or drawdown rule. */
   evaluation?: EvaluationStatus | null
 }
+/** Funded-account withdrawals: a payout needs `qualifying_days` days of at least
+ * `qualifying_profit` net realised profit since the last one. */
+export interface PayoutRules {
+  qualifying_profit: Money
+  qualifying_days: number
+  /** Share of profit one payout may take. */
+  withdrawal_percent: number
+  /** Trader's share of each payout. */
+  split_percent: number
+  minimum: Money
+  /** Per payout number; the last repeats; empty is uncapped. */
+  caps: Money[]
+}
 export interface AccountRules {
   plan: string | null
+  phase: "evaluation" | "funded"
   profit_target: Money | null
   max_drawdown: Money | null
   drawdown_mode: "intraday" | "end_of_day"
+  /** The trailing floor stops once it reaches this balance. */
+  lock_balance: Money | null
   buy_only: boolean
   buying_power: boolean
   expiry_cutoff_seconds: number
+  payouts: PayoutRules | null
 }
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money }
-export interface EvaluationDay { day: string; open_equity: Money; close_equity: Money; peak: Money; floor: Money | null }
+export interface EvaluationDay {
+  day: string
+  open_equity: Money
+  close_equity: Money
+  peak: Money
+  floor: Money | null
+  /** Net realised P&L of the day, after fees. */
+  realised: Money
+  /** Funded accounts: the day counted toward a payout. */
+  qualifying: boolean
+}
+export interface Payout {
+  number: number
+  time: string
+  /** Trading day in progress when requested; it and later days count toward the next payout. */
+  day: string
+  amount: Money
+  trader_share: Money
+  /** Equity when requested, before the withdrawal. */
+  balance: Money
+}
+/** A funded account's standing for its next payout. */
+export interface PayoutStatus {
+  eligible: boolean
+  /** The first unmet requirement. */
+  blocked: { code: string; message: string; actual: number | null; limit: number | null } | null
+  number: number
+  active: boolean
+  /** No positions and no working or armed orders. */
+  flat: boolean
+  qualifying_days: number
+  required_days: number
+  qualifying_profit: Money
+  profit: Money
+  withdrawable: Money
+  cap: Money | null
+  /** Largest amount accepted now. */
+  maximum: Money
+  minimum: Money
+  trader_share: Money
+  withdrawal_percent: number
+  split_percent: number
+}
 export interface Evaluation {
   enabled: boolean
   attempt: number
@@ -51,6 +110,11 @@ export interface Evaluation {
   day_open_equity: Money
   day_close_equity: Money
   days: EvaluationDay[]
+  floor_locked: boolean
+  /** Days closed since the last payout (or the start) that qualified. */
+  qualifying_days: number
+  cycle_started: string
+  payouts: Payout[]
 }
 export interface AttemptSummary {
   attempt: number
@@ -68,6 +132,8 @@ export interface Account {
   rules: AccountRules
   evaluation: Evaluation
   buying_power: BuyingPower
+  /** Null outside the funded phase. */
+  payout: PayoutStatus | null
   attempts: AttemptSummary[]
 }
 export interface Trade {
@@ -102,7 +168,15 @@ export interface Trade {
   fills: string[]
 }
 export interface TradesResponse { account_version: string; attempt: number; trades: Trade[] }
-export interface Plan { id: string; name: string; summary: string; initial_cash: Money; rules: AccountRules }
+export interface Plan {
+  id: string
+  name: string
+  summary: string
+  initial_cash: Money
+  rules: AccountRules
+  /** Funded plans: the evaluation plan ID whose pass unlocks them. */
+  unlocked_by: string | null
+}
 export interface PlansResponse { plans: Plan[] }
 export type ResetRequest = { reason: string } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export type Side = "buy" | "sell"

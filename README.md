@@ -30,14 +30,17 @@ and your data stay on your machine.
   style rules: a profit target and a trailing drawdown floor (intraday or end of day)
   decide pass or fail, with buy-only and buying-power plans and auto-close before
   expiry. Orders can wait for the underlying to cross a level, and brackets attach a
-  stop-loss and take-profit (on the option or the underlying) that cancel each other. The Dashboard charts equity against the target and floor; Trade docks an order
-  ticket beside the chain; Positions adds Greeks, limits, a spot × vol scenario grid and a
+  stop-loss and take-profit (on the option or the underlying) that cancel each other.
+  Passing an evaluation unlocks a funded account of the same size: no target, a floor
+  that locks at the starting balance, and payouts after enough qualifying days. The
+  Dashboard charts equity against the target and floor; Trade docks an order ticket
+  beside the chain; Positions adds Greeks, limits, a spot × vol scenario grid and a
   kill switch; Orders, a Journal (P&L calendar, win rate, profit factor, reports by hold
-  time, weekday and month) and Rules complete the account.
+  time, weekday and month), Rules and Payouts complete the account.
 - **Record and replay**: save any provider's feed to a file and play it back later with
   its original market times, for demos at night and reproducible bug reports.
 - **Engine**: feed health per underlying, trading session, queue and analytics timing.
-- Light and dark themes, keyboard shortcuts (1-6 switch pages, arrows step expiries).
+- Light and dark themes, keyboard shortcuts (1-7 switch pages, arrows step expiries).
 
 ## Paper trading
 
@@ -61,6 +64,14 @@ high) or `eod-25k|50k|100k` (any strategy, 12% target, 6% drawdown trailing each
 Touching the floor fails the attempt and closes every position; reaching the target
 passes it. Start a new attempt with any plan from the Dashboard or Rules page; history
 is kept across attempts.
+
+A pass unlocks the matching `funded-*` plan: the same size, drawdown and strategy rules
+without a target, with the floor locking once it reaches the starting balance. A funded
+account pays out from the Payouts page after 8 qualifying days ($100, $150 or $200 of
+net realised profit for 25K, 50K or 100K) with no open positions or orders: up to half
+the profit per payout, at least 1% of the balance and at most 2%, 3%, 4% and then 6%
+for payouts 1 to 4+, of which the trader keeps 80%. These terms are this project's own,
+modelled on common prop-firm rules.
 
 Loopback writes are open unless a token is configured. To enable writes on a
 remote bind, set `OPENPORT_WRITE_TOKEN` or `--write-token TOKEN` and send it as a
@@ -226,6 +237,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Record and replay of any provider's feed
 - [x] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets, trade journal
+- [x] Funded accounts: locking drawdown floors, qualifying days and payouts
 - [x] Paper trading for American equity and ETF options (cash settlement at intrinsic)
 - [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session

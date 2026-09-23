@@ -137,6 +137,22 @@ export function PageHeader({ title, subtitle, children }: { title: ReactNode; su
   )
 }
 
+/** A checklist row: a ticked or open circle, a label and an optional value. */
+export function Check({ ok, label, value, tone = "neutral" }: { ok: boolean; label: ReactNode; value?: ReactNode; tone?: Tone }) {
+  return (
+    <li className="flex items-center justify-between gap-3">
+      <span className="flex min-w-0 items-center gap-2">
+        <svg viewBox="0 0 16 16" className={`h-3.5 w-3.5 shrink-0 ${ok ? "text-bullish" : "text-faint"}`} fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.5" />{ok && <path d="m5 8 2 2 4-4" />}
+        </svg>
+        <span className="min-w-0 text-muted">{label}</span>
+        <span className="sr-only">{ok ? "(met)" : "(not met)"}</span>
+      </span>
+      {value != null && <span className={`shrink-0 tabular ${toneText[tone]}`}>{value}</span>}
+    </li>
+  )
+}
+
 /** Headline figure with a label, an optional coloured detail line and a meter. */
 export function Tile({ label, value, detail, tone = "neutral", meter, hint }: {
   label: string; value: ReactNode; detail?: ReactNode; tone?: Tone; hint?: string

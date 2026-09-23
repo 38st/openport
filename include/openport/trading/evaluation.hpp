@@ -17,6 +17,19 @@ struct EvaluationDay {
   Money close_equity;  ///< Last fully marked equity observed on that date.
   Money peak;          ///< High-water mark after that day's ratchet.
   Money floor;         ///< Drawdown floor after that day's ratchet; zero without a rule.
+  Money realised;      ///< Net realised P&L of the day (after fees).
+  bool qualifying = false;  ///< Funded accounts: the day counted toward a payout.
+};
+
+/// A funded-account withdrawal. The account pays out `amount`; the trader keeps
+/// `trader_share` of it.
+struct Payout {
+  std::uint64_t number = 0;
+  Timestamp time = 0;
+  md::Date day;   ///< Trading day in progress when requested; it and later days count toward the next payout.
+  Money amount;
+  Money trader_share;
+  Money balance;  ///< Equity when requested, before the withdrawal.
 };
 
 /// Rule progress for the current attempt. Only fully marked equity (every
@@ -37,6 +50,11 @@ struct Evaluation {
   Money day_open_equity;
   Money day_close_equity;         ///< Latest fully marked equity observed on `day`.
   std::vector<EvaluationDay> days;  ///< Finished days of this attempt, oldest first.
+  bool floor_locked = false;      ///< The floor reached the lock balance and stopped trailing.
+  Money day_open_realised;        ///< Net realised P&L when `day` began.
+  std::uint64_t qualifying_days = 0;  ///< Days closed since the last payout (or the start) that qualified.
+  Timestamp cycle_started = 0;
+  std::vector<Payout> payouts;
 };
 
 /// An earlier attempt, summarised when the account is reset.

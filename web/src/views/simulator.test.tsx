@@ -75,7 +75,7 @@ describe("simulator pages", () => {
     expect(texts[4]).toContain("5 minutes before expiry")
     expect(texts[7]).toContain("$5,000.00")
     const html = render(<RulesView />)
-    for (const text of ["Rules", "Profit target", "Trailing drawdown", "Plans", "Intraday 100K", "Every new high", "Buy only", "5 min before", "Start"])
+    for (const text of ["Rules", "Profit target", "Trailing drawdown", "Evaluation plans", "Intraday 100K", "Every new high", "Buy only", "5 min before", "Start"])
       expect(html).toContain(text)
   })
 })

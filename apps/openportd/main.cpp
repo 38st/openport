@@ -67,8 +67,9 @@ int usage(const char* error = nullptr) {
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN]\n\n"
       "paper: durable European index paper trading; cash 100000, fee 0.65\n"
-      "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k);\n"
-      "      default practice; --paper-cash then overrides its starting balance\n"
+      "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
+      "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
+      "      --paper-cash then overrides its starting balance\n"
       "write token: --write-token overrides OPENPORT_WRITE_TOKEN; required for remote writes\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
@@ -149,7 +150,7 @@ int run(int argc, char** argv) {
       settings.paper_journal = value;
     } else if (arg == "--plan") {
       const auto* plan = server::find_plan(value);
-      if (!plan) return usage("--plan must be practice, intraday-25k|50k|100k or eod-25k|50k|100k");
+      if (!plan) return usage("--plan must be practice or an evaluation or funded plan ID (see --help)");
       settings.plan = plan;
     } else if (arg == "--paper-cash") {
       settings.paper_cash = trading::Money::parse(value);

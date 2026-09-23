@@ -9,7 +9,7 @@ import { Badge, Meter, toneOf, toneText } from "./ui"
 
 export const viewLabels: Record<View, string> = {
   dashboard: "Dashboard", chain: "Trade", positions: "Positions", orders: "Orders", journal: "Journal",
-  rules: "Rules", smile: "Volatility", exposure: "Exposure", engine: "Status",
+  rules: "Rules", payouts: "Payouts", smile: "Volatility", exposure: "Exposure", engine: "Status",
 }
 
 const icons: Partial<Record<View, ReactNode>> = {
@@ -19,16 +19,18 @@ const icons: Partial<Record<View, ReactNode>> = {
   orders: <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />,
   journal: <path d="M4 5h16v15H4zM4 10h16M9 3v4m6-4v4" />,
   rules: <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Zm-3 9 2 2 4-4" />,
+  payouts: <path d="M3 7h18v11H3zM3 11h18M7 15h4m6 0h.01M6 7l9-3 1 3" />,
   engine: <path d="M3 12h4l3-8 4 16 3-8h4" />,
 }
 function Icon({ view }: { view: View }) {
   return <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icons[view]}</svg>
 }
 
-export function evaluationBadge(account: Pick<Account, "evaluation"> | undefined, plan?: string | null) {
+export function evaluationBadge(account: Pick<Account, "evaluation" | "rules"> | undefined, plan?: string | null) {
   if (!account) return null
   const { evaluation } = account
   if (!evaluation.enabled) return <Badge tone="neutral">{plan ? "Practice" : "Paper"}</Badge>
+  if (account.rules.phase === "funded" && evaluation.status === "active") return <Badge tone="positive">funded</Badge>
   const tone = evaluation.status === "passed" ? "positive" : evaluation.status === "failed" ? "negative" : "accent"
   return <Badge tone={tone}>{evaluation.status}</Badge>
 }
@@ -44,6 +46,7 @@ export function AccountSummary() {
   const target = e.target_equity != null ? ratio(e.profit, subtractMoney(e.target_equity, e.starting_balance)) : null
   const buffer = e.floor != null && e.drawdown_buffer != null
     ? ratio(e.drawdown_buffer, subtractMoney(e.peak, e.floor)) : null
+  const payout = account.payout
   const rows: [string, string | null | undefined, boolean?][] = [
     ["Buying power", account.buying_power.available],
     ["Unrealized", portfolio?.unrealised, true],
@@ -77,6 +80,10 @@ export function AccountSummary() {
           {target != null && <div>
             <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-muted"><span>Target</span><span className="tabular">{Math.max(0, target * 100).toFixed(0)}%</span></div>
             <Meter value={target} tone="positive" label="Progress to profit target" />
+          </div>}
+          {payout && <div>
+            <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-muted"><span>Payout days</span><span className="tabular">{payout.qualifying_days} / {payout.required_days}</span></div>
+            <Meter value={payout.qualifying_days / payout.required_days} tone="positive" label="Qualifying days toward the next payout" />
           </div>}
           {buffer != null && <div>
             <div className="mb-1 flex justify-between text-[10px] uppercase tracking-wide text-muted"><span>Floor buffer</span><span className="tabular">{formatMoney(e.drawdown_buffer)}</span></div>

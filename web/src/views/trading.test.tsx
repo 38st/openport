@@ -214,11 +214,12 @@ describe("paper trading fixtures", () => {
     expect(html).not.toContain("at bid")
   })
   it("routes the simulator pages, keeps old Portfolio links and numbers the sidebar", () => {
-    expect(primaryViews).toEqual(["dashboard", "chain", "positions", "orders", "journal", "rules"])
+    expect(primaryViews).toEqual(["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts"])
     expect(parseRoute("#/SPX/portfolio").view).toBe("positions")
     expect(formatRoute({ view: "positions", symbol: "SPX", expiry: null })).toBe("#/SPX/positions")
     const sidebar = render(<Sidebar view="positions" onView={() => {}} open={false} onClose={() => {}} />)
     expect(sidebar).toContain('title="Positions (3)"')
+    expect(sidebar).toContain('title="Payouts (7)"')
     expect(sidebar).toContain('aria-current="page"')
     for (const text of ["Intraday 100K", ">active<", "$100,267.50", "+$267.50", "(+0.27%)", "$99,078.70", "Progress to profit target"]) expect(sidebar).toContain(text)
   })

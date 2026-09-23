@@ -39,6 +39,27 @@ struct TradingSnapshot {
   std::vector<Closure> closures;     ///< Settlements and resets, in sequence.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
 };
+/// A funded account's standing for its next payout: an active, flat account
+/// with the required qualifying days since the last payout. `blocked` is the
+/// first unmet requirement; when it is NONE, any whole-cent amount from
+/// `minimum` to `maximum` is accepted.
+struct PayoutQuote {
+  Decision blocked;
+  std::uint64_t number = 1;      ///< The next payout's number.
+  bool funded = false;           ///< Funded phase with payout rules.
+  bool active = false;
+  bool flat = false;             ///< No positions and no working or armed orders.
+  std::uint64_t qualifying_days = 0;
+  std::int64_t required_days = 0;
+  Money profit;                  ///< Equity less the starting balance.
+  Money withdrawable;            ///< withdrawal_percent of positive profit, whole cents.
+  std::optional<Money> cap;      ///< This payout number's cap.
+  Money maximum;                 ///< min(withdrawable, cap), leaving equity above a locked floor.
+  Money minimum;
+  Money trader_share;            ///< split_percent of the maximum.
+};
+[[nodiscard]] PayoutQuote payout_quote(const TradingSnapshot& snapshot, const AccountRules& rules);
+
 struct CommandResult {
   Decision decision;
   std::optional<OrderId> order_id;
@@ -83,6 +104,10 @@ class TradingSession {
   /// mark as Reset closures (no fills, no fees), restore cash, clear the kill
   /// latch and apply the given rules. Order and fill history is kept.
   CommandResult reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time);
+  /// Withdraw a whole-cent amount from a funded account under its payout rules
+  /// (see payout_quote). The withdrawal is not a loss: the day's baseline and
+  /// an unlocked trailing peak move down with it. Resets the qualifying days.
+  CommandResult request_payout(Money amount, Timestamp time);
   [[nodiscard]] std::shared_ptr<const TradingSnapshot> snapshot() const;
 
   /// Read-only integration context, owned by the reducer. The engine copies it

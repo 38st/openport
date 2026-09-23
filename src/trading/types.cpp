@@ -19,6 +19,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(INVALID_SCENARIO); CASE(INVALID_REASON); CASE(JOURNAL_IO); CASE(JOURNAL_CORRUPT); CASE(JOURNAL_LOCKED);
     CASE(EVALUATION_CLOSED); CASE(BUYING_POWER); CASE(BUY_ONLY); CASE(EXPIRY_CUTOFF);
     CASE(ACCOUNT_RESET); CASE(INVALID_RULES); CASE(OCO_FILLED); CASE(POSITION_CLOSED);
+    CASE(PAYOUT_UNAVAILABLE); CASE(PAYOUT_NOT_ELIGIBLE); CASE(INVALID_PAYOUT); CASE(PLAN_LOCKED);
   }
 #undef CASE
   return "UNKNOWN";
@@ -80,10 +81,18 @@ void validate_limits(const Limits& l) {
   if (!valid) throw TradingError(Reason::INVALID_LIMITS, "Limits must be finite and nonnegative; order size must be positive");
 }
 void validate_rules(const AccountRules& r) {
+  const auto& p = r.payouts;
+  const bool payouts_ok = p.qualifying_profit >= Money{} && p.qualifying_days >= 0 && p.qualifying_days <= 366 &&
+      p.withdrawal_percent >= 0 && p.withdrawal_percent <= 100 && p.split_percent >= 0 && p.split_percent <= 100 &&
+      p.minimum >= Money{} && p.caps.size() <= 64 &&
+      std::all_of(p.caps.begin(), p.caps.end(), [](Money cap) { return cap > Money{}; });
   if (r.profit_target < Money{} || r.max_drawdown < Money{} || r.expiry_cutoff < 0 ||
-      r.expiry_cutoff >= md::kNanosPerDay || r.plan.size() > 64 ||
-      (r.drawdown_mode != DrawdownMode::Intraday && r.drawdown_mode != DrawdownMode::EndOfDay))
+      r.expiry_cutoff >= md::kNanosPerDay || r.plan.size() > 64 || r.lock_balance < Money{} || !payouts_ok ||
+      (r.drawdown_mode != DrawdownMode::Intraday && r.drawdown_mode != DrawdownMode::EndOfDay) ||
+      (r.phase != Phase::Evaluation && r.phase != Phase::Funded) ||
+      (r.phase == Phase::Funded && (r.profit_target > Money{} || p.qualifying_days < 1)))
     throw TradingError(Reason::INVALID_RULES,
-        "Target and drawdown must be nonnegative, the expiry cutoff under one day, the plan name at most 64 bytes");
+        "Rule amounts must be nonnegative, percentages 0-100, caps positive, the expiry cutoff under one day and the plan name "
+        "at most 64 bytes; a funded phase has no profit target and at least one qualifying day");
 }
 }  // namespace openport::trading

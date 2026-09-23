@@ -1,13 +1,13 @@
 import { useCallback, useSyncExternalStore } from "react"
 
-export const views = ["dashboard", "chain", "positions", "orders", "journal", "rules", "smile", "exposure", "engine"] as const
+export const views = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts", "smile", "exposure", "engine"] as const
 export type View = (typeof views)[number]
-/** Sidebar order; keys 1-6 switch between them. */
-export const primaryViews = ["dashboard", "chain", "positions", "orders", "journal", "rules"] as const satisfies readonly View[]
+/** Sidebar order; keys 1-7 switch between them. */
+export const primaryViews = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts"] as const satisfies readonly View[]
 /** Market analytics sit beside the chain as the Trade page's tabs. */
 export const tradeViews = ["chain", "smile", "exposure"] as const satisfies readonly View[]
 /** Pages that exist only with a paper-trading server. */
-export const accountViews: readonly View[] = ["dashboard", "positions", "orders", "journal", "rules"]
+export const accountViews: readonly View[] = ["dashboard", "positions", "orders", "journal", "rules", "payouts"]
 /** Links from before the simulator redesign keep working. */
 const aliases: Record<string, View> = { portfolio: "positions" }
 

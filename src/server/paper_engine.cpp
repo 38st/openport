@@ -346,8 +346,13 @@ void Engine::apply_command(PendingCommand& pending) {
           break;
         }
         case TradingCommand::Kind::ResetAccount:
-          result = trading_->reset_account(c.initial_cash, c.rules, c.reason, market_time_);
+          if (!c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed ||
+                                           trading_->config().rules.plan != c.required_pass))
+            result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + " evaluation to start this funded account",
+                               {}, {}, {}};
+          else result = trading_->reset_account(c.initial_cash, c.rules, c.reason, market_time_);
           break;
+        case TradingCommand::Kind::Payout: result = trading_->request_payout(c.amount, market_time_); break;
       }
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;

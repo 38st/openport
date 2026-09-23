@@ -15,8 +15,8 @@ and monotone. Delayed feeds must pass their delayed market time, not receipt tim
 | `ledger.hpp` | `Account`, `Position`, `Ledger::fill`, `settle`, `restore` |
 | `risk.hpp` | `portfolio_risk`, `check_exposure`, `scenario_grid`, risk buckets and scenario cells |
 | `journal.hpp` | `Journal`, `FileJournal::create/read/resume`, `verify_journal`, `JournalRecovery` |
-| `session.hpp` | `TradingSession`, `CommandResult`, immutable `TradingSnapshot` |
-| `evaluation.hpp` | `Evaluation`, `EvaluationDay`, `AttemptSummary`, `Closure`, `BuyingPower`, `naked_requirement` |
+| `session.hpp` | `TradingSession`, `CommandResult`, immutable `TradingSnapshot`, `PayoutQuote`, `payout_quote` |
+| `evaluation.hpp` | `Evaluation`, `EvaluationDay`, `Payout`, `AttemptSummary`, `Closure`, `BuyingPower`, `naked_requirement` |
 | `history.hpp` | `Lifecycle`, `lifecycles` (round trips rebuilt from fills and closures) |
 
 Typical ingress:
@@ -303,6 +303,9 @@ side, no buying-power check. All rule money is exact.
 | `buy_only` | A sell must close contracts already held, counting working sells on the same contract; otherwise `BUY_ONLY` |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
 | `expiry_cutoff` | From expiry − cutoff until expiry, working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
+| `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
+| `lock_balance` | Once peak − drawdown reaches it, the floor stays there and stops trailing (zero disables) |
+| `payouts` | Funded phase: qualifying days, withdrawal share, trader split, minimum and caps (see Funded accounts and payouts) |
 
 Outcomes use **fully marked equity**: every position has a mark, fresh or not. A
 position without any mark defers the decision rather than counting as zero. Every
@@ -342,7 +345,56 @@ attempt begins. Settlements are also recorded as closures.
 
 `Evaluation` carries the attempt number, start time, starting balance, peak, floor,
 status and decision, plus one `EvaluationDay` per finished New York date (open and
-close equity, peak and floor after that day's ratchet), appended at `roll_day`.
+close equity, peak and floor after that day's ratchet, net realised P&L after fees,
+and whether it qualified toward a payout), appended at `roll_day`.
+
+### Funded accounts and payouts
+
+A funded account is an attempt whose rules have `phase = Funded`: no profit target
+(`validate_rules` rejects one), the usual drawdown floor, and usually a `lock_balance`
+equal to the starting balance so the floor stops trailing there. Touching the floor
+fails the account like an evaluation; it stays closed until a reset. `PayoutRules`:
+
+| Field | Meaning |
+| --- | --- |
+| `qualifying_profit` | A finished day qualifies with at least this much net realised profit (realised P&L less fees, from rollover to rollover) |
+| `qualifying_days` | Qualifying days needed since the previous payout; at least 1 on a funded account |
+| `withdrawal_percent` | Share of profit above the starting balance one payout may take |
+| `split_percent` | The trader's share of each payout |
+| `minimum` | Smallest payout |
+| `caps` | Largest payout by payout number; the last cap repeats; empty is uncapped |
+
+Qualifying days need not be consecutive. Each finished day counts once, toward the
+cycle in progress when it rolls over; a payout resets the count, so the trading day of
+the request (`Payout::day`) and later days count toward the next payout.
+`payout_quote(snapshot, rules)` reports the standing: the next payout
+number, the qualifying days, profit, the withdrawable share (whole cents), the cap,
+the maximum and the trader's share at the maximum, and `blocked`, the first unmet
+requirement in this order: funded phase (`PAYOUT_UNAVAILABLE`), an active account
+(`PAYOUT_UNAVAILABLE`), no positions or open orders including armed ones
+(`PAYOUT_NOT_ELIGIBLE`), the qualifying days (`PAYOUT_NOT_ELIGIBLE` with actual and
+limit), and a maximum of at least the minimum (`PAYOUT_NOT_ELIGIBLE`). The maximum is
+`min(withdrawable, cap)`; with a locked floor it also leaves equity at least a cent
+above the floor.
+
+`request_payout(amount, time)` takes a positive whole-cent amount (otherwise it
+throws `INVALID_PAYOUT`), returns `blocked` when set, and rejects amounts outside
+`[minimum, maximum]` with `INVALID_PAYOUT`. It then withdraws the cash (realised P&L is
+unchanged) and records a `Payout` (number, time, trading day, amount, trader share,
+equity before the withdrawal). A withdrawal is not a loss: the daily-loss baseline, the
+open and close equity of the trading day in progress (even when requested after its
+date ends and before rollover) and an unlocked peak and floor all move down by the
+amount, so the day's P&L and the drawdown room are unchanged and an end-of-day ratchet
+compares closes net of it; a locked floor stays where it is.
+
+The server offers a funded preset for each evaluation preset (`funded-intraday-25k`
+and so on). A reset into one requires that the current attempt passed the evaluation
+it names, otherwise `PLAN_LOCKED`; `--plan` can start a new journal on one directly,
+and custom rules may set `phase` freely. Preset parameters are this project's own,
+modelled on common prop-firm terms: the evaluation's drawdown and strategy rules, the
+floor locking at the starting balance, 8 qualifying days of $100, $150 or $200 (25K,
+50K, 100K), up to 50% of profit per payout, 80% to the trader, a minimum of 1% of the
+balance and caps of 2%, 3%, 4% and then 6% of the balance for payouts 1, 2, 3 and 4+.
 
 `history.hpp`'s `lifecycles(fills, closures, contracts)` rebuilds round trips from flat
 to flat. Each replays its own fills through a fresh `Ledger`, so realised P&L uses the
@@ -419,10 +471,12 @@ Every record has exactly `seq`, `time`, `type`, `payload`, `prev_hash`, `hash`.
 Sequence starts at 1; the genesis previous hash is 64 ASCII zeroes. New payloads use
 schema 2 and tick policy `v2` (the `index-v1` table plus equity and ETF classes). Schema 2 adds `config.rules`, the evaluation,
 attempts and closures to the state and snapshot, and `system` to orders; it also
-records `evaluation_passed`, `evaluation_failed`, `evaluation_day` and `account_reset`
-outcomes. Recovery reads schema 1 journals: their original keys stay required, the
-added ones default, and the evaluation starts from the first record with the recorded
-starting cash. Resumed schema 1 journals continue with schema 2 records; an older build
+records `evaluation_passed`, `evaluation_failed`, `evaluation_day`, `account_reset`
+and `payout` outcomes. Later schema 2 fields (conditional and bracket orders, the
+funded phase, payout rules and records, qualifying days) default when absent, so
+earlier schema 2 journals recover unchanged. Recovery reads schema 1 journals: their
+original keys stay required, the added ones default, and the evaluation starts from
+the first record with the recorded starting cash. Resumed schema 1 journals continue with schema 2 records; an older build
 refuses them rather than silently dropping rule state. The canonical encoding is compact nlohmann JSON
 3.12 serialization: recursively lexicographically sorted object keys, array order
 preserved, UTF-8 strings, integer money, round-trip decimal doubles, no whitespace.
@@ -489,8 +543,10 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules) |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
-| `INVALID_RULES` | Negative rule money, cutoff of a day or more, or a plan name over 64 bytes |
+| `INVALID_RULES` | Negative rule money, cutoff of a day or more, a plan name over 64 bytes, payout percentages outside 0-100 or nonpositive caps, or a funded phase with a profit target or no qualifying days |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket exit cancelled by its sibling's fill, or because its position closed |
+| `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
+| `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it |
 
 ## Engine integration and HTTP API
 
@@ -561,10 +617,11 @@ focus at the top of the ticket.
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position; returns version and `position_closed` |
-| `GET /api/account` | Rules, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, drawdown buffer, target equity/remaining, decision, current day and finished `days[]`), buying power and earlier `attempts[]`; absent rules give null floor/target |
+| `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised` and `qualifying`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs and attempt. Defaults: all statuses of the current attempt |
-| `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing) and `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing); evaluations auto-close five minutes before expiry |
-| `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules`; returns the new account view |
+| `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before expiry |
+| `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |
+| `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
 buying_power, expiry_cutoff_seconds}` with null money for a disabled target or
