@@ -39,7 +39,7 @@ conflicting terms under one OSI reject.
 
 Reducer commands are `define`, `submit`, `modify`, `cancel`, `cancel_all`,
 `close_positions`, `on_quotes`, `set_limits`, `trip_kill`, `reset_kill`, `settle`,
-`roll_day`, `reset_account`, `request_payout` and `annotate`. Every completed command, including
+`roll_day`, `reset_account`, `request_payout`, `annotate`, `exercise` and `trade_stock`. Every completed command, including
 a business rejection, increments `account_version`. Business failures return a
 `Decision` with code/message and numeric actual/limit/scope where applicable.
 Invalid command batches, arithmetic overflow, invalid configuration and persistence
@@ -81,12 +81,30 @@ AAPL. The underlying and exercise style must match the root's conventions: Ameri
 exercise on a European index root is `AMERICAN_UNSUPPORTED`, a European contract on any
 other root is `ROOT_UNSUPPORTED`. Adjusted deliverables are rejected.
 
-American options are simulated without early exercise or assignment, dividends, or
-stock positions. A position held into expiry settles in cash at intrinsic value from
-the settlement reference, as if exercised or assigned and closed at the closing print.
-Evaluation plans close positions five minutes before expiry, so this only affects
-accounts without an expiry cutoff. Greeks and scenarios use the analytics' European
-Black-76 values at the de-Americanised smile IV.
+American equity and ETF options deliver shares; OEX, like the European index roots,
+settles in cash. Held into expiry, an equity or ETF option a cent or more in the money
+at the settlement reference is exercised or assigned: it settles at intrinsic value,
+and 100 shares a contract change hands at the settlement reference, bought by long
+calls and short puts, sold by long puts and short calls. Together that costs the
+strike, while the option's own trade records its real result and the shares' P&L is
+their own move from there. `exercise(symbol, contracts, time)` exercises long, in-the-
+money contracts early in the same way against the underlying's fresh price, so any
+time value left is a cost; it takes the account's checks and, with the
+`buying_power` rule, must fit within it. Early assignment of short options and
+dividends are not simulated. Evaluation plans close positions five minutes before
+expiry, so expiry delivery only reaches accounts without an expiry cutoff. Greeks and
+scenarios use the analytics' European Black-76 values at the de-Americanised smile IV.
+
+Delivered shares (`TradingSnapshot::stocks`) are marked at the underlying's price,
+which `on_quotes` takes in `stocks` (the engine sends it for every underlying whose
+equity options or shares the account holds), with the same freshness rule as marks:
+the market time while the underlying's options trade, or their last session's end
+while they do not. They count in equity, daily loss and the rules, at their dollar
+delta in risk limits and scenarios, and in the P&L by Greek (all delta). Short shares
+hold 150% of their value in buying power. `trade_stock(symbol, shares, time)` only
+reduces them, at the underlying's fresh price in the regular session and without a
+fee; flattening closes them too, and a decided attempt liquidates them. Shares stay
+out of the trade history, which follows the options.
 Strikes must be positive, representable in OSI's thousandths and eight digits;
 expiry dates must be valid in OSI's 2000–2099 range. Explicit AM/PM terms from the
 known definition determine expiry; conflicting terms cannot replace a definition.
@@ -588,7 +606,9 @@ options pay zero and release their entire basis into realised P&L. Negative
 references, premature settlement, missing positions or unknown contracts reject.
 The existing expiry API does not model the prior-day last-trading cutoff for all
 AM products; this v1 uses the requested expiry boundary and regular-session policy.
-Stock delivery, American exercise and assignment are deferred.
+American equity and ETF options held into expiry deliver shares at settlement (see
+[instruments](#instruments-and-prices)); the settlement closure keeps the option's
+trade at intrinsic value.
 
 ## Journal, recovery and failure handling
 
@@ -836,7 +856,9 @@ focus at the top of the ticket.
 
 | Endpoint | Request / response |
 | --- | --- |
-| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
+| `POST /api/positions/exercise` | Canonical `symbol` and positive `quantity` of long equity or ETF contracts to exercise early; returns the portfolio |
+| `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
+| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), takes no trigger or bracket, counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
@@ -948,10 +970,11 @@ conditional and bracket orders; multi-leg orders, margin and buying power; order
 changes, cancel-all and flattening; deterministic journal round trips, tampering,
 torn suffixes, exclusive writers and injected write failures; state deltas (including
 randomized round trips), checkpoints, damaged deltas, mixed-schema recovery and
-compaction; overnight and curb sessions; trade notes and tags. The CLI tests compact journals from earlier builds with `openportd`.
+compaction; overnight and curb sessions; trade notes and tags; P&L by Greek; exercise,
+assignment and delivered shares. The CLI tests compact journals from earlier builds with `openportd`.
 
 Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
 JSON errors, write protection, restart recovery, AM/PM settlement, named accounts and
 replays. Socket tests cover asynchronous POST/DELETE responses and shutdown of pending
-commands. External idempotency, stock positions, assignment, trade-through matching,
-attribution and portfolio margin remain outside v1.
+commands. External idempotency, early assignment, dividends, trade-through matching
+and portfolio margin remain outside v1.

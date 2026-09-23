@@ -102,9 +102,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Annotation, note, tags, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(BuyingPower, available, reserved, short_requirement)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Position, contract, quantity, basis, realised, fees)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Account, cash, realised, fees)
-inline void to_json(Json& j, const Ledger& l) { j = Json{{"account", l.account()}, {"positions", l.positions()}}; }
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StockPosition, symbol, shares, basis, realised, fees)
+inline void to_json(Json& j, const Ledger& l) {
+  j = Json{{"account", l.account()}, {"positions", l.positions()}, {"stocks", l.stocks()}};
+}
 inline void from_json(const Json& j, Ledger& l) {
-  l = Ledger::restore(j.at("account").get<Account>(), j.at("positions").get<std::map<std::string, Position>>());
+  std::map<std::string, StockPosition> stocks;
+  added_field(j, "stocks", stocks);
+  l = Ledger::restore(j.at("account").get<Account>(), j.at("positions").get<std::map<std::string, Position>>(), std::move(stocks));
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExposureRange, delta_low, delta_high, vega_low, vega_high)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RiskBucket, position, reachable, limits, delta_utilisation, vega_utilisation)
@@ -112,7 +117,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RiskSnapshot, aggregate, underlyings, complet
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioCell, spot_percent, vol_points, pnl, clamped)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioGrid, cells, complete)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedPosition, position, mark, mark_time, mark_age, market_value, unrealised, fresh, awaiting_settlement)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedStock, position, mark, mark_time, market_value, unrealised, fresh)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions)
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
   j.at("equity").get_to(s.equity); j.at("start_of_day_equity").get_to(s.start_of_day_equity);
@@ -125,6 +131,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   added_field(j, "closures", s.closures); added_field(j, "attempts", s.attempts);
   added_field(j, "annotations", s.annotations);
   added_field(j, "attribution", s.attribution); added_field(j, "attributions", s.attributions);
+  added_field(j, "stocks", s.stocks);
 }
 
 namespace detail {
@@ -165,14 +172,16 @@ struct State {
   std::vector<AttemptSummary> attempts;
   std::vector<Closure> closures;
   std::map<std::string, Annotation> annotations;
-  /// Open stretches by held contract, and today's finished ones (and costs) by contract.
+  /// Open stretches by held contract (or stock), and today's finished ones (and costs).
   std::map<std::string, Reference> references;
   std::map<std::string, Attribution> explained;
+  /// The underlyings' latest prices, which mark and trade delivered shares.
+  std::map<std::string, Mark> stock_marks;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Book, quote, bid_left, ask_left)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mark, price, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations, references, explained)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations, references, explained, stock_marks)
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
   j.at("limits_revision").get_to(s.limits_revision); j.at("ledger").get_to(s.ledger);
@@ -183,6 +192,7 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "evaluation", s.evaluation); added_field(j, "attempts", s.attempts);
   added_field(j, "closures", s.closures); added_field(j, "annotations", s.annotations);
   added_field(j, "references", s.references); added_field(j, "explained", s.explained);
+  added_field(j, "stock_marks", s.stock_marks);
 }
 }  // namespace detail
 }  // namespace openport::trading

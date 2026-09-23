@@ -2,7 +2,7 @@ import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useRefreshTrading, useTradingSession } from "../api/trading"
-import type { ClosePositionsResponse, Order, Position, TradingStatus } from "../api/trading-types"
+import type { ClosePositionsResponse, Order, Position, StockHolding, TradingStatus } from "../api/trading-types"
 import { contractLabel, orderLabel } from "../lib/journal"
 import { closingAction, editableFields, flattenPlan, isOpen, orderChange, orderDraft, outcome, underlyingsOf } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
@@ -13,7 +13,7 @@ import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
 import { Badge } from "./ui"
 
 /** Runs one write at a time, keeping its error and pending state for this dialog. */
-function useWrite(trading: TradingStatus) {
+export function useWrite(trading: TradingStatus) {
   const token = useWriteToken()
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
@@ -145,14 +145,15 @@ export function CancelAllDialog({ orders, trading, onClose, onDone }: {
  * Flatten: cancel the orders in scope, then close every position in it at market,
  * short positions first. Shows each closing order's outcome afterwards.
  */
-export function FlattenDialog({ positions, orders, trading, initial = null, onClose }: {
-  positions: readonly Position[]; orders: readonly Order[]; trading: TradingStatus; initial?: string | null; onClose: () => void
+export function FlattenDialog({ positions, stocks = [], orders, trading, initial = null, onClose }: {
+  positions: readonly Position[]; stocks?: readonly StockHolding[]; orders: readonly Order[]; trading: TradingStatus; initial?: string | null; onClose: () => void
 }) {
   const write = useWrite(trading)
   const { underlyings } = useLive()
   const [scope, setScope] = useState<string | null>(initial)
   const [done, setDone] = useState<ClosePositionsResponse | null>(null)
   const plan = flattenPlan(positions, orders, scope)
+  const shares = stocks.filter((s) => s.shares !== 0 && (scope == null || s.symbol === scope))
   // Flattening sends market orders, which the overnight and curb sessions refuse.
   const limitOnly = [...new Set(plan.closing.map((p) => p.underlying))]
     .filter((symbol) => extendedSession(underlyings.find((u) => u.symbol === symbol)) != null)
@@ -175,8 +176,9 @@ export function FlattenDialog({ positions, orders, trading, initial = null, onCl
         </div>
       ) : (
         <>
-          <ScopePicker value={scope} options={underlyingsOf(positions.filter((p) => p.quantity !== 0))} onChange={setScope} what="Close" />
-          {plan.closing.length ? (
+          <ScopePicker value={scope} options={[...new Set([...underlyingsOf(positions.filter((p) => p.quantity !== 0)), ...stocks.map((s) => s.symbol)])].sort()}
+            onChange={setScope} what="Close" />
+          {plan.closing.length || shares.length ? (<>
             <ul className="space-y-1 text-sm">
               {plan.closing.map((position) => (
                 <li key={position.symbol} className="flex justify-between gap-2">
@@ -185,7 +187,13 @@ export function FlattenDialog({ positions, orders, trading, initial = null, onCl
                 </li>
               ))}
             </ul>
-          ) : <p className="text-sm text-muted">No position{scope ? ` on ${scope}` : ""} can trade now.</p>}
+            {shares.length > 0 && <ul className="space-y-1 text-sm">
+              {shares.map((s) => <li key={s.symbol} className="flex justify-between gap-2">
+                <span>{Math.abs(s.shares)} {s.symbol} shares</span>
+                <span className={s.shares > 0 ? "text-bearish" : "text-bullish"}>{s.shares > 0 ? "Sell" : "Buy back"} at the price</span>
+              </li>)}
+            </ul>}
+          </>) : <p className="text-sm text-muted">No position{scope ? ` on ${scope}` : ""} can trade now.</p>}
           <p className="text-xs text-muted">
             {plan.cancelling.length ? `${plan.cancelling.length} working ${plan.cancelling.length === 1 ? "order is" : "orders are"} cancelled first. ` : ""}
             Each position closes with a market order at the displayed quote, short ones first so a spread never leaves a naked short.
@@ -197,9 +205,9 @@ export function FlattenDialog({ positions, orders, trading, initial = null, onCl
             Close with a limit order from the position's Close button, or flatten once the regular session opens.</p>}
           <WriteAccess trading={trading} />
           <TradingError error={write.error} />
-          <button type="button" className="trade-button" disabled={!plan.closing.length || limitOnly.length > 0 || write.pending || write.blocked}
+          <button type="button" className="trade-button" disabled={!(plan.closing.length + shares.length) || limitOnly.length > 0 || write.pending || write.blocked}
             onClick={() => void write.run(() => api.closePositions(scope, trading.write), setDone)}>
-            {write.pending ? "Closing…" : `Close ${plan.closing.length} ${plan.closing.length === 1 ? "position" : "positions"}`}
+            {write.pending ? "Closing…" : `Close ${plan.closing.length + shares.length} ${plan.closing.length + shares.length === 1 ? "position" : "positions"}`}
           </button>
         </>
       )}

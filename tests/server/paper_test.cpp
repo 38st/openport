@@ -1076,6 +1076,52 @@ TEST_F(PaperEngine, ResetToPresetStartsAttemptAndTradesSeparateAttempts) {
   engine->stop();
 }
 
+TEST(PaperStocks, ExerciseDeliversSharesThatThePortfolioShowsAndCloses) {
+  PaperProvider provider;
+  server::Engine engine(provider, md::Subscription{{"SPY"}}, paper_options());
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto contract = *md::parse_osi("SPY261022C00500000");
+  const auto symbol = contract.osi_symbol();
+  auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto quote = [&] {
+    provider.sink->publish(md::UnderlyingQuote{"SPY", time, 519.9, 520.1, 520});
+    provider.sink->publish(md::OptionQuote{0, time, 21.0, 21.2, 10, 10});
+    ASSERT_TRUE(wait_for([&] { const auto m = engine.metrics("SPY"); return m && m->as_of == time && !m->slices.empty(); }));
+  };
+  provider.sink->publish(md::ContractDefinition{0, contract});
+  quote();
+  const auto bought = write(engine, "POST", "/api/orders", {{"client_order_id", "calls"}, {"symbol", symbol}, {"side", "buy"},
+      {"type", "limit"}, {"quantity", 2}, {"limit_price", "21.20"}, {"time_in_force", "day"}});
+  ASSERT_EQ(bought.status, 201) << bought.body;
+  // A batch with the calls held carries SPY's price for exercise.
+  time += md::kNanosPerSecond;
+  quote();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == time; }));
+  const auto exercised = write(engine, "POST", "/api/positions/exercise", {{"symbol", symbol}, {"quantity", 1}});
+  ASSERT_EQ(exercised.status, 200) << exercised.body;
+  auto portfolio = json::parse(exercised.body);
+  ASSERT_EQ(portfolio["stocks"].size(), 1);
+  EXPECT_EQ(portfolio["stocks"][0]["symbol"], "SPY");
+  EXPECT_EQ(portfolio["stocks"][0]["shares"], 100);
+  EXPECT_EQ(portfolio["stocks"][0]["average_price"], "520.00");
+  EXPECT_EQ(portfolio["positions"][0]["quantity"], 1);
+  const auto trades = read(engine, "/api/trades")["trades"];
+  EXPECT_EQ(trades[0]["closed_contracts"], 1);
+  const auto partly = write(engine, "POST", "/api/stocks/close", {{"symbol", "SPY"}, {"shares", 40}});
+  ASSERT_EQ(partly.status, 200) << partly.body;
+  EXPECT_EQ(json::parse(partly.body)["stocks"][0]["shares"], 60);
+  const auto rest = write(engine, "POST", "/api/stocks/close", {{"symbol", "SPY"}});
+  ASSERT_EQ(rest.status, 200) << rest.body;
+  EXPECT_TRUE(json::parse(rest.body)["stocks"].empty());
+  const auto none = write(engine, "POST", "/api/stocks/close", {{"symbol", "SPY"}});
+  EXPECT_EQ(none.status, 422) << none.body;
+  EXPECT_EQ(write(engine, "POST", "/api/stocks/close", {{"symbol", "spy"}}).status, 400);
+  EXPECT_EQ(write(engine, "POST", "/api/positions/exercise", {{"symbol", symbol}, {"quantity", 0}}).status, 400);
+  EXPECT_EQ(write(engine, "POST", "/api/positions/exercise", {{"symbol", symbol}, {"quantity", 5}}).status, 422);
+  engine.stop();
+}
+
 TEST_F(PaperEngine, PortfolioExplainsTheDaysPnlByGreek) {
   seed();
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);

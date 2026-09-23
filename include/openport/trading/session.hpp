@@ -21,6 +21,14 @@ struct MarkedPosition {
   bool fresh = false;
   bool awaiting_settlement = false;
 };
+struct MarkedStock {
+  StockPosition position;
+  std::optional<Money> mark;  ///< The underlying's latest price.
+  Timestamp mark_time = 0;
+  std::optional<Money> market_value;
+  std::optional<Money> unrealised;
+  bool fresh = false;
+};
 struct TradingSnapshot {
   std::uint64_t account_version = 0;
   Timestamp time = 0;
@@ -31,6 +39,7 @@ struct TradingSnapshot {
   bool valuation_complete = true;
   bool journal_failed = false;
   std::vector<MarkedPosition> positions;
+  std::vector<MarkedStock> stocks;  ///< Shares from exercise and assignment.
   std::vector<Order> open_orders;
   std::vector<Order> recent_orders;  ///< All v1 orders, in acceptance sequence.
   std::vector<Fill> recent_fills;    ///< All v1 fills, in execution sequence.
@@ -132,8 +141,11 @@ class TradingSession {
   /// On an idle account (flat, no open orders, attempt started) an empty batch
   /// changes nothing but the clock, so it is not a transaction and nothing is
   /// journaled; the snapshot keeps its time until the next transaction.
+  /// `stocks` prices the underlyings: the shares that exercise and assignment
+  /// deliver are marked and traded at them.
   CommandResult on_quotes(const std::vector<QuoteObservation>& quotes,
-                          const std::vector<Valuation>& valuations, Timestamp time);
+                          const std::vector<Valuation>& valuations, Timestamp time,
+                          const std::vector<StockPrice>& stocks = {});
   CommandResult set_limits(Limits limits, Timestamp time);
   CommandResult trip_kill(std::string reason, Timestamp time);
   CommandResult reset_kill(std::string reason, Timestamp time);
@@ -156,6 +168,15 @@ class TradingSession {
   /// throws INVALID_NOTE; an unknown trade returns UNKNOWN_TRADE. An empty note
   /// without tags clears it. Allowed whatever the account's state or session.
   CommandResult annotate(std::uint64_t trade, std::string note, std::vector<std::string> tags, Timestamp time);
+  /// Exercise `contracts` of a long, in-the-money American equity or ETF option
+  /// before expiry: they close at intrinsic value against the underlying's fresh
+  /// price, and 100 shares each are bought (calls) or sold (puts) at that price,
+  /// which together cost the strike. Held into expiry, such options are exercised
+  /// or assigned at settlement when a cent or more in the money.
+  CommandResult exercise(const std::string& symbol, Quantity contracts, Timestamp time);
+  /// Reduce or close a stock position at the underlying's fresh price in the
+  /// regular session, without a fee; shares come only from exercise and assignment.
+  CommandResult trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time);
   [[nodiscard]] std::shared_ptr<const TradingSnapshot> snapshot() const;
 
   /// Read-only integration context, owned by the reducer. The engine copies it

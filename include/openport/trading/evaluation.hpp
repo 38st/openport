@@ -72,7 +72,8 @@ struct AttemptSummary {
   std::uint64_t first_fill = 1;
 };
 
-enum class ClosureKind { Settlement, Reset };
+/// Exercise: contracts exercised early into shares, at intrinsic value.
+enum class ClosureKind { Settlement, Reset, Exercise };
 
 /// A position that left the ledger without a fill, so trade history can close it.
 struct Closure {

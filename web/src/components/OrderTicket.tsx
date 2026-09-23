@@ -9,7 +9,7 @@ import { count, days, fixed, isNum, price } from "../lib/format"
 import { heldPositions, orderPowerUse } from "../lib/margin"
 import { probabilityOfProfit, singleLeg, smileVol } from "../lib/probability"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
-import { extendedSession, formatMoney, limitOnlyNotice, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
+import { deliversShares, extendedSession, formatMoney, limitOnlyNotice, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
@@ -243,9 +243,9 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
       </div>
       <div className="mt-1 text-sm">{selection.strike} {selection.optionType} · {expiryLabel} <span className="text-xs text-muted">({days(selection.expiry.days)})</span></div>
       <div className="mt-0.5 break-all text-[11px] tabular text-faint">{selection.symbol}</div>
-      <p className="mt-1 text-[11px] text-muted">{selection.expiry.style === "american"
-        ? "American · early exercise not simulated; held into expiry settles at intrinsic"
-        : "European · cash settled"} · 100 multiplier</p>
+      <p className="mt-1 text-[11px] text-muted">{selection.expiry.style !== "american" ? "European · cash settled"
+        : deliversShares(selection.underlying) ? "American · exercise and assignment deliver 100 shares a contract"
+        : "American · cash settled; early exercise is not simulated"} · 100 multiplier</p>
       {held !== 0 && <p className="mt-1 text-xs"><span className="text-muted">You hold</span> <span className="tabular">{held > 0 ? `${held} long` : `${-held} short`}</span></p>}
     </div>
     <div className="grid grid-cols-3 gap-2 rounded-md border border-border bg-background/40 p-3 text-xs tabular">

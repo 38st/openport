@@ -442,7 +442,20 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         // Missing live analytics after recovery must not overwrite a recorded frame.
         if (valuation.time > 0) valuations.push_back(std::move(valuation));
       }
-      session.on_quotes(quotes, valuations, market_time_);
+      // Underlyings price the shares that equity options deliver, and exercise.
+      std::set<std::string> deliverable;
+      for (const auto& p : session.snapshot()->positions) {
+        const auto& c = p.position.contract;
+        if (c.style == pricing::ExerciseStyle::American && !md::is_index_underlying(c.underlying)) deliverable.insert(c.underlying);
+      }
+      for (const auto& stock : session.snapshot()->stocks) deliverable.insert(stock.position.symbol);
+      std::vector<StockPrice> stocks;
+      for (const auto& symbol : deliverable) {
+        const auto book = book_.underlyings().find(symbol);
+        if (book == book_.underlyings().end() || book->second.spot_ts <= 0 || book->second.spot_ts > market_time_) continue;
+        if (const auto price = quote_price(book->second.spot)) stocks.push_back({symbol, book->second.spot_ts, *price});
+      }
+      session.on_quotes(quotes, valuations, market_time_, stocks);
       // Underlying prints retain ingress order. The first valid post-expiry last on
       // the expiry date is our documented PM closing-print approximation.
       for (const auto& event : batch) {
@@ -574,6 +587,24 @@ void Engine::apply_command(PendingCommand& pending) {
           break;
         case TradingCommand::Kind::Payout: result = session.request_payout(c.amount, market_time_); break;
         case TradingCommand::Kind::Annotate: result = session.annotate(c.trade, c.note, c.tags, market_time_); break;
+        case TradingCommand::Kind::Exercise: {
+          const auto contract = session.contracts().find(c.symbol);
+          const auto gate = contract == session.contracts().end() ? Decision{} : acceptance(contract->second.underlying);
+          if (gate.ok()) result = session.exercise(c.symbol, c.quantity, market_time_);
+          else result.decision = gate;
+          break;
+        }
+        case TradingCommand::Kind::CloseStock: {
+          // Close all the shares, or the given number, in the direction that reduces them.
+          Quantity held = 0;
+          for (const auto& stock : session.snapshot()->stocks) if (stock.position.symbol == c.symbol) held = stock.position.shares;
+          const Quantity shares = c.quantity > 0 ? c.quantity : (held < 0 ? -held : held);
+          const auto gate = acceptance(c.symbol);
+          if (held == 0) result.decision = {Reason::INVALID_ORDER, "The account holds no " + c.symbol + " shares", {}, {}, {}};
+          else if (!gate.ok()) result.decision = gate;
+          else result = session.trade_stock(c.symbol, held < 0 ? shares : -shares, market_time_);
+          break;
+        }
         case TradingCommand::Kind::CreateAccount: break;  // handled above
       }
       if (reply.error_code.empty()) reply.decision = result.decision;

@@ -120,6 +120,54 @@ void fill_position(State& s, const std::string& symbol, Quantity signed_quantity
   s.explained[symbol].costs += static_cast<double>(signed_quantity) * contract.multiplier * (value - price).dollars() - fee.dollars();
   start_stretch(s, symbol);
 }
+/// American equity and ETF options deliver shares; index options settle in cash.
+bool physical(const md::OptionContract& c) {
+  return c.style == pricing::ExerciseStyle::American && !md::is_index_underlying(c.underlying);
+}
+Quantity shares_held(const State& s, const std::string& symbol) {
+  const auto it = s.ledger.stocks().find(symbol);
+  return it == s.ledger.stocks().end() ? 0 : it->second.shares;
+}
+/// The underlying's price if fresh: within max_quote_age of the market time
+/// while its options trade, or of their last session's end while they do not.
+std::optional<Money> stock_price(const State& s, const std::string& symbol) {
+  const auto it = s.stock_marks.find(symbol);
+  if (it == s.stock_marks.end() || it->second.time > s.time) return std::nullopt;
+  const auto session = md::trading_session(symbol, s.time);
+  const auto observed = session.open || session.market_time == md::kInvalidTimestamp ? s.time : std::min(s.time, session.market_time);
+  if (observed - it->second.time > s.config.limits.max_quote_age) return std::nullopt;
+  return it->second.price;
+}
+/// Shares' stretches are all delta: the price's move times the shares.
+Attribution explain_stock(const detail::Reference& r, Money value) {
+  Attribution a;
+  a.delta = static_cast<double>(r.quantity) * (value - r.mark).dollars();
+  return a;
+}
+void start_stock_stretch(State& s, const std::string& symbol) {
+  const auto shares = shares_held(s, symbol);
+  const auto mark = s.stock_marks.find(symbol);
+  if (shares == 0 || mark == s.stock_marks.end()) return;
+  s.references[symbol] = {shares, mark->second.price, std::nullopt};
+}
+/// Trade shares at `price`: the stretch before ends at the underlying's mark,
+/// any difference from it is a cost, and a stretch at the new size starts.
+void trade_shares(State& s, const std::string& symbol, Quantity signed_shares, Money price) {
+  const auto mark = s.stock_marks.find(symbol);
+  const Money value = mark == s.stock_marks.end() ? price : mark->second.price;
+  if (const auto it = s.references.find(symbol); it != s.references.end()) {
+    s.explained[symbol] += explain_stock(it->second, value);
+    s.references.erase(it);
+  }
+  s.ledger.trade_stock(symbol, signed_shares, price, Money{});
+  s.explained[symbol].costs += static_cast<double>(signed_shares) * (value - price).dollars();
+  start_stock_stretch(s, symbol);
+}
+/// Shares an option position becomes: 100 a contract, bought by long calls and
+/// short puts, sold by long puts and short calls.
+Quantity delivered(const md::OptionContract& c, Quantity contracts) {
+  return (c.type == pricing::OptionType::Call ? 1 : -1) * static_cast<Quantity>(c.multiplier) * contracts;
+}
 /// A bracket's two exits can fill only once between them: checks count the pair
 /// through its earlier order, so the later one is shadowed while both are open.
 bool shadowed(const State& s, const Order& o) {
@@ -202,8 +250,19 @@ Money requirement(const State& s, const MarginBook& book) {
   for (const auto& [symbol, entry] : book) legs.push_back({s.contracts.at(symbol), entry.first, entry.second, spot_for(s, symbol)});
   return margin_requirement(legs);
 }
+/// Short shares hold 150% of their value, as a short sale does; long shares are paid for.
+Money stock_requirement(const State& s) {
+  Money total;
+  for (const auto& [symbol, stock] : s.ledger.stocks()) {
+    if (stock.shares >= 0) continue;
+    const auto mark = s.stock_marks.find(symbol);
+    const Money value = mark == s.stock_marks.end() ? -stock.basis : mark->second.price * -stock.shares;
+    total = total + value.prorate(3, 2);
+  }
+  return total;
+}
 /// Buying power that positions do not hold: cash less their margin requirement.
-Money free_power(const State& s) { return s.ledger.account().cash - requirement(s, held_book(s)); }
+Money free_power(const State& s) { return s.ledger.account().cash - requirement(s, held_book(s)) - stock_requirement(s); }
 struct Use {
   Money reservation;   ///< Fees plus any net cost, never less than the fees.
   bool uses = false;   ///< Filling would reduce free buying power.
@@ -253,7 +312,7 @@ struct PowerDetail {
 PowerDetail buying_power(const State& s, OrderId focus = 0) {
   PowerDetail out;
   const auto book = held_book(s);
-  const Money short_requirement = requirement(s, book);
+  const Money short_requirement = requirement(s, book) + stock_requirement(s);
   std::map<std::string, std::pair<Quantity, Quantity>> capacity;
   Money reserved;
   for (const auto& o : s.orders) {
@@ -330,19 +389,37 @@ TradingSnapshot snapshot_of(const State& s) {
     out.valuation_complete &= p.fresh;
     out.positions.push_back(std::move(p));
   }
+  for (const auto& [symbol, stock] : s.ledger.stocks()) {
+    MarkedStock m;
+    m.position = stock;
+    if (const auto it = s.stock_marks.find(symbol); it != s.stock_marks.end()) {
+      m.mark = it->second.price;
+      m.mark_time = it->second.time;
+      m.market_value = it->second.price * stock.shares;
+      m.unrealised = *m.market_value - stock.basis;
+      m.fresh = stock_price(s, symbol).has_value();
+      out.equity = out.equity + *m.market_value;
+      out.unrealised = out.unrealised + *m.unrealised;
+    }
+    out.valuation_complete &= m.fresh;
+    out.stocks.push_back(std::move(m));
+  }
+  std::map<std::string, double> stock_prices;
+  for (const auto& [symbol, stock] : s.ledger.stocks())
+    if (const auto price = stock_price(s, symbol)) stock_prices[symbol] = price->dollars();
   if (std::any_of(s.orders.begin(), s.orders.end(), [&](const Order& o) { return shadowed(s, o); })) {
     // Reachable exposure counts each open bracket pair once.
     auto orders = s.orders;
     for (auto& o : orders) if (shadowed(s, o)) o.status = OrderStatus::Cancelled;
-    out.risk = portfolio_risk(s.ledger, orders, s.contracts, s.valuations, s.config.limits, s.time);
+    out.risk = portfolio_risk(s.ledger, orders, s.contracts, s.valuations, s.config.limits, s.time, stock_prices);
   } else {
-    out.risk = portfolio_risk(s.ledger, s.orders, s.contracts, s.valuations, s.config.limits, s.time);
+    out.risk = portfolio_risk(s.ledger, s.orders, s.contracts, s.valuations, s.config.limits, s.time, stock_prices);
   }
   out.risk.daily_loss = std::max(Money{}, s.start_equity - out.equity);
   out.risk.kill_latched = s.kill;
   out.risk.kill_reason = s.kill_reason;
   out.risk.limits_revision = s.limits_revision;
-  out.scenarios = scenario_grid(s.ledger, s.valuations, s.config.scenarios, s.time, s.config.limits.max_valuation_age);
+  out.scenarios = scenario_grid(s.ledger, s.valuations, s.config.scenarios, s.time, s.config.limits.max_valuation_age, stock_prices);
   if (!out.valuation_complete) out.quality_flags.push_back(Reason::STALE_QUOTE);
   if (!out.risk.complete || !out.scenarios.complete) out.quality_flags.push_back(Reason::MISSING_VALUATION);
   if (std::any_of(out.positions.begin(), out.positions.end(), [](const auto& p) { return p.awaiting_settlement; }))
@@ -354,15 +431,21 @@ TradingSnapshot snapshot_of(const State& s) {
   out.annotations = s.annotations;
   // Today's P&L by Greek: the finished stretches, and the open ones to the marks now.
   out.attributions = s.explained;
-  for (const auto& [symbol, reference] : s.references)
-    if (const auto mark = s.marks.find(symbol); mark != s.marks.end())
-      out.attributions[symbol] += explain(s.contracts.at(symbol), reference, mark->second.price, valuation_of(s, symbol));
+  for (const auto& [symbol, reference] : s.references) {
+    if (s.contracts.contains(symbol)) {
+      if (const auto mark = s.marks.find(symbol); mark != s.marks.end())
+        out.attributions[symbol] += explain(s.contracts.at(symbol), reference, mark->second.price, valuation_of(s, symbol));
+    } else if (const auto mark = s.stock_marks.find(symbol); mark != s.stock_marks.end()) {
+      out.attributions[symbol] += explain_stock(reference, mark->second.price);
+    }
+  }
   for (const auto& [symbol, attribution] : out.attributions) out.attribution += attribution;
   return out;
 }
 /// Rules only act on fully marked equity: every position has a mark, fresh or not.
 std::optional<Money> marked_equity(const TradingSnapshot& snapshot) {
   for (const auto& p : snapshot.positions) if (!p.market_value) return std::nullopt;
+  for (const auto& p : snapshot.stocks) if (!p.market_value) return std::nullopt;
   return snapshot.equity;
 }
 /// The trailing floor, peak - max drawdown. With a lock balance it stops once
@@ -863,6 +946,14 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   auto& stored = s.orders.at(static_cast<std::size_t>(order.id - 1));
   if (stored.open()) cancel_order(stored, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
 }
+/// Close shares at the underlying's fresh price in the regular session; without
+/// one they stay, and a rule retries on later transactions.
+void close_shares(State& s, const std::string& symbol, Quantity shares, Events& events) {
+  const auto price = stock_price(s, symbol);
+  if (shares == 0 || !price || !md::market_session(s.time).open) return;
+  trade_shares(s, symbol, -shares, *price);
+  event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", -shares}, {"price", *price}});
+}
 void decide(State& s, EvaluationStatus status, Money equity, std::string message, Events& events) {
   auto& e = s.evaluation;
   e.status = status;
@@ -901,6 +992,11 @@ void monitor_rules(State& s, Events& events) {
                dollars(target), events);
       }
     }
+  }
+  if (rules.evaluation() && e.status != EvaluationStatus::Active) {
+    std::vector<std::pair<std::string, Quantity>> stocks;
+    for (const auto& [symbol, stock] : s.ledger.stocks()) stocks.emplace_back(symbol, stock.shares);
+    for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, events);
   }
   std::vector<std::string> symbols;
   for (const auto& [symbol, position] : s.ledger.positions()) symbols.push_back(symbol);
@@ -1193,7 +1289,7 @@ struct TradingSession::Impl {
   /// or evaluation change. Rollover is its own command.
   bool idle(Timestamp time) const {
     const auto& s = state;
-    return !stopped && time >= s.time && s.ledger.positions().empty() &&
+    return !stopped && time >= s.time && s.ledger.positions().empty() && s.ledger.stocks().empty() &&
            s.evaluation.started > 0 && s.evaluation.cycle_started > 0 &&
            std::none_of(s.orders.begin(), s.orders.end(), [](const Order& o) { return o.open(); });
   }
@@ -1330,14 +1426,20 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       const auto gate = rejections.find(s.contracts.at(symbol).underlying);
       place(s, std::move(request), time, gate == rejections.end() ? Decision{} : gate->second, events);
     }
+    // Shares close at the underlying's fresh price in the regular session.
+    std::vector<std::pair<std::string, Quantity>> stocks;
+    if (account_check(s).ok())
+      for (const auto& [symbol, stock] : s.ledger.stocks())
+        if (in_scope(symbol) && !rejections.contains(symbol)) stocks.emplace_back(symbol, stock.shares);
+    for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, events);
     return CommandResult{};
   });
 }
 CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quotes,
-    const std::vector<Valuation>& valuations, Timestamp time) {
+    const std::vector<Valuation>& valuations, Timestamp time, const std::vector<StockPrice>& stocks) {
   // An empty batch on an idle account only moves the clock: not a transaction,
   // so nothing is journaled. The next transaction advances the clock itself.
-  if (quotes.empty() && valuations.empty() && impl_->idle(time)) return CommandResult{{}, {}, impl_->state.version};
+  if (quotes.empty() && valuations.empty() && stocks.empty() && impl_->idle(time)) return CommandResult{{}, {}, impl_->state.version};
   return impl_->transact(time, "market", [&](State& s, Events& events) {
     std::set<std::string> seen;
     std::set<std::string> changed;
@@ -1364,6 +1466,15 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
         valuation = Valuation{valuation.symbol, valuation.time, 0, 0, 0, 0, 0, 0, 0, 0, 0, false};
       }
       s.valuations[valuation.symbol] = valuation;
+    }
+    seen.clear();
+    for (const auto& price : stocks) {
+      if (price.symbol.empty() || price.price <= Money{}) throw TradingError(Reason::INVALID_QUOTE, "A stock price needs a symbol and a positive price");
+      if (price.time < 0 || price.time > time) throw TradingError(Reason::INVALID_TIME, "Stock price is future-dated or negative");
+      if (!seen.insert(price.symbol).second) throw TradingError(Reason::INVALID_QUOTE, "One price per underlying per batch is required");
+      const auto prior = s.stock_marks.find(price.symbol);
+      if (prior != s.stock_marks.end() && price.time < prior->second.time) continue;
+      s.stock_marks[price.symbol] = {price.price, price.time};
     }
     monitor_loss(s, events);
     // Invalid quotes provide no liquidity. Keep orders until a new valid quote
@@ -1441,6 +1552,17 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
     sync_exits(s, symbol, events);
     event(events, "settlement", Json{{"symbol", symbol}, {"reference", settlement}, {"intrinsic", intrinsic}});
+    // American equity and ETF options a cent or more in the money are exercised
+    // or assigned: settled at intrinsic value, they deliver shares at the
+    // settlement price, which together cost the strike.
+    if (physical(it->second) && intrinsic >= Money::from_micros(10'000)) {
+      const auto underlying = it->second.underlying;
+      const auto shares = delivered(it->second, quantity);
+      if (const auto mark = s.stock_marks.find(underlying); mark == s.stock_marks.end() || mark->second.time <= time)
+        s.stock_marks[underlying] = {settlement, time};
+      trade_shares(s, underlying, shares, settlement);
+      event(events, "delivery", Json{{"symbol", symbol}, {"underlying", underlying}, {"shares", shares}, {"price", settlement}});
+    }
     return CommandResult{};
   });
 }
@@ -1483,6 +1605,7 @@ CommandResult TradingSession::roll_day(Timestamp time) {
     s.explained.clear();
     s.references.clear();
     for (const auto& [symbol, position] : s.ledger.positions()) start_stretch(s, symbol);
+    for (const auto& [symbol, stock] : s.ledger.stocks()) start_stock_stretch(s, symbol);
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
     return CommandResult{};
   });
@@ -1573,6 +1696,62 @@ CommandResult TradingSession::annotate(std::uint64_t trade, std::string note, st
       annotation.time = s.time;
       s.annotations[key] = std::move(annotation);
     }
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::exercise(const std::string& symbol, Quantity contracts, Timestamp time) {
+  if (contracts <= 0) throw TradingError(Reason::INVALID_ORDER, "Exercise a positive number of contracts");
+  return impl_->transact(time, "exercise", [&](State& s, Events& events) {
+    const auto it = s.contracts.find(symbol);
+    if (it == s.contracts.end()) return CommandResult{failure(Reason::UNKNOWN_CONTRACT, "Exercise references an unregistered OSI"), {}, 0};
+    const auto contract = it->second;
+    if (!physical(contract))
+      return CommandResult{failure(Reason::INVALID_ORDER, "Only American equity and ETF options deliver shares; index options settle in cash"), {}, 0};
+    if (s.time >= contract.expiry_time()) return CommandResult{failure(Reason::EXPIRED, "The contract has expired; settlement exercises it"), {}, 0};
+    if (const auto d = account_check(s); !d.ok()) return CommandResult{d, {}, 0};
+    if (held(s, symbol) < contracts) return CommandResult{failure(Reason::INVALID_ORDER, "Exercise needs that many long contracts"), {}, 0};
+    const auto price = stock_price(s, contract.underlying);
+    if (!price) return CommandResult{failure(Reason::STALE_QUOTE, "Exercise needs a fresh price for " + contract.underlying), {}, 0};
+    const Money strike = Money::from_double(contract.strike);
+    const Money intrinsic = std::max(Money{}, contract.type == pricing::OptionType::Call ? *price - strike : strike - *price);
+    if (intrinsic <= Money{}) return CommandResult{failure(Reason::INVALID_ORDER, "Exercise needs the option in the money"), {}, 0};
+    const auto shares = delivered(contract, contracts);
+    // The contracts close at intrinsic value, so any time value left is a cost,
+    // and the shares change hands at the underlying's price.
+    const auto apply = [&](State& t) {
+      fill_position(t, symbol, -contracts, intrinsic, Money{});
+      t.closures.push_back({symbol, contracts, intrinsic, t.time, ClosureKind::Exercise, t.fills.size()});
+      trade_shares(t, contract.underlying, shares, *price);
+    };
+    if (s.config.rules.buying_power) {
+      State projected = s;
+      apply(projected);
+      const auto power = buying_power(projected).total;
+      if (free_power(projected) < free_power(s) && power.available < Money{})
+        return CommandResult{{Reason::BUYING_POWER, "Exercise needs more buying power than the account has available",
+                              (-power.available).dollars(), 0.0, contract.underlying}, {}, 0};
+    }
+    apply(s);
+    sync_exits(s, symbol, events);
+    event(events, "exercise", Json{{"symbol", symbol}, {"contracts", contracts}, {"intrinsic", intrinsic},
+                                   {"underlying", contract.underlying}, {"shares", shares}, {"price", *price}});
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time) {
+  if (signed_shares == 0) throw TradingError(Reason::INVALID_ORDER, "Trade a nonzero number of shares");
+  return impl_->transact(time, "stock_trade", [&](State& s, Events& events) {
+    const auto shares = shares_held(s, symbol);
+    const bool reduces = shares != 0 && (shares > 0) != (signed_shares > 0) &&
+                         (shares > 0 ? -signed_shares <= shares : signed_shares <= -shares);
+    if (!reduces)
+      return CommandResult{failure(Reason::INVALID_ORDER, "Stock trades only reduce the shares exercise and assignment delivered"), {}, 0};
+    if (const auto d = account_check(s); !d.ok()) return CommandResult{d, {}, 0};
+    if (!md::market_session(s.time).open) return CommandResult{failure(Reason::SESSION_CLOSED, "Stock trades in the regular session"), {}, 0};
+    const auto price = stock_price(s, symbol);
+    if (!price) return CommandResult{failure(Reason::STALE_QUOTE, "Needs a fresh price for " + symbol), {}, 0};
+    trade_shares(s, symbol, signed_shares, *price);
+    event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", signed_shares}, {"price", *price}});
     return CommandResult{};
   });
 }

@@ -3,12 +3,13 @@ import { useMemo, useState, type ReactNode } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useAccount, useAllOrders, useRefreshTrading, useTradingQueries } from "../api/trading"
-import type { Order, Position, Risk, TradingStatus } from "../api/trading-types"
+import type { Order, Position, Risk, StockHolding, TradingStatus } from "../api/trading-types"
 import { Dialog } from "../components/Dialog"
 import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
+import { CloseSharesDialog, ExerciseDialog, SharesTable } from "../components/StockActions"
 import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
 import { ScenarioGrid } from "../components/ScenarioGrid"
@@ -21,7 +22,7 @@ import { contractLabel } from "../lib/journal"
 import { strategyGroups, type StrategyGroup } from "../lib/positions"
 import { closingLegs } from "../lib/strategy"
 import { describeTrigger } from "../lib/ticket"
-import { formatMoney, paperNotice, ratio, signedMoney } from "../lib/trading"
+import { deliversShares, formatMoney, paperNotice, ratio, signedMoney } from "../lib/trading"
 
 /** Right-aligned numeric table; the first `left` columns are labels, aligned left. */
 export function Table({ label, headers, children, left = 1 }: { label: string; headers: string[]; children: ReactNode; left?: number }) {
@@ -70,8 +71,8 @@ function protection(position: Position, orders: Order[]): string | null {
   return exits.map((o) => `${o.role === "stop_loss" ? "Stop" : "Target"} ${o.trigger ? describeTrigger(o.trigger, o.side ?? "sell", o.underlying)
     : formatMoney(o.limit_price)}`).join(" · ")
 }
-function Positions({ positions, onClose, orders = [], selected, onSelect, groups = [] }: {
-  positions: Position[]; onClose?: (position: Position) => void; orders?: Order[]
+function Positions({ positions, onClose, onExercise, orders = [], selected, onSelect, groups = [] }: {
+  positions: Position[]; onClose?: (position: Position) => void; onExercise?: (position: Position) => void; orders?: Order[]
   /** Held strategies, to note which positions belong to one. */
   groups?: readonly StrategyGroup[]
   /** Positions picked to close together, by symbol. */
@@ -104,7 +105,11 @@ function Positions({ positions, onClose, orders = [], selected, onSelect, groups
         <td className={toneText[toneOf(position.attribution?.total)]} title={position.attribution ? describeAttribution(position.attribution) : "Explained from this contract's next fill or rollover"}>
           {position.attribution ? signedMoney(position.attribution.total.toFixed(2)) : "—"}</td>
         <td>{fixed(position.greeks.dollar_delta, 2)}</td><td>{fixed(position.greeks.vega_dollars, 2)}</td><td>{fixed(position.greeks.theta_dollars, 2)}</td>
-        <td>{onClose && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Close ${position.symbol}`} onClick={() => onClose(position)}>Close</button>}</td>
+        <td><div className="flex justify-end gap-1.5">
+          {onExercise && position.quantity > 0 && !position.awaiting_settlement && deliversShares(position.underlying) &&
+            <button type="button" className="trade-button" aria-label={`Exercise ${position.symbol}`} onClick={() => onExercise(position)}>Exercise</button>}
+          {onClose && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Close ${position.symbol}`} onClick={() => onClose(position)}>Close</button>}
+        </div></td>
       </tr>
     })}
   </Table>
@@ -123,6 +128,8 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const allOrders = useAllOrders().data?.orders
   const [editing, setEditing] = useState<Risk | null>(null)
   const [closing, setClosing] = useState<Position | null>(null)
+  const [exercising, setExercising] = useState<Position | null>(null)
+  const [closingShares, setClosingShares] = useState<StockHolding | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [together, setTogether] = useState(false)
   const [flatten, setFlatten] = useState<{ underlying: string | null } | null>(null)
@@ -158,7 +165,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
       </div>
       <p className="text-[11px] text-muted">Valued {timestampET(data.time)}</p>
       {groups.length > 0 && <Panel title={`Strategies · ${groups.length}`}><Strategies groups={groups} trading={trading} /></Panel>}
-      <Panel title={`Open positions · ${data.positions.length}`} actions={trading.enabled && data.positions.length > 0 ? <>
+      <Panel title={`Open positions · ${data.positions.length}`} actions={trading.enabled && (data.positions.length > 0 || (data.stocks?.length ?? 0) > 0) ? <>
         {data.positions.length > 1 && <>
           <span className="text-[11px] text-muted">{picked.size ? `${picked.size} picked` : "Pick positions to close them in one order"}</span>
           {picked.size > 0 && <button type="button" className="trade-button" onClick={() => setPicked(new Set())}>Clear</button>}
@@ -167,9 +174,14 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <button type="button" className="trade-button" onClick={() => setFlatten({ underlying: null })}>Close all</button>
       </> : undefined}>
         <Positions positions={data.positions} orders={allOrders} groups={groups} onClose={trading.enabled ? setClosing : undefined}
+          onExercise={trading.enabled ? setExercising : undefined}
           selected={trading.enabled && data.positions.length > 1 ? picked : undefined}
           onSelect={(symbol, on) => setPicked((current) => { const next = new Set(current); if (on) next.add(symbol); else next.delete(symbol); return next })} />
       </Panel>
+      {(data.stocks?.length ?? 0) > 0 && <Panel title={`Shares · ${data.stocks!.length}`}>
+        <SharesTable stocks={data.stocks!} onClose={trading.enabled ? setClosingShares : undefined} />
+        <p className="mt-2 text-[11px] text-muted">From exercise and assignment of equity and ETF options, marked and closed at the underlying's price.</p>
+      </Panel>}
     </> : trading.enabled && !portfolio.error ? <Empty>Loading positions…</Empty> : null}
     <Panel title="Portfolio risk" actions={<button type="button" className="trade-button" disabled={!risk.data || !trading.enabled} onClick={() => { if (risk.data) setEditing(risk.data) }}>Edit limits</button>}>
       <TradingError error={risk.error} />{risk.data ? <RiskPanel risk={risk.data} /> : <p className="text-sm text-muted">{trading.enabled ? "Loading risk…" : "Risk unavailable"}</p>}
@@ -178,7 +190,9 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
     <Panel title="Kill switch"><KillSwitch kill={risk.data?.kill ?? { latched: trading.kill_latched, reason: null }} trading={trading} /></Panel>
     {editing && <LimitsEditor initial={editing} trading={trading} onClose={() => setEditing(null)} />}
     {closing && <CloseTicket position={closing} trading={trading} onClose={() => setClosing(null)} />}
-    {flatten && data && <FlattenDialog positions={data.positions} orders={allOrders ?? []} trading={trading}
+    {exercising && <ExerciseDialog position={exercising} trading={trading} onClose={() => setExercising(null)} />}
+    {closingShares && <CloseSharesDialog stock={closingShares} trading={trading} onClose={() => setClosingShares(null)} />}
+    {flatten && data && <FlattenDialog positions={data.positions} stocks={data.stocks ?? []} orders={allOrders ?? []} trading={trading}
       initial={flatten.underlying} onClose={() => setFlatten(null)} />}
     {together && data && <CloseTogether positions={data.positions.filter((p) => picked.has(p.symbol))} trading={trading}
       onClose={() => { setTogether(false); setPicked(new Set()) }} />}

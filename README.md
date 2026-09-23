@@ -78,8 +78,10 @@ pays a per-contract fee. Positions are marked at the mid, and risk limits on dol
 delta, vega, order size, price bands and daily loss are checked before and at every
 fill. Every product trades in its regular session (09:30 to 16:15 ET for index
 options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
-(20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. American options are simulated without early exercise, assignment
-or stock positions: one held into expiry settles in cash at intrinsic value.
+(20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. American equity
+and ETF options deliver shares when exercised early or held into expiry a cent in the
+money; the shares are marked, risked and closed at the underlying's price. Early
+assignment is not simulated.
 
 Buying power follows each order's real margin: a naked short holds the usual
 20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals
@@ -323,7 +325,7 @@ from `CMakeLists.txt` and creates a draft GitHub release.
 - [x] Paper trading in Cboe's overnight and curb sessions
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
 - [x] P&L attribution by delta, gamma, vega and theta
-- [ ] Stock positions, early exercise and assignment
+- [x] Stock positions from early exercise and from exercise and assignment at expiry
 
 ## License
 

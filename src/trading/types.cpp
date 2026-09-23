@@ -36,8 +36,8 @@ Decision eligible(const md::OptionContract& c) {
   if (c.style == pricing::ExerciseStyle::American && conventions.style != pricing::ExerciseStyle::American)
     return {Reason::AMERICAN_UNSUPPORTED, "American exercise is not listed on this European-style root", {}, {}, {}};
   if (!c.standard) return {Reason::NONSTANDARD_UNSUPPORTED, "Adjusted deliverables are unsupported", {}, {}, {}};
-  // American equity, ETF and OEX options trade too. Early exercise and assignment
-  // are not simulated; a position held into expiry settles at intrinsic value.
+  // American equity, ETF and OEX options trade too. Equity and ETF options deliver
+  // shares when exercised or assigned; OEX settles in cash.
   constexpr std::string_view roots[] = {"SPX", "SPXW", "XSP", "NDX", "NDXP", "RUT", "RUTW", "XND", "MRUT", "DJX", "VIX", "VIXW"};
   if (c.style == pricing::ExerciseStyle::European && std::find(std::begin(roots), std::end(roots), c.root) == std::end(roots))
     return {Reason::ROOT_UNSUPPORTED, "Root is outside the cash-settled European index allowlist", {}, {}, {}};

@@ -118,6 +118,12 @@ export function stepLimitPrice(root: string, value: Money, direction: 1 | -1): M
   return decimalString((steps > 0n ? steps : 1n) * cents, 2)
 }
 
+/** Index options settle in cash; equity and ETF options deliver shares. The server's index roots. */
+const indexUnderlyings = new Set(["SPX", "XSP", "NDX", "XND", "RUT", "MRUT", "VIX", "DJX", "OEX"])
+export function deliversShares(underlying: string): boolean {
+  return !indexUnderlyings.has(underlying)
+}
+
 /** For servers without `paper`: orders wait while the product's sessions are closed. */
 export function paperSessionNotice(symbol: string, session: TradingSession | null | undefined) {
   if (!session || session.open) return null

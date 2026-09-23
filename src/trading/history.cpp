@@ -94,15 +94,20 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
     auto& life = out[it->second.index];
     const auto held = life.quantity;
     if (held == 0) return;
+    // An early exercise can take part of the position; the rest stays open.
+    const auto closing = closure.kind == ClosureKind::Exercise
+        ? std::min(magnitude(closure.quantity), magnitude(held)) : magnitude(held);
     if (closure.kind == ClosureKind::Settlement) {
       it->second.ledger.settle(closure.symbol, closure.price);
     } else {
-      it->second.ledger.fill(contract->second, -held, closure.price, Money{});
+      it->second.ledger.fill(contract->second, held > 0 ? -closing : closing, closure.price, Money{});
     }
-    life.closed_contracts += magnitude(held);
-    life.close_notional = life.close_notional + closure.price * magnitude(held);
+    life.quantity = held > 0 ? held - closing : held + closing;
+    life.closed_contracts += closing;
+    life.close_notional = life.close_notional + closure.price * closing;
     life.gross = it->second.ledger.account().realised;
     life.fees = it->second.ledger.account().fees;
+    if (life.quantity != 0) return;
     life.closure = closure.kind;
     finish(closure.symbol, closure.time);
   };

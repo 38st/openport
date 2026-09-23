@@ -177,13 +177,24 @@ json portfolio_json(const TradingView& view) {
         {"awaiting_settlement", p.awaiting_settlement}, {"greeks", position_greeks(p, view)},
         {"attribution", s.attributions.contains(c.osi_symbol()) ? attribution_json(s.attributions.at(c.osi_symbol())) : json(nullptr)}});
   }
+  json stocks = json::array();
+  for (const auto& held : s.stocks) {
+    const auto& p = held.position;
+    const auto magnitude = p.shares < 0 ? -p.shares : p.shares;
+    stocks.push_back({{"symbol", p.symbol}, {"shares", p.shares},
+        {"average_price", (p.shares < 0 ? -p.basis : p.basis).prorate(1, magnitude).str()}, {"basis", p.basis.str()},
+        {"mark", money(held.mark)}, {"mark_time", held.mark ? json(md::format_timestamp(held.mark_time)) : json(nullptr)},
+        {"market_value", money(held.market_value)}, {"unrealised", money(held.unrealised)},
+        {"realised", p.realised.str()}, {"fees", p.fees.str()}, {"fresh", held.fresh},
+        {"attribution", s.attributions.contains(p.symbol) ? attribution_json(s.attributions.at(p.symbol)) : json(nullptr)}});
+  }
   json flags = json::array();
   for (auto code : s.quality_flags) flags.push_back(to_string(code));
   return {{"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
           {"cash", s.account.cash.str()}, {"equity", s.equity.str()},
           {"start_of_day_equity", s.start_of_day_equity.str()}, {"day_pnl", (s.equity - s.start_of_day_equity).str()},
           {"realised", s.account.realised.str()}, {"unrealised", s.unrealised.str()}, {"fees", s.account.fees.str()},
-          {"valuation_complete", s.valuation_complete}, {"quality_flags", flags}, {"positions", positions},
+          {"valuation_complete", s.valuation_complete}, {"quality_flags", flags}, {"positions", positions}, {"stocks", stocks},
           {"buying_power", buying_power_json(s.buying_power)}, {"attribution", attribution_json(s.attribution)}};
 }
 json account_json(const TradingView& view) {
@@ -280,7 +291,8 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"cost", cost.str()}, {"gross", t.gross.str()}, {"fees", t.fees.str()}, {"net", net.str()},
         {"return", open || cost == Money{} ? json(nullptr) : number(net.dollars() / cost.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
-        {"closure", !t.closure ? json(nullptr) : json(*t.closure == ClosureKind::Settlement ? "settlement" : "reset")},
+        {"closure", !t.closure ? json(nullptr) : json(*t.closure == ClosureKind::Settlement ? "settlement"
+                                                        : *t.closure == ClosureKind::Exercise ? "exercise" : "reset")},
         {"fills", fills},
         {"note", a == s.annotations.end() ? std::string{} : a->second.note},
         {"tags", a == s.annotations.end() ? json::array() : json(a->second.tags)}});
@@ -395,6 +407,8 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::Settle: body["position_closed"] = true; break;
     case TradingCommand::Kind::ResetAccount:
     case TradingCommand::Kind::Payout: body = account_json(view); break;
+    case TradingCommand::Kind::Exercise:
+    case TradingCommand::Kind::CloseStock: body = portfolio_json(view); break;
     case TradingCommand::Kind::Annotate: {
       const auto a = s.annotations.find(std::to_string(command.trade));
       body["trade"] = std::to_string(command.trade);
@@ -608,6 +622,27 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
         if (!tag.is_string()) throw std::invalid_argument("tags must be strings");
         command.tags.push_back(tag.get<std::string>());
       }
+    }
+    return command;
+  }
+  if (path == "/api/positions/exercise") {
+    fields(body, {"symbol", "quantity"});
+    command.kind = TradingCommand::Kind::Exercise;
+    command.symbol = symbol_field(body);
+    command.quantity = integer_field(body, "quantity");
+    if (command.quantity <= 0) throw std::invalid_argument("quantity must be a positive number of contracts");
+    return command;
+  }
+  if (path == "/api/stocks/close") {
+    fields(body, {"symbol"}, {"shares"});
+    command.kind = TradingCommand::Kind::CloseStock;
+    command.symbol = string_field(body, "symbol");
+    if (command.symbol.empty() || command.symbol.size() > 16 ||
+        !std::all_of(command.symbol.begin(), command.symbol.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.'; }))
+      throw std::invalid_argument("symbol must be an uppercase stock symbol such as SPY");
+    if (body.contains("shares")) {
+      command.quantity = integer_field(body, "shares");
+      if (command.quantity <= 0) throw std::invalid_argument("shares must be positive; leave it out to close them all");
     }
     return command;
   }
@@ -845,6 +880,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   const auto pairs = query_pairs(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
   const bool route = (request.method == "POST" && (path == "/api/orders" ||
       path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/accounts" ||
+      path == "/api/positions/exercise" || path == "/api/stocks/close" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout")) ||
       (request.method == "PUT" && (path == "/api/risk/limits" || path.starts_with("/api/orders/") ||

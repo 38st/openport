@@ -180,7 +180,7 @@ export interface Trade {
   return: Num
   mark: Money | null
   unrealised: Money | null
-  closure: "settlement" | "reset" | null
+  closure: "settlement" | "reset" | "exercise" | null
   fills: string[]
   /** The trader's note ("" for none) and tags; absent from older servers. */
   note?: string
@@ -298,6 +298,21 @@ export interface Position {
   /** Today's P&L by Greek for this contract; null until its first fill or rollover on this server. */
   attribution?: Attribution | null
 }
+/** Shares of an underlying, delivered by exercise and assignment. */
+export interface StockHolding {
+  symbol: string
+  shares: number
+  average_price: Money
+  basis: Money
+  mark: Money | null
+  mark_time: string | null
+  market_value: Money | null
+  unrealised: Money | null
+  realised: Money
+  fees: Money
+  fresh: boolean
+  attribution: Attribution | null
+}
 export interface Portfolio {
   account_version: string
   time: string
@@ -311,6 +326,8 @@ export interface Portfolio {
   valuation_complete: boolean
   quality_flags: string[]
   positions: Position[]
+  /** Absent from older servers. */
+  stocks?: StockHolding[]
   buying_power?: BuyingPower
   /** Today's P&L by Greek; absent from older servers. */
   attribution?: Attribution

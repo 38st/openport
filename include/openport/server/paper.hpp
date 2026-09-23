@@ -43,7 +43,8 @@ struct TradingView {
 };
 
 struct TradingCommand {
-  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate };
+  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
+                    Exercise, CloseStock };
   Kind kind = Kind::Submit;
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
@@ -65,6 +66,8 @@ struct TradingCommand {
   std::uint64_t trade = 0;        ///< Annotate: the trade, by its opening fill's ID.
   std::string note;               ///< Annotate: the note; empty with no tags clears it.
   std::vector<std::string> tags;  ///< Annotate: the trade's tags.
+  /// Exercise: contracts of `symbol`; CloseStock: shares of `symbol` to close, 0 for all.
+  trading::Quantity quantity = 0;
 };
 
 struct TradingReply {

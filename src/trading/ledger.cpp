@@ -14,6 +14,28 @@ Quantity add_quantity(Quantity a, Quantity b) {
   if (__builtin_add_overflow(a, b, &result)) throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Position quantity overflow");
   return result;
 }
+/// Trade `units` (signed contracts or shares) at `unit` (the price times the
+/// multiplier) against a holding and return the realised P&L. A reduction
+/// releases its share of the signed basis; a reversal opens the rest at the price.
+Money trade(Quantity& quantity, Money& basis, Quantity units, Money unit) {
+  const auto old_q = quantity;
+  const auto total_q = add_quantity(old_q, units);
+  (void)magnitude(total_q);
+  const auto size = magnitude(units);
+  const auto old_size = magnitude(old_q);
+  Money realised;
+  if (old_q == 0 || (old_q > 0) == (units > 0)) {
+    basis = basis + unit * units;
+  } else {
+    const auto closed = std::min(old_size, size);
+    const Money allocated = basis.prorate(closed, old_size);
+    realised = (unit * (old_q > 0 ? closed : -closed)) - allocated;
+    basis = basis - allocated;
+    if (size > closed) basis = unit * total_q;
+  }
+  quantity = total_q;
+  return realised;
+}
 }  // namespace
 void Ledger::fill(const md::OptionContract& contract, Quantity signed_quantity, Money price, Money fee) {
   const auto decision = eligible(contract);
@@ -23,29 +45,27 @@ void Ledger::fill(const md::OptionContract& contract, Quantity signed_quantity, 
   const auto symbol = contract.osi_symbol();
   const auto it = positions_.find(symbol);
   Position next = it == positions_.end() ? Position{contract, 0, {}, {}, {}} : it->second;
-  const auto old_q = next.quantity;
-  const auto total_q = add_quantity(old_q, signed_quantity);
-  (void)magnitude(total_q);
-  const auto size = magnitude(signed_quantity);
-  const auto old_size = magnitude(old_q);
-  const Money notional = (price * 100) * signed_quantity;
-  const Money cash = account_.cash - notional - fee;
-  Money realised;
-  if (old_q == 0 || (old_q > 0) == (signed_quantity > 0)) {
-    next.basis = next.basis + notional;
-  } else {
-    const auto closed = std::min(old_size, size);
-    const Money allocated = next.basis.prorate(closed, old_size);
-    realised = ((price * 100) * (old_q > 0 ? closed : -closed)) - allocated;
-    next.basis = next.basis - allocated;
-    if (size > closed) next.basis = (price * 100) * total_q;
-  }
-  next.quantity = total_q;
+  const Money cash = account_.cash - (price * 100) * signed_quantity - fee;
+  const Money realised = trade(next.quantity, next.basis, signed_quantity, price * 100);
   next.realised = next.realised + realised;
   next.fees = next.fees + fee;
   const Account account{cash, account_.realised + realised, account_.fees + fee};
-  if (total_q == 0) positions_.erase(symbol);
+  if (next.quantity == 0) positions_.erase(symbol);
   else positions_.insert_or_assign(symbol, std::move(next));
+  account_ = account;
+}
+void Ledger::trade_stock(const std::string& symbol, Quantity signed_shares, Money price, Money fee) {
+  if (symbol.empty() || signed_shares == 0 || price < Money{} || fee < Money{})
+    throw TradingError(Reason::INVALID_ORDER, "A stock trade needs a symbol, nonzero shares and nonnegative price/fee");
+  const auto it = stocks_.find(symbol);
+  StockPosition next = it == stocks_.end() ? StockPosition{symbol, 0, {}, {}, {}} : it->second;
+  const Money cash = account_.cash - price * signed_shares - fee;
+  const Money realised = trade(next.shares, next.basis, signed_shares, price);
+  next.realised = next.realised + realised;
+  next.fees = next.fees + fee;
+  const Account account{cash, account_.realised + realised, account_.fees + fee};
+  if (next.shares == 0) stocks_.erase(symbol);
+  else stocks_.insert_or_assign(symbol, std::move(next));
   account_ = account;
 }
 void Ledger::settle(const std::string& symbol, Money intrinsic) {
@@ -61,17 +81,24 @@ void Ledger::withdraw(Money amount) {
   if (amount <= Money{}) throw TradingError(Reason::INVALID_PAYOUT, "Withdrawal must be positive");
   account_.cash = account_.cash - amount;
 }
-Ledger Ledger::restore(Account account, std::map<std::string, Position> positions) {
+Ledger Ledger::restore(Account account, std::map<std::string, Position> positions,
+                       std::map<std::string, StockPosition> stocks) {
   for (const auto& [symbol, p] : positions) {
     if (!eligible(p.contract).ok() || p.contract.osi_symbol() != symbol || p.quantity == 0 ||
         p.quantity == std::numeric_limits<Quantity>::min() || p.fees < Money{} ||
         (p.quantity > 0 ? p.basis < Money{} : p.basis > Money{}))
       throw TradingError(Reason::JOURNAL_CORRUPT, "Invalid recorded ledger position");
   }
+  for (const auto& [symbol, p] : stocks) {
+    if (symbol.empty() || p.symbol != symbol || p.shares == 0 || p.shares == std::numeric_limits<Quantity>::min() ||
+        p.fees < Money{} || (p.shares > 0 ? p.basis < Money{} : p.basis > Money{}))
+      throw TradingError(Reason::JOURNAL_CORRUPT, "Invalid recorded stock position");
+  }
   if (account.fees < Money{}) throw TradingError(Reason::JOURNAL_CORRUPT, "Negative recorded fees");
   Ledger result;
   result.account_ = account;
   result.positions_ = std::move(positions);
+  result.stocks_ = std::move(stocks);
   return result;
 }
 }  // namespace openport::trading

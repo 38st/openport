@@ -66,7 +66,8 @@ Timestamp observation_time(const md::OptionContract& contract, Timestamp now) {
 }
 RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orders,
     const std::map<std::string, md::OptionContract>& contracts,
-    const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now) {
+    const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now,
+    const std::map<std::string, double>& stock_prices) {
   RiskSnapshot result;
   result.aggregate.limits = limits.aggregate;
   auto exposure_of = [&](const md::OptionContract& c, Quantity q) -> std::optional<Exposure> {
@@ -91,6 +92,11 @@ RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orde
     result.aggregate = next_aggregate;
   };
   for (const auto& [symbol, p] : ledger.positions()) add_exposure(p.contract.underlying, exposure_of(p.contract, p.quantity), false);
+  for (const auto& [symbol, stock] : ledger.stocks()) {
+    const auto price = stock_prices.find(symbol);
+    add_exposure(symbol, price == stock_prices.end() ? std::nullopt
+        : std::optional<Exposure>(Exposure{static_cast<double>(stock.shares) * price->second, 0, 0, 0}), false);
+  }
   for (const auto& o : orders) {
     if (!o.open()) continue;
     if (multi_leg(o.request)) {
@@ -139,7 +145,7 @@ void validate_scenarios(const ScenarioConfig& c) {
   if (!valid) throw TradingError(Reason::INVALID_SCENARIO, "Invalid or oversized spot/vol grid");
 }
 ScenarioGrid scenario_grid(const Ledger& ledger, const std::map<std::string, Valuation>& valuations,
-    const ScenarioConfig& config, Timestamp now, Timestamp max_age) {
+    const ScenarioConfig& config, Timestamp now, Timestamp max_age, const std::map<std::string, double>& stock_prices) {
   validate_scenarios(config);
   ScenarioGrid result;
   for (double spot : config.spot_percent) {
@@ -160,6 +166,17 @@ ScenarioGrid scenario_grid(const Ledger& ledger, const std::map<std::string, Val
         const double shocked = pricing::black_price(p.contract.type, v.forward * (1 + spot / 100),
             p.contract.strike, v.years, std::max(config.vol_floor, shocked_vol), v.discount);
         const double pnl = static_cast<double>(p.quantity) * 100 * (shocked - base);
+        if (!std::isfinite(pnl) || !std::isfinite(cell.pnl + pnl)) result.complete = false;
+        else cell.pnl += pnl;
+      }
+      // Shares move with the underlying; volatility does not touch them.
+      for (const auto& [symbol, stock] : ledger.stocks()) {
+        const auto price = stock_prices.find(symbol);
+        if (price == stock_prices.end()) {
+          result.complete = false;
+          continue;
+        }
+        const double pnl = static_cast<double>(stock.shares) * price->second * spot / 100;
         if (!std::isfinite(pnl) || !std::isfinite(cell.pnl + pnl)) result.complete = false;
         else cell.pnl += pnl;
       }

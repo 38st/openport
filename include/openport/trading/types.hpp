@@ -181,6 +181,13 @@ struct Valuation {
   bool valid = true;
 };
 
+/// An underlying's price, for the shares that exercise and assignment deliver.
+struct StockPrice {
+  std::string symbol;
+  Timestamp time = 0;
+  Money price;
+};
+
 /// P&L explained by the Greeks, in dollars (analytic, not accounting). Each
 /// stretch a position is held at one size is split by the Greeks at its start:
 /// delta times the underlying's move, half gamma times the move squared, vega

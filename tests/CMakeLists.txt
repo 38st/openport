@@ -55,6 +55,7 @@ target_sources(openport_tests PRIVATE
   trading/sessions_test.cpp
   trading/notes_test.cpp
   trading/attribution_test.cpp
+  trading/delivery_test.cpp
   trading/evaluation_test.cpp
   trading/conditional_test.cpp
   trading/funded_test.cpp

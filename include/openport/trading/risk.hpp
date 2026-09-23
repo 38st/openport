@@ -33,10 +33,13 @@ struct RiskSnapshot {
 /// overnight, while SPX trades).
 [[nodiscard]] Timestamp observation_time(const md::OptionContract& contract, Timestamp now);
 
+/// Shares count at their dollar delta, at `stock_prices` (fresh prices by
+/// underlying); a holding without one leaves the result incomplete.
 [[nodiscard]] RiskSnapshot portfolio_risk(
     const Ledger& ledger, const std::vector<Order>& orders,
     const std::map<std::string, md::OptionContract>& contracts,
-    const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now);
+    const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now,
+    const std::map<std::string, double>& stock_prices = {});
 [[nodiscard]] Decision check_exposure(const RiskSnapshot& risk);
 
 struct ScenarioCell {
@@ -52,6 +55,6 @@ struct ScenarioGrid {
 void validate_scenarios(const ScenarioConfig& config);
 [[nodiscard]] ScenarioGrid scenario_grid(const Ledger& ledger,
     const std::map<std::string, Valuation>& valuations, const ScenarioConfig& config,
-    Timestamp now, Timestamp max_age);
+    Timestamp now, Timestamp max_age, const std::map<std::string, double>& stock_prices = {});
 
 }  // namespace openport::trading
