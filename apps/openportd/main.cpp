@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <locale>
 #include <sstream>
 #include <string>
@@ -26,6 +27,7 @@
 #include "openport/providers/options.hpp"
 #include "openport/server/api.hpp"
 #include "openport/server/engine.hpp"
+#include "openport/server/plans.hpp"
 #include "openport/server/web_server.hpp"
 #include "openport/server/web_policy.hpp"
 
@@ -47,6 +49,8 @@ struct Settings {
   bool paper_enabled = true;
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
+  const server::PlanPreset* plan = server::find_plan("practice");
+  std::optional<trading::Money> paper_cash;
   std::string write_token;
   int threads = 2;
   double rate = 0.04;
@@ -60,9 +64,11 @@ int usage(const char* error = nullptr) {
       "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
-      "                 [--paper-journal PATH] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
+      "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN]\n\n"
       "paper: durable European index paper trading; cash 100000, fee 0.65\n"
+      "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k);\n"
+      "      default practice; --paper-cash then overrides its starting balance\n"
       "write token: --write-token overrides OPENPORT_WRITE_TOKEN; required for remote writes\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
@@ -141,8 +147,12 @@ int run(int argc, char** argv) {
     } else if (arg == "--paper-journal") {
       if (value.empty()) return usage("--paper-journal requires a nonempty path");
       settings.paper_journal = value;
+    } else if (arg == "--plan") {
+      const auto* plan = server::find_plan(value);
+      if (!plan) return usage("--plan must be practice, intraday-25k|50k|100k or eod-25k|50k|100k");
+      settings.plan = plan;
     } else if (arg == "--paper-cash") {
-      settings.paper.initial_cash = trading::Money::parse(value);
+      settings.paper_cash = trading::Money::parse(value);
     } else if (arg == "--paper-fee") {
       settings.paper.fee_per_contract = trading::Money::parse(value);
       if (settings.paper.fee_per_contract < trading::Money{}) return usage("--paper-fee must be nonnegative");
@@ -188,6 +198,10 @@ int run(int argc, char** argv) {
   engine_options.record_file = settings.record_file;
   engine_options.paper_enabled = settings.paper_enabled;
   engine_options.paper_journal = settings.paper_journal;
+  // Rules and cash seed new journals only; recovery restores the recorded configuration.
+  settings.paper.rules = settings.plan->rules;
+  settings.paper.initial_cash = settings.paper_cash.value_or(settings.plan->initial_cash);
+  if (settings.paper.initial_cash <= trading::Money{}) return usage("--paper-cash must be positive");
   engine_options.paper = settings.paper;
   engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins});
   server::Engine engine(*provider, settings.subscription, engine_options);

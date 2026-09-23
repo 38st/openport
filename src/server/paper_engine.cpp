@@ -182,9 +182,15 @@ void Engine::publish_trading() {
   const auto& config = trading_view_ ? trading_view_->config : options_.paper;
   status.fee_per_contract = config.fee_per_contract;
   status.initial_cash = config.initial_cash;
+  status.plan = config.rules.plan;
+  status.evaluation.clear();
   if (trading_view_) {
     status.account_version = trading_view_->snapshot->account_version;
     status.kill_latched = trading_view_->snapshot->risk.kill_latched;
+    if (config.rules.evaluation()) {
+      constexpr const char* names[] = {"active", "passed", "failed"};
+      status.evaluation = names[static_cast<int>(trading_view_->snapshot->evaluation.status)];
+    }
   }
 }
 
@@ -339,6 +345,9 @@ void Engine::apply_command(PendingCommand& pending) {
           }
           break;
         }
+        case TradingCommand::Kind::ResetAccount:
+          result = trading_->reset_account(c.initial_cash, c.rules, c.reason, market_time_);
+          break;
       }
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;

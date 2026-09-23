@@ -23,8 +23,11 @@ enum class Reason {
   KILL_SWITCH, RISK_CHANGED, IOC_REMAINDER, USER_CANCEL, SESSION_CLOSED, FEED_STALLED,
   DAY_END, EXPIRED, AWAITING_SETTLEMENT, INVALID_SETTLEMENT, ALREADY_SETTLED,
   UNKNOWN_ORDER, ORDER_TERMINAL, INVALID_LIMITS, INVALID_TIME, INVALID_SCENARIO,
-  INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED
+  INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED,
+  EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES
 };
+/// The last Reason; recorded codes are strings, so new codes append here.
+inline constexpr Reason kLastReason = Reason::INVALID_RULES;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -68,6 +71,9 @@ struct Order {
   Timestamp accepted_at = 0;
   Timestamp day_end = 0;
   Decision reason;
+  /// Reducer-generated closing order (rule liquidation or expiry auto-close).
+  /// Always market IOC against a fresh book; never user-submitted.
+  bool system = false;
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   [[nodiscard]] bool open() const {
     return status == OrderStatus::Working || status == OrderStatus::PartiallyFilled;
@@ -141,11 +147,30 @@ struct ScenarioConfig {
   std::vector<double> vol_points{-5, 0, 5, 10};
   double vol_floor = 0.0001;
 };
+
+/// How often the trailing drawdown floor may rise. Breaches are always
+/// monitored on every transaction; the mode only controls the ratchet.
+enum class DrawdownMode { Intraday, EndOfDay };
+
+/// Evaluation-account rules. The defaults describe an unrestricted paper
+/// account: no target, no drawdown floor, any side, no buying-power check.
+struct AccountRules {
+  std::string plan;           ///< Display name only, e.g. "Intraday 100K"; at most 64 bytes.
+  Money profit_target;        ///< Dollars above the starting balance; zero disables.
+  Money max_drawdown;         ///< Trailing distance below peak equity; zero disables.
+  DrawdownMode drawdown_mode = DrawdownMode::Intraday;
+  bool buy_only = false;      ///< Sells may only reduce existing long positions.
+  bool buying_power = false;  ///< Enforce cash buying power, with naked-short requirements.
+  Timestamp expiry_cutoff = 0;  ///< Auto-close this long before contract expiry; zero disables.
+  [[nodiscard]] bool evaluation() const { return profit_target > Money{} || max_drawdown > Money{}; }
+};
+
 struct SessionConfig {
   Money initial_cash = Money::from_micros(100'000'000'000);
   Money fee_per_contract = Money::from_micros(650'000);
   Limits limits;
   ScenarioConfig scenarios;
+  AccountRules rules;
 };
 
 [[nodiscard]] Decision eligible(const md::OptionContract& contract);
@@ -154,5 +179,7 @@ struct SessionConfig {
 [[nodiscard]] bool valid_quote(const QuoteObservation& quote);
 [[nodiscard]] bool valid_valuation(const Valuation& valuation);
 void validate_limits(const Limits& limits);
+/// Money amounts nonnegative, cutoff within [0, 1 day), plan name at most 64 bytes.
+void validate_rules(const AccountRules& rules);
 
 }  // namespace openport::trading

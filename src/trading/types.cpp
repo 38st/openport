@@ -17,6 +17,8 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(AWAITING_SETTLEMENT); CASE(INVALID_SETTLEMENT); CASE(ALREADY_SETTLED);
     CASE(UNKNOWN_ORDER); CASE(ORDER_TERMINAL); CASE(INVALID_LIMITS); CASE(INVALID_TIME);
     CASE(INVALID_SCENARIO); CASE(INVALID_REASON); CASE(JOURNAL_IO); CASE(JOURNAL_CORRUPT); CASE(JOURNAL_LOCKED);
+    CASE(EVALUATION_CLOSED); CASE(BUYING_POWER); CASE(BUY_ONLY); CASE(EXPIRY_CUTOFF);
+    CASE(ACCOUNT_RESET); CASE(INVALID_RULES);
   }
 #undef CASE
   return "UNKNOWN";
@@ -69,5 +71,12 @@ void validate_limits(const Limits& l) {
                exposure_ok(l.aggregate) && exposure_ok(l.per_underlying);
   for (const auto& [name, limit] : l.underlying_overrides) valid &= !name.empty() && exposure_ok(limit);
   if (!valid) throw TradingError(Reason::INVALID_LIMITS, "Limits must be finite and nonnegative; order size must be positive");
+}
+void validate_rules(const AccountRules& r) {
+  if (r.profit_target < Money{} || r.max_drawdown < Money{} || r.expiry_cutoff < 0 ||
+      r.expiry_cutoff >= md::kNanosPerDay || r.plan.size() > 64 ||
+      (r.drawdown_mode != DrawdownMode::Intraday && r.drawdown_mode != DrawdownMode::EndOfDay))
+    throw TradingError(Reason::INVALID_RULES,
+        "Target and drawdown must be nonnegative, the expiry cutoff under one day, the plan name at most 64 bytes");
 }
 }  // namespace openport::trading

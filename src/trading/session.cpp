@@ -58,6 +58,94 @@ Decision price_check(const State& s, const QuoteObservation& q, Money price) {
             static_cast<double>(difference / 1'000'000), static_cast<double>(band / 1'000'000), q.symbol};
   return {};
 }
+Quantity magnitude(Quantity q) { return q < 0 ? -q : q; }
+Quantity held(const State& s, const std::string& symbol) {
+  const auto it = s.ledger.positions().find(symbol);
+  return it == s.ledger.positions().end() ? 0 : it->second.quantity;
+}
+std::optional<double> spot_for(const State& s, const std::string& symbol) {
+  const auto it = s.valuations.find(symbol);
+  if (it == s.valuations.end() || !valid_valuation(it->second)) return std::nullopt;
+  return it->second.spot;
+}
+/// Working user orders on one side of a contract, excluding one order.
+Quantity pending(const State& s, const std::string& symbol, Side side, OrderId exclude) {
+  Quantity total = 0;
+  for (const auto& o : s.orders)
+    if (o.open() && !o.system && o.id != exclude && o.request.symbol == symbol && o.request.side == side)
+      total += o.remaining();
+  return total;
+}
+/// True when this order, together with the other working orders on its side,
+/// can only reduce the current position toward flat.
+bool closing_only(const State& s, const Order& o) {
+  const auto q = held(s, o.request.symbol);
+  const auto side = o.request.side;
+  const auto others = pending(s, o.request.symbol, side, o.id);
+  return side == Side::Sell ? q > 0 && o.remaining() + others <= q
+                            : q < 0 && o.remaining() + others <= -q;
+}
+Money average_unit_price(const Position& p) {
+  const auto size = magnitude(p.quantity);
+  if (size == 0) return {};
+  return (p.basis < Money{} ? -p.basis : p.basis).prorate(1, size * 100);
+}
+struct PowerDetail {
+  BuyingPower total;
+  Money focus_reservation;
+  Quantity focus_opening = 0;
+};
+/// Working orders reserve in acceptance order. Closing capacity is consumed by
+/// earlier orders first, so two sells cannot both claim the same long contracts.
+/// Opening buys reserve premium plus fees; opening sells reserve the naked
+/// requirement plus fees (their credit covers the buy-back value); closing
+/// orders reserve only fees. Orders without a limit use the current far side.
+PowerDetail buying_power(const State& s, OrderId focus = 0) {
+  PowerDetail out;
+  Money short_requirement;
+  for (const auto& [symbol, position] : s.ledger.positions()) {
+    if (position.quantity >= 0) continue;
+    const auto size = -position.quantity;
+    const auto mark = s.marks.find(symbol);
+    // Without a mark the entry credit stands in for the buy-back value.
+    const Money value = mark != s.marks.end() ? (mark->second.price * 100) * size : -position.basis;
+    short_requirement = short_requirement + value + naked_requirement(position.contract, spot_for(s, symbol)) * size;
+  }
+  std::map<std::string, std::pair<Quantity, Quantity>> capacity;
+  Money reserved;
+  for (const auto& o : s.orders) {
+    if (!o.open() || o.remaining() <= 0) continue;
+    const auto& symbol = o.request.symbol;
+    const auto contract = s.contracts.find(symbol);
+    if (contract == s.contracts.end()) continue;
+    const auto q = held(s, symbol);
+    auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Quantity>(q, 0), std::max<Quantity>(-q, 0)).first->second;
+    const auto remaining = o.remaining();
+    Money price;
+    if (o.request.limit_price) price = *o.request.limit_price;
+    else if (const auto book = s.books.find(symbol); book != s.books.end() && valid_quote(book->second.quote))
+      price = o.request.side == Side::Buy ? *book->second.quote.ask : *book->second.quote.bid;
+    Money reservation = s.config.fee_per_contract * remaining;
+    Quantity opening = 0;
+    if (o.request.side == Side::Buy) {
+      const auto closing = std::min(remaining, short_left);
+      short_left -= closing;
+      opening = remaining - closing;
+      reservation = reservation + (price * 100) * opening;
+    } else {
+      const auto closing = std::min(remaining, long_left);
+      long_left -= closing;
+      opening = remaining - closing;
+      reservation = reservation + naked_requirement(contract->second, spot_for(s, symbol)) * opening;
+    }
+    reserved = reserved + reservation;
+    if (o.id == focus) { out.focus_reservation = reservation; out.focus_opening = opening; }
+  }
+  out.total.reserved = reserved;
+  out.total.short_requirement = short_requirement;
+  out.total.available = s.ledger.account().cash - short_requirement - reserved;
+  return out;
+}
 TradingSnapshot snapshot_of(const State& s) {
   TradingSnapshot out;
   out.account_version = s.version;
@@ -96,7 +184,34 @@ TradingSnapshot snapshot_of(const State& s) {
   if (!out.risk.complete || !out.scenarios.complete) out.quality_flags.push_back(Reason::MISSING_VALUATION);
   if (std::any_of(out.positions.begin(), out.positions.end(), [](const auto& p) { return p.awaiting_settlement; }))
     out.quality_flags.push_back(Reason::AWAITING_SETTLEMENT);
+  out.evaluation = s.evaluation;
+  out.buying_power = buying_power(s).total;
+  out.closures = s.closures;
+  out.attempts = s.attempts;
   return out;
+}
+/// Rules only act on fully marked equity: every position has a mark, fresh or not.
+std::optional<Money> marked_equity(const TradingSnapshot& snapshot) {
+  for (const auto& p : snapshot.positions) if (!p.market_value) return std::nullopt;
+  return snapshot.equity;
+}
+Money floor_for(const AccountRules& rules, Money peak) {
+  return rules.max_drawdown > Money{} ? peak - rules.max_drawdown : Money{};
+}
+std::string dollars(Money value) { return (value < Money{} ? "-$" + (-value).str() : "$" + value.str()); }
+Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
+  Evaluation e;
+  e.attempt = attempt;
+  e.started = s.time;
+  e.starting_balance = s.ledger.account().cash;
+  e.peak = e.starting_balance;
+  e.floor = floor_for(s.config.rules, e.peak);
+  e.first_order = static_cast<OrderId>(s.orders.size() + 1);
+  e.first_fill = s.fills.size() + 1;
+  e.day = s.day;
+  e.day_open_equity = e.starting_balance;
+  e.day_close_equity = e.starting_balance;
+  return e;
 }
 void cancel_order(Order& order, Decision reason, Events& events) {
   if (!order.open()) return;
@@ -134,6 +249,11 @@ void advance(State& s, Timestamp time, Events& events) {
 }
 Decision order_check(const State& s, const Order& o, bool at_fill = false) {
   if (s.kill) return failure(Reason::KILL_SWITCH, s.kill_reason);
+  const auto& rules = s.config.rules;
+  if (rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
+    return failure(Reason::EVALUATION_CLOSED, std::string("The evaluation has ") +
+        (s.evaluation.status == EvaluationStatus::Passed ? "passed" : "failed") +
+        "; reset the account to start a new attempt");
   const auto& request = o.request;
   const auto c = s.contracts.find(request.symbol);
   if (c == s.contracts.end()) return failure(Reason::UNKNOWN_CONTRACT, "Order must reference a registered canonical OSI definition");
@@ -152,6 +272,10 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
             static_cast<double>(s.config.limits.max_order_contracts), request.symbol};
   if (request.limit_price && request.limit_price->micros() % tick_size(c->second.root, *request.limit_price).micros() != 0)
     return failure(Reason::INVALID_TICK, "Limit price is not a positive multiple of the product tier tick");
+  if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
+    return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
+  if (rules.expiry_cutoff > 0 && s.time >= c->second.expiry_time() - rules.expiry_cutoff && !closing_only(s, o))
+    return failure(Reason::EXPIRY_CUTOFF, "Contract is inside the pre-expiry cutoff; only closing orders are accepted");
   if (const auto d = quote_check(s, request.symbol); !d.ok()) return d;
   const auto& quote = s.books.at(request.symbol).quote;
   const auto price = !at_fill && request.limit_price ? *request.limit_price : (request.side == Side::Buy ? *quote.ask : *quote.bid);
@@ -159,7 +283,28 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
   const auto snapshot = snapshot_of(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
-  return check_exposure(snapshot.risk);
+  if (const auto d = check_exposure(snapshot.risk); !d.ok()) return d;
+  if (rules.buying_power && !at_fill) {
+    // Fills recheck buying power against the projected ledger instead.
+    const auto power = buying_power(s, o.id);
+    if (power.focus_opening > 0 && power.total.available < Money{})
+      return {Reason::BUYING_POWER, "Order needs more buying power than the account has available",
+              power.focus_reservation.dollars(), (power.total.available + power.focus_reservation).dollars(), request.symbol};
+  }
+  return {};
+}
+/// Liquidation and expiry auto-close reduce risk, so only the contract,
+/// session and executable-quote gates apply, including under the kill latch.
+Decision system_check(const State& s, const Order& o) {
+  const auto c = s.contracts.find(o.request.symbol);
+  if (c == s.contracts.end()) return failure(Reason::UNKNOWN_CONTRACT, "Order must reference a registered canonical OSI definition");
+  if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "Contract has expired");
+  if (md::trading_session(c->second.root, s.time).name != "regular")
+    return failure(Reason::SESSION_CLOSED, "v1 accepts and executes only in the product regular session");
+  return quote_check(s, o.request.symbol);
+}
+bool opens(Quantity held_quantity, Quantity signed_fill) {
+  return held_quantity == 0 || (held_quantity > 0) == (signed_fill > 0) || magnitude(signed_fill) > magnitude(held_quantity);
 }
 bool marketable(const Order& o, const QuoteObservation& q) {
   if (o.request.type == OrderType::Market) return true;
@@ -170,7 +315,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   if (!o.open()) return;
   if (incoming != id && s.books.at(o.request.symbol).quote.time < o.accepted_at) return;
   if (!quote_check(s, o.request.symbol).ok() || !marketable(o, s.books.at(o.request.symbol).quote)) return;
-  auto decision = order_check(s, o, true);
+  auto decision = o.system ? system_check(s, o) : order_check(s, o, true);
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
     decision.code = Reason::RISK_CHANGED;
@@ -183,13 +328,22 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   auto& budget = o.request.side == Side::Buy ? book.ask_left : book.bid_left;
   const Quantity quantity = std::min(o.remaining(), budget);
   if (quantity <= 0) return;
-  decision = price_check(s, book.quote, price);
+  decision = o.system ? Decision{} : price_check(s, book.quote, price);
   const Money fee = s.config.fee_per_contract * quantity;
-  if (decision.ok()) {
+  if (decision.ok() && !o.system) {
     // Check the proposed accounting before committing any liquidity or fill.
+    const Quantity signed_quantity = o.request.side == Side::Buy ? quantity : -quantity;
+    const auto before = held(s, o.request.symbol);
     State projected = s;
-    projected.ledger.fill(s.contracts.at(o.request.symbol), o.request.side == Side::Buy ? quantity : -quantity, price, fee);
+    projected.ledger.fill(s.contracts.at(o.request.symbol), signed_quantity, price, fee);
+    projected.orders.at(static_cast<std::size_t>(id - 1)).filled_quantity += quantity;
     decision = loss_check(projected, snapshot_of(projected));
+    if (decision.ok() && s.config.rules.buying_power && opens(before, signed_quantity)) {
+      const auto power = buying_power(projected).total;
+      if (power.available < Money{})
+        decision = {Reason::BUYING_POWER, "Fill needs more buying power than the account has available",
+                    (-power.available).dollars(), 0.0, o.request.symbol};
+    }
   }
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
@@ -225,6 +379,82 @@ void match_symbols(State& s, const std::set<std::string>& symbols, Events& event
     }
   }
 }
+/// Submit a reducer-owned market IOC that closes one position against the
+/// current fresh book. Without executable liquidity nothing is recorded, so a
+/// rule keeps retrying on later transactions instead of accumulating orders.
+void flatten(State& s, const std::string& symbol, std::string_view why, Events& events) {
+  const auto q = held(s, symbol);
+  const auto contract = s.contracts.find(symbol);
+  if (q == 0 || contract == s.contracts.end() || s.time >= contract->second.expiry_time() ||
+      md::trading_session(contract->second.root, s.time).name != "regular" || !quote_check(s, symbol).ok())
+    return;
+  const auto side = q > 0 ? Side::Sell : Side::Buy;
+  const auto& book = s.books.at(symbol);
+  if ((side == Side::Sell ? book.bid_left : book.ask_left) <= 0) return;
+  Order order;
+  order.id = static_cast<OrderId>(s.orders.size() + 1);
+  order.request = {"system:" + std::string(why) + ":" + std::to_string(order.id), symbol, side,
+                   OrderType::Market, TimeInForce::Ioc, magnitude(q), {}};
+  order.accepted_at = s.time;
+  order.day_end = s.time;  // IOC: never rests past this transaction.
+  order.system = true;
+  s.orders.push_back(order);
+  event(events, "order_accepted", order);
+  match_symbols(s, {symbol}, events, order.id);
+  auto& stored = s.orders.at(static_cast<std::size_t>(order.id - 1));
+  if (stored.open()) cancel_order(stored, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+}
+void decide(State& s, EvaluationStatus status, Money equity, std::string message, Events& events) {
+  auto& e = s.evaluation;
+  e.status = status;
+  e.decided_at = s.time;
+  e.decided_equity = equity;
+  e.decision = message;
+  event(events, status == EvaluationStatus::Passed ? "evaluation_passed" : "evaluation_failed",
+        Json{{"attempt", e.attempt}, {"equity", equity}, {"peak", e.peak}, {"floor", e.floor}, {"message", message}});
+  for (auto& o : s.orders)
+    if (!o.system) cancel_order(o, failure(Reason::EVALUATION_CLOSED, message), events);
+}
+/// Runs after every command: tracks the day's closing equity, ratchets an
+/// intraday peak, decides pass/fail on fully marked equity (touching the floor
+/// fails), then liquidates a decided attempt and auto-closes expiring positions.
+void monitor_rules(State& s, Events& events) {
+  const auto& rules = s.config.rules;
+  auto& e = s.evaluation;
+  if (const auto equity = marked_equity(snapshot_of(s))) {
+    if (local_date(s.time) == e.day) e.day_close_equity = *equity;
+    if (rules.evaluation() && e.status == EvaluationStatus::Active) {
+      if (rules.drawdown_mode == DrawdownMode::Intraday && *equity > e.peak) {
+        e.peak = *equity;
+        e.floor = floor_for(rules, e.peak);
+      }
+      const auto target = e.starting_balance + rules.profit_target;
+      if (rules.max_drawdown > Money{} && *equity <= e.floor) {
+        decide(s, EvaluationStatus::Failed, *equity, "Equity " + dollars(*equity) + " reached the drawdown floor " +
+               dollars(e.floor) + " (peak " + dollars(e.peak) + ", max drawdown " + dollars(rules.max_drawdown) + ")", events);
+      } else if (rules.profit_target > Money{} && *equity >= target) {
+        decide(s, EvaluationStatus::Passed, *equity, "Equity " + dollars(*equity) + " reached the profit target " +
+               dollars(target), events);
+      }
+    }
+  }
+  std::vector<std::string> symbols;
+  for (const auto& [symbol, position] : s.ledger.positions()) symbols.push_back(symbol);
+  for (const auto& symbol : symbols) {
+    if (rules.evaluation() && e.status != EvaluationStatus::Active) {
+      flatten(s, symbol, e.status == EvaluationStatus::Passed ? "target" : "drawdown", events);
+      continue;
+    }
+    const auto& contract = s.contracts.at(symbol);
+    if (rules.expiry_cutoff > 0 && s.time >= contract.expiry_time() - rules.expiry_cutoff &&
+        s.time < contract.expiry_time()) {
+      for (auto& o : s.orders)
+        if (!o.system && o.request.symbol == symbol)
+          cancel_order(o, failure(Reason::EXPIRY_CUTOFF, "Pre-expiry cutoff: the position is being closed"), events);
+      flatten(s, symbol, "expiry", events);
+    }
+  }
+}
 void require_reason(const std::string& reason) {
   if (reason.find_first_not_of(" \t\r\n") == std::string::npos)
     throw TradingError(Reason::INVALID_REASON, "An explicit nonblank reason is required");
@@ -245,12 +475,14 @@ struct TradingSession::Impl {
     advance(next, time, events);
     auto result = action(next, events);
     monitor_loss(next, events);
+    monitor_rules(next, events);
     if (next.version == std::numeric_limits<std::uint64_t>::max())
       throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Account version exhausted");
     ++next.version;
     auto publication = std::make_shared<TradingSnapshot>(snapshot_of(next));
     if (journal) {
-      const Json payload{{"schema", 1}, {"tick_policy", "index-v1"}, {"events", events},
+      // Schema 2 adds account rules, evaluation progress, closures and system orders.
+      const Json payload{{"schema", 2}, {"tick_policy", "index-v1"}, {"events", events},
                          {"state", next}, {"snapshot", *publication}, {"decision", result.decision}};
       try { journal->append(time, type, payload.dump()); }
       catch (...) {
@@ -272,6 +504,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
     : impl_(std::make_unique<Impl>()) {
   validate_limits(config.limits);
   validate_scenarios(config.scenarios);
+  validate_rules(config.rules);
   if (time < 0) throw TradingError(Reason::INVALID_TIME, "Negative session time");
   if (config.fee_per_contract < Money{}) throw TradingError(Reason::INVALID_MONEY, "Fee cannot be negative");
   if (journal && journal->sequence() != 0) throw TradingError(Reason::JOURNAL_CORRUPT, "Use recover for a nonempty journal");
@@ -280,6 +513,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
   impl_->state.day = local_date(time);
   impl_->state.ledger = Ledger(impl_->state.config.initial_cash);
   impl_->state.start_equity = impl_->state.config.initial_cash;
+  impl_->state.evaluation = fresh_evaluation(impl_->state, 1);
   impl_->journal = std::move(journal);
   impl_->snapshot = std::make_shared<TradingSnapshot>(snapshot_of(impl_->state));
   impl_->transact(time, "session_start", [](State& s, Events& events) {
@@ -427,8 +661,10 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
       return CommandResult{failure(Reason::INVALID_SETTLEMENT, "Settlement requires expiry, a position and nonnegative reference"), {}, 0};
     const Money strike = Money::from_double(it->second.strike);
     const Money intrinsic = std::max(Money{}, it->second.type == pricing::OptionType::Call ? settlement - strike : strike - settlement);
+    const auto quantity = held(s, symbol);
     s.ledger.settle(symbol, intrinsic);
     s.settled.insert(symbol);
+    s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
     event(events, "settlement", Json{{"symbol", symbol}, {"reference", settlement}, {"intrinsic", intrinsic}});
     return CommandResult{};
   });
@@ -440,9 +676,52 @@ CommandResult TradingSession::roll_day(Timestamp time) {
     monitor_loss(s, events);
     const auto snapshot = snapshot_of(s);
     if (!snapshot.valuation_complete) return CommandResult{failure(Reason::STALE_QUOTE, "Rollover requires complete marked equity"), {}, 0};
+    // Close the finished day. An end-of-day floor ratchets only here, from the
+    // last fully marked equity observed on that date; breaches are still checked
+    // on every transaction by monitor_rules.
+    auto& e = s.evaluation;
+    const auto& rules = s.config.rules;
+    if (rules.evaluation() && e.status == EvaluationStatus::Active &&
+        rules.drawdown_mode == DrawdownMode::EndOfDay && e.day_close_equity > e.peak) {
+      e.peak = e.day_close_equity;
+      e.floor = floor_for(rules, e.peak);
+    }
+    e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor});
+    event(events, "evaluation_day", e.days.back());
+    e.day = day;
+    e.day_open_equity = snapshot.equity;
+    e.day_close_equity = snapshot.equity;
     s.start_equity = snapshot.equity;
     s.day = day;
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time) {
+  require_reason(reason);
+  validate_rules(rules);
+  if (initial_cash <= Money{}) throw TradingError(Reason::INVALID_MONEY, "Starting balance must be positive");
+  return impl_->transact(time, "account_reset", [&](State& s, Events& events) {
+    const auto snapshot = snapshot_of(s);
+    for (auto& o : s.orders) cancel_order(o, failure(Reason::ACCOUNT_RESET, reason), events);
+    for (const auto& p : snapshot.positions) {
+      const auto& position = p.position;
+      s.closures.push_back({position.contract.osi_symbol(), position.quantity,
+                            p.mark ? *p.mark : average_unit_price(position), s.time, ClosureKind::Reset, s.fills.size()});
+    }
+    const auto& e = s.evaluation;
+    s.attempts.push_back({e.attempt, s.config.rules.plan, e.started, s.time, e.starting_balance, snapshot.equity,
+                          e.status, e.decision, e.first_order, e.first_fill});
+    const auto attempt = e.attempt + 1;
+    s.config.initial_cash = initial_cash;
+    s.config.rules = std::move(rules);
+    s.ledger = Ledger(initial_cash);
+    s.start_equity = initial_cash;
+    s.kill = false;
+    s.kill_reason.clear();
+    s.evaluation = fresh_evaluation(s, attempt);
+    event(events, "account_reset", Json{{"reason", reason}, {"attempt", attempt}, {"initial_cash", initial_cash},
+                                        {"rules", s.config.rules}});
     return CommandResult{};
   });
 }
@@ -471,19 +750,40 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
   if (journal && (recovery.truncated_final_line || journal->head() != verified.head || journal->sequence() != verified.records.size()))
     throw TradingError(Reason::JOURNAL_CORRUPT, "Recovery sink does not match verified journal head");
   auto impl = std::make_unique<Impl>();
+  bool legacy = false;
   try {
     for (const auto& r : verified.records) {
       const auto payload = Json::parse(r.payload);
-      if (payload.at("schema") != 1 || payload.at("tick_policy") != "index-v1")
+      const auto& schema = payload.at("schema");
+      if ((schema != 1 && schema != 2) || payload.at("tick_policy") != "index-v1")
         throw TradingError(Reason::JOURNAL_CORRUPT, "Unsupported trading journal schema/policy");
+      legacy = schema == 1;
       auto state = payload.at("state").get<State>();
       auto snapshot = payload.at("snapshot").get<TradingSnapshot>();
       if (state.version != r.seq || state.time != r.time || snapshot.account_version != state.version || snapshot.time != state.time)
         throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded state version/time does not match transaction");
       validate_limits(state.config.limits);
       validate_scenarios(state.config.scenarios);
+      validate_rules(state.config.rules);
       impl->state = std::move(state);
       impl->snapshot = std::make_shared<TradingSnapshot>(std::move(snapshot));
+    }
+    if (legacy) {
+      // A schema 1 account has no rules; start its progress record from the
+      // journal's first transaction so later schema 2 records continue it.
+      auto& s = impl->state;
+      Evaluation e;
+      e.started = verified.records.front().time;
+      e.starting_balance = s.config.initial_cash;
+      e.peak = e.starting_balance;
+      e.day = s.day;
+      e.day_open_equity = s.start_equity;
+      e.day_close_equity = impl->snapshot->equity;
+      s.evaluation = std::move(e);
+      auto snapshot = std::make_shared<TradingSnapshot>(*impl->snapshot);
+      snapshot->evaluation = s.evaluation;
+      snapshot->buying_power = buying_power(s).total;
+      impl->snapshot = std::move(snapshot);
     }
   } catch (const TradingError& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
     catch (const Json::exception& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }

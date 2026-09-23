@@ -16,6 +16,8 @@ and monotone. Delayed feeds must pass their delayed market time, not receipt tim
 | `risk.hpp` | `portfolio_risk`, `check_exposure`, `scenario_grid`, risk buckets and scenario cells |
 | `journal.hpp` | `Journal`, `FileJournal::create/read/resume`, `verify_journal`, `JournalRecovery` |
 | `session.hpp` | `TradingSession`, `CommandResult`, immutable `TradingSnapshot` |
+| `evaluation.hpp` | `Evaluation`, `EvaluationDay`, `AttemptSummary`, `Closure`, `BuyingPower`, `naked_requirement` |
+| `history.hpp` | `Lifecycle`, `lifecycles` (round trips rebuilt from fills and closures) |
 
 Typical ingress:
 
@@ -36,7 +38,7 @@ provider's dense instrument ID. Re-registering identical terms is harmless;
 conflicting terms under one OSI reject.
 
 Reducer commands are `define`, `submit`, `cancel`, `on_quotes`, `set_limits`,
-`trip_kill`, `reset_kill`, `settle`, and `roll_day`. Every completed command, including
+`trip_kill`, `reset_kill`, `settle`, `roll_day` and `reset_account`. Every completed command, including
 a business rejection, increments `account_version`. Business failures return a
 `Decision` with code/message and numeric actual/limit/scope where applicable.
 Invalid command batches, arithmetic overflow, invalid configuration and persistence
@@ -231,7 +233,8 @@ includes spread and fees in daily loss. A failed fill check cancels the remainin
 order with `RISK_CHANGED`, preserving the underlying reason in its message and
 actual/limit/scope. Noncrossed resting orders wait; invalid quotes supply no fills.
 Limit changes apply immediately, increment a revision, and cancel affected orders
-in acceptance order when rechecks fail. Existing positions are never force-liquidated.
+in acceptance order when rechecks fail. Limits never force-liquidate positions; only
+account rules do (see Account rules).
 
 Daily loss is `max(0, start_of_day_equity - equity)` including marks and fees. A loss
 **strictly greater than** the configured allowance trips the latch and cancels all
@@ -243,9 +246,70 @@ cannot make stale data tradable. Settlement is still permitted while killed.
 `roll_day` is an explicit command on a later New York date, requiring complete marked
 equity. It first monitors the old daily baseline, then stores the new baseline.
 Repeated same-day rollover rejects. The kill latch survives rollover and recovery.
-There are no deposits/withdrawals, margin, buying power, cash-interest, reduce-only
-exceptions or automatic liquidation in this version. Negative cash/short positions
-are permitted subject to the stated limits; this is not a brokerage margin model.
+There are no deposits/withdrawals, cash interest or reduce-only exceptions. Without
+the `buying_power` rule, negative cash and short positions are permitted subject to
+the stated limits. With it, the naked-option requirement below applies; neither is a
+full brokerage margin model.
+
+## Account rules and evaluations
+
+`SessionConfig::rules` (`AccountRules`) turns the account into an evaluation. The
+defaults describe the plain paper account above: no target, no drawdown floor, any
+side, no buying-power check. All rule money is exact.
+
+| Rule | Effect |
+| --- | --- |
+| `profit_target` | Pass when equity reaches starting balance + target (zero disables) |
+| `max_drawdown` | Fail when equity touches peak − drawdown (zero disables) |
+| `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date |
+| `buy_only` | A sell must close contracts already held, counting working sells on the same contract; otherwise `BUY_ONLY` |
+| `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
+| `expiry_cutoff` | From expiry − cutoff until expiry, working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
+
+Outcomes use **fully marked equity**: every position has a mark, fresh or not. A
+position without any mark defers the decision rather than counting as zero. Every
+transaction runs the monitor after its command and the daily-loss check: it records
+the day's latest marked equity, ratchets an intraday peak, fails on `equity <= floor`
+(the floor is breached by touching it) and otherwise passes on `equity >= target`.
+Breaches are checked on every transaction in both modes; the mode only controls when
+the floor rises. The decision is sticky for the attempt: open user orders cancel with
+`EVALUATION_CLOSED`, new user orders reject with it, and every position is liquidated.
+
+**System orders** perform liquidation and expiry auto-close: market IOC orders with
+`system = true` and client IDs `system:drawdown:N`, `system:target:N` or
+`system:expiry:N`. They need a registered unexpired contract, the regular session and
+a fresh executable book with displayed size on the closing side. They skip the kill
+latch, price band, daily-loss, exposure, rule and buying-power checks because they
+only reduce risk. Without executable liquidity nothing is recorded; the monitor retries
+on later transactions until the account is flat, so system orders never accumulate.
+
+**Buying power** is cash less short requirements less working-order reservations. Long
+premium is paid in full. A short option holds its buy-back value (last mark, or its
+entry credit without one) plus the naked requirement
+`100 * max(20% of spot - OTM amount, 10% of spot for calls or of strike for puts)`,
+with the strike standing in for a missing spot. Working orders reserve in acceptance
+order, consuming closing capacity so two sells cannot both claim the same long:
+opening buys reserve premium plus fees, opening sells reserve the naked requirement plus
+fees (their credit covers the buy-back value), and closing orders reserve only fees.
+Spreads are not netted; each short leg is naked. An order that opens contracts is
+rejected if the result is negative; closing orders are always allowed. Fills recheck
+against the projected ledger and cancel the remainder with `RISK_CHANGED`.
+
+`reset_account(initial_cash, rules, reason, time)` starts a new attempt. It cancels
+working orders with `ACCOUNT_RESET`, records each open position as a `Reset` closure
+at its last mark (average price without one; no fill, no fee), archives an
+`AttemptSummary`, restores cash, clears the kill latch and applies the new rules. The
+order and fill history is kept; `Evaluation::first_order/first_fill` mark where the
+attempt begins. Settlements are also recorded as closures.
+
+`Evaluation` carries the attempt number, start time, starting balance, peak, floor,
+status and decision, plus one `EvaluationDay` per finished New York date (open and
+close equity, peak and floor after that day's ratchet), appended at `roll_day`.
+
+`history.hpp`'s `lifecycles(fills, closures, contracts)` rebuilds round trips from flat
+to flat. Each replays its own fills through a fresh `Ledger`, so realised P&L uses the
+account's basis allocation and rounding exactly; a reversing fill closes one lifecycle
+and opens the next at the same price with its fee split pro rata.
 
 ## Scenarios
 
@@ -314,8 +378,14 @@ in use by another openportd; use `--paper-journal` to choose another file or
 an active journal.
 
 Every record has exactly `seq`, `time`, `type`, `payload`, `prev_hash`, `hash`.
-Sequence starts at 1; the genesis previous hash is 64 ASCII zeroes. Payload schema
-is 1 and tick policy is `index-v1`. The canonical encoding is compact nlohmann JSON
+Sequence starts at 1; the genesis previous hash is 64 ASCII zeroes. New payloads use
+schema 2 and tick policy `index-v1`. Schema 2 adds `config.rules`, the evaluation,
+attempts and closures to the state and snapshot, and `system` to orders; it also
+records `evaluation_passed`, `evaluation_failed`, `evaluation_day` and `account_reset`
+outcomes. Recovery reads schema 1 journals: their original keys stay required, the
+added ones default, and the evaluation starts from the first record with the recorded
+starting cash. Resumed schema 1 journals continue with schema 2 records; an older build
+refuses them rather than silently dropping rule state. The canonical encoding is compact nlohmann JSON
 3.12 serialization: recursively lexicographically sorted object keys, array order
 preserved, UTF-8 strings, integer money, round-trip decimal doubles, no whitespace.
 Hash is lowercase hex SHA-256 (OpenSSL EVP) over the canonical entire record with
@@ -378,6 +448,10 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |
 | `JOURNAL_IO`, `JOURNAL_CORRUPT` | Persistence stop condition or invalid/tampered recovery chain/schema |
 | `JOURNAL_LOCKED` | Journal already owned by another writer; analytics remain available |
+| `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
+| `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules) |
+| `ACCOUNT_RESET` | Working order cancelled by a reset |
+| `INVALID_RULES` | Negative rule money, cutoff of a day or more, or a plan name over 64 bytes |
 
 ## Engine integration and HTTP API
 
@@ -443,6 +517,19 @@ focus at the top of the ticket.
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position; returns version and `position_closed` |
+| `GET /api/account` | Rules, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, drawdown buffer, target equity/remaining, decision, current day and finished `days[]`), buying power and earlier `attempts[]`; absent rules give null floor/target |
+| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs and attempt. Defaults: all statuses of the current attempt |
+| `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing) and `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing); evaluations auto-close five minutes before expiry |
+| `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules`; returns the new account view |
+
+Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
+buying_power, expiry_cutoff_seconds}` with null money for a disabled target or
+drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
+`buying_power: {available, reserved, short_requirement}`; orders add `origin`
+(`user` or `system`); status and ticks add `trading.plan` and `trading.evaluation`
+(`active`/`passed`/`failed`, null without a target or drawdown rule). `--plan ID`
+chooses the rules for a new journal (default `practice`); `--paper-cash` then overrides
+its starting balance. Recovery keeps the recorded rules.
 
 Money is an exact decimal string, quantities are integers, IDs/versions are strings,
 and timestamps use the same UTC ISO format as `as_of`. Analytical values may be

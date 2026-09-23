@@ -23,6 +23,8 @@ struct TradingStatus {
   std::string write = "disabled";
   trading::Money fee_per_contract;
   trading::Money initial_cash;
+  std::string plan;        ///< Active rules' display name; empty without a plan.
+  std::string evaluation;  ///< active/passed/failed with a target or drawdown rule, else empty.
 };
 
 /// The reducer snapshot and its pricing inputs are published together so HTTP
@@ -37,7 +39,7 @@ struct TradingView {
 };
 
 struct TradingCommand {
-  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle };
+  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount };
   Kind kind = Kind::Submit;
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
@@ -46,6 +48,8 @@ struct TradingCommand {
   std::string reason;
   std::string symbol;
   trading::Money settlement;
+  trading::Money initial_cash;   ///< ResetAccount: the new starting balance.
+  trading::AccountRules rules;   ///< ResetAccount: the new attempt's rules.
 };
 
 struct TradingReply {

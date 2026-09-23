@@ -28,6 +28,7 @@ add_library(openport_trading
   trading/risk.cpp
   trading/journal.cpp
   trading/session.cpp
+  trading/history.cpp
 )
 add_library(openport::trading ALIAS openport_trading)
 target_include_directories(openport_trading PUBLIC
@@ -84,6 +85,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/engine.cpp
     server/paper_engine.cpp
     server/paper_api.cpp
+    server/plans.cpp
     server/api.cpp
     server/web_server.cpp
   )

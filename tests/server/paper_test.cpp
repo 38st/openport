@@ -796,4 +796,129 @@ TEST(PaperRecovery, SettlementProvenanceIsDurableAndStopReleasesJournalWriter) {
   replacement.stop();
   std::filesystem::remove(path);
 }
+
+TEST(PaperPlans, PresetsListExactRules) {
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, paper_options());
+  const auto plans = read(engine, "/api/plans")["plans"];
+  ASSERT_EQ(plans.size(), 7);
+  EXPECT_EQ(plans[0]["id"], "practice");
+  EXPECT_EQ(plans[0]["rules"]["profit_target"], nullptr);
+  EXPECT_EQ(plans[0]["rules"]["buying_power"], true);
+  const auto intraday = plans[3];
+  EXPECT_EQ(intraday["id"], "intraday-100k");
+  EXPECT_EQ(intraday["name"], "Intraday 100K");
+  EXPECT_EQ(intraday["initial_cash"], "100000.00");
+  EXPECT_EQ(intraday["rules"], json({{"plan", "Intraday 100K"}, {"profit_target", "10000.00"}, {"max_drawdown", "5000.00"},
+      {"drawdown_mode", "intraday"}, {"buy_only", true}, {"buying_power", true}, {"expiry_cutoff_seconds", 300}}));
+  const auto eod = plans[4];
+  EXPECT_EQ(eod["id"], "eod-25k");
+  EXPECT_EQ(eod["rules"]["profit_target"], "3000.00");
+  EXPECT_EQ(eod["rules"]["max_drawdown"], "1500.00");
+  EXPECT_EQ(eod["rules"]["drawdown_mode"], "end_of_day");
+  EXPECT_EQ(eod["rules"]["buy_only"], false);
+}
+
+TEST_F(PaperEngine, AccountViewWithoutRulesHasNoTargetOrFloor) {
+  const auto account = read(*engine, "/api/account");
+  EXPECT_EQ(account["rules"]["plan"], nullptr);
+  EXPECT_EQ(account["evaluation"]["enabled"], false);
+  EXPECT_EQ(account["evaluation"]["status"], "active");
+  EXPECT_EQ(account["evaluation"]["attempt"], 1);
+  EXPECT_EQ(account["evaluation"]["starting_balance"], "100000.00");
+  EXPECT_EQ(account["evaluation"]["floor"], nullptr);
+  EXPECT_EQ(account["evaluation"]["target_equity"], nullptr);
+  EXPECT_EQ(account["buying_power"]["available"], "100000.00");
+  EXPECT_TRUE(account["attempts"].empty());
+  const auto trading = read(*engine, "/api/status")["trading"];
+  EXPECT_EQ(trading["plan"], nullptr);
+  EXPECT_EQ(trading["evaluation"], nullptr);
+  engine->stop();
+}
+
+TEST_F(PaperEngine, ResetToPresetStartsAttemptAndTradesSeparateAttempts) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
+  auto trades = read(*engine, "/api/trades")["trades"];
+  ASSERT_EQ(trades.size(), 1);
+  EXPECT_EQ(trades[0]["status"], "open");
+  EXPECT_EQ(trades[0]["direction"], "long");
+  EXPECT_EQ(trades[0]["average_open"], "4.20");
+  EXPECT_EQ(trades[0]["mark"], "4.10");
+  EXPECT_EQ(trades[0]["unrealised"], "-10.00");
+  EXPECT_EQ(trades[0]["attempt"], 1);
+  EXPECT_EQ(read(*engine, "/api/orders?status=all")["orders"][0]["origin"], "user");
+
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "intraday-25k"}, {"reason", "start evaluation"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  const auto account = json::parse(reset.body);
+  EXPECT_EQ(account["rules"]["plan"], "Intraday 25K");
+  const auto evaluation = account["evaluation"];
+  EXPECT_EQ(evaluation["enabled"], true);
+  EXPECT_EQ(evaluation["attempt"], 2);
+  EXPECT_EQ(evaluation["starting_balance"], "25000.00");
+  EXPECT_EQ(evaluation["equity"], "25000.00");
+  EXPECT_EQ(evaluation["floor"], "23750.00");
+  EXPECT_EQ(evaluation["drawdown_buffer"], "1250.00");
+  EXPECT_EQ(evaluation["target_equity"], "27500.00");
+  EXPECT_EQ(evaluation["target_remaining"], "2500.00");
+  EXPECT_EQ(account["attempts"][0]["final_equity"], "99989.35");
+  EXPECT_EQ(read(*engine, "/api/account"), account);
+
+  EXPECT_TRUE(read(*engine, "/api/trades")["trades"].empty());
+  trades = read(*engine, "/api/trades?status=closed&attempt=all")["trades"];
+  ASSERT_EQ(trades.size(), 1);
+  EXPECT_EQ(trades[0]["closure"], "reset");
+  EXPECT_EQ(trades[0]["attempt"], 1);
+  EXPECT_EQ(trades[0]["gross"], "-10.00");
+  EXPECT_EQ(trades[0]["fees"], "0.65");
+  EXPECT_EQ(trades[0]["net"], "-10.65");
+  EXPECT_EQ(trades[0]["cost"], "420.00");
+  EXPECT_NEAR(trades[0]["return"].get<double>(), -10.65 / 420, 1e-12);
+  const auto trading = read(*engine, "/api/status")["trading"];
+  EXPECT_EQ(trading["plan"], "Intraday 25K");
+  EXPECT_EQ(trading["evaluation"], "active");
+  EXPECT_EQ(json::parse(server::tick_message(*engine))["trading"], trading);
+
+  auto sell = order(market, "naked-sell", "4.00");
+  sell["side"] = "sell";
+  expect_error(write(*engine, "POST", "/api/orders", sell), 422, "BUY_ONLY");
+  engine->stop();
+}
+
+TEST_F(PaperEngine, ResetRequestsAreStrict) {
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "platinum"}, {"reason", "x"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"initial_cash", "1"}, {"reason", "x"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"reason", "x"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "  "}}), 422, "INVALID_REASON");
+  const json rules{{"plan", "Custom"}, {"profit_target", nullptr}, {"max_drawdown", "10.00"}, {"drawdown_mode", "sideways"},
+                   {"buy_only", false}, {"buying_power", false}, {"expiry_cutoff_seconds", 0}};
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", rules}, {"reason", "x"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "-5"}, {"rules", rules}, {"reason", "x"}}), 400, "INVALID_REQUEST");
+  const auto bad_query = server::handle_api({"GET", "/api/trades?status=open&status=all"}, *engine);
+  EXPECT_EQ(bad_query.status, 400);
+  EXPECT_EQ(server::handle_api({"GET", "/api/trades?attempt=previous"}, *engine).status, 400);
+  engine->stop();
+}
+
+TEST_F(PaperEngine, CustomDrawdownBreachLiquidatesWithSystemOrders) {
+  seed();
+  const json rules{{"plan", "Tight"}, {"profit_target", nullptr}, {"max_drawdown", "10.00"}, {"drawdown_mode", "intraday"},
+                   {"buy_only", false}, {"buying_power", false}, {"expiry_cutoff_seconds", 0}};
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", rules}, {"reason", "tight"}}).status, 200);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "breach", "4.20")).status, 201);
+  const auto account = read(*engine, "/api/account");
+  EXPECT_EQ(account["evaluation"]["status"], "failed");
+  EXPECT_EQ(account["evaluation"]["decided_equity"], "9989.35");
+  EXPECT_NE(account["evaluation"]["decision"].get<std::string>().find("drawdown floor $9990.00"), std::string::npos);
+  const auto orders = read(*engine, "/api/orders?status=all")["orders"];
+  EXPECT_EQ(orders[0]["origin"], "system");
+  EXPECT_TRUE(orders[0]["client_order_id"].get<std::string>().starts_with("system:drawdown:"));
+  EXPECT_EQ(orders[0]["status"], "filled");
+  EXPECT_TRUE(read(*engine, "/api/portfolio")["positions"].empty());
+  EXPECT_EQ(read(*engine, "/api/portfolio")["cash"], "9978.70");
+  EXPECT_EQ(json::parse(server::tick_message(*engine))["trading"]["evaluation"], "failed");
+  expect_error(write(*engine, "POST", "/api/orders", order(market, "after", "4.20")), 422, "EVALUATION_CLOSED");
+  engine->stop();
+}
 }  // namespace

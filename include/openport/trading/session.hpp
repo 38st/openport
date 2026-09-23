@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "openport/trading/evaluation.hpp"
 #include "openport/trading/journal.hpp"
 #include "openport/trading/risk.hpp"
 
@@ -33,6 +34,10 @@ struct TradingSnapshot {
   RiskSnapshot risk;
   ScenarioGrid scenarios;
   std::vector<Reason> quality_flags;
+  Evaluation evaluation;             ///< Current attempt's rule progress.
+  BuyingPower buying_power;
+  std::vector<Closure> closures;     ///< Settlements and resets, in sequence.
+  std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
 };
 struct CommandResult {
   Decision decision;
@@ -74,6 +79,10 @@ class TradingSession {
   /// Explicit baseline reset, once per later New York date; requires full marks.
   /// Kill latch persists across rollover.
   CommandResult roll_day(Timestamp time);
+  /// Start a new attempt: cancel working orders, close positions at their last
+  /// mark as Reset closures (no fills, no fees), restore cash, clear the kill
+  /// latch and apply the given rules. Order and fill history is kept.
+  CommandResult reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time);
   [[nodiscard]] std::shared_ptr<const TradingSnapshot> snapshot() const;
 
   /// Read-only integration context, owned by the reducer. The engine copies it

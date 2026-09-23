@@ -49,8 +49,9 @@ target_sources(openport_tests PRIVATE
   trading/matching_test.cpp
   trading/risk_settlement_test.cpp
   trading/journal_test.cpp
+  trading/evaluation_test.cpp
 )
-target_link_libraries(openport_tests PRIVATE openport::trading)
+target_link_libraries(openport_tests PRIVATE openport::trading nlohmann_json::nlohmann_json)
 
 include(GoogleTest)
 gtest_discover_tests(openport_tests DISCOVERY_TIMEOUT 60)
