@@ -71,4 +71,12 @@ describe("strategy ticket", () => {
       expect(html).toContain(text)
     expect(html).not.toContain("NaN")
   })
+  it("shows what a closing order closes instead of its payoff", () => {
+    const close = spread.map((l) => ({ ...l, side: l.side === "buy" ? "sell" as const : "buy" as const }))
+    const html = render(<StrategyTicket closing title="Close together" legs={close} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000}
+      trading={trading} onClose={() => {}} units={3} variant="dialog" />, any)
+    for (const text of ["Close together", "SPX <span", ">Close</span>", "Closes", "6 contracts, all legs together", 'value="3"']) expect(html).toContain(text)
+    expect(html).not.toContain("Max profit")
+    expect(html).not.toContain("Profit and loss at expiry")
+  })
 })

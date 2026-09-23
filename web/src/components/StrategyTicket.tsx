@@ -31,12 +31,14 @@ const shortDate = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateSt
  * net per unit: a debit pays, a credit receives. Risk is shown at the first
  * expiry: exact when every leg expires then, estimated for calendars and diagonals.
  * `expiries` are the legs' expiries from the chain; `units` sets the starting quantity.
+ * `closing` marks an order that closes held positions: its payoff alone means
+ * nothing, so the ticket shows what it closes instead.
  */
-export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order" }: {
+export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order", closing = false }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
-  spot: number | null | undefined; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel"; units?: number; title?: string
+  spot: number | null | undefined; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel"; units?: number; title?: string; closing?: boolean
 }) {
-  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} />
+  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} closing={closing} />
   if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
     <aside aria-label="Strategy ticket" className="flex max-h-[calc(100dvh-7rem)] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-chart">
@@ -49,9 +51,9 @@ export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, tradi
   )
 }
 
-function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits }: {
+function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits, closing }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
-  spot: number | null | undefined; trading: TradingStatus; initialUnits?: number
+  spot: number | null | undefined; trading: TradingStatus; initialUnits?: number; closing: boolean
 }) {
   const { accountScope, underlyings } = useLive()
   const token = useWriteToken()
@@ -107,7 +109,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const value = net != null && validUnits ? strategyPayoff(legs, q, net, terms) : null
   const strikes = legs.map((l) => l.strike)
   const center = spot != null && Number.isFinite(spot) ? spot : (Math.min(...strikes) + Math.max(...strikes)) / 2
-  const profile = net == null || !validUnits ? null
+  const profile = net == null || !validUnits || closing ? null
     : !multi ? riskProfile(legs, q, net)
     : value ? estimatedProfile(value, legs, q, Math.max(0, Math.min(center, ...strikes) * 0.7), Math.max(center, ...strikes) * 1.3) : null
   const approx = profile?.estimated ? "≈ " : ""
@@ -174,7 +176,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       <button type="button" className="trade-button" onClick={newOrder}>Another order</button>
     </OrderResult>}
     <div>
-      <div className="text-base font-semibold">{underlying} <span className="font-normal text-muted">{label}</span></div>
+      <div className="text-base font-semibold">{underlying} <span className="font-normal text-muted">{closing ? "Close" : label}</span></div>
       <div className="mt-1 text-sm">{known.length === 1 ? `${known[0]!.expiry} ${known[0]!.settlement}` : known.map((e) => shortDate(e.expiry)).join(" / ")} · {legs.length} of {MAX_LEGS} legs</div>
       {legs.length < 2 && <p className="mt-1 text-xs text-muted">Click another bid or ask on the chain to add a leg: an ask buys, a bid sells.</p>}
     </div>
@@ -253,9 +255,11 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
         <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
           <dt className="text-muted">Net premium</dt><dd className="text-right tabular">{net == null || !validUnits ? "—" : `${formatMoney((Math.abs(net) * 100 * q).toFixed(2))} ${net > 0 ? "paid" : "received"}`}</dd>
           <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{validUnits ? formatMoney((fee * contracts).toFixed(2)) : "—"}</dd>
+          {closing ? <><dt className="text-muted">Closes</dt><dd className="text-right tabular">{validUnits ? `${contracts} contracts, all legs together` : "—"}</dd></> : <>
           <dt className="text-muted">Max profit</dt><dd className="text-right tabular text-bullish">{profile ? profile.maxProfit == null ? "Unlimited" : `${approx}${formatMoney(profile.maxProfit.toFixed(2))}` : "—"}</dd>
           <dt className="text-muted">Max loss</dt><dd className="text-right tabular text-bearish">{profile ? profile.maxLoss == null ? "Unlimited" : `${approx}${formatMoney(profile.maxLoss.toFixed(2))}` : "—"}</dd>
           <dt className="text-muted">Breakevens</dt><dd className="text-right tabular">{profile ? profile.breakevens.length ? `${approx}${profile.breakevens.map((b) => b.toFixed(2)).join(", ")}` : "None" : "—"}</dd>
+          </>}
           <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
           {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
         </dl>

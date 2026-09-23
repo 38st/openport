@@ -69,7 +69,7 @@ function CloseTogether({ positions, trading, onClose }: { positions: Position[];
   if (loaded.length < ids.length) return error ? <Dialog title="Close together" onClose={onClose}><TradingError error={error} /></Dialog> : null
   const legs = (edited ?? plan.legs).map((leg) => ({ ...leg,
     quote: loaded.find((c) => c.expiry.id === leg.expiry)?.strikes.find((r) => r.strike === leg.strike)?.[leg.type] ?? null }))
-  return <StrategyTicket title="Close together" legs={legs} onLegs={setEdited} expiries={loaded.map((c) => c.expiry)} underlying={underlying}
+  return <StrategyTicket title="Close together" closing legs={legs} onLegs={setEdited} expiries={loaded.map((c) => c.expiry)} underlying={underlying}
     spot={loaded[0]?.spot} trading={trading} variant="dialog" units={plan.units} onClose={onClose} />
 }
 
