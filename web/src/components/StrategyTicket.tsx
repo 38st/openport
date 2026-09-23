@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useMemo, useRef, useState } from "react"
+import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
@@ -8,7 +8,7 @@ import type { Expiry } from "../api/types"
 import { LineChart } from "../charts/LineChart"
 import { money, price } from "../lib/format"
 import { heldPositions } from "../lib/margin"
-import { MAX_LEGS, MAX_RATIO, netQuote, payoff, riskProfile, roundNet, strategyLabel, strategyPowerUse, type StrategyLeg } from "../lib/strategy"
+import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, type StrategyLeg } from "../lib/strategy"
 import { comboTickCents, formatMoney, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -24,16 +24,20 @@ export function netText(net: number | null | undefined): string {
   return `$${Math.abs(net).toFixed(2)} ${net > 0 ? "debit" : "credit"}`
 }
 
+const shortDate = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
+
 /**
  * Builds and submits a multi-leg order from legs picked on the chain. Prices are
- * net per unit: a debit pays, a credit receives. Risk is shown at expiry.
+ * net per unit: a debit pays, a credit receives. Risk is shown at the first
+ * expiry: exact when every leg expires then, estimated for calendars and diagonals.
+ * `expiries` are the legs' expiries from the chain; `units` sets the starting quantity.
  */
-export function StrategyTicket({ legs, onLegs, expiry, underlying, spot, trading, onClose, variant = "panel" }: {
-  legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiry: Expiry; underlying: string
-  spot: number | null | undefined; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel"
+export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order" }: {
+  legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
+  spot: number | null | undefined; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel"; units?: number; title?: string
 }) {
-  const body = <StrategyBody legs={legs} onLegs={onLegs} expiry={expiry} underlying={underlying} spot={spot} trading={trading} />
-  if (variant === "dialog") return <Dialog title="Strategy order" onClose={onClose}>{body}</Dialog>
+  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} />
+  if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
     <aside aria-label="Strategy ticket" className="flex max-h-[calc(100dvh-7rem)] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-chart">
       <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
@@ -45,9 +49,9 @@ export function StrategyTicket({ legs, onLegs, expiry, underlying, spot, trading
   )
 }
 
-function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
-  legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiry: Expiry; underlying: string
-  spot: number | null | undefined; trading: TradingStatus
+function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits }: {
+  legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
+  spot: number | null | undefined; trading: TradingStatus; initialUnits?: number
 }) {
   const { accountScope, underlyings } = useLive()
   const token = useWriteToken()
@@ -58,7 +62,7 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
   const roots = legs.map((l) => l.symbol.slice(0, 6).trim())
   const tick = comboTickCents(roots)
   const quote = netQuote(legs)
-  const [units, setUnits] = useState("1")
+  const [units, setUnits] = useState(String(initialUnits ?? 1))
   const [type, setType] = useState<"limit" | "market">("limit")
   const [tif, setTif] = useState<"day" | "ioc">("day")
   const [amount, setAmount] = useState(() => quote.mid != null ? Math.abs(roundNet(quote.mid, tick)).toFixed(2) : "")
@@ -96,7 +100,17 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
   const net = type === "market" ? quote.ask : validAmount ? (direction === "debit" ? typed : -typed) : null
   const limitText = net == null ? "" : net.toFixed(2)
   const label = strategyLabel(legs)
-  const profile = net != null && validUnits ? riskProfile(legs, q, net) : null
+  const legExpiries = [...new Set(legs.map((l) => l.expiry))]
+  const multi = legExpiries.length > 1
+  const known = expiries.filter((e) => legExpiries.includes(e.id)).sort((a, b) => Date.parse(a.expiry_time) - Date.parse(b.expiry_time))
+  const terms = new Map(known.map((e) => [e.id, { id: e.id, time: Date.parse(e.expiry_time), forward: e.forward, discount: e.discount }]))
+  const value = net != null && validUnits ? strategyPayoff(legs, q, net, terms) : null
+  const strikes = legs.map((l) => l.strike)
+  const center = spot != null && Number.isFinite(spot) ? spot : (Math.min(...strikes) + Math.max(...strikes)) / 2
+  const profile = net == null || !validUnits ? null
+    : !multi ? riskProfile(legs, q, net)
+    : value ? estimatedProfile(value, legs, q, Math.max(0, Math.min(center, ...strikes) * 0.7), Math.max(center, ...strikes) * 1.3) : null
+  const approx = profile?.estimated ? "≈ " : ""
   const fee = Number(trading.fee_per_contract ?? 0)
   const contracts = validUnits ? q * legs.reduce((total, leg) => total + leg.ratio, 0) : 0
   // Mirrors the server: margin on the held positions after the fill, plus the net and fees.
@@ -112,16 +126,11 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
   const blocked = writeBlocked(trading, token) || trading.kill_latched || !!untradable || !!notice || !!closed || !!rules?.buy_only
   const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount)
 
-  const chart = useMemo(() => {
-    if (!profile || net == null || !validUnits) return null
-    // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is wider.
-    const strikes = legs.map((l) => l.strike)
-    const center = spot != null && Number.isFinite(spot) ? spot : (Math.min(...strikes) + Math.max(...strikes)) / 2
-    const margin = Math.max(Math.max(...strikes) - Math.min(...strikes), center * 0.01)
-    const low = Math.max(0, Math.min(center, ...strikes) - margin), high = Math.max(center, ...strikes) + margin
-    const points = Array.from({ length: 121 }, (_, i) => low + ((high - low) * i) / 120)
-    return points.map((x) => ({ x, y: payoff(legs, q, net, x) }))
-  }, [legs, profile, net, q, validUnits, spot])
+  // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is wider.
+  const margin = Math.max(Math.max(...strikes) - Math.min(...strikes), center * 0.01)
+  const [chartLow, chartHigh] = [Math.max(0, Math.min(center, ...strikes) - margin), Math.max(center, ...strikes) + margin]
+  const chart = profile && value
+    ? Array.from({ length: 121 }, (_, i) => chartLow + ((chartHigh - chartLow) * i) / 120).map((x) => ({ x, y: value(x) })) : null
 
   const setLeg = (index: number, patch: Partial<StrategyLeg>) => onLegs(legs.map((l, i) => (i === index ? { ...l, ...patch } : l)))
   const applyNet = (value: number | null) => {
@@ -166,7 +175,7 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
     </OrderResult>}
     <div>
       <div className="text-base font-semibold">{underlying} <span className="font-normal text-muted">{label}</span></div>
-      <div className="mt-1 text-sm">{expiry.expiry} {expiry.settlement} · {legs.length} of {MAX_LEGS} legs</div>
+      <div className="mt-1 text-sm">{known.length === 1 ? `${known[0]!.expiry} ${known[0]!.settlement}` : known.map((e) => shortDate(e.expiry)).join(" / ")} · {legs.length} of {MAX_LEGS} legs</div>
       {legs.length < 2 && <p className="mt-1 text-xs text-muted">Click another bid or ask on the chain to add a leg: an ask buys, a bid sells.</p>}
     </div>
     <div className="overflow-hidden rounded-md border border-border">
@@ -185,7 +194,7 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
               {leg.ratio}
               <button type="button" className="px-1 text-muted hover:text-foreground" aria-label={`More ${leg.strike} ${leg.type} per unit`} disabled={leg.ratio >= MAX_RATIO} onClick={() => setLeg(i, { ratio: leg.ratio + 1 })}>+</button>
             </span></td>
-            <td className="px-2 py-1.5">{leg.strike} {leg.type === "call" ? "C" : "P"}</td>
+            <td className="px-2 py-1.5">{leg.strike} {leg.type === "call" ? "C" : "P"}{multi && <span className="text-muted"> · {shortDate(leg.expiry.slice(0, 10))}</span>}</td>
             <td className="px-2 py-1.5 text-right">{price(leg.quote?.bid)} × {price(leg.quote?.ask)}</td>
             <td className="px-1 py-1.5 text-right"><button type="button" className="px-1 text-muted hover:text-danger" aria-label={`Remove ${leg.strike} ${leg.type}`}
               onClick={() => onLegs(legs.filter((_, j) => j !== i))}>×</button></td>
@@ -244,9 +253,9 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
         <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
           <dt className="text-muted">Net premium</dt><dd className="text-right tabular">{net == null || !validUnits ? "—" : `${formatMoney((Math.abs(net) * 100 * q).toFixed(2))} ${net > 0 ? "paid" : "received"}`}</dd>
           <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{validUnits ? formatMoney((fee * contracts).toFixed(2)) : "—"}</dd>
-          <dt className="text-muted">Max profit</dt><dd className="text-right tabular text-bullish">{profile ? profile.maxProfit == null ? "Unlimited" : formatMoney(profile.maxProfit.toFixed(2)) : "—"}</dd>
-          <dt className="text-muted">Max loss</dt><dd className="text-right tabular text-bearish">{profile ? profile.maxLoss == null ? "Unlimited" : formatMoney(profile.maxLoss.toFixed(2)) : "—"}</dd>
-          <dt className="text-muted">Breakevens</dt><dd className="text-right tabular">{profile ? profile.breakevens.length ? profile.breakevens.map((b) => b.toFixed(2)).join(", ") : "None" : "—"}</dd>
+          <dt className="text-muted">Max profit</dt><dd className="text-right tabular text-bullish">{profile ? profile.maxProfit == null ? "Unlimited" : `${approx}${formatMoney(profile.maxProfit.toFixed(2))}` : "—"}</dd>
+          <dt className="text-muted">Max loss</dt><dd className="text-right tabular text-bearish">{profile ? profile.maxLoss == null ? "Unlimited" : `${approx}${formatMoney(profile.maxLoss.toFixed(2))}` : "—"}</dd>
+          <dt className="text-muted">Breakevens</dt><dd className="text-right tabular">{profile ? profile.breakevens.length ? `${approx}${profile.breakevens.map((b) => b.toFixed(2)).join(", ")}` : "None" : "—"}</dd>
           <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
           {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
         </dl>
@@ -255,7 +264,9 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
           <LineChart height={160} marginLeft={60} series={[{ id: "payoff", label: "P&L at expiry", color: "var(--chart-1)", points: chart, area: true }]}
             references={[{ y: 0, label: "Even", color: "var(--muted)" }]} markers={spot != null && Number.isFinite(spot) ? [{ x: spot, label: `${underlying} ${spot.toFixed(0)}`, color: "var(--warn)" }] : []}
             formatX={(x) => x.toFixed(0)} formatY={(y) => money(y)} />
-          <figcaption className="mt-1 text-[11px] text-muted">P&L at expiry for {validUnits ? q : "—"} unit{q === 1 ? "" : "s"}, before fees.</figcaption>
+          <figcaption className="mt-1 text-[11px] text-muted">{profile?.estimated
+            ? `Estimated P&L at the ${shortDate(known[0]!.expiry)} expiry for ${q} unit${q === 1 ? "" : "s"}, later legs at today's implied volatility, before fees.`
+            : `P&L at expiry for ${validUnits ? q : "—"} unit${q === 1 ? "" : "s"}, before fees.`}</figcaption>
         </figure>}
         <button className="w-full rounded-md bg-accent px-3 py-2.5 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50"
           type="submit" aria-label="Submit strategy order" disabled={!valid || blocked || pending || order != null}>

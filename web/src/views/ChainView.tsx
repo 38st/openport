@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { useQueries, useQuery } from "@tanstack/react-query"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -69,7 +69,9 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const summaryData = matchingPayload(summary.data, symbol)
   const expiries = summaryData?.expiries ?? []
   const selected = expiry && expiries.some((e) => e.id === expiry) ? expiry : defaultExpiry(expiries)
-  useEffect(() => { setTicket(null); setLegs([]); setReviewing(false); setUntradable(null) }, [symbol, selected, live.accountScope])
+  useEffect(() => { setTicket(null); setUntradable(null) }, [symbol, selected, live.accountScope])
+  // A strategy keeps its legs across expiries, for calendars and diagonals.
+  useEffect(() => { setLegs([]); setReviewing(false) }, [symbol, live.accountScope])
 
   const chain = useQuery({
     queryKey: ["chain", symbol, selected, window, version],
@@ -87,8 +89,17 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
     return best
   }, [data, forward])
   const agreement = useMemo(() => (data ? vendorAgreement(data.strikes, forward) : null), [data, forward])
-  // Legs follow the chain's latest quotes.
-  const liveLegs = useMemo(() => legs.map((leg) => ({ ...leg, quote: data?.strikes.find((row) => row.strike === leg.strike)?.[leg.type] ?? leg.quote })), [legs, data])
+  // Legs follow the chain's latest quotes, fetching the chains of legs in other expiries.
+  const otherExpiries = [...new Set(legs.map((leg) => leg.expiry))].filter((id) => id !== selected)
+  const others = useQueries({ queries: otherExpiries.map((id) => ({
+    queryKey: ["chain", symbol, id, 0, version],
+    queryFn: ({ signal }: { signal: AbortSignal }) => api.chain(symbol, id, 0, signal),
+    placeholderData: (previous: Awaited<ReturnType<typeof api.chain>> | undefined) => matchingPayload(previous, symbol, id),
+  })) })
+  const chains = new Map([...(data && selected ? [[selected, data] as const] : []),
+    ...otherExpiries.flatMap((id, i) => { const chain = matchingPayload(others[i]?.data, symbol, id); return chain ? [[id, chain] as const] : [] })])
+  const liveLegs = legs.map((leg) => ({ ...leg, quote: chains.get(leg.expiry)?.strikes.find((row) => row.strike === leg.strike)?.[leg.type] ?? leg.quote }))
+  const legExpiries = [...chains.values()].map((chain) => chain.expiry).filter((e) => legs.some((leg) => leg.expiry === e.id))
   const highlighted = useMemo(() => new Map<string, "bid" | "ask">(mode === "strategy"
     ? legs.map((leg) => [leg.symbol, leg.side === "buy" ? "ask" : "bid"])
     : ticket ? [[ticket.symbol, ticket.cell]] : []), [mode, legs, ticket])
@@ -177,14 +188,14 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         )}
       </Panel>
       {live.trading && strategyOpen && data && (docked ? <div className="sticky top-16">
-        <StrategyTicket key={live.accountScope} legs={liveLegs} onLegs={setLegs} expiry={data.expiry} underlying={symbol} spot={data.spot}
+        <StrategyTicket key={live.accountScope} legs={liveLegs} onLegs={setLegs} expiries={legExpiries} underlying={symbol} spot={data.spot}
           trading={live.trading} variant="panel" onClose={() => setLegs([])} />
       </div> : reviewing ? <StrategyTicket key={live.accountScope} legs={liveLegs} onLegs={(next) => { setLegs(next); if (!next.length) setReviewing(false) }}
-          expiry={data.expiry} underlying={symbol} spot={data.spot} trading={live.trading} variant="dialog" onClose={() => setReviewing(false)} />
+          expiries={legExpiries} underlying={symbol} spot={data.spot} trading={live.trading} variant="dialog" onClose={() => setReviewing(false)} />
       : <div role="region" aria-label="Strategy legs" className="fixed inset-x-3 bottom-3 z-20 flex items-center justify-between gap-3 rounded-lg border border-accent/50 bg-panel p-3 shadow-chart">
           <div className="min-w-0 text-sm">
             <div className="truncate font-medium">{symbol} {strategyLabel(liveLegs)}</div>
-            <div className="text-xs text-muted">{legs.length} of {MAX_LEGS} legs · {legs.length < 2 ? "tap another bid or ask" : "tap to add or remove"}</div>
+            <div className="text-xs text-muted">{legs.length} of {MAX_LEGS} legs{legExpiries.length > 1 ? ` · ${legExpiries.length} expiries` : ""} · {legs.length < 2 ? "tap another bid or ask" : "tap to add or remove"}</div>
           </div>
           <div className="flex shrink-0 gap-2">
             <button type="button" className="trade-button" onClick={() => setLegs([])}>Clear</button>

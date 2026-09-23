@@ -16,6 +16,7 @@ const std::string C5100 = osi("SPXW261022C05100000");
 const std::string C5110 = osi("SPXW261022C05110000");
 const std::string C5120 = osi("SPXW261022C05120000");
 const std::string LATER = osi("SPXW261023P04890000");
+const std::string LATER_4900 = osi("SPXW261023P04900000");
 const std::string XSP = osi("XSP261022P00490000");
 
 /// A few SPXW strikes around 5000, quoted together.
@@ -80,8 +81,14 @@ TEST(TradingMargin, SpreadsNeedTheirWidthAndBoundedGroupsTheirWorstLoss) {
   // A strangle is unbounded above, so both shorts are naked.
   const auto call = naked_requirement(*md::parse_osi(C5100), 5000.0);
   EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(C5100, -1, "300")}), m("90800") + call);
-  // A long in a later expiry does not cover a short that expires first.
-  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(LATER, 1)}), m("90500"));
+  // A long that expires with its short or later covers it: diagonals hold the width, calendars nothing.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(LATER, 1)}), m("1000"));
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(LATER_4900, 1)}), m("0"));
+  // A long that expires first does not cover a later short.
+  EXPECT_EQ(margin_requirement({margin(LATER, -1, "400"), margin(P4900, 1)}), m("400") + naked_requirement(*md::parse_osi(LATER), 5000.0));
+  // An iron condor beside a calendar: each expiry on its own still wins.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(P4890, 1), margin(C5100, -1, "300"), margin(C5110, 1),
+                                margin(LATER_4900, 1)}), m("1000"));
   EXPECT_EQ(margin_requirement({margin(P4890, 3), margin(C5100, 2)}), Money{});
 }
 
@@ -268,6 +275,25 @@ TEST(TradingBuyingPower, ProtectionIsAllowedWhenBuyingPowerIsNegative) {
   ASSERT_TRUE(protect.decision.ok()) << protect.decision.message;
   EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Filled);
   EXPECT_EQ(s.snapshot()->buying_power.available, m("87898.70"));  // 88898.70 - 1000
+}
+
+TEST(TradingMultiLeg, CalendarsHoldOnlyTheirDebit) {
+  Chain f;
+  AccountRules rules;
+  rules.buying_power = true;
+  TradingSession s(config("2000", rules), f.time);
+  f.define(s, {P4900, LATER_4900});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {LATER_4900, "6.00", "6.20", -0.31}});
+  // Sell the near put, buy the next day's: a 1.20 debit that the later put covers.
+  const auto legs = std::vector<Leg>{leg(P4900, Side::Sell), leg(LATER_4900, Side::Buy)};
+  ASSERT_TRUE(s.submit(combo("rest", legs, 5, "1.00"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("506.50"));  // 5 * 100 * 1.00 + 10 * 0.65
+  const auto result = s.submit(combo("calendar", legs, 1, "1.20"), f.time);
+  ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+  const auto snap = s.snapshot();
+  EXPECT_EQ(snap->recent_orders.back().status, OrderStatus::Filled);
+  EXPECT_EQ(snap->buying_power.short_requirement, Money{});
+  EXPECT_EQ(snap->account.cash, m("1878.70"));  // - 120 - 2 * 0.65
 }
 
 TEST(TradingMultiLeg, AWorkingComboIsOnePendingExposure) {

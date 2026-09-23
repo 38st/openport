@@ -35,7 +35,7 @@ afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clea
 
 describe("strategy ticket", () => {
   it("prices the legs net, shows the expiry risk and places one order", () => {
-    const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiry={expiry} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any)
+    const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any)
     for (const text of ["Strategy ticket", "SPX <span", "Bull put spread", "2 of 4 legs", "SELL", "BUY", "6900 P", "6890 P",
       "Net bid", "$1.20 credit", "$1.00 credit", "$0.80 credit", 'value="1.00"', "$0.05 tick", "receive at least",
       "Rests: the legs trade now at $0.80 credit; fills when that reaches $1.00 credit.", "Max profit", "$100.00", "Max loss", "$900.00",
@@ -45,9 +45,9 @@ describe("strategy ticket", () => {
     expect(html).not.toContain("NaN")
   })
   it("asks for a second leg and blocks buy-only plans", () => {
-    expect(render(<StrategyTicket legs={[spread[0]!]} onLegs={() => {}} expiry={expiry} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any))
+    expect(render(<StrategyTicket legs={[spread[0]!]} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any))
       .toContain("Click another bid or ask on the chain to add a leg")
-    const buyOnly = render(<StrategyTicket legs={spread} onLegs={() => {}} expiry={expiry} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, account)
+    const buyOnly = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, account)
     expect(buyOnly).toContain("is buy-only and single-leg")
     expect(buyOnly).toMatch(/aria-label="Submit strategy order" disabled=""/)
   })
@@ -61,5 +61,14 @@ describe("strategy ticket", () => {
       legs: [{ symbol: "SPXW  261016P06900000", side: "sell", ratio: 1 }, { symbol: "SPXW  261016P06890000", side: "buy", ratio: 1 }] }
     const html = render(<OrdersView />, any, [combo])
     for (const text of ["SPX Oct 16 −6900P +6890P", "2 legs", "NET", "$1.00 cr"]) expect(html).toContain(text)
+  })
+  it("estimates a calendar at its first expiry", () => {
+    const later = { ...expiry, id: "2026-10-23PM", expiry: "2026-10-23", expiry_time: "2026-10-23T20:00:00Z", days: 30 }
+    const far: StrategyLeg = { ...put(6900, "buy", 7, 7.4), symbol: "SPXW  261023P06900000", expiry: later.id,
+      quote: { ...quote, symbol: "SPXW  261023P06900000", bid: 7, ask: 7.4, mid: 7.2, iv: 0.2 } }
+    const html = render(<StrategyTicket legs={[spread[0]!, far]} onLegs={() => {}} expiries={[later, expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any)
+    for (const text of ["Calendar spread", "Oct 16 / Oct 23", "· Oct 23", "≈ $", "Estimated P&amp;L at the Oct 16 expiry", "later legs at today&#x27;s implied volatility"])
+      expect(html).toContain(text)
+    expect(html).not.toContain("NaN")
   })
 })

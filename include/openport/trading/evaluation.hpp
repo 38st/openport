@@ -104,12 +104,14 @@ struct MarginLeg {
   Money value;                   ///< Shorts: buy-back value of all the contracts.
   std::optional<double> spot;    ///< For the naked rule.
 };
-/// Requirement for option positions, grouped by underlying and expiry time. Each
-/// group needs the least of: its shorts paired with longs of the same type as
-/// verticals (a put long below or a call long above its short costs the width,
-/// one at or beyond it nothing), each pair never charged more than naked and
-/// unpaired shorts naked at their buy-back value plus naked_requirement; and the
-/// group's worst loss at expiry when that is bounded (no net short calls).
+/// Requirement for option positions. Shorts pair with longs of the same type on
+/// the same underlying that expire with them or later, as verticals: a put long
+/// below or a call long above its short costs the width, one at or beyond it
+/// nothing, and no pair costs more than naked; unpaired shorts are naked at their
+/// buy-back value plus naked_requirement. Positions that expire together may
+/// instead need their worst loss at expiry, when that is bounded (no net short
+/// calls). Each underlying needs the least of pairing across expiries and
+/// taking each expiry on its own (the lesser of its verticals and worst loss).
 /// Longs need nothing: their premium is paid in full.
 [[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs);
 

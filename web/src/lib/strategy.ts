@@ -100,6 +100,8 @@ export interface RiskProfile {
   maxProfit: number | null
   maxLoss: number | null
   breakevens: number[]
+  /** Legs expire apart: values at the first expiry are estimates. */
+  estimated?: boolean
 }
 /** Max profit, max loss and breakevens at expiry; null when the legs expire apart. */
 export function riskProfile(legs: StrategyLeg[], units: number, net: number): RiskProfile | null {
@@ -122,6 +124,66 @@ export function riskProfile(legs: StrategyLeg[], units: number, net: number): Ri
     maxProfit: slope > 0 ? null : Math.max(0, high),
     maxLoss: slope < 0 ? null : Math.max(0, -low),
     breakevens: breakevens.map((b) => Math.round(b * 100) / 100),
+  }
+}
+
+/** Standard normal CDF from Abramowitz and Stegun's erf approximation 7.1.26 (error under 1.5e-7). */
+export function normCdf(x: number): number {
+  const t = 1 / (1 + (0.3275911 * Math.abs(x)) / Math.SQRT2)
+  const tail = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-(x * x) / 2)
+  return x >= 0 ? 1 - tail / 2 : tail / 2
+}
+/** Black-76 value per unit; intrinsic (discounted) without volatility or time. */
+export function black76(type: Kind, forward: number, strike: number, vol: number, years: number, discount: number): number {
+  if (!(vol > 0) || !(years > 0)) return discount * Math.max(0, type === "call" ? forward - strike : strike - forward)
+  const s = vol * Math.sqrt(years)
+  const d1 = (Math.log(forward / strike) + (s * s) / 2) / s, d2 = d1 - s
+  return type === "call" ? discount * (forward * normCdf(d1) - strike * normCdf(d2)) : discount * (strike * normCdf(-d2) - forward * normCdf(-d1))
+}
+/** What the payoff needs to know about an expiry, from the chain. */
+export interface ExpiryTerms { id: string; time: number; forward: number | null; discount: number | null }
+const YEAR_MS = 365.25 * 86_400_000
+/**
+ * P&L at the first expiry for `units`, as a function of spot then: legs that
+ * expire first at intrinsic value, later legs at Black-76 with their current
+ * implied volatility, the forward carried from spot by the ratio of today's
+ * forwards and discounted by the ratio of discount factors. Exact when all legs
+ * expire together; null when a later leg has no volatility or terms.
+ */
+export function strategyPayoff(legs: StrategyLeg[], units: number, net: number, terms: Map<string, ExpiryTerms>): ((spot: number) => number) | null {
+  const ids = [...new Set(legs.map((l) => l.expiry))]
+  if (ids.length === 1) return (spot) => payoff(legs, units, net, spot)
+  const byTime = ids.map((id) => terms.get(id)).filter((t): t is ExpiryTerms => t != null).sort((a, b) => a.time - b.time)
+  if (byTime.length !== ids.length) return null
+  const front = byTime[0]!
+  const later = legs.filter((l) => l.expiry !== front.id).map((leg) => {
+    const t = terms.get(leg.expiry)!
+    const carry = front.forward && t.forward ? t.forward / front.forward : 1
+    const discount = front.discount && t.discount ? t.discount / front.discount : 1
+    return { leg, carry, discount, years: (t.time - front.time) / YEAR_MS, vol: leg.quote?.iv ?? null }
+  })
+  if (later.some((l) => l.vol == null || !Number.isFinite(l.vol))) return null
+  const first = legs.filter((l) => l.expiry === front.id)
+  return (spot) => payoff(first, units, 0, spot) - net * 100 * units + later.reduce((total, { leg, carry, discount, years, vol }) =>
+    total + sign(leg.side) * leg.ratio * units * 100 * black76(leg.type, spot * carry, leg.strike, vol!, years, discount), 0)
+}
+/** Max profit, loss and breakevens sampled from a payoff over a spot range and at the strikes; unbounded as with riskProfile. */
+export function estimatedProfile(value: (spot: number) => number, legs: StrategyLeg[], units: number, low: number, high: number): RiskProfile {
+  // Near legs' payoffs kink at their strikes, so sample those too.
+  const grid = Array.from({ length: 401 }, (_, i) => low + ((high - low) * i) / 400)
+  const points = [...new Set([...grid, ...legs.map((l) => l.strike).filter((k) => k > low && k < high)])].sort((a, b) => a - b)
+  const values = points.map(value)
+  const slope = legs.reduce((total, leg) => total + (leg.type === "call" ? sign(leg.side) * leg.ratio * units : 0), 0)
+  const breakevens: number[] = []
+  for (let i = 1; i < points.length; i++) {
+    const [a, b] = [values[i - 1]!, values[i]!]
+    if ((a < 0 && b >= 0) || (a > 0 && b <= 0)) breakevens.push(points[i - 1]! + (points[i]! - points[i - 1]!) * (-a / (b - a)))
+  }
+  return {
+    maxProfit: slope > 0 ? null : Math.max(0, ...values),
+    maxLoss: slope < 0 ? null : Math.max(0, -Math.min(...values)),
+    breakevens: breakevens.map((b) => Math.round(b * 100) / 100),
+    estimated: true,
   }
 }
 

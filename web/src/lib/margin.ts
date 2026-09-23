@@ -42,20 +42,29 @@ export function trade(book: MarginPosition[], contract: MarginContract, change: 
 function naked(position: MarginPosition, n: number, spot: number | null | undefined) {
   return (position.value * n) / -position.quantity + n * nakedRequirement(position.type, position.strike, spot)
 }
-/** Shorts paired with same-type longs as verticals: the width, never more than naked; the rest naked. */
-function verticals(group: MarginPosition[], type: "call" | "put", spot: number | null | undefined) {
-  const order = (a: MarginPosition, b: MarginPosition) => (type === "put" ? b.strike - a.strike : a.strike - b.strike)
-  const shorts = group.filter((p) => p.type === type && p.quantity < 0).sort(order).map((p) => ({ p, left: -p.quantity }))
-  const longs = group.filter((p) => p.type === type && p.quantity > 0).sort(order).map((p) => ({ p, left: p.quantity }))
-  let cost = 0, next = 0
+/**
+ * Shorts paired with same-type longs that expire with them or later: the most
+ * exposed shorts take the most protective eligible long (the earliest expiring
+ * on a tie). A pair costs its width, never more than naked; the rest are naked.
+ */
+function verticals(positions: MarginPosition[], type: "call" | "put", spot: number | null | undefined) {
+  const protects = (a: number, b: number) => (type === "put" ? a > b : a < b)
+  const shorts = positions.filter((p) => p.type === type && p.quantity < 0)
+    .sort((a, b) => (protects(a.strike, b.strike) ? -1 : protects(b.strike, a.strike) ? 1 : 0)).map((p) => ({ p, left: -p.quantity }))
+  const longs = positions.filter((p) => p.type === type && p.quantity > 0).map((p) => ({ p, left: p.quantity }))
+  let cost = 0
   for (const short of shorts) {
-    while (short.left > 0 && next < longs.length) {
-      const long = longs[next]!
-      const n = Math.min(short.left, long.left)
-      const width = Math.max(0, type === "put" ? short.p.strike - long.p.strike : long.p.strike - short.p.strike)
+    while (short.left > 0) {
+      let best: (typeof longs)[number] | null = null
+      for (const long of longs)
+        if (long.left > 0 && long.p.expiry >= short.p.expiry && (!best || protects(long.p.strike, best.p.strike) ||
+            (long.p.strike === best.p.strike && long.p.expiry < best.p.expiry))) best = long
+      if (!best) break
+      const n = Math.min(short.left, best.left)
+      const width = Math.max(0, type === "put" ? short.p.strike - best.p.strike : best.p.strike - short.p.strike)
       cost += Math.min(width * 100 * n, naked(short.p, n, spot))
       short.left -= n
-      if ((long.left -= n) === 0) next++
+      best.left -= n
     }
     if (short.left > 0) cost += naked(short.p, short.left, spot)
   }
@@ -68,19 +77,26 @@ function worstLoss(group: MarginPosition[]) {
     total + p.quantity * 100 * Math.max(0, p.type === "call" ? spot - p.strike : p.strike - spot), 0)
   return Math.max(0, -Math.min(0, ...[0, ...group.map((p) => p.strike)].map(payoff)))
 }
-/** Mirrors the server's margin_requirement: per underlying and expiry, the least of verticals and the bounded worst loss. */
+/**
+ * Mirrors the server's margin_requirement: per underlying, the least of pairing
+ * across expiries (a later long covers an earlier short) and taking each expiry
+ * on its own, the lesser of its verticals and its bounded worst loss.
+ */
 export function marginRequirement(positions: MarginPosition[], spot: number | null | undefined): number {
-  const groups = new Map<string, MarginPosition[]>()
-  for (const p of positions) {
-    if (p.quantity === 0) continue
-    const key = `${p.underlying}|${p.expiry}`
-    groups.set(key, [...(groups.get(key) ?? []), p])
+  const group = <K,>(items: MarginPosition[], key: (p: MarginPosition) => K) => {
+    const groups = new Map<K, MarginPosition[]>()
+    for (const p of items) groups.set(key(p), [...(groups.get(key(p)) ?? []), p])
+    return [...groups.values()]
   }
   let total = 0
-  for (const group of groups.values()) {
-    const pairs = verticals(group, "put", spot) + verticals(group, "call", spot)
-    const loss = worstLoss(group)
-    total += loss == null ? pairs : Math.min(pairs, loss)
+  for (const all of group(positions.filter((p) => p.quantity !== 0), (p) => p.underlying)) {
+    let separate = 0
+    for (const expiry of group(all, (p) => p.expiry)) {
+      const pairs = verticals(expiry, "put", spot) + verticals(expiry, "call", spot)
+      const loss = worstLoss(expiry)
+      separate += loss == null ? pairs : Math.min(pairs, loss)
+    }
+    total += Math.min(separate, verticals(all, "put", spot) + verticals(all, "call", spot))
   }
   return total
 }

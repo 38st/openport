@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { quote } from "../test/trading-fixtures"
 import { legsLabel, orderLabel } from "./journal"
-import { netQuote, riskProfile, roundNet, strategyLabel, strategyPowerUse, toggleLeg, type StrategyLeg } from "./strategy"
+import { black76, estimatedProfile, netQuote, normCdf, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, toggleLeg, type ExpiryTerms, type StrategyLeg } from "./strategy"
 import { comboTickCents } from "./trading"
 
 const osi = (type: "C" | "P", strike: number, date = "261022") => `SPXW  ${date}${type}${String(strike * 1000).padStart(8, "0")}`
@@ -77,5 +77,33 @@ describe("strategies", () => {
     expect(legsLabel([legs[0]!, { symbol: osi("P", 4900, "261023"), side: "buy", ratio: 1 }], "SPX")).toBe("SPX −Oct 22 4900P +Oct 23 4900P")
     expect(orderLabel({ symbol: null, underlying: "SPX", legs })).toBe("SPX Oct 22 −4900P +2×4890P")
     expect(orderLabel({ symbol: osi("C", 5000), underlying: "SPX", legs: null })).toBe("SPX Oct 22 5000C")
+  })
+  it("prices later legs with Black-76 to estimate a calendar at the first expiry", () => {
+    expect(normCdf(0)).toBeCloseTo(0.5, 7)
+    expect(normCdf(1.96)).toBeCloseTo(0.975, 3)
+    expect(black76("call", 100, 100, 0.2, 1, 1)).toBeCloseTo(7.9656, 3)
+    // Put-call parity: C - P = D (F - K).
+    expect(black76("call", 105, 100, 0.3, 0.5, 0.98) - black76("put", 105, 100, 0.3, 0.5, 0.98)).toBeCloseTo(0.98 * 5, 9)
+    expect(black76("put", 90, 100, 0, 1, 1)).toBe(10)
+    const near = Date.parse("2026-10-22T20:00:00Z"), day = 86_400_000
+    const terms = new Map<string, ExpiryTerms>([["2026-10-22PM", { id: "2026-10-22PM", time: near, forward: 5000, discount: 0.99 }],
+      ["2026-10-29PM", { id: "2026-10-29PM", time: near + 7 * day, forward: 5000, discount: 0.99 }]])
+    const later = { ...leg("put", 4900, "buy", 8, 8.4, 1, "2026-10-29PM"), expiry: "2026-10-29PM", quote: { ...quote, bid: 8, ask: 8.4, mid: 8.2, iv: 0.2, tradable: true } }
+    const calendar = [leg("put", 4900, "sell", 5, 5.2), later]
+    const value = strategyPayoff(calendar, 1, 3, terms)!
+    // At the short strike the near put expires worthless while the later put keeps a week of time value.
+    expect(value(4900)).toBeCloseTo(100 * black76("put", 4900, 4900, 0.2, 7 / 365.25, 1) - 300, 6)
+    // Far from the strike both puts are worth their intrinsic value, so the loss is the debit.
+    expect(value(3500)).toBeCloseTo(-300, 0)
+    const profile = estimatedProfile(value, calendar, 1, 3430, 6500)
+    expect(profile.estimated).toBe(true)
+    expect(profile.maxLoss).toBeCloseTo(300, 0)
+    expect(profile.maxProfit).toBeGreaterThan(value(4900) - 50)
+    expect(profile.maxProfit).toBeLessThanOrEqual(value(4900) + 1e-9)
+    expect(profile.breakevens).toHaveLength(2)
+    expect(profile.breakevens[0]).toBeLessThan(4900)
+    expect(profile.breakevens[1]).toBeGreaterThan(4900)
+    expect(strategyPayoff([calendar[0]!, { ...later, quote: { ...later.quote, iv: null } }], 1, 3, terms)).toBeNull()
+    expect(strategyPayoff(calendar, 1, 3, new Map())).toBeNull()
   })
 })

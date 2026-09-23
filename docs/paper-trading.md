@@ -356,14 +356,19 @@ on later transactions until the account is flat, so system orders never accumula
 reservations. Long premium is paid in full. A naked short option holds its buy-back
 value (last mark, or its entry credit without one) plus the naked requirement
 `100 * max(20% of spot - OTM amount, 10% of spot for calls or of strike for puts)`,
-with the strike standing in for a missing spot. `margin_requirement` nets spreads:
-positions that expire together on one underlying need the least of (a) their shorts
-paired with same-type longs as verticals, a put long below or a call long above its
-short costing the width and one at or beyond it nothing, each pair never more than
-naked and the rest naked; and (b) the group's worst loss at expiry, when no net short
-calls make it unbounded. So a credit spread holds its width, an iron condor one wing, a
-long butterfly nothing, and a short strangle both naked requirements. Longs in another
-expiry do not cover a short.
+with the strike standing in for a missing spot. `margin_requirement` nets spreads. A
+short pairs with a long of the same type on the same underlying that expires with it or
+later, as a vertical: a put long below or a call long above its short costs the width,
+one at or beyond it nothing, no pair costs more than naked, and unpaired shorts are
+naked. The most exposed shorts take the most protective longs first. Positions that
+expire together may instead need their worst loss at that expiry, when no net short
+calls make it unbounded. Each underlying needs the least of pairing across expiries and
+taking each expiry on its own (the lesser of its verticals and worst loss). So a credit
+spread holds its width, an iron condor one wing, a long butterfly nothing, a calendar
+nothing beyond its debit, a diagonal the strike difference when its long is further out
+of the money, and a short strangle both naked requirements. A long that expires before
+its short does not cover it. (European puts can trade below intrinsic value before
+expiry; the pairing ignores that.)
 
 Each working order reserves what filling it now would cost: its fees, plus the change
 in the positions' margin requirement, plus the premium it pays less the premium it

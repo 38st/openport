@@ -104,6 +104,10 @@ describe("margin", () => {
     expect(marginRequirement([put(4900, -1, 500), put(4890, 1), call(5100, -1, 300), call(5110, 1)], 5000)).toBeCloseTo(1_000)
     expect(marginRequirement([call(5100, 1), call(5110, -2, 500), call(5120, 1)], 5000)).toBe(0)
     expect(marginRequirement([put(4900, -2, 1000), put(4890, 1)], 5000)).toBeCloseTo(91_500)
+    // Across expiries: a later long covers an earlier short, not the reverse.
+    expect(marginRequirement([put(4900, -1, 500), put(4900, 1, 0, "2026-10-23PM")], 5000)).toBe(0)
+    expect(marginRequirement([put(4900, -1, 500), put(4890, 1, 0, "2026-10-23PM")], 5000)).toBeCloseTo(1_000)
+    expect(marginRequirement([put(4890, -1, 400, "2026-10-23PM"), put(4900, 1)], 5000)).toBeCloseTo(400 + 100 * 890)
   })
   it("reserves only a spread's width when legging in, and needs power to uncover a short", () => {
     const short = { symbol: put(4900, 0).symbol, underlying: "SPX", expiry: "2026-10-22PM", type: "put" as const, strike: 4900 }
