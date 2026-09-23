@@ -5,8 +5,11 @@
 #include <functional>
 #include <limits>
 #include <set>
+#include <stdexcept>
+#include <utility>
 
 #include "state.hpp"
+#include "state_delta.hpp"
 
 namespace openport::trading {
 namespace {
@@ -966,6 +969,100 @@ void require_reason(const std::string& reason) {
   if (reason.find_first_not_of(" \t\r\n") == std::string::npos)
     throw TradingError(Reason::INVALID_REASON, "An explicit nonblank reason is required");
 }
+
+constexpr std::uint64_t kCheckpointEvery = 1000;
+/// Keeps schema 3 records small: each carries its state as the change from
+/// the record before ("delta") or whole, as a checkpoint ("state"). A journal
+/// starts with a checkpoint and has one every kCheckpointEvery records, and
+/// any change more than half the size of the last checkpoint is recorded whole.
+class StateRecorder {
+ public:
+  void add(Json& payload, Json state) {
+    if (base_ && since_ + 1 < kCheckpointEvery) {
+      auto delta = detail::state_delta(*base_, state);
+      if (delta.dump().size() * 2 <= checkpoint_bytes_) {
+        payload["delta"] = std::move(delta);
+        base_ = std::move(state);
+        ++since_;
+        return;
+      }
+    }
+    checkpoint_bytes_ = state.dump().size();
+    payload["state"] = state;
+    base_ = std::move(state);
+    since_ = 0;
+  }
+ private:
+  std::optional<Json> base_;
+  std::uint64_t since_ = 0;
+  std::size_t checkpoint_bytes_ = 0;
+};
+
+/// Reverify even caller-constructed recovery objects instead of trusting them.
+JournalRecovery reverify(const JournalRecovery& recovery) {
+  if (recovery.records.empty()) throw TradingError(Reason::JOURNAL_CORRUPT, "Recovery requires a session_start record");
+  std::string lines;
+  try {
+    for (const auto& r : recovery.records) {
+      lines += Json{{"seq", r.seq}, {"time", r.time}, {"type", r.type}, {"payload", Json::parse(r.payload)},
+                    {"prev_hash", r.prev_hash}, {"hash", r.hash}}.dump() + '\n';
+    }
+  } catch (const Json::exception& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
+  auto verified = verify_journal(lines, recovery.head);
+  if (verified.records.front().type != "session_start") throw TradingError(Reason::JOURNAL_CORRUPT, "Missing session start");
+  return verified;
+}
+
+/// Visit each transaction of a verified journal in order with the whole state
+/// it left: read from the record (schemas 1 and 2, and schema 3 checkpoints) or
+/// rebuilt by applying the record's delta. Each state must carry its record's
+/// sequence and time, and each new config passes validation. The visitor gets
+/// the payload without its state; returns the last state.
+template <class Visit>
+Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit) {
+  Json state;
+  bool chained = false;  // A delta may follow only a schema 3 record.
+  Json validated;
+  for (const auto& r : records) {
+    auto payload = Json::parse(r.payload);
+    const auto schema = payload.at("schema");
+    const auto& ticks = payload.at("tick_policy");
+    if ((schema != 1 && schema != 2 && schema != 3) || (ticks != "index-v1" && ticks != "v2"))
+      throw TradingError(Reason::JOURNAL_CORRUPT, "Unsupported trading journal schema/policy");
+    const auto whole = payload.find("state");
+    if (schema == 3) {
+      const auto delta = payload.find("delta");
+      if ((whole == payload.end()) == (delta == payload.end()))
+        throw TradingError(Reason::JOURNAL_CORRUPT, "A schema 3 record carries either a whole state or a delta");
+      if (delta != payload.end()) {
+        if (!chained) throw TradingError(Reason::JOURNAL_CORRUPT, "A state delta without a checkpoint before it");
+        try { detail::apply_state_delta(state, *delta); }
+        catch (const std::invalid_argument& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
+      }
+    } else {
+      const auto& snapshot = payload.at("snapshot");
+      if (snapshot.at("account_version") != r.seq || snapshot.at("time") != r.time)
+        throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded snapshot version/time does not match transaction");
+      if (whole == payload.end()) throw TradingError(Reason::JOURNAL_CORRUPT, "Record without its state");
+    }
+    if (whole != payload.end()) {
+      state = std::move(*whole);
+      payload.erase(whole);
+    }
+    chained = schema == 3;
+    if (!state.is_object() || state.at("version") != r.seq || state.at("time") != r.time)
+      throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded state version/time does not match transaction");
+    if (const auto& config = state.at("config"); config != validated) {
+      const auto c = config.get<SessionConfig>();
+      validate_limits(c.limits);
+      validate_scenarios(c.scenarios);
+      validate_rules(c.rules);
+      validated = config;
+    }
+    visit(r, std::move(payload), std::as_const(state));
+  }
+  return state;
+}
 }  // namespace
 
 PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
@@ -1007,6 +1104,8 @@ struct TradingSession::Impl {
   std::shared_ptr<Journal> journal;
   std::shared_ptr<const TradingSnapshot> snapshot;
   bool stopped = false;
+  /// A new session's first record, and the first after recovery, are checkpoints.
+  StateRecorder recorder;
   /// Whether moving the clock alone to `time` could change anything. Flat with
   /// no open orders, and once the attempt has its start time, time drives no
   /// rule: no DAY or expiry cancellation, trigger, mark, freshness flag, loss
@@ -1032,10 +1131,11 @@ struct TradingSession::Impl {
     ++next.version;
     auto publication = std::make_shared<TradingSnapshot>(snapshot_of(next));
     if (journal) {
-      // Schema 2 adds account rules, evaluation progress, closures and system orders.
+      // Schema 3 records the state as a change from the record before, with
+      // checkpoints, and no snapshot: recovery derives it from the state.
       // Tick policy v2 extends index-v1 with equity and ETF classes.
-      const Json payload{{"schema", 2}, {"tick_policy", "v2"}, {"events", events},
-                         {"state", next}, {"snapshot", *publication}, {"decision", result.decision}};
+      Json payload{{"schema", 3}, {"tick_policy", "v2"}, {"events", events}, {"decision", result.decision}};
+      recorder.add(payload, next);
       try { journal->append(time, type, payload.dump()); }
       catch (...) {
         stopped = true;
@@ -1364,42 +1464,20 @@ std::optional<QuoteObservation> TradingSession::quote(const std::string& symbol)
 }
 md::Date TradingSession::trading_day() const { return impl_->state.day; }
 TradingSession TradingSession::recover(const JournalRecovery& recovery, std::shared_ptr<Journal> journal) {
-  if (recovery.records.empty()) throw TradingError(Reason::JOURNAL_CORRUPT, "Recovery requires a session_start record");
-  // Reverify even caller-constructed recovery objects instead of trusting them.
-  std::string lines;
-  try {
-    for (const auto& r : recovery.records) {
-      lines += Json{{"seq", r.seq}, {"time", r.time}, {"type", r.type}, {"payload", Json::parse(r.payload)},
-                    {"prev_hash", r.prev_hash}, {"hash", r.hash}}.dump() + '\n';
-    }
-  } catch (const Json::exception& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
-  const auto verified = verify_journal(lines, recovery.head);
-  if (verified.records.front().type != "session_start") throw TradingError(Reason::JOURNAL_CORRUPT, "Missing session start");
+  const auto verified = reverify(recovery);
   if (journal && (recovery.truncated_final_line || journal->head() != verified.head || journal->sequence() != verified.records.size()))
     throw TradingError(Reason::JOURNAL_CORRUPT, "Recovery sink does not match verified journal head");
   auto impl = std::make_unique<Impl>();
-  bool legacy = false;
   try {
-    for (const auto& r : verified.records) {
-      const auto payload = Json::parse(r.payload);
-      const auto& schema = payload.at("schema");
-      const auto& ticks = payload.at("tick_policy");
-      if ((schema != 1 && schema != 2) || (ticks != "index-v1" && ticks != "v2"))
-        throw TradingError(Reason::JOURNAL_CORRUPT, "Unsupported trading journal schema/policy");
-      legacy = schema == 1;
-      auto state = payload.at("state").get<State>();
-      auto snapshot = payload.at("snapshot").get<TradingSnapshot>();
-      if (state.version != r.seq || state.time != r.time || snapshot.account_version != state.version || snapshot.time != state.time)
-        throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded state version/time does not match transaction");
-      validate_limits(state.config.limits);
-      validate_scenarios(state.config.scenarios);
-      validate_rules(state.config.rules);
-      impl->state = std::move(state);
-      impl->snapshot = std::make_shared<TradingSnapshot>(std::move(snapshot));
-    }
-    if (legacy) {
+    Json last;
+    auto state = walk_states(verified.records, [&](const JournalRecord&, Json&& payload, const Json&) { last = std::move(payload); });
+    impl->state = state.get<State>();
+    // Schema 3 records no snapshot; the reducer derives it from the state.
+    impl->snapshot = std::make_shared<TradingSnapshot>(
+        last.at("schema") == 3 ? snapshot_of(impl->state) : last.at("snapshot").get<TradingSnapshot>());
+    if (last.at("schema") == 1) {
       // A schema 1 account has no rules; start its progress record from the
-      // journal's first transaction so later schema 2 records continue it.
+      // journal's first transaction so later records continue it.
       auto& s = impl->state;
       Evaluation e;
       for (const auto& r : verified.records) if (r.time > 0) { e.started = r.time; break; }
@@ -1420,5 +1498,53 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
     catch (const Json::exception& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
   impl->journal = std::move(journal);
   return TradingSession(std::move(impl));
+}
+std::string TradingSession::compact(const JournalRecovery& recovery, Journal& out) {
+  if (out.sequence() != 0) throw TradingError(Reason::JOURNAL_IO, "Compaction writes into an empty journal");
+  const auto verified = reverify(recovery);
+  (void)recover(recovery);  // Only a journal that recovers is rewritten.
+  StateRecorder recorder;
+  Json reread;
+  try {
+    const auto final_seq = verified.records.size();
+    const auto last = walk_states(verified.records, [&](const JournalRecord& r, Json&& payload, const Json& state) {
+      if (r.seq == final_seq && payload.at("schema") == 1) {
+        // Recovery completes the evaluation of a journal whose last record is
+        // schema 1 from that record, so it stays as it is.
+        out.append(r.time, r.type, r.payload);
+        return;
+      }
+      payload["schema"] = 3;
+      payload.erase("snapshot");
+      payload.erase("delta");
+      recorder.add(payload, state);
+      const auto line = payload.dump();
+      // Read the record back as recovery will, before it is written.
+      const auto check = Json::parse(line);
+      if (const auto delta = check.find("delta"); delta != check.end()) detail::apply_state_delta(reread, *delta);
+      else reread = check.at("state");
+      if (reread != state)
+        throw TradingError(Reason::JOURNAL_CORRUPT, "Compaction would change transaction " + std::to_string(r.seq));
+      out.append(r.time, r.type, line);
+    });
+    if (Json::parse(verified.records.back().payload).at("schema") == 1) return recover(recovery).snapshot_json();
+    return Json(snapshot_of(last.get<State>())).dump();
+  } catch (const Json::exception& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
+    catch (const std::invalid_argument& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
+}
+void TradingSession::expand(const JournalRecovery& recovery, Journal& out) {
+  if (out.sequence() != 0) throw TradingError(Reason::JOURNAL_IO, "Expansion writes into an empty journal");
+  const auto verified = reverify(recovery);
+  (void)recover(recovery);
+  try {
+    (void)walk_states(verified.records, [&](const JournalRecord& r, Json&& payload, const Json& state) {
+      if (payload.at("schema") != 3) { out.append(r.time, r.type, r.payload); return; }
+      payload["schema"] = 2;
+      payload.erase("delta");
+      payload["snapshot"] = snapshot_of(state.get<State>());
+      payload["state"] = state;
+      out.append(r.time, r.type, payload.dump());
+    });
+  } catch (const Json::exception& e) { throw TradingError(Reason::JOURNAL_CORRUPT, e.what()); }
 }
 }  // namespace openport::trading

@@ -91,7 +91,9 @@ Dashboard or Rules page, and add accounts from the account switcher in the sideb
 
 Every account survives restarts through an append-only, hash-chained journal: the main
 account at `~/.openport/paper-journal.jsonl` (`--paper-journal`), the others in an
-`accounts` directory beside it. `--no-paper` turns trading off. The engine also models
+`accounts` directory beside it. Each record carries what its transaction changed, with
+the whole state every thousand records; `openportd --compact-journals` rewrites
+journals from older builds that way, keeping each original as `.bak`. `--no-paper` turns trading off. The engine also models
 the funded phase that follows a pass (`funded-*` plans with a locking floor and
 payouts). This is a simulator that funds no one, so the web terminal hides those plans
 and the Payouts page; set `showFundedAccounts` in `web/src/lib/features.ts` to offer

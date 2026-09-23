@@ -1,9 +1,11 @@
 #pragma once
 
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "openport/trading/session.hpp"
 
@@ -70,5 +72,21 @@ struct TradingReply {
   std::string account;  ///< The account the command acted on (a new account's ID for CreateAccount).
 };
 using TradingCompletion = std::function<void(TradingReply)>;
+
+/// A journal as compact_paper_journals left it.
+struct JournalCompaction {
+  std::filesystem::path file;
+  std::uintmax_t bytes_before = 0;
+  std::uintmax_t bytes_after = 0;
+  std::filesystem::path backup;  ///< The journal as it was; empty if nothing was rewritten.
+  std::string error;             ///< Why the journal was left as it was.
+};
+/// Rewrite the main paper journal and the account journals in `accounts` whose
+/// records carry whole states (schemas 1 and 2) in the compact schema. Each takes the
+/// writer's lock, so a running openportd's journals are refused. The rewrite
+/// must recover to the same account before it replaces the journal, and the
+/// original stays beside it as FILE.bak.
+[[nodiscard]] std::vector<JournalCompaction> compact_paper_journals(
+    const std::filesystem::path& journal, const std::filesystem::path& accounts);
 
 }  // namespace openport::server

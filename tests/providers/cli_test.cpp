@@ -8,6 +8,7 @@
 #include <string>
 
 #include "support/recording.hpp"
+#include "support/scripted_market.hpp"
 #include "openport/trading/journal.hpp"
 
 namespace {
@@ -139,6 +140,80 @@ TEST(Cli, DaemonReportsJournalLockedByAnotherProcessBeforeWebStartupFails) {
   EXPECT_FALSE(recovery.truncated_final_line);
   journal->append(1, "still-owned", "{}");
   EXPECT_EQ(journal->sequence(), 2u);
+}
+
+struct Finished { int status = -1; std::string output; };
+Finished run_daemon(const std::string& args) {
+  const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/openportd\" " + args + " 2>&1";
+  Finished finished;
+  FILE* pipe = popen(command.c_str(), "r");
+  if (!pipe) return finished;
+  char buffer[512];
+  while (fgets(buffer, sizeof buffer, pipe)) finished.output += buffer;
+  const auto status = pclose(pipe);
+  if (WIFEXITED(status)) finished.status = WEXITSTATUS(status);
+  return finished;
+}
+
+TEST(Cli, DaemonCompactsJournalsFromEarlierBuildsAndKeepsTheOriginals) {
+  using namespace openport;
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-compact-XXXXXX").string();
+  ASSERT_NE(mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  std::filesystem::create_directories(directory / "accounts");
+  const auto main = directory / "paper-journal.jsonl";
+  const auto swing = directory / "accounts" / "swing.jsonl";
+  const auto fresh = directory / "accounts" / "fresh.jsonl";
+  // Journals as a build before the compact format wrote them, and one written since.
+  test::ScriptedMarket f;
+  std::string expected;
+  for (const auto& file : {main, swing, fresh}) {
+    const auto current = file.string() + ".current";
+    {
+      trading::TradingSession s({}, f.time, trading::FileJournal::create(current));
+      f.seed(s);
+      for (int i = 0; i < 4; ++i) {
+        f.next();
+        s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+        ASSERT_TRUE(s.submit(f.market("buy-" + std::to_string(i)), f.time).decision.ok());
+      }
+      if (file == main) expected = s.snapshot_json();
+    }
+    if (file == fresh) {
+      std::filesystem::rename(current, file);
+    } else {
+      trading::TradingSession::expand(trading::FileJournal::read(current), *trading::FileJournal::create(file.string()));
+      std::filesystem::remove(current);
+    }
+  }
+  const auto before = std::filesystem::file_size(main);
+  const auto args = "--compact-journals --paper-journal '" + main.string() + "'";
+  {
+    // A journal in use stays as it is; the others are still rewritten.
+    const auto held = trading::FileJournal::resume(swing.string());
+    const auto result = run_daemon(args);
+    EXPECT_EQ(result.status, 1) << result.output;
+    EXPECT_NE(result.output.find(swing.string() + ": left as it was: JOURNAL_LOCKED"), std::string::npos) << result.output;
+    EXPECT_NE(result.output.find(main.string() + ": "), std::string::npos) << result.output;
+    EXPECT_NE(result.output.find("; the original is paper-journal.jsonl.bak"), std::string::npos) << result.output;
+    EXPECT_NE(result.output.find(fresh.string() + ": already compact"), std::string::npos) << result.output;
+  }
+  EXPECT_EQ(std::filesystem::file_size(directory / "paper-journal.jsonl.bak"), before);
+  EXPECT_LT(std::filesystem::file_size(main) * 2, before);
+  EXPECT_EQ(trading::TradingSession::recover(trading::FileJournal::read(main.string())).snapshot_json(), expected);
+  EXPECT_EQ(trading::TradingSession::recover(trading::FileJournal::read((directory / "paper-journal.jsonl.bak").string())).snapshot_json(), expected);
+  const auto again = run_daemon(args);
+  EXPECT_EQ(again.status, 0) << again.output;
+  EXPECT_NE(again.output.find(main.string() + ": already compact"), std::string::npos) << again.output;
+  EXPECT_NE(again.output.find("; the original is swing.jsonl.bak"), std::string::npos) << again.output;
+  EXPECT_FALSE(std::filesystem::exists(directory / "paper-journal.jsonl.bak2"));
+  for (const auto& entry : std::filesystem::directory_iterator(directory / "accounts"))
+    EXPECT_EQ(entry.path().string().find(".compacting"), std::string::npos) << entry.path();
+  std::filesystem::create_directories(directory / "empty");
+  const auto missing = run_daemon("--compact-journals --paper-journal '" + (directory / "empty" / "none.jsonl").string() + "'");
+  EXPECT_EQ(missing.status, 0) << missing.output;
+  EXPECT_NE(missing.output.find("no paper journals"), std::string::npos) << missing.output;
+  std::filesystem::remove_all(directory);
 }
 
 }  // namespace

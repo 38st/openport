@@ -28,6 +28,7 @@ add_library(openport_trading
   trading/risk.cpp
   trading/journal.cpp
   trading/session.cpp
+  trading/state_delta.cpp
   trading/history.cpp
   trading/margin.cpp
 )

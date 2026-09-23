@@ -12,7 +12,8 @@ add_executable(openport_tests
   analytics/american_test.cpp
 )
 target_link_libraries(openport_tests PRIVATE openport::options GTest::gtest_main)
-target_include_directories(openport_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# Unit tests also reach private helpers under src/.
+target_include_directories(openport_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(openport_tests PRIVATE
   OPENPORT_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
@@ -50,6 +51,7 @@ target_sources(openport_tests PRIVATE
   trading/matching_test.cpp
   trading/risk_settlement_test.cpp
   trading/journal_test.cpp
+  trading/journal_schema_test.cpp
   trading/evaluation_test.cpp
   trading/conditional_test.cpp
   trading/funded_test.cpp

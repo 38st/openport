@@ -54,6 +54,7 @@ struct Settings {
   std::optional<std::filesystem::path> candle_dir;
   bool history = true;
   bool paper_enabled = true;
+  bool compact_journals = false;
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
   const server::PlanPreset* plan = server::find_plan("practice");
@@ -72,9 +73,12 @@ int usage(const char* error = nullptr) {
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
-      "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n\n"
+      "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n"
+      "       openportd --compact-journals [--paper-journal PATH]\n\n"
       "paper: durable paper trading on index, equity and ETF options; cash 100000, fee\n"
       "       0.65; more named accounts live in an accounts directory beside the journal\n"
+      "compact: rewrite journals from builds before the compact format, keeping each\n"
+      "         original as FILE.bak, then exit; stop openportd first\n"
       "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
@@ -133,6 +137,31 @@ std::filesystem::path find_web_root(const char* argv0) {
   return std::filesystem::current_path() / "web/dist";
 }
 
+std::string size_text(std::uintmax_t bytes) {
+  char text[32];
+  if (bytes >= 1'000'000) std::snprintf(text, sizeof text, "%.1f MB", static_cast<double>(bytes) / 1e6);
+  else std::snprintf(text, sizeof text, "%.1f KB", static_cast<double>(bytes) / 1e3);
+  return text;
+}
+
+int compact_journals(const std::filesystem::path& journal, const std::filesystem::path& accounts) {
+  const auto results = server::compact_paper_journals(journal, accounts);
+  if (results.empty()) std::printf("no paper journals at %s\n", journal.c_str());
+  bool failed = false;
+  for (const auto& r : results) {
+    if (!r.error.empty()) {
+      failed = true;
+      std::fprintf(stderr, "%s: left as it was: %s\n", r.file.c_str(), r.error.c_str());
+    } else if (r.backup.empty()) {
+      std::printf("%s: already compact (%s)\n", r.file.c_str(), size_text(r.bytes_before).c_str());
+    } else {
+      std::printf("%s: %s -> %s; the original is %s\n", r.file.c_str(), size_text(r.bytes_before).c_str(),
+                  size_text(r.bytes_after).c_str(), r.backup.filename().c_str());
+    }
+  }
+  return failed ? 1 : 0;
+}
+
 }  // namespace
 
 int run(int argc, char** argv) {
@@ -146,6 +175,7 @@ int run(int argc, char** argv) {
     if (arg == "--help" || arg == "-h") return usage();
     if (arg == "--no-paper") { settings.paper_enabled = false; continue; }
     if (arg == "--no-history") { settings.history = false; continue; }
+    if (arg == "--compact-journals") { settings.compact_journals = true; continue; }
     if (!has_value) return usage(("missing value for " + arg).c_str());
     const std::string value = argv[++i];
     if (arg == "--provider") {
@@ -206,6 +236,13 @@ int run(int argc, char** argv) {
       return usage(("unknown option " + arg).c_str());
     }
   }
+  // More named accounts live beside the main journal, one journal each.
+  const auto paper_accounts = settings.paper_journal.empty()
+      ? std::filesystem::path{} : std::filesystem::absolute(settings.paper_journal).parent_path() / "accounts";
+  if (settings.compact_journals) {
+    if (settings.paper_journal.empty()) return usage("HOME is unavailable; specify --paper-journal");
+    return compact_journals(settings.paper_journal, paper_accounts);
+  }
   if (settings.subscription.underlyings.empty()) return usage("no symbols");
   settings.provider.api_key = env_key_for(settings.provider.name);
 
@@ -238,9 +275,7 @@ int run(int argc, char** argv) {
   engine_options.record_file = settings.record_file;
   engine_options.paper_enabled = settings.paper_enabled;
   engine_options.paper_journal = settings.paper_journal;
-  // More named accounts live beside the main journal, one journal each.
-  if (!settings.paper_journal.empty())
-    engine_options.paper_accounts = std::filesystem::absolute(settings.paper_journal).parent_path() / "accounts";
+  engine_options.paper_accounts = paper_accounts;
   // Rules and cash seed new journals only; recovery restores the recorded configuration.
   settings.paper.rules = settings.plan->rules;
   settings.paper.initial_cash = settings.paper_cash.value_or(settings.plan->initial_cash);

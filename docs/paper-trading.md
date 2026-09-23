@@ -533,8 +533,9 @@ Stock delivery, American exercise and assignment are deferred.
 an existing verified one. Each line is one **atomic reducer transaction**. Its
 payload contains ordered typed outcomes (`order_accepted`, `order_rejected`,
 `fill`, `cancel`, `definition`, `limit_change`, `kill_trip`, `kill_reset`,
-`settlement`, `day_rollover`, `session_start`), the resulting reducer state, and the
-published snapshot. Grouping a partial fill and IOC cancellation in one committed
+`settlement`, `day_rollover`, `session_start`) and the resulting reducer state, whole
+or as its change from the record before. The published snapshot is derived from the
+state, so it is not recorded. Grouping a partial fill and IOC cancellation in one committed
 line prevents recovery from exposing half a command. The top-level type names the
 command (`submit`, `market`, etc.); outcomes are in `payload.events`. Empty market
 batches on an idle account are not transactions, so a flat account without working
@@ -556,15 +557,32 @@ an active journal.
 
 Every record has exactly `seq`, `time`, `type`, `payload`, `prev_hash`, `hash`.
 Sequence starts at 1; the genesis previous hash is 64 ASCII zeroes. New payloads use
-schema 2 and tick policy `v2` (the `index-v1` table plus equity and ETF classes). Schema 2 adds `config.rules`, the evaluation,
-attempts and closures to the state and snapshot, and `system` to orders; it also
-records `evaluation_passed`, `evaluation_failed`, `evaluation_day`, `account_reset`
-and `payout` outcomes. Later schema 2 fields (conditional and bracket orders, the
-funded phase, payout rules and records, qualifying days) default when absent, so
-earlier schema 2 journals recover unchanged; multi-leg orders record their `legs`. Recovery reads schema 1 journals: their
-original keys stay required, the added ones default, and the evaluation starts from
-the first record with the recorded starting cash. Resumed schema 1 journals continue with schema 2 records; an older build
-refuses them rather than silently dropping rule state. The canonical encoding is compact nlohmann JSON
+schema 3 and tick policy `v2` (the `index-v1` table plus equity and ETF classes): the
+`events`, the command's `decision`, and either `state`, the whole reducer state (a
+checkpoint), or `delta`, its change from the previous record's state. A delta is a
+tree of nodes: `{"v": value}` replaces a value, `{"o": {key: node}, "d": [keys]}`
+changes some of an object's keys and removes others, and `{"a": {"index": node},
+"n": length}` changes some of an array's elements and sets its length, new elements
+arriving whole. The first record is a checkpoint, as are the first after every
+recovery, one in every 1,000 records, and any record whose change is more than half
+the size of the last checkpoint. Recovery rebuilds each record's state from the one
+before and checks it against the record's sequence and time. Order, fill and closure
+history therefore costs a record only what the transaction added: records stay a few
+hundred bytes however long an account trades, where schema 2 wrote the whole state
+and snapshot every time (a 14,063-record journal of mostly idle polls shrank from
+60.6 MB to 5.4 MB, and its startup from 5.8 s to 0.6 s).
+
+Schema 2 added `config.rules`, the evaluation, attempts and closures to the state and
+snapshot, and `system` to orders; it also records `evaluation_passed`,
+`evaluation_failed`, `evaluation_day`, `account_reset` and `payout` outcomes. Later
+schema 2 fields (conditional and bracket orders, the funded phase, payout rules and
+records, qualifying days) default when absent, so earlier schema 2 journals recover
+unchanged; multi-leg orders record their `legs`. Recovery reads schema 1 and 2
+records, which hold the whole state and snapshot, in any mix with schema 3. Schema 1
+journals keep their original keys required and default the added ones, and the
+evaluation starts from the first record with the recorded starting cash. Resumed
+schema 1 and 2 journals continue with schema 3 records; builds from before schema 3
+refuse them rather than guess. The canonical encoding is compact nlohmann JSON
 3.12 serialization: recursively lexicographically sorted object keys, array order
 preserved, UTF-8 strings, integer money, round-trip decimal doubles, no whitespace.
 Hash is lowercase hex SHA-256 (OpenSSL EVP) over the canonical entire record with
@@ -582,8 +600,9 @@ the hosting application should durably provision the containing directory.
 
 Recovery verifies the chain and restores **recorded outcomes/state**, including
 cash, basis residues, liquidity budgets, observation high-water marks, definitions,
-orders, fills, limits, kill state, daily baseline and the exact published snapshot.
-It never reruns market matching or reprices a recovered snapshot. A resumed sink
+orders, fills, limits, kill state and daily baseline, and the published snapshot:
+recorded (schemas 1 and 2) or derived from the recovered state as the reducer
+derived it (schema 3). It never reruns market matching or reprices from new data. A resumed sink
 must match the recovered head and sequence exactly. Subsequent commands calculate
 normally from recovered state.
 
@@ -597,10 +616,27 @@ to `read`/`verify_journal` to detect removal of complete trailing records. An
 unanchored hash chain cannot detect wholesale history replacement or a clean tail
 truncation.
 
-Full outcome checkpoints favor auditability and deterministic recovery over space
-and throughput. All v1 orders/fills remain in memory and the snapshot's `recent_*`
-arrays; there is no retention cap or compaction. This is appropriate for this core
-batch; long-running production use will need bounded history and checkpoint policy.
+Every record's whole state stays recoverable, so the journal is a complete audit of
+the account at each transaction. All v1 orders/fills remain in memory and the
+snapshot's `recent_*` arrays; there is no retention cap, and a checkpoint grows with
+the account's history, one per thousand records.
+
+### Compacting older journals
+
+Records written before schema 3 keep their whole states until rewritten. Stop
+openportd, then run `openportd --compact-journals` (with the same `--paper-journal`
+if you set one; in Docker, `docker run --rm -v openport:/var/lib/openport openport
+--compact-journals` while the server's container is stopped): it rewrites the main journal and each account journal beside it
+that has such records, and reports the sizes. A rewrite takes the writer's lock, so
+a journal in use is left as it is with `JOURNAL_LOCKED`; keeps every transaction's
+sequence, time, type, events and decision; reads each rewritten record back before
+writing it; and must recover to the same account before it replaces the journal. A
+final schema 1 record stays as it is, since recovery completes that journal's
+evaluation from it. The original stays beside it as `FILE.bak` (then `.bak2` and so
+on): move it back to undo, or delete it once you are satisfied. The rewrite has a
+new hash chain, so replace any head you persisted to anchor the old one.
+`TradingSession::expand` does the reverse, writing every state and snapshot whole
+(schema 2), for audit tools and for returning a journal to an older build.
 Identical inputs give identical output on the same build. Exact monetary results
 are portable; floating-point analytics are not promised bit-identical across
 compilers/architectures, although recovery restores the recorded doubles.
@@ -830,7 +866,9 @@ basis residues; all execution/budget/priority/clock rules; open-order risk range
 loss/kill controls; scenarios; settlement; evaluation and funded-account rules;
 conditional and bracket orders; multi-leg orders, margin and buying power; order
 changes, cancel-all and flattening; deterministic journal round trips, tampering,
-torn suffixes, exclusive writers and injected write failures.
+torn suffixes, exclusive writers and injected write failures; state deltas (including
+randomized round trips), checkpoints, damaged deltas, mixed-schema recovery and
+compaction. The CLI tests compact journals from earlier builds with `openportd`.
 
 Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
 JSON errors, write protection, restart recovery, AM/PM settlement, named accounts and

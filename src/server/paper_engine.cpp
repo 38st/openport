@@ -141,6 +141,66 @@ trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp ma
   return {};
 }
 
+namespace {
+/// Rewrite one journal (see compact_paper_journals).
+JournalCompaction compact_journal(const std::filesystem::path& file) {
+  JournalCompaction result{file, 0, 0, {}, {}};
+  const auto temporary = std::filesystem::path(file.string() + ".compacting");
+  try {
+    // The writer's lock, held until the rewrite is in place.
+    const auto lock = FileJournal::resume(file.string());
+    const auto recovery = FileJournal::read(file.string(), lock->head());
+    result.bytes_before = result.bytes_after = std::filesystem::file_size(file);
+    // Only records with whole states shrink; a final schema 1 record stays.
+    bool whole = false;
+    for (const auto& r : recovery.records) {
+      const auto schema = nlohmann::json::parse(r.payload).at("schema");
+      if (schema == 2 || (schema == 1 && r.seq < recovery.records.size())) { whole = true; break; }
+    }
+    if (!whole) return result;
+    std::filesystem::remove(temporary);  // Left by a run that stopped part way.
+    std::string expected;
+    {
+      const auto out = FileJournal::create(temporary.string());
+      expected = TradingSession::compact(recovery, *out);
+    }
+    if (TradingSession::recover(FileJournal::read(temporary.string())).snapshot_json() != expected)
+      throw TradingError(Reason::JOURNAL_CORRUPT, "the rewrite does not recover to the same account");
+    auto backup = std::filesystem::path(file.string() + ".bak");
+    for (int n = 2; std::filesystem::exists(backup); ++n) backup = file.string() + ".bak" + std::to_string(n);
+    std::filesystem::create_hard_link(file, backup);
+    std::filesystem::rename(temporary, file);
+    sync_directory(std::filesystem::absolute(file).parent_path());
+    result.backup = backup;
+    result.bytes_after = std::filesystem::file_size(file);
+  } catch (const TradingError& error) {
+    result.error = std::string(to_string(error.code())) + ": " + error.what();
+  } catch (const std::exception& error) {
+    result.error = error.what();
+  }
+  if (!result.error.empty()) {
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
+  }
+  return result;
+}
+}  // namespace
+
+std::vector<JournalCompaction> compact_paper_journals(const std::filesystem::path& journal,
+                                                      const std::filesystem::path& accounts) {
+  std::vector<JournalCompaction> results;
+  std::error_code ec;
+  if (!journal.empty() && std::filesystem::exists(journal, ec)) results.push_back(compact_journal(journal));
+  if (!accounts.empty() && std::filesystem::is_directory(accounts, ec)) {
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(accounts, ec))
+      if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string())) files.push_back(entry.path());
+    std::sort(files.begin(), files.end());
+    for (const auto& file : files) results.push_back(compact_journal(file));
+  }
+  return results;
+}
+
 Engine::PaperAccount* Engine::find_account(std::string_view id) {
   if (id.empty()) id = kMainAccount;
   for (auto& account : accounts_)

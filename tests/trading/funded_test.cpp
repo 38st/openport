@@ -299,6 +299,7 @@ TEST(TradingFunded, EarlierSchemaTwoJournalsRecoverAsEvaluations) {
   std::string pattern = (std::filesystem::temp_directory_path() / "openport-funded-XXXXXX").string();
   ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
   const std::filesystem::path directory = pattern;
+  const auto current = (directory / "current.jsonl").string();
   const auto path = (directory / "earlier.jsonl").string();
   ScriptedMarket f;
   auto capture = std::make_shared<CapturingJournal>();
@@ -306,11 +307,13 @@ TEST(TradingFunded, EarlierSchemaTwoJournalsRecoverAsEvaluations) {
   rules.plan = "Earlier";
   rules.max_drawdown = m("1000");
   {
-    TradingSession s(config(rules), f.time, capture);
+    TradingSession s(config(rules), f.time, FileJournal::create(current));
     f.seed(s);
     winning_trade(s, f);
     next_day(s, f, {2026, 9, 23});
   }
+  // Every state whole, as schema 2 wrote it, to rewrite as the earlier schema 2.
+  TradingSession::expand(FileJournal::read(current), *capture);
   {
     auto file = FileJournal::create(path);
     for (const auto& entry : capture->entries) file->append(entry.time, entry.type, earlier_schema_two(entry.payload));

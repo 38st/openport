@@ -158,6 +158,17 @@ class TradingSession {
   /// sink must have exactly the verified recovered head and sequence.
   static TradingSession recover(const JournalRecovery& recovery,
                                 std::shared_ptr<Journal> journal = {});
+  /// Rewrite a journal that recovers into `out`, an empty journal, in the
+  /// current schema: the same transactions, times, types, events and
+  /// decisions, each state recorded as a change from the one before, and no
+  /// snapshots. A final schema 1 record stays as it is, since recovery
+  /// completes that journal's evaluation from it. Every rewritten record is
+  /// read back before it is written; returns the snapshot_json that `out`
+  /// recovers to.
+  static std::string compact(const JournalRecovery& recovery, Journal& out);
+  /// The reverse: every transaction with its whole state and the snapshot
+  /// derived from it (schema 2), for audit tools and builds from before schema 3.
+  static void expand(const JournalRecovery& recovery, Journal& out);
   /// Stable diagnostic representation, also convenient for exact replay checks.
   [[nodiscard]] std::string snapshot_json() const;
  private:
