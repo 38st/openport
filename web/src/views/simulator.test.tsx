@@ -10,6 +10,7 @@ import { DashboardView, equitySeries } from "./DashboardView"
 import { JournalView } from "./JournalView"
 import { RulesView, ruleText } from "./RulesView"
 import { ResetDialog } from "../components/ResetDialog"
+import { describeAttribution } from "../lib/attribution"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 const clients: QueryClient[] = []
@@ -47,6 +48,23 @@ describe("simulator pages", () => {
       expect(html).toContain(text)
     expect(html).not.toContain("Evaluation failed")
     expect(html).not.toContain("NaN")
+  })
+  it("explains today's P&L by Greek on the dashboard and each position", () => {
+    const attribution = { delta: 120, gamma: 4.5, vega: -30, theta: -12.25, other: 1.75, costs: -10.65, total: 73.35 }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+    clients.push(client)
+    const queries = tradingQueries(0, "17", true)
+    client.setQueryData(queries.account.queryKey, account)
+    client.setQueryData(queries.portfolio.queryKey, { ...portfolio, attribution,
+      positions: portfolio.positions.map((p, i) => i === 0 ? { ...p, attribution } : p) })
+    client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 2, trades })
+    client.setQueryData(["plans"], { plans })
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><DashboardView /></QueryClientProvider>)
+    expect(html).toContain("Today&#x27;s P&amp;L by Greek")
+    for (const text of ["Delta", "Gamma", "Vega", "Theta", "Other", "Costs", "+$120.00", "−$30.00", "−$10.65", "+$73.35"]) expect(html).toContain(text)
+    expect(describeAttribution(attribution)).toBe("Delta +$120.00 · Gamma +$4.50 · Vega −$30.00 · Theta −$12.25 · Other +$1.75 · Costs −$10.65")
+    // Older servers send no attribution, and the panel stays away.
+    expect(render(<DashboardView />)).not.toContain("by Greek")
   })
   it("announces a decided evaluation and a practice account", () => {
     const failed = render(<DashboardView />, { ...account, evaluation: { ...account.evaluation, status: "failed",

@@ -43,6 +43,10 @@ struct TradingSnapshot {
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
   /// Notes and tags by trade, named by its opening fill's ID.
   std::map<std::string, Annotation> annotations;
+  /// Today's P&L by Greek for the account, and for each contract held or traded
+  /// today. Positions held from before an upgrade join at the next fill or rollover.
+  Attribution attribution;
+  std::map<std::string, Attribution> attributions;
 };
 /// A funded account's standing for its next payout: an active, flat account
 /// with the required qualifying days since the last payout. `blocked` is the

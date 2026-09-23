@@ -16,6 +16,7 @@ import { TradingError, WriteAccess } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { fixed, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
+import { describeAttribution } from "../lib/attribution"
 import { contractLabel } from "../lib/journal"
 import { strategyGroups, type StrategyGroup } from "../lib/positions"
 import { closingLegs } from "../lib/strategy"
@@ -79,7 +80,7 @@ function Positions({ positions, onClose, orders = [], selected, onSelect, groups
   if (!positions.length) return <p className="text-sm text-muted">No open positions. Click a bid or ask on the Trade page to build a ticket.</p>
   const picking = onSelect != null && selected != null
   const underlying = picking ? positions.find((p) => selected.has(p.symbol))?.underlying : undefined
-  return <Table label="Positions" left={picking ? 2 : 1} headers={[...(picking ? ["Pick"] : []), "Contract", "Qty", "Avg price", "Mark / age", "Market value", "Unrealized", "P&L %", "Dollar delta", "Vega", "Theta", ""]}>
+  return <Table label="Positions" left={picking ? 2 : 1} headers={[...(picking ? ["Pick"] : []), "Contract", "Qty", "Avg price", "Mark / age", "Market value", "Unrealized", "P&L %", "Today", "Dollar delta", "Vega", "Theta", ""]}>
     {positions.map((position) => {
       const change = position.unrealised != null ? ratio(position.unrealised, position.basis.replace("-", "")) : null
       return <tr key={position.symbol}>
@@ -100,6 +101,8 @@ function Positions({ positions, onClose, orders = [], selected, onSelect, groups
         <td>{formatMoney(position.market_value)}</td>
         <td className={toneText[toneOf(position.unrealised)]}>{signedMoney(position.unrealised)}</td>
         <td className={toneText[toneOf(change)]}>{signedPercent(change)}</td>
+        <td className={toneText[toneOf(position.attribution?.total)]} title={position.attribution ? describeAttribution(position.attribution) : "Explained from this contract's next fill or rollover"}>
+          {position.attribution ? signedMoney(position.attribution.total.toFixed(2)) : "—"}</td>
         <td>{fixed(position.greeks.dollar_delta, 2)}</td><td>{fixed(position.greeks.vega_dollars, 2)}</td><td>{fixed(position.greeks.theta_dollars, 2)}</td>
         <td>{onClose && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Close ${position.symbol}`} onClick={() => onClose(position)}>Close</button>}</td>
       </tr>

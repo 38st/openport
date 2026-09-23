@@ -44,6 +44,20 @@ export interface AccountRules {
   payouts: PayoutRules | null
 }
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money }
+/**
+ * P&L explained by the Greeks, in dollars: each stretch a position is held at one
+ * size, split by its Greeks at the start. `other` is what they leave unexplained;
+ * `costs` are the spread paid against the mark at each fill, and fees.
+ */
+export interface Attribution {
+  delta: number
+  gamma: number
+  vega: number
+  theta: number
+  other: number
+  costs: number
+  total: number
+}
 export interface EvaluationDay {
   day: string
   open_equity: Money
@@ -54,6 +68,8 @@ export interface EvaluationDay {
   realised: Money
   /** Funded accounts: the day counted toward a payout. */
   qualifying: boolean
+  /** The day's P&L by Greek; absent from older servers. */
+  attribution?: Attribution
 }
 export interface Payout {
   number: number
@@ -279,6 +295,8 @@ export interface Position {
   fresh: boolean
   awaiting_settlement: boolean
   greeks: { delta: Num; gamma: Num; vega: Num; theta: Num; dollar_delta: Num; dollar_gamma_1pct: Num; vega_dollars: Num; theta_dollars: Num }
+  /** Today's P&L by Greek for this contract; null until its first fill or rollover on this server. */
+  attribution?: Attribution | null
 }
 export interface Portfolio {
   account_version: string
@@ -294,6 +312,8 @@ export interface Portfolio {
   quality_flags: string[]
   positions: Position[]
   buying_power?: BuyingPower
+  /** Today's P&L by Greek; absent from older servers. */
+  attribution?: Attribution
 }
 export interface RiskCaps { dollar_delta: number; vega: number }
 export interface Limits {

@@ -50,8 +50,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
   calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
   per contract or per strategy. Each trade takes a note and tags, kept in the account's
   journal. A new attempt keeps the history.
-- **Risk**: Greeks per position, dollar-delta and vega limits, a spot × volatility
-  scenario grid, a daily loss limit and a kill switch. Positions close together as one
+- **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
+  (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
+  a daily loss limit and a kill switch. Positions close together as one
   order, or flatten an underlying or the whole account in one step.
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market.
@@ -321,8 +322,8 @@ from `CMakeLists.txt` and creates a draft GitHub release.
       accounts and trading recorded days in replay
 - [x] Paper trading in Cboe's overnight and curb sessions
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
+- [x] P&L attribution by delta, gamma, vega and theta
 - [ ] Stock positions, early exercise and assignment
-- [ ] P&L attribution by delta, gamma, vega and theta
 
 ## License
 

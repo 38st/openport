@@ -74,6 +74,52 @@ std::optional<double> spot_for(const State& s, const std::string& symbol) {
   if (it == s.valuations.end() || !valid_valuation(it->second)) return std::nullopt;
   return it->second.spot;
 }
+const Valuation* valuation_of(const State& s, const std::string& symbol) {
+  const auto it = s.valuations.find(symbol);
+  return it == s.valuations.end() || !valid_valuation(it->second) ? nullptr : &it->second;
+}
+/// A stretch's change in value to `value` per unit, split by the Greeks at its
+/// start; without valuations at both ends, it is all `other`.
+Attribution explain(const md::OptionContract& c, const detail::Reference& r, Money value, const Valuation* now) {
+  Attribution a;
+  const double size = static_cast<double>(r.quantity) * c.multiplier;
+  if (r.valuation && now) {
+    const auto& v = *r.valuation;
+    const double move = now->spot - v.spot;
+    a.delta = size * v.delta * move;
+    a.gamma = size * 0.5 * v.gamma * move * move;
+    a.vega = size * v.vega * (now->smile_iv - v.smile_iv) * 100;
+    a.theta = size * v.theta * (v.years - now->years) * 365;
+  }
+  a.other = size * (value - r.mark).dollars() - a.delta - a.gamma - a.vega - a.theta;
+  return a;
+}
+/// End a held contract's stretch at `value` per unit, into today's explanation.
+void end_stretch(State& s, const std::string& symbol, Money value, const Valuation* now) {
+  const auto it = s.references.find(symbol);
+  if (it == s.references.end()) return;
+  s.explained[symbol] += explain(s.contracts.at(symbol), it->second, value, now);
+  s.references.erase(it);
+}
+/// Start a stretch at the contract's size, mark and valuation now.
+void start_stretch(State& s, const std::string& symbol) {
+  const auto quantity = held(s, symbol);
+  const auto mark = s.marks.find(symbol);
+  if (quantity == 0 || mark == s.marks.end()) return;
+  const auto* valuation = valuation_of(s, symbol);
+  s.references[symbol] = {quantity, mark->second.price, valuation ? std::optional(*valuation) : std::nullopt};
+}
+/// Book a fill: the stretch before it ends at the mark, the spread paid against
+/// the mark and the fee are costs, and a stretch at the new size starts.
+void fill_position(State& s, const std::string& symbol, Quantity signed_quantity, Money price, Money fee) {
+  const auto& contract = s.contracts.at(symbol);
+  const auto mark = s.marks.find(symbol);
+  const Money value = mark == s.marks.end() ? price : mark->second.price;
+  end_stretch(s, symbol, value, valuation_of(s, symbol));
+  s.ledger.fill(contract, signed_quantity, price, fee);
+  s.explained[symbol].costs += static_cast<double>(signed_quantity) * contract.multiplier * (value - price).dollars() - fee.dollars();
+  start_stretch(s, symbol);
+}
 /// A bracket's two exits can fill only once between them: checks count the pair
 /// through its earlier order, so the later one is shadowed while both are open.
 bool shadowed(const State& s, const Order& o) {
@@ -306,6 +352,12 @@ TradingSnapshot snapshot_of(const State& s) {
   out.closures = s.closures;
   out.attempts = s.attempts;
   out.annotations = s.annotations;
+  // Today's P&L by Greek: the finished stretches, and the open ones to the marks now.
+  out.attributions = s.explained;
+  for (const auto& [symbol, reference] : s.references)
+    if (const auto mark = s.marks.find(symbol); mark != s.marks.end())
+      out.attributions[symbol] += explain(s.contracts.at(symbol), reference, mark->second.price, valuation_of(s, symbol));
+  for (const auto& [symbol, attribution] : out.attributions) out.attribution += attribution;
   return out;
 }
 /// Rules only act on fully marked equity: every position has a mark, fresh or not.
@@ -572,7 +624,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
     cancel_order(o, decision, events);
     return;
   }
-  s.ledger.fill(s.contracts.at(o.request.symbol), o.request.side == Side::Buy ? quantity : -quantity, price, fee);
+  fill_position(s, o.request.symbol, o.request.side == Side::Buy ? quantity : -quantity, price, fee);
   budget -= quantity;
   o.filled_quantity += quantity;
   o.filled_notional = o.filled_notional + price * quantity;
@@ -631,7 +683,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     const auto size = magnitude(contracts);
     const Money price = leg.side == Side::Buy ? *book.quote.ask : *book.quote.bid;
     const Money fee = s.config.fee_per_contract * size;
-    s.ledger.fill(s.contracts.at(leg.symbol), contracts, price, fee);
+    fill_position(s, leg.symbol, contracts, price, fee);
     (leg.side == Side::Buy ? book.ask_left : book.bid_left) -= size;
     Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, leg.symbol, leg.side,
               size, price, fee, book.quote.observation, book.quote.time, s.time};
@@ -1375,6 +1427,15 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     const Money strike = Money::from_double(it->second.strike);
     const Money intrinsic = std::max(Money{}, it->second.type == pricing::OptionType::Call ? settlement - strike : strike - settlement);
     const auto quantity = held(s, symbol);
+    // The last stretch ends at intrinsic value, at expiry with the settlement
+    // as the underlying's price and the volatility unchanged.
+    std::optional<Valuation> at_expiry;
+    if (const auto r = s.references.find(symbol); r != s.references.end() && r->second.valuation) {
+      at_expiry = *r->second.valuation;
+      at_expiry->spot = settlement.dollars();
+      at_expiry->years = 0;
+    }
+    end_stretch(s, symbol, intrinsic, at_expiry ? &*at_expiry : nullptr);
     s.ledger.settle(symbol, intrinsic);
     s.settled.insert(symbol);
     s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
@@ -1409,7 +1470,7 @@ CommandResult TradingSession::roll_day(Timestamp time) {
       const bool qualifying = rules.phase == Phase::Funded && e.status == EvaluationStatus::Active &&
           payouts.qualifying_days > 0 && realised >= payouts.qualifying_profit && realised > Money{};
       if (qualifying) ++e.qualifying_days;
-      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying});
+      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying, snapshot.attribution});
       event(events, "evaluation_day", e.days.back());
     }
     e.day_open_realised = net_realised(s);
@@ -1418,6 +1479,10 @@ CommandResult TradingSession::roll_day(Timestamp time) {
     e.day_close_equity = snapshot.equity;
     s.start_equity = snapshot.equity;
     s.day = day;
+    // The new day's P&L by Greek runs from these marks.
+    s.explained.clear();
+    s.references.clear();
+    for (const auto& [symbol, position] : s.ledger.positions()) start_stretch(s, symbol);
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
     return CommandResult{};
   });
@@ -1473,6 +1538,8 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.config.initial_cash = initial_cash;
     s.config.rules = std::move(rules);
     s.ledger = Ledger(initial_cash);
+    s.explained.clear();
+    s.references.clear();
     s.start_equity = initial_cash;
     s.kill = false;
     s.kill_reason.clear();

@@ -153,6 +153,12 @@ Money average_price(const Position& position) {
   const auto rounded = static_cast<std::int64_t>((numerator + denominator / 2) / denominator);
   return Money::from_micros(negative ? -rounded : rounded);
 }
+/// P&L by Greek in dollars, to the cent.
+json attribution_json(const Attribution& a) {
+  const auto cents = [](double x) { return number(std::round(x * 100) / 100); };
+  return {{"delta", cents(a.delta)}, {"gamma", cents(a.gamma)}, {"vega", cents(a.vega)}, {"theta", cents(a.theta)},
+          {"other", cents(a.other)}, {"costs", cents(a.costs)}, {"total", cents(a.total())}};
+}
 json portfolio_json(const TradingView& view) {
   const auto& s = *view.snapshot;
   json positions = json::array();
@@ -168,7 +174,8 @@ json portfolio_json(const TradingView& view) {
         {"mark", money(p.mark)}, {"mark_age_seconds", p.mark ? json(static_cast<double>(p.mark_age) / md::kNanosPerSecond) : json(nullptr)},
         {"market_value", money(p.market_value)}, {"unrealised", money(p.unrealised)},
         {"realised", position.realised.str()}, {"fees", position.fees.str()}, {"fresh", p.fresh},
-        {"awaiting_settlement", p.awaiting_settlement}, {"greeks", position_greeks(p, view)}});
+        {"awaiting_settlement", p.awaiting_settlement}, {"greeks", position_greeks(p, view)},
+        {"attribution", s.attributions.contains(c.osi_symbol()) ? attribution_json(s.attributions.at(c.osi_symbol())) : json(nullptr)}});
   }
   json flags = json::array();
   for (auto code : s.quality_flags) flags.push_back(to_string(code));
@@ -177,7 +184,7 @@ json portfolio_json(const TradingView& view) {
           {"start_of_day_equity", s.start_of_day_equity.str()}, {"day_pnl", (s.equity - s.start_of_day_equity).str()},
           {"realised", s.account.realised.str()}, {"unrealised", s.unrealised.str()}, {"fees", s.account.fees.str()},
           {"valuation_complete", s.valuation_complete}, {"quality_flags", flags}, {"positions", positions},
-          {"buying_power", buying_power_json(s.buying_power)}};
+          {"buying_power", buying_power_json(s.buying_power)}, {"attribution", attribution_json(s.attribution)}};
 }
 json account_json(const TradingView& view) {
   const auto& s = *view.snapshot;
@@ -193,7 +200,8 @@ json account_json(const TradingView& view) {
     days.push_back({{"day", md::format_date(d.day)}, {"open_equity", d.open_equity.str()},
                     {"close_equity", d.close_equity.str()}, {"peak", d.peak.str()},
                     {"floor", floor ? json(d.floor.str()) : json(nullptr)},
-                    {"realised", d.realised.str()}, {"qualifying", d.qualifying}});
+                    {"realised", d.realised.str()}, {"qualifying", d.qualifying},
+                    {"attribution", attribution_json(d.attribution)}});
   json payouts = json::array();
   for (const auto& p : e.payouts)
     payouts.push_back({{"number", p.number}, {"time", md::format_timestamp(p.time)}, {"day", md::format_date(p.day)}, {"amount", p.amount.str()},

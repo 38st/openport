@@ -293,6 +293,33 @@ mark and are always incomplete. If no mark exists, market value/unrealised are n
 the equity field is only a partial estimate and must be read with its completeness
 flag. Normal session fills always establish a mark first.
 
+## P&L by Greek
+
+The snapshot explains the day's P&L by the Greeks (`attribution`, and
+`attributions` per contract held or traded today). Each stretch a position is held
+at one size starts from its mark and valuation (`Reference`): at a fill, at the day's
+rollover, or when the position opens. Its change in value to the mark now is split
+by the Greeks at its start, per unit times quantity times the multiplier:
+
+```text
+delta = delta0 * (S - S0)            gamma = 0.5 * gamma0 * (S - S0)^2
+vega  = vega0 * (iv - iv0) * 100     theta = theta0 * (T0 - T) * 365
+other = (mark - mark0) - delta - gamma - vega - theta
+```
+
+with spot `S`, the strike's smile volatility `iv` and years to expiry `T` from the
+valuations at either end. Without valid valuations at both ends it is all `other`. A
+fill ends the stretch at the mark and starts one at the new size; the spread paid
+against the mark and the fee are `costs`. Settlement ends the last stretch at
+intrinsic value, at expiry, with the settlement as the underlying's price and the
+volatility unchanged. So the parts add up to the day's P&L exactly (up to floating
+point): equity less the day's baseline. Rollover records the finished day's parts in
+its `EvaluationDay` and starts every stretch again from the closing marks; a reset
+starts afresh. Stretches and finished parts are state, journaled and recovered; a
+position held from before an upgrade joins at its next fill or rollover. The parts
+are analytic dollars, not accounting: vega is per volatility point and theta per
+calendar day, as in the valuations.
+
 ## Risk and kill switch
 
 Valuations come from the caller's coherent strike-smile frame: spot delta/gamma,
@@ -809,7 +836,7 @@ focus at the top of the ticket.
 
 | Endpoint | Request / response |
 | --- | --- |
-| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks |
+| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), takes no trigger or bracket, counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
@@ -821,7 +848,7 @@ focus at the top of the ticket.
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position; returns version and `position_closed` |
-| `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised` and `qualifying`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
+| `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised`, `qualifying` and `attribution`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`. Defaults: all statuses of the current attempt |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before expiry |

@@ -181,6 +181,27 @@ struct Valuation {
   bool valid = true;
 };
 
+/// P&L explained by the Greeks, in dollars (analytic, not accounting). Each
+/// stretch a position is held at one size is split by the Greeks at its start:
+/// delta times the underlying's move, half gamma times the move squared, vega
+/// times the implied volatility change in points and theta times the days that
+/// passed. `other` is what they leave unexplained (larger moves, the smile, marks
+/// without valuations); `costs` is the spread paid against the mark at each
+/// fill, and fees.
+struct Attribution {
+  double delta = 0;
+  double gamma = 0;
+  double vega = 0;
+  double theta = 0;
+  double other = 0;
+  double costs = 0;
+  [[nodiscard]] double total() const { return delta + gamma + vega + theta + other + costs; }
+  Attribution& operator+=(const Attribution& a) {
+    delta += a.delta; gamma += a.gamma; vega += a.vega; theta += a.theta; other += a.other; costs += a.costs;
+    return *this;
+  }
+};
+
 struct Exposure {
   double dollar_delta = 0;
   double dollar_gamma_1pct = 0;

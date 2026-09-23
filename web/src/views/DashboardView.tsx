@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react"
 import { useLive } from "../api/live"
-import { useAccount, usePlans, useTrades } from "../api/trading"
-import type { Account, Trade, TradingStatus } from "../api/trading-types"
+import { useAccount, usePlans, usePortfolio, useTrades } from "../api/trading"
+import type { Account, Attribution, Trade, TradingStatus } from "../api/trading-types"
+import { HBarChart } from "../charts/HBarChart"
 import { LineChart, type Reference, type Series } from "../charts/LineChart"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
@@ -9,6 +10,7 @@ import { TradingError } from "../components/TradingControls"
 import { Check, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { money, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
+import { attributionParts } from "../lib/attribution"
 import { contractLabel, formatDuration } from "../lib/journal"
 import { offeredPlans, unlockedFundedPlan } from "../lib/payouts"
 import { useRoute } from "../lib/route"
@@ -50,6 +52,7 @@ export function DashboardView() {
 
 function Dashboard({ trading }: { trading: TradingStatus }) {
   const account = useAccount()
+  const portfolio = usePortfolio()
   const trades = useTrades("current")
   const { underlyings } = useLive()
   const plans = usePlans()
@@ -149,6 +152,8 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
         ))}
       </dl>
 
+      {portfolio.data?.attribution && <PnlByGreek attribution={portfolio.data.attribution} />}
+
       <Panel title="How am I doing?">
         <div className="grid gap-6 md:grid-cols-2">
           <div>
@@ -168,7 +173,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-accent">Rules</h3>
             <ul className="space-y-1.5 text-sm">
               {planFacts({ initial_cash: e.starting_balance, rules: r }).slice(1).map((fact) => <Check key={fact} ok label={fact} />)}
-              <Check ok label="Regular trading hours only" />
+              <Check ok label="Regular hours, and overnight and curb sessions for SPX, XSP, VIX and RUT (limit orders)" />
               <Check ok label={`Underlyings: ${underlyings.map((u) => u.symbol).join(", ") || "none configured"}`} />
             </ul>
           </div>
@@ -197,6 +202,22 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
       </div>
       {resetting != null && <ResetDialog trading={trading} attempt={e.attempt} initial={resetting || undefined} onClose={() => setResetting(null)} />}
     </div>
+  )
+}
+
+/** Today's P&L split by the Greeks, with the spread and fees apart. */
+function PnlByGreek({ attribution: a }: { attribution: Attribution }) {
+  const usd = (value: number) => signedMoney(value.toFixed(2))
+  return (
+    <Panel title="Today's P&L by Greek" actions={<span className="text-xs text-muted">Total <span className={`tabular ${toneText[toneOf(a.total)]}`}>{usd(a.total)}</span></span>}>
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_16rem]">
+        <HBarChart label="Today's P&L by Greek" signed format={usd}
+          rows={attributionParts.map((part) => ({ label: part.label, value: a[part.key] }))} />
+        <p className="text-[11px] text-muted">Each stretch a position is held at one size is split by its Greeks at the start: delta for the
+          underlying's move, gamma for its square, vega for the change in implied volatility and theta for the time that passed.
+          Other is what they leave unexplained; costs are the spread paid against the mark at each fill, and fees.</p>
+      </div>
+    </Panel>
   )
 }
 

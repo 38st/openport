@@ -19,6 +19,7 @@ struct EvaluationDay {
   Money floor;         ///< Drawdown floor after that day's ratchet; zero without a rule.
   Money realised;      ///< Net realised P&L of the day (after fees).
   bool qualifying = false;  ///< Funded accounts: the day counted toward a payout.
+  Attribution attribution;  ///< The day's P&L by Greek.
 };
 
 /// A funded-account withdrawal. The account pays out `amount`; the trader keeps

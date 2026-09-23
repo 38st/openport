@@ -76,11 +76,13 @@ inline void from_json(const Json& j, SessionConfig& c) {
   j.at("limits").get_to(c.limits); j.at("scenarios").get_to(c.scenarios);
   added_field(j, "rules", c.rules);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(EvaluationDay, day, open_equity, close_equity, peak, floor, realised, qualifying)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Attribution, delta, gamma, vega, theta, other, costs)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(EvaluationDay, day, open_equity, close_equity, peak, floor, realised, qualifying, attribution)
 inline void from_json(const Json& j, EvaluationDay& d) {
   j.at("day").get_to(d.day); j.at("open_equity").get_to(d.open_equity); j.at("close_equity").get_to(d.close_equity);
   j.at("peak").get_to(d.peak); j.at("floor").get_to(d.floor);
   added_field(j, "realised", d.realised); added_field(j, "qualifying", d.qualifying);
+  added_field(j, "attribution", d.attribution);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Payout, number, time, day, amount, trader_share, balance)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Evaluation, attempt, started, starting_balance, peak, floor, status, decided_at, decided_equity, decision, first_order, first_fill, day, day_open_equity, day_close_equity, days, floor_locked, day_open_realised, qualifying_days, cycle_started, payouts)
@@ -110,7 +112,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RiskSnapshot, aggregate, underlyings, complet
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioCell, spot_percent, vol_points, pnl, clamped)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioGrid, cells, complete)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedPosition, position, mark, mark_time, mark_age, market_value, unrealised, fresh, awaiting_settlement)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions)
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
   j.at("equity").get_to(s.equity); j.at("start_of_day_equity").get_to(s.start_of_day_equity);
@@ -122,6 +124,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   added_field(j, "evaluation", s.evaluation); added_field(j, "buying_power", s.buying_power);
   added_field(j, "closures", s.closures); added_field(j, "attempts", s.attempts);
   added_field(j, "annotations", s.annotations);
+  added_field(j, "attribution", s.attribution); added_field(j, "attributions", s.attributions);
 }
 
 namespace detail {
@@ -133,6 +136,13 @@ struct Book {
 struct Mark {
   Money price;
   Timestamp time = 0;
+};
+/// Where a held position's current stretch at one size began: its size, mark
+/// and, when valid, valuation. Today's P&L by Greek runs from here.
+struct Reference {
+  Quantity quantity = 0;
+  Money mark;
+  std::optional<Valuation> valuation;
 };
 struct State {
   SessionConfig config;
@@ -155,10 +165,14 @@ struct State {
   std::vector<AttemptSummary> attempts;
   std::vector<Closure> closures;
   std::map<std::string, Annotation> annotations;
+  /// Open stretches by held contract, and today's finished ones (and costs) by contract.
+  std::map<std::string, Reference> references;
+  std::map<std::string, Attribution> explained;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Book, quote, bid_left, ask_left)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mark, price, time)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations, references, explained)
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
   j.at("limits_revision").get_to(s.limits_revision); j.at("ledger").get_to(s.ledger);
@@ -168,6 +182,7 @@ inline void from_json(const Json& j, State& s) {
   j.at("kill").get_to(s.kill); j.at("kill_reason").get_to(s.kill_reason);
   added_field(j, "evaluation", s.evaluation); added_field(j, "attempts", s.attempts);
   added_field(j, "closures", s.closures); added_field(j, "annotations", s.annotations);
+  added_field(j, "references", s.references); added_field(j, "explained", s.explained);
 }
 }  // namespace detail
 }  // namespace openport::trading

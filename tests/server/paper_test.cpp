@@ -1076,6 +1076,19 @@ TEST_F(PaperEngine, ResetToPresetStartsAttemptAndTradesSeparateAttempts) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, PortfolioExplainsTheDaysPnlByGreek) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
+  const auto portfolio = read(*engine, "/api/portfolio");
+  const auto a = portfolio["attribution"];
+  for (const auto* key : {"delta", "gamma", "vega", "theta", "other", "costs", "total"}) EXPECT_TRUE(a[key].is_number()) << key;
+  // One contract bought at the 4.20 ask against a 4.10 mark, and the fee.
+  EXPECT_DOUBLE_EQ(a["costs"].get<double>(), -10.65);
+  EXPECT_DOUBLE_EQ(a["total"].get<double>(), std::stod(portfolio["day_pnl"].get<std::string>()));
+  EXPECT_EQ(portfolio["positions"][0]["attribution"], a);
+  engine->stop();
+}
+
 TEST_F(PaperEngine, TradesTakeNotesAndTags) {
   seed();
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
