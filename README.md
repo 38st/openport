@@ -34,8 +34,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
   stop-loss and take-profit (on the option or the underlying) that cancel each other.
   Strategies of up to four legs (spreads, straddles, condors, butterflies, calendars and
   diagonals) are picked on the chain and fill together at a net debit or credit, with
-  their payoff at expiry, and buying power nets them: a credit spread holds its width
-  and a calendar its debit, not a naked requirement. Positions show each strategy a
+  a risk graph (P&L at expiry and today), probability of profit and the expected move.
+  Buying power nets them: a credit spread holds its width and a calendar its debit, not
+  a naked requirement. Positions show each strategy a
   multi-leg order opened as one row, with its net value, P&L, Greeks and risk at
   expiry, closed or rolled to a later expiry in one order; the journal can group trades
   the same way. Working orders change in place (size, limit or trigger), and positions
@@ -277,6 +278,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Underlying chart with positions, triggers and the expected move
 - [x] Order changes in place, cancel all and flatten
 - [x] Strategies as positions: grouped legs, close and roll, journal by strategy
+- [x] Risk graph, probability of profit and expected move on the tickets
 - [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session
 - [ ] P&L attribution by delta, gamma, vega and theta

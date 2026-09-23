@@ -39,7 +39,9 @@ describe("strategy ticket", () => {
     for (const text of ["Strategy ticket", "SPX <span", "Bull put spread", "2 of 4 legs", "SELL", "BUY", "6900 P", "6890 P",
       "Net bid", "$1.20 credit", "$1.00 credit", "$0.80 credit", 'value="1.00"', "$0.05 tick", "receive at least",
       "Rests: the legs trade now at $0.80 credit; fills when that reaches $1.00 credit.", "Max profit", "$100.00", "Max loss", "$900.00",
-      "6899.00", "$100.00 received", "Estimated fees", "$1.30", "Buying power effect", "−$901.30", "Bull put spread · 1 × $1.00 credit"])
+      "6899.00", "$100.00 received", "Estimated fees", "$1.30", "Buying power effect", "−$901.30", "Bull put spread · 1 × $1.00 credit",
+      // Above the 6899 breakeven by the Oct 16 expiry: forward 7,010, 23 days, 20% volatility.
+      "Probability of profit", "≈ 62%", "1σ move by Oct 16", "±351.94"])
       expect(html).toContain(text)
     expect(html).toMatch(/aria-label="Submit strategy order">/)
     expect(html).not.toContain("NaN")

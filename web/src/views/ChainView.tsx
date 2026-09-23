@@ -101,6 +101,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
     ...otherExpiries.flatMap((id, i) => { const chain = matchingPayload(others[i]?.data, symbol, id); return chain ? [[id, chain] as const] : [] })])
   const liveLegs = legs.map((leg) => ({ ...leg, quote: chains.get(leg.expiry)?.strikes.find((row) => row.strike === leg.strike)?.[leg.type] ?? leg.quote }))
   const legExpiries = [...chains.values()].map((chain) => chain.expiry).filter((e) => legs.some((leg) => leg.expiry === e.id))
+  const smiles = new Map([...chains].map(([id, chain]) => [id, chain.strikes]))
   const highlighted = useMemo(() => new Map<string, "bid" | "ask">(mode === "strategy"
     ? legs.map((leg) => [leg.symbol, leg.side === "buy" ? "ask" : "bid"])
     : ticket ? [[ticket.symbol, ticket.cell]] : []), [mode, legs, ticket])
@@ -191,9 +192,9 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         )}
       </Panel>
       {live.trading && strategyOpen && data && (docked ? <div className="sticky top-16">
-        <StrategyTicket key={live.accountScope} legs={liveLegs} onLegs={setLegs} expiries={legExpiries} underlying={symbol} spot={data.spot}
+        <StrategyTicket key={live.accountScope} smiles={smiles} legs={liveLegs} onLegs={setLegs} expiries={legExpiries} underlying={symbol} spot={data.spot}
           trading={live.trading} variant="panel" onClose={() => setLegs([])} />
-      </div> : reviewing ? <StrategyTicket key={live.accountScope} legs={liveLegs} onLegs={(next) => { setLegs(next); if (!next.length) setReviewing(false) }}
+      </div> : reviewing ? <StrategyTicket key={live.accountScope} smiles={smiles} legs={liveLegs} onLegs={(next) => { setLegs(next); if (!next.length) setReviewing(false) }}
           expiries={legExpiries} underlying={symbol} spot={data.spot} trading={live.trading} variant="dialog" onClose={() => setReviewing(false)} />
       : <div role="region" aria-label="Strategy legs" className="fixed inset-x-3 bottom-3 z-20 flex items-center justify-between gap-3 rounded-lg border border-accent/50 bg-panel p-3 shadow-chart">
           <div className="min-w-0 text-sm">
@@ -208,7 +209,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
       {live.trading && mode === "single" && ticket && ticket.underlying === symbol && ticket.expiry.id === selected && <div className={docked ? "sticky top-16" : ""}>
         <OrderTicket
           key={`${live.accountScope}/${ticket.symbol}/${ticket.cell}`}
-          selection={ticket} trading={live.trading} variant={docked ? "panel" : "dialog"}
+          selection={ticket} trading={live.trading} variant={docked ? "panel" : "dialog"} smile={data?.strikes}
           quote={data?.strikes.find((row) => row.strike === ticket.strike)?.[ticket.optionType] ?? null}
           onClose={() => setTicket(null)} />
       </div>}

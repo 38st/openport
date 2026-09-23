@@ -5,8 +5,9 @@ import { useLive } from "../api/live"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
 import type { Bracket, NewOrder, Order, Side, Trigger, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote } from "../api/types"
-import { count, days, fixed, price } from "../lib/format"
+import { count, days, fixed, isNum, price } from "../lib/format"
 import { heldPositions, orderPowerUse } from "../lib/margin"
+import { probabilityOfProfit, singleLeg, smileVol } from "../lib/probability"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
 import { formatMoney, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -58,11 +59,13 @@ export function OrderResult({ order, error, children }: { order?: Order; error?:
 const quickSizes = [1, 5, 10, 25, 50]
 
 /** A dialog by default; `panel` docks it beside the chain. */
-export function OrderTicket({ selection, quote, trading, onClose, variant = "dialog" }: {
+export function OrderTicket({ selection, quote, trading, onClose, variant = "dialog", smile }: {
   selection: TicketSelection; quote: OptionQuote | null; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel"
+  /** The expiry's smile, for the probability of profit; the option's own volatility otherwise. */
+  smile?: readonly { strike: number; iv: number | null }[]
 }) {
   const title = "Paper order"
-  const body = <TicketBody selection={selection} quote={quote} trading={trading} onClose={onClose} variant={variant} />
+  const body = <TicketBody selection={selection} quote={quote} trading={trading} onClose={onClose} variant={variant} smile={smile} />
   if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
     <aside aria-label="Order ticket" className="flex max-h-[calc(100dvh-7rem)] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-chart">
@@ -75,8 +78,9 @@ export function OrderTicket({ selection, quote, trading, onClose, variant = "dia
   )
 }
 
-function TicketBody({ selection, quote, trading, onClose, variant }: {
+function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
   selection: TicketSelection; quote: OptionQuote | null; trading: TradingStatus; onClose: () => void; variant: "dialog" | "panel"
+  smile?: readonly { strike: number; iv: number | null }[]
 }) {
   const { accountScope, underlyings } = useLive()
   const token = useWriteToken()
@@ -125,6 +129,15 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
   const serverFee = trading.fee_per_contract
   const effectiveFee = serverFee ?? (fee || null)
   const estimate = ticketEstimate(quote, side, q, estimatedPrice, effectiveFee)
+  // An opening order's odds at expiry; a closing one ends the position, so it has none.
+  const closes = held !== 0 && (held > 0) !== (side === "buy")
+  const premium = Number(estimatedPrice)
+  const terms = selection.expiry
+  const odds = !closes && Number.isFinite(premium) && premium > 0 && isNum(terms.forward) && isNum(terms.days) && terms.days > 0 ? (() => {
+    const { breakeven, value } = singleLeg(selection.optionType, side, selection.strike, premium)
+    const vol = smileVol(smile ?? [], isNum(quote?.iv) ? quote.iv : isNum(terms.atm_iv) ? terms.atm_iv : null)
+    return { breakeven, pop: probabilityOfProfit(value, [breakeven], { forward: terms.forward, years: terms.days / 365, vol }) }
+  })() : null
   const trigger: Trigger | undefined = condition === "cross" && validMoney(crossLevel) && Number(crossLevel) > 0
     ? { source: "underlying", direction: crossDirection(Number(crossLevel), spot), level: crossLevel } : undefined
   const exitLevel = (value: string) => validMoney(value) && Number(value) > 0
@@ -306,6 +319,11 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
         <dt className="text-muted">Estimated premium · {side === "buy" ? "debit" : "credit"}</dt><dd className="text-right tabular">{formatMoney(estimate.premium)}</dd>
         <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{formatMoney(estimate.fees)}</dd>
+        {odds && <>
+          <dt className="text-muted">Breakeven at expiry</dt><dd className="text-right tabular">{odds.breakeven.toFixed(2)}</dd>
+          <dt className="text-muted" title="Risk-neutral: lognormal around the expiry's forward, with the smile's volatility at the breakeven">Probability of profit</dt>
+          <dd className="text-right tabular">{odds.pop == null ? "—" : `≈ ${(odds.pop * 100).toFixed(0)}%`}</dd>
+        </>}
         <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
         {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
       </dl>

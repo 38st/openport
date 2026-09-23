@@ -6,8 +6,10 @@ import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "
 import type { NewOrder, Order, TradingStatus } from "../api/trading-types"
 import type { Expiry } from "../api/types"
 import { LineChart } from "../charts/LineChart"
-import { money, price } from "../lib/format"
+import { expectedMove } from "../lib/candles"
+import { isNum, money, price } from "../lib/format"
 import { heldPositions } from "../lib/margin"
+import { probabilityOfProfit, smileVol, valueToday } from "../lib/probability"
 import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, type StrategyLeg } from "../lib/strategy"
 import { comboTickCents, formatMoney, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -36,12 +38,14 @@ const shortDate = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateSt
  * nothing, so the ticket says what the order does instead. The `bare` variant is
  * the body alone, for a dialog that adds its own controls.
  */
-export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order", closing = false, roll = false }: {
+export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order", closing = false, roll = false, smiles }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
   spot: number | null | undefined; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel" | "bare"; units?: number; title?: string
   closing?: boolean; roll?: boolean
+  /** Each expiry's smile, by expiry id, for the probability of profit; flat at-the-money volatility otherwise. */
+  smiles?: ReadonlyMap<string, readonly { strike: number; iv: number | null }[]>
 }) {
-  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} closing={closing} roll={roll} />
+  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} closing={closing} roll={roll} smiles={smiles} />
   if (variant === "bare") return body
   if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
@@ -55,9 +59,10 @@ export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, tradi
   )
 }
 
-function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits, closing, roll }: {
+function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits, closing, roll, smiles }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
   spot: number | null | undefined; trading: TradingStatus; initialUnits?: number; closing: boolean; roll: boolean
+  smiles?: ReadonlyMap<string, readonly { strike: number; iv: number | null }[]>
 }) {
   const { accountScope, underlyings } = useLive()
   const token = useWriteToken()
@@ -117,6 +122,14 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     : !multi ? riskProfile(legs, q, net)
     : value ? estimatedProfile(value, legs, q, Math.max(0, Math.min(center, ...strikes) * 0.7), Math.max(center, ...strikes) * 1.3) : null
   const approx = profile?.estimated ? "≈ " : ""
+  // The first expiry's risk-neutral distribution: its forward, time left and smile.
+  const front = known[0]
+  const distribution = front && isNum(front.forward) && isNum(front.days) && front.days > 0
+    ? { forward: front.forward, years: front.days / 365, vol: smileVol(smiles?.get(front.id) ?? [], isNum(front.atm_iv) ? front.atm_iv : null) } : null
+  const pop = profile && value && distribution ? probabilityOfProfit(value, profile.breakevens, distribution) : null
+  const move = front ? expectedMove(front.forward, front.atm_iv, front.days) : null
+  const legTerms = new Map(known.map((e) => [e.id, { forward: e.forward, discount: e.discount, years: isNum(e.days) ? e.days / 365 : null }]))
+  const today = profile && net != null && validUnits && spot != null && Number.isFinite(spot) ? valueToday(legs, q, net, spot, legTerms) : null
   const fee = Number(trading.fee_per_contract ?? 0)
   const contracts = validUnits ? q * legs.reduce((total, leg) => total + leg.ratio, 0) : 0
   // Mirrors the server: margin on the held positions after the fill, plus the net and fees.
@@ -132,11 +145,17 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const blocked = writeBlocked(trading, token) || trading.kill_latched || !!untradable || !!notice || !!closed || !!rules?.buy_only
   const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount)
 
-  // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is wider.
+  // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is
+  // wider, and the expected move within a quarter of spot.
   const margin = Math.max(Math.max(...strikes) - Math.min(...strikes), center * 0.01)
-  const [chartLow, chartHigh] = [Math.max(0, Math.min(center, ...strikes) - margin), Math.max(center, ...strikes) + margin]
-  const chart = profile && value
-    ? Array.from({ length: 121 }, (_, i) => chartLow + ((chartHigh - chartLow) * i) / 120).map((x) => ({ x, y: value(x) })) : null
+  let [chartLow, chartHigh] = [Math.max(0, Math.min(center, ...strikes) - margin), Math.max(center, ...strikes) + margin]
+  if (move != null && front && isNum(front.forward)) {
+    chartLow = Math.max(0, Math.min(chartLow, Math.max(center * 0.75, front.forward - move * 1.15)))
+    chartHigh = Math.max(chartHigh, Math.min(center * 1.25, front.forward + move * 1.15))
+  }
+  const grid = Array.from({ length: 121 }, (_, i) => chartLow + ((chartHigh - chartLow) * i) / 120)
+  const chart = profile && value ? grid.map((x) => ({ x, y: value(x) })) : null
+  const todayChart = chart && today ? grid.map((x) => ({ x, y: today(x) })) : null
 
   const setLeg = (index: number, patch: Partial<StrategyLeg>) => onLegs(legs.map((l, i) => (i === index ? { ...l, ...patch } : l)))
   const applyNet = (value: number | null) => {
@@ -264,18 +283,26 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           <dt className="text-muted">Max profit</dt><dd className="text-right tabular text-bullish">{profile ? profile.maxProfit == null ? "Unlimited" : `${approx}${formatMoney(profile.maxProfit.toFixed(2))}` : "—"}</dd>
           <dt className="text-muted">Max loss</dt><dd className="text-right tabular text-bearish">{profile ? profile.maxLoss == null ? "Unlimited" : `${approx}${formatMoney(profile.maxLoss.toFixed(2))}` : "—"}</dd>
           <dt className="text-muted">Breakevens</dt><dd className="text-right tabular">{profile ? profile.breakevens.length ? `${approx}${profile.breakevens.map((b) => b.toFixed(2)).join(", ")}` : "None" : "—"}</dd>
+          <dt className="text-muted" title="Risk-neutral: lognormal around the expiry's forward, with the smile's volatility at each breakeven">Probability of profit</dt>
+          <dd className="text-right tabular">{pop == null ? "—" : `≈ ${(pop * 100).toFixed(0)}%`}</dd>
+          <dt className="text-muted" title="One standard deviation: forward × ATM volatility × √(years)">1σ move{front ? ` by ${shortDate(front.expiry)}` : ""}</dt>
+          <dd className="text-right tabular">{move == null ? "—" : `±${move.toFixed(2)}`}</dd>
           </>}
           <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
           {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
         </dl>
         {rules?.buying_power && after != null && after < 0 && power?.uses && <p role="status" className="text-xs text-danger">Exceeds available buying power; the server will reject it.</p>}
         {chart && <figure aria-label="Profit and loss at expiry">
-          <LineChart height={160} marginLeft={60} series={[{ id: "payoff", label: "P&L at expiry", color: "var(--chart-1)", points: chart, area: true }]}
-            references={[{ y: 0, label: "Even", color: "var(--muted)" }]} markers={spot != null && Number.isFinite(spot) ? [{ x: spot, label: `${underlying} ${spot.toFixed(0)}`, color: "var(--warn)" }] : []}
+          <LineChart height={160} marginLeft={60} series={[{ id: "payoff", label: "P&L at expiry", color: "var(--chart-1)", points: chart, area: true },
+            ...(todayChart ? [{ id: "today", label: "P&L today", color: "var(--chart-4)", points: todayChart, dashed: true }] : [])]}
+            references={[{ y: 0, label: "Even", color: "var(--muted)" }]} markers={[
+              ...(spot != null && Number.isFinite(spot) ? [{ x: spot, label: `${underlying} ${spot.toFixed(0)}`, color: "var(--warn)" }] : []),
+              ...(move != null && front && isNum(front.forward) ? [{ x: front.forward - move, label: "−1σ", color: "var(--chart-7)" }, { x: front.forward + move, label: "+1σ", color: "var(--chart-7)" }] : []),
+            ]}
             formatX={(x) => x.toFixed(0)} formatY={(y) => money(y)} />
           <figcaption className="mt-1 text-[11px] text-muted">{profile?.estimated
             ? `Estimated P&L at the ${shortDate(known[0]!.expiry)} expiry for ${q} unit${q === 1 ? "" : "s"}, later legs at today's implied volatility, before fees.`
-            : `P&L at expiry for ${validUnits ? q : "—"} unit${q === 1 ? "" : "s"}, before fees.`}</figcaption>
+            : `P&L at expiry for ${validUnits ? q : "—"} unit${q === 1 ? "" : "s"}, before fees.`}{todayChart ? " Dashed: today, at each leg's implied volatility." : ""}</figcaption>
         </figure>}
         <button className="w-full rounded-md bg-accent px-3 py-2.5 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50"
           type="submit" aria-label="Submit strategy order" disabled={!valid || blocked || pending || order != null}>

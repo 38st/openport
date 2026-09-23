@@ -42,6 +42,9 @@ describe("paper trading fixtures", () => {
   it("renders a labelled buy ticket with quotes, sizes, exact premium and its own Greeks", () => {
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
     expect(html).toContain("<dialog")
+    // Buying the 7000 call at $4.60 pays off above 7004.60 by expiry, about even odds at a 7,010 forward.
+    expect(html).toContain("Breakeven at expiry</dt><dd class=\"text-right tabular\">7004.60")
+    expect(html).toContain("≈ 50%")
     expect(html).toContain("aria-labelledby=")
     expect(html).toContain("2026-10-16 PM")
     expect(html).toContain("7000 call")
