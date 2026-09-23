@@ -150,7 +150,7 @@ export function LineChart({ series, markers = [], height = 320, formatX, formatY
       )}
       {anchor && hoverX != null && layout && (
         <div
-          className="pointer-events-none absolute top-2 rounded-md border border-border bg-raised/95 px-2 py-1.5 text-[11px] shadow-lg"
+          className="pointer-events-none absolute top-2 rounded-md border border-border bg-tooltip px-2 py-1.5 text-[11px] shadow-chart"
           style={{ left: Math.min(layout.x(anchor.x) + 12, width - 170) }}
         >
           <div className="mb-1 text-muted tabular">{formatX(anchor.x)}</div>

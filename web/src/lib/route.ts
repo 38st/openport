@@ -13,10 +13,14 @@ export interface Route {
 /// hash makes every screen linkable and survives a reload.
 export function parseRoute(hash: string): Route {
   const [symbol, view, expiry] = hash.replace(/^#\/?/, "").split("/")
-  return {
-    symbol: symbol ? decodeURIComponent(symbol).toUpperCase() : null,
-    view: (views as readonly string[]).includes(view ?? "") ? (view as View) : "chain",
-    expiry: expiry ? decodeURIComponent(expiry) : null,
+  try {
+    return {
+      symbol: symbol ? decodeURIComponent(symbol).toUpperCase() : null,
+      view: (views as readonly string[]).includes(view ?? "") ? (view as View) : "chain",
+      expiry: expiry ? decodeURIComponent(expiry) : null,
+    }
+  } catch {
+    return { symbol: null, view: "chain", expiry: null }
   }
 }
 

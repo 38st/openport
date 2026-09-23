@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react"
 import type { Expiry } from "../api/types"
 import { days, expiryLabel } from "../lib/format"
+import { groupKeyIndex } from "../lib/keyboard"
 
 /// Horizontal strip of expiries with days to expiry. Shows the settlement only where
 /// two expiries share a date (SPX monthly AM vs SPXW PM).
@@ -23,7 +24,7 @@ export function ExpiryPicker({ expiries, value, onChange }: { expiries: Expiry[]
 
   return (
     <div ref={strip} className="relative flex gap-1 overflow-x-auto pb-1" role="tablist" aria-label="Expiry">
-      {expiries.map((e) => {
+      {expiries.map((e, index) => {
         const active = e.id === value
         return (
           <button
@@ -31,7 +32,19 @@ export function ExpiryPicker({ expiries, value, onChange }: { expiries: Expiry[]
             ref={active ? selected : undefined}
             role="tab"
             aria-selected={active}
+            tabIndex={active ? 0 : -1}
             onClick={() => onChange(e.id)}
+            onKeyDown={(event) => {
+              if (event.altKey || event.ctrlKey || event.metaKey) return
+              const next = groupKeyIndex(event.key, index, expiries.length)
+              if (next == null) return
+              const expiry = expiries[next]
+              if (!expiry) return
+              event.preventDefault()
+              event.stopPropagation()
+              onChange(expiry.id)
+              strip.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]').item(next)?.focus()
+            }}
             className={`shrink-0 rounded-md border px-2 py-1 text-left transition-colors ${
               active ? "border-accent/60 bg-raised" : "border-border hover:border-muted"
             }`}

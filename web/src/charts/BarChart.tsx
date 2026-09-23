@@ -76,7 +76,7 @@ export function BarChart({ bars, markers = [], height = 280, formatX, formatY }:
       )}
       {hovered && layout && (
         <div
-          className="pointer-events-none absolute top-2 rounded-md border border-border bg-raised/95 px-2 py-1 text-[11px] shadow-lg"
+          className="pointer-events-none absolute top-2 rounded-md border border-border bg-tooltip px-2 py-1 text-[11px] shadow-chart"
           style={{ left: Math.min(layout.x(hovered.x) + 10, width - 150) }}
         >
           <span className="text-muted tabular">{formatX(hovered.x)}</span>{" "}

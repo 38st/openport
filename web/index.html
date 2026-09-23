@@ -1,7 +1,17 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // Keep in sync with resolveTheme in src/lib/theme.ts; run before first paint.
+      (() => {
+        let preference = null;
+        try { preference = localStorage.getItem("openport-theme"); } catch {}
+        const dark = preference === "dark" || (preference !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="OpenPort: open-source options analytics on your own market data." />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

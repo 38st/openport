@@ -1,5 +1,6 @@
 import { useLive } from "../api/live"
 import { Panel, FeedBadge } from "../components/ui"
+import { AsOf } from "../components/AsOf"
 import { clock, count, fixed, price } from "../lib/format"
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -69,7 +70,7 @@ export function EngineView() {
                 <td className="py-1 text-right">{price(u.spot)}</td>
                 <td className="py-1 text-right">{u.expiries}</td>
                 <td className="py-1 text-right">{count(u.options)}</td>
-                <td className="py-1 text-right">{clock(u.as_of)}</td>
+                <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} /></td>
               </tr>
             ))}
           </tbody>

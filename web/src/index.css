@@ -1,47 +1,109 @@
 @import "tailwindcss";
 
-/* Palette shared with Gambit: a near-black terminal with semantic state colours. */
-@theme {
+/* Semantic tokens are shared by the UI, SVG charts and animations.
+   The bootstrap script resolves system preference before this stylesheet paints. */
+:root {
+  color-scheme: light;
+  --background: #f6f7f9;
+  --foreground: #17212b;
+  --panel: #ffffff;
+  --raised: #edf0f3;
+  --border: #d8dde3;
+  --muted: #52606d;
+  --faint: #606b76;
+  --accent: #08753e;
+  --live: #08753e;
+  --stale: #2864b7;
+  --warn: #865400;
+  --danger: #b52242;
+  --bullish: #137349;
+  --bearish: #b52242;
+  --gex-positive: #087873;
+  --gex-negative: #7046b5;
+  --chart-1: #08753e;
+  --chart-2: #7046b5;
+  --chart-3: #865400;
+  --chart-4: #2563ad;
+  --chart-5: #b22e73;
+  --chart-6: #4d7013;
+  --chart-7: #08718c;
+  --chart-8: #b04b12;
+  --tooltip: var(--panel);
+  --chart-shadow: rgb(23 33 43 / 0.12);
+  --transparent: transparent;
+  --selection: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  --flash-up: color-mix(in srgb, var(--bullish) 14%, var(--panel));
+  --flash-down: color-mix(in srgb, var(--bearish) 14%, var(--panel));
+}
+
+:root.dark {
+  color-scheme: dark;
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --panel: #101010;
+  --raised: #181818;
+  --border: #303030;
+  --muted: #a3a3a3;
+  --faint: #929292;
+  --accent: #2cc76f;
+  --live: #28ce70;
+  --stale: #629af0;
+  --warn: #f5b544;
+  --danger: #f16b80;
+  --bullish: #3fcf8e;
+  --bearish: #f16b80;
+  --gex-positive: #3ec5bf;
+  --gex-negative: #ae91ed;
+  --chart-1: #3fcf8e;
+  --chart-2: #a78bfa;
+  --chart-3: #f5b544;
+  --chart-4: #5aa9f8;
+  --chart-5: #f472b6;
+  --chart-6: #a3e635;
+  --chart-7: #22d3ee;
+  --chart-8: #fb923c;
+  --tooltip: var(--raised);
+  --chart-shadow: rgb(0 0 0 / 0.4);
+  --selection: color-mix(in srgb, var(--accent) 25%, var(--panel));
+  --flash-up: color-mix(in srgb, var(--bullish) 22%, var(--panel));
+  --flash-down: color-mix(in srgb, var(--bearish) 22%, var(--panel));
+}
+
+/* Inline aliases resolve the active palette at the utility's point of use. */
+@theme inline {
   --font-sans: "Geist Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-live: var(--live);
+  --color-stale: var(--stale);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-bullish: var(--bullish);
+  --color-bearish: var(--bearish);
+  --color-gex-positive: var(--gex-positive);
+  --color-gex-negative: var(--gex-negative);
+  --color-tooltip: var(--tooltip);
+  --color-transparent: var(--transparent);
+  --shadow-chart: 0 4px 12px var(--chart-shadow);
+}
 
-  --color-background: hsl(0 0% 4%);
-  --color-foreground: hsl(0 0% 98%);
-  --color-panel: hsl(0 0% 6%);
-  --color-raised: hsl(0 0% 9%);
-  --color-border: hsl(0 0% 15%);
-  --color-muted: hsl(0 0% 60%);
-  --color-faint: hsl(0 0% 38%);
-  --color-accent: hsl(142 70% 45%);
-
-  --color-live: hsl(145 68% 48%);
-  --color-stale: hsl(217 84% 62%);
-  --color-warn: hsl(42 92% 57%);
-  --color-danger: hsl(351 76% 62%);
-  --color-bullish: hsl(150 62% 49%);
-  --color-bearish: hsl(351 76% 62%);
-  --color-gex-positive: hsl(178 52% 50%);
-  --color-gex-negative: hsl(257 59% 65%);
-
+@theme {
   --animate-flash-up: flash-up 700ms ease-out;
   --animate-flash-down: flash-down 700ms ease-out;
-
-  /* A live value moved: a brief semantic wash that fades back to the panel. */
   @keyframes flash-up {
-    from {
-      background-color: hsl(150 62% 49% / 0.3);
-    }
-    to {
-      background-color: transparent;
-    }
+    from { background-color: var(--flash-up); }
+    to { background-color: var(--transparent); }
   }
   @keyframes flash-down {
-    from {
-      background-color: hsl(351 76% 62% / 0.3);
-    }
-    to {
-      background-color: transparent;
-    }
+    from { background-color: var(--flash-down); }
+    to { background-color: var(--transparent); }
   }
 }
 
@@ -52,8 +114,8 @@
     height: 100%;
   }
   body {
-    background: var(--color-background);
-    color: var(--color-foreground);
+    background: var(--background);
+    color: var(--foreground);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
@@ -62,7 +124,11 @@
     font-variant-numeric: tabular-nums;
   }
   ::selection {
-    background: hsl(142 70% 45% / 0.35);
+    background: var(--selection);
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 }
 

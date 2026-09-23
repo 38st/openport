@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -7,6 +7,9 @@ import { ExpiryPicker } from "../components/ExpiryPicker"
 import { Flash } from "../components/Flash"
 import { Empty, Panel, Segmented, Stat } from "../components/ui"
 import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format"
+import { matchingPayload } from "../lib/payload"
+
+const europeanIndices = new Set(["SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW", "VIX", "VIXW", "XSP"])
 
 const windows = [
   { value: 0.02, label: "±2%" },
@@ -42,20 +45,21 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
 
   const summary = useQuery({
     queryKey: ["summary", symbol, version],
-    queryFn: () => api.summary(symbol),
-    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => api.summary(symbol, signal),
+    placeholderData: (previous) => matchingPayload(previous, symbol),
   })
-  const expiries = summary.data?.expiries ?? []
+  const summaryData = matchingPayload(summary.data, symbol)
+  const expiries = summaryData?.expiries ?? []
   const selected = expiry && expiries.some((e) => e.id === expiry) ? expiry : defaultExpiry(expiries)
 
   const chain = useQuery({
     queryKey: ["chain", symbol, selected, window, version],
-    queryFn: () => api.chain(symbol, selected as string, window),
+    queryFn: ({ signal }) => api.chain(symbol, selected as string, window, signal),
     enabled: selected != null,
-    placeholderData: keepPreviousData,
+    placeholderData: (previous) => matchingPayload(previous, symbol, selected),
   })
 
-  const data = chain.data?.expiry.id === selected ? chain.data : undefined
+  const data = matchingPayload(chain.data, symbol, selected)
   const forward = data?.expiry.forward ?? null
   const atmStrike = useMemo(() => {
     if (!data || !isNum(forward)) return null
@@ -67,7 +71,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const provider = live.status?.provider.name ?? "vendor"
 
   if (summary.isError) return <Empty>{String(summary.error)}</Empty>
-  if (!summary.data) return <Empty>Loading {symbol}…</Empty>
+  if (!summaryData) return <Empty>Loading {symbol}…</Empty>
 
   const e = data?.expiry
   return (
@@ -111,9 +115,14 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         }
       >
         {data ? (
-          <ChainTable rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} provider={provider} />
+          <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} provider={provider} />
         ) : (
           <Empty>{chain.isError ? String(chain.error) : "Loading chain…"}</Empty>
+        )}
+        {!europeanIndices.has(symbol) && (
+          <p className="mt-2 text-[11px] text-muted">
+            IVs and Greeks use a European model, accurate for the out-of-the-money side of American-style options.
+          </p>
         )}
       </Panel>
     </div>
@@ -134,7 +143,7 @@ function columns(provider: string): Column[] {
     { key: "delta", label: "Δ", title: "Delta per unit of underlying", render: (o) => fixed(o.delta, 3) },
     { key: "gamma", label: "Γ", title: "Gamma per $1 of spot", render: (o) => fixed(o.gamma, 5), greek: true },
     { key: "vega", label: "Vega", title: "Per vol point", render: (o) => fixed(o.vega, 3), greek: true },
-    { key: "theta", label: "Θ", title: "Per calendar day", render: (o) => fixed(o.theta, 3), greek: true },
+    { key: "theta", label: "Θ", title: "per calendar day, forward held fixed (as Cboe quotes it)", render: (o) => fixed(o.theta, 3), greek: true },
     {
       key: "iv",
       label: "IV",

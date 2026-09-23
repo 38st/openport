@@ -5,6 +5,7 @@ import type { Summary } from "./api/types"
 import { Header } from "./components/Header"
 import { Empty } from "./components/ui"
 import { useRoute, views } from "./lib/route"
+import { matchingPayload } from "./lib/payload"
 import { ChainView, defaultExpiry } from "./views/ChainView"
 import { EngineView } from "./views/EngineView"
 import { ExposureView } from "./views/ExposureView"
@@ -16,20 +17,24 @@ export function App() {
   const queryClient = useQueryClient()
   const symbols = (live.tick?.underlyings ?? live.status?.underlyings ?? []).map((u) => u.symbol)
   const symbol = route.symbol && symbols.includes(route.symbol) ? route.symbol : (symbols[0] ?? null)
+  const version = symbol ? live.version(symbol) : 0
 
   // 1-4 switch views; left/right step through expiries on the chain.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      if (event.metaKey || event.ctrlKey || event.altKey || target?.closest("input, textarea, select")) return
+      const target = event.target instanceof Element ? event.target : null
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || target?.closest(
+        'input, textarea, select, button, [contenteditable]:not([contenteditable="false"]), [role="radiogroup"], [role="tablist"], [role="textbox"], [role="combobox"], [role="slider"], [role="spinbutton"]',
+      )) return
       const index = Number(event.key) - 1
       const view = views[index]
       if (view) {
+        event.preventDefault()
         navigate({ view })
         return
       }
       if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && symbol && route.view === "chain") {
-        const summary = queryClient.getQueriesData<Summary>({ queryKey: ["summary", symbol] }).at(-1)?.[1]
+        const summary = matchingPayload(queryClient.getQueryData<Summary>(["summary", symbol, version]), symbol)
         const ids = summary?.expiries.map((e) => e.id) ?? []
         if (ids.length === 0) return
         const current = route.expiry ?? defaultExpiry(summary?.expiries ?? [])
@@ -41,7 +46,7 @@ export function App() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [navigate, queryClient, route.expiry, route.view, symbol])
+  }, [navigate, queryClient, route.expiry, route.view, symbol, version])
 
   const waiting = live.status?.feed.message || "Connecting to openportd…"
 

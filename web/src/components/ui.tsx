@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import type { FeedState } from "../api/types"
+import { groupKeyIndex } from "../lib/keyboard"
 
 export function Panel({ title, actions, children, className = "" }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
@@ -39,12 +40,25 @@ export function Segmented<T extends string | number>({
 }) {
   return (
     <div role="radiogroup" aria-label={label} className="inline-flex rounded-md border border-border bg-background p-0.5">
-      {options.map((o) => (
+      {options.map((o, index) => (
         <button
           key={String(o.value)}
+          type="button"
           role="radio"
           aria-checked={o.value === value}
+          tabIndex={o.value === value ? 0 : -1}
           onClick={() => onChange(o.value)}
+          onKeyDown={(event) => {
+            if (event.altKey || event.ctrlKey || event.metaKey) return
+            const next = groupKeyIndex(event.key, index, options.length)
+            if (next == null) return
+            const option = options[next]
+            if (!option) return
+            event.preventDefault()
+            event.stopPropagation()
+            onChange(option.value)
+            event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]').item(next)?.focus()
+          }}
           className={`rounded px-2 py-0.5 text-xs transition-colors ${
             o.value === value ? "bg-raised text-foreground" : "text-muted hover:text-foreground"
           }`}

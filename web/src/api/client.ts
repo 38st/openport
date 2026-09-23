@@ -9,8 +9,8 @@ export class ApiError extends Error {
   }
 }
 
-async function get<T>(path: string): Promise<T> {
-  const response = await fetch(path, { headers: { Accept: "application/json" } })
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, { signal, headers: { Accept: "application/json" } })
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: string } | null
     throw new ApiError(response.status, body?.error ?? `${response.status} ${response.statusText}`)
@@ -21,12 +21,12 @@ async function get<T>(path: string): Promise<T> {
 const underlying = (symbol: string) => `/api/underlyings/${encodeURIComponent(symbol)}`
 
 export const api = {
-  status: () => get<Status>("/api/status"),
-  summary: (symbol: string) => get<Summary>(`${underlying(symbol)}/summary`),
-  chain: (symbol: string, expiry: string, window: number) =>
-    get<Chain>(`${underlying(symbol)}/chain?expiry=${encodeURIComponent(expiry)}&window=${window}`),
-  exposure: (symbol: string, expiries: number, window: number) =>
-    get<ExposureMatrix>(`${underlying(symbol)}/exposure?expiries=${expiries}&window=${window}`),
-  surface: (symbol: string, expiries: number, window: number) =>
-    get<Surface>(`${underlying(symbol)}/surface?expiries=${expiries}&window=${window}`),
+  status: (signal?: AbortSignal) => get<Status>("/api/status", signal),
+  summary: (symbol: string, signal?: AbortSignal) => get<Summary>(`${underlying(symbol)}/summary`, signal),
+  chain: (symbol: string, expiry: string, window: number, signal?: AbortSignal) =>
+    get<Chain>(`${underlying(symbol)}/chain?expiry=${encodeURIComponent(expiry)}&window=${window}`, signal),
+  exposure: (symbol: string, expiries: number, window: number, signal?: AbortSignal) =>
+    get<ExposureMatrix>(`${underlying(symbol)}/exposure?expiries=${expiries}&window=${window}`, signal),
+  surface: (symbol: string, expiries: number, window: number, signal?: AbortSignal) =>
+    get<Surface>(`${underlying(symbol)}/surface?expiries=${expiries}&window=${window}`, signal),
 }

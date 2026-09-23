@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { useMemo, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -6,6 +6,7 @@ import { BarChart } from "../charts/BarChart"
 import { Heatmap } from "../charts/Heatmap"
 import { Empty, Panel, Segmented, Stat } from "../components/ui"
 import { expiryLabel, fixed, isNum, money, price } from "../lib/format"
+import { matchingPayload } from "../lib/payload"
 
 type Metric = "gex" | "vex"
 
@@ -17,10 +18,10 @@ export function ExposureView({ symbol }: { symbol: string }) {
 
   const exposure = useQuery({
     queryKey: ["exposure", symbol, expiries, window, version],
-    queryFn: () => api.exposure(symbol, expiries, window),
-    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => api.exposure(symbol, expiries, window, signal),
+    placeholderData: (previous) => matchingPayload(previous, symbol),
   })
-  const data = exposure.data
+  const data = matchingPayload(exposure.data, symbol)
 
   const totals = useMemo(() => {
     if (!data) return []
@@ -42,8 +43,8 @@ export function ExposureView({ symbol }: { symbol: string }) {
   const summary = data.exposure
   const unit = metric === "gex" ? "per 1% move" : "per vol point"
   const markers = [
-    ...(isNum(data.spot) ? [{ x: data.spot, label: `spot ${price(data.spot)}`, color: "#f5b544" }] : []),
-    ...(metric === "gex" && isNum(summary.gamma_flip) ? [{ x: summary.gamma_flip, label: "flip", color: "#9ca3af" }] : []),
+    ...(isNum(data.spot) ? [{ x: data.spot, label: `spot ${price(data.spot)}`, color: "var(--warn)" }] : []),
+    ...(metric === "gex" && isNum(summary.gamma_flip) ? [{ x: summary.gamma_flip, label: "flip", color: "var(--muted)" }] : []),
   ]
 
   return (
@@ -79,6 +80,7 @@ export function ExposureView({ symbol }: { symbol: string }) {
 
       <Panel title="By strike and expiry">
         <Heatmap
+          label={`${metric === "gex" ? "Gamma" : "Vanna"} exposure by strike and expiry, ${unit}`}
           rows={data.strikes}
           columns={data.expiries.map((e) => ({ id: e.id, label: expiryLabel(e.id) }))}
           values={data.expiries.map((e) => (metric === "gex" ? e.gex : e.vex))}

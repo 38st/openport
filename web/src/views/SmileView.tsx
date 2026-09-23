@@ -1,16 +1,17 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { useMemo, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { LineChart, type Series } from "../charts/LineChart"
 import { Empty, Panel, Segmented } from "../components/ui"
 import { days, expiryLabel, fixed, isNum, pct, price, vol } from "../lib/format"
+import { matchingPayload } from "../lib/payload"
 
 // Natural tenors, placed on the square-root time axis.
 const tenorTicks = [7, 30, 91, 182, 365, 730, 1826].map(Math.sqrt)
 const tenor = (d: number) => (d < 25 ? "1w" : d < 60 ? "1m" : d < 120 ? "3m" : d < 250 ? "6m" : d < 500 ? "1y" : d < 1000 ? "2y" : "5y")
 
-const palette = ["#3fcf8e", "#a78bfa", "#f5b544", "#5aa9f8", "#f472b6", "#a3e635", "#22d3ee", "#fb923c"]
+const palette = Array.from({ length: 8 }, (_, i) => `var(--chart-${i + 1})`)
 
 export function SmileView({ symbol }: { symbol: string }) {
   const version = useLive().version(symbol)
@@ -20,22 +21,24 @@ export function SmileView({ symbol }: { symbol: string }) {
 
   const surface = useQuery({
     queryKey: ["surface", symbol, expiries, window, version],
-    queryFn: () => api.surface(symbol, expiries, window),
-    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => api.surface(symbol, expiries, window, signal),
+    placeholderData: (previous) => matchingPayload(previous, symbol),
   })
   const summary = useQuery({
     queryKey: ["summary", symbol, version],
-    queryFn: () => api.summary(symbol),
-    placeholderData: keepPreviousData,
+    queryFn: ({ signal }) => api.summary(symbol, signal),
+    placeholderData: (previous) => matchingPayload(previous, symbol),
   })
+  const surfaceData = matchingPayload(surface.data, symbol)
+  const summaryData = matchingPayload(summary.data, symbol)
 
   const smiles = useMemo<Series[]>(() => {
     // Skip expiries in their final hour: their smiles are all noise.
-    const slices = (surface.data?.expiries ?? []).filter((e) => (e.days ?? 0) > 1 / 24)
+    const slices = (surfaceData?.expiries ?? []).filter((e) => (e.days ?? 0) > 1 / 24)
     return slices.map((e, i) => ({
       id: e.id,
       label: `${expiryLabel(e.id)} · ${days(e.days)}`,
-      color: palette[i % palette.length] ?? "#3fcf8e",
+      color: palette[i % palette.length] ?? "var(--chart-1)",
       band: i === 0,
       points: e.points.map((p) => ({
         x: axis === "strike" ? p.strike : (p.k ?? 0),
@@ -44,18 +47,20 @@ export function SmileView({ symbol }: { symbol: string }) {
         hi: p.ask_iv,
       })),
     }))
-  }, [surface.data, axis])
+  }, [surfaceData, axis])
 
   const term = useMemo<Series[]>(() => {
     // Square-root time axis: a week and five years both stay readable.
-    const points = (summary.data?.expiries ?? [])
+    const points = (summaryData?.expiries ?? [])
       .filter((e) => (e.days ?? 0) > 1 / 24 && isNum(e.atm_iv))
       .map((e) => ({ x: Math.sqrt(e.days ?? 0), y: e.atm_iv }))
-    return [{ id: "atm", label: "ATM vol", color: "#3fcf8e", points }]
-  }, [summary.data])
+    return [{ id: "atm", label: "ATM vol", color: "var(--chart-1)", points }]
+  }, [summaryData])
 
-  const spot = surface.data?.spot
-  const markers = axis === "strike" && isNum(spot) ? [{ x: spot, label: `spot ${price(spot)}`, color: "#f5b544" }] : [{ x: 0, label: "forward", color: "#f5b544" }]
+  const spot = surfaceData?.spot
+  const markers = axis === "strike"
+    ? isNum(spot) ? [{ x: spot, label: `spot ${price(spot)}`, color: "var(--warn)" }] : []
+    : [{ x: 0, label: "forward", color: "var(--warn)" }]
 
   if (surface.isError) return <Empty>{String(surface.error)}</Empty>
   return (
@@ -124,7 +129,7 @@ export function SmileView({ symbol }: { symbol: string }) {
                 </tr>
               </thead>
               <tbody className="tabular">
-                {(summary.data?.expiries ?? []).map((e) => (
+                {(summaryData?.expiries ?? []).map((e) => (
                   <tr key={e.id} className="border-t border-border/40">
                     <td className="py-0.5">{expiryLabel(e.id, true)}</td>
                     <td className="py-0.5 text-right">{days(e.days)}</td>

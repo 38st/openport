@@ -14,6 +14,14 @@ describe("route", () => {
     expect(parseRoute("#/spy/nonsense")).toEqual({ symbol: "SPY", view: "chain", expiry: null })
     expect(parseRoute("")).toEqual({ symbol: null, view: "chain", expiry: null })
   })
+
+  it.each(["#/%/chain", "#/%E0%A4/chain", "#/SPX/chain/%", "#/SPX/chain/%FF"])("safely resets a malformed encoded route: %s", (hash) => {
+    expect(parseRoute(hash)).toEqual({ symbol: null, view: "chain", expiry: null })
+  })
+
+  it("still decodes valid escaped route segments", () => {
+    expect(parseRoute("#/brk%2Fb/smile")).toEqual({ symbol: "BRK/B", view: "smile", expiry: null })
+  })
 })
 
 describe("format", () => {
