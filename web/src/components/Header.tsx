@@ -1,5 +1,9 @@
+import { useQuery } from "@tanstack/react-query"
+import { api } from "../api/client"
 import { useLive } from "../api/live"
-import { count, fixed, price } from "../lib/format"
+import { count, fixed, isNum, price } from "../lib/format"
+import { matchingPayload } from "../lib/payload"
+import { providerLabel } from "../lib/provider"
 import { views, type View } from "../lib/route"
 import { useTheme } from "../lib/theme"
 import { AsOf } from "./AsOf"
@@ -24,13 +28,21 @@ export function Header({
   onSymbol: (symbol: string) => void
   onView: (view: View) => void
 }) {
-  const { status, tick, connection } = useLive()
+  const { status, tick, connection, version, market, underlyings } = useLive()
   const { theme, toggleTheme } = useTheme()
-  const underlyings = tick?.underlyings ?? status?.underlyings ?? []
   const current = underlyings.find((u) => u.symbol === symbol)
   const feed = tick?.feed ?? status?.feed
   const provider = status?.provider
   const engine = tick?.engine ?? status?.engine
+  const summary = useQuery({
+    queryKey: ["summary", symbol, symbol ? version(symbol) : 0],
+    queryFn: ({ signal }) => api.summary(symbol as string, signal),
+    enabled: symbol != null && current?.as_of != null,
+    placeholderData: (previous) => symbol ? matchingPayload(previous, symbol) : undefined,
+  })
+  const summaryData = symbol ? matchingPayload(summary.data, symbol) : undefined
+  const inferredSpot = summaryData?.version === current?.version && summaryData?.spot_source === "parity" && isNum(current?.spot)
+  const dataLabel = provider ? providerLabel(provider, feed?.state) : ""
 
   return (
     <header className="border-b border-border bg-panel">
@@ -44,12 +56,12 @@ export function Header({
           OpenPort
         </a>
 
-        <nav className="flex items-center gap-1" aria-label="Underlyings">
+        <nav className="flex min-w-0 flex-wrap items-center gap-1" aria-label="Underlyings">
           {underlyings.map((u) => (
             <button
               key={u.symbol}
               onClick={() => onSymbol(u.symbol)}
-              className={`rounded-md px-2 py-1 text-sm tabular ${u.symbol === symbol ? "bg-raised text-foreground" : "text-muted hover:text-foreground"}`}
+              className={`min-w-0 rounded-md px-2 py-1 text-sm tabular [overflow-wrap:anywhere] ${u.symbol === symbol ? "bg-raised text-foreground" : "text-muted hover:text-foreground"}`}
             >
               {u.symbol}
             </button>
@@ -57,18 +69,20 @@ export function Header({
         </nav>
 
         {current && (
-          <div className="flex items-baseline gap-2">
-            <Flash key={symbol} value={current.spot} className="px-1 text-lg tabular">
-              {price(current.spot)}
-            </Flash>
-            <span className="text-[11px] text-muted">as of <AsOf asOf={current.as_of} delaySeconds={provider?.delay_seconds} /></span>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+            <span title={inferredSpot ? "No underlying quote from this provider; spot inferred from put-call parity" : undefined}>
+              <Flash key={symbol} value={current.spot} className="px-1 text-lg tabular">
+                {inferredSpot ? "≈" : ""}{price(current.spot)}
+              </Flash>
+            </span>
+            <span className="min-w-0 text-[11px] text-muted">as of <AsOf asOf={current.as_of} delaySeconds={provider?.delay_seconds} market={market} /></span>
           </div>
         )}
 
-        <div className="ml-auto flex flex-wrap items-center gap-3 text-[11px] text-muted">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3 text-[11px] text-muted">
           {provider && (
-            <span title={provider.realtime ? "real-time data" : `delayed ${provider.delay_seconds / 60} minutes`}>
-              <span className="text-foreground">{provider.name}</span> {provider.realtime ? "real-time" : `${provider.delay_seconds / 60}-min delay`}
+            <span className="min-w-0 [overflow-wrap:anywhere]" title={`${dataLabel}${provider.realtime_plan_dependent ? " · based on the current feed state" : ""}`}>
+              <span className="text-foreground">{provider.name}</span> {dataLabel}
             </span>
           )}
           {feed && <FeedBadge state={feed.state} message={feed.message} />}
@@ -97,7 +111,7 @@ export function Header({
         </div>
       </div>
 
-      <nav className="flex gap-1 px-3" aria-label="Views">
+      <nav className="flex flex-wrap gap-1 px-3" aria-label="Views">
         {views.map((v, i) => (
           <button
             key={v}

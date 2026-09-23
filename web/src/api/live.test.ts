@@ -33,6 +33,27 @@ describe("live state", () => {
     expect(liveState(status, restarted, "open").version("SPX")).toBe(0)
     expect(liveState(undefined, null, "connecting").version("SPX")).toBe(0)
   })
+
+  it("merges tick health with REST counts and preserves explicit nulls and newly subscribed symbols", () => {
+    const rest: Status = { ...status, underlyings: [{ ...status.underlyings[0]!, last_error: "old error", last_error_time: "2026-09-22T19:00:00Z" }] }
+    const pending = { symbol: "SPX", version: 0, spot: null, as_of: null, state: "connecting" as const, message: null, last_success: null, last_error: null, last_error_time: null }
+    const update: Tick = { ...tick, underlyings: [pending, { ...pending, symbol: "SPY" }] }
+    const live = liveState(rest, update, "open")
+    expect(live.underlyings[0]).toEqual({ ...rest.underlyings[0], ...pending })
+    expect(live.underlyings[1]).toEqual({ ...pending, symbol: "SPY" })
+    expect(liveState(rest, update, "closed").underlyings).toBe(rest.underlyings)
+    expect(liveState(undefined, null, "connecting").underlyings).toEqual([])
+  })
+
+  it("prefers connected market updates, falls back for older ticks, and respects explicit null", () => {
+    const market = { open: false, note: "Closed", next_open: null }
+    const rest = { ...status, market }
+    expect(liveState(rest, tick, "open").market).toBe(market)
+    expect(liveState(rest, { ...tick, market: null }, "open").market).toBeNull()
+    const update = { ...tick, market: { ...market, open: true } }
+    expect(liveState(rest, update, "open").market?.open).toBe(true)
+    expect(liveState(rest, update, "closed").market?.open).toBe(false)
+  })
 })
 
 class Socket {

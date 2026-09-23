@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { snapshotFreshness } from "./freshness"
+import { marketBadge, snapshotFreshness, timestampET } from "./freshness"
 
 const now = Date.parse("2026-09-22T20:14:00Z")
 
@@ -39,8 +39,38 @@ describe("snapshot freshness", () => {
   it("uses standard time in winter and treats an invalid delay as real-time", () => {
     expect(snapshotFreshness("2026-01-06T20:59:00Z", 0, Date.parse("2026-01-06T20:59:30Z")).label)
       .toBe("Tue, Jan 6, 2026, 15:59 ET, <1 min old")
-    for (const delay of [-900, NaN, Infinity]) {
+    for (const delay of [null, -900, NaN, Infinity]) {
       expect(snapshotFreshness("2026-09-22T19:59:00Z", delay, now).stale).toBe(true)
     }
+  })
+})
+
+describe("market badge", () => {
+  const closed = { open: false, note: "Outside regular trading hours", next_open: "2026-09-23T13:30:00Z" }
+
+  it.each([true, false])("uses a neutral closed badge regardless of stale=%s", (stale) => {
+    expect(marketBadge(closed, stale)).toEqual({
+      label: "market closed", tone: "neutral",
+      title: "Outside regular trading hours · Next open: Wed, Sep 23, 2026, 09:30 ET",
+    })
+  })
+
+  it("keeps stale badges for open markets and older servers", () => {
+    for (const market of [{ ...closed, open: true }, null, undefined]) {
+      expect(marketBadge(market, true)).toMatchObject({ label: "stale", tone: "warn" })
+      expect(marketBadge(market, false)).toBeNull()
+    }
+  })
+
+  it("omits unknown or invalid next opens, and handles a missing snapshot", () => {
+    for (const next_open of [null, "invalid"]) {
+      expect(marketBadge({ ...closed, next_open }, snapshotFreshness(null, 0, now).stale)?.title).toBe(closed.note)
+    }
+  })
+
+  it("formats next opens and health timestamps in Eastern time across DST", () => {
+    expect(timestampET("2026-01-06T14:30:00Z")).toBe("Tue, Jan 6, 2026, 09:30 ET")
+    expect(timestampET("2026-09-23T13:30:00Z")).toBe("Wed, Sep 23, 2026, 09:30 ET")
+    for (const timestamp of [null, undefined, "", "invalid"]) expect(timestampET(timestamp)).toBe("—")
   })
 })

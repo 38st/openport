@@ -4,7 +4,7 @@ import { groupKeyIndex } from "../lib/keyboard"
 
 export function Panel({ title, actions, children, className = "" }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={`rounded-lg border border-border bg-panel ${className}`}>
+    <section className={`min-w-0 rounded-lg border border-border bg-panel ${className}`}>
       {(title || actions) && (
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
           <h2 className="text-xs font-medium uppercase tracking-wide text-muted">{title}</h2>
@@ -79,9 +79,9 @@ const feedTone: Record<FeedState, string> = {
   stopped: "bg-faint",
 }
 
-export function FeedBadge({ state, message }: { state: FeedState; message: string }) {
+export function FeedBadge({ state, message }: { state: FeedState; message?: string | null }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px]" title={message}>
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px]" title={message ?? undefined}>
       <span className={`h-1.5 w-1.5 rounded-full ${feedTone[state]} ${state === "live" ? "animate-pulse" : ""}`} />
       {state}
     </span>
@@ -90,4 +90,16 @@ export function FeedBadge({ state, message }: { state: FeedState; message: strin
 
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="flex min-h-40 items-center justify-center text-sm text-muted">{children}</div>
+}
+
+export function CoverageBadge({ coverage }: { coverage: { label: string; low: boolean } | null }) {
+  if (!coverage) return null
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-[11px] tabular ${coverage.low ? "border-warn text-warn" : "border-border text-muted"}`}
+      title={coverage.low ? "Coverage below 90%; analytics may be incomplete" : undefined}
+    >
+      {coverage.label}{coverage.low ? " · low coverage" : ""}
+    </span>
+  )
 }

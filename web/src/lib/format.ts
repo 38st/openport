@@ -2,7 +2,7 @@
 
 type Value = number | null | undefined
 
-const dash = "–"
+const dash = "—"
 
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 })
 const compactMoney = new Intl.NumberFormat("en-US", {

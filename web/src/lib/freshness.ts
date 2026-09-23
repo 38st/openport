@@ -1,3 +1,5 @@
+import type { MarketSession, Num } from "../api/types"
+
 const snapshotDate = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   weekday: "short",
@@ -9,8 +11,29 @@ const snapshotDate = new Intl.DateTimeFormat("en-US", {
   hourCycle: "h23",
 })
 
+export function timestampET(iso: string | null | undefined): string {
+  const timestamp = iso ? Date.parse(iso) : NaN
+  return Number.isFinite(timestamp) ? `${snapshotDate.format(timestamp)} ET` : "—"
+}
+
+export function marketBadge(market: MarketSession | null | undefined, stale: boolean) {
+  if (market?.open === false) {
+    const nextOpen = timestampET(market.next_open)
+    return {
+      label: "market closed",
+      tone: "neutral" as const,
+      title: [market.note, nextOpen === "—" ? null : `Next open: ${nextOpen}`].filter(Boolean).join(" · "),
+    }
+  }
+  return stale ? {
+    label: "stale",
+    tone: "warn" as const,
+    title: "Data is older than the provider's stated delay plus 10 minutes",
+  } : null
+}
+
 /** Age uses wall time, not the provider's delayed market clock. */
-export function snapshotFreshness(asOf: string | null | undefined, delaySeconds: number, now = Date.now()) {
+export function snapshotFreshness(asOf: string | null | undefined, delaySeconds: Num = 0, now = Date.now()) {
   const timestamp = asOf ? Date.parse(asOf) : NaN
   if (!Number.isFinite(timestamp) || !Number.isFinite(now)) {
     return { label: "date / age unavailable", ageSeconds: null, stale: false }
@@ -22,7 +45,7 @@ export function snapshotFreshness(asOf: string | null | undefined, delaySeconds:
   const age = days > 0 ? `${days}d ${hours % 24}h old`
     : hours > 0 ? `${hours}h ${minutes % 60}m old`
     : minutes > 0 ? `${minutes} min old` : "<1 min old"
-  const delay = Number.isFinite(delaySeconds) ? Math.max(0, delaySeconds) : 0
+  const delay = delaySeconds != null && Number.isFinite(delaySeconds) ? Math.max(0, delaySeconds) : 0
   return {
     label: `${snapshotDate.format(timestamp)} ET, ${age}`,
     ageSeconds,

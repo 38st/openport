@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import { api } from "./client"
 import { connectLive, type Connection } from "./connection"
-import type { Status, Tick } from "./types"
+import type { Status, Tick, UnderlyingSnapshot, UnderlyingStatus } from "./types"
 
 export type { Connection } from "./connection"
 
@@ -10,6 +10,8 @@ interface Live {
   status: Status | undefined
   tick: Tick | null
   connection: Connection
+  market: Status["market"]
+  underlyings: (UnderlyingSnapshot & Partial<Pick<UnderlyingStatus, "expiries" | "options">>)[]
   /** Version of an underlying's data: queries include it in their key and refetch when it moves. */
   version: (symbol: string) => number
 }
@@ -22,6 +24,10 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
     status,
     tick: connectedTick,
     connection,
+    market: connectedTick?.market === undefined ? status?.market : connectedTick.market,
+    underlyings: connectedTick
+      ? connectedTick.underlyings.map((u) => ({ ...status?.underlyings.find((previous) => previous.symbol === u.symbol), ...u }))
+      : status?.underlyings ?? [],
     version: (symbol) => connectedTick?.underlyings.find((u) => u.symbol === symbol)?.version
       ?? status?.underlyings.find((u) => u.symbol === symbol)?.version ?? 0,
   }

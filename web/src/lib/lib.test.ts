@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { extent, linear, niceTicks } from "../charts/scale"
 import { flashDirection } from "./flash"
-import { days, expiryLabel, price, vol } from "./format"
+import { count, days, expiryLabel, fixed, price, vol } from "./format"
 import { formatRoute, parseRoute } from "./route"
 
 describe("route", () => {
@@ -26,8 +26,17 @@ describe("route", () => {
 
 describe("format", () => {
   it("never renders a missing value as zero", () => {
-    expect(price(null)).toBe("–")
-    expect(vol(Number.NaN)).toBe("–")
+    for (const value of [null, undefined, Number.NaN]) {
+      expect(price(value)).toBe("—")
+      expect(count(value)).toBe("—")
+      expect(fixed(value)).toBe("—")
+      expect(vol(value)).toBe("—")
+    }
+  })
+
+  it("preserves received zero quotes and open interest", () => {
+    expect(price(0)).toBe("0.00")
+    expect(count(0)).toBe("0")
   })
 
   it("shows vol points and sub-dollar prices sensibly", () => {

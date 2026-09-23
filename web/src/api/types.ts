@@ -7,27 +7,51 @@ export type FeedState = "connecting" | "live" | "delayed" | "stale" | "error" | 
 export interface ProviderInfo {
   name: string
   realtime: boolean
+  realtime_plan_dependent?: boolean | null
   delay_seconds: number
+  poll_interval_seconds?: Num
   trades: boolean
   open_interest: boolean
   vendor_greeks: boolean
 }
 
-export interface EngineInfo {
-  events: number
+export interface EngineMetrics {
   events_per_second: Num
   analytics_ms: Num
   contracts: number
+  nonstandard_contracts?: Num
+  queue_depth?: Num
+  coalesced_events?: Num
+  dropped_events?: Num
+  overloaded?: boolean | null
+}
+
+export interface EngineInfo extends EngineMetrics {
+  events: number
   uptime_seconds: number
 }
 
-export interface UnderlyingStatus {
+export interface UnderlyingSnapshot {
   symbol: string
   spot: Num
-  as_of: string
+  as_of: string | null
   version: number
+  state?: FeedState | null
+  message?: string | null
+  last_success?: string | null
+  last_error?: string | null
+  last_error_time?: string | null
+}
+
+export interface UnderlyingStatus extends UnderlyingSnapshot {
   expiries: number
   options: number
+}
+
+export interface MarketSession {
+  open: boolean
+  note: string
+  next_open: string | null
 }
 
 export interface Status {
@@ -35,6 +59,16 @@ export interface Status {
   feed: { state: FeedState; message: string; updated: string | null }
   underlyings: UnderlyingStatus[]
   engine: EngineInfo
+  market?: MarketSession | null
+}
+
+export type SpotSource = "quote" | "parity" | null
+
+export interface Coverage {
+  options: Num
+  quoted: Num
+  priced: Num
+  open_interest: Num
 }
 
 export interface Expiry {
@@ -51,6 +85,8 @@ export interface Expiry {
   gex: Num
   vex: Num
   strikes: number
+  style?: "european" | "american" | null
+  coverage?: Coverage | null
 }
 
 export interface ExposureSummary {
@@ -59,16 +95,20 @@ export interface ExposureSummary {
   gamma_flip: Num
   call_wall: Num
   put_wall: Num
+  oi_coverage?: Num
 }
 
 export interface Summary {
   symbol: string
   spot: Num
-  as_of: string
+  spot_source?: SpotSource
+  as_of: string | null
   version: number
   compute_ms: Num
   exposure: ExposureSummary
   expiries: Expiry[]
+  american_approximation?: boolean | null
+  coverage?: Coverage | null
 }
 
 export interface OptionQuote {
@@ -83,7 +123,7 @@ export interface OptionQuote {
   vega: Num
   theta: Num
   vanna: Num
-  oi: number
+  oi: Num
   vendor_iv: Num
 }
 
@@ -99,7 +139,8 @@ export interface ChainRow {
 export interface Chain {
   symbol: string
   spot: Num
-  as_of: string
+  spot_source?: SpotSource
+  as_of: string | null
   version: number
   expiry: Expiry
   strikes: ChainRow[]
@@ -108,7 +149,8 @@ export interface Chain {
 export interface ExposureMatrix {
   symbol: string
   spot: Num
-  as_of: string
+  spot_source?: SpotSource
+  as_of: string | null
   version: number
   strikes: number[]
   expiries: { id: string; expiry: string; days: Num; gex: Num[]; vex: Num[] }[]
@@ -127,7 +169,8 @@ export interface SmilePoint {
 export interface Surface {
   symbol: string
   spot: Num
-  as_of: string
+  spot_source?: SpotSource
+  as_of: string | null
   version: number
   expiries: { id: string; expiry: string; days: Num; forward: Num; atm_iv: Num; points: SmilePoint[] }[]
 }
@@ -135,6 +178,7 @@ export interface Surface {
 export interface Tick {
   type: "tick"
   feed: { state: FeedState; message: string }
-  underlyings: { symbol: string; spot: Num; as_of: string; version: number }[]
-  engine: { events_per_second: Num; analytics_ms: Num; contracts: number }
+  underlyings: UnderlyingSnapshot[]
+  engine: EngineMetrics
+  market?: MarketSession | null
 }

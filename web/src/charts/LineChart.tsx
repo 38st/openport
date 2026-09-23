@@ -126,24 +126,24 @@ export function LineChart({ series, markers = [], height = 320, formatX, formatY
           )}
           {markers.map((m) => (
             <g key={m.label}>
-              <line x1={layout.x(m.x)} x2={layout.x(m.x)} y1={margin.top} y2={height - margin.bottom} stroke={m.color} strokeDasharray="4 3" strokeOpacity={0.8} />
-              <text x={layout.x(m.x) + 4} y={margin.top + 10} fill={m.color} className="text-[10px]">
+              <line x1={layout.x(m.x)} x2={layout.x(m.x)} y1={margin.top} y2={height - margin.bottom} style={{ stroke: m.color }} strokeDasharray="4 3" strokeOpacity={0.8} />
+              <text x={layout.x(m.x) + 4} y={margin.top + 10} style={{ fill: m.color }} className="text-[10px]">
                 {m.label}
               </text>
             </g>
           ))}
           {series.map((s) =>
-            s.band ? <path key={`band-${s.id}`} d={band(s.points)} fill={s.color} fillOpacity={0.12} /> : null,
+            s.band ? <path key={`band-${s.id}`} d={band(s.points)} style={{ fill: s.color }} fillOpacity={0.12} /> : null,
           )}
           {series.map((s) => (
-            <path key={s.id} d={path(s.points, (p) => p.y)} fill="none" stroke={s.color} strokeWidth={1.6} strokeLinejoin="round" />
+            <path key={s.id} d={path(s.points, (p) => p.y)} fill="none" style={{ stroke: s.color }} strokeWidth={1.6} strokeLinejoin="round" />
           ))}
           {anchor && hoverX != null && (
             <line x1={layout.x(anchor.x)} x2={layout.x(anchor.x)} y1={margin.top} y2={height - margin.bottom} className="stroke-muted" strokeOpacity={0.5} />
           )}
           {readout.map(({ series: s, point }) =>
             point && point.y != null ? (
-              <circle key={`dot-${s.id}`} cx={layout.x(point.x)} cy={layout.y(point.y)} r={3} fill={s.color} className="stroke-background" strokeWidth={1.5} />
+              <circle key={`dot-${s.id}`} cx={layout.x(point.x)} cy={layout.y(point.y)} r={3} style={{ fill: s.color }} className="stroke-background" strokeWidth={1.5} />
             ) : null,
           )}
         </svg>

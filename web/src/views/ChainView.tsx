@@ -5,11 +5,11 @@ import { useLive } from "../api/live"
 import type { ChainRow, Expiry, OptionQuote } from "../api/types"
 import { ExpiryPicker } from "../components/ExpiryPicker"
 import { Flash } from "../components/Flash"
-import { Empty, Panel, Segmented, Stat } from "../components/ui"
+import { CoverageBadge, Empty, Panel, Segmented, Stat } from "../components/ui"
+import { expiryCoverage } from "../lib/coverage"
 import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format"
 import { matchingPayload } from "../lib/payload"
-
-const europeanIndices = new Set(["SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW", "VIX", "VIXW", "XSP"])
+import { americanApproximation } from "../lib/model"
 
 const windows = [
   { value: 0.02, label: "±2%" },
@@ -74,6 +74,9 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   if (!summaryData) return <Empty>Loading {symbol}…</Empty>
 
   const e = data?.expiry
+  const summaryExpiry = expiries.find((item) => item.id === selected)
+  const coverage = expiryCoverage(e?.coverage === undefined ? summaryExpiry?.coverage : e.coverage)
+  const approximation = americanApproximation(symbol, summaryData.american_approximation, e?.style ?? summaryExpiry?.style)
   return (
     <div className="flex flex-col gap-3">
       <ExpiryPicker expiries={expiries} value={selected} onChange={onExpiry} />
@@ -101,6 +104,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         title={e ? `${symbol} ${e.expiry} ${e.settlement}` : symbol}
         actions={
           <>
+            <CoverageBadge coverage={coverage} />
             <Segmented label="Strike window" value={window} options={windows} onChange={setWindow} />
             <Segmented
               label="Columns"
@@ -119,7 +123,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         ) : (
           <Empty>{chain.isError ? String(chain.error) : "Loading chain…"}</Empty>
         )}
-        {!europeanIndices.has(symbol) && (
+        {approximation && (
           <p className="mt-2 text-[11px] text-muted">
             IVs and Greeks use a European model, accurate for the out-of-the-money side of American-style options.
           </p>
@@ -215,7 +219,7 @@ function ChainTable({
               >
                 {callColumns.map((c) => (
                   <td key={`c-${c.key}`} className={`${cell} ${callItm ? "bg-raised/50" : ""}`}>
-                    {row.call ? c.render(row.call) : "–"}
+                    {row.call ? c.render(row.call) : "—"}
                   </td>
                 ))}
                 <td className="px-3 py-1 text-center tabular">
@@ -224,7 +228,7 @@ function ChainTable({
                 </td>
                 {putColumns.map((c) => (
                   <td key={`p-${c.key}`} className={`${cell} ${putItm ? "bg-raised/50" : ""}`}>
-                    {row.put ? c.render(row.put) : "–"}
+                    {row.put ? c.render(row.put) : "—"}
                   </td>
                 ))}
               </tr>

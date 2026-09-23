@@ -1,0 +1,126 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import type { ReactNode } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { liveState, useLive } from "../api/live"
+import type { Chain, Expiry, ExposureMatrix, OptionQuote, Status, Summary, Tick } from "../api/types"
+import { Header } from "../components/Header"
+import { ChainView } from "./ChainView"
+import { EngineView } from "./EngineView"
+import { ExposureView } from "./ExposureView"
+
+vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
+vi.mock("../lib/theme", () => ({ useTheme: () => ({ theme: "dark", toggleTheme: vi.fn() }) }))
+
+const asOf = "2026-09-22T19:59:00Z"
+const status: Status = {
+  provider: { name: "test", realtime: true, realtime_plan_dependent: true, delay_seconds: 900, trades: false, open_interest: true, vendor_greeks: false },
+  feed: { state: "delayed", message: "Connected", updated: asOf },
+  engine: { contracts: 2, events: 1, events_per_second: null, analytics_ms: null, uptime_seconds: 60 },
+  underlyings: [{ symbol: "SPY", spot: 700, as_of: asOf, version: 1, expiries: 1, options: 2 }],
+  market: { open: false, note: "Session ended", next_open: "2026-09-23T13:30:00Z" },
+}
+const expiry: Expiry = {
+  id: "2026-10-16PM", expiry: "2026-10-16", expiry_time: "2026-10-16T20:00:00Z", settlement: "PM",
+  days: 24, forward: 700, discount: 1, rate: 0, rate_fitted: false, atm_iv: null, gex: null, vex: null, strikes: 1,
+  coverage: { options: 2, quoted: 1, priced: 1, open_interest: 0 }, style: "european",
+}
+const summary: Summary = {
+  symbol: "SPY", spot: 700, spot_source: "parity", as_of: asOf, version: 1, compute_ms: null,
+  exposure: { gex: null, vex: null, gamma_flip: null, call_wall: null, put_wall: null, oi_coverage: 0.97 },
+  expiries: [expiry], american_approximation: true,
+}
+const quote: OptionQuote = {
+  bid: null, ask: null, mid: null, oi: null, iv: null, bid_iv: null, ask_iv: null,
+  delta: null, gamma: null, vega: null, theta: null, vanna: null, vendor_iv: null,
+}
+const clients: QueryClient[] = []
+
+function render(view: ReactNode, payloads: { summary?: Summary; chain?: Chain; exposure?: ExposureMatrix } = {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity, retry: false } } })
+  clients.push(client)
+  client.setQueryData(["summary", "SPY", 1], payloads.summary ?? summary)
+  if (payloads.chain) client.setQueryData(["chain", "SPY", expiry.id, 0.05, 1], payloads.chain)
+  if (payloads.exposure) client.setQueryData(["exposure", "SPY", 8, 0.05, 1], payloads.exposure)
+  return renderToStaticMarkup(<QueryClientProvider client={client}>{view}</QueryClientProvider>)
+}
+
+afterEach(() => {
+  clients.splice(0).forEach((client) => client.clear())
+  vi.clearAllMocks()
+})
+
+describe("web follow-up rendering", () => {
+  it("labels a matching parity snapshot, the closed session, and the actual delayed plan", () => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+    const html = render(<Header symbol="SPY" view="chain" onSymbol={() => {}} onView={() => {}} />)
+    expect(html).toContain("≈700.00")
+    expect(html).toContain("No underlying quote from this provider; spot inferred from put-call parity")
+    expect(html).toContain("market closed")
+    expect(html).toContain("Session ended · Next open: Wed, Sep 23, 2026, 09:30 ET")
+    expect(html).toContain("15-min delay")
+    expect(html).not.toContain(">stale<")
+  })
+
+  it("does not attach another snapshot's source to the header spot and handles pending underlyings", () => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+    const header = <Header symbol="SPY" view="chain" onSymbol={() => {}} onView={() => {}} />
+    expect(render(header, { summary: { ...summary, version: 0 } })).not.toContain("≈")
+    expect(render(header, { summary: { ...summary, symbol: "SPX" } })).not.toContain("≈")
+    const pending = { ...status, underlyings: [{ ...status.underlyings[0]!, spot: null, as_of: null }] }
+    vi.mocked(useLive).mockReturnValue(liveState(pending, null, "open"))
+    const html = render(header)
+    expect(html).not.toContain("≈")
+    expect(html).toContain(">—</span>")
+    expect(html).toContain("date / age unavailable")
+  })
+
+  it("shows null quotes as em dashes, received zeros as zero, selected-expiry coverage and style", () => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+    const chain: Chain = {
+      symbol: "SPY", spot: null, as_of: null, version: 1, expiry,
+      strikes: [{ strike: 700, iv: null, gex: null, vex: null, call: quote, put: { ...quote, bid: 0, ask: 0, mid: 0, oi: 0 } }],
+    }
+    const html = render(<ChainView symbol="SPY" expiry={expiry.id} onExpiry={() => {}} />, { chain })
+    const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map((match) => match[1]!.replace(/<[^>]+>/g, ""))
+    expect(cells.slice(0, 5)).toEqual(["—", "—", "—", "—", "—"])
+    expect(cells.slice(-5)).toEqual(["0.00", "0.00", "—", "—", "0"])
+    expect(html).toContain("priced 1/2 · OI 0/2 · low coverage")
+    expect(html).not.toContain("IVs and Greeks use a European model")
+  })
+
+  it.each([0.97, 0.89, null])("renders exposure OI coverage %s, including unknown coverage", (ratio) => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+    const exposure: ExposureMatrix = {
+      symbol: "SPY", spot: null, as_of: null, version: 1, strikes: [], expiries: [], total_gex: [],
+      exposure: { ...summary.exposure, oi_coverage: ratio },
+    }
+    const html = render(<ExposureView symbol="SPY" />, { exposure })
+    expect(html).toContain(ratio == null ? "OI coverage —" : `OI coverage ${Math.round(ratio * 100)}%`)
+    expect(html.includes("low coverage")).toBe(ratio != null && ratio < 0.9)
+  })
+
+  it("shows tick health, error time and queue overload without losing nulls to REST fallbacks", () => {
+    const tick: Tick = {
+      type: "tick", feed: { ...status.feed, message: "cboe QQQ: 10826 options, parsed in 502 ms; cboe SPX: 9000 options, parsed in 450 ms" },
+      engine: { ...status.engine, queue_depth: 3, coalesced_events: 4, dropped_events: 5, overloaded: true },
+      underlyings: [{ symbol: "SPY", spot: null, as_of: null, version: 1, state: "error", message: "Retrying", last_success: asOf, last_error: "Rate limited", last_error_time: "2026-09-22T20:00:00Z" }],
+    }
+    vi.mocked(useLive).mockReturnValue(liveState(status, tick, "open"))
+    const html = render(<EngineView />)
+    expect(html).toContain("Underlying health")
+    expect(html).toContain("Retrying")
+    expect(html).toContain("Rate limited")
+    expect(html).toContain("Tue, Sep 22, 2026, 16:00 ET")
+    expect(html).toContain("old</time>")
+    expect(html).toContain("overloaded")
+    expect(html).toContain('<span class="block">cboe QQQ: 10826 options, parsed in 502 ms</span>')
+    expect(html).toContain('<span class="block">cboe SPX: 9000 options, parsed in 450 ms</span>')
+    for (const [label, value] of [["Queue depth", 3], ["Coalesced events", 4], ["Dropped events", 5]]) {
+      expect(html.replace(/<[^>]+>/g, "")).toContain(`${label}${value}`)
+    }
+    expect(html).not.toContain("700.00")
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, market: undefined }, null, "open"))
+    expect(render(<EngineView />)).not.toContain("overloaded")
+  })
+})

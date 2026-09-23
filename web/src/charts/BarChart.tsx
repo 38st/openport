@@ -66,8 +66,8 @@ export function BarChart({ bars, markers = [], height = 280, formatX, formatY }:
           })}
           {markers.map((m) => (
             <g key={m.label}>
-              <line x1={layout.x(m.x)} x2={layout.x(m.x)} y1={margin.top} y2={height - margin.bottom} stroke={m.color} strokeDasharray="4 3" />
-              <text x={layout.x(m.x) + 4} y={margin.top + 8} fill={m.color} className="text-[10px]">
+              <line x1={layout.x(m.x)} x2={layout.x(m.x)} y1={margin.top} y2={height - margin.bottom} style={{ stroke: m.color }} strokeDasharray="4 3" />
+              <text x={layout.x(m.x) + 4} y={margin.top + 8} style={{ fill: m.color }} className="text-[10px]">
                 {m.label}
               </text>
             </g>

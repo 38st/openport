@@ -4,7 +4,8 @@ import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { BarChart } from "../charts/BarChart"
 import { Heatmap } from "../charts/Heatmap"
-import { Empty, Panel, Segmented, Stat } from "../components/ui"
+import { CoverageBadge, Empty, Panel, Segmented, Stat } from "../components/ui"
+import { oiCoverage } from "../lib/coverage"
 import { expiryLabel, fixed, isNum, money, price } from "../lib/format"
 import { matchingPayload } from "../lib/payload"
 
@@ -61,6 +62,7 @@ export function ExposureView({ symbol }: { symbol: string }) {
         title={`${metric === "gex" ? "Gamma" : "Vanna"} exposure by strike · ${unit}`}
         actions={
           <>
+            {summary.oi_coverage !== undefined && <CoverageBadge coverage={oiCoverage(summary.oi_coverage)} />}
             <Segmented
               label="Metric"
               value={metric}

@@ -2,12 +2,14 @@ import { useLive } from "../api/live"
 import { Panel, FeedBadge } from "../components/ui"
 import { AsOf } from "../components/AsOf"
 import { clock, count, fixed, price } from "../lib/format"
+import { timestampET } from "../lib/freshness"
+import { providerLabel } from "../lib/provider"
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-baseline justify-between gap-4 border-b border-border/40 py-1.5 text-sm last:border-0">
-      <span className="text-muted">{label}</span>
-      <span className="tabular text-right">{children}</span>
+    <div className="flex min-w-0 items-baseline justify-between gap-4 border-b border-border/40 py-1.5 text-sm last:border-0">
+      <span className="shrink-0 text-muted">{label}</span>
+      <span className="min-w-0 tabular text-right [overflow-wrap:anywhere]">{children}</span>
     </div>
   )
 }
@@ -17,15 +19,18 @@ function Capability({ on, label }: { on: boolean; label: string }) {
 }
 
 export function EngineView() {
-  const { status, tick } = useLive()
+  const { status, tick, market, underlyings } = useLive()
   if (!status) return null
-  const { provider, feed, engine } = status
+  const { provider } = status
+  const feed = tick?.feed ?? status.feed
+  const engine = { ...status.engine, ...tick?.engine }
 
   return (
     <div className="grid gap-3 lg:grid-cols-2">
       <Panel title="Provider">
         <Row label="Name">{provider.name}</Row>
-        <Row label="Data">{provider.realtime ? "real-time" : `${provider.delay_seconds / 60}-minute delay`}</Row>
+        <Row label="Data">{providerLabel(provider, feed.state)}</Row>
+        {provider.poll_interval_seconds != null && <Row label="Poll interval">{fixed(provider.poll_interval_seconds, 0)} s</Row>}
         <div className="flex flex-wrap gap-1.5 pt-2">
           <Capability on label="quotes" />
           <Capability on={provider.trades} label="trades" />
@@ -36,45 +41,83 @@ export function EngineView() {
 
       <Panel title="Feed">
         <Row label="State">
-          <FeedBadge state={tick?.feed.state ?? feed.state} message={feed.message} />
+          <FeedBadge state={feed.state} message={feed.message} />
         </Row>
         <Row label="Last message">
-          <span className="text-xs">{tick?.feed.message ?? feed.message}</span>
+          <span className="block space-y-1 text-left text-xs">
+            {(feed.message ?? "—").split("; ").map((message, index) => <span key={index} className="block">{message}</span>)}
+          </span>
         </Row>
-        <Row label="Updated">{clock(feed.updated)}</Row>
+        <Row label="Updated">{clock(status.feed.updated)}</Row>
       </Panel>
 
-      <Panel title="Engine">
-        <Row label="Contracts tracked">{count(tick?.engine.contracts ?? engine.contracts)}</Row>
+      <Panel title="Engine" actions={engine.overloaded === true ? <span className="rounded-full border border-warn px-2 py-0.5 text-[11px] font-medium text-warn">overloaded</span> : undefined}>
+        <Row label="Contracts tracked">{count(engine.contracts)}</Row>
+        <Row label="Nonstandard contracts">{count(engine.nonstandard_contracts)}</Row>
         <Row label="Events processed">{count(engine.events)}</Row>
-        <Row label="Events per second">{fixed(tick?.engine.events_per_second ?? engine.events_per_second, 1)}</Row>
-        <Row label="Last analytics pass">{fixed(tick?.engine.analytics_ms ?? engine.analytics_ms, 1)} ms</Row>
+        <Row label="Events per second">{fixed(engine.events_per_second, 1)}</Row>
+        <Row label="Last analytics pass">{fixed(engine.analytics_ms, 1)} ms</Row>
+        <Row label="Queue depth">{count(engine.queue_depth)}</Row>
+        <Row label="Coalesced events">{count(engine.coalesced_events)}</Row>
+        <Row label="Dropped events">{count(engine.dropped_events)}</Row>
         <Row label="Uptime">{Math.floor(engine.uptime_seconds / 60)} min</Row>
       </Panel>
 
       <Panel title="Underlyings">
-        <table className="w-full text-sm">
-          <thead className="text-muted">
-            <tr>
-              <th className="py-1 text-left font-normal">Symbol</th>
-              <th className="py-1 text-right font-normal">Spot</th>
-              <th className="py-1 text-right font-normal">Expiries</th>
-              <th className="py-1 text-right font-normal">Options priced</th>
-              <th className="py-1 text-right font-normal">As of</th>
-            </tr>
-          </thead>
-          <tbody className="tabular">
-            {status.underlyings.map((u) => (
-              <tr key={u.symbol} className="border-t border-border/40">
-                <td className="py-1">{u.symbol}</td>
-                <td className="py-1 text-right">{price(u.spot)}</td>
-                <td className="py-1 text-right">{u.expiries}</td>
-                <td className="py-1 text-right">{count(u.options)}</td>
-                <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} /></td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-muted">
+              <tr>
+                <th className="py-1 text-left font-normal">Symbol</th>
+                <th className="py-1 text-right font-normal">Spot</th>
+                <th className="py-1 text-right font-normal">Expiries</th>
+                <th className="py-1 text-right font-normal">Options priced</th>
+                <th className="py-1 text-right font-normal">As of</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="tabular">
+              {underlyings.map((u) => (
+                <tr key={u.symbol} className="border-t border-border/40">
+                  <td className="py-1">{u.symbol}</td>
+                  <td className="py-1 text-right">{price(u.spot)}</td>
+                  <td className="py-1 text-right">{count(u.expiries)}</td>
+                  <td className="py-1 text-right">{count(u.options)}</td>
+                  <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} market={market} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <Panel title="Underlying health" className="lg:col-span-2">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="text-muted">
+              <tr>
+                <th scope="col" className="px-2 py-1 font-normal">Symbol</th>
+                <th scope="col" className="px-2 py-1 font-normal">State</th>
+                <th scope="col" className="px-2 py-1 font-normal">Message</th>
+                <th scope="col" className="px-2 py-1 font-normal">Last success</th>
+                <th scope="col" className="px-2 py-1 font-normal">Last error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {underlyings.map((u) => (
+                <tr key={u.symbol} className="border-t border-border/40 align-top">
+                  <th scope="row" className="px-2 py-2 font-normal tabular">{u.symbol}</th>
+                  <td className="px-2 py-2">{u.state ? <FeedBadge state={u.state} message={u.message} /> : "—"}</td>
+                  <td className="min-w-40 px-2 py-2 text-muted break-words">{u.message ?? "—"}</td>
+                  <td className="min-w-44 px-2 py-2 tabular">{u.last_success ? <AsOf asOf={u.last_success} showBadge={false} /> : "—"}</td>
+                  <td className="min-w-44 px-2 py-2 break-words">
+                    <div className={u.last_error ? "text-warn" : "text-muted"}>{u.last_error ?? "—"}</div>
+                    {u.last_error_time && <time dateTime={u.last_error_time} className="text-[11px] text-muted tabular">{timestampET(u.last_error_time)}</time>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </Panel>
 
       <Panel title="How the numbers are made" className="lg:col-span-2">
