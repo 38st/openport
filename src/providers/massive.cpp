@@ -171,7 +171,7 @@ std::string MassiveProvider::poll(net::HttpClient& http, const std::string& unde
 
   std::string url = massive_chain_url(options_.base_url, underlying);
   while (!url.empty()) {
-    const net::HttpResponse response = http.get(url, headers, options_.timeout);
+    const net::HttpResponse response = http.get(url, headers, options_.timeout, cancellation());
     if (response.status == 401 || response.status == 403) {
       throw std::runtime_error("the API key was rejected, or the plan does not include options");
     }
@@ -190,6 +190,7 @@ std::string MassiveProvider::poll(net::HttpClient& http, const std::string& unde
     if (++pages > 2000) throw std::runtime_error("pagination did not end");
   }
 
+  check_cancelled();
   publish_chain(underlying, contracts, underlying_price, underlying_ts, subscription, sink);
   char summary[192];
   std::snprintf(
@@ -231,6 +232,7 @@ void MassiveProvider::publish_chain(const std::string& underlying,
   std::set<md::InstrumentId> seen;
   for (auto& [c, contract] : parsed) {
     if (!publisher_.known(c->symbol) && !filter.admits(contract)) continue;
+    check_cancelled();
     const md::InstrumentId id = publisher_.define(c->symbol, std::move(contract), sink);
     seen.insert(id);
     if (c->has_quote) publisher_.quote(id, c->quote_ts, c->bid, c->ask, c->bid_size, c->ask_size, sink);

@@ -76,3 +76,91 @@ TEST(Http, ParsesUrls) {
 }
 
 }  // namespace
+
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <future>
+
+#include "openport/md/event_queue.hpp"
+#include "openport/providers/massive.hpp"
+
+namespace {
+TEST(Http, PreCancelledRequestsFailBeforeDnsOrNetworkAccess) {
+  openport::net::HttpClient client;
+  std::atomic<bool> cancel{true};
+  const auto started = std::chrono::steady_clock::now();
+  try {
+    client.get("https://does-not-exist.invalid/", {}, std::chrono::seconds(30), &cancel);
+    FAIL() << "cancelled request succeeded";
+  } catch (const std::exception& error) {
+    EXPECT_NE(std::string(error.what()).find("cancelled"), std::string::npos);
+  }
+  EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+}
+
+// Socket tests use the WebServer suite so the sandbox-safe filter excludes them.
+TEST(WebServer, HttpCancellationInterruptsReadAndTlsHandshake) {
+  namespace asio = boost::asio;
+  using tcp = asio::ip::tcp;
+  for (const auto* scheme : {"http://", "https://"}) {
+    asio::io_context io;
+    tcp::acceptor listener(io, {asio::ip::make_address("127.0.0.1"), 0});
+    tcp::socket peer(io);
+    std::atomic<bool> cancel{false};
+    openport::net::HttpClient client;
+    const auto url =
+        std::string(scheme) + "127.0.0.1:" + std::to_string(listener.local_endpoint().port());
+    auto request = std::async(std::launch::async, [&] {
+      try {
+        client.get(url, {}, std::chrono::seconds(30), &cancel);
+        return std::string("succeeded");
+      } catch (const std::exception& error) {
+        return std::string(error.what());
+      }
+    });
+    bool received = false;
+    char bytes[4096];
+    listener.async_accept(peer, [&](auto ec) {
+      ASSERT_FALSE(ec);
+      peer.async_read_some(asio::buffer(bytes), [&](auto error, auto) {
+        EXPECT_FALSE(error);
+        received = true;
+      });
+    });
+    io.run_for(std::chrono::seconds(3));
+    EXPECT_TRUE(received);  // HTTP request or TLS ClientHello, deliberately unanswered
+    const auto started = std::chrono::steady_clock::now();
+    cancel = true;
+    EXPECT_EQ(request.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    EXPECT_NE(request.get().find("cancelled"), std::string::npos);
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+  }
+}
+
+TEST(WebServer, PollingProviderStopInterruptsAnInFlightHttpRead) {
+  namespace asio = boost::asio;
+  using tcp = asio::ip::tcp;
+  asio::io_context io;
+  tcp::acceptor listener(io, {asio::ip::make_address("127.0.0.1"), 0});
+  tcp::socket peer(io);
+  openport::providers::MassiveProvider provider(
+      {.api_key = "test",
+       .base_url = "http://127.0.0.1:" + std::to_string(listener.local_endpoint().port())});
+  openport::md::EventQueue queue;
+  bool received = false;
+  char bytes[4096];
+  listener.async_accept(peer, [&](auto ec) {
+    ASSERT_FALSE(ec);
+    peer.async_read_some(asio::buffer(bytes), [&](auto error, auto) {
+      EXPECT_FALSE(error);
+      received = true;
+    });
+  });
+  provider.start({{"SPY"}}, queue);
+  io.run_for(std::chrono::seconds(3));
+  EXPECT_TRUE(received);
+  const auto started = std::chrono::steady_clock::now();
+  provider.stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+}
+}  // namespace

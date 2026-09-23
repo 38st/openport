@@ -4,6 +4,7 @@ add_executable(openport_tests
   pricing/binomial_test.cpp
   md/time_test.cpp
   md/contract_test.cpp
+  md/event_queue_test.cpp
   analytics/forward_test.cpp
   analytics/chain_analytics_test.cpp
 )
@@ -16,12 +17,16 @@ if(OPENPORT_BUILD_PROVIDERS)
   target_sources(openport_tests PRIVATE
     net/http_test.cpp
     providers/cboe_test.cpp
+    providers/runtime_test.cpp
+    providers/cli_test.cpp
     providers/massive_test.cpp
     providers/thetadata_test.cpp
     server/api_test.cpp
     server/web_policy_test.cpp
     server/engine_test.cpp
   )
+  target_compile_definitions(openport_tests PRIVATE OPENPORT_APPS_DIR="${PROJECT_BINARY_DIR}/apps")
+  add_dependencies(openport_tests openportd openport-probe)
   target_link_libraries(openport_tests PRIVATE openport::providers openport::server
                         nlohmann_json::nlohmann_json)
   if(OPENPORT_WITH_DATABENTO)

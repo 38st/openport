@@ -156,3 +156,35 @@ TEST(Cboe, UpdatesKnownContractsOutsideTheWindowAndRetiresOnlyTheirUnderlying) {
 }
 
 }  // namespace
+
+namespace {
+TEST(Cboe, FrozenAfterHoursQuotesUseLastTradeTimeRatherThanAdvancingPublicationTime) {
+  // Publication is UTC; last_trade_time is New York local (EDT here).
+  const auto chain = providers::parse_cboe_chain(R"({
+    "timestamp":"2026-09-22 20:34:59",
+    "data":{"options":[{"option":"SPXW260925C07800000","bid":41,"ask":42,"iv":0.2}],
+            "symbol":"^SPX","current_price":7777,"last_trade_time":"2026-09-22 16:14:59"}
+  })");
+  providers::CboeDelayedProvider provider;
+  Collector sink;
+  provider.publish_chain(chain, {}, sink);
+  const auto expected = *md::parse_datetime("2026-09-22 16:14:59", md::Zone::NewYork);
+  EXPECT_EQ(sink.all<md::UnderlyingQuote>().at(0).ts, expected);
+  EXPECT_EQ(sink.all<md::OptionQuote>().at(0).ts, expected);
+  EXPECT_EQ(sink.all<md::VendorGreeks>().at(0).ts, expected);
+}
+
+TEST(Cboe, LastTradeTimeCannotAdvanceDelayedSnapshotAndInvalidTimeFallsBack) {
+  for (const auto* last_trade : {"2026-09-22 16:34:59", "invalid", ""}) {
+    const auto chain = providers::parse_cboe_chain(
+        std::string(
+            R"({"timestamp":"2026-09-22 20:34:59","data":{"options":[],"symbol":"SPY","last_trade_time":")") +
+        last_trade + R"("}})");
+    providers::CboeDelayedProvider provider;
+    Collector sink;
+    provider.publish_chain(chain, {}, sink);
+    EXPECT_EQ(sink.all<md::UnderlyingQuote>().at(0).ts,
+              *md::parse_datetime("2026-09-22 20:19:59", md::Zone::Utc));
+  }
+}
+}  // namespace

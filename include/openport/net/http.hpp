@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <memory>
@@ -47,6 +48,12 @@ class HttpClient {
   /// statuses are returned, not thrown.
   virtual HttpResponse get(std::string_view url, const Headers& headers = {},
                            std::chrono::seconds timeout = std::chrono::seconds(30));
+
+  /// Cancellation is checked every 25 ms during connect, TLS handshake and I/O.
+  /// The flag must outlive this blocking call.
+  /// System DNS resolution (getaddrinfo) can still block until the OS returns.
+  HttpResponse get(std::string_view url, const Headers& headers, std::chrono::seconds timeout,
+                   const std::atomic<bool>* cancellation);
 
  private:
   struct Impl;

@@ -1,6 +1,7 @@
 #include "openport/server/engine.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 #include <type_traits>
 
 namespace openport::server {
@@ -10,28 +11,39 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
   status_.provider = std::string(provider.name());
   status_.capabilities = provider.capabilities();
   for (const auto& symbol : subscription_.underlyings) status_.underlyings.try_emplace(symbol);
+  health_ = status_.underlyings;
 }
 
 Engine::~Engine() { stop(); }
 
 void Engine::start() {
-  stop();
+  if (started_)
+    throw std::logic_error("Engine::start may be called only once; construct a new Engine");
+  started_ = true;
   stopping_ = false;
   {
     const std::lock_guard lock(mutex_);
     status_.started = options_.clock();
-    for (auto& [symbol, health] : status_.underlyings) health = {};
   }
-  provider_.start(subscription_, queue_);
-  thread_ = std::thread(&Engine::run, this);
+  try {
+    provider_started_ = true;
+    provider_.start(subscription_, queue_);
+    thread_ = options_.launch([this] { run(); });
+  } catch (...) {
+    // Even a partially started provider must stop before the queue can be destroyed.
+    provider_.stop();
+    provider_started_ = false;
+    throw;
+  }
 }
 
 void Engine::stop() {
   stopping_ = true;
-  if (thread_.joinable()) {
-    thread_.join();
+  if (provider_started_) {
     provider_.stop();
+    provider_started_ = false;
   }
+  if (thread_.joinable()) thread_.join();
 }
 
 std::vector<std::string> Engine::symbols() const {
@@ -50,6 +62,11 @@ std::shared_ptr<const analytics::UnderlyingMetrics> Engine::metrics(const std::s
 EngineStatus Engine::status() const {
   const std::lock_guard lock(mutex_);
   EngineStatus out = status_;
+  const auto queue = queue_.status();
+  out.queue_depth = queue.depth;
+  out.coalesced_events = queue.coalesced;
+  out.dropped_events = queue.dropped;
+  out.overloaded = queue.overloaded;
   const auto now = options_.clock();
   const auto stale_after =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -91,13 +108,14 @@ EngineStatus Engine::status() const {
   return out;
 }
 
-void Engine::update_health(const md::Event& event) {
-  const auto received = options_.clock();
-  const std::lock_guard lock(mutex_);
+void Engine::update_health(const md::Event& event, md::Timestamp received) {
   if (const auto* feed = std::get_if<md::ProviderStatus>(&event)) {
     auto update = [&](UnderlyingHealth& health) {
-      health.state = feed->state;
-      health.message = feed->message;
+      if (health.state != feed->state || health.message != feed->message) {
+        health_changed_ = true;
+        health.state = feed->state;
+        health.message = feed->message;
+      }
       if (feed->state == md::FeedState::Live || feed->state == md::FeedState::Delayed) {
         health.last_success = received;
       } else if (feed->state == md::FeedState::Error) {
@@ -106,27 +124,37 @@ void Engine::update_health(const md::Event& event) {
       }
     };
     if (feed->underlying.empty()) {
-      for (auto& [symbol, health] : status_.underlyings) update(health);
+      for (auto& [symbol, health] : health_) update(health);
     } else {
-      update(status_.underlyings[feed->underlying]);
+      const auto [it, inserted] = health_.try_emplace(feed->underlying);
+      health_changed_ = health_changed_ || inserted;
+      update(it->second);
     }
-    status_.feed_updated = received;
+    feed_updated_ = received;
+    health_dirty_ = true;
   } else if (status_.capabilities.poll_interval == std::chrono::seconds(0)) {
     // Streaming feeds prove liveness with quotes. Snapshot feeds report success
     // after the whole poll, including unchanged or empty chains.
-    std::string symbol;
+    const std::string* symbol = nullptr;
     if (const auto* quote = std::get_if<md::OptionQuote>(&event)) {
-      if (const auto* option = book_.option(quote->id)) symbol = option->contract.underlying;
+      if (const auto* option = book_.option(quote->id)) symbol = &option->contract.underlying;
     } else if (const auto* spot = std::get_if<md::UnderlyingQuote>(&event)) {
-      symbol = spot->symbol;
+      symbol = &spot->symbol;
     }
-    if (!symbol.empty()) {
-      auto& health = status_.underlyings[symbol];
-      health.state =
+    if (symbol) {
+      auto it = health_.find(*symbol);
+      if (it == health_.end()) return;
+      auto& health = it->second;
+      const auto state =
           status_.capabilities.delay.count() > 0 ? md::FeedState::Delayed : md::FeedState::Live;
-      health.message = status_.provider + " " + symbol + ": receiving quotes";
+      if (health.state != state) {
+        health_changed_ = true;
+        health.state = state;
+        health.message = status_.provider + " " + *symbol + ": receiving quotes";
+      }
       health.last_success = received;
-      status_.feed_updated = received;
+      feed_updated_ = received;
+      health_dirty_ = true;
     }
   }
 }
@@ -135,14 +163,40 @@ void Engine::run() {
   std::vector<md::Event> batch;
   auto last_analytics = std::chrono::steady_clock::now();
   last_rate_time_ = last_analytics;
+  auto last_health = options_.monotonic_clock();
+  constexpr auto kHealthInterval = std::chrono::milliseconds(100);
 
   while (!stopping_) {
     batch.clear();
     queue_.drain(batch, std::chrono::milliseconds(50));
+    const auto received = options_.clock();
     for (const md::Event& event : batch) {
       book_.apply(event);
       ++events_;
-      update_health(event);
+      update_health(event, received);
+    }
+    const auto health_now = options_.monotonic_clock();
+    const bool publish_health =
+        health_dirty_ && (health_changed_ || health_now - last_health >= kHealthInterval);
+    if (!batch.empty() || publish_health) {
+      const std::lock_guard lock(mutex_);
+      status_.events = events_;
+      if (publish_health) {
+        if (health_changed_) {
+          status_.underlyings = health_;
+        } else {
+          // Quote receipt changes only timestamps; reuse published nodes and strings.
+          for (const auto& [symbol, health] : health_) {
+            auto& published = status_.underlyings.at(symbol);
+            published.last_success = health.last_success;
+            published.last_error_time = health.last_error_time;
+          }
+        }
+        status_.feed_updated = feed_updated_;
+        last_health = health_now;
+        health_dirty_ = false;
+        health_changed_ = false;
+      }
     }
 
     const auto now = std::chrono::steady_clock::now();

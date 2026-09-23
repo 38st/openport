@@ -80,6 +80,8 @@ class DatabentoMapper {
 };
 
 /// Real-time OPRA options data from Databento, using your own API key.
+/// Parent subscriptions stream the whole chain upstream. Nonzero max_expiries
+/// or strike_window are rejected because they cannot reduce upstream traffic.
 ///
 /// Definitions and open interest are replayed from the start of the trading day so
 /// the whole chain arrives on connect; quotes (consolidated BBO, one-second samples

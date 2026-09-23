@@ -123,11 +123,12 @@ md::Capabilities ThetaDataProvider::capabilities() const noexcept {
 
 std::vector<ThetaRow> ThetaDataProvider::fetch(net::HttpClient& http, std::string_view endpoint,
                                                const std::string& root) {
+  check_cancelled();
   const std::string url = options_.base_url + "/v3/option/snapshot/" + std::string(endpoint) +
                           "?symbol=" + root + "&expiration=*&format=ndjson";
   net::HttpResponse response;
   try {
-    response = http.get(url, {}, options_.timeout);
+    response = http.get(url, {}, options_.timeout, cancellation());
   } catch (const std::exception& error) {
     throw std::runtime_error(std::string(error.what()) +
                              " (is Theta Terminal running? java -jar ThetaTerminalv3.jar)");
@@ -155,6 +156,7 @@ std::string ThetaDataProvider::poll(net::HttpClient& http, const std::string& un
     try {
       for (ThetaRow& row : fetch(http, endpoint, root)) rows.push_back(std::move(row));
     } catch (const std::exception& error) {
+      check_cancelled();
       degraded += "; degraded " + root + " " + std::string(endpoint) + ": " + error.what();
     }
   };
@@ -165,6 +167,7 @@ std::string ThetaDataProvider::poll(net::HttpClient& http, const std::string& un
       auxiliary("open_interest", root, open_interest);
     }
   }
+  check_cancelled();
   publish_chain(underlying, quotes, implied_vols, open_interest, subscription, sink);
 
   char summary[160];
@@ -216,6 +219,7 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
     md::OptionContract contract = contract_of(row);
     const std::string symbol = contract.osi_symbol();
     if (!publisher_.known(symbol) && !filter.admits(contract)) continue;
+    check_cancelled();
     const md::InstrumentId id = publisher_.define(symbol, std::move(contract), sink);
     seen.insert(id);
     ids.emplace(key_of(row), id);

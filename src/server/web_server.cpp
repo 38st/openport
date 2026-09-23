@@ -1,6 +1,7 @@
 #include "openport/server/web_server.hpp"
 
 #include <boost/asio/dispatch.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -9,7 +10,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 #include <charconv>
-#include <deque>
+#include <future>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -55,7 +56,7 @@ StaticFile resolve_static_file(const std::filesystem::path& root, std::string_vi
   std::error_code ec;
   const auto canonical_root = std::filesystem::canonical(root, ec);
   if (ec || !std::filesystem::is_directory(canonical_root, ec)) {
-    return {404, {}, "web root is unavailable"};
+    return {404, {}, "web terminal not built: run `npm run build` in web/, or pass --web-root"};
   }
   auto resolve = [&](const std::filesystem::path& path) -> StaticFile {
     const auto file = std::filesystem::weakly_canonical(canonical_root / path, ec);
@@ -78,13 +79,12 @@ StaticFile resolve_static_file(const std::filesystem::path& root, std::string_vi
   return resolve("index.html");
 }
 
-bool websocket_origin_allowed(std::optional<std::string_view> origin, std::string_view host) {
-  if (!origin) return true;
-  const auto scheme = origin->find("://");
-  if (scheme == std::string_view::npos) return false;
-  const auto protocol = origin->substr(0, scheme);
-  if (protocol != "http" && protocol != "https") return false;
-  const auto authority = origin->substr(scheme + 3);
+std::optional<std::string> normalize_origin(std::string_view origin) {
+  const auto scheme = origin.find("://");
+  if (scheme == std::string_view::npos) return std::nullopt;
+  const auto protocol = origin.substr(0, scheme);
+  if (protocol != "http" && protocol != "https") return std::nullopt;
+  const auto authority = origin.substr(scheme + 3);
   auto normalize = [protocol](std::string_view value) -> std::optional<std::string> {
     if (value.empty() || value.find_first_of("/@\\?#% \t\r\n") != std::string_view::npos ||
         value.find('\0') != std::string_view::npos)
@@ -121,8 +121,22 @@ bool websocket_origin_allowed(std::optional<std::string_view> origin, std::strin
     return normalized + ":" + std::to_string(port);
   };
   const auto source = normalize(authority);
-  const auto destination = normalize(host);
-  return source && destination && *source == *destination;
+  if (!source) return std::nullopt;
+  return std::string(protocol) + "://" + *source;
+}
+
+bool websocket_origin_allowed(std::optional<std::string_view> origin, std::string_view host,
+                              const std::vector<std::string>& allowed_origins) {
+  if (!origin) return true;
+  const auto source = normalize_origin(*origin);
+  if (!source) return false;
+  const auto scheme = source->substr(0, source->find("://") + 3);
+  const auto destination = normalize_origin(scheme + std::string(host));
+  if (source == destination) return true;
+  for (const auto& allowed : allowed_origins) {
+    if (source == normalize_origin(allowed)) return true;
+  }
+  return false;
 }
 
 std::unique_ptr<WebSocketSlots::Lease> WebSocketSlots::acquire() {
@@ -162,6 +176,47 @@ std::string_view mime_type(std::string_view path) {
   return "application/octet-stream";
 }
 
+class Session {
+ public:
+  virtual ~Session() = default;
+  virtual std::future<void> stop() = 0;
+};
+
+class Sessions {
+ public:
+  bool add(const std::shared_ptr<Session>& session) {
+    const std::lock_guard lock(mutex_);
+    if (stopping_) return false;
+    std::erase_if(sessions_, [](const auto& weak) { return weak.expired(); });
+    sessions_.push_back(session);
+    return true;
+  }
+
+  void stop(asio::io_context* local_io = nullptr) {
+    std::vector<std::shared_ptr<Session>> active;
+    {
+      const std::lock_guard lock(mutex_);
+      stopping_ = true;
+      for (auto& weak : sessions_)
+        if (auto session = weak.lock()) active.push_back(session);
+    }
+    std::vector<std::future<void>> closed;
+    for (auto& session : active) closed.push_back(session->stop());
+    for (auto& done : closed) {
+      if (local_io) {
+        while (done.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+          local_io->poll_one();
+      }
+      done.get();
+    }
+  }
+
+ private:
+  std::mutex mutex_;
+  std::vector<std::weak_ptr<Session>> sessions_;
+  bool stopping_ = false;
+};
+
 class WsSession;
 
 /// Tracks live WebSocket sessions and fans messages out to them.
@@ -180,7 +235,7 @@ class Hub {
   std::vector<std::weak_ptr<WsSession>> sessions_;
 };
 
-class WsSession : public std::enable_shared_from_this<WsSession> {
+class WsSession : public Session, public std::enable_shared_from_this<WsSession> {
  public:
   WsSession(tcp::socket&& socket, Hub& hub, std::unique_ptr<WebSocketSlots::Lease> slot)
       : ws_(std::move(socket)), hub_(hub), slot_(std::move(slot)) {
@@ -192,23 +247,35 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
     ws_.async_accept(request, beast::bind_front_handler(&WsSession::on_accept, shared_from_this()));
   }
 
+  std::future<void> stop() override {
+    auto done = std::make_shared<std::promise<void>>();
+    auto future = done->get_future();
+    asio::post(ws_.get_executor(), [self = shared_from_this(), done] {
+      self->open_ = false;
+      self->stopped_ = true;
+      beast::error_code ignored;
+      auto& socket = beast::get_lowest_layer(self->ws_).socket();
+      socket.cancel(ignored);
+      socket.shutdown(tcp::socket::shutdown_both, ignored);
+      socket.close(ignored);
+      // The active write owns its buffer until its cancellation handler runs.
+      done->set_value();
+    });
+    return future;
+  }
+
   void send(std::shared_ptr<const std::string> message) {
     asio::post(ws_.get_executor(), [self = shared_from_this(), message = std::move(message)] {
       if (!self->open_) return;
-      // Keep at most one message waiting behind the one being written: a slow client
-      // gets the newest state, not an ever-growing queue.
-      if (self->queue_.size() >= 2) {
-        self->queue_.back() = message;
-        return;
-      }
-      self->queue_.push_back(message);
-      if (self->queue_.size() == 1) self->write_next();
+      const bool idle = self->queue_.empty();
+      self->queue_.push(std::move(message));
+      if (idle) self->write_next();
     });
   }
 
  private:
   void on_accept(beast::error_code ec) {
-    if (ec) return;
+    if (ec || stopped_) return;
     open_ = true;
     hub_.add(weak_from_this());
     read();
@@ -219,7 +286,7 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   }
 
   void on_read(beast::error_code ec, std::size_t) {
-    if (ec) {
+    if (ec || stopped_) {
       open_ = false;
       return;
     }
@@ -234,12 +301,12 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   }
 
   void on_write(beast::error_code ec, std::size_t) {
-    if (ec) {
+    if (ec || stopped_) {
       open_ = false;
       queue_.clear();
       return;
     }
-    queue_.pop_front();
+    queue_.pop();
     if (!queue_.empty()) write_next();
   }
 
@@ -247,7 +314,8 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   beast::flat_buffer buffer_;
   Hub& hub_;
   std::unique_ptr<WebSocketSlots::Lease> slot_;
-  std::deque<std::shared_ptr<const std::string>> queue_;
+  TickQueue queue_;
+  bool stopped_ = false;
   bool open_ = false;
 };
 
@@ -266,19 +334,34 @@ struct Shared {
   ApiHandler api;
   Hub hub;
   WebSocketSlots slots;
+  Sessions sessions;
+  std::vector<std::string> allowed_origins;
 };
 
-class HttpSession : public std::enable_shared_from_this<HttpSession> {
+class HttpSession : public Session, public std::enable_shared_from_this<HttpSession> {
  public:
   HttpSession(tcp::socket&& socket, Shared& shared) : stream_(std::move(socket)), shared_(shared) {}
 
   void run() {
+    if (!shared_.sessions.add(shared_from_this())) return;
     asio::dispatch(stream_.get_executor(),
                    beast::bind_front_handler(&HttpSession::read, shared_from_this()));
   }
 
+  std::future<void> stop() override {
+    auto done = std::make_shared<std::promise<void>>();
+    auto future = done->get_future();
+    asio::post(stream_.get_executor(), [self = shared_from_this(), done] {
+      self->stopped_ = true;
+      self->close();
+      done->set_value();
+    });
+    return future;
+  }
+
  private:
   void read() {
+    if (stopped_) return;
     parser_.emplace();
     parser_->body_limit(64 * 1024);
     stream_.expires_after(std::chrono::seconds(60));
@@ -287,7 +370,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
   }
 
   void on_read(beast::error_code ec, std::size_t) {
-    if (ec == http::error::end_of_stream) return close();
+    if (stopped_ || ec == http::error::end_of_stream) return close();
     if (ec) return;
     http::request<http::string_body> request = parser_->release();
 
@@ -298,7 +381,8 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
                                       ? std::nullopt
                                       : std::optional<std::string_view>(origin->value());
         if (request.count(http::field::origin) > 1 || request.count(http::field::host) != 1 ||
-            !websocket_origin_allowed(origin_value, request[http::field::host])) {
+            !websocket_origin_allowed(origin_value, request[http::field::host],
+                                      shared_.allowed_origins)) {
           return reject_upgrade(request, http::status::forbidden,
                                 "WebSocket Origin does not match Host");
         }
@@ -307,8 +391,10 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
           return reject_upgrade(request, http::status::service_unavailable,
                                 "WebSocket session limit reached");
         stream_.expires_never();
-        std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot))
-            ->accept(std::move(request));
+        auto session =
+            std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot));
+        // During shutdown an upgrade must not escape the registry's close barrier.
+        if (shared_.sessions.add(session)) session->accept(std::move(request));
       }
       return;
     }
@@ -402,13 +488,16 @@ class HttpSession : public std::enable_shared_from_this<HttpSession> {
 
   void close() {
     beast::error_code ignored;
-    stream_.socket().shutdown(tcp::socket::shutdown_send, ignored);
+    stream_.socket().cancel(ignored);
+    stream_.socket().shutdown(tcp::socket::shutdown_both, ignored);
+    stream_.socket().close(ignored);
   }
 
   beast::tcp_stream stream_;
   beast::flat_buffer buffer_;
   std::optional<http::request_parser<http::string_body>> parser_;
   Shared& shared_;
+  bool stopped_ = false;
 };
 
 class Listener : public std::enable_shared_from_this<Listener> {
@@ -429,11 +518,15 @@ class Listener : public std::enable_shared_from_this<Listener> {
 
   [[nodiscard]] unsigned short port() const noexcept { return port_; }
 
-  void close() {
-    asio::post(acceptor_.get_executor(), [self = shared_from_this()] {
+  std::future<void> close() {
+    auto done = std::make_shared<std::promise<void>>();
+    auto future = done->get_future();
+    asio::post(acceptor_.get_executor(), [self = shared_from_this(), done] {
       beast::error_code ignored;
       self->acceptor_.close(ignored);
+      done->set_value();
     });
+    return future;
   }
 
  private:
@@ -460,13 +553,19 @@ struct WebServer::Impl {
   asio::io_context io;
   std::shared_ptr<Listener> listener;
   std::vector<std::thread> threads;
+  bool started = false;
+  std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work;
 };
 
 WebServer::WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
-                     ApiHandler api)
+                     ApiHandler api, std::vector<std::string> allowed_origins)
     : impl_(std::make_unique<Impl>()) {
   impl_->shared.web_root = std::move(web_root);
   impl_->shared.api = std::move(api);
+  for (const auto& origin : allowed_origins) {
+    if (!normalize_origin(origin)) throw std::invalid_argument("invalid allowed origin: " + origin);
+  }
+  impl_->shared.allowed_origins = std::move(allowed_origins);
   impl_->address = std::move(address);
   impl_->requested_port = port;
 }
@@ -474,20 +573,40 @@ WebServer::WebServer(std::string address, unsigned short port, std::filesystem::
 WebServer::~WebServer() { stop(); }
 
 void WebServer::start(int threads) {
+  if (impl_->started)
+    throw std::logic_error("WebServer::start may be called only once; construct a new WebServer");
+  impl_->started = true;
+  impl_->work.emplace(impl_->io.get_executor());
   const tcp::endpoint endpoint{asio::ip::make_address(impl_->address), impl_->requested_port};
   impl_->listener = std::make_shared<Listener>(impl_->io, endpoint, impl_->shared);
   impl_->listener->accept();
-  for (int i = 0; i < std::max(1, threads); ++i) {
-    impl_->threads.emplace_back([this] { impl_->io.run(); });
+  try {
+    for (int i = 0; i < std::max(1, threads); ++i) {
+      impl_->threads.emplace_back([this] { impl_->io.run(); });
+    }
+  } catch (...) {
+    stop();
+    throw;
   }
 }
 
 void WebServer::stop() {
-  if (impl_->threads.empty()) return;
-  if (impl_->listener) impl_->listener->close();
-  impl_->io.stop();
+  if (!impl_->listener) return;
+  auto closed = impl_->listener->close();
+  // A failed first thread launch still needs to execute the listener close.
+  if (impl_->threads.empty()) {
+    while (closed.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+      impl_->io.poll_one();
+  }
+  closed.get();
+  impl_->shared.sessions.stop(impl_->threads.empty() ? &impl_->io : nullptr);
+  // Let cancellation completions release sessions before the I/O threads exit.
+  impl_->work.reset();
+  if (impl_->threads.empty()) impl_->io.run();
   for (std::thread& thread : impl_->threads) thread.join();
   impl_->threads.clear();
+  impl_->io.stop();
+  impl_->listener.reset();
 }
 
 void WebServer::broadcast(std::string message) {

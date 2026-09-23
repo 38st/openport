@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "openport/providers/factory.hpp"
+#include "openport/providers/options.hpp"
 #include "openport/server/api.hpp"
 #include "openport/server/engine.hpp"
 #include "openport/server/web_server.hpp"
@@ -39,15 +40,19 @@ struct Settings {
   unsigned short port = 8080;
   std::filesystem::path web_root;
   int threads = 2;
+  std::vector<std::string> allowed_origins;
 };
 
 int usage(const char* error = nullptr) {
   if (error) std::fprintf(stderr, "openportd: %s\n\n", error);
-  std::fprintf(stderr,
-               "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
-               "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
-               "                 [--option KEY=VALUE]...\n\n"
-               "providers:");
+  std::fprintf(
+      stderr,
+      "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
+      "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
+      "                 [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
+      "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
+      "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
+      "providers:");
   for (auto name : providers::provider_names()) {
     std::fprintf(stderr, " %.*s", static_cast<int>(name.size()), name.data());
   }
@@ -93,7 +98,7 @@ std::filesystem::path find_web_root(const char* argv0) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
   Settings settings;
   settings.web_root = find_web_root(argv[0]);
   for (int i = 1; i < argc; ++i) {
@@ -109,13 +114,16 @@ int main(int argc, char** argv) {
     } else if (arg == "--address") {
       settings.address = value;
     } else if (arg == "--port") {
-      settings.port = static_cast<unsigned short>(std::stoi(value));
+      settings.port =
+          static_cast<unsigned short>(providers::parse_integer(value, "--port", 1, 65535));
+    } else if (arg == "--allowed-origin") {
+      settings.allowed_origins.push_back(value);
     } else if (arg == "--web-root") {
       settings.web_root = value;
     } else if (arg == "--expiries") {
-      settings.subscription.max_expiries = std::stoi(value);
+      settings.subscription.max_expiries = providers::parse_integer(value, "--expiries");
     } else if (arg == "--window") {
-      settings.subscription.strike_window = std::stod(value);
+      settings.subscription.strike_window = providers::parse_fraction(value, "--window");
     } else if (arg == "--poll-seconds") {
       settings.provider.options["poll_seconds"] = value;
     } else if (arg == "--option") {
@@ -129,26 +137,15 @@ int main(int argc, char** argv) {
   if (settings.subscription.underlyings.empty()) return usage("no symbols");
   settings.provider.api_key = env_key_for(settings.provider.name);
 
-  std::unique_ptr<md::Provider> provider;
-  try {
-    provider = providers::make_provider(settings.provider);
-  } catch (const std::exception& error) {
-    std::fprintf(stderr, "openportd: %s\n", error.what());
-    return 1;
-  }
+  providers::validate_subscription(settings.provider.name, settings.subscription);
+  auto provider = providers::make_provider(settings.provider);
 
   server::Engine engine(*provider, settings.subscription, {});
-  server::WebServer web(settings.address, settings.port, settings.web_root,
-                        [&engine](const server::ApiRequest& request) {
-                          return server::handle_api(request, engine);
-                        });
-  try {
-    web.start(settings.threads);
-  } catch (const std::exception& error) {
-    std::fprintf(stderr, "openportd: cannot listen on %s:%u: %s\n", settings.address.c_str(),
-                 settings.port, error.what());
-    return 1;
-  }
+  server::WebServer web(
+      settings.address, settings.port, settings.web_root,
+      [&engine](const server::ApiRequest& request) { return server::handle_api(request, engine); },
+      settings.allowed_origins);
+  web.start(settings.threads);
   engine.start();
 
   std::string symbols;
@@ -170,4 +167,16 @@ int main(int argc, char** argv) {
   web.stop();
   engine.stop();
   return 0;
+}
+
+int main(int argc, char** argv) {
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "openportd: %s\n", error.what());
+    return 2;
+  } catch (...) {
+    std::fprintf(stderr, "openportd: unknown startup failure\n");
+    return 2;
+  }
 }

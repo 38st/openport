@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -50,8 +51,7 @@ class SnapshotPublisher {
     double bid_size = -1.0;
     double ask_size = -1.0;
     double open_interest = -1.0;
-    double iv = -1.0;
-    double delta = -2.0;
+    std::optional<md::VendorGreeks> greeks;
   };
 
   std::unordered_map<std::string, md::InstrumentId> ids_;
@@ -82,6 +82,8 @@ class ChainFilter {
 class PollingProvider : public md::Provider {
  public:
   void start(const md::Subscription& subscription, md::EventSink& sink) final;
+  /// Interrupts requests and joins promptly, except while system DNS is blocked
+  /// in getaddrinfo (see HttpClient::get).
   void stop() final;
 
   /// Runs one poll and reports its underlying's outcome. Call without the background
@@ -97,6 +99,9 @@ class PollingProvider : public md::Provider {
   /// Returns a one-line summary for the status message.
   virtual std::string poll(net::HttpClient& http, const std::string& underlying,
                            const md::Subscription& subscription, md::EventSink& sink) = 0;
+
+  void check_cancelled() const;
+  [[nodiscard]] const std::atomic<bool>* cancellation() const { return &stopping_; }
 
   /// Status to report after a successful poll: Live or Delayed.
   [[nodiscard]] virtual md::FeedState healthy_state() const noexcept = 0;

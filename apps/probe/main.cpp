@@ -7,9 +7,9 @@
 //   openport-probe cboe SPX --analyze     # also run OpenPort's analytics on the snapshot
 
 #include <algorithm>
-#include <cmath>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -22,6 +22,8 @@
 #include "openport/analytics/chain_book.hpp"
 #include "openport/md/event_queue.hpp"
 #include "openport/providers/factory.hpp"
+#include "openport/providers/options.hpp"
+#include "state.hpp"
 
 namespace {
 
@@ -34,13 +36,19 @@ struct Overloaded : Ts... {
 
 struct Chain {
   double price = 0.0;
-  std::map<md::Date, std::map<double, std::pair<md::InstrumentId, md::InstrumentId>>> expiries;
+  std::map<probe::ExpiryKey, std::map<double, std::pair<md::InstrumentId, md::InstrumentId>>>
+      expiries;
 };
 
 int usage() {
-  std::fprintf(stderr,
-               "usage: openport-probe <provider> <underlying>... [--expiries N] [--window F] "
-               "[--seconds S] [--analyze]\nproviders:");
+  std::fprintf(
+      stderr,
+      "usage: openport-probe <provider> <underlying>... [--expiries N] [--window F] "
+      "[--seconds S] [--quotes N] [--analyze]\n"
+      "streaming: definitions and N quotes per underlying (default 100), else timeout failure\n"
+      "polling: one complete snapshot per underlying\n"
+      "databento: --expiries and --window must be 0 (whole-chain upstream "
+      "subscription)\nproviders:");
   for (auto name : providers::provider_names()) {
     std::fprintf(stderr, " %.*s", static_cast<int>(name.size()), name.data());
   }
@@ -61,8 +69,8 @@ void print_analytics(const analytics::ChainBook& book) {
     const analytics::UnderlyingMetrics m = analytics::analyze(underlying, book, as_of);
     std::printf("\n%s analytics: %d options priced in %.1f ms (as of %s)\n", symbol.c_str(),
                 m.options_priced, m.compute_ms, md::format_timestamp(as_of).c_str());
-    std::printf("  %-10s %7s %10s %9s %7s %9s %12s %8s\n", "expiry", "days", "forward", "rate",
-                "atm iv", "vs vendor", "gex $M/1%", "strikes");
+    std::printf("  %-10s %-2s %7s %10s %9s %7s %9s %12s %8s\n", "expiry", "", "days", "forward",
+                "rate", "atm iv", "vs vendor", "gex $M/1%", "strikes");
     std::vector<double> all_diffs;
     int shown = 0;
     for (const auto& slice : m.slices) {
@@ -79,19 +87,21 @@ void print_analytics(const analytics::ChainBook& book) {
       const double rate = -std::log(slice.forward.discount) / slice.years * 100.0;
       if (shown++ < 12) {
         // '*' marks a rate borrowed from the longer expiries rather than fitted to this one.
-        std::printf("  %-10s %7.2f %10.2f %6.2f%%%c %6.2f%% %8.3fvp %12.1f %8zu\n",
-                    md::format_date(slice.expiry).c_str(), slice.years * 365.0,
-                    slice.forward.forward, rate, slice.forward.fitted_discount ? ' ' : '*',
-                    slice.atm_iv * 100.0,
+        std::printf("  %-10s %-2s %7.2f %10.2f %6.2f%%%c %6.2f%% %8.3fvp %12.1f %8zu\n",
+                    md::format_date(slice.expiry).c_str(),
+                    probe::settlement_label(md::conventions_for_root(slice.root).settlement),
+                    slice.years * 365.0, slice.forward.forward, rate,
+                    slice.forward.fitted_discount ? ' ' : '*', slice.atm_iv * 100.0,
                     diffs.empty() ? std::nan("") : diffs[diffs.size() / 2], slice.gex / 1e6,
                     slice.strikes.size());
       }
     }
     std::sort(all_diffs.begin(), all_diffs.end());
     if (!all_diffs.empty()) {
-      std::printf("  our IV vs vendor IV over %zu out-of-the-money options: median %.3f, p90 %.3f vol pts\n",
-                  all_diffs.size(), all_diffs[all_diffs.size() / 2],
-                  all_diffs[all_diffs.size() * 9 / 10]);
+      std::printf(
+          "  our IV vs vendor IV over %zu out-of-the-money options: median %.3f, p90 %.3f vol "
+          "pts\n",
+          all_diffs.size(), all_diffs[all_diffs.size() / 2], all_diffs[all_diffs.size() * 9 / 10]);
     }
     std::printf("  exposure: GEX %.1f $M per 1%%, VEX %.1f $M per vol pt, gamma flip %.2f, "
                 "call wall %.0f, put wall %.0f\n",
@@ -102,37 +112,38 @@ void print_analytics(const analytics::ChainBook& book) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run(int argc, char** argv) {
   if (argc < 3) return usage();
   md::ProviderConfig config{argv[1], env_key_for(argv[1]), {}};
   md::Subscription subscription;
   int seconds = 60;
   bool analyze = false;
+  int minimum_quotes = 100;
   for (int i = 2; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--analyze") {
       analyze = true;
     } else if (arg == "--expiries" && i + 1 < argc) {
-      subscription.max_expiries = std::atoi(argv[++i]);
+      subscription.max_expiries = providers::parse_integer(argv[++i], arg, 0);
     } else if (arg == "--window" && i + 1 < argc) {
-      subscription.strike_window = std::atof(argv[++i]);
+      subscription.strike_window = providers::parse_fraction(argv[++i], arg);
+    } else if (arg == "--quotes" && i + 1 < argc) {
+      minimum_quotes = providers::parse_integer(argv[++i], arg, 1);
     } else if (arg == "--seconds" && i + 1 < argc) {
-      seconds = std::atoi(argv[++i]);
-    } else if (arg.starts_with("--")) {
-      return usage();
+      seconds = providers::parse_integer(argv[++i], arg, 1);
+    } else if (arg.starts_with("-")) {
+      throw std::invalid_argument("unknown option or missing value: " + arg);
     } else {
-      subscription.underlyings.push_back(arg);
+      auto symbol = arg;
+      for (char& c : symbol) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      subscription.underlyings.push_back(std::move(symbol));
     }
   }
   if (subscription.underlyings.empty()) return usage();
 
-  std::unique_ptr<md::Provider> provider;
-  try {
-    provider = providers::make_provider(config);
-  } catch (const std::exception& error) {
-    std::fprintf(stderr, "openport-probe: %s\n", error.what());
-    return 1;
-  }
+  providers::validate_subscription(config.name, subscription);
+  auto provider = providers::make_provider(config);
+
   const md::Capabilities caps = provider->capabilities();
   std::printf("provider  %.*s (%s%s, trades %s, open interest %s, vendor greeks %s)\n",
               static_cast<int>(provider->name().size()), provider->name().data(),
@@ -143,6 +154,11 @@ int main(int argc, char** argv) {
 
   md::EventQueue queue;
   const auto started = std::chrono::steady_clock::now();
+  // Stop while the queue is still alive, including exceptions during startup/output.
+  struct StopProvider {
+    md::Provider& provider;
+    ~StopProvider() { provider.stop(); }
+  } stop_provider{*provider};
   provider->start(subscription, queue);
 
   std::unordered_map<md::InstrumentId, md::OptionContract> contracts;
@@ -150,17 +166,18 @@ int main(int argc, char** argv) {
   std::unordered_map<md::InstrumentId, md::VendorGreeks> greeks;
   std::map<std::string, md::UnderlyingQuote> underlyings;
   std::map<std::string, std::size_t> counts;
-  std::size_t snapshots = 0;
+  probe::Readiness readiness(subscription, caps.poll_interval.count() == 0,
+                             static_cast<std::size_t>(minimum_quotes));
   bool failed = false;
 
   analytics::ChainBook book;
   std::vector<md::Event> batch;
   const auto deadline = started + std::chrono::seconds(seconds);
-  while (std::chrono::steady_clock::now() < deadline &&
-         snapshots < subscription.underlyings.size() && !failed) {
+  while (std::chrono::steady_clock::now() < deadline && !readiness.all_ready() && !failed) {
     batch.clear();
     queue.drain(batch, std::chrono::milliseconds(200));
     for (md::Event& event : batch) {
+      readiness.apply(event);
       book.apply(event);
       std::visit(Overloaded{
                      [&](md::ContractDefinition& e) {
@@ -182,9 +199,6 @@ int main(int argc, char** argv) {
                        std::printf("status    %.*s: %s\n",
                                    static_cast<int>(md::to_string(e.state).size()),
                                    md::to_string(e.state).data(), e.message.c_str());
-                       if (e.state == md::FeedState::Live || e.state == md::FeedState::Delayed) {
-                         ++snapshots;
-                       }
                        if (e.state == md::FeedState::Error) failed = true;
                      },
                  },
@@ -192,6 +206,11 @@ int main(int argc, char** argv) {
     }
   }
   provider->stop();
+  for (const auto& symbol : subscription.underlyings) {
+    if (!readiness.ready(symbol))
+      std::fprintf(stderr, "openport-probe: %s not ready before timeout or provider failure\n",
+                   symbol.c_str());
+  }
 
   std::printf("events   ");
   for (const auto& [name, count] : counts) std::printf(" %s=%zu", name.c_str(), count);
@@ -200,45 +219,58 @@ int main(int argc, char** argv) {
   // Group contracts into chains and print a few strikes around the money.
   std::map<std::string, Chain> chains;
   for (const auto& [id, contract] : contracts) {
-    auto& row = chains[contract.underlying].expiries[contract.expiry][contract.strike];
+    auto& row = chains[contract.underlying].expiries[probe::expiry_key(contract)][contract.strike];
     (contract.type == pricing::OptionType::Call ? row.first : row.second) = id + 1;  // 0 = none
   }
   for (auto& [symbol, chain] : chains) {
     const auto underlying = underlyings.find(symbol);
     chain.price = underlying != underlyings.end() ? underlying->second.last : 0.0;
-    std::printf("\n%s  last %.2f  as of %s  (%zu expiries, %s .. %s)\n", symbol.c_str(),
-                chain.price,
-                underlying != underlyings.end() ? md::format_timestamp(underlying->second.ts).c_str()
-                                                : "?",
-                chain.expiries.size(), md::format_date(chain.expiries.begin()->first).c_str(),
-                md::format_date(chain.expiries.rbegin()->first).c_str());
+    std::printf(
+        "\n%s  last %.2f  as of %s  (%zu expiries, %s .. %s)\n", symbol.c_str(), chain.price,
+        underlying != underlyings.end() ? md::format_timestamp(underlying->second.ts).c_str() : "?",
+        chain.expiries.size(), md::format_timestamp(chain.expiries.begin()->first.first).c_str(),
+        md::format_timestamp(chain.expiries.rbegin()->first.first).c_str());
 
-    const auto& [expiry, strikes] = *chain.expiries.begin();
-    std::printf("  nearest expiry %s\n", md::format_date(expiry).c_str());
-    std::printf("  %21s  %-8s %10s  %21s  %-8s\n", "call bid / ask", "vendor iv", "strike",
-                "put bid / ask", "vendor iv");
-    auto atm = strikes.lower_bound(chain.price);
-    for (int back = 0; back < 3 && atm != strikes.begin(); ++back) --atm;
-    int shown = 0;
-    for (auto it = atm; it != strikes.end() && shown < 7; ++it, ++shown) {
-      auto side = [&](md::InstrumentId slot, char* out, std::size_t size, char* iv_out) {
-        std::snprintf(out, size, "-");
-        std::snprintf(iv_out, 16, "-");
-        if (slot == 0) return;
-        const md::InstrumentId id = slot - 1;
-        if (auto q = quotes.find(id); q != quotes.end()) {
-          std::snprintf(out, size, "%9.2f / %-9.2f", q->second.bid, q->second.ask);
-        }
-        if (auto g = greeks.find(id); g != greeks.end()) {
-          std::snprintf(iv_out, 16, "%.2f%%", g->second.iv * 100.0);
-        }
-      };
-      char call[32], put[32], call_iv[16], put_iv[16];
-      side(it->second.first, call, sizeof call, call_iv);
-      side(it->second.second, put, sizeof put, put_iv);
-      std::printf("  %21s  %-8s %10.2f  %21s  %-8s\n", call, call_iv, it->first, put, put_iv);
+    for (const auto& [expiry, strikes] : chain.expiries) {
+      std::printf("  expiry %s %s settlement\n", md::format_timestamp(expiry.first).c_str(),
+                  probe::settlement_label(expiry.second));
+      std::printf("  %21s  %-8s %10s  %21s  %-8s\n", "call bid / ask", "vendor iv", "strike",
+                  "put bid / ask", "vendor iv");
+      auto atm = strikes.lower_bound(chain.price);
+      for (int back = 0; back < 3 && atm != strikes.begin(); ++back) --atm;
+      int shown = 0;
+      for (auto it = atm; it != strikes.end() && shown < 7; ++it, ++shown) {
+        auto side = [&](md::InstrumentId slot, char* out, std::size_t size, char* iv_out) {
+          std::snprintf(out, size, "-");
+          std::snprintf(iv_out, 16, "-");
+          if (slot == 0) return;
+          const md::InstrumentId id = slot - 1;
+          if (auto q = quotes.find(id); q != quotes.end()) {
+            std::snprintf(out, size, "%9.2f / %-9.2f", q->second.bid, q->second.ask);
+          }
+          if (auto g = greeks.find(id); g != greeks.end()) {
+            std::snprintf(iv_out, 16, "%.2f%%", g->second.iv * 100.0);
+          }
+        };
+        char call[32], put[32], call_iv[16], put_iv[16];
+        side(it->second.first, call, sizeof call, call_iv);
+        side(it->second.second, put, sizeof put, put_iv);
+        std::printf("  %21s  %-8s %10.2f  %21s  %-8s\n", call, call_iv, it->first, put, put_iv);
+      }
     }
   }
   if (analyze) print_analytics(book);
-  return failed || snapshots == 0 ? 1 : 0;
+  return failed || !readiness.all_ready() ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "openport-probe: %s\n", error.what());
+    return 2;
+  } catch (...) {
+    std::fprintf(stderr, "openport-probe: unknown startup failure\n");
+    return 2;
+  }
 }

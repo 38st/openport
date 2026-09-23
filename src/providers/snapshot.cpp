@@ -51,15 +51,16 @@ void SnapshotPublisher::open_interest(md::InstrumentId id, md::Timestamp ts, dou
 }
 
 void SnapshotPublisher::greeks(const md::VendorGreeks& greeks, md::EventSink& sink) {
-  if (!(greeks.iv > 0.0)) return;
+  if (!(greeks.iv > 0.0) && !std::isnan(greeks.iv)) return;
   Last& last = last_[greeks.id];
-  if (last.iv == greeks.iv && (last.delta == greeks.delta ||
-                               (std::isnan(last.delta) && std::isnan(greeks.delta)))) {
+  const auto equal = [](double a, double b) { return a == b || (std::isnan(a) && std::isnan(b)); };
+  if (last.greeks && equal(last.greeks->iv, greeks.iv) && equal(last.greeks->delta, greeks.delta) &&
+      equal(last.greeks->gamma, greeks.gamma) && equal(last.greeks->vega, greeks.vega) &&
+      equal(last.greeks->theta, greeks.theta) && equal(last.greeks->rho, greeks.rho)) {
     return;
   }
   sink.publish(greeks);
-  last.iv = greeks.iv;
-  last.delta = greeks.delta;
+  last.greeks = greeks;
 }
 
 ChainFilter::ChainFilter(const md::Subscription& subscription, md::Date today, double spot,
@@ -90,6 +91,10 @@ void PollingProvider::start(const md::Subscription& subscription, md::EventSink&
   stop();
   stopping_ = false;
   thread_ = std::thread(&PollingProvider::run, this, subscription, &sink);
+}
+
+void PollingProvider::check_cancelled() const {
+  if (stopping_.load()) throw std::runtime_error("poll cancelled");
 }
 
 void PollingProvider::stop() {
@@ -129,9 +134,12 @@ void PollingProvider::run(md::Subscription subscription, md::EventSink* sink) {
 void PollingProvider::poll_once(net::HttpClient& http, const std::string& underlying,
                                 const md::Subscription& subscription, md::EventSink& sink) {
   try {
+    check_cancelled();
     std::string summary = poll(http, underlying, subscription, sink);
+    check_cancelled();
     sink.publish(md::ProviderStatus{md::now(), healthy_state(), std::move(summary), underlying});
   } catch (const std::exception& error) {
+    if (stopping_.load()) return;
     sink.publish(md::ProviderStatus{md::now(), md::FeedState::Error,
                                     std::string(name()) + " " + underlying + ": " + error.what(),
                                     underlying});

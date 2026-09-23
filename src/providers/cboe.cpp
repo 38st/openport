@@ -83,6 +83,8 @@ CboeChain parse_cboe_chain(std::string_view json) {
   chain.price = number_or_zero(data, "current_price");
   chain.bid = number_or_zero(data, "bid");
   chain.ask = number_or_zero(data, "ask");
+  chain.last_trade_time =
+      md::parse_datetime(text_or_empty(data, "last_trade_time"), md::Zone::NewYork).value_or(0);
   return chain;
 }
 
@@ -101,7 +103,8 @@ md::Capabilities CboeDelayedProvider::capabilities() const noexcept {
 
 std::string CboeDelayedProvider::poll(net::HttpClient& http, const std::string& underlying,
                                       const md::Subscription& subscription, md::EventSink& sink) {
-  const net::HttpResponse response = http.get(cboe_chain_url(underlying), {}, options_.timeout);
+  const net::HttpResponse response =
+      http.get(cboe_chain_url(underlying), {}, options_.timeout, cancellation());
   if (response.status != 200) throw std::runtime_error("HTTP " + std::to_string(response.status));
 
   const auto parse_started = std::chrono::steady_clock::now();
@@ -109,6 +112,7 @@ std::string CboeDelayedProvider::poll(net::HttpClient& http, const std::string& 
   const auto parse_us = std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - parse_started)
                             .count();
+  check_cancelled();
   publish_chain(chain, subscription, sink);
 
   char summary[192];
@@ -124,8 +128,11 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
                                         const md::Subscription& subscription,
                                         md::EventSink& sink) {
   // Quotes describe the market 15 minutes before the snapshot was generated.
-  const md::Timestamp ts =
+  const md::Timestamp delayed =
       chain.as_of - std::chrono::duration_cast<std::chrono::nanoseconds>(kDelay).count();
+  // The publication timestamp advances after the market closes; quotes do not.
+  const md::Timestamp ts =
+      chain.last_trade_time > 0 ? std::min(delayed, chain.last_trade_time) : delayed;
 
   std::string underlying = chain.symbol;
   if (!underlying.empty() && underlying.front() == '^') underlying.erase(0, 1);
@@ -146,6 +153,7 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   std::set<md::InstrumentId> seen;
   for (auto& [option, contract] : contracts) {
     if (!publisher_.known(option->symbol) && !filter.admits(contract)) continue;
+    check_cancelled();
     const md::InstrumentId id = publisher_.define(option->symbol, std::move(contract), sink);
     seen.insert(id);
     publisher_.quote(id, ts, option->bid, option->ask, option->bid_size, option->ask_size, sink);

@@ -13,6 +13,7 @@
 #include <stdexcept>
 
 #include "openport/md/contract.hpp"
+#include "openport/providers/factory.hpp"
 
 namespace openport::providers {
 namespace {
@@ -208,6 +209,7 @@ md::Capabilities DatabentoProvider::capabilities() const noexcept {
 }
 
 void DatabentoProvider::start(const md::Subscription& subscription, md::EventSink& sink) {
+  validate_subscription("databento", subscription);
   stop();
   const std::lock_guard lock(mutex_);
   auto session = std::make_unique<Session>(sink, subscription.underlyings);

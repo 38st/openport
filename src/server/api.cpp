@@ -225,6 +225,10 @@ json status_json(const MetricsSource& source) {
        {{"events", s.events},
         {"events_per_second", sig(s.events_per_second, 4)},
         {"analytics_ms", sig(s.analytics_ms, 4)},
+        {"queue_depth", s.queue_depth},
+        {"coalesced_events", s.coalesced_events},
+        {"dropped_events", s.dropped_events},
+        {"overloaded", s.overloaded},
         {"contracts", s.contracts},
         {"nonstandard_contracts", s.nonstandard_contracts},
         {"uptime_seconds", s.started > 0 ? (md::now() - s.started) / md::kNanosPerSecond : 0}}},
@@ -411,6 +415,10 @@ std::string tick_message(const MetricsSource& source) {
               {"engine",
                {{"events_per_second", sig(s.events_per_second, 4)},
                 {"analytics_ms", sig(s.analytics_ms, 4)},
+                {"queue_depth", s.queue_depth},
+                {"coalesced_events", s.coalesced_events},
+                {"dropped_events", s.dropped_events},
+                {"overloaded", s.overloaded},
                 {"contracts", s.contracts},
                 {"nonstandard_contracts", s.nonstandard_contracts}}}}
       .dump();

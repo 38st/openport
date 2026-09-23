@@ -33,6 +33,10 @@ struct EngineStatus {
   md::FeedState feed_state = md::FeedState::Connecting;
   std::string feed_message;
   md::Timestamp feed_updated = 0;
+  std::size_t queue_depth = 0;
+  std::uint64_t coalesced_events = 0;
+  std::uint64_t dropped_events = 0;
+  bool overloaded = false;
   std::uint64_t events = 0;
   double events_per_second = 0.0;
   double analytics_ms = 0.0;  ///< time the last analytics pass took
@@ -64,6 +68,13 @@ class Engine final : public MetricsSource {
     std::chrono::milliseconds analytics_interval{1000};
     analytics::AnalyticsOptions analytics;
     std::function<md::Timestamp()> clock = md::now;
+    /// Monotonic cadence for publishing receipt timestamps, independent of wall-clock jumps.
+    std::function<std::chrono::steady_clock::time_point()> monotonic_clock =
+        std::chrono::steady_clock::now;
+    /// Injectable so failure to create the consumer thread can be tested.
+    std::function<std::thread(std::function<void()>)> launch = [](std::function<void()> run) {
+      return std::thread(std::move(run));
+    };
   };
 
   Engine(md::Provider& provider, md::Subscription subscription, Options options);
@@ -71,6 +82,7 @@ class Engine final : public MetricsSource {
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
 
+  /// One attempt per instance; construct a new Engine to restart.
   void start();
   void stop();
 
@@ -82,7 +94,7 @@ class Engine final : public MetricsSource {
  private:
   void run();
   void refresh_analytics();
-  void update_health(const md::Event& event);
+  void update_health(const md::Event& event, md::Timestamp received);
 
   md::Provider& provider_;
   md::Subscription subscription_;
@@ -92,12 +104,18 @@ class Engine final : public MetricsSource {
 
   std::thread thread_;
   std::atomic<bool> stopping_{false};
+  bool started_ = false;
+  bool provider_started_ = false;
 
   mutable std::mutex mutex_;  // guards everything below
   std::map<std::string, std::shared_ptr<const analytics::UnderlyingMetrics>> metrics_;
   EngineStatus status_;
 
-  // Engine thread only.
+  // Engine thread only: quote receipt never locks the reader-facing status mutex.
+  std::map<std::string, UnderlyingHealth> health_;
+  md::Timestamp feed_updated_ = 0;
+  bool health_dirty_ = false;
+  bool health_changed_ = false;
   std::map<std::string, std::uint64_t> analysed_versions_;
   std::uint64_t events_ = 0;
   std::uint64_t events_at_last_rate_ = 0;

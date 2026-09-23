@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "openport/server/api.hpp"
 
@@ -21,12 +22,13 @@ using ApiHandler = std::function<ApiResponse(const ApiRequest&)>;
 class WebServer {
  public:
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
-            ApiHandler api);
+            ApiHandler api, std::vector<std::string> allowed_origins = {});
   ~WebServer();
   WebServer(const WebServer&) = delete;
   WebServer& operator=(const WebServer&) = delete;
 
-  /// Binds, listens and starts `threads` I/O threads. Throws if the port is taken.
+  /// Binds once per instance. A second start throws, even after stop or failure.
+  /// Throws if the port is taken.
   void start(int threads = 1);
   void stop();
 

@@ -35,6 +35,7 @@ struct CboeChain {
   double bid = 0.0;
   double ask = 0.0;
   std::vector<CboeOption> options;
+  md::Timestamp last_trade_time = 0;  ///< New York market clock; caps frozen after-hours quotes
 };
 
 /// Parses cdn.cboe.com/api/global/delayed_quotes/options/<symbol>.json.

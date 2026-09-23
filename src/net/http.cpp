@@ -62,6 +62,7 @@ std::optional<Url> parse_url(std::string_view url) {
 
 struct HttpClient::Impl {
   asio::io_context io;
+  const std::atomic<bool>* cancellation = nullptr;
   ssl::context tls_context{ssl::context::tls_client};
   // Exactly one of these is open at a time.
   std::unique_ptr<TlsStream> tls;
@@ -95,12 +96,26 @@ struct HttpClient::Impl {
 
   // Beast only enforces tcp_stream timeouts on asynchronous operations, so every
   // step is started asynchronously and the io_context is run until it finishes.
+  void check_cancelled() const {
+    if (cancellation && cancellation->load()) throw std::runtime_error("HTTP request cancelled");
+  }
+
   template <typename Start>
   void run(Start&& start) {
+    check_cancelled();
     boost::system::error_code result = asio::error::would_block;
     std::forward<Start>(start)([&result](boost::system::error_code ec) { result = ec; });
     io.restart();
-    io.run();
+    while (!io.stopped()) {
+      io.run_for(std::chrono::milliseconds(25));
+      if (cancellation && cancellation->load() && open()) {
+        // Complete the cancelled handlers before their captured stack data dies.
+        boost::system::error_code ignored;
+        tcp_layer().socket().cancel(ignored);
+        tcp_layer().socket().close(ignored);
+      }
+    }
+    check_cancelled();
     if (result) throw boost::system::system_error(result);
   }
 
@@ -115,12 +130,16 @@ struct HttpClient::Impl {
   }
 
   void connect(const Url& url, std::chrono::seconds timeout) {
+    check_cancelled();
     close();
     tcp::resolver resolver(io);
+    // Synchronous system DNS is the only step the cancellation flag cannot interrupt.
     const auto endpoints = resolver.resolve(url.host, url.port);
+    check_cancelled();
 
     if (url.tls) {
-      auto stream = std::make_unique<TlsStream>(io, tls_context);
+      tls = std::make_unique<TlsStream>(io, tls_context);
+      auto& stream = tls;
       // SSL_set_tlsext_host_name is a macro with a C-style cast; call what it expands to.
       if (SSL_ctrl(stream->native_handle(), SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
                    const_cast<char*>(url.host.c_str())) != 1) {
@@ -135,15 +154,14 @@ struct HttpClient::Impl {
       });
       layer.expires_after(timeout);
       run([&](auto done) { stream->async_handshake(ssl::stream_base::client, done); });
-      tls = std::move(stream);
     } else {
-      auto stream = std::make_unique<beast::tcp_stream>(io);
+      plain = std::make_unique<beast::tcp_stream>(io);
+      auto& stream = plain;
       stream->expires_after(timeout);
       run([&](auto done) {
         stream->async_connect(endpoints,
                               [done](boost::system::error_code ec, const tcp::endpoint&) { done(ec); });
       });
-      plain = std::move(stream);
     }
     connected = url;
   }
@@ -195,6 +213,7 @@ HttpClient::~HttpClient() { impl_->close(); }
 
 HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
                              std::chrono::seconds timeout) {
+  impl_->check_cancelled();
   const std::optional<Url> parsed = parse_url(url);
   if (!parsed) throw std::runtime_error("not an http(s) URL: " + std::string(url));
 
@@ -204,11 +223,27 @@ HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
     return impl_->request(*parsed, headers, timeout);
   } catch (const std::exception&) {
     impl_->close();
-    if (!reusing) throw;
+    if (!reusing || (impl_->cancellation && impl_->cancellation->load())) throw;
   }
   // A kept-alive connection can be closed by the server between requests; retry once fresh.
   impl_->connect(*parsed, timeout);
   return impl_->request(*parsed, headers, timeout);
+}
+
+HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
+                             std::chrono::seconds timeout, const std::atomic<bool>* cancellation) {
+  const auto previous = impl_->cancellation;
+  impl_->cancellation = cancellation;
+  try {
+    impl_->check_cancelled();
+    auto response = get(url, headers, timeout);
+    impl_->check_cancelled();
+    impl_->cancellation = previous;
+    return response;
+  } catch (...) {
+    impl_->cancellation = previous;
+    throw;
+  }
 }
 
 std::string gunzip(std::string_view compressed) {

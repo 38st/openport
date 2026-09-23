@@ -155,3 +155,111 @@ TEST(WebServer, ClosesWebSocketsWithMessagesLargerThanFourKiB) {
 }
 
 }  // namespace
+
+namespace {
+TEST(WebPolicy, ExplicitProxyOriginsMatchExactlyAfterNormalization) {
+  const std::vector<std::string> allowed{"https://Terminal.Example:443", "http://localhost:3000"};
+  EXPECT_TRUE(
+      server::websocket_origin_allowed("https://terminal.example", "internal:8080", allowed));
+  EXPECT_TRUE(server::websocket_origin_allowed("http://localhost:3000", "internal:8080", allowed));
+  EXPECT_TRUE(server::websocket_origin_allowed("http://internal:8080", "internal:8080", allowed));
+  for (const auto* origin :
+       {"http://terminal.example", "https://terminal.example:444", "https://terminal.example.evil",
+        "https://terminal.example/", "https://terminal.example@evil", "null"})
+    EXPECT_FALSE(server::websocket_origin_allowed(origin, "internal:8080", allowed)) << origin;
+  EXPECT_THROW((server::WebServer("127.0.0.1", 0, {}, {}, {"https://host/path"})),
+               std::invalid_argument);
+}
+
+TEST(WebPolicy, SlowClientKeepsActiveWriteAndOnlyNewestPendingTick) {
+  server::TickQueue queue;
+  const auto active = std::make_shared<const std::string>("active");
+  queue.push(active);
+  for (int i = 0; i < 10000; ++i) {
+    queue.push(std::make_shared<const std::string>(std::to_string(i)));
+    EXPECT_EQ(queue.size(), 2u);
+    EXPECT_EQ(queue.front(), active);
+  }
+  queue.pop();
+  ASSERT_EQ(queue.size(), 1u);
+  EXPECT_EQ(*queue.front(), "9999");
+  queue.pop();
+  EXPECT_TRUE(queue.empty());
+}
+
+TEST_F(StaticFiles, MissingWebRootExplainsHowToBuildOrSelectTheTerminal) {
+  const auto result = server::resolve_static_file(parent / "missing", "/");
+  EXPECT_EQ(result.status, 404);
+  EXPECT_EQ(result.reason,
+            "web terminal not built: run `npm run build` in web/, or pass --web-root");
+}
+
+TEST(WebServer, StopClosesHttpAndWebSocketSessionsAndReleasesThePort) {
+  server::WebServer web("127.0.0.1", 0, {}, [](const auto&) { return server::ApiResponse{}; });
+  web.start(2);
+  const auto port = web.port();
+  asio::io_context io;
+  websocket::stream<tcp::socket> ws(io);
+  ws.next_layer().connect({asio::ip::make_address("127.0.0.1"), port});
+  ws.handshake("127.0.0.1:" + std::to_string(port), "/ws");
+  tcp::socket http_socket(io);
+  http_socket.connect({asio::ip::make_address("127.0.0.1"), port});
+  // Round-trip one request so the server is known to own this keep-alive session.
+  http::request<http::empty_body> request{http::verb::get, "/api/status", 11};
+  request.set(http::field::host, "localhost");
+  http::write(http_socket, request);
+  beast::flat_buffer buffer;
+  http::response<http::string_body> response;
+  http::read(http_socket, buffer, response);
+  web.broadcast(std::string(1024 * 1024, 'x'));
+  const auto started = std::chrono::steady_clock::now();
+  web.stop();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
+  EXPECT_THROW(web.start(), std::logic_error);
+  bool http_closed = false, ws_closed = false;
+  char byte;
+  http_socket.async_read_some(asio::buffer(&byte, 1),
+                              [&](auto ec, auto) { http_closed = bool(ec); });
+  beast::flat_buffer ws_buffer;
+  std::function<void()> read_ws;
+  read_ws = [&] {
+    ws.async_read(ws_buffer, [&](auto ec, auto) {
+      if (ec)
+        ws_closed = true;
+      else {
+        ws_buffer.consume(ws_buffer.size());
+        read_ws();
+      }
+    });
+  };
+  read_ws();
+  io.run_for(std::chrono::seconds(1));
+  EXPECT_TRUE(http_closed);
+  EXPECT_TRUE(ws_closed);
+  server::WebServer replacement("127.0.0.1", port, {},
+                                [](const auto&) { return server::ApiResponse{}; });
+  EXPECT_NO_THROW(replacement.start());
+  replacement.stop();
+}
+
+TEST(WebServer, RejectsSecondStartWhileRunningAndAcceptsConfiguredProxyOrigin) {
+  server::WebServer web("127.0.0.1", 0, {}, [](const auto&) { return server::ApiResponse{}; },
+                        {"https://terminal.example"});
+  web.start();
+  EXPECT_THROW(web.start(), std::logic_error);
+  asio::io_context io;
+  websocket::stream<tcp::socket> ws(io);
+  ws.next_layer().connect({asio::ip::make_address("127.0.0.1"), web.port()});
+  ws.set_option(websocket::stream_base::decorator(
+      [](auto& request) { request.set(http::field::origin, "https://terminal.example:443"); }));
+  EXPECT_NO_THROW(ws.handshake("internal:8080", "/ws"));
+  web.stop();
+}
+}  // namespace
+
+TEST(WebPolicy, FailedWebServerStartStillConsumesTheSingleStartAttempt) {
+  openport::server::WebServer web("invalid-address", 0, {}, {});
+  EXPECT_THROW(web.start(), std::exception);
+  EXPECT_THROW(web.start(), std::logic_error);
+  EXPECT_NO_THROW(web.stop());
+}

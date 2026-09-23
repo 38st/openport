@@ -99,3 +99,188 @@ TEST(Engine, StreamingQuotesRefreshOnlyTheirUnderlyingWithASixtySecondMinimum) {
 }
 
 }  // namespace
+
+namespace {
+TEST(Engine, RejectsEverySecondStartIncludingAfterStop) {
+  ManualProvider provider;
+  server::Engine engine(provider, {{"SPY"}}, {});
+  engine.start();
+  EXPECT_THROW(engine.start(), std::logic_error);
+  engine.stop();
+  EXPECT_THROW(engine.start(), std::logic_error);
+}
+
+TEST(Engine, StopsProviderWhenConsumerThreadLaunchThrows) {
+  class TrackedProvider final : public md::Provider {
+   public:
+    std::string_view name() const noexcept override { return "tracked"; }
+    md::Capabilities capabilities() const noexcept override { return {}; }
+    void start(const md::Subscription&, md::EventSink&) override { running = true; }
+    void stop() override {
+      running = false;
+      ++stops;
+    }
+    bool running = false;
+    int stops = 0;
+  } provider;
+  server::Engine::Options options;
+  options.launch = [](auto) -> std::thread { throw std::runtime_error("no thread resources"); };
+  server::Engine engine(provider, {{"SPY"}}, options);
+  EXPECT_THROW(engine.start(), std::runtime_error);
+  EXPECT_FALSE(provider.running);
+  EXPECT_EQ(provider.stops, 1);
+  EXPECT_THROW(engine.start(), std::logic_error);
+}
+
+TEST(Engine, BatchedHealthPreservesErrorOrderingAndLatestReceipt) {
+  ManualProvider provider;
+  std::atomic<md::Timestamp> clock{1000 * md::kNanosPerSecond};
+  server::Engine::Options options;
+  options.clock = [&] { return clock.load(); };
+  server::Engine engine(provider, {{"SPY", "SPX"}}, options);
+  engine.start();
+  provider.sink->publish(md::UnderlyingQuote{"SPY", 1, 0, 0, 500});
+  ASSERT_TRUE(
+      eventually([&] { return engine.status().underlyings.at("SPY").last_success == clock; }));
+  const auto message = engine.status().underlyings.at("SPY").message;
+  clock += md::kNanosPerSecond;
+  for (int i = 0; i < 10000; ++i) provider.sink->publish(md::UnderlyingQuote{"SPY", i, 0, 0, 501});
+  provider.sink->publish(md::ProviderStatus{1, md::FeedState::Error, "disconnected", "SPY"});
+  ASSERT_TRUE(eventually(
+      [&] { return engine.status().underlyings.at("SPY").state == md::FeedState::Error; }));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").last_success, clock);
+  EXPECT_EQ(engine.status().underlyings.at("SPX").last_success, 0);
+  clock += md::kNanosPerSecond;
+  provider.sink->publish(md::UnderlyingQuote{"SPY", 1, 0, 0, 502});
+  ASSERT_TRUE(
+      eventually([&] { return engine.status().underlyings.at("SPY").last_success == clock; }));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").message, message);
+  EXPECT_EQ(engine.status().underlyings.at("SPY").last_error, "disconnected");
+}
+
+TEST(Engine, SerializesQueueTelemetryInStatusAndTicks) {
+  class BacklogProvider final : public md::Provider {
+   public:
+    std::string_view name() const noexcept override { return "backlog"; }
+    md::Capabilities capabilities() const noexcept override { return {}; }
+    void start(const md::Subscription&, md::EventSink& sink) override {
+      sink.publish(md::UnderlyingQuote{"SPY", 1});
+      sink.publish(md::UnderlyingQuote{"SPY", 2});
+      for (std::size_t i = 0; i < md::kEventQueueCapacity; ++i) sink.publish(md::OptionTrade{});
+    }
+    void stop() override {}
+  } provider;
+  server::Engine::Options options;
+  // Hold the consumer until telemetry is inspected, without a scheduling race.
+  options.launch = [](auto) { return std::thread([] {}); };
+  server::Engine engine(provider, {{"SPY"}}, options);
+  engine.start();
+  for (const auto& text :
+       {server::handle_api({"GET", "/api/status"}, engine).body, server::tick_message(engine)}) {
+    const auto json = nlohmann::json::parse(text)["engine"];
+    EXPECT_EQ(json["queue_depth"], md::kEventQueueCapacity);
+    EXPECT_EQ(json["coalesced_events"], 1);
+    EXPECT_EQ(json["dropped_events"], 1);
+    EXPECT_EQ(json["overloaded"], true);
+  }
+}
+}  // namespace
+
+namespace {
+TEST(Engine, OneDrainUsesOneReceiptClockForAllQuoteHealthUpdates) {
+  class BatchProvider final : public md::Provider {
+   public:
+    std::string_view name() const noexcept override { return "batch"; }
+    md::Capabilities capabilities() const noexcept override { return {}; }
+    void start(const md::Subscription&, md::EventSink& sink) override {
+      sink.publish(md::UnderlyingQuote{"SPX", 1});
+      sink.publish(md::UnderlyingQuote{"SPY", 1});
+    }
+    void stop() override {}
+  } provider;
+  std::atomic<md::Timestamp> clock{1000 * md::kNanosPerSecond};
+  server::Engine::Options options;
+  options.clock = [&] { return ++clock; };
+  server::Engine engine(provider, {{"SPX", "SPY"}}, options);
+  engine.start();
+  ASSERT_TRUE(eventually([&] { return engine.status().events == 2; }));
+  const auto status = engine.status();
+  EXPECT_EQ(status.underlyings.at("SPX").last_success, status.underlyings.at("SPY").last_success);
+}
+}  // namespace
+
+namespace {
+TEST(Engine, PublishesUnchangedHealthTimestampsAtMostEveryHundredMilliseconds) {
+  ManualProvider provider;
+  std::atomic<md::Timestamp> receipt{1000 * md::kNanosPerSecond};
+  std::atomic<int> monotonic_ms{0};
+  server::Engine::Options options;
+  options.clock = [&] { return receipt.load(); };
+  options.monotonic_clock = [&] {
+    return std::chrono::steady_clock::time_point{} + std::chrono::milliseconds(monotonic_ms.load());
+  };
+  server::Engine engine(provider, {{"SPY"}}, options);
+  engine.start();
+  provider.sink->publish(md::UnderlyingQuote{"SPY", 1});
+  ASSERT_TRUE(eventually([&] { return engine.status().events == 1; }));
+  const auto first = engine.status();
+  ASSERT_EQ(first.underlyings.at("SPY").last_success, receipt);
+  for (int batch = 2; batch <= 20; ++batch) {
+    receipt += md::kNanosPerSecond;
+    monotonic_ms = batch;
+    provider.sink->publish(md::UnderlyingQuote{"SPY", batch});
+    ASSERT_TRUE(eventually([&] { return engine.status().events == static_cast<std::uint64_t>(batch); }));
+    const auto status = engine.status();
+    EXPECT_EQ(status.underlyings.at("SPY").last_success, first.underlyings.at("SPY").last_success);
+    EXPECT_EQ(status.feed_updated, first.feed_updated);
+  }
+  monotonic_ms = 99;
+  provider.sink->publish(md::UnderlyingQuote{"SPY", 21});
+  ASSERT_TRUE(eventually([&] { return engine.status().events == 21; }));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").last_success,
+            first.underlyings.at("SPY").last_success);
+  // A pending receipt must be published when due even if there are no more events.
+  monotonic_ms = 100;
+  ASSERT_TRUE(eventually([&] { return engine.status().underlyings.at("SPY").last_success == receipt; }));
+  const auto published = engine.status();
+  EXPECT_EQ(published.feed_updated, receipt);
+  EXPECT_EQ(published.underlyings.at("SPY").message, first.underlyings.at("SPY").message);
+  receipt += md::kNanosPerSecond;
+  monotonic_ms = 101;
+  provider.sink->publish(md::UnderlyingQuote{"SPY", 22});
+  ASSERT_TRUE(eventually([&] { return engine.status().events == 22; }));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").last_success,
+            published.underlyings.at("SPY").last_success);
+}
+
+TEST(Engine, StateAndMessageChangesBypassHealthPublicationThrottle) {
+  ManualProvider provider;
+  std::atomic<md::Timestamp> receipt{1000 * md::kNanosPerSecond};
+  server::Engine::Options options;
+  options.clock = [&] { return receipt.load(); };
+  options.monotonic_clock = [] { return std::chrono::steady_clock::time_point{}; };
+  server::Engine engine(provider, {{"SPY"}}, options);
+  engine.start();
+  const auto publish = [&](md::Event event, std::uint64_t count) {
+    provider.sink->publish(std::move(event));
+    return eventually([&] { return engine.status().events == count; });
+  };
+  ASSERT_TRUE(publish(md::ProviderStatus{1, md::FeedState::Live, "connected", "SPY"}, 1));
+  receipt += md::kNanosPerSecond;
+  ASSERT_TRUE(publish(md::ProviderStatus{2, md::FeedState::Live, "receiving", "SPY"}, 2));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").message, "receiving");
+  EXPECT_EQ(engine.status().underlyings.at("SPY").last_success, receipt);
+  receipt += md::kNanosPerSecond;
+  ASSERT_TRUE(publish(md::ProviderStatus{3, md::FeedState::Error, "disconnected", "SPY"}, 3));
+  auto health = engine.status().underlyings.at("SPY");
+  EXPECT_EQ(health.state, md::FeedState::Error);
+  EXPECT_EQ(health.last_error_time, receipt);
+  EXPECT_EQ(health.last_error, "disconnected");
+  receipt += md::kNanosPerSecond;
+  ASSERT_TRUE(publish(md::UnderlyingQuote{"SPY", 4}, 4));
+  health = engine.status().underlyings.at("SPY");
+  EXPECT_EQ(health.state, md::FeedState::Live);
+  EXPECT_EQ(health.last_success, receipt);
+  EXPECT_EQ(health.last_error, "disconnected");
+}
+}  // namespace
