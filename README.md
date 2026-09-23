@@ -1,12 +1,13 @@
 # OpenPort
 
-Self-hosted options analytics on your own market data. Plug in the provider you already
-pay for, or start with Cboe's free delayed quotes, and get a live web terminal: option
-chains with implied volatility and Greeks computed by OpenPort itself, smiles and term
-structure, and gamma and vanna exposure maps.
+Self-hosted options analytics and a trading simulator on your own market data. Plug in
+the provider you already pay for, or start with Cboe's free delayed quotes, and get a
+live web terminal: option chains with implied volatility and Greeks computed by OpenPort
+itself, smiles and term structure, gamma and vanna exposure maps, and a paper account
+that trades those chains under prop-firm evaluation rules.
 
-One C++20 binary runs the feed, the analytics engine and the web terminal. Your API keys
-and your data stay on your machine.
+One C++20 binary runs the feed, the analytics engine, the simulator and the web
+terminal. Your API keys, your data and your trades stay on your machine.
 
 ![SPX option chain during Cboe's overnight session](docs/screenshots/chain-dark.png)
 
@@ -31,9 +32,11 @@ and your data stay on your machine.
   decide pass or fail, with buy-only and buying-power plans and auto-close before
   expiry. Orders can wait for the underlying to cross a level, and brackets attach a
   stop-loss and take-profit (on the option or the underlying) that cancel each other.
-  Strategies of up to four legs (spreads, straddles, condors, butterflies) are picked
-  on the chain and fill together at a net debit or credit, with their expiry payoff,
-  and buying power nets them: a credit spread holds its width, not a naked requirement.
+  Strategies of up to four legs (spreads, straddles, condors, butterflies, calendars and
+  diagonals) are picked on the chain and fill together at a net debit or credit, with
+  their payoff at expiry, and buying power nets them: a credit spread holds its width
+  and a calendar its debit, not a naked requirement. Positions can be closed together
+  as one order.
   The Dashboard charts equity against the target and floor; Trade docks an order ticket
   beside the chain; Positions adds Greeks, limits, a spot × vol scenario grid and a
   kill switch; Orders, a Journal (P&L calendar, win rate, profit factor, reports by hold
@@ -41,7 +44,8 @@ and your data stay on your machine.
 - **Record and replay**: save any provider's feed to a file and play it back later with
   its original market times, for demos at night and reproducible bug reports.
 - **Engine**: feed health per underlying, trading session, queue and analytics timing.
-- Light and dark themes, keyboard shortcuts (1-7 switch pages, arrows step expiries).
+- Light and dark themes, keyboard shortcuts (number keys switch pages, arrows step
+  expiries).
 
 ## Paper trading
 
@@ -58,6 +62,12 @@ options). The account survives restarts through an append-only, hash-chained jou
 options are simulated without early exercise, assignment or stock positions: one held
 into expiry settles in cash at intrinsic value. Portfolio margin and brokerage
 execution are out of scope.
+
+Buying power follows each order's real margin: a naked short holds the usual
+20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals
+hold only what they can lose. An order that would use buying power must fit within it;
+anything that frees buying power (closing, buying back a short, buying protection) is
+always allowed, even when the account is short of it.
 
 `--plan` chooses the rules for a new journal: `practice` (the default: buying power
 only), `intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new
@@ -203,6 +213,24 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 
 Expiry ids are the date plus settlement, for example `2026-10-16AM`.
 
+With paper trading on, the same API is the account: `GET /api/portfolio`, `/api/orders`,
+`/api/fills`, `/api/risk`, `/api/account`, `/api/trades` and `/api/plans`, and writes
+with `POST /api/orders`, `DELETE /api/orders/{id}`, `PUT /api/risk/limits`,
+`POST /api/risk/kill` and `POST /api/account/reset`. The web terminal uses exactly
+these routes, so anything it does can be scripted. An order takes one contract, or
+`legs` for a strategy; this calendar buys the later put and sells the nearer one at a
+net debit of at most 6.60:
+
+```bash
+curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{
+  "client_order_id": "calendar-1", "type": "limit", "quantity": 1,
+  "limit_price": "6.60", "time_in_force": "day",
+  "legs": [{"symbol": "SPXW  260925P07700000", "side": "buy"},
+           {"symbol": "SPXW  260923P07700000", "side": "sell"}]}'
+```
+
+[Paper trading](docs/paper-trading.md) documents every field, rule and reason code.
+
 ## Security
 
 openportd binds to 127.0.0.1 by default and has no authentication. If you expose it,
@@ -236,7 +264,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets, trade journal
 - [x] Funded phase in the engine: locking drawdown floors, qualifying days and payouts
-- [x] Multi-leg orders with spread-aware buying power
+- [x] Multi-leg orders (spreads, condors, calendars) with spread-aware buying power
 - [x] Paper trading for American equity and ETF options (cash settlement at intrinsic)
 - [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session
