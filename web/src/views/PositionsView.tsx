@@ -1,5 +1,5 @@
-import { useQueries, useQuery } from "@tanstack/react-query"
-import { useState, type ReactNode } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { useMemo, useState, type ReactNode } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useAccount, useAllOrders, useRefreshTrading, useTradingQueries } from "../api/trading"
@@ -9,7 +9,7 @@ import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
-import { StrategyTicket } from "../components/StrategyTicket"
+import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
 import { ScenarioGrid } from "../components/ScenarioGrid"
 import { TradingError, WriteAccess } from "../components/TradingControls"
@@ -17,7 +17,8 @@ import { Badge, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../comp
 import { fixed, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { contractLabel } from "../lib/journal"
-import { closingLegs, type StrategyLeg } from "../lib/strategy"
+import { strategyGroups, type StrategyGroup } from "../lib/positions"
+import { closingLegs } from "../lib/strategy"
 import { describeTrigger } from "../lib/ticket"
 import { formatMoney, paperNotice, ratio, signedMoney } from "../lib/trading"
 
@@ -55,23 +56,9 @@ function CloseTicket({ position, trading, onClose }: { position: Position; tradi
  * to take off a spread without uncovering a short on the way.
  */
 function CloseTogether({ positions, trading, onClose }: { positions: Position[]; trading: TradingStatus; onClose: () => void }) {
-  const { version } = useLive()
   const plan = closingLegs(positions)
-  const underlying = positions[0]?.underlying ?? ""
-  const ids = "legs" in plan ? [...new Set(plan.legs.map((l) => l.expiry))] : []
-  const chains = useQueries({ queries: ids.map((id) => ({
-    queryKey: ["chain", underlying, id, 0, version(underlying)],
-    queryFn: ({ signal }: { signal: AbortSignal }) => api.chain(underlying, id, 0, signal),
-  })) })
-  const [edited, setEdited] = useState<StrategyLeg[] | null>(null)
   if (!("legs" in plan)) return <Dialog title="Close together" onClose={onClose}><p className="text-sm text-warn">{plan.reason}</p></Dialog>
-  const loaded = chains.map((c) => c.data).filter((c): c is NonNullable<typeof c> => c != null)
-  const error = chains.find((c) => c.error)?.error
-  if (loaded.length < ids.length) return error ? <Dialog title="Close together" onClose={onClose}><TradingError error={error} /></Dialog> : null
-  const legs = (edited ?? plan.legs).map((leg) => ({ ...leg,
-    quote: loaded.find((c) => c.expiry.id === leg.expiry)?.strikes.find((r) => r.strike === leg.strike)?.[leg.type] ?? null }))
-  return <StrategyTicket title="Close together" closing legs={legs} onLegs={setEdited} expiries={loaded.map((c) => c.expiry)} underlying={underlying}
-    spot={loaded[0]?.spot} trading={trading} variant="dialog" units={plan.units} onClose={onClose} />
+  return <CloseStrategyDialog plan={plan} underlying={positions[0]?.underlying ?? ""} trading={trading} onClose={onClose} />
 }
 
 /** Open bracket exits protecting a position, e.g. "Stop bid ≤ $3.50 · Target $5.00". */
@@ -82,8 +69,10 @@ function protection(position: Position, orders: Order[]): string | null {
   return exits.map((o) => `${o.role === "stop_loss" ? "Stop" : "Target"} ${o.trigger ? describeTrigger(o.trigger, o.side ?? "sell", o.underlying)
     : formatMoney(o.limit_price)}`).join(" · ")
 }
-function Positions({ positions, onClose, orders = [], selected, onSelect }: {
+function Positions({ positions, onClose, orders = [], selected, onSelect, groups = [] }: {
   positions: Position[]; onClose?: (position: Position) => void; orders?: Order[]
+  /** Held strategies, to note which positions belong to one. */
+  groups?: readonly StrategyGroup[]
   /** Positions picked to close together, by symbol. */
   selected?: Set<string>; onSelect?: (symbol: string, on: boolean) => void
 }) {
@@ -102,6 +91,8 @@ function Positions({ positions, onClose, orders = [], selected, onSelect }: {
           <div className="mt-1 text-[11px] text-faint">{position.symbol}</div>
           {position.awaiting_settlement && <span className="mt-1 inline-block rounded-full border border-warn px-2 py-0.5 text-[10px] text-warn">Awaiting settlement</span>}
           {protection(position, orders) && <div className="mt-1 text-[10px] text-accent">{protection(position, orders)}</div>}
+          {groups.filter((g) => g.legs.some((l) => l.position.symbol === position.symbol)).map((g) =>
+            <div key={g.order.id} className="mt-1 text-[10px] text-muted">In {g.label.toLowerCase()} #{g.order.id}</div>)}
         </td>
         <td><Badge tone={position.quantity > 0 ? "positive" : "negative"}>{position.quantity > 0 ? `+${position.quantity} long` : `${position.quantity} short`}</Badge></td>
         <td>{formatMoney(position.average_price)}</td>
@@ -134,6 +125,8 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const [flatten, setFlatten] = useState<{ underlying: string | null } | null>(null)
   const refresh = useRefreshTrading()
   const data = portfolio.data
+  const groups = useMemo(() => strategyGroups(data?.positions ?? [], allOrders ?? [], account?.evaluation.started ?? null),
+    [data?.positions, allOrders, account?.evaluation.started])
   return <div className="min-w-0 space-y-4">
     <PageHeader title="Positions" subtitle={<>Open positions, risk and scenarios · account version {data?.account_version ?? trading.account_version}</>}>
       <WriteAccess trading={trading} />
@@ -161,6 +154,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <Tile label="Realized" value={signedMoney(data.realised)} tone={toneOf(data.realised)} detail={`fees ${formatMoney(data.fees)}`} />
       </div>
       <p className="text-[11px] text-muted">Valued {timestampET(data.time)}</p>
+      {groups.length > 0 && <Panel title={`Strategies · ${groups.length}`}><Strategies groups={groups} trading={trading} /></Panel>}
       <Panel title={`Open positions · ${data.positions.length}`} actions={trading.enabled && data.positions.length > 0 ? <>
         {data.positions.length > 1 && <>
           <span className="text-[11px] text-muted">{picked.size ? `${picked.size} picked` : "Pick positions to close them in one order"}</span>
@@ -169,7 +163,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         </>}
         <button type="button" className="trade-button" onClick={() => setFlatten({ underlying: null })}>Close all</button>
       </> : undefined}>
-        <Positions positions={data.positions} orders={allOrders} onClose={trading.enabled ? setClosing : undefined}
+        <Positions positions={data.positions} orders={allOrders} groups={groups} onClose={trading.enabled ? setClosing : undefined}
           selected={trading.enabled && data.positions.length > 1 ? picked : undefined}
           onSelect={(symbol, on) => setPicked((current) => { const next = new Set(current); if (on) next.add(symbol); else next.delete(symbol); return next })} />
       </Panel>

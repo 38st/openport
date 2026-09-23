@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react"
 import { useLive } from "../api/live"
-import { useFills, useTrades } from "../api/trading"
+import { useAllOrders, useFills, useTrades } from "../api/trading"
 import type { Fill, Trade, TradingStatus } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
 import { TradingError } from "../components/TradingControls"
@@ -8,7 +8,9 @@ import { Empty, PageHeader, Panel, Segmented, Tile, toneOf, toneText } from "../
 import { signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, tradeBuckets, tradeNet, type Dimension, type Side } from "../lib/journal"
+import { tradeGroups, type TradeGroup } from "../lib/positions"
 import { formatMoney, signedMoney } from "../lib/trading"
+import { netLabel } from "./OrdersView"
 
 const usd = (value: number) => signedMoney(value.toFixed(2))
 const monthName = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
@@ -137,60 +139,101 @@ function Reports({ trades }: { trades: Trade[] }) {
 }
 
 const pageSize = 25
+const headers = ["Contract", "Side", "Qty", "Opened", "Closed", "Held", "Avg open", "Avg close", "Net P&L", "Return"]
+
+function TradeRow({ trade: t, expanded, onToggle }: { trade: Trade; expanded: boolean; onToggle: () => void }) {
+  return <tr className="cursor-pointer border-t border-border/40 hover:bg-raised/50" onClick={onToggle} aria-expanded={expanded}>
+    <td className="px-2 py-2 text-left">
+      <span className={`mr-2 inline-block h-3 w-0.5 align-middle ${t.status === "open" ? "bg-accent" : tradeNet(t) >= 0 ? "bg-bullish" : "bg-bearish"}`} />
+      <span className="font-medium">{contractLabel(t)}</span>
+      {t.closure && <span className="ml-1 text-[10px] text-muted">({t.closure})</span>}
+    </td>
+    <td className={`px-2 py-2 ${t.direction === "long" ? "text-bullish" : "text-bearish"}`}>{t.direction}</td>
+    <td className="px-2 py-2">{t.max_quantity}</td>
+    <td className="px-2 py-2 text-muted">{short.format(Date.parse(t.opened))}</td>
+    <td className="px-2 py-2 text-muted">{t.closed ? short.format(Date.parse(t.closed)) : "open"}</td>
+    <td className="px-2 py-2">{formatDuration(t.duration_seconds)}</td>
+    <td className="px-2 py-2">{formatMoney(t.average_open)}</td>
+    <td className="px-2 py-2">{formatMoney(t.average_close)}</td>
+    <td className={`px-2 py-2 ${toneText[toneOf(t.status === "open" ? t.unrealised : t.net)]}`}>
+      {t.status === "open" ? <span title="Unrealized">{signedMoney(t.unrealised)}</span> : signedMoney(t.net)}
+    </td>
+    <td className={`px-2 py-2 ${toneText[toneOf(t.return)]}`}>{signedPercent(t.return)}</td>
+  </tr>
+}
+
+/** A strategy's round trips as one row: net P&L of its legs, opened at the order's net price. */
+function StrategyRow({ group, expanded, onToggle }: { group: TradeGroup; expanded: boolean; onToggle: () => void }) {
+  const order = group.order!
+  // Open strategies count their closed legs' net and the open legs' unrealized P&L.
+  const value = group.status === "open" ? (group.unrealised == null ? null : group.unrealised + group.net) : group.net
+  const held = group.closed ? (Date.parse(group.closed) - Date.parse(group.opened)) / 1000 : null
+  return <tr className="cursor-pointer border-t border-border/40 hover:bg-raised/50" onClick={onToggle} aria-expanded={expanded}>
+    <td className="px-2 py-2 text-left">
+      <span className={`mr-2 inline-block h-3 w-0.5 align-middle ${group.status === "open" ? "bg-accent" : group.net >= 0 ? "bg-bullish" : "bg-bearish"}`} />
+      <span className="font-medium">{group.label}</span> <span className="text-[10px] text-muted">{group.trades.length} legs · #{order.id}</span>
+    </td>
+    <td className="px-2 py-2 text-accent">strategy</td>
+    <td className="px-2 py-2">{order.filled_quantity}</td>
+    <td className="px-2 py-2 text-muted">{short.format(Date.parse(group.opened))}</td>
+    <td className="px-2 py-2 text-muted">{group.closed ? short.format(Date.parse(group.closed)) : "open"}</td>
+    <td className="px-2 py-2">{formatDuration(held)}</td>
+    <td className="px-2 py-2">{order.average_fill_price ? netLabel(order.average_fill_price) : "—"}</td>
+    <td className="px-2 py-2">—</td>
+    <td className={`px-2 py-2 ${toneText[toneOf(value)]}`}>
+      {value == null ? "—" : group.status === "open" ? <span title="Closed legs' net plus open legs' unrealized">{usd(value)}</span> : usd(value)}
+    </td>
+    <td className="px-2 py-2">—</td>
+  </tr>
+}
+
 function History({ trades }: { trades: Trade[] }) {
   const [filter, setFilter] = useState<"closed" | "open" | "all">("closed")
+  const [grouping, setGrouping] = useState<"trades" | "strategies">("trades")
   const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
   const fills = useFills().data?.fills
+  const orders = useAllOrders().data?.orders
   const fillsById = useMemo(() => new Map((fills ?? []).map((f) => [f.id, f])), [fills])
-  const rows = trades.filter((t) => filter === "all" || t.status === filter)
-  const pages = Math.max(1, Math.ceil(rows.length / pageSize))
+  const groups = useMemo(() => tradeGroups(trades, fills ?? [], orders ?? []), [trades, fills, orders])
+  const items: TradeGroup[] = grouping === "strategies"
+    ? groups.filter((g) => filter === "all" || g.status === filter)
+    : trades.filter((t) => filter === "all" || t.status === filter).map((t) => ({ key: `trade-${t.id}`, order: null, label: "", trades: [t],
+        status: t.status, opened: t.opened, closed: t.closed, net: tradeNet(t), unrealised: null }))
+  const pages = Math.max(1, Math.ceil(items.length / pageSize))
   const current = Math.min(page, pages - 1)
-  const visible = rows.slice(current * pageSize, (current + 1) * pageSize)
-  const net = rows.filter((t) => t.status === "closed").reduce((sum, t) => sum + tradeNet(t), 0)
+  const visible = items.slice(current * pageSize, (current + 1) * pageSize)
+  const net = trades.filter((t) => t.status === "closed").reduce((sum, t) => sum + tradeNet(t), 0)
+  const toggle = (key: string) => setExpanded(expanded === key ? null : key)
+  const detail = (t: Trade) => <TradeDetail trade={t} fills={t.fills.map((id) => fillsById.get(id)).filter((f): f is Fill => f != null)} />
   return (
     <Panel title="Trade history" actions={<>
       <span className="text-xs text-muted">Net <span className={`tabular ${toneText[toneOf(net)]}`}>{usd(net)}</span></span>
+      <Segmented label="Group trades" value={grouping} onChange={(v) => { setGrouping(v); setPage(0); setExpanded(null) }}
+        options={[{ value: "trades", label: "Contracts" }, { value: "strategies", label: "Strategies" }]} />
       <Segmented label="Trade status" value={filter} onChange={(v) => { setFilter(v); setPage(0) }}
         options={[{ value: "closed", label: "Closed" }, { value: "open", label: "Open" }, { value: "all", label: "All" }]} />
     </>}>
-      {!rows.length ? <p className="text-sm text-muted">No {filter === "all" ? "" : `${filter} `}trades yet.</p> : <>
+      {!items.length ? <p className="text-sm text-muted">No {filter === "all" ? "" : `${filter} `}trades yet.</p> : <>
         <div className="max-w-full overflow-x-auto" tabIndex={0} role="region" aria-label="Trade history">
           <table className="w-full text-right text-xs tabular whitespace-nowrap">
             <thead className="text-[11px] uppercase tracking-wide text-muted"><tr>
-              {["Contract", "Side", "Qty", "Opened", "Closed", "Held", "Avg open", "Avg close", "Net P&L", "Return"].map((h, i) =>
-                <th key={h} scope="col" className={`px-2 py-2 font-normal ${i === 0 ? "text-left" : ""}`}>{h}</th>)}
+              {headers.map((h, i) => <th key={h} scope="col" className={`px-2 py-2 font-normal ${i === 0 ? "text-left" : ""}`}>{h}</th>)}
             </tr></thead>
             <tbody>
-              {visible.map((t) => <Fragment key={t.id}>
-                <tr className="cursor-pointer border-t border-border/40 hover:bg-raised/50" onClick={() => setExpanded(expanded === t.id ? null : t.id)}
-                  aria-expanded={expanded === t.id}>
-                  <td className="px-2 py-2 text-left">
-                    <span className={`mr-2 inline-block h-3 w-0.5 align-middle ${t.status === "open" ? "bg-accent" : tradeNet(t) >= 0 ? "bg-bullish" : "bg-bearish"}`} />
-                    <span className="font-medium">{contractLabel(t)}</span>
-                    {t.closure && <span className="ml-1 text-[10px] text-muted">({t.closure})</span>}
-                  </td>
-                  <td className={`px-2 py-2 ${t.direction === "long" ? "text-bullish" : "text-bearish"}`}>{t.direction}</td>
-                  <td className="px-2 py-2">{t.max_quantity}</td>
-                  <td className="px-2 py-2 text-muted">{short.format(Date.parse(t.opened))}</td>
-                  <td className="px-2 py-2 text-muted">{t.closed ? short.format(Date.parse(t.closed)) : "open"}</td>
-                  <td className="px-2 py-2">{formatDuration(t.duration_seconds)}</td>
-                  <td className="px-2 py-2">{formatMoney(t.average_open)}</td>
-                  <td className="px-2 py-2">{formatMoney(t.average_close)}</td>
-                  <td className={`px-2 py-2 ${toneText[toneOf(t.status === "open" ? t.unrealised : t.net)]}`}>
-                    {t.status === "open" ? <span title="Unrealized">{signedMoney(t.unrealised)}</span> : signedMoney(t.net)}
-                  </td>
-                  <td className={`px-2 py-2 ${toneText[toneOf(t.return)]}`}>{signedPercent(t.return)}</td>
-                </tr>
-                {expanded === t.id && <tr className="bg-raised/30"><td colSpan={10} className="px-4 py-3 text-left">
-                  <TradeDetail trade={t} fills={t.fills.map((id) => fillsById.get(id)).filter((f): f is Fill => f != null)} />
-                </td></tr>}
+              {visible.map((group) => <Fragment key={group.key}>
+                {group.order
+                  ? <StrategyRow group={group} expanded={expanded === group.key} onToggle={() => toggle(group.key)} />
+                  : <TradeRow trade={group.trades[0]!} expanded={expanded === group.key} onToggle={() => toggle(group.key)} />}
+                {expanded === group.key && (group.order
+                  ? group.trades.map((t) => <TradeRow key={t.id} trade={t} expanded={false} onToggle={() => {}} />)
+                  : <tr className="bg-raised/30"><td colSpan={headers.length} className="px-4 py-3 text-left">{detail(group.trades[0]!)}</td></tr>)}
               </Fragment>)}
             </tbody>
           </table>
         </div>
         {pages > 1 && <div className="mt-3 flex items-center justify-between text-xs text-muted">
-          <span>Showing {current * pageSize + 1}–{Math.min(rows.length, (current + 1) * pageSize)} of {rows.length}</span>
+          <span>Showing {current * pageSize + 1}–{Math.min(items.length, (current + 1) * pageSize)} of {items.length}</span>
           <span className="flex items-center gap-2">
             <button type="button" className="trade-button" disabled={current === 0} onClick={() => setPage(current - 1)}>Previous</button>
             <span className="tabular">{current + 1} / {pages}</span>

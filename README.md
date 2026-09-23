@@ -35,9 +35,11 @@ terminal. Your API keys, your data and your trades stay on your machine.
   Strategies of up to four legs (spreads, straddles, condors, butterflies, calendars and
   diagonals) are picked on the chain and fill together at a net debit or credit, with
   their payoff at expiry, and buying power nets them: a credit spread holds its width
-  and a calendar its debit, not a naked requirement. Working orders change in place
-  (size, limit or trigger), and positions close together as one order, or all at once
-  with a flatten that buys shorts back first.
+  and a calendar its debit, not a naked requirement. Positions show each strategy a
+  multi-leg order opened as one row, with its net value, P&L, Greeks and risk at
+  expiry, closed or rolled to a later expiry in one order; the journal can group trades
+  the same way. Working orders change in place (size, limit or trigger), and positions
+  close together as one order, or all at once with a flatten that buys shorts back first.
   The Dashboard charts equity against the target and floor; Trade charts the underlying
   (one-minute to daily candles, backfilled from Cboe's free history) with your strikes,
   armed triggers and the selected expiry's expected move on it, and docks an order ticket
@@ -273,6 +275,8 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Multi-leg orders (spreads, condors, calendars) with spread-aware buying power
 - [x] Paper trading for American equity and ETF options (cash settlement at intrinsic)
 - [x] Underlying chart with positions, triggers and the expected move
+- [x] Order changes in place, cancel all and flatten
+- [x] Strategies as positions: grouped legs, close and roll, journal by strategy
 - [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session
 - [ ] P&L attribution by delta, gamma, vega and theta
