@@ -70,7 +70,8 @@ int usage(const char* error = nullptr) {
       "                 [--record FILE] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n\n"
-      "paper: durable European index paper trading; cash 100000, fee 0.65\n"
+      "paper: durable European index paper trading; cash 100000, fee 0.65; more named\n"
+      "       accounts are kept in an accounts directory beside the journal\n"
       "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
@@ -222,6 +223,9 @@ int run(int argc, char** argv) {
   engine_options.record_file = settings.record_file;
   engine_options.paper_enabled = settings.paper_enabled;
   engine_options.paper_journal = settings.paper_journal;
+  // More named accounts live beside the main journal, one journal each.
+  if (!settings.paper_journal.empty())
+    engine_options.paper_accounts = std::filesystem::absolute(settings.paper_journal).parent_path() / "accounts";
   // Rules and cash seed new journals only; recovery restores the recorded configuration.
   settings.paper.rules = settings.plan->rules;
   settings.paper.initial_cash = settings.paper_cash.value_or(settings.plan->initial_cash);

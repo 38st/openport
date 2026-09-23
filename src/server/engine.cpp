@@ -47,7 +47,7 @@ void Engine::start() {
     if (provider_started_) provider_.stop();
     provider_started_ = false;
     if (recorder_) recorder_->close();
-    trading_.reset();
+    accounts_.clear();
     {
       const std::lock_guard lock(command_mutex_);
       accepting_commands_ = false;
@@ -252,16 +252,16 @@ void Engine::run() {
       return status && status->state == md::FeedState::Stopped;
     });
     if (ended || stopping_ || !commands.empty() ||
-        (trading_ && !batch.empty() && (!trading_->snapshot()->positions.empty() ||
-                                      !trading_->snapshot()->open_orders.empty())) ||
+        (!batch.empty() && std::any_of(accounts_.begin(), accounts_.end(), [](const PaperAccount& account) {
+           return account.session && (!account.session->snapshot()->positions.empty() ||
+                                       !account.session->snapshot()->open_orders.empty());
+         })) ||
         now - last_analytics >= options_.analytics_interval) {
       last_analytics = now;
       refresh_analytics();
     }
-    try { update_trading(batch, commands); }
-    catch (const trading::TradingError& error) {
-      fail_trading(std::string(trading::to_string(error.code())) + ": " + error.what());
-    } catch (const std::exception& error) { fail_trading(std::string("TRADING_UNAVAILABLE: ") + error.what()); }
+    // Each account catches its own failures; nothing else here can fail the others.
+    update_trading(batch, commands);
     for (auto& command : commands) apply_command(command);
   }
   std::deque<PendingCommand> remaining;
@@ -272,9 +272,9 @@ void Engine::run() {
   }
   for (auto& command : remaining) apply_command(command);
   refresh_analytics();
-  // Release the exclusive journal writer on its owner thread. Published values
+  // Release the exclusive journal writers on their owner thread. Published values
   // remain readable, and a replacement Engine can recover as soon as stop returns.
-  trading_.reset();
+  accounts_.clear();
 }
 
 void Engine::refresh_analytics() {

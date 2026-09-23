@@ -276,6 +276,7 @@ json status_json(const MetricsSource& source) {
   const auto now = source.wall_time();
   return {
       {"trading", trading_status_json(s.trading)},
+      {"accounts", account_ticks_json(s)},
       {"market", market_json(now)},
       {"provider",
        {{"name", s.provider},
@@ -570,6 +571,7 @@ std::string tick_message(const MetricsSource& source) {
   const auto now = source.wall_time();
   return json{{"type", "tick"},
               {"trading", trading_status_json(s.trading)},
+              {"accounts", account_ticks_json(s)},
               {"market", market_json(now)},
               {"feed", {{"state", md::to_string(s.feed_state)}, {"message", s.feed_message}}},
               {"underlyings", underlyings_json(source, s, false, now)},

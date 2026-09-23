@@ -637,7 +637,32 @@ compilers/architectures, although recovery restores the recorded doubles.
 ## Engine integration and HTTP API
 
 Paper trading is enabled by default in `openportd`; `--no-paper` disables it and
-reports `PAPER_DISABLED` in status. The engine thread alone owns the session. A
+reports `PAPER_DISABLED` in status. The engine thread alone owns the sessions.
+
+### Accounts
+
+The journal at `--paper-journal` is the **main** account. More named accounts live
+in an `accounts` directory beside it, one journal each (`accounts/<id>.jsonl`, the
+display name in `accounts/<id>.name`), recovered at startup in ID order. Every
+account trades the same market at once: each receives the quotes and valuations for
+its own positions, open orders and commands, marks, fills, settles, rolls its day
+and applies its rules whichever account the terminal shows. An account whose
+journal cannot open, or fails later, reports why in its status and refuses writes;
+the others carry on.
+
+`POST /api/accounts` takes a `name` (1 to 64 printable characters) and either a
+preset `plan` or `initial_cash` and complete `rules`, and returns 201 with the new
+account's `id`, a slug of the name made unique (`swing-50k`, `swing-50k-2`). Funded
+plans are refused: they start by resetting an account that passed the evaluation.
+Every other trading route acts on the main account, or on another given as
+`account=<id>` in the query (reads and writes alike; a write takes no other query
+parameter). An unknown account is 404 `UNKNOWN_ACCOUNT`; a malformed one is 400.
+Without an accounts directory (`--paper-journal` empty in tests) the server keeps
+one account and account creation returns 503.
+
+### Commands and views
+
+The engine thread alone owns each session. A A
 bounded FIFO inbox (256 pending commands) sequences writes, applies the drained
 market batch first, then applies commands in ingress order. HTTP threads enqueue
 and return; completions are posted onto the requesting Beast session executor.
@@ -653,10 +678,11 @@ underlying prints and HTTP reads never replenish displayed option liquidity.
 cross can be missed on streaming feeds.** Underlying prints are retained in order
 so settlement uses the first qualifying print.
 
-Each market batch and command publishes an immutable trading view. GET endpoints
-read that view without touching the reducer. `/api/status` and WebSocket ticks
-include `trading: {enabled, reason, account_version, kill_latched, write,
-fee_per_contract, initial_cash}`. The fee and original session cash are exact money
+Each market batch and command publishes an immutable trading view per account. GET
+endpoints read that view without touching the reducer. `/api/status` and WebSocket
+ticks include the main account's `trading: {enabled, reason, account_version,
+kill_latched, write, fee_per_contract, initial_cash}` and `accounts: [{id, name,
+trading}]` for every account. The fee and original session cash are exact money
 strings (defaults `"0.65"` and `"100000.00"`), taken from the active/recovered session
 configuration; `initial_cash` is not the current balance or daily equity baseline.
 Versions are decimal strings and `write` is `open`, `token`, or `disabled`. Clients refetch
@@ -697,6 +723,8 @@ focus at the top of the ticket.
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working/partially filled |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), takes no trigger or bracket, counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders |
+| `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
+| `POST /api/accounts` | `name` and a preset `plan`, or `initial_cash` and `rules`; 201 returns the new account's `id`, `name`, version, plan and equity (see [accounts](#accounts)) |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |

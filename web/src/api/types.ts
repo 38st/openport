@@ -70,8 +70,13 @@ export interface MarketSession {
   next_open: string | null
 }
 
+/** One paper account, as status and ticks list them. */
+export interface AccountBrief { id: string; name: string; trading: TradingStatus }
+
 export interface Status {
   trading?: TradingStatus | null
+  /** Every paper account, the main one first; absent on older servers. */
+  accounts?: AccountBrief[] | null
   provider: ProviderInfo
   feed: { state: FeedState; message: string; updated: string | null }
   underlyings: UnderlyingStatus[]
@@ -257,6 +262,7 @@ export interface Surface {
 
 export interface Tick {
   trading?: TradingStatus | null
+  accounts?: AccountBrief[] | null
   type: "tick"
   feed: { state: FeedState; message: string }
   underlyings: UnderlyingSnapshot[]

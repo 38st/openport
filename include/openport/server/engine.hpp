@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -30,9 +31,20 @@ struct UnderlyingHealth {
   md::Timestamp last_error_time = 0;
 };
 
+/// The main account keeps the original journal; others are named alongside it.
+inline constexpr std::string_view kMainAccount = "main";
+
+/// One paper account's standing, for the account list and ticks.
+struct AccountStatus {
+  std::string id;
+  std::string name;
+  TradingStatus trading;
+};
+
 /// A consistent picture of the feed and the engine for the status endpoint.
 struct EngineStatus {
-  TradingStatus trading;
+  TradingStatus trading;  ///< The main account's.
+  std::vector<AccountStatus> accounts;  ///< Every account, the main one first.
   std::string provider;
   md::Capabilities capabilities;
   md::FeedState feed_state = md::FeedState::Connecting;
@@ -62,7 +74,12 @@ class MetricsSource {
       const std::string& symbol) const = 0;
   [[nodiscard]] virtual EngineStatus status() const = 0;
   [[nodiscard]] virtual md::Timestamp wall_time() const { return md::now(); }
+  /// The main account's publication.
   [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view() const { return {}; }
+  /// A named account's publication; the main account's for an empty id. Null when unknown.
+  [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view(std::string_view account) const {
+    return account.empty() || account == kMainAccount ? trading_view() : nullptr;
+  }
   /// Price history for charts; nullptr when this source keeps none.
   [[nodiscard]] virtual const CandleStore* candles() const { return nullptr; }
   /// False means unavailable or full. Completion runs on the engine thread;
@@ -79,7 +96,9 @@ class Engine final : public MetricsSource {
   struct Options {
     std::chrono::milliseconds analytics_interval{1000};
     bool paper_enabled = true;
-    std::filesystem::path paper_journal;  ///< Empty only for explicit in-process simulations.
+    std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
+    /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
+    std::filesystem::path paper_accounts;
     trading::SessionConfig paper;
     std::shared_ptr<trading::Journal> paper_sink;  ///< Optional in-process test/simulation sink.
     std::size_t command_capacity = 256;
@@ -115,6 +134,7 @@ class Engine final : public MetricsSource {
   [[nodiscard]] EngineStatus status() const override;
   [[nodiscard]] md::Timestamp wall_time() const override { return options_.clock(); }
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view() const override;
+  [[nodiscard]] std::shared_ptr<const TradingView> trading_view(std::string_view account) const override;
   [[nodiscard]] const CandleStore* candles() const override { return options_.candles.get(); }
   bool post_trading(TradingCommand command, TradingCompletion completion) override;
   [[nodiscard]] md::RecordingStats recording_stats() const;
@@ -126,13 +146,23 @@ class Engine final : public MetricsSource {
     TradingCommand command;
     TradingCompletion completion;
   };
+  /// One paper account: a reducer and its journal. Engine thread only.
+  struct PaperAccount {
+    std::string id;
+    std::string name;
+    std::unique_ptr<trading::TradingSession> session;
+    std::string failure;  ///< Why it cannot trade; empty while it can.
+  };
   void run();
   void start_trading();
+  PaperAccount* find_account(std::string_view id);
+  void create_account(const TradingCommand& command, TradingReply& reply);
   void observe_trading(const md::Event& event);
   void update_trading(const std::vector<md::Event>& batch, std::deque<PendingCommand>& commands);
   void apply_command(PendingCommand& pending);
   void publish_trading();
-  void fail_trading(std::string reason);
+  /// Stops one account after a journal or integration failure; the others carry on.
+  void fail_trading(PaperAccount& account, std::string reason);
   void refresh_analytics();
   void update_health(const md::Event& event, md::Timestamp received);
 
@@ -151,7 +181,7 @@ class Engine final : public MetricsSource {
   mutable std::mutex mutex_;  // guards everything below
   std::map<std::string, std::shared_ptr<const analytics::UnderlyingMetrics>> metrics_;
   EngineStatus status_;
-  std::shared_ptr<const TradingView> trading_view_;
+  std::map<std::string, std::shared_ptr<const TradingView>, std::less<>> trading_views_;
 
   std::mutex command_mutex_;
   std::deque<PendingCommand> commands_;
@@ -159,8 +189,7 @@ class Engine final : public MetricsSource {
   bool accepting_commands_ = false;
 
   // Initialized/recovered by start(), then owned exclusively by the engine thread.
-  std::unique_ptr<trading::TradingSession> trading_;
-  std::string trading_failure_;
+  std::vector<PaperAccount> accounts_;  // the main account first
   std::map<std::string, std::string> settlement_source_;
   md::Timestamp market_time_ = 0;
   std::map<std::string, md::InstrumentId> instruments_;

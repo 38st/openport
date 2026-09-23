@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <set>
+#include <tuple>
 #include <nlohmann/json.hpp>
 #include <fcntl.h>
 #include <unistd.h>
@@ -76,6 +78,42 @@ Valuation valuation_for(const std::string& symbol, const md::OptionContract& con
   }
   return result;
 }
+/// Opens a journal for writing, making each directory created on the way durable:
+/// an existing file is locked, then read for recovery; otherwise a new one is created.
+std::pair<std::shared_ptr<Journal>, std::optional<JournalRecovery>> open_journal(const std::filesystem::path& file) {
+  const auto parent = std::filesystem::absolute(file).parent_path();
+  auto existing = parent;
+  while (!std::filesystem::exists(existing)) existing = existing.parent_path();
+  std::filesystem::create_directories(parent);
+  for (auto path = parent; path != existing; path = path.parent_path()) sync_directory(path);
+  sync_directory(existing);
+  if (std::filesystem::exists(file)) {
+    // Lock before reading, then recover the same verified head held by the writer.
+    std::shared_ptr<Journal> journal = FileJournal::resume(file.string());
+    return {journal, FileJournal::read(file.string())};
+  }
+  std::shared_ptr<Journal> journal = FileJournal::create(file.string());
+  sync_directory(parent);
+  return {journal, std::nullopt};
+}
+
+/// Account IDs name journal files: lowercase letters, digits and single hyphens.
+bool account_id(std::string_view id) {
+  return !id.empty() && id.size() <= 40 && id.front() != '-' && id.back() != '-' &&
+         std::all_of(id.begin(), id.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; }) &&
+         id.find("--") == std::string_view::npos;
+}
+std::string slug(std::string_view name) {
+  std::string id;
+  for (const char c : name) {
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) id += c;
+    else if (c >= 'A' && c <= 'Z') id += static_cast<char>(c - 'A' + 'a');
+    else if (!id.empty() && id.back() != '-') id += '-';
+    if (id.size() >= 32) break;
+  }
+  while (!id.empty() && id.back() == '-') id.pop_back();
+  return id;
+}
 }  // namespace
 
 trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp market_time,
@@ -103,9 +141,19 @@ trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp ma
   return {};
 }
 
-std::shared_ptr<const TradingView> Engine::trading_view() const {
+Engine::PaperAccount* Engine::find_account(std::string_view id) {
+  if (id.empty()) id = kMainAccount;
+  for (auto& account : accounts_)
+    if (account.id == id) return &account;
+  return nullptr;
+}
+
+std::shared_ptr<const TradingView> Engine::trading_view() const { return trading_view(kMainAccount); }
+
+std::shared_ptr<const TradingView> Engine::trading_view(std::string_view account) const {
   const std::lock_guard lock(mutex_);
-  return trading_view_;
+  const auto it = trading_views_.find(account.empty() ? kMainAccount : account);
+  return it == trading_views_.end() ? nullptr : it->second;
 }
 
 bool Engine::post_trading(TradingCommand command, TradingCompletion completion) {
@@ -118,88 +166,140 @@ bool Engine::post_trading(TradingCommand command, TradingCompletion completion) 
 
 void Engine::start_trading() {
   if (!options_.paper_enabled) return;
-  try {
-    std::shared_ptr<Journal> journal = options_.paper_sink;
-    std::optional<JournalRecovery> recovery;
-    if (!options_.paper_journal.empty()) {
-      const auto parent = std::filesystem::absolute(options_.paper_journal).parent_path();
-      auto existing = parent;
-      while (!std::filesystem::exists(existing)) existing = existing.parent_path();
-      std::filesystem::create_directories(parent);
-      for (auto path = parent; path != existing; path = path.parent_path()) sync_directory(path);
-      sync_directory(existing);
-      if (std::filesystem::exists(options_.paper_journal)) {
-        // Lock before reading, then recover the same verified head held by the writer.
-        journal = FileJournal::resume(options_.paper_journal.string());
-        recovery = FileJournal::read(options_.paper_journal.string());
-      } else {
-        journal = FileJournal::create(options_.paper_journal.string());
-        sync_directory(parent);
-      }
+  // Each account opens on its own: one that fails reports why and the rest trade.
+  const auto open = [&](PaperAccount& account, const std::filesystem::path& file, bool seed) {
+    try {
+      std::shared_ptr<Journal> journal = file.empty() ? options_.paper_sink : nullptr;
+      std::optional<JournalRecovery> recovery;
+      if (!file.empty()) std::tie(journal, recovery) = open_journal(file);
+      if (journal) journal = std::make_shared<SettlementJournal>(journal, settlement_source_);
+      if (recovery) account.session = std::make_unique<TradingSession>(TradingSession::recover(*recovery, journal));
+      else if (seed) account.session = std::make_unique<TradingSession>(options_.paper, 0, journal);
+      else throw TradingError(Reason::JOURNAL_CORRUPT, "The account journal is empty");
+    } catch (const TradingError& error) {
+      account.failure = std::string(to_string(error.code())) + ": " + error.what();
+    } catch (const std::exception& error) {
+      account.failure = std::string("JOURNAL_IO: ") + error.what();
     }
-    if (journal) journal = std::make_shared<SettlementJournal>(journal, settlement_source_);
-    if (recovery) trading_ = std::make_unique<TradingSession>(TradingSession::recover(*recovery, journal));
-    if (!trading_) trading_ = std::make_unique<TradingSession>(options_.paper, 0, journal);
-    market_time_ = trading_->snapshot()->time;
-    for (const auto& [symbol, contract] : trading_->contracts()) {
-      if (const auto quote = trading_->quote(symbol)) observations_[symbol] = quote->observation;
+  };
+  accounts_.push_back({std::string(kMainAccount), "Main", nullptr, {}});
+  open(accounts_.back(), options_.paper_journal, true);
+  std::error_code ec;
+  if (!options_.paper_accounts.empty() && std::filesystem::is_directory(options_.paper_accounts, ec)) {
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(options_.paper_accounts, ec))
+      if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string())) files.push_back(entry.path());
+    std::sort(files.begin(), files.end());
+    for (const auto& file : files) {
+      PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}};
+      std::ifstream named(std::filesystem::path(file).replace_extension(".name"));
+      if (std::string name; named && std::getline(named, name) && !name.empty() && name.size() <= 64) account.name = name;
+      open(account, file, false);
+      accounts_.push_back(std::move(account));
     }
-    publish_trading();
-    const std::lock_guard lock(command_mutex_);
-    accepting_commands_ = !stopping_;
-  } catch (const TradingError& error) {
-    fail_trading(std::string(to_string(error.code())) + ": " + error.what());
-  } catch (const std::exception& error) {
-    fail_trading(std::string("JOURNAL_IO: ") + error.what());
   }
+  for (const auto& account : accounts_) {
+    if (!account.session) continue;
+    market_time_ = std::max(market_time_, account.session->snapshot()->time);
+    for (const auto& [symbol, contract] : account.session->contracts())
+      if (const auto quote = account.session->quote(symbol))
+        observations_[symbol] = std::max(observations_[symbol], quote->observation);
+  }
+  publish_trading();
+  const std::lock_guard lock(command_mutex_);
+  accepting_commands_ = !stopping_;
+}
+
+void Engine::create_account(const TradingCommand& c, TradingReply& reply) {
+  if (!options_.paper_enabled || options_.paper_accounts.empty() || stopping_) {
+    reply.error_code = "TRADING_UNAVAILABLE";
+    reply.decision.message = "This server keeps a single paper account";
+    return;
+  }
+  auto base = slug(c.name);
+  if (base.empty() || base == kMainAccount) base = "account";
+  auto id = base;
+  for (int n = 2; find_account(id); ++n) id = base + "-" + std::to_string(n);
+  PaperAccount account{id, c.name, nullptr, {}};
+  try {
+    auto config = options_.paper;
+    config.rules = c.rules;
+    config.initial_cash = c.initial_cash;
+    const auto file = options_.paper_accounts / (id + ".jsonl");
+    auto [journal, recovery] = open_journal(file);
+    if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists at " + file.string());
+    {
+      const auto named = options_.paper_accounts / (id + ".name");
+      std::ofstream out(named, std::ios::trunc);
+      out << c.name << '\n';
+      out.flush();
+      if (!out) throw TradingError(Reason::JOURNAL_IO, "Cannot write " + named.string());
+    }
+    account.session = std::make_unique<TradingSession>(config, market_time_,
+        std::make_shared<SettlementJournal>(journal, settlement_source_));
+  } catch (const TradingError& error) {
+    reply.decision = {error.code(), error.what(), {}, {}, {}};
+    return;
+  } catch (const std::exception& error) {
+    reply.decision = {Reason::JOURNAL_IO, error.what(), {}, {}, {}};
+    return;
+  }
+  accounts_.push_back(std::move(account));
+  publish_trading();
+  reply.account = id;
 }
 
 void Engine::publish_trading() {
-  std::shared_ptr<TradingView> view;
-  if (trading_) {
-    view = std::make_shared<TradingView>();
-    view->snapshot = trading_->snapshot();
-    view->config = trading_->config();
-    view->contracts = trading_->contracts();
-    view->valuations = trading_->valuations();
-    for (const auto& [symbol, contract] : view->contracts) {
-      if (const auto quote = trading_->quote(symbol)) {
-        auto& time = view->market_times[contract.underlying];
-        time = std::max(time, quote->time);
+  if (!options_.paper_enabled) return;
+  std::map<std::string, std::shared_ptr<const TradingView>, std::less<>> views;
+  std::vector<AccountStatus> statuses;
+  for (const auto& account : accounts_) {
+    std::shared_ptr<TradingView> view;
+    if (account.session) {
+      const auto& session = *account.session;
+      view = std::make_shared<TradingView>();
+      view->snapshot = session.snapshot();
+      view->config = session.config();
+      view->contracts = session.contracts();
+      view->valuations = session.valuations();
+      for (const auto& [symbol, contract] : view->contracts) {
+        if (const auto quote = session.quote(symbol)) {
+          auto& time = view->market_times[contract.underlying];
+          time = std::max(time, quote->time);
+        }
+      }
+      for (const auto& [symbol, book] : book_.underlyings()) {
+        auto& time = view->market_times[symbol];
+        time = std::max(time, book.data_time);
       }
     }
-    for (const auto& [symbol, book] : book_.underlyings()) {
-      auto& time = view->market_times[symbol];
-      time = std::max(time, book.data_time);
+    TradingStatus status;
+    status.enabled = account.failure.empty() && view != nullptr;
+    status.reason = account.failure;
+    status.write = status.enabled ? options_.write_mode : "disabled";
+    const auto& config = view ? view->config : options_.paper;
+    status.fee_per_contract = config.fee_per_contract;
+    status.initial_cash = config.initial_cash;
+    status.plan = config.rules.plan;
+    if (view) {
+      status.account_version = view->snapshot->account_version;
+      status.kill_latched = view->snapshot->risk.kill_latched;
+      if (config.rules.evaluation()) {
+        constexpr const char* names[] = {"active", "passed", "failed"};
+        status.evaluation = names[static_cast<int>(view->snapshot->evaluation.status)];
+      }
     }
+    statuses.push_back({account.id, account.name, std::move(status)});
+    if (view) views.emplace(account.id, std::move(view));
   }
   const std::lock_guard lock(mutex_);
-  trading_view_ = std::move(view);
-  auto& status = status_.trading;
-  status.enabled = options_.paper_enabled && trading_failure_.empty();
-  status.reason = trading_failure_;
-  status.write = trading_failure_.empty() ? options_.write_mode : "disabled";
-  const auto& config = trading_view_ ? trading_view_->config : options_.paper;
-  status.fee_per_contract = config.fee_per_contract;
-  status.initial_cash = config.initial_cash;
-  status.plan = config.rules.plan;
-  status.evaluation.clear();
-  if (trading_view_) {
-    status.account_version = trading_view_->snapshot->account_version;
-    status.kill_latched = trading_view_->snapshot->risk.kill_latched;
-    if (config.rules.evaluation()) {
-      constexpr const char* names[] = {"active", "passed", "failed"};
-      status.evaluation = names[static_cast<int>(trading_view_->snapshot->evaluation.status)];
-    }
-  }
+  trading_views_ = std::move(views);
+  if (!statuses.empty()) status_.trading = statuses.front().trading;
+  status_.accounts = std::move(statuses);
 }
 
-void Engine::fail_trading(std::string reason) {
-  trading_failure_ = std::move(reason);
-  {
-    const std::lock_guard lock(command_mutex_);
-    accepting_commands_ = false;
-  }
+void Engine::fail_trading(PaperAccount& account, std::string reason) {
+  account.failure = std::move(reason);
   publish_trading();
 }
 
@@ -211,7 +311,7 @@ void Engine::observe_trading(const md::Event& event) {
     if (const auto* option = book_.option(quote->id)) {
       auto& number = observations_[option->contract.osi_symbol()];
       if (number == std::numeric_limits<std::uint64_t>::max()) {
-        fail_trading("ARITHMETIC_OVERFLOW: quote observation exhausted");
+        for (auto& account : accounts_) fail_trading(account, "ARITHMETIC_OVERFLOW: quote observation exhausted");
       } else {
         ++number;
       }
@@ -225,88 +325,108 @@ void Engine::observe_trading(const md::Event& event) {
 
 void Engine::update_trading(const std::vector<md::Event>& batch,
                             std::deque<PendingCommand>& commands) {
-  if (!trading_ || !trading_failure_.empty()) return;
+  if (accounts_.empty()) return;
   if (batch.empty() && commands.empty()) return;
-  std::set<std::string> symbols;
-  for (const auto& p : trading_->snapshot()->positions) symbols.insert(p.position.contract.osi_symbol());
-  for (const auto& order : trading_->snapshot()->open_orders)
-    for (const auto& symbol : order_symbols(order.request)) symbols.insert(symbol);
-  for (const auto& pending : commands) {
-    if (pending.command.kind == TradingCommand::Kind::Submit)
-      for (const auto& symbol : order_symbols(pending.command.order)) symbols.insert(symbol);
-    if (pending.command.kind == TradingCommand::Kind::Settle) symbols.insert(pending.command.symbol);
-  }
-  std::vector<QuoteObservation> quotes;
-  std::vector<Valuation> valuations;
   const auto now = wall_time();
-  for (const auto& symbol : symbols) {
-    const auto id = instruments_.find(symbol);
-    const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
-    if (option && !trading_->contracts().contains(symbol)) {
-      const auto result = trading_->define(option->contract, market_time_);
-      if (!result.decision.ok()) continue;
-    }
-    const auto definition = trading_->contracts().find(symbol);
-    if (definition == trading_->contracts().end()) continue;
-    if (option) {
-      const auto& a = option->contract;
-      const auto& b = definition->second;
-      if (a.root != b.root || a.underlying != b.underlying || a.expiry != b.expiry ||
-          a.strike != b.strike || a.type != b.type || a.style != b.style ||
-          a.settlement != b.settlement || a.multiplier != b.multiplier || a.standard != b.standard)
-        throw TradingError(Reason::INVALID_CONTRACT, "INVALID_CONTRACT: listed terms conflict with registered definition");
-    }
-    // A stalled feed cannot replenish resting-order liquidity. Keep the orders
-    // and reducer clock intact; ordinary market-time DAY/expiry rules still apply.
-    if (option && option->has_quote && option->quote_ts >= 0 &&
-        paper_acceptance(definition->second.underlying, option->quote_ts, now,
-            status_.capabilities.delay, trading_->config().limits.max_quote_age).code != Reason::FEED_STALLED) {
-      quotes.push_back({symbol, observations_[symbol], option->quote_ts,
-                        quote_price(option->bid), quote_price(option->ask),
-                        whole_size(option->bid_size), whole_size(option->ask_size)});
-    }
-    auto valuation = valuation_for(symbol, definition->second, metrics(definition->second.underlying));
-    // Missing live analytics after recovery must not overwrite a recorded frame.
-    if (valuation.time > 0) valuations.push_back(std::move(valuation));
-  }
-  trading_->on_quotes(quotes, valuations, market_time_);
-  // Underlying prints retain ingress order. The first valid post-expiry last on
-  // the expiry date is our documented PM closing-print approximation.
-  for (const auto& event : batch) {
-    const auto* spot = std::get_if<md::UnderlyingQuote>(&event);
-    if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
-    const auto snapshot = trading_->snapshot();
-    for (const auto& p : snapshot->positions) {
-      const auto& contract = p.position.contract;
-      if (contract.settlement == md::Settlement::PM && contract.underlying == spot->symbol &&
-          spot->ts >= contract.expiry_time() && new_york_date(spot->ts) == contract.expiry) {
-        settlement_source_ = {{"kind", "provider_closing_print"}, {"provider", std::string(provider_.name())},
-                              {"symbol", spot->symbol}, {"quote_time", md::format_timestamp(spot->ts)}};
-        trading_->settle(contract.osi_symbol(), Money::from_double(spot->last), market_time_);
+  for (auto& account : accounts_) {
+    if (!account.session || !account.failure.empty()) continue;
+    auto& session = *account.session;
+    try {
+      std::set<std::string> symbols;
+      for (const auto& p : session.snapshot()->positions) symbols.insert(p.position.contract.osi_symbol());
+      for (const auto& order : session.snapshot()->open_orders)
+        for (const auto& symbol : order_symbols(order.request)) symbols.insert(symbol);
+      for (const auto& pending : commands) {
+        const auto& command = pending.command;
+        if ((command.account.empty() ? kMainAccount : std::string_view(command.account)) != account.id) continue;
+        if (command.kind == TradingCommand::Kind::Submit)
+          for (const auto& symbol : order_symbols(command.order)) symbols.insert(symbol);
+        if (command.kind == TradingCommand::Kind::Settle) symbols.insert(command.symbol);
       }
+      std::vector<QuoteObservation> quotes;
+      std::vector<Valuation> valuations;
+      for (const auto& symbol : symbols) {
+        const auto id = instruments_.find(symbol);
+        const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
+        if (option && !session.contracts().contains(symbol)) {
+          const auto result = session.define(option->contract, market_time_);
+          if (!result.decision.ok()) continue;
+        }
+        const auto definition = session.contracts().find(symbol);
+        if (definition == session.contracts().end()) continue;
+        if (option) {
+          const auto& a = option->contract;
+          const auto& b = definition->second;
+          if (a.root != b.root || a.underlying != b.underlying || a.expiry != b.expiry ||
+              a.strike != b.strike || a.type != b.type || a.style != b.style ||
+              a.settlement != b.settlement || a.multiplier != b.multiplier || a.standard != b.standard)
+            throw TradingError(Reason::INVALID_CONTRACT, "INVALID_CONTRACT: listed terms conflict with registered definition");
+        }
+        // A stalled feed cannot replenish resting-order liquidity. Keep the orders
+        // and reducer clock intact; ordinary market-time DAY/expiry rules still apply.
+        if (option && option->has_quote && option->quote_ts >= 0 &&
+            paper_acceptance(definition->second.underlying, option->quote_ts, now,
+                status_.capabilities.delay, session.config().limits.max_quote_age).code != Reason::FEED_STALLED) {
+          quotes.push_back({symbol, observations_[symbol], option->quote_ts,
+                            quote_price(option->bid), quote_price(option->ask),
+                            whole_size(option->bid_size), whole_size(option->ask_size)});
+        }
+        auto valuation = valuation_for(symbol, definition->second, metrics(definition->second.underlying));
+        // Missing live analytics after recovery must not overwrite a recorded frame.
+        if (valuation.time > 0) valuations.push_back(std::move(valuation));
+      }
+      session.on_quotes(quotes, valuations, market_time_);
+      // Underlying prints retain ingress order. The first valid post-expiry last on
+      // the expiry date is our documented PM closing-print approximation.
+      for (const auto& event : batch) {
+        const auto* spot = std::get_if<md::UnderlyingQuote>(&event);
+        if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
+        const auto snapshot = session.snapshot();
+        for (const auto& p : snapshot->positions) {
+          const auto& contract = p.position.contract;
+          if (contract.settlement == md::Settlement::PM && contract.underlying == spot->symbol &&
+              spot->ts >= contract.expiry_time() && new_york_date(spot->ts) == contract.expiry) {
+            settlement_source_ = {{"kind", "provider_closing_print"}, {"provider", std::string(provider_.name())},
+                                  {"symbol", spot->symbol}, {"quote_time", md::format_timestamp(spot->ts)}};
+            session.settle(contract.osi_symbol(), Money::from_double(spot->last), market_time_);
+          }
+        }
+      }
+      const auto day = new_york_date(market_time_);
+      if (!batch.empty() && day > session.trading_day() &&
+          md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
+          session.snapshot()->valuation_complete) session.roll_day(market_time_);
+    } catch (const TradingError& error) {
+      account.failure = std::string(to_string(error.code())) + ": " + error.what();
+    } catch (const std::exception& error) {
+      account.failure = std::string("TRADING_UNAVAILABLE: ") + error.what();
     }
   }
-  const auto day = new_york_date(market_time_);
-  if (!batch.empty() && day > trading_->trading_day() &&
-      md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
-      trading_->snapshot()->valuation_complete) trading_->roll_day(market_time_);
   publish_trading();
 }
 
 void Engine::apply_command(PendingCommand& pending) {
   TradingReply reply;
-  if (!trading_ || !trading_failure_.empty() || stopping_) {
+  const auto& c = pending.command;
+  auto* account = c.kind == TradingCommand::Kind::CreateAccount ? nullptr : find_account(c.account);
+  if (c.kind == TradingCommand::Kind::CreateAccount) {
+    create_account(c, reply);
+    if (!reply.account.empty()) account = find_account(reply.account);
+  } else if (!account) {
+    reply.error_code = "UNKNOWN_ACCOUNT";
+    reply.decision.message = "No paper account " + c.account;
+  } else if (!account->session || !account->failure.empty() || stopping_) {
     reply.error_code = "TRADING_UNAVAILABLE";
-    reply.decision.message = trading_failure_.empty() ? "Trading is disabled or engine is stopping" : trading_failure_;
+    reply.decision.message = account->failure.empty() ? "Trading is disabled or engine is stopping" : account->failure;
   } else {
-    const auto before = trading_->snapshot();
-    const auto& c = pending.command;
+    auto& session = *account->session;
+    const auto before = session.snapshot();
     // New orders need the underlying's feed to be current, as the ticket shows.
     const auto acceptance = [&](const std::string& underlying) {
-      const auto view = trading_view();
+      const auto view = trading_view(account->id);
       const auto time = view->market_times.find(underlying);
       return paper_acceptance(underlying, time == view->market_times.end() ? 0 : time->second,
-                              wall_time(), status_.capabilities.delay, trading_->config().limits.max_quote_age);
+                              wall_time(), status_.capabilities.delay, session.config().limits.max_quote_age);
     };
     try {
       CommandResult result;
@@ -321,15 +441,15 @@ void Engine::apply_command(PendingCommand& pending) {
               if (const auto* option = book_.option(id->second)) contract = &option->contract;
             }
             if (!contract) {
-              const auto saved = trading_->contracts().find(symbol);
-              if (saved != trading_->contracts().end()) contract = &saved->second;
+              const auto saved = session.contracts().find(symbol);
+              if (saved != session.contracts().end()) contract = &saved->second;
             }
             if (!contract) continue;
             rejection = eligible(*contract);
             if (rejection.ok()) rejection = acceptance(contract->underlying);
             if (!rejection.ok()) break;
           }
-          result = trading_->submit(c.order, market_time_, rejection);
+          result = session.submit(c.order, market_time_, rejection);
           break;
         }
         case TradingCommand::Kind::Modify: {
@@ -337,14 +457,14 @@ void Engine::apply_command(PendingCommand& pending) {
           Decision rejection;
           for (const auto& order : before->open_orders)
             if (order.id == c.order_id) {
-              const auto contract = trading_->contracts().find(order_symbols(order.request).front());
-              if (contract != trading_->contracts().end()) rejection = acceptance(contract->second.underlying);
+              const auto contract = session.contracts().find(order_symbols(order.request).front());
+              if (contract != session.contracts().end()) rejection = acceptance(contract->second.underlying);
             }
-          result = trading_->modify(c.order_id, c.change, market_time_, rejection);
+          result = session.modify(c.order_id, c.change, market_time_, rejection);
           break;
         }
         case TradingCommand::Kind::CancelAll:
-          result = trading_->cancel_all(c.underlying.empty() ? std::nullopt : std::optional(c.underlying), market_time_);
+          result = session.cancel_all(c.underlying.empty() ? std::nullopt : std::optional(c.underlying), market_time_);
           break;
         case TradingCommand::Kind::ClosePositions: {
           std::map<std::string, Decision> rejections;
@@ -353,42 +473,43 @@ void Engine::apply_command(PendingCommand& pending) {
             if ((c.underlying.empty() || underlying == c.underlying) && !rejections.contains(underlying))
               if (auto rejection = acceptance(underlying); !rejection.ok()) rejections.emplace(underlying, std::move(rejection));
           }
-          result = trading_->close_positions(c.underlying.empty() ? std::nullopt : std::optional(c.underlying),
-                                             market_time_, rejections);
+          result = session.close_positions(c.underlying.empty() ? std::nullopt : std::optional(c.underlying),
+                                           market_time_, rejections);
           break;
         }
-        case TradingCommand::Kind::Cancel: result = trading_->cancel(c.order_id, market_time_); break;
+        case TradingCommand::Kind::Cancel: result = session.cancel(c.order_id, market_time_); break;
         case TradingCommand::Kind::Limits:
           if (c.expected_revision != before->risk.limits_revision) {
             reply.error_code = "LIMITS_REVISION";
             reply.decision.message = "Limits changed; refetch the current revision";
-          } else result = trading_->set_limits(c.limits, market_time_);
+          } else result = session.set_limits(c.limits, market_time_);
           break;
-        case TradingCommand::Kind::Trip: result = trading_->trip_kill(c.reason, market_time_); break;
-        case TradingCommand::Kind::Reset: result = trading_->reset_kill(c.reason, market_time_); break;
+        case TradingCommand::Kind::Trip: result = session.trip_kill(c.reason, market_time_); break;
+        case TradingCommand::Kind::Reset: result = session.reset_kill(c.reason, market_time_); break;
         case TradingCommand::Kind::Settle: {
-          const auto it = trading_->contracts().find(c.symbol);
-          if (it != trading_->contracts().end() && it->second.settlement != md::Settlement::AM)
+          const auto it = session.contracts().find(c.symbol);
+          if (it != session.contracts().end() && it->second.settlement != md::Settlement::AM)
             result.decision = {Reason::INVALID_SETTLEMENT, "PM settlement uses the provider closing print", {}, {}, {}};
           else {
             settlement_source_ = {{"kind", "manual_am_import"}, {"symbol", c.symbol}};
-            result = trading_->settle(c.symbol, c.settlement, market_time_);
+            result = session.settle(c.symbol, c.settlement, market_time_);
           }
           break;
         }
         case TradingCommand::Kind::ResetAccount:
           if (!c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed ||
-                                           trading_->config().rules.plan != c.required_pass))
+                                           session.config().rules.plan != c.required_pass))
             result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + " evaluation to start this funded account",
                                {}, {}, {}};
-          else result = trading_->reset_account(c.initial_cash, c.rules, c.reason, market_time_);
+          else result = session.reset_account(c.initial_cash, c.rules, c.reason, market_time_);
           break;
-        case TradingCommand::Kind::Payout: result = trading_->request_payout(c.amount, market_time_); break;
+        case TradingCommand::Kind::Payout: result = session.request_payout(c.amount, market_time_); break;
+        case TradingCommand::Kind::CreateAccount: break;  // handled above
       }
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;
       publish_trading();
-      const auto& orders = trading_->snapshot()->recent_orders;
+      const auto& orders = session.snapshot()->recent_orders;
       for (const auto& order : before->open_orders) {
         if (orders.at(static_cast<std::size_t>(order.id - 1)).status == OrderStatus::Cancelled)
           reply.cancelled_orders.push_back(order.id);
@@ -398,16 +519,19 @@ void Engine::apply_command(PendingCommand& pending) {
       reply.decision = {error.code(), error.what(), {}, {}, {}};
       if (error.code() == Reason::JOURNAL_IO || error.code() == Reason::JOURNAL_CORRUPT ||
           error.code() == Reason::JOURNAL_LOCKED) {
-        fail_trading(std::string(to_string(error.code())) + ": " + error.what());
+        fail_trading(*account, std::string(to_string(error.code())) + ": " + error.what());
         reply.error_code = "TRADING_UNAVAILABLE";
       }
     } catch (const std::exception& error) {
-      fail_trading(std::string("TRADING_UNAVAILABLE: ") + error.what());
+      fail_trading(*account, std::string("TRADING_UNAVAILABLE: ") + error.what());
       reply.error_code = "TRADING_UNAVAILABLE";
-      reply.decision.message = trading_failure_;
+      reply.decision.message = account->failure;
     }
   }
-  reply.view = trading_view();
+  if (account) {
+    reply.account = account->id;
+    reply.view = trading_view(account->id);
+  }
   // A disconnected consumer cannot take down the single owner of the ledger.
   try { pending.completion(std::move(reply)); } catch (...) {}
 }

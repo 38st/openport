@@ -1,5 +1,6 @@
 import type { CandleInterval, Candles, Chain, ExposureMatrix, Status, Summary, Surface } from "./types"
-import type { Account, CancelAllResponse, ClosePositionsResponse, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderChange, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradesResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderChange, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradesResponse, WriteMode } from "./trading-types"
+import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { writeToken } from "../lib/write-token"
 
 export class ApiError extends Error {
@@ -52,26 +53,33 @@ function write<T>(path: string, method: "POST" | "PUT" | "DELETE", mode: WriteMo
 }
 
 const underlying = (symbol: string) => `/api/underlyings/${encodeURIComponent(symbol)}`
+/** Trading routes act on the active account; the main one needs no parameter. */
+function scoped(path: string): string {
+  const account = activeAccount.get()
+  return account === MAIN_ACCOUNT ? path : `${path}${path.includes("?") ? "&" : "?"}account=${encodeURIComponent(account)}`
+}
 
 export const api = {
-  portfolio: (signal?: AbortSignal) => get<Portfolio>("/api/portfolio", signal),
-  orders: (status: "open" | "all" = "all", signal?: AbortSignal) => get<OrdersResponse>(`/api/orders?status=${status}`, signal),
-  fills: (signal?: AbortSignal) => get<FillsResponse>("/api/fills", signal),
-  risk: (signal?: AbortSignal) => get<Risk>("/api/risk", signal),
-  submitOrder: (order: NewOrder, mode: WriteMode) => write<SubmitOrderResponse>("/api/orders", "POST", mode, order),
-  cancelOrder: (id: string, mode: WriteMode) => write<OrderResponse>(`/api/orders/${encodeURIComponent(id)}`, "DELETE", mode),
-  modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(`/api/orders/${encodeURIComponent(id)}`, "PUT", mode, change),
-  cancelAllOrders: (underlying: string | null, mode: WriteMode) => write<CancelAllResponse>("/api/orders/cancel", "POST", mode, underlying ? { underlying } : {}),
-  closePositions: (underlying: string | null, mode: WriteMode) => write<ClosePositionsResponse>("/api/positions/close", "POST", mode, underlying ? { underlying } : {}),
-  updateLimits: (expected_revision: string, limits: Limits, mode: WriteMode) => write<Risk>("/api/risk/limits", "PUT", mode, { expected_revision, limits }),
-  setKill: (action: "trip" | "reset", reason: string, mode: WriteMode) => write<KillResponse>("/api/risk/kill", "POST", mode, { action, reason }),
-  settle: (symbol: string, value: Money, mode: WriteMode) => write<SettlementResponse>("/api/settlements", "POST", mode, { symbol, value }),
-  account: (signal?: AbortSignal) => get<Account>("/api/account", signal),
+  portfolio: (signal?: AbortSignal) => get<Portfolio>(scoped("/api/portfolio"), signal),
+  orders: (status: "open" | "all" = "all", signal?: AbortSignal) => get<OrdersResponse>(scoped(`/api/orders?status=${status}`), signal),
+  fills: (signal?: AbortSignal) => get<FillsResponse>(scoped("/api/fills"), signal),
+  risk: (signal?: AbortSignal) => get<Risk>(scoped("/api/risk"), signal),
+  submitOrder: (order: NewOrder, mode: WriteMode) => write<SubmitOrderResponse>(scoped("/api/orders"), "POST", mode, order),
+  cancelOrder: (id: string, mode: WriteMode) => write<OrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "DELETE", mode),
+  modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "PUT", mode, change),
+  cancelAllOrders: (underlying: string | null, mode: WriteMode) => write<CancelAllResponse>(scoped("/api/orders/cancel"), "POST", mode, underlying ? { underlying } : {}),
+  closePositions: (underlying: string | null, mode: WriteMode) => write<ClosePositionsResponse>(scoped("/api/positions/close"), "POST", mode, underlying ? { underlying } : {}),
+  updateLimits: (expected_revision: string, limits: Limits, mode: WriteMode) => write<Risk>(scoped("/api/risk/limits"), "PUT", mode, { expected_revision, limits }),
+  setKill: (action: "trip" | "reset", reason: string, mode: WriteMode) => write<KillResponse>(scoped("/api/risk/kill"), "POST", mode, { action, reason }),
+  settle: (symbol: string, value: Money, mode: WriteMode) => write<SettlementResponse>(scoped("/api/settlements"), "POST", mode, { symbol, value }),
+  account: (signal?: AbortSignal) => get<Account>(scoped("/api/account"), signal),
   trades: (status: "open" | "closed" | "all" = "all", attempt: "current" | "all" = "current", signal?: AbortSignal) =>
-    get<TradesResponse>(`/api/trades?status=${status}&attempt=${attempt}`, signal),
+    get<TradesResponse>(scoped(`/api/trades?status=${status}&attempt=${attempt}`), signal),
   plans: (signal?: AbortSignal) => get<PlansResponse>("/api/plans", signal),
-  resetAccount: (request: ResetRequest, mode: WriteMode) => write<Account>("/api/account/reset", "POST", mode, request),
-  requestPayout: (amount: Money, mode: WriteMode) => write<Account>("/api/account/payout", "POST", mode, { amount }),
+  accounts: (signal?: AbortSignal) => get<AccountsResponse>("/api/accounts", signal),
+  createAccount: (request: CreateAccountRequest, mode: WriteMode) => write<CreateAccountResponse>("/api/accounts", "POST", mode, request),
+  resetAccount: (request: ResetRequest, mode: WriteMode) => write<Account>(scoped("/api/account/reset"), "POST", mode, request),
+  requestPayout: (amount: Money, mode: WriteMode) => write<Account>(scoped("/api/account/payout"), "POST", mode, { amount }),
   status: (signal?: AbortSignal) => get<Status>("/api/status", signal),
   summary: (symbol: string, signal?: AbortSignal) => get<Summary>(`${underlying(symbol)}/summary`, signal),
   chain: (symbol: string, expiry: string, window: number, signal?: AbortSignal) =>

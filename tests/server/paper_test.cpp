@@ -469,6 +469,80 @@ TEST_F(PaperEngine, PmUsesFirstExpiryDatePrintAndAmWaitsForImport) {
   expect_error(write(*engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5010.00"}}), 422, "ALREADY_SETTLED");
 }
 
+TEST(PaperAccounts, NamedAccountsTradeApartAndRecoverFromTheirOwnJournals) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-accounts-" + std::to_string(md::now()));
+  auto options = paper_options();
+  options.paper_journal = directory / "paper-journal.jsonl";
+  options.paper_accounts = directory / "accounts";
+  test::ScriptedMarket market;
+  std::atomic<md::Timestamp> wall_now{market.time};
+  options.clock = [&] { return wall_now.load(); };
+  std::string swing;
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    EXPECT_EQ(read(engine, "/api/accounts")["accounts"].size(), 1);
+    auto created = write(engine, "POST", "/api/accounts", {{"name", "Swing 50k"}, {"plan", "eod-50k"}});
+    ASSERT_EQ(created.status, 201) << created.body;
+    EXPECT_EQ(json::parse(created.body)["account"]["id"], "swing-50k");
+    EXPECT_EQ(json::parse(created.body)["account"]["equity"], "50000.00");
+    EXPECT_EQ(json::parse(write(engine, "POST", "/api/accounts", {{"name", "Swing 50k"}, {"plan", "practice"}}).body)["account"]["id"], "swing-50k-2");
+    EXPECT_EQ(write(engine, "POST", "/api/accounts", {{"name", "Funded"}, {"plan", "funded-eod-50k"}}).status, 400);
+    EXPECT_EQ(write(engine, "POST", "/api/accounts", {{"name", ""}, {"plan", "practice"}}).status, 400);
+    const auto accounts = read(engine, "/api/accounts")["accounts"];
+    ASSERT_EQ(accounts.size(), 3);
+    EXPECT_EQ(accounts[0]["id"], "main");
+    EXPECT_EQ(accounts[1]["name"], "Swing 50k");
+    EXPECT_EQ(accounts[1]["trading"]["plan"], "End-of-day 50K");
+    EXPECT_EQ(json::parse(server::tick_message(engine))["accounts"].size(), 3);
+
+    provider.sink->publish(md::ContractDefinition{0, market.contract});
+    provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+    provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 10, 10});
+    ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+    const auto bought = write(engine, "POST", "/api/orders?account=swing-50k", order(market, "swing", "4.20"));
+    ASSERT_EQ(bought.status, 201) << bought.body;
+    EXPECT_EQ(json::parse(bought.body)["order"]["status"], "filled");
+    EXPECT_EQ(read(engine, "/api/portfolio?account=swing-50k")["positions"].size(), 1);
+    EXPECT_TRUE(read(engine, "/api/portfolio")["positions"].empty());
+    EXPECT_TRUE(read(engine, "/api/portfolio?account=main")["positions"].empty());
+    EXPECT_EQ(read(engine, "/api/orders?status=open&account=swing-50k")["orders"].size(), 0);
+    // Unknown and malformed accounts are errors, reads and writes alike.
+    EXPECT_EQ(server::handle_api({"GET", "/api/portfolio?account=nobody"}, engine).status, 404);
+    EXPECT_EQ(server::handle_api({"GET", "/api/portfolio?account=Swing"}, engine).status, 400);
+    EXPECT_EQ(write(engine, "POST", "/api/orders?account=nobody", order(market, "lost")).status, 404);
+    EXPECT_EQ(write(engine, "POST", "/api/orders?account=swing-50k&x=1", order(market, "extra")).status, 400);
+    swing = read(engine, "/api/portfolio?account=swing-50k").dump();
+    engine.stop();
+  }
+  EXPECT_TRUE(std::filesystem::exists(directory / "accounts" / "swing-50k.jsonl"));
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view("swing-50k") != nullptr; }));
+    const auto accounts = read(engine, "/api/accounts")["accounts"];
+    ASSERT_EQ(accounts.size(), 3);
+    EXPECT_EQ(accounts[1]["name"], "Swing 50k");
+    EXPECT_EQ(read(engine, "/api/portfolio?account=swing-50k").dump(), swing);
+    EXPECT_TRUE(read(engine, "/api/portfolio")["positions"].empty());
+    engine.stop();
+  }
+  std::filesystem::remove_all(directory);
+}
+
+TEST(PaperAccounts, AServerWithoutAnAccountsDirectoryKeepsOneAccount) {
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, paper_options());
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto response = write(engine, "POST", "/api/accounts", {{"name", "Second"}, {"plan", "practice"}});
+  EXPECT_EQ(response.status, 503) << response.body;
+  EXPECT_EQ(read(engine, "/api/accounts")["accounts"].size(), 1);
+}
+
 TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
   const auto path = std::filesystem::temp_directory_path() / ("openport-paper-" + std::to_string(md::now()) + ".jsonl");
   auto options = paper_options(); options.paper_journal = path;

@@ -6,6 +6,7 @@ import { signedPercent } from "../lib/format"
 import { payoutsVisible } from "../lib/payouts"
 import { navigableViews, type View } from "../lib/route"
 import { formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
+import { AccountSwitcher } from "./AccountSwitcher"
 import { Badge, Meter, toneOf, toneText } from "./ui"
 
 export const viewLabels: Record<View, string> = {
@@ -137,7 +138,7 @@ export function Sidebar({ view, onView, open, onClose }: { view: View; onView: (
             {link("engine")}
           </div>
         </nav>
-        {trading && <div className="border-t border-border p-3"><AccountSummary /></div>}
+        {trading && <div className="space-y-3 border-t border-border p-3"><AccountSwitcher /><AccountSummary /></div>}
       </aside>
     </>
   )

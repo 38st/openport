@@ -331,6 +331,10 @@ export interface SubmitOrderResponse extends OrderResponse { fills: Fill[] }
 /** New terms for a resting order; omitted fields keep their value. */
 export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money }
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
+export interface AccountListItem { id: string; name: string; trading: TradingStatus; equity: Money | null }
+export interface AccountsResponse { accounts: AccountListItem[] }
+export type CreateAccountRequest = { name: string } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
+export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
 /** Each closing order with its outcome; a rejected one carries its reason. */
 export interface ClosePositionsResponse extends CancelAllResponse { orders: Order[]; fills: Fill[] }
 export interface KillResponse { account_version: string; kill: KillState; cancelled_orders: string[] }

@@ -335,7 +335,8 @@ int reason_status(Reason reason) {
 }
 ApiResponse command_response(const TradingCommand& command, const TradingReply& reply) {
   if (!reply.error_code.empty())
-    return api_error(reply.error_code == "LIMITS_REVISION" ? 409 : 503, reply.error_code, reply.decision.message);
+    return api_error(reply.error_code == "LIMITS_REVISION" ? 409 : reply.error_code == "UNKNOWN_ACCOUNT" ? 404 : 503,
+                     reply.error_code, reply.decision.message);
   if (!reply.decision.ok()) return api_error(reason_status(reply.decision.code),
       std::string(to_string(reply.decision.code)), reply.decision.message, reply.decision);
   if (!reply.view || !reply.view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "No trading publication");
@@ -383,6 +384,12 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::Settle: body["position_closed"] = true; break;
     case TradingCommand::Kind::ResetAccount:
     case TradingCommand::Kind::Payout: body = account_json(view); break;
+    case TradingCommand::Kind::CreateAccount:
+      status = 201;
+      body = {{"account", {{"id", reply.account}, {"name", command.name},
+                           {"account_version", std::to_string(s.account_version)},
+                           {"plan", nullable(view.config.rules.plan)}, {"equity", s.equity.str()}}}};
+      break;
   }
   return {status, body.dump()};
 }
@@ -544,37 +551,69 @@ std::string scope_field(const json& body) {
     throw std::invalid_argument("underlying must be an uppercase symbol such as SPX");
   return underlying;
 }
-TradingCommand parse_command(const ApiRequest& request) {
+/// Account IDs are lowercase letters, digits and single hyphens, as their journals are named.
+bool valid_account(std::string_view id) {
+  return !id.empty() && id.size() <= 40 && id.front() != '-' && id.back() != '-' && id.find("--") == std::string_view::npos &&
+         std::all_of(id.begin(), id.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; });
+}
+TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   TradingCommand command;
   if (request.method == "DELETE") {
     if (!request.body.empty()) throw std::invalid_argument("DELETE must have no body");
     command.kind = TradingCommand::Kind::Cancel;
-    command.order_id = identifier(std::string_view(request.target).substr(std::string_view("/api/orders/").size()));
+    command.order_id = identifier(path.substr(std::string_view("/api/orders/").size()));
     return command;
   }
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
   const auto body = strict_json(request.body);
-  if (request.method == "PUT" && request.target.starts_with("/api/orders/")) {
+  if (request.method == "PUT" && path.starts_with("/api/orders/")) {
     fields(body, {}, {"quantity", "limit_price", "trigger_level"});
     command.kind = TradingCommand::Kind::Modify;
-    command.order_id = identifier(std::string_view(request.target).substr(std::string_view("/api/orders/").size()));
+    command.order_id = identifier(path.substr(std::string_view("/api/orders/").size()));
     if (body.contains("quantity")) command.change.quantity = integer_field(body, "quantity");
     if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
     if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
     if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price or trigger_level");
     return command;
   }
-  if (request.target == "/api/orders/cancel") {
+  if (path == "/api/orders/cancel") {
     command.kind = TradingCommand::Kind::CancelAll;
     command.underlying = scope_field(body);
     return command;
   }
-  if (request.target == "/api/positions/close") {
+  if (path == "/api/positions/close") {
     command.kind = TradingCommand::Kind::ClosePositions;
     command.underlying = scope_field(body);
     return command;
   }
-  if (request.target == "/api/orders") {
+  if (path == "/api/accounts") {
+    // A name, and either a preset plan or a starting balance and complete rules.
+    fields(body, {"name"}, {"plan", "initial_cash", "rules"});
+    command.kind = TradingCommand::Kind::CreateAccount;
+    command.name = string_field(body, "name");
+    if (command.name.empty() || command.name.size() > 64 ||
+        std::any_of(command.name.begin(), command.name.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }))
+      throw std::invalid_argument("name must be 1 to 64 printable characters");
+    if (body.contains("plan")) {
+      if (body.contains("initial_cash") || body.contains("rules")) throw std::invalid_argument("plan excludes initial_cash and rules");
+      const auto* plan = find_plan(string_field(body, "plan"));
+      if (!plan) throw std::invalid_argument("Unknown plan; see GET /api/plans");
+      if (!plan->unlocked_by.empty())
+        throw std::invalid_argument("A funded plan starts from an account that passed its evaluation; reset that account instead");
+      command.initial_cash = plan->initial_cash;
+      command.rules = plan->rules;
+    } else {
+      if (!body.contains("initial_cash") || !body.contains("rules"))
+        throw std::invalid_argument("Provide a plan, or both initial_cash and rules");
+      command.initial_cash = decimal_field(body, "initial_cash");
+      if (command.initial_cash <= Money{}) throw std::invalid_argument("initial_cash must be positive");
+      command.rules = parse_rules(body.at("rules"));
+      if (command.rules.phase == Phase::Funded)
+        throw std::invalid_argument("A funded account starts from an account that passed its evaluation");
+    }
+    return command;
+  }
+  if (path == "/api/orders") {
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
     if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price"});
@@ -620,18 +659,18 @@ TradingCommand parse_command(const ApiRequest& request) {
       if (!order.bracket->stop_loss && !order.bracket->take_profit)
         throw std::invalid_argument("A bracket needs a stop_loss, a take_profit or both");
     }
-  } else if (request.target == "/api/risk/limits") {
+  } else if (path == "/api/risk/limits") {
     fields(body, {"expected_revision", "limits"});
     command.kind = TradingCommand::Kind::Limits;
     command.expected_revision = identifier(string_field(body, "expected_revision"));
     command.limits = parse_limits(body.at("limits"));
-  } else if (request.target == "/api/risk/kill") {
+  } else if (path == "/api/risk/kill") {
     fields(body, {"action", "reason"});
     const auto action = string_field(body, "action");
     if (action != "trip" && action != "reset") throw std::invalid_argument("action must be trip or reset");
     command.kind = action == "trip" ? TradingCommand::Kind::Trip : TradingCommand::Kind::Reset;
     command.reason = string_field(body, "reason");
-  } else if (request.target == "/api/account/reset") {
+  } else if (path == "/api/account/reset") {
     // Either a preset ID, or a custom starting balance and complete rules.
     fields(body, {"reason"}, {"plan", "initial_cash", "rules"});
     command.kind = TradingCommand::Kind::ResetAccount;
@@ -651,7 +690,7 @@ TradingCommand parse_command(const ApiRequest& request) {
       if (command.initial_cash <= Money{}) throw std::invalid_argument("initial_cash must be positive");
       command.rules = parse_rules(body.at("rules"));
     }
-  } else if (request.target == "/api/account/payout") {
+  } else if (path == "/api/account/payout") {
     fields(body, {"amount"});
     command.kind = TradingCommand::Kind::Payout;
     command.amount = decimal_field(body, "amount");
@@ -683,46 +722,79 @@ json trading_status_json(const TradingStatus& status) {
           {"initial_cash", status.initial_cash.str()},
           {"plan", nullable(status.plan)}, {"evaluation", nullable(status.evaluation)}};
 }
+json accounts_json(const MetricsSource& source) {
+  json list = json::array();
+  for (const auto& account : source.status().accounts) {
+    const auto view = source.trading_view(account.id);
+    list.push_back({{"id", account.id}, {"name", account.name}, {"trading", trading_status_json(account.trading)},
+                    {"equity", view && view->snapshot ? json(view->snapshot->equity.str()) : json(nullptr)}});
+  }
+  return list;
+}
+json account_ticks_json(const EngineStatus& status) {
+  json list = json::array();
+  for (const auto& account : status.accounts)
+    list.push_back({{"id", account.id}, {"name", account.name}, {"trading", trading_status_json(account.trading)}});
+  return list;
+}
+
+/// Splits "a=1&b=2" into distinct keys; nullopt when a key repeats.
+std::optional<std::map<std::string, std::string>> query_pairs(std::string_view query) {
+  std::map<std::string, std::string> pairs;
+  std::size_t start = 0;
+  while (!query.empty() && start <= query.size()) {
+    const auto end = std::min(query.find('&', start), query.size());
+    const auto pair = query.substr(start, end - start);
+    const auto equals = pair.find('=');
+    if (!pairs.emplace(std::string(pair.substr(0, equals)),
+                       equals == std::string_view::npos ? std::string() : std::string(pair.substr(equals + 1))).second)
+      return std::nullopt;
+    start = end + 1;
+  }
+  return pairs;
+}
+
+/// Whether `account` names an account the source publishes (the main one when empty).
+bool known_account(const MetricsSource& source, const std::string& account) {
+  if (account.empty() || account == kMainAccount) return true;
+  const auto accounts = source.status().accounts;
+  return std::any_of(accounts.begin(), accounts.end(), [&](const auto& a) { return a.id == account; });
+}
+
 std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSource& source) {
   const auto question = request.target.find('?');
   const auto path = request.target.substr(0, question);
   if (path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
-      path != "/api/account" && path != "/api/trades" && path != "/api/plans") return {};
-  const auto query = question == std::string::npos ? "" : request.target.substr(question + 1);
-  // Trades accept status=open|closed|all and attempt=current|all, each at most once, in any order.
-  std::string trade_status = "all", trade_attempt = "current";
-  bool valid_query = query.empty() || (path == "/api/orders" && (query == "status=open" || query == "status=all"));
-  if (path == "/api/trades" && !query.empty()) {
-    valid_query = true;
-    std::set<std::string> seen;
-    std::size_t start = 0;
-    while (valid_query && start <= query.size()) {
-      const auto end = std::min(query.find('&', start), query.size());
-      const auto pair = query.substr(start, end - start);
-      const auto equals = pair.find('=');
-      const auto key = pair.substr(0, equals);
-      const auto value = equals == std::string::npos ? "" : pair.substr(equals + 1);
-      if (!seen.insert(key).second) valid_query = false;
-      else if (key == "status" && (value == "open" || value == "closed" || value == "all")) trade_status = value;
-      else if (key == "attempt" && (value == "current" || value == "all")) trade_attempt = value;
-      else valid_query = false;
-      start = end + 1;
-    }
+      path != "/api/account" && path != "/api/trades" && path != "/api/plans" && path != "/api/accounts") return {};
+  const auto query = question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1);
+  // Every route takes account=ID; orders take status=open|all; trades take
+  // status=open|closed|all and attempt=current|all. Each key at most once.
+  const auto pairs = query_pairs(query);
+  std::string account, status = "all", attempt = "current";
+  bool valid_query = pairs.has_value();
+  for (const auto& [key, value] : pairs.value_or(std::map<std::string, std::string>{})) {
+    if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
+    else if (key == "status" && path == "/api/orders" && (value == "open" || value == "all")) status = value;
+    else if (key == "status" && path == "/api/trades" && (value == "open" || value == "closed" || value == "all")) status = value;
+    else if (key == "attempt" && path == "/api/trades" && (value == "current" || value == "all")) attempt = value;
+    else valid_query = false;
   }
   if (!valid_query) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   if (path == "/api/plans") return ApiResponse{200, plans_json().dump()};
-  const auto view = source.trading_view();
+  if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source)}}.dump()};
+  if (!known_account(source, account)) return api_error(404, "UNKNOWN_ACCOUNT", "No paper account " + account);
+  const auto view = source.trading_view(account);
   if (!view || !view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "Paper trading is disabled or unavailable");
   const auto& s = *view->snapshot;
   if (path == "/api/portfolio") return ApiResponse{200, portfolio_json(*view).dump()};
   if (path == "/api/risk") return ApiResponse{200, risk_json(*view).dump()};
   if (path == "/api/account") return ApiResponse{200, account_json(*view).dump()};
-  if (path == "/api/trades") return ApiResponse{200, trades_json(*view, trade_status, trade_attempt == "current").dump()};
+  if (path == "/api/trades") return ApiResponse{200, trades_json(*view, status, attempt == "current").dump()};
   json body{{"account_version", std::to_string(s.account_version)}};
   if (path == "/api/orders") {
     body["orders"] = json::array();
     for (auto it = s.recent_orders.rbegin(); it != s.recent_orders.rend(); ++it)
-      if (query != "status=open" || it->open()) body["orders"].push_back(order_json(*it, *view));
+      if (status != "open" || it->open()) body["orders"].push_back(order_json(*it, *view));
   } else {
     body["fills"] = json::array();
     for (auto it = s.recent_fills.rbegin(); it != s.recent_fills.rend(); ++it) body["fills"].push_back(fill_json(*it, *view));
@@ -732,20 +804,38 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
 
 void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete) {
   if (request.method == "GET") { complete(handle_api(request, source)); return; }
-  const bool route = (request.method == "POST" && (request.target == "/api/orders" ||
-      request.target == "/api/orders/cancel" || request.target == "/api/positions/close" ||
-      request.target == "/api/risk/kill" || request.target == "/api/settlements" ||
-      request.target == "/api/account/reset" || request.target == "/api/account/payout")) ||
-      (request.method == "PUT" && (request.target == "/api/risk/limits" || request.target.starts_with("/api/orders/"))) ||
-      (request.method == "DELETE" && request.target.starts_with("/api/orders/"));
+  // Writes take one query parameter, account=ID; the route is the path alone.
+  const auto question = request.target.find('?');
+  const std::string path = request.target.substr(0, question);
+  const auto pairs = query_pairs(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
+  const bool route = (request.method == "POST" && (path == "/api/orders" ||
+      path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/accounts" ||
+      path == "/api/risk/kill" || path == "/api/settlements" ||
+      path == "/api/account/reset" || path == "/api/account/payout")) ||
+      (request.method == "PUT" && (path == "/api/risk/limits" || path.starts_with("/api/orders/"))) ||
+      (request.method == "DELETE" && path.starts_with("/api/orders/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
-  const auto trading = source.status().trading;
-  if (trading.reason.starts_with("JOURNAL_LOCKED:")) {
-    complete(api_error(503, "TRADING_UNAVAILABLE", trading.reason));
+  std::string account;
+  if (!pairs || pairs->size() > 1 || (pairs->size() == 1 && (!pairs->contains("account") || !valid_account(pairs->at("account"))) ) ||
+      (pairs->size() == 1 && path == "/api/accounts")) {
+    complete(api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter"));
+    return;
+  }
+  if (pairs->size() == 1) account = pairs->at("account");
+  // An account whose journal another process holds cannot take writes.
+  const auto status = source.status();
+  for (const auto& a : status.accounts)
+    if ((a.id == (account.empty() ? std::string(kMainAccount) : account)) && a.trading.reason.starts_with("JOURNAL_LOCKED:")) {
+      complete(api_error(503, "TRADING_UNAVAILABLE", a.trading.reason));
+      return;
+    }
+  if (status.accounts.empty() && status.trading.reason.starts_with("JOURNAL_LOCKED:")) {
+    complete(api_error(503, "TRADING_UNAVAILABLE", status.trading.reason));
     return;
   }
   try {
-    const auto command = parse_command(request);
+    auto command = parse_command(request, path);
+    command.account = account;
     if (!source.post_trading(command, [command, complete](TradingReply reply) {
           complete(command_response(command, reply));
         })) complete(api_error(503, "TRADING_UNAVAILABLE", "Command inbox full or trading unavailable"));
