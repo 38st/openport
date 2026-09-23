@@ -4,6 +4,9 @@ import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { writeToken } from "../lib/write-token"
 
+/** What a replay plays: a recording in the recordings directory, or the demo market. */
+export type ReplaySource = { file: string } | { demo: true }
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -101,7 +104,7 @@ export const api = {
   surface: (symbol: string, expiries: number, window: number, signal?: AbortSignal) =>
     get<Surface>(`${underlying(symbol)}/surface?expiries=${expiries}&window=${window}`, signal),
   replay: (signal?: AbortSignal) => get<ReplayListing>("/api/replay", signal),
-  startReplay: (file: string, speed: number, mode: WriteMode) => write<{ replay: ReplayState }>("/api/replay", "POST", mode, { file, speed }),
+  startReplay: (source: ReplaySource, speed: number, mode: WriteMode) => write<{ replay: ReplayState }>("/api/replay", "POST", mode, { ...source, speed }),
   controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean }, mode: WriteMode) =>
     write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),
   stopReplay: (mode: WriteMode) => write<{ replay: null }>("/api/replay", "DELETE", mode),

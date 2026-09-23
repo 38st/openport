@@ -59,6 +59,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
 - **Replay**: record every session and trade any recorded day again beside the live
   feed, in its own practice account, at 1× to 300× or as fast as possible, with pause
   and skip.
+- **Demo market**: when markets are closed or the feed has stalled, the terminal offers
+  a simulated day in SPX and SPY options to trade instead, generated on your machine
+  and labelled as simulated prices everywhere it shows.
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
   the terminal and as browser notifications with an optional chime while it is open.
 
@@ -264,7 +267,7 @@ these routes, so anything it does can be scripted:
 | `PUT /api/risk/limits`, `POST /api/risk/kill` | Change the risk limits; trip or reset the kill switch |
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one; every route above takes `?account=ID` for one other than the main account |
-| `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings; start, control or stop a replay. `/api/replay/X` is route `/api/X` on the replay |
+| `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings and the demo market; start one (`{file}` or `{demo: true}`), control or stop it. `/api/replay/X` is route `/api/X` on the replay |
 
 This calendar buys the later put and sells the nearer one at a net debit of at most
 6.60:

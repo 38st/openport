@@ -3,8 +3,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <future>
 #include <nlohmann/json.hpp>
+#include <unistd.h>
 
 #include "openport/providers/replay.hpp"
 #include "openport/server/engine.hpp"
@@ -135,13 +137,14 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
   same_analytics(*expected, *replayed.metrics("SPX"));
 }
 
-server::ApiResponse call(server::ReplayHost& host, std::string method, std::string target, std::string body = {}) {
+server::ApiResponse call(server::ReplayHost& host, std::string method, std::string target, std::string body = {},
+                         std::chrono::seconds timeout = 5s) {
   auto promise = std::make_shared<std::promise<server::ApiResponse>>();
   auto future = promise->get_future();
   server::ApiRequest request{std::move(method), std::move(target), std::move(body)};
   request.content_type = "application/json";
   EXPECT_TRUE(host.handle(request, [promise](server::ApiResponse response) { promise->set_value(std::move(response)); }));
-  if (future.wait_for(5s) != std::future_status::ready) throw std::runtime_error("replay request did not complete");
+  if (future.wait_for(timeout) != std::future_status::ready) throw std::runtime_error("replay request did not complete");
   return future.get();
 }
 
@@ -216,6 +219,57 @@ TEST(ReplayHost, ListsStartsTradesControlsAndStopsARecordedSession) {
   EXPECT_EQ(call(host, "GET", "/api/replay/status").status, 404);
   EXPECT_TRUE(host.tick().empty());
   EXPECT_EQ(call(host, "PUT", "/api/replay", R"({"paused": false})").status, 404);
+}
+
+TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  server::Engine::Options base;
+  base.analytics_interval = 1ms;
+  server::ReplayHost host({file.directory, base});
+  const auto listing = json::parse(call(host, "GET", "/api/replay").body);
+  EXPECT_EQ(listing["demo"]["provider"], "demo");
+  EXPECT_EQ(listing["demo"]["symbols"], json::array({"SPX", "SPY"}));
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": true, "file": "synthetic.oprec"})").status, 400);
+  EXPECT_EQ(call(host, "POST", "/api/replay", "{}").status, 400);
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": 1})").status, 400);
+
+  // Generated on start; at 1x the opening snapshot plays at once and the next waits 15 seconds.
+  const auto started = call(host, "POST", "/api/replay", R"({"demo": true, "plan": "intraday-25k"})", 60s);
+  ASSERT_EQ(started.status, 201) << started.body;
+  const auto replay = json::parse(started.body)["replay"];
+  EXPECT_EQ(replay["demo"], true);
+  EXPECT_EQ(replay["file"], "Demo market");
+  EXPECT_EQ(replay["provider"], "demo");
+  // The player holds the generated file open; nothing is left on disk.
+  const auto prefix = "openport-demo-" + std::to_string(::getpid()) + "-";
+  for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::temp_directory_path()))
+    EXPECT_FALSE(entry.path().filename().string().starts_with(prefix)) << entry.path();
+
+  // Next month's SPY series are the last defined: wait until the one traded here is quoted.
+  ASSERT_TRUE(test::recording_eventually([&] {
+    const auto chain = call(host, "GET", "/api/replay/underlyings/SPY/chain?expiry=2026-10-16PM");
+    if (chain.status != 200) return false;
+    const auto parsed = json::parse(chain.body);
+    for (const auto& row : parsed["strikes"])
+      if (row["strike"] == 600 && row["call"].is_object() && row["call"]["ask"].is_number()) return true;
+    return false;
+  }));
+  const auto status = json::parse(call(host, "GET", "/api/replay/status").body);
+  EXPECT_EQ(status["provider"]["name"], "replay (demo)");
+  EXPECT_EQ(status["provider"]["simulated"], true);
+  EXPECT_EQ(status["trading"]["plan"], "Intraday 25K");
+  const json order{{"client_order_id", "demo"}, {"symbol", md::parse_osi("SPY261016C00600000")->osi_symbol()},
+                   {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}};
+  const auto bought = call(host, "POST", "/api/replay/orders", order.dump());
+  ASSERT_EQ(bought.status, 201) << bought.body;
+  EXPECT_EQ(json::parse(bought.body)["order"]["status"], "filled");
+  EXPECT_EQ(json::parse(host.tick())["replay"]["demo"], true);
+  host.stop();
+
+  server::ReplayHost off({file.directory, base, false});
+  EXPECT_TRUE(json::parse(call(off, "GET", "/api/replay").body)["demo"].is_null());
+  EXPECT_EQ(call(off, "POST", "/api/replay", R"({"demo": true})").status, 404);
 }
 
 TEST(EngineRecording, ExistingFileFailsBeforeProviderStarts) {

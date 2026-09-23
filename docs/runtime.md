@@ -234,6 +234,21 @@ names are plain file names inside the directory; anything else is refused.
 Without a replay, `/api/replay/...` returns 404 `NO_REPLAY`; a recording that cannot
 be read fails to start with 422 `REPLAY_FAILED`.
 
+The **demo market** is a replay of a simulated day, for trying the terminal when
+nothing trades. `POST /api/replay {"demo": true}` generates it
+(`providers::write_demo_recording`, about a second) into a file that the player opens
+and the server unlinks at once, then plays it like a recording under the provider name
+`demo`. Its prices are generated, not market data: status reports
+`provider.simulated`, the terminal labels them "simulated prices", and the replay
+banner reads "Demo". The day is fixed (Wednesday 2026-09-16, the same on every run of
+a build): SPX opens at 6,000, slides about 1% through the morning and rallies in the
+afternoon, SPY follows at a tenth, and implied volatility rises as the index falls,
+with a put skew and a term structure. Each chain has five expiries, 0DTE to next
+month's AM-settled SPX, at 15-second snapshots from 09:30 until SPY's 16:15 close, with
+open interest; quotes sit on each product's ticks. The terminal offers it under the
+header, and in the welcome, when no underlying on the live feed takes orders. The
+Replay page starts it at any speed. `ReplayHost::Options::demo` turns it off.
+
 ## Price history
 
 The chart on Trade reads `GET /api/underlyings/{symbol}/candles` from two sources:

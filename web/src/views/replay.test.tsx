@@ -3,11 +3,14 @@ import type { ReactNode } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "../api/client"
-import { liveState, useLive } from "../api/live"
-import type { ReplayListing, ReplayState, Tick } from "../api/types"
+import { liveState, marketNow, useLive } from "../api/live"
+import type { ReplayListing, ReplayState, Status, Tick } from "../api/types"
+import { DemoPrompt } from "../components/DemoPrompt"
+import { AsOf } from "../components/AsOf"
 import { ReplayBanner } from "../components/ReplayBanner"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
+import { createPromptStore, demoPrompt, idleReason, nothingTrades } from "../lib/demo"
 import { portfolio, status } from "../test/trading-fixtures"
 import { replayClock, ReplayView } from "./ReplayView"
 
@@ -58,6 +61,11 @@ describe("trading a replay", () => {
     expect(state.tick).toBe(replayTick)
     expect(replayClock(replay.time)).toBe("Tue, Sep 22, 15:04:31 ET")
     expect(replayClock(null)).toBe("Not started")
+    // Ages and times to expiry run on the replay's clock, not today's.
+    expect(marketNow(state)).toBe(Date.parse(replay.time!))
+    const live = liveState(status, null, "open", 0, MAIN_ACCOUNT, () => {}, "live", replay)
+    expect(Math.abs(marketNow(live) - Date.now())).toBeLessThan(1_000)
+    expect(render(<AsOf asOf="2026-09-22T19:04:01.000Z" now={Date.parse(replay.time!)} />)).toContain("15:04 ET, &lt;1 min old")
   })
 })
 
@@ -90,6 +98,77 @@ describe("the replay page", () => {
     expect(html).toContain(">Skip gap</button>")
     expect(html).toContain("Trade this replay")
     expect(html).toContain(`aria-label="Replay ${replay.file}">Restart</button>`)
+  })
+})
+
+const demoListing: ReplayListing = { ...recordings, recordings: [],
+  demo: { provider: "demo", symbols: ["SPX", "SPY"], started: "2026-09-16T13:30:00.000Z" } }
+const demoReplay: ReplayState = { ...replay, file: "Demo market", provider: "demo", demo: true, delay_seconds: 0 }
+const idle = { ...status, underlyings: status.underlyings.map((u) => ({ ...u,
+  paper: { accepting: false, reason: "FEED_STALLED", message: `${u.symbol} quotes are behind`, session: "global" as const } })) }
+
+describe("the demo market", () => {
+  it("is offered on the replay page and plays as a simulated day", () => {
+    const html = render(<ReplayView />, demoListing)
+    expect(html).toContain("Demo market")
+    expect(html).toContain("A simulated trading day in SPX and SPY options")
+    expect(html).toContain("not market data")
+    expect(html).toContain(">Start the demo</button>")
+    expect(html).toContain('aria-label="Starting speed"')
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open", 0, MAIN_ACCOUNT, () => {}, "live", demoReplay))
+    const playing = render(<ReplayView />, { ...demoListing, replay: demoReplay })
+    expect(playing).toContain("Demo market · simulated prices, not market data")
+    expect(playing).toContain(">Restart the demo</button>")
+  })
+
+  it("is labelled simulated in the banner", () => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open", 0, MAIN_ACCOUNT, () => {}, "replay", demoReplay))
+    const html = render(<ReplayBanner />)
+    expect(html).toContain(">Demo</span>")
+    expect(html).toContain("Simulated prices, not market data")
+    expect(html).not.toContain(demoReplay.file)
+  })
+
+  it("starts from the API with demo instead of a file", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ replay: demoReplay }), { status: 201 }))
+    vi.stubGlobal("fetch", fetcher)
+    await api.startReplay({ demo: true }, 10, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ method: "POST", body: JSON.stringify({ demo: true, speed: 10 }) }))
+    await api.startReplay({ file: replay.file }, 1, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ body: JSON.stringify({ file: replay.file, speed: 1 }) }))
+  })
+
+  it("is offered under the header only while nothing on the live feed trades", () => {
+    const store = createPromptStore(() => { throw new Error("blocked") })
+    expect(store.get()).toBe(false)
+    expect(render(<DemoPrompt onNavigate={() => {}} />, demoListing)).toBe("")
+    vi.mocked(useLive).mockReturnValue(liveState(idle as Status, null, "open"))
+    const html = render(<DemoPrompt onNavigate={() => {}} />, demoListing)
+    expect(html).toContain("The market data feed has stalled. The demo market plays a simulated day in SPX and SPY options")
+    expect(html).toContain(">Try the demo</button>")
+    expect(html).toContain(">Not now</button>")
+    // Not while a replay runs, nor on a server without the demo.
+    expect(render(<DemoPrompt onNavigate={() => {}} />, { ...demoListing, replay: demoReplay })).toBe("")
+    expect(render(<DemoPrompt onNavigate={() => {}} />, { ...demoListing, demo: null })).toBe("")
+    demoPrompt.hide()
+    expect(render(<DemoPrompt onNavigate={() => {}} />, demoListing)).toBe("")
+  })
+
+  it("says why nothing trades", () => {
+    const closed = { accepting: false, reason: "SESSION_CLOSED", message: null, session: "closed" as const }
+    const stalled = { accepting: false, reason: "FEED_STALLED", message: null, session: "global" as const }
+    const open = { accepting: true, reason: null, message: null, session: "regular" as const }
+    const u = (symbol: string, paper: typeof closed | typeof stalled | typeof open) => ({ ...status.underlyings[0]!, symbol, paper })
+    expect(nothingTrades([])).toBe(false)
+    expect(nothingTrades([u("SPX", closed), u("SPY", open)])).toBe(false)
+    expect(nothingTrades([u("SPX", stalled), u("SPY", closed)])).toBe(true)
+    expect(idleReason([u("SPX", closed), u("SPY", closed)])).toBe("Options markets are closed")
+    expect(idleReason([u("SPX", stalled)])).toBe("The market data feed has stalled")
+    expect(idleReason([u("SPX", stalled), u("SPY", closed), u("QQQ", closed)])).toBe("Options markets are closed and the SPX feed has stalled")
+    // Without paper trading, sessions decide.
+    const session = { ...status.underlyings[0]!, paper: null, session: { name: "closed" as const, open: false, note: "closed (weekend)" } }
+    expect(nothingTrades([session])).toBe(true)
+    expect(idleReason([session])).toBe("Options markets are closed")
   })
 })
 

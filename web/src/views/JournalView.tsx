@@ -1,6 +1,6 @@
 import { Fragment, useMemo, useState } from "react"
 import { api } from "../api/client"
-import { useLive } from "../api/live"
+import { marketNow, useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTrades } from "../api/trading"
 import type { Fill, Trade, TradingStatus } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
@@ -68,7 +68,8 @@ function Journal({ trading }: { trading: TradingStatus }) {
 
 function Calendar({ trades }: { trades: Trade[] }) {
   const days = useMemo(() => dailyResults(trades), [trades])
-  const today = newYorkDate(new Date().toISOString())?.date ?? ""
+  const live = useLive()
+  const today = newYorkDate(new Date(marketNow(live)).toISOString())?.date ?? ""
   const latest = [...days.keys()].sort().at(-1) ?? today
   const [cursor, setCursor] = useState(() => ({ year: Number(latest.slice(0, 4)) || 2026, month: Number(latest.slice(5, 7)) || 1 }))
   const weeks = monthWeeks(cursor.year, cursor.month)

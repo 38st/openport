@@ -15,6 +15,7 @@
 
 #include "openport/analytics/svi.hpp"
 #include "openport/analytics/ssvi.hpp"
+#include "openport/providers/demo.hpp"
 #include "paper_json.hpp"
 
 namespace openport::server {
@@ -283,6 +284,7 @@ json status_json(const MetricsSource& source) {
       {"market", market_json(now)},
       {"provider",
        {{"name", s.provider},
+        {"simulated", providers::simulated_provider(s.provider)},
         {"realtime", s.capabilities.realtime},
         {"realtime_plan_dependent", s.capabilities.realtime_plan_dependent},
         {"poll_interval_seconds", s.capabilities.poll_interval.count()},

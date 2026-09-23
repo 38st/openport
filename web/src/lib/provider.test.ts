@@ -24,6 +24,10 @@ describe("provider label", () => {
     }
   })
 
+  it("calls the demo market's prices simulated, whatever the feed state", () => {
+    for (const state of ["live", "delayed", null] as const) expect(providerLabel({ ...provider, name: "replay (demo)", simulated: true }, state)).toBe("simulated prices")
+  })
+
   it("preserves capability-based labels for older and fixed-plan providers", () => {
     for (const realtime_plan_dependent of [false, null, undefined]) {
       expect(providerLabel({ ...provider, realtime_plan_dependent }, "delayed")).toBe("real-time")

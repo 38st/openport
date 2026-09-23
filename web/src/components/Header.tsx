@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { api } from "../api/client"
-import { useLive } from "../api/live"
+import { marketNow, useLive } from "../api/live"
 import { count, fixed, isNum, price } from "../lib/format"
 import { matchingPayload } from "../lib/payload"
 import { providerLabel } from "../lib/provider"
@@ -20,7 +20,8 @@ export function Header({
   /** Opens the navigation drawer on narrow screens. */
   onMenu?: () => void
 }) {
-  const { status, tick, connection, version, market, underlyings } = useLive()
+  const live = useLive()
+  const { status, tick, connection, version, market, underlyings } = live
   const { theme, toggleTheme } = useTheme()
   const current = underlyings.find((u) => u.symbol === symbol)
   const feed = tick?.feed ?? status?.feed
@@ -65,7 +66,8 @@ export function Header({
                 {inferredSpot ? "≈" : ""}{price(current.spot)}
               </Flash>
             </span>
-            <span className="min-w-0 text-[11px] text-muted">as of <AsOf asOf={current.as_of} delaySeconds={provider?.delay_seconds} market={market} session={current.session} /></span>
+            <span className="min-w-0 text-[11px] text-muted">as of <AsOf asOf={current.as_of} delaySeconds={provider?.delay_seconds} market={market} session={current.session}
+              now={live.source === "replay" ? marketNow(live) : undefined} /></span>
           </div>
         )}
 

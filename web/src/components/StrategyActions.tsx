@@ -79,7 +79,9 @@ export function RollDialog({ group, trading, onClose }: { group: StrategyGroup; 
 }
 
 /** Held strategies with their net value, P&L and Greeks, and one-click close and roll. */
-export function Strategies({ groups, trading }: { groups: readonly StrategyGroup[]; trading: TradingStatus }) {
+export function Strategies({ groups, trading, now = Date.now() }: { groups: readonly StrategyGroup[]; trading: TradingStatus
+  /** The market's clock, for the time to expiry: a replay's while trading one. */
+  now?: number }) {
   const [closing, setClosing] = useState<StrategyGroup | null>(null)
   const [rolling, setRolling] = useState<StrategyGroup | null>(null)
   const net = (value: number | null) => value == null ? "—" : `${formatMoney(Math.abs(value).toFixed(2))} ${value < 0 ? "cr" : "db"}`
@@ -90,7 +92,7 @@ export function Strategies({ groups, trading }: { groups: readonly StrategyGroup
           <th key={h} scope="col" className={`px-2 py-2 text-[11px] font-normal uppercase tracking-wide ${i === 0 ? "text-left" : ""}`}>{h}</th>)}</tr></thead>
         <tbody className="[&_td]:px-2 [&_td]:py-2 [&_tr]:border-t [&_tr]:border-border/40">
           {groups.map((group) => {
-            const left = group.expires != null && Number.isFinite(group.expires) ? (group.expires - Date.now()) / 86_400_000 : null
+            const left = group.expires != null && Number.isFinite(group.expires) ? (group.expires - now) / 86_400_000 : null
             return <tr key={group.order.id}>
               <td className="text-left">
                 <div className="flex items-center gap-1.5 font-medium">{group.label} <Badge tone="accent">{group.legs.length} legs</Badge></div>

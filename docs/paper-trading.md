@@ -885,8 +885,8 @@ focus at the top of the ticket.
 
 Every route in this table except `/api/plans` and `/api/accounts` takes `account=ID`
 in its query for an account other than the main one (see [accounts](#accounts)).
-`/api/replay` and the routes under it serve a replay of a recording; see
-[replaying in the terminal](runtime.md#replaying-in-the-terminal).
+`/api/replay` and the routes under it serve a replay of a recording or the simulated
+demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
 buying_power, expiry_cutoff_seconds}` with null money for a disabled target or

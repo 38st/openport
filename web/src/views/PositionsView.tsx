@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useMemo, useState, type ReactNode } from "react"
 import { api } from "../api/client"
-import { useLive } from "../api/live"
+import { marketNow, useLive } from "../api/live"
 import { useAccount, useAllOrders, useRefreshTrading, useTradingQueries } from "../api/trading"
 import type { Order, Position, Risk, StockHolding, TradingStatus } from "../api/trading-types"
 import { Dialog } from "../components/Dialog"
@@ -122,7 +122,8 @@ export function PositionsView() {
 }
 
 function PositionsAccount({ trading }: { trading: TradingStatus }) {
-  const { underlyings } = useLive()
+  const live = useLive()
+  const { underlyings } = live
   const { portfolio, orders, risk } = useTradingQueries()
   const account = useAccount().data
   const allOrders = useAllOrders().data?.orders
@@ -164,7 +165,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <Tile label="Realized" value={signedMoney(data.realised)} tone={toneOf(data.realised)} detail={`fees ${formatMoney(data.fees)}`} />
       </div>
       <p className="text-[11px] text-muted">Valued {timestampET(data.time)}</p>
-      {groups.length > 0 && <Panel title={`Strategies · ${groups.length}`}><Strategies groups={groups} trading={trading} /></Panel>}
+      {groups.length > 0 && <Panel title={`Strategies · ${groups.length}`}><Strategies groups={groups} trading={trading} now={marketNow(live)} /></Panel>}
       <Panel title={`Open positions · ${data.positions.length}`} actions={trading.enabled && (data.positions.length > 0 || (data.stocks?.length ?? 0) > 0) ? <>
         {data.positions.length > 1 && <>
           <span className="text-[11px] text-muted">{picked.size ? `${picked.size} picked` : "Pick positions to close them in one order"}</span>

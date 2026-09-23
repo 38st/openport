@@ -16,8 +16,8 @@ namespace openport::server {
 /// as they did that day. Its API mirrors the live one under /api/replay/..., so the
 /// terminal trades a recorded day exactly as it trades today.
 ///
-///   GET    /api/replay   recordings in the directory, and the replay running
-///   POST   /api/replay   {file, speed?, plan?}: start one (stopping any other)
+///   GET    /api/replay   recordings in the directory, the demo, and the replay running
+///   POST   /api/replay   {file | demo: true, speed?, plan?}: start one (stopping any other)
 ///   PUT    /api/replay   {speed?, paused?, skip?}: control it
 ///   DELETE /api/replay   stop it
 ///   *      /api/replay/X the live route /api/X, on the replay
@@ -29,6 +29,9 @@ class ReplayHost {
     /// Analytics, paper and write settings for replay engines; journals, recording
     /// and chart persistence are always off for a replay.
     Engine::Options engine;
+    /// Offer the demo market, a simulated day generated on each start
+    /// (providers::write_demo_recording) and played like a recording.
+    bool demo = true;
   };
 
   explicit ReplayHost(Options options);

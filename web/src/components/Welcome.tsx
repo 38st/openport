@@ -3,6 +3,7 @@ import { useLive } from "../api/live"
 import { providerLabel } from "../lib/provider"
 import type { View } from "../lib/route"
 import { formatMoney } from "../lib/trading"
+import { useDemoOffer } from "./DemoPrompt"
 import { Dialog } from "./Dialog"
 
 const key = "openport.welcome"
@@ -40,6 +41,7 @@ export function useWelcome() {
 export function Welcome({ onNavigate }: { onNavigate: (view: View) => void }) {
   const open = useWelcome()
   const { status, trading } = useLive()
+  const offer = useDemoOffer()
   if (!open || !status) return null
   const provider = status.provider
   const symbols = status.underlyings.map((u) => u.symbol)
@@ -70,9 +72,13 @@ export function Welcome({ onNavigate }: { onNavigate: (view: View) => void }) {
       </>}
       <li>The bell sets price and fill alerts. Number keys switch pages; the arrow keys step through expiries.</li>
     </ul>
+    {offer.offered && <p className="text-sm">{offer.reason}. In the meantime the demo market plays a simulated day
+      in {offer.symbols.join(" and ")} options, with generated prices and its own paper account.</p>}
     <p className="text-xs text-muted">Simulated fills, no order routing, not investment advice.</p>
     <div className="flex flex-wrap gap-2">
-      <button type="button" className="trade-button border-accent text-foreground" onClick={() => go("chain")}>Start on the chain</button>
+      {offer.offered && <button type="button" className="trade-button border-accent text-foreground"
+        onClick={() => { welcome.close(); offer.start(() => onNavigate("replay")) }}>Try the demo</button>}
+      <button type="button" className={`trade-button ${offer.offered ? "" : "border-accent text-foreground"}`} onClick={() => go("chain")}>Start on the chain</button>
       {trading?.enabled && <button type="button" className="trade-button" onClick={() => go("dashboard")}>See the account</button>}
     </div>
   </Dialog>

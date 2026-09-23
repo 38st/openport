@@ -121,6 +121,12 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   return <LiveContext value={value}>{children}</LiveContext>
 }
 
+/** Now on the market's clock: the replay's while trading one, otherwise the wall clock. */
+export function marketNow(live: Pick<Live, "source" | "replay">): number {
+  const replay = live.source === "replay" && live.replay?.time ? Date.parse(live.replay.time) : Number.NaN
+  return Number.isFinite(replay) ? replay : Date.now()
+}
+
 export function useLive(): Live {
   const live = useContext(LiveContext)
   if (!live) throw new Error("useLive outside LiveProvider")

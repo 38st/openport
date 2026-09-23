@@ -5,6 +5,7 @@ import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
 import { AlertWatcher, Toasts } from "./components/Alerts"
 import { Header } from "./components/Header"
+import { DemoPrompt } from "./components/DemoPrompt"
 import { ReplayBanner } from "./components/ReplayBanner"
 import { Welcome, welcome } from "./components/Welcome"
 import { Sidebar, viewLabels } from "./components/Sidebar"
@@ -91,6 +92,7 @@ export function App() {
       <Sidebar view={view} onView={(next) => navigate({ view: next })} open={menu} onClose={closeMenu} />
       <div className="flex min-w-0 flex-1 flex-col">
         <ReplayBanner />
+        <DemoPrompt onNavigate={(next) => navigate({ view: next })} />
         <Header symbol={symbol} onSymbol={(s) => navigate({ symbol: s, expiry: null })} onMenu={() => setMenu(true)} />
         <main className="min-w-0 flex-1 p-3 lg:p-5">{content}</main>
         <AlertWatcher />

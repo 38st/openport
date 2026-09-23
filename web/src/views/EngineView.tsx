@@ -1,4 +1,4 @@
-import { useLive } from "../api/live"
+import { marketNow, useLive } from "../api/live"
 import { Panel, FeedBadge } from "../components/ui"
 import { AsOf } from "../components/AsOf"
 import { clock, count, fixed, price } from "../lib/format"
@@ -19,7 +19,8 @@ function Capability({ on, label }: { on: boolean; label: string }) {
 }
 
 export function EngineView() {
-  const { status, tick, market, underlyings } = useLive()
+  const live = useLive()
+  const { status, tick, market, underlyings } = live
   if (!status) return null
   const { provider } = status
   const feed = tick?.feed ?? status.feed
@@ -82,7 +83,8 @@ export function EngineView() {
                   <td className="py-1 text-right">{price(u.spot)}</td>
                   <td className="py-1 text-right">{count(u.expiries)}</td>
                   <td className="py-1 text-right">{count(u.options)}</td>
-                  <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} market={market} session={u.session} /></td>
+                  <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} market={market} session={u.session}
+                    now={live.source === "replay" ? marketNow(live) : undefined} /></td>
                 </tr>
               ))}
             </tbody>

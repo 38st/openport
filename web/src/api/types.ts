@@ -7,6 +7,8 @@ export type FeedState = "connecting" | "live" | "delayed" | "stale" | "error" | 
 
 export interface ProviderInfo {
   name: string
+  /** Generated prices, not market data: the demo market. Absent on older servers. */
+  simulated?: boolean
   realtime: boolean
   realtime_plan_dependent?: boolean | null
   delay_seconds: number
@@ -265,6 +267,8 @@ export interface Surface {
 /** The replay running beside the live feed: its recording, speed and clock. */
 export interface ReplayState {
   file: string
+  /** The demo market: a simulated day rather than a recording of real quotes. */
+  demo?: boolean
   provider: string
   symbols: string[]
   started: string | null
@@ -284,7 +288,9 @@ export interface ReplayRecording {
   delay_seconds?: number
   error?: string
 }
-export interface ReplayListing { directory: string; recordings: ReplayRecording[]; replay: ReplayState | null }
+/** The demo market the server offers: a simulated day in these symbols. */
+export interface ReplayDemo { provider: string; symbols: string[]; started: string }
+export interface ReplayListing { directory: string; recordings: ReplayRecording[]; demo?: ReplayDemo | null; replay: ReplayState | null }
 
 export interface Tick {
   trading?: TradingStatus | null

@@ -62,6 +62,7 @@ if(OPENPORT_BUILD_PROVIDERS)
   # One adapter per market-data provider.
   add_library(openport_providers
     providers/factory.cpp
+    providers/demo.cpp
     providers/replay.cpp
     providers/snapshot.cpp
     providers/cboe.cpp

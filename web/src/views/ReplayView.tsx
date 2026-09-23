@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { useRef, useState } from "react"
-import { api } from "../api/client"
+import { api, type ReplaySource } from "../api/client"
 import { useLive } from "../api/live"
 import type { ReplayRecording, ReplayState } from "../api/types"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
@@ -37,7 +37,7 @@ export function useReplayControls() {
     pause: (paused: boolean) => run(() => api.controlReplay({ paused }, mode)),
     skip: () => run(() => api.controlReplay({ skip: true }, mode)),
     stop: () => run(() => api.stopReplay(mode)),
-    start: (file: string, speed: number, then: () => void) => run(async () => { await api.startReplay(file, speed, mode); then() }),
+    start: (source: ReplaySource, speed: number, then: () => void) => run(async () => { await api.startReplay(source, speed, mode); then() }),
   }
 }
 
@@ -57,10 +57,15 @@ function Controls({ replay }: { replay: ReplayState }) {
   </div>
 }
 
+/** What is playing: the demo's simulated day, or a recording from a provider. */
+export function replayTitle(replay: ReplayState) {
+  return replay.demo ? "Demo market · simulated prices, not market data" : `${replay.file} · ${replay.provider} · ${replay.symbols.join(", ")}`
+}
+
 /**
  * Replays run a recorded day beside the live feed, with their own paper account and
- * chart: pick a recording, set the pace, then trade it from every page as if it were
- * that day.
+ * chart: pick a recording, or the demo market's simulated day, set the pace, then
+ * trade it from every page as if it were that day.
  */
 export function ReplayView() {
   const live = useLive()
@@ -69,8 +74,12 @@ export function ReplayView() {
   const [speed, setSpeed] = useState(10)
   const replay = live.replay ?? listing.data?.replay ?? null
   const recordings = listing.data?.recordings ?? []
+  const demo = listing.data?.demo
+  const started = () => { live.switchSource("replay"); void listing.refetch() }
   return <div className="min-w-0 space-y-4">
     <PageHeader title="Replay" subtitle="Trade a recorded day with its own paper account, at the pace you choose">
+      {(demo || recordings.length > 0) && <Segmented label="Starting speed" value={speed} onChange={setSpeed}
+        options={[1, 10, 60, 0].map((value) => ({ value, label: speedLabel(value) }))} />}
       {live.status?.trading && <WriteAccess trading={live.status.trading} />}
     </PageHeader>
     {replay ? (
@@ -79,14 +88,23 @@ export function ReplayView() {
         : <button type="button" className="trade-button border-accent" onClick={() => live.switchSource("replay")}>Trade this replay</button>}>
         <div className="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <span className="text-lg font-medium tabular">{replayClock(replay.time)}</span>
-          <span className="text-sm text-muted">{replay.file} · {replay.provider} · {replay.symbols.join(", ")}</span>
+          <span className="text-sm text-muted">{replayTitle(replay)}</span>
           {replay.finished ? <Badge tone="neutral">finished</Badge> : replay.paused ? <Badge tone="warn">paused</Badge> : <Badge tone="positive">{speedLabel(replay.speed)}</Badge>}
         </div>
         <Controls replay={replay} />
       </Panel>
     ) : null}
-    <Panel title="Recordings" actions={recordings.length > 0 ? <Segmented label="Starting speed" value={speed} onChange={setSpeed}
-      options={[1, 10, 60, 0].map((value) => ({ value, label: speedLabel(value) }))} /> : undefined}>
+    {demo && <Panel title="Demo market">
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="min-w-0 flex-1 text-sm">A simulated trading day in {demo.symbols.join(" and ")} options, from the open to the last
+          trade at 4:15 pm: prices are generated on this server, not market data. It plays like a recording, with its own paper
+          account, so every page works while markets are closed.</p>
+        <button type="button" className="trade-button border-accent text-foreground" disabled={controls.pending || controls.blocked}
+          onClick={() => void controls.start({ demo: true }, speed, started)}>
+          {controls.pending ? "Starting…" : replay?.demo ? "Restart the demo" : "Start the demo"}</button>
+      </div>
+    </Panel>}
+    <Panel title="Recordings">
       <TradingError error={listing.error ?? controls.error} />
       {!listing.data ? <Empty>Loading recordings…</Empty> : recordings.length === 0 ? (
         <div className="space-y-2 text-sm text-muted">
@@ -109,8 +127,8 @@ export function ReplayView() {
                 <td>{size(recording.bytes)}</td>
                 <td className="text-right"><button type="button" className="trade-button" disabled={!!recording.error || controls.pending || controls.blocked}
                   aria-label={`Replay ${recording.file}`}
-                  onClick={() => void controls.start(recording.file, speed, () => { live.switchSource("replay"); void listing.refetch() })}>
-                  {replay?.file === recording.file ? "Restart" : "Replay"}</button></td>
+                  onClick={() => void controls.start({ file: recording.file }, speed, started)}>
+                  {replay?.file === recording.file && !replay.demo ? "Restart" : "Replay"}</button></td>
               </tr>)}
             </tbody>
           </table>

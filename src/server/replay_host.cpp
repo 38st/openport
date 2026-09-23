@@ -1,10 +1,13 @@
 #include "openport/server/replay_host.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <nlohmann/json.hpp>
 #include <system_error>
+#include <unistd.h>
 #include <vector>
 
+#include "openport/providers/demo.hpp"
 #include "openport/providers/replay.hpp"
 #include "openport/server/plans.hpp"
 
@@ -58,6 +61,30 @@ json parse_body(const ApiRequest& request, std::initializer_list<std::string_vie
   return body;
 }
 
+json demo_json() {
+  const providers::DemoOptions demo;
+  return {{"provider", providers::kDemoProvider}, {"symbols", {"SPX", "SPY"}},
+          {"started", md::format_timestamp(md::new_york_to_utc(demo.date, 9, 30))}};
+}
+
+/// Generates the demo day where only this process looks, and returns a player for
+/// it. The player holds the file open, so it is unlinked at once and leaves nothing behind.
+std::unique_ptr<providers::ReplayProvider> demo_provider(int speed) {
+  static std::atomic<unsigned> count{0};
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("openport-demo-" + std::to_string(::getpid()) + "-" + std::to_string(++count) + ".oprec");
+  std::error_code ec;
+  try {
+    providers::write_demo_recording(path);
+    auto provider = std::make_unique<providers::ReplayProvider>(providers::ReplayProvider::Options{path, speed, false, nullptr});
+    std::filesystem::remove(path, ec);
+    return provider;
+  } catch (...) {
+    std::filesystem::remove(path, ec);
+    throw;
+  }
+}
+
 int speed_field(const json& body) {
   const auto& value = body.at("speed");
   if (!value.is_number_integer() || !providers::ReplayProvider::valid_speed(value.get<int>()))
@@ -68,6 +95,7 @@ int speed_field(const json& body) {
 
 struct ReplayHost::Session {
   std::string file;
+  bool demo = false;
   // The engine reads the provider, so it is declared after it and stops first.
   std::unique_ptr<providers::ReplayProvider> provider;
   std::unique_ptr<Engine> engine;
@@ -76,6 +104,7 @@ struct ReplayHost::Session {
     const auto time = provider->time();
     json out = header_json(provider->header());
     out["file"] = file;
+    out["demo"] = demo;
     out["speed"] = provider->speed();
     out["paused"] = provider->paused();
     out["finished"] = provider->finished();
@@ -132,23 +161,37 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
     if (request.method == "GET") {
       const auto session = current();
       complete(ok({{"directory", options_.recordings.string()}, {"recordings", recordings_json(options_.recordings)},
+                   {"demo", options_.demo ? demo_json() : json(nullptr)},
                    {"replay", session ? session->state() : json(nullptr)}}));
     } else if (request.method == "POST") {
-      const auto body = parse_body(request, {"file", "speed", "plan"});
-      if (!body.contains("file") || !body.at("file").is_string()) throw std::invalid_argument("file must be a recording's name");
-      const auto name = body.at("file").get<std::string>();
-      const auto path = options_.recordings / name;
-      std::error_code ec;
-      if (options_.recordings.empty() || !plain_name(name) || !std::filesystem::is_regular_file(path, ec)) {
-        complete(api_error(404, "NOT_FOUND", "No recording " + name + " in the recordings directory"));
+      const auto body = parse_body(request, {"file", "demo", "speed", "plan"});
+      if (body.contains("demo") && !body.at("demo").is_boolean()) throw std::invalid_argument("demo must be true or false");
+      const bool demo = body.contains("demo") && body.at("demo").get<bool>();
+      if (demo == body.contains("file")) throw std::invalid_argument("Give either file, a recording's name, or demo: true");
+      if (demo && !options_.demo) {
+        complete(api_error(404, "NOT_FOUND", "The demo market is off on this server"));
         return;
+      }
+      std::string name = "Demo market";
+      std::filesystem::path path;
+      if (!demo) {
+        if (!body.at("file").is_string()) throw std::invalid_argument("file must be a recording's name");
+        name = body.at("file").get<std::string>();
+        path = options_.recordings / name;
+        std::error_code ec;
+        if (options_.recordings.empty() || !plain_name(name) || !std::filesystem::is_regular_file(path, ec)) {
+          complete(api_error(404, "NOT_FOUND", "No recording " + name + " in the recordings directory"));
+          return;
+        }
       }
       const int speed = body.contains("speed") ? speed_field(body) : 1;
       const auto* plan = find_plan(body.contains("plan") && body.at("plan").is_string() ? body.at("plan").get<std::string>() : "practice");
       if (!plan || !plan->unlocked_by.empty()) throw std::invalid_argument("plan must be an evaluation or practice plan; see GET /api/plans");
       auto session = std::make_shared<Session>();
       session->file = name;
-      session->provider = std::make_unique<providers::ReplayProvider>(providers::ReplayProvider::Options{path, speed, false, nullptr});
+      session->demo = demo;
+      session->provider = demo ? demo_provider(speed)
+          : std::make_unique<providers::ReplayProvider>(providers::ReplayProvider::Options{path, speed, false, nullptr});
       auto engine = options_.engine;
       engine.paper_journal.clear();
       engine.paper_accounts.clear();

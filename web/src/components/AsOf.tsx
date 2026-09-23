@@ -2,14 +2,17 @@ import { useEffect, useState } from "react"
 import type { MarketSession, TradingSession, Num } from "../api/types"
 import { marketBadge, snapshotFreshness } from "../lib/freshness"
 
-export function AsOf({ asOf, delaySeconds = 0, market, session, showBadge = true }: {
+export function AsOf({ asOf, delaySeconds = 0, market, session, showBadge = true, now: clock }: {
   asOf: string | null | undefined
   delaySeconds?: Num
   market?: MarketSession | null
   session?: TradingSession | null
   showBadge?: boolean
+  /** The market's clock when it is not the wall's: a replay's. */
+  now?: number
 }) {
-  const [now, setNow] = useState(Date.now)
+  const [wall, setNow] = useState(Date.now)
+  const now = clock ?? wall
   useEffect(() => {
     // Closed feeds still age even when neither REST nor the socket emits changes.
     const timer = window.setInterval(() => setNow(Date.now()), 30_000)

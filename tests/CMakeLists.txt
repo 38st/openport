@@ -21,6 +21,7 @@ if(OPENPORT_BUILD_PROVIDERS)
   target_sources(openport_tests PRIVATE
     md/recording_test.cpp
     providers/replay_test.cpp
+    providers/demo_test.cpp
     server/recording_test.cpp
     net/http_test.cpp
     providers/cboe_test.cpp
