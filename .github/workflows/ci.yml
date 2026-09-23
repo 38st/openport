@@ -1,0 +1,68 @@
+name: CI
+
+# Manual while the repository is private, where Actions minutes are billed.
+# Add push and pull_request triggers when it goes public.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpp:
+    name: C++ (GCC 13, Ubuntu 24.04, warnings as errors)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build libboost-dev libssl-dev zlib1g-dev libzstd-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DOPENPORT_WERROR=ON -DOPENPORT_BUILD_BENCHMARKS=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ./build/tests/openport_tests
+
+  web:
+    name: Web (TypeScript, Vitest, Vite)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx tsc -p tsconfig.json
+      - run: npx vitest run
+      - run: npx vite build
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t openport:ci .
+      - name: Smoke test
+        run: |
+          docker run -d --rm --name openport -p 127.0.0.1:8080:8080 openport:ci
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/api/status > /dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/api/status > /dev/null
+          test "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://127.0.0.1:8080//etc/passwd)" = 400
+          docker stop openport
