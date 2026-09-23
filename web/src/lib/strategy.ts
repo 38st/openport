@@ -1,11 +1,12 @@
 import type { OptionQuote } from "../api/types"
 import type { Side } from "../api/trading-types"
-import { nakedRequirement } from "./ticket"
+import { powerUse, trade, type MarginPosition, type PowerUse } from "./margin"
 
 export type Kind = "call" | "put"
 /** A leg as the ticket holds it, with its latest quote. */
 export interface StrategyLeg {
   symbol: string
+  underlying: string
   side: Side
   ratio: number
   type: Kind
@@ -125,41 +126,14 @@ export function riskProfile(legs: StrategyLeg[], units: number, net: number): Ri
 }
 
 /**
- * The server's margin rule for these legs alone: shorts paired with same-type
- * longs as verticals (width, never more than naked) and the rest naked at their
- * buy-back value plus the naked requirement; or the worst expiry loss when it
- * is bounded, whichever is less.
+ * Mirrors the server's reservation for a multi-leg order: fees, plus the change
+ * in the margin requirement from the held positions to after the fill (legs
+ * sold short at their mid), plus the net debit (less a net credit).
  */
-export function strategyRequirement(legs: StrategyLeg[], units: number, spot: number | null | undefined): number {
-  const naked = (leg: StrategyLeg, n: number) => n * (100 * (leg.quote?.mid ?? 0) + nakedRequirement(leg.type, leg.strike, spot))
-  let verticals = 0
-  for (const type of ["put", "call"] as const) {
-    const order = (a: StrategyLeg, b: StrategyLeg) => (type === "put" ? b.strike - a.strike : a.strike - b.strike)
-    const shorts = legs.filter((l) => l.type === type && l.side === "sell").sort(order).map((leg) => ({ leg, left: leg.ratio * units }))
-    const longs = legs.filter((l) => l.type === type && l.side === "buy").sort(order).map((leg) => ({ leg, left: leg.ratio * units }))
-    let next = 0
-    for (const short of shorts) {
-      while (short.left > 0 && next < longs.length) {
-        const long = longs[next]!
-        const n = Math.min(short.left, long.left)
-        const width = Math.max(0, type === "put" ? short.leg.strike - long.leg.strike : long.leg.strike - short.leg.strike)
-        verticals += Math.min(width * 100 * n, naked(short.leg, n))
-        short.left -= n
-        if ((long.left -= n) === 0) next++
-      }
-      if (short.left > 0) verticals += naked(short.leg, short.left)
-    }
-  }
-  const expiries = new Set(legs.map((l) => l.expiry)).size
-  const calls = legs.reduce((total, leg) => total + (leg.type === "call" ? sign(leg.side) * leg.ratio : 0), 0)
-  if (expiries > 1 || calls < 0) return verticals
-  const worst = Math.min(0, ...[0, ...legs.map((l) => l.strike)].map((s) => payoff(legs, units, 0, s)))
-  return Math.min(verticals, Math.max(0, -worst))
-}
-
-/** Buying power the order would reserve, negative: fees plus its net debit (less a credit) and the legs' requirement. */
-export function strategyBuyingPowerEffect(legs: StrategyLeg[], units: number, net: number | null, fee: number, spot: number | null | undefined): number | null {
+export function strategyPowerUse(legs: StrategyLeg[], units: number, net: number | null, fee: number,
+  spot: number | null | undefined, held: MarginPosition[] = []): PowerUse | null {
   if (!legs.length || !Number.isSafeInteger(units) || units <= 0 || net == null || !Number.isFinite(net) || !Number.isFinite(fee)) return null
   const fees = fee * units * legs.reduce((total, leg) => total + leg.ratio, 0)
-  return -(fees + Math.max(0, strategyRequirement(legs, units, spot) + net * 100 * units))
+  const after = legs.reduce((book, leg) => trade(book, leg, sign(leg.side) * leg.ratio * units, leg.quote?.mid ?? 0), held)
+  return powerUse(held, after, net * 100 * units, fees, spot)
 }

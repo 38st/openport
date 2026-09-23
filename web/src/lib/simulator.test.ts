@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { quote, trades } from "../test/trading-fixtures"
+import { portfolio, quote, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
 import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, tradeBuckets } from "./journal"
-import { buyingPowerEffect, crossDirection, describeTrigger, marketability, nakedRequirement, opposite, split, stopDirection, strategyName } from "./ticket"
+import { heldPositions, marginRequirement, orderPowerUse, type MarginPosition } from "./margin"
+import { crossDirection, describeTrigger, marketability, nakedRequirement, opposite, split, stopDirection, strategyName } from "./ticket"
 import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
 
 describe("journal analytics", () => {
@@ -78,14 +79,45 @@ describe("ticket logic", () => {
     expect(marketability("buy", "market", "", { ...quote, ask: null }).marketable).toBe(false)
   })
   it("estimates buying power like the server's reservations", () => {
-    const base = { quantity: 2, price: 4.6, fee: 0.65, type: "call" as const, strike: 5000, spot: 5000 }
-    expect(buyingPowerEffect({ ...base, side: "buy", held: 0 })).toBeCloseTo(-921.3)
-    expect(buyingPowerEffect({ ...base, side: "sell", held: 2 })).toBeCloseTo(-1.3)
-    expect(buyingPowerEffect({ ...base, side: "sell", held: 0 })).toBeCloseTo(-200_001.3)
-    expect(buyingPowerEffect({ ...base, side: "buy", held: 0, quantity: 0 })).toBeNull()
+    const call = { symbol: "SPXW  261022C05000000", underlying: "SPX", expiry: "2026-10-22PM", type: "call" as const, strike: 5000 }
+    const long: MarginPosition[] = [{ ...call, quantity: 2, value: 0 }]
+    const order = { quantity: 2, price: 4.6, fee: 0.65 }
+    expect(orderPowerUse({ ...order, side: "buy" }, call, [], 5000)).toEqual({ effect: expect.closeTo(-921.3, 6), uses: true })
+    expect(orderPowerUse({ ...order, side: "sell" }, call, long, 5000)).toEqual({ effect: expect.closeTo(-1.3, 6), uses: false })
+    expect(orderPowerUse({ ...order, side: "sell" }, call, [], 5000)!.effect).toBeCloseTo(-200_001.3)
+    expect(orderPowerUse({ ...order, side: "buy", quantity: 0 }, call, [], 5000)).toBeNull()
     expect(nakedRequirement("put", 5000, 5200)).toBeCloseTo(84_000)
     expect(nakedRequirement("call", 5200, 5000)).toBeCloseTo(80_000)
     expect(nakedRequirement("put", 5000, null)).toBeCloseTo(100_000)
+  })
+})
+
+describe("margin", () => {
+  const put = (strike: number, quantity: number, value = 0, expiry = "2026-10-22PM") =>
+    ({ symbol: `SPXW  ${expiry.slice(2, 4)}${expiry.slice(5, 7)}${expiry.slice(8, 10)}P0${strike}000`, underlying: "SPX", expiry, type: "put" as const, strike, quantity, value })
+  const call = (strike: number, quantity: number, value = 0) =>
+    ({ symbol: `SPXW  261022C0${strike}000`, underlying: "SPX", expiry: "2026-10-22PM", type: "call" as const, strike, quantity, value })
+  it("nets spreads like the server", () => {
+    expect(marginRequirement([put(4900, -1, 500)], 5000)).toBeCloseTo(90_500)
+    expect(marginRequirement([put(4900, -1, 500), put(4890, 1)], 5000)).toBeCloseTo(1_000)
+    expect(marginRequirement([put(4900, 1), put(4890, -1, 400)], 5000)).toBe(0)
+    expect(marginRequirement([put(4900, -1, 500), put(4890, 1), call(5100, -1, 300), call(5110, 1)], 5000)).toBeCloseTo(1_000)
+    expect(marginRequirement([call(5100, 1), call(5110, -2, 500), call(5120, 1)], 5000)).toBe(0)
+    expect(marginRequirement([put(4900, -2, 1000), put(4890, 1)], 5000)).toBeCloseTo(91_500)
+  })
+  it("reserves only a spread's width when legging in, and needs power to uncover a short", () => {
+    const short = { symbol: put(4900, 0).symbol, underlying: "SPX", expiry: "2026-10-22PM", type: "put" as const, strike: 4900 }
+    const longLeg = { ...short, symbol: put(4890, 0).symbol, strike: 4890 }
+    // Selling against a held long: the width less the credit, plus the fee.
+    expect(orderPowerUse({ side: "sell", quantity: 1, price: 5.4, fee: 0.65 }, short, [put(4890, 1)], 5000)!.effect).toBeCloseTo(-460.65)
+    // Selling the long of a spread leaves the put naked: far more than the sale brings in.
+    const spread = [put(4900, -1, 510), put(4890, 1)]
+    const uncover = orderPowerUse({ side: "sell", quantity: 1, price: 4, fee: 0.65 }, longLeg, spread, 5000)!
+    expect(uncover.uses).toBe(true)
+    expect(uncover.effect).toBeCloseTo(-(0.65 + 90_510 - 1_000 - 400))
+    // Buying the short back frees more than it costs.
+    expect(orderPowerUse({ side: "buy", quantity: 1, price: 5.2, fee: 0.65 }, short, spread, 5000)).toEqual({ effect: expect.closeTo(-0.65, 6), uses: false })
+    expect(heldPositions([{ ...portfolio.positions[1]!, mark: null, basis: "-310.00" }])[0]!.value).toBe(310)
   })
 })
 

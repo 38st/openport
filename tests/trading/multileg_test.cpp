@@ -185,6 +185,91 @@ TEST(TradingMultiLeg, BuyingPowerNetsSpreadsThatANakedShortCouldNotAfford) {
   EXPECT_EQ(snap->buying_power.available, m("10393.50") - m("5000") - m("2643.90"));
 }
 
+OrderRequest single(std::string client, const std::string& symbol, Side side, std::optional<std::string_view> limit = {}) {
+  return {std::move(client), symbol, side, limit ? OrderType::Limit : OrderType::Market, limit ? TimeInForce::Day : TimeInForce::Ioc,
+          1, limit ? std::optional<Money>(m(*limit)) : std::nullopt, {}, {}, {}};
+}
+
+TEST(TradingBuyingPower, LeggingIntoASpreadReservesOnlyItsWidth) {
+  Chain f;
+  AccountRules rules;
+  rules.buying_power = true;
+  {
+    // Short first: the put is naked until its protection is bought.
+    TradingSession s(config("10000", rules), f.time);
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(s.submit(single("short-first", P4900, Side::Sell), f.time).decision.code, Reason::BUYING_POWER);
+  }
+  TradingSession s(config("10000", rules), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(single("long", P4890, Side::Buy), f.time).decision.ok());
+  // Selling against the long reserves the spread's width less the credit, not a naked requirement.
+  ASSERT_TRUE(s.submit(single("rest", P4900, Side::Sell, "5.40"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("460.65"));  // 1000 - 540 + 0.65
+  ASSERT_TRUE(s.cancel(2, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("short", P4900, Side::Sell), f.time).decision.ok());
+  const auto snap = s.snapshot();
+  EXPECT_EQ(snap->positions.size(), 2);
+  EXPECT_EQ(snap->account.cash, m("10078.70"));  // - 420 + 500 - 2 * 0.65
+  EXPECT_EQ(snap->buying_power.short_requirement, m("1000"));
+  EXPECT_EQ(snap->buying_power.available, m("9078.70"));
+}
+
+TEST(TradingBuyingPower, UncoveringAShortNeedsBuyingPowerButClosingItNeverDoes) {
+  Chain f;
+  AccountRules rules;
+  rules.buying_power = true;
+  TradingSession s(config("10000", rules), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(combo("spread", {leg(P4900, Side::Sell), leg(P4890, Side::Buy)}, 1, "-0.80"), f.time).decision.ok());
+  // Selling the long alone would leave a naked put the account cannot carry.
+  const auto uncover = s.submit(single("sell-long", P4890, Side::Sell), f.time).decision;
+  EXPECT_EQ(uncover.code, Reason::BUYING_POWER);
+  EXPECT_NE(uncover.message.find("uncovers a short"), std::string::npos) << uncover.message;
+  // Closing both together frees buying power, so it is always allowed.
+  const auto close = s.submit(combo("close", {leg(P4900, Side::Buy), leg(P4890, Side::Sell)}, 1, "1.20"), f.time);
+  ASSERT_TRUE(close.decision.ok()) << close.decision.message;
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  // So is buying the short back first, then selling the long.
+  ASSERT_TRUE(s.submit(combo("again", {leg(P4900, Side::Sell), leg(P4890, Side::Buy)}, 1, "-0.80"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("buy-short", P4900, Side::Buy), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("sell-long-after", P4890, Side::Sell), f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingBuyingPower, ProtectionIsAllowedWhenBuyingPowerIsNegative) {
+  Chain f;
+  AccountRules rules;
+  rules.buying_power = true;
+  auto c = config("100000", rules);
+  c.limits.max_daily_loss = m("1000000");
+  TradingSession s(c, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(single("naked", P4900, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("9989.35"));  // 100499.35 - 510 - 90000
+  // A sharp fall: the put is deep in the money and its naked requirement grows.
+  ++f.observation;
+  f.time += md::kNanosPerSecond;
+  std::vector<QuoteObservation> quotes{{P4900, f.observation, f.time, m("119"), m("121"), 10, 10},
+                                       {P4890, f.observation, f.time, m("114"), m("116"), 10, 10}};
+  std::vector<Valuation> valuations;
+  for (const auto& symbol : {P4900, P4890})
+    valuations.push_back({symbol, f.time, -0.9, 0.001, 2.0, -0.1, 4800, 4810, 0.99,
+                          md::years_between(f.time, md::parse_osi(symbol)->expiry_time()), 0.20, true});
+  s.on_quotes(quotes, valuations, f.time);
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("-7500.65"));  // 100499.35 - 12000 - 96000
+  EXPECT_EQ(s.submit(single("more", P4890, Side::Sell, "114"), f.time).decision.code, Reason::BUYING_POWER);
+  // Buying protection frees far more than it costs.
+  const auto protect = s.submit(single("protect", P4890, Side::Buy), f.time);
+  ASSERT_TRUE(protect.decision.ok()) << protect.decision.message;
+  EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("87898.70"));  // 88898.70 - 1000
+}
+
 TEST(TradingMultiLeg, AWorkingComboIsOnePendingExposure) {
   Chain f;
   auto tight = config();

@@ -2,12 +2,13 @@ import { useQuery } from "@tanstack/react-query"
 import { useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
-import { useAccount, useRefreshTrading, useTradingSession } from "../api/trading"
+import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
 import type { NewOrder, Order, TradingStatus } from "../api/trading-types"
 import type { Expiry } from "../api/types"
 import { LineChart } from "../charts/LineChart"
 import { money, price } from "../lib/format"
-import { MAX_LEGS, MAX_RATIO, netQuote, payoff, riskProfile, roundNet, strategyBuyingPowerEffect, strategyLabel, type StrategyLeg } from "../lib/strategy"
+import { heldPositions } from "../lib/margin"
+import { MAX_LEGS, MAX_RATIO, netQuote, payoff, riskProfile, roundNet, strategyLabel, strategyPowerUse, type StrategyLeg } from "../lib/strategy"
 import { comboTickCents, formatMoney, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -53,6 +54,7 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
   const account = useAccount().data
+  const positions = usePortfolio().data?.positions
   const roots = legs.map((l) => l.symbol.slice(0, 6).trim())
   const tick = comboTickCents(roots)
   const quote = netQuote(legs)
@@ -97,7 +99,9 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
   const profile = net != null && validUnits ? riskProfile(legs, q, net) : null
   const fee = Number(trading.fee_per_contract ?? 0)
   const contracts = validUnits ? q * legs.reduce((total, leg) => total + leg.ratio, 0) : 0
-  const effect = strategyBuyingPowerEffect(legs, q, net, fee, spot)
+  // Mirrors the server: margin on the held positions after the fill, plus the net and fees.
+  const power = strategyPowerUse(legs, q, net, fee, spot, heldPositions(positions ?? []))
+  const effect = power?.effect ?? null
   const available = account ? Number(account.buying_power.available) : null
   const after = effect != null && available != null ? available + effect : null
   const marketable = quote.ask != null && (type === "market" || (net != null && quote.ask <= net + 1e-9))
@@ -246,7 +250,7 @@ function StrategyBody({ legs, onLegs, expiry, underlying, spot, trading }: {
           <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
           {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
         </dl>
-        {rules?.buying_power && after != null && after < 0 && <p role="status" className="text-xs text-danger">Exceeds available buying power; the server will reject it.</p>}
+        {rules?.buying_power && after != null && after < 0 && power?.uses && <p role="status" className="text-xs text-danger">Exceeds available buying power; the server will reject it.</p>}
         {chart && <figure aria-label="Profit and loss at expiry">
           <LineChart height={160} marginLeft={60} series={[{ id: "payoff", label: "P&L at expiry", color: "var(--chart-1)", points: chart, area: true }]}
             references={[{ y: 0, label: "Even", color: "var(--muted)" }]} markers={spot != null && Number.isFinite(spot) ? [{ x: spot, label: `${underlying} ${spot.toFixed(0)}`, color: "var(--warn)" }] : []}

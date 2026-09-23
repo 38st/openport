@@ -54,20 +54,6 @@ export function nakedRequirement(type: Kind, strike: number, spot: number | null
   return 100 * Math.max(0.2 * s - otm, 0.1 * (type === "call" ? s : strike))
 }
 
-/**
- * Estimated change in buying power, negative when it uses power, following the
- * server's reservations: opening buys pay premium and fees, opening sells hold
- * the naked requirement plus fees, closing contracts cost only fees.
- */
-export function buyingPowerEffect(order: { side: Side; quantity: number; price: number | null; fee: number; held: number;
-  type: Kind; strike: number; spot: number | null | undefined }): number | null {
-  const { side, quantity, price, fee, held } = order
-  if (!Number.isSafeInteger(quantity) || quantity <= 0 || !Number.isFinite(fee)) return null
-  const { opening } = split(side, quantity, held)
-  if (side === "buy") return price == null || !Number.isFinite(price) ? null : -(opening * 100 * price + fee * quantity)
-  return -(opening * nakedRequirement(order.type, order.strike, order.spot) + fee * quantity)
-}
-
 export type Direction = "at_or_below" | "at_or_above"
 export const opposite = (direction: Direction): Direction => (direction === "at_or_below" ? "at_or_above" : "at_or_below")
 /**

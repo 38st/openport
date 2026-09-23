@@ -25,7 +25,7 @@ function render(node: ReactNode, value: Account = account, orders: Order[] = [])
 }
 const trading = { ...status.trading!, fee_per_contract: "0.65" }
 const put = (strike: number, side: "buy" | "sell", bid: number, ask: number): StrategyLeg => ({
-  symbol: `SPXW  261016P0${strike}000`, side, ratio: 1, type: "put", strike, expiry: expiry.id,
+  symbol: `SPXW  261016P0${strike}000`, underlying: "SPX", side, ratio: 1, type: "put", strike, expiry: expiry.id,
   quote: { ...quote, symbol: `SPXW  261016P0${strike}000`, bid, ask, mid: (bid + ask) / 2 },
 })
 const spread = [put(6900, "sell", 5, 5.2), put(6890, "buy", 4, 4.2)]

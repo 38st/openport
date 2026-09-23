@@ -117,32 +117,70 @@ std::optional<Money> executable_net(const State& s, const OrderRequest& r) {
   }
   return net;
 }
-/// Margin entry for a signed number of contracts; shorts carry their buy-back
-/// value at the mark (or `fallback`, the entry credit, without one).
-MarginLeg margin_leg(const State& s, const std::string& symbol, Quantity quantity, Money fallback = {}) {
-  MarginLeg leg{s.contracts.at(symbol), quantity, {}, spot_for(s, symbol)};
-  if (quantity < 0) {
-    const auto mark = s.marks.find(symbol);
-    leg.value = mark != s.marks.end() ? (mark->second.price * 100) * -quantity : fallback;
+/// Positions for margin by symbol: signed contracts and, for shorts, their
+/// buy-back value.
+using MarginBook = std::map<std::string, std::pair<Quantity, Money>>;
+/// The held positions; a short's buy-back value is its mark, or its entry credit without one.
+MarginBook held_book(const State& s) {
+  MarginBook book;
+  for (const auto& [symbol, p] : s.ledger.positions()) {
+    if (p.quantity == 0) continue;
+    Money value;
+    if (p.quantity < 0) {
+      const auto mark = s.marks.find(symbol);
+      value = mark != s.marks.end() ? (mark->second.price * 100) * -p.quantity : -p.basis;
+    }
+    book[symbol] = {p.quantity, value};
   }
-  return leg;
+  return book;
 }
-/// A multi-leg order reserves as if it stood alone: its fees, plus its net debit
-/// or less its net credit, plus the margin requirement of its legs by themselves.
-/// It opens contracts when any leg does.
-std::pair<Money, Quantity> combo_reservation(const State& s, const Order& o) {
-  const auto units = o.remaining();
+/// Trade `change` contracts of `symbol` in the book: shorts that remain keep
+/// their share of the buy-back value, and contracts newly sold are valued at `price`.
+void trade(MarginBook& book, const std::string& symbol, Quantity change, Money price) {
+  const auto it = book.find(symbol);
+  const auto [quantity, value] = it == book.end() ? std::pair<Quantity, Money>{0, {}} : it->second;
+  const auto next = quantity + change;
+  if (next == 0) { book.erase(symbol); return; }
+  Money next_value;
+  if (next < 0) {
+    const Quantity kept = quantity < 0 ? std::min(-quantity, -next) : 0;
+    next_value = (kept > 0 ? value.prorate(kept, -quantity) : Money{}) + (price * 100) * (-next - kept);
+  }
+  book[symbol] = {next, next_value};
+}
+Money requirement(const State& s, const MarginBook& book) {
   std::vector<MarginLeg> legs;
+  for (const auto& [symbol, entry] : book) legs.push_back({s.contracts.at(symbol), entry.first, entry.second, spot_for(s, symbol)});
+  return margin_requirement(legs);
+}
+/// Buying power that positions do not hold: cash less their margin requirement.
+Money free_power(const State& s) { return s.ledger.account().cash - requirement(s, held_book(s)); }
+struct Use {
+  Money reservation;   ///< Fees plus any net cost, never less than the fees.
+  bool uses = false;   ///< Filling would reduce free buying power.
+};
+/// An order's use of buying power if it filled now: its fees, plus the change
+/// in the margin requirement from `before` to `after`, plus the premium it pays
+/// (`cash`, negative when it receives premium). An order that releases more
+/// than it costs reserves only its fees.
+Use use_of(const State& s, const MarginBook& before, const MarginBook& after, Money cash, Money fees) {
+  const auto change = requirement(s, after) - requirement(s, before) + cash;
+  return {fees + std::max(Money{}, change), fees + change > Money{}};
+}
+/// A multi-leg order on the held positions: legs sold short at their marks,
+/// and the net debit (or credit) per unit at its limit or the current far sides.
+Use combo_use(const State& s, const Order& o, const MarginBook& book) {
+  const auto units = o.remaining();
+  auto after = book;
   Money fees;
-  Quantity opening = 0;
   for (const auto& leg : o.request.legs) {
     const auto contracts = signed_contracts(leg, units);
     fees = fees + s.config.fee_per_contract * magnitude(contracts);
-    legs.push_back(margin_leg(s, leg.symbol, contracts));
-    if (opens(held(s, leg.symbol), contracts)) opening = units;
+    const auto mark = s.marks.find(leg.symbol);
+    trade(after, leg.symbol, contracts, mark != s.marks.end() ? mark->second.price : Money{});
   }
   const auto net = o.request.limit_price ? *o.request.limit_price : executable_net(s, o.request).value_or(Money{});
-  return {fees + std::max(Money{}, margin_requirement(legs) + (net * 100) * units), opening};
+  return use_of(s, book, after, (net * 100) * units, fees);
 }
 Money average_unit_price(const Position& p) {
   const auto size = magnitude(p.quantity);
@@ -152,59 +190,63 @@ Money average_unit_price(const Position& p) {
 struct PowerDetail {
   BuyingPower total;
   Money focus_reservation;
-  Quantity focus_opening = 0;
+  Quantity focus_opening = 0;  ///< Contracts the focus order opens beyond earlier orders' claims.
+  bool focus_uses = false;     ///< The focus order would reduce free buying power.
 };
-/// Positions hold their margin requirement, spreads netted (margin_requirement).
-/// Working orders reserve in acceptance order. Closing capacity is consumed by
-/// earlier orders first, so two sells cannot both claim the same long contracts.
-/// Opening buys reserve premium plus fees; opening sells reserve the naked
-/// requirement plus fees (their credit covers the buy-back value); closing
-/// orders reserve only fees; multi-leg orders reserve as if alone
-/// (combo_reservation). Orders without a limit use the current far side.
+/// Positions hold their margin requirement (margin_requirement, spreads netted).
+/// Each working order reserves what filling it now would cost (use_of): fees,
+/// the change in margin on the held positions and the premium it pays, less
+/// what it receives, never below the fees. Single-leg orders see the positions
+/// less the contracts earlier orders already claim to close, in acceptance
+/// order, so two sells cannot both claim the same long. Bracket exits stay
+/// within their position and reserve only fees. Orders without a limit use the
+/// current far side.
 PowerDetail buying_power(const State& s, OrderId focus = 0) {
   PowerDetail out;
-  std::vector<MarginLeg> held_legs;
-  for (const auto& [symbol, position] : s.ledger.positions())
-    if (position.quantity != 0) held_legs.push_back(margin_leg(s, symbol, position.quantity, -position.basis));
-  const Money short_requirement = margin_requirement(held_legs);
+  const auto book = held_book(s);
+  const Money short_requirement = requirement(s, book);
   std::map<std::string, std::pair<Quantity, Quantity>> capacity;
   Money reserved;
   for (const auto& o : s.orders) {
     if (!o.open() || o.remaining() <= 0 || shadowed(s, o)) continue;
-    if (multi_leg(o.request)) {
-      const auto [reservation, opening] = combo_reservation(s, o);
-      reserved = reserved + reservation;
-      if (o.id == focus) { out.focus_reservation = reservation; out.focus_opening = opening; }
-      continue;
-    }
-    const auto& symbol = o.request.symbol;
-    const auto contract = s.contracts.find(symbol);
-    if (contract == s.contracts.end()) continue;
-    const auto q = held(s, symbol);
-    auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Quantity>(q, 0), std::max<Quantity>(-q, 0)).first->second;
     const auto remaining = o.remaining();
-    Money price;
-    if (o.request.limit_price) price = *o.request.limit_price;
-    else if (const auto book = s.books.find(symbol); book != s.books.end() && valid_quote(book->second.quote))
-      price = o.request.side == Side::Buy ? *book->second.quote.ask : *book->second.quote.bid;
-    Money reservation = s.config.fee_per_contract * remaining;
+    Use use;
     Quantity opening = 0;
-    if (o.role != OrderRole::Normal) {
-      // Bracket exits stay within the position, so they only ever close; they
-      // leave closing capacity to ordinary orders such as a manual close.
-    } else if (o.request.side == Side::Buy) {
-      const auto closing = std::min(remaining, short_left);
-      short_left -= closing;
-      opening = remaining - closing;
-      reservation = reservation + (price * 100) * opening;
+    if (multi_leg(o.request)) {
+      use = combo_use(s, o, book);
+      for (const auto& leg : o.request.legs)
+        if (opens(held(s, leg.symbol), signed_contracts(leg, remaining))) opening = remaining;
     } else {
-      const auto closing = std::min(remaining, long_left);
-      long_left -= closing;
-      opening = remaining - closing;
-      reservation = reservation + naked_requirement(contract->second, spot_for(s, symbol)) * opening;
+      const auto& symbol = o.request.symbol;
+      if (!s.contracts.contains(symbol)) continue;
+      const auto q = held(s, symbol);
+      auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Quantity>(q, 0), std::max<Quantity>(-q, 0)).first->second;
+      const bool buy = o.request.side == Side::Buy;
+      Money price;
+      if (o.request.limit_price) price = *o.request.limit_price;
+      else if (const auto quote = s.books.find(symbol); quote != s.books.end() && valid_quote(quote->second.quote))
+        price = buy ? *quote->second.quote.ask : *quote->second.quote.bid;
+      const Money fees = s.config.fee_per_contract * remaining;
+      if (o.role != OrderRole::Normal) {
+        // Bracket exits stay within the position, so they only ever close; they
+        // leave closing capacity to ordinary orders such as a manual close.
+        use = {fees, false};
+      } else {
+        auto before = book;
+        if (q > 0 && !buy) trade(before, symbol, long_left - q, {});
+        if (q < 0 && buy) trade(before, symbol, -q - short_left, {});
+        auto& left = buy ? short_left : long_left;
+        const auto closing = std::min(remaining, left);
+        left -= closing;
+        opening = remaining - closing;
+        auto after = before;
+        trade(after, symbol, buy ? remaining : -remaining, price);
+        const Money premium = (price * 100) * remaining;
+        use = use_of(s, before, after, buy ? premium : -premium, fees);
+      }
     }
-    reserved = reserved + reservation;
-    if (o.id == focus) { out.focus_reservation = reservation; out.focus_opening = opening; }
+    reserved = reserved + use.reservation;
+    if (o.id == focus) { out.focus_reservation = use.reservation; out.focus_opening = opening; out.focus_uses = use.uses; }
   }
   out.total.reserved = reserved;
   out.total.short_requirement = short_requirement;
@@ -402,8 +444,9 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
   if (const auto d = check_exposure(snapshot.risk); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
     const auto power = buying_power(s, o.id);
-    if (power.focus_opening > 0 && power.total.available < Money{})
-      return {Reason::BUYING_POWER, "Order needs more buying power than the account has available",
+    if (power.focus_uses && power.total.available < Money{})
+      return {Reason::BUYING_POWER, power.focus_opening > 0 ? "Order needs more buying power than the account has available"
+                : "Closing these legs uncovers a short option; close the short legs too, or first",
               power.focus_reservation.dollars(), (power.total.available + power.focus_reservation).dollars(), first->underlying};
   }
   return {};
@@ -455,10 +498,12 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
   if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = check_exposure(snapshot.risk); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
-    // Fills recheck buying power against the projected ledger instead.
+    // Orders that free buying power are always allowed; fills recheck against
+    // the projected ledger instead.
     const auto power = buying_power(s, o.id);
-    if (power.focus_opening > 0 && power.total.available < Money{})
-      return {Reason::BUYING_POWER, "Order needs more buying power than the account has available",
+    if (power.focus_uses && power.total.available < Money{})
+      return {Reason::BUYING_POWER, power.focus_opening > 0 ? "Order needs more buying power than the account has available"
+                : "Selling this long uncovers a short option it protects; buy the short back first, or close both together as one order",
               power.focus_reservation.dollars(), (power.total.available + power.focus_reservation).dollars(), request.symbol};
   }
   return {};
@@ -506,12 +551,12 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   if (decision.ok() && !reducing) {
     // Check the proposed accounting before committing any liquidity or fill.
     const Quantity signed_quantity = o.request.side == Side::Buy ? quantity : -quantity;
-    const auto before = held(s, o.request.symbol);
     State projected = s;
     projected.ledger.fill(s.contracts.at(o.request.symbol), signed_quantity, price, fee);
     projected.orders.at(static_cast<std::size_t>(id - 1)).filled_quantity += quantity;
     decision = loss_check(projected, snapshot_of(projected));
-    if (decision.ok() && s.config.rules.buying_power && opens(before, signed_quantity)) {
+    // A fill that reduces free buying power must leave it nonnegative.
+    if (decision.ok() && s.config.rules.buying_power && free_power(projected) < free_power(s)) {
       const auto power = buying_power(projected).total;
       if (power.available < Money{})
         decision = {Reason::BUYING_POWER, "Fill needs more buying power than the account has available",
@@ -554,19 +599,17 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     units = std::min(units, (leg.side == Side::Buy ? book.ask_left : book.bid_left) / leg.ratio);
   }
   if (decision.ok() && units <= 0) return;
-  bool opening = false;
   if (decision.ok()) {
     State projected = s;
     for (const auto& leg : o.request.legs) {
       const auto& q = s.books.at(leg.symbol).quote;
       const auto contracts = signed_contracts(leg, units);
-      opening |= opens(held(s, leg.symbol), contracts);
       projected.ledger.fill(s.contracts.at(leg.symbol), contracts, leg.side == Side::Buy ? *q.ask : *q.bid,
                             s.config.fee_per_contract * magnitude(contracts));
     }
     projected.orders.at(static_cast<std::size_t>(id - 1)).filled_quantity += units;
     decision = loss_check(projected, snapshot_of(projected));
-    if (decision.ok() && s.config.rules.buying_power && opening) {
+    if (decision.ok() && s.config.rules.buying_power && free_power(projected) < free_power(s)) {
       const auto power = buying_power(projected).total;
       if (power.available < Money{})
         decision = {Reason::BUYING_POWER, "Fill needs more buying power than the account has available",

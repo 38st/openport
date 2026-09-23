@@ -6,7 +6,8 @@ import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "
 import type { Bracket, NewOrder, Order, Side, Trigger, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote } from "../api/types"
 import { count, days, fixed, price } from "../lib/format"
-import { buyingPowerEffect, crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
+import { heldPositions, orderPowerUse } from "../lib/margin"
+import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
 import { formatMoney, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -146,8 +147,11 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
   const root = selection.symbol.slice(0, 6).trim()
   const name = strategyName(side, selection.optionType, held, Number.isSafeInteger(q) && q > 0 ? q : 1)
   const fill = marketability(side, type, limitPrice, quote)
-  const effect = buyingPowerEffect({ side, quantity: q, price: estimatedPrice == null ? null : Number(estimatedPrice),
-    fee: Number(effectiveFee ?? 0), held, type: selection.optionType, strike: selection.strike, spot: selection.spot })
+  // Mirrors the server: margin on the held positions (spreads netted) plus premium and fees.
+  const power = orderPowerUse({ side, quantity: q, price: estimatedPrice == null ? null : Number(estimatedPrice), fee: Number(effectiveFee ?? 0) },
+    { symbol: selection.symbol, underlying: selection.underlying, expiry: selection.expiry.id, type: selection.optionType, strike: selection.strike },
+    heldPositions(portfolio?.positions ?? []), selection.spot)
+  const effect = power?.effect ?? null
   const available = account ? Number(account.buying_power.available) : null
   const after = effect != null && available != null ? available + effect : null
   const expiryLabel = `${selection.expiry.expiry} ${selection.expiry.settlement}`
@@ -305,7 +309,9 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
         <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
         {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
       </dl>
-      {rules?.buying_power && after != null && after < 0 && opening > 0 && <p role="status" className="text-xs text-danger">Exceeds available buying power; the server will reject it.</p>}
+      {rules?.buying_power && after != null && after < 0 && power?.uses && <p role="status" className="text-xs text-danger">{opening > 0
+        ? "Exceeds available buying power; the server will reject it."
+        : "Selling this long uncovers a short it protects, which needs more buying power than you have. Buy the short back first, or close both together from Positions."}</p>}
       <details className="text-xs">
         <summary className="cursor-pointer text-muted">This order’s Greeks impact</summary>
         <p className="mb-2 mt-2 text-muted">Quantity × 100 × per-unit Greek, signed by side</p>

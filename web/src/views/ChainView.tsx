@@ -154,7 +154,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
               if (!quote.tradable || !quote.symbol) { setUntradable(quote.untradable_reason ?? "Contract unavailable for paper trading"); return }
               if (mode === "strategy") {
                 if (legs.length >= MAX_LEGS && !legs.some((leg) => leg.symbol === quote.symbol)) { setUntradable(`A strategy has at most ${MAX_LEGS} legs.`); return }
-                setLegs((current) => toggleLeg(current, { symbol: quote.symbol!, side: sideFromCell(cell), ratio: 1, type: optionType,
+                setLegs((current) => toggleLeg(current, { symbol: quote.symbol!, underlying: symbol, side: sideFromCell(cell), ratio: 1, type: optionType,
                   strike: row.strike, expiry: data.expiry.id, quote }))
                 return
               }

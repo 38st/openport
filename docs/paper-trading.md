@@ -365,17 +365,25 @@ calls make it unbounded. So a credit spread holds its width, an iron condor one 
 long butterfly nothing, and a short strangle both naked requirements. Longs in another
 expiry do not cover a short.
 
-Working orders reserve in acceptance order, consuming closing capacity so two sells
-cannot both claim the same long: opening buys reserve premium plus fees, opening sells
-reserve the naked requirement plus fees (their credit covers the buy-back value), and
-closing orders reserve only fees. A multi-leg order reserves as if it stood alone: its
-fees plus `max(0, margin requirement of its legs + net * 100 * units)`, so a credit
-spread reserves its width less its credit and a debit spread its debit. Legging into a
-spread with single-leg orders reserves the short as naked; use a multi-leg order. An
-order that opens contracts is rejected if the result is negative; closing orders are
-always allowed, even the long leg of a spread (buying power may then go negative,
-blocking new opening orders). Fills recheck against the projected ledger and cancel
-the remainder with `RISK_CHANGED`.
+Each working order reserves what filling it now would cost: its fees, plus the change
+in the positions' margin requirement, plus the premium it pays less the premium it
+receives, and never less than its fees (new shorts are valued at the order's price, or
+at their marks for a multi-leg order). So an opening buy reserves its premium, a naked
+sell its naked requirement (its credit covers the buy-back value), a sell against a held
+long (legging into a spread) the width less its credit, a multi-leg credit spread its
+width less its credit, and a closing order only its fees. Single-leg orders see the
+positions less the contracts that earlier orders, in acceptance order, already claim to
+close, so two sells cannot both claim the same long; otherwise each order is measured
+against the held positions alone.
+
+An order or a fill that would reduce free buying power (cash less the positions'
+requirement) must leave available buying power nonnegative, otherwise `BUYING_POWER`
+(`RISK_CHANGED` at a fill). One that frees buying power is always allowed: closing a
+position, buying back a short and buying protection work even when buying power is
+negative. Selling the long leg of a spread alone needs enough buying power to carry the
+short it uncovers; buy the short back first, or close both together as one multi-leg
+order. When legging in, a short sold before its long is naked until the long is bought.
+Fills recheck against the projected ledger and cancel the remainder with `RISK_CHANGED`.
 
 `reset_account(initial_cash, rules, reason, time)` starts a new attempt. It cancels
 working orders with `ACCOUNT_RESET`, records each open position as a `Reset` closure

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest"
 import { quote } from "../test/trading-fixtures"
 import { legsLabel, orderLabel } from "./journal"
-import { netQuote, riskProfile, roundNet, strategyBuyingPowerEffect, strategyLabel, strategyRequirement, toggleLeg, type StrategyLeg } from "./strategy"
+import { netQuote, riskProfile, roundNet, strategyLabel, strategyPowerUse, toggleLeg, type StrategyLeg } from "./strategy"
 import { comboTickCents } from "./trading"
 
 const osi = (type: "C" | "P", strike: number, date = "261022") => `SPXW  ${date}${type}${String(strike * 1000).padStart(8, "0")}`
 function leg(type: "call" | "put", strike: number, side: "buy" | "sell", bid: number, ask: number, ratio = 1, expiry = "2026-10-22PM"): StrategyLeg {
-  return { symbol: osi(type === "call" ? "C" : "P", strike, expiry.startsWith("2026-10-22") ? "261022" : "261023"), side, ratio, type, strike, expiry,
+  return { symbol: osi(type === "call" ? "C" : "P", strike, expiry.startsWith("2026-10-22") ? "261022" : "261023"), underlying: "SPX", side, ratio, type, strike, expiry,
     quote: { ...quote, bid, ask, mid: (bid + ask) / 2, tradable: true } }
 }
 const putSpread = [leg("put", 4900, "sell", 5, 5.2), leg("put", 4890, "buy", 4, 4.2)]
@@ -56,17 +56,20 @@ describe("strategies", () => {
     expect(riskProfile([leg("call", 5100, "sell", 3, 3.2), leg("call", 5110, "buy", 2, 2.2, 1, "2026-10-23PM")], 1, -1)).toBeNull()
     expect(riskProfile([leg("call", 5100, "sell", 3, 3.2), leg("put", 4900, "sell", 3, 3.2)], 1, -6)!.maxLoss).toBeNull()
   })
-  it("mirrors the server's buying power for a strategy by itself", () => {
+  it("mirrors the server's buying power for a strategy on the held positions", () => {
     // The credit spread holds its width; the reservation takes the credit off and adds fees.
-    expect(strategyRequirement(putSpread, 3, 5000)).toBe(3000)
-    expect(strategyBuyingPowerEffect(putSpread, 3, -1.2, 0.65, 5000)).toBeCloseTo(-2643.9, 6)
+    expect(strategyPowerUse(putSpread, 3, -1.2, 0.65, 5000)).toEqual({ effect: expect.closeTo(-2643.9, 6), uses: true })
     // A debit spread reserves its debit.
     const debit = [leg("put", 4900, "buy", 5, 5.2), leg("put", 4890, "sell", 4, 4.2)]
-    expect(strategyRequirement(debit, 1, 5000)).toBe(0)
-    expect(strategyBuyingPowerEffect(debit, 1, 1.2, 0.65, 5000)).toBeCloseTo(-121.3, 6)
+    expect(strategyPowerUse(debit, 1, 1.2, 0.65, 5000)!.effect).toBeCloseTo(-121.3, 6)
     // A short strangle is naked on both sides: mid buy-back plus 20% of spot less the OTM amount.
     const strangle = [leg("call", 5100, "sell", 3, 3.2), leg("put", 4900, "sell", 5, 5.2)]
-    expect(strategyRequirement(strangle, 1, 5000)).toBeCloseTo(310 + 90000 + 510 + 90000, 6)
+    expect(strategyPowerUse(strangle, 1, 0, 0, 5000)!.effect).toBeCloseTo(-(310 + 90000 + 510 + 90000), 6)
+    // Closing a held spread together frees its width: only fees.
+    const held = [{ symbol: putSpread[0]!.symbol, underlying: "SPX", expiry: "2026-10-22PM", type: "put" as const, strike: 4900, quantity: -1, value: 510 },
+      { symbol: putSpread[1]!.symbol, underlying: "SPX", expiry: "2026-10-22PM", type: "put" as const, strike: 4890, quantity: 1, value: 0 }]
+    const close = [{ ...putSpread[0]!, side: "buy" as const }, { ...putSpread[1]!, side: "sell" as const }]
+    expect(strategyPowerUse(close, 1, 1.2, 0.65, 5000, held)).toEqual({ effect: expect.closeTo(-1.3, 6), uses: false })
   })
   it("labels multi-leg orders compactly", () => {
     const legs = [{ symbol: osi("P", 4900), side: "sell" as const, ratio: 1 }, { symbol: osi("P", 4890), side: "buy" as const, ratio: 2 }]
