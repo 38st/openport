@@ -130,6 +130,13 @@ cmake --build build -j
 ./build/apps/openportd --symbols SPX,SPY,QQQ --web-root web/dist
 ```
 
+To install it, `cmake --install build --component openport --prefix ~/.local` puts
+`openportd` in `bin/` and the terminal in `share/openport/web`, where it finds it on
+its own. A release archive has the same layout: unpack it and run `bin/openportd`
+(Linux needs OpenSSL 3, zlib and zstd; macOS, Homebrew's `openssl@3`, `zstd` and
+`brotli`). `openportd --version` prints the version. The terminal opens with a short
+welcome the first time; the footer's welcome link shows it again.
+
 Add `--record-dir ~/.openport/recordings` to record each session for the Replay page.
 Full chains are large: see [recording](docs/runtime.md#recording-and-replay) before
 recording all day.
@@ -290,7 +297,12 @@ cd web && npx vitest run            # web unit tests
 ```
 
 The C++ suite passes with Apple Clang on macOS and with GCC 13 on Ubuntu 24.04 built
-with `-DOPENPORT_WERROR=ON`.
+with `-DOPENPORT_WERROR=ON`. The CI workflow runs on demand while the repository is
+private. `tools/release.sh` builds a release on your own machine instead: it checks and
+tests the web terminal and the engine, packages this machine's build and a Linux build
+from the Docker image with checksums and release notes into `dist/`, and smoke-tests
+the image. Nothing is published unless you pass `--publish`, which tags the version
+from `CMakeLists.txt` and creates a draft GitHub release.
 
 ## Roadmap
 

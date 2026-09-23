@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <regex>
 #include <stdexcept>
 #include <string>
 
@@ -153,6 +154,12 @@ Finished run_daemon(const std::string& args) {
   const auto status = pclose(pipe);
   if (WIFEXITED(status)) finished.status = WEXITSTATUS(status);
   return finished;
+}
+
+TEST(Cli, DaemonPrintsItsVersion) {
+  const auto result = run_daemon("--version");
+  EXPECT_EQ(result.status, 0) << result.output;
+  EXPECT_TRUE(std::regex_match(result.output, std::regex(R"(openportd \d+\.\d+\.\d+\n)"))) << result.output;
 }
 
 TEST(Cli, DaemonCompactsJournalsFromEarlierBuildsAndKeepsTheOriginals) {

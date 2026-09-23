@@ -6,6 +6,7 @@ import type { Summary } from "./api/types"
 import { AlertWatcher, Toasts } from "./components/Alerts"
 import { Header } from "./components/Header"
 import { ReplayBanner } from "./components/ReplayBanner"
+import { Welcome, welcome } from "./components/Welcome"
 import { Sidebar, viewLabels } from "./components/Sidebar"
 import { Empty } from "./components/ui"
 import { payoutsVisible } from "./lib/payouts"
@@ -94,11 +95,15 @@ export function App() {
         <main className="min-w-0 flex-1 p-3 lg:p-5">{content}</main>
         <AlertWatcher />
         <Toasts />
+        <Welcome onNavigate={(next) => navigate({ view: next })} />
         <footer className="border-t border-border px-4 py-2 text-[11px] text-faint">
           OpenPort · open-source options analytics and a paper-trading simulator on your own market data · simulated fills, no order routing · not investment advice ·{" "}
           <a className="underline decoration-dotted hover:text-muted" href="https://github.com/38st/openport">
             source
-          </a>
+          </a>{" "}·{" "}
+          <button type="button" className="underline decoration-dotted hover:text-muted" onClick={() => welcome.show()}>
+            welcome
+          </button>
         </footer>
       </div>
     </div>

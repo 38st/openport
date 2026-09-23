@@ -41,7 +41,9 @@ Ports must be integers from 1 through 65,535. Poll intervals and probe timeout
 seconds must be positive integers. Expiry counts must be nonnegative integers;
 strike windows must be finite numbers in [0, 1]. Numeric suffixes, unknown flags,
 and unknown provider option keys are errors. Startup failures print a reason and
-exit with code 2.
+exit with code 2. `openportd --version` prints the version and exits;
+`openportd --compact-journals` rewrites older paper journals and exits 1 if any was
+left as it was (see [compacting](paper-trading.md#compacting-older-journals)).
 
 Supported `openportd --option KEY=VALUE` keys:
 

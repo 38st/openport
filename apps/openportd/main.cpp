@@ -74,7 +74,8 @@ int usage(const char* error = nullptr) {
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n"
-      "       openportd --compact-journals [--paper-journal PATH]\n\n"
+      "       openportd --compact-journals [--paper-journal PATH]\n"
+      "       openportd --version\n\n"
       "paper: durable paper trading on index, equity and ETF options; cash 100000, fee\n"
       "       0.65; more named accounts live in an accounts directory beside the journal\n"
       "compact: rewrite journals from builds before the compact format, keeping each\n"
@@ -173,6 +174,7 @@ int run(int argc, char** argv) {
     const std::string arg = argv[i];
     const bool has_value = i + 1 < argc;
     if (arg == "--help" || arg == "-h") return usage();
+    if (arg == "--version") { std::printf("openportd %s\n", OPENPORT_VERSION); return 0; }
     if (arg == "--no-paper") { settings.paper_enabled = false; continue; }
     if (arg == "--no-history") { settings.history = false; continue; }
     if (arg == "--compact-journals") { settings.compact_journals = true; continue; }

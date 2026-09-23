@@ -17,6 +17,9 @@ endif()
 
 include(FetchContent)
 set(FETCHCONTENT_QUIET ON)
+# Some dependencies install their own headers and libraries; keep those out of
+# the openport component (`cmake --install build --component openport`).
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME thirdparty)
 
 if(OPENPORT_BUILD_PROVIDERS AND OPENPORT_WITH_DATABENTO)
   # Databento's official client. It downloads a prebuilt libdbn_c for the platform and

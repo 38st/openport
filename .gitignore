@@ -22,3 +22,6 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Release builds (tools/release.sh)
+/dist/
