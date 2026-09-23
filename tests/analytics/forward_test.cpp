@@ -23,7 +23,8 @@ std::vector<ParityPoint> chain(double forward, double discount, double years, do
   std::vector<ParityPoint> points;
   for (double k = forward * 0.9; k <= forward * 1.1; k += forward * 0.01) {
     const double vol = 0.2 + 0.3 * std::pow(std::log(k / forward), 2.0);
-    const double call = black_price(OptionType::Call, forward, k, years, vol, discount) + jitter(rng);
+    const double call =
+        black_price(OptionType::Call, forward, k, years, vol, discount) + jitter(rng);
     const double put = black_price(OptionType::Put, forward, k, years, vol, discount) + jitter(rng);
     points.push_back({k, call, put, 1.0});
   }
@@ -75,6 +76,28 @@ TEST(ImpliedForward, FallsBackToAnAssumedDiscountWithTooFewStrikes) {
 
 TEST(ImpliedForward, RejectsEmptyInput) {
   EXPECT_FALSE(implied_forward({}, 0.5).ok);
+}
+
+TEST(ImpliedForward, LockedOutlierCannotDominateElevenGoodPoints) {
+  std::vector<ParityPoint> points;
+  for (int i = 0; i < 11; ++i) points.push_back({95.0 + i, 15.0 - i, 10.0, 25.0});
+  points.push_back({100.0, 60.0, 10.0, 1e8});
+  for (const auto estimate : {implied_forward(points, 1.0),
+                              openport::analytics::implied_forward_given_discount(points, 1.0)}) {
+    ASSERT_TRUE(estimate.ok);
+    EXPECT_NEAR(estimate.forward, 100.0, 1e-8);
+    EXPECT_EQ(estimate.points, 11);
+  }
+}
+
+TEST(ImpliedForward, LockedQuoteCannotOutweighTwoGoodQuotesInASparseExpiry) {
+  const std::vector<ParityPoint> points{{95, 15, 10, 25}, {105, 5, 10, 25}, {100, 60, 10, 1e8}};
+  for (const auto estimate : {implied_forward(points, 1.0),
+                              openport::analytics::implied_forward_given_discount(points, 1.0)}) {
+    EXPECT_TRUE(estimate.ok);
+    EXPECT_NEAR(estimate.forward, 100, 1e-8);
+    EXPECT_EQ(estimate.points, 2);
+  }
 }
 
 }  // namespace

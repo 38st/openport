@@ -7,128 +7,132 @@
 namespace openport::analytics {
 namespace {
 
+double median(std::vector<double> values) {
+  const auto middle = values.begin() + (values.size() - 1) / 2;
+  std::nth_element(values.begin(), middle, values.end());
+  return *middle;
+}
+
+// The absolute cap corresponds to a one-cent combined spread. The relative cap
+// prevents a lone locked quote from outweighing even a sparse wider market.
+std::vector<ParityPoint> bounded_points(std::span<const ParityPoint> points) {
+  std::vector<ParityPoint> out;
+  std::vector<double> weights;
+  for (const auto& p : points) {
+    if (!std::isfinite(p.strike) || p.strike <= 0 || !std::isfinite(p.call_mid) || p.call_mid < 0 ||
+        !std::isfinite(p.put_mid) || p.put_mid < 0 || !std::isfinite(p.weight) || p.weight <= 0)
+      continue;
+    out.push_back(p);
+    weights.push_back(p.weight);
+  }
+  if (out.empty()) return out;
+  const double cap = std::min(1e4, median(weights));
+  for (auto& p : out) p.weight = std::min(p.weight, cap);
+  return out;
+}
+
+std::vector<bool> inliers(const std::vector<ParityPoint>& points, double discount) {
+  std::vector<std::pair<double, double>> forwards;
+  double total_weight = 0;
+  for (const auto& p : points) {
+    forwards.emplace_back(p.strike + (p.call_mid - p.put_mid) / discount, p.weight);
+    total_weight += p.weight;
+  }
+  std::sort(forwards.begin(), forwards.end());
+  double center = forwards.front().first;
+  double cumulative = 0;
+  for (const auto& [f, w] : forwards) {
+    cumulative += w;
+    center = f;
+    if (cumulative >= total_weight / 2) break;
+  }
+  std::vector<double> residuals;
+  for (const auto& [f, w] : forwards) residuals.push_back(std::abs(f - center));
+  // MAD does not grow with a single stale price. The numerical floor preserves
+  // exact parity points when roundoff makes their theoretical zero MAD nonzero.
+  const double cutoff =
+      std::max(3.0 * 1.4826 * median(residuals), 1e-10 * std::max(1.0, std::abs(center)));
+  std::vector<bool> use;
+  for (const auto& p : points) {
+    const double f = p.strike + (p.call_mid - p.put_mid) / discount;
+    use.push_back(std::isfinite(f) && (points.size() < 3 || std::abs(f - center) <= cutoff));
+  }
+  return use;
+}
+
 struct Line {
   double intercept = 0.0;
   double slope = 0.0;
+  int points = 0;
   bool ok = false;
 };
 
-/// Weighted least squares for y = a + b x over the points flagged in `use`.
-Line fit(std::span<const ParityPoint> points, const std::vector<bool>& use) {
-  double sw = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
-  int n = 0;
+Line fit(const std::vector<ParityPoint>& points, const std::vector<bool>& use) {
+  double sw = 0, sx = 0, sy = 0;
+  Line line;
   for (std::size_t i = 0; i < points.size(); ++i) {
     if (!use[i]) continue;
-    const double w = points[i].weight;
-    const double x = points[i].strike;
-    const double y = points[i].call_mid - points[i].put_mid;
-    sw += w;
-    sx += w * x;
-    sy += w * y;
-    sxx += w * x * x;
-    sxy += w * x * y;
-    ++n;
+    const auto& p = points[i];
+    sw += p.weight;
+    sx += p.weight * p.strike;
+    sy += p.weight * (p.call_mid - p.put_mid);
+    ++line.points;
   }
-  Line line;
-  const double denominator = sw * sxx - sx * sx;
-  if (n < 2 || !(sw > 0.0) || std::abs(denominator) <= 1e-12 * sw * sxx) return line;
-  line.slope = (sw * sxy - sx * sy) / denominator;
-  line.intercept = (sy - line.slope * sx) / sw;
+  if (line.points < 3 || !(sw > 0)) return line;
+  const double xbar = sx / sw, ybar = sy / sw;
+  double sxx = 0, sxy = 0;
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    if (!use[i]) continue;
+    const auto& p = points[i];
+    const double x = p.strike - xbar;
+    sxx += p.weight * x * x;
+    sxy += p.weight * x * (p.call_mid - p.put_mid - ybar);
+  }
+  if (!(sxx > 1e-12 * sw)) return line;
+  line.slope = sxy / sxx;
+  line.intercept = ybar - line.slope * xbar;
   line.ok = std::isfinite(line.slope) && std::isfinite(line.intercept);
   return line;
 }
 
 }  // namespace
 
-ForwardEstimate implied_forward(std::span<const ParityPoint> points, double expiry_years,
+ForwardEstimate implied_forward(std::span<const ParityPoint> input, double expiry_years,
                                 double fallback_rate) {
-  ForwardEstimate out;
-  if (points.empty() || !(expiry_years > 0.0)) return out;
-
-  std::vector<bool> use(points.size(), true);
-  const double min_discount = std::exp(-0.20 * expiry_years);
-  const double max_discount = std::exp(0.05 * expiry_years);
-  auto plausible = [&](const Line& line) {
-    const double discount = -line.slope;
-    return line.ok && discount >= min_discount && discount <= max_discount;
-  };
-
-  if (points.size() >= 3) {
-    Line line = fit(points, use);
-    if (line.ok) {
-      // One pass of outlier removal: stale or crossed quotes can sit far off the line.
-      double sw = 0.0, swr2 = 0.0;
-      for (std::size_t i = 0; i < points.size(); ++i) {
-        const double r = points[i].call_mid - points[i].put_mid -
-                         (line.intercept + line.slope * points[i].strike);
-        sw += points[i].weight;
-        swr2 += points[i].weight * r * r;
-      }
-      const double sigma = std::sqrt(swr2 / sw);
-      int kept = 0;
-      for (std::size_t i = 0; i < points.size(); ++i) {
-        const double r = points[i].call_mid - points[i].put_mid -
-                         (line.intercept + line.slope * points[i].strike);
-        use[i] = std::abs(r) <= 3.0 * sigma + 1e-12;
-        kept += use[i] ? 1 : 0;
-      }
-      if (kept >= 3 && kept < static_cast<int>(points.size())) line = fit(points, use);
-      if (plausible(line)) {
-        out.discount = -line.slope;
-        out.forward = line.intercept / out.discount;
-        out.points = kept;
-        out.fitted_discount = true;
-        out.ok = out.forward > 0.0;
-        if (out.ok) return out;
-      }
-    }
-    std::fill(use.begin(), use.end(), true);
+  if (!std::isfinite(expiry_years) || !(expiry_years > 0) || !std::isfinite(fallback_rate))
+    return {};
+  const auto points = bounded_points(input);
+  if (points.empty()) return {};
+  const double discount = std::exp(-fallback_rate * expiry_years);
+  if (!(discount > 0) || !std::isfinite(discount)) return {};
+  const auto line = fit(points, inliers(points, discount));
+  if (line.ok && -line.slope >= std::exp(-0.20 * expiry_years) &&
+      -line.slope <= std::exp(0.05 * expiry_years)) {
+    const double forward = line.intercept / -line.slope;
+    if (std::isfinite(forward) && forward > 0)
+      return {forward, -line.slope, line.points, true, true};
   }
-
-  // Too few strikes, or a slope the data cannot pin down: assume the discount factor.
-  return implied_forward_given_discount(points, std::exp(-fallback_rate * expiry_years));
+  return implied_forward_given_discount(points, discount);
 }
 
-ForwardEstimate implied_forward_given_discount(std::span<const ParityPoint> points,
+ForwardEstimate implied_forward_given_discount(std::span<const ParityPoint> input,
                                                double discount) {
   ForwardEstimate out;
   out.discount = discount;
-  if (points.empty() || !(discount > 0.0)) return out;
-
-  auto implied = [discount](const ParityPoint& p) {
-    return p.strike + (p.call_mid - p.put_mid) / discount;
-  };
-  auto mean = [&](const std::vector<bool>& use, int& used) {
-    double sw = 0.0, swf = 0.0;
-    used = 0;
-    for (std::size_t i = 0; i < points.size(); ++i) {
-      if (!use[i]) continue;
-      sw += points[i].weight;
-      swf += points[i].weight * implied(points[i]);
-      ++used;
-    }
-    return sw > 0.0 ? swf / sw : 0.0;
-  };
-
-  std::vector<bool> use(points.size(), true);
-  int used = 0;
-  double forward = mean(use, used);
-  if (points.size() >= 3) {
-    double sw = 0.0, swr2 = 0.0;
-    for (const ParityPoint& p : points) {
-      const double r = implied(p) - forward;
-      sw += p.weight;
-      swr2 += p.weight * r * r;
-    }
-    const double sigma = std::sqrt(swr2 / sw);
-    for (std::size_t i = 0; i < points.size(); ++i) {
-      use[i] = std::abs(implied(points[i]) - forward) <= 3.0 * sigma + 1e-12;
-    }
-    forward = mean(use, used);
+  if (!(discount > 0) || !std::isfinite(discount)) return out;
+  const auto points = bounded_points(input);
+  if (points.empty()) return out;
+  const auto use = inliers(points, discount);
+  double sw = 0, swf = 0;
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    if (!use[i]) continue;
+    const auto& p = points[i];
+    sw += p.weight;
+    swf += p.weight * (p.strike + (p.call_mid - p.put_mid) / discount);
+    ++out.points;
   }
-  out.forward = forward;
-  out.points = used;
-  out.ok = forward > 0.0 && used > 0;
+  out.forward = sw > 0 ? swf / sw : 0;
+  out.ok = std::isfinite(out.forward) && out.forward > 0 && out.points > 0;
   return out;
 }
 

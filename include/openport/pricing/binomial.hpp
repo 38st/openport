@@ -18,6 +18,11 @@ enum class TreeMethod : std::uint8_t {
 /// American exercise is checked at every node, so this is the reference model for
 /// US equity options, where early exercise has real value (puts, and calls ahead
 /// of dividends). Leisen-Reimer rounds `steps` up to the next odd number.
+/// Inadmissible probabilities, saturated tails or unrepresentable nodes fall
+/// back to BSM, floored by optimal deterministic exercise
+/// for American contracts. This fallback is an approximation for positive vol.
+/// Invalid inputs throw invalid_argument; unrepresentable fallback prices throw
+/// overflow_error rather than returning NaN or a negative price.
 [[nodiscard]] double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod method,
                                     int steps);
 

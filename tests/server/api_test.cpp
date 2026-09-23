@@ -35,7 +35,8 @@ class StubSource final : public server::MetricsSource {
   }
 
   std::vector<std::string> symbols() const override { return {metrics_->symbol}; }
-  std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string& symbol) const override {
+  std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
+      const std::string& symbol) const override {
     return symbol == metrics_->symbol ? metrics_ : nullptr;
   }
   server::EngineStatus status() const override { return status_; }
@@ -161,8 +162,9 @@ TEST(WebServer, ServesTheApiAndTheAppShellOverHttp) {
   std::ofstream(root / "assets" / "app-1234.js") << "console.log('hi')";
 
   StubSource source;
-  server::WebServer web("127.0.0.1", 0, root,
-                        [&source](const server::ApiRequest& r) { return server::handle_api(r, source); });
+  server::WebServer web("127.0.0.1", 0, root, [&source](const server::ApiRequest& r) {
+    return server::handle_api(r, source);
+  });
   web.start(1);
   const std::string base = "http://127.0.0.1:" + std::to_string(web.port());
 
@@ -185,6 +187,101 @@ TEST(WebServer, ServesTheApiAndTheAppShellOverHttp) {
 
   web.stop();
   std::filesystem::remove_all(root);
+}
+
+TEST(Api, PublishesMarketAndAnalyticsProvenance) {
+  StubSource source;
+  auto status = get(source, "/api/status");
+  auto tick = json::parse(server::tick_message(source));
+  for (auto* j : {&status, &tick}) {
+    ASSERT_TRUE((*j)["market"].is_object());
+    EXPECT_TRUE((*j)["market"]["open"].is_boolean());
+    EXPECT_TRUE((*j)["market"]["note"].is_string());
+    EXPECT_TRUE((*j)["market"].contains("next_open"));
+  }
+  for (const auto view : {"summary", "chain", "exposure", "surface"}) {
+    auto j = get(source, std::string("/api/underlyings/SPX/") + view);
+    EXPECT_EQ(j["spot_source"], "quote");
+  }
+  auto summary = get(source, "/api/underlyings/SPX/summary");
+  EXPECT_EQ(summary["american_approximation"], false);
+  const json coverage{{"options", 82}, {"quoted", 82}, {"priced", 82}, {"open_interest", 82}};
+  EXPECT_EQ(summary["coverage"], coverage);
+  EXPECT_EQ(summary["expiries"][0]["coverage"], coverage);
+  EXPECT_EQ(summary["expiries"][0]["style"], "european");
+  EXPECT_EQ(summary["exposure"]["oi_coverage"], 1.0);
+}
+
+TEST(Api, MissingQuotesAndOiAreNullWhileReceivedZerosStayZero) {
+  analytics::ChainBook book;
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 12, 0);
+  book.apply(md::UnderlyingQuote{"SPY", as_of, 100, 100, 100});
+  book.apply(md::ContractDefinition{0, *md::parse_osi("SPY261022C00100000")});
+  book.apply(md::ContractDefinition{1, *md::parse_osi("SPY261022P00100000")});
+  book.apply(md::ContractDefinition{2, *md::parse_osi("SPY1261022C00100000")});
+  book.apply(md::OptionQuote{1, as_of, 0, 2, 0, 1});
+  book.apply(md::OpenInterest{1, as_of, 0});
+  StubSource source(analytics::analyze(book.underlyings().at("SPY"), book, as_of));
+  auto chain = get(source, "/api/underlyings/SPY/chain");
+  auto& row = chain["strikes"][0];
+  for (const auto key : {"bid", "ask", "mid", "oi"}) EXPECT_TRUE(row["call"][key].is_null());
+  EXPECT_EQ(row["put"]["bid"], 0);
+  EXPECT_EQ(row["put"]["ask"], 2);
+  EXPECT_EQ(row["put"]["mid"], 1);
+  EXPECT_EQ(row["put"]["oi"], 0);
+  EXPECT_EQ(chain["expiry"]["style"], "american");
+  EXPECT_EQ(chain["expiry"]["coverage"]["options"], 2);
+  EXPECT_EQ(chain["expiry"]["coverage"]["quoted"], 1);
+  EXPECT_EQ(chain["expiry"]["coverage"]["open_interest"], 1);
+}
+
+TEST(Api, AmericanApproximationAndPartialExposureCoverageAreExplicit) {
+  test::SyntheticChain original;
+  analytics::ChainBook book;
+  for (md::InstrumentId id = 0; id < 82; ++id) {
+    const auto* s = original.book.option(id);
+    auto c = s->contract;
+    c.underlying = "SPY";
+    c.root = "SPY";
+    c.style = pricing::ExerciseStyle::American;
+    book.apply(md::ContractDefinition{id, c});
+    book.apply(md::OptionQuote{id, original.as_of, s->bid, s->ask, 1, 1});
+    if (id < 41) book.apply(md::OpenInterest{id, original.as_of, 0});
+  }
+  StubSource source(analytics::analyze(book.underlyings().at("SPY"), book, original.as_of));
+  auto summary = get(source, "/api/underlyings/SPY/summary");
+  EXPECT_EQ(summary["spot_source"], "parity");
+  EXPECT_EQ(summary["american_approximation"], true);
+  EXPECT_EQ(summary["coverage"],
+            (json{{"options", 82}, {"quoted", 82}, {"priced", 82}, {"open_interest", 41}}));
+  EXPECT_EQ(summary["expiries"][0]["style"], "american");
+  EXPECT_EQ(summary["exposure"]["oi_coverage"], .5);
+  auto exposure = get(source, "/api/underlyings/SPY/exposure?window=0.001");
+  EXPECT_EQ(exposure["exposure"]["oi_coverage"], .5);
+  auto chain = get(source, "/api/underlyings/SPY/chain");
+  EXPECT_EQ(chain["expiry"]["coverage"], summary["coverage"]);
+  EXPECT_EQ(chain["expiry"]["style"], "american");
+  EXPECT_EQ(chain["strikes"][0]["call"]["oi"], 0);
+  EXPECT_TRUE(chain["strikes"][40]["call"]["oi"].is_null());
+}
+
+TEST(Api, UnanchoredUnquotedChainStillReportsMissingDataAndCoverage) {
+  analytics::ChainBook book;
+  book.apply(md::ContractDefinition{0, *md::parse_osi("SPY261022C00100000")});
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 12, 0);
+  StubSource source(analytics::analyze(book.underlyings().at("SPY"), book, as_of));
+  auto summary = get(source, "/api/underlyings/SPY/summary");
+  EXPECT_TRUE(summary["spot"].is_null());
+  EXPECT_TRUE(summary["spot_source"].is_null());
+  EXPECT_EQ(summary["american_approximation"], false);
+  EXPECT_EQ(summary["coverage"],
+            (json{{"options", 1}, {"quoted", 0}, {"priced", 0}, {"open_interest", 0}}));
+  EXPECT_TRUE(summary["exposure"]["oi_coverage"].is_null());
+  for (const auto view : {"chain", "exposure", "surface"}) {
+    auto j = get(source, std::string("/api/underlyings/SPY/") + view);
+    EXPECT_TRUE(j["spot_source"].is_null());
+    EXPECT_TRUE(j["spot"].is_null());
+  }
 }
 
 }  // namespace

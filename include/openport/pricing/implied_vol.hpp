@@ -14,6 +14,7 @@ enum class IvStatus : std::uint8_t {
   AboveMaximum,    ///< at or above the no-arbitrage upper bound
   NotConverged,
   InvalidInput,
+  NonFiniteModel,  ///< finite inputs overflowed a model price or vega evaluation
 };
 
 [[nodiscard]] std::string_view to_string(IvStatus status) noexcept;

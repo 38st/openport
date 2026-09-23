@@ -4,6 +4,8 @@
 #include <random>
 #include <vector>
 
+#include "../tests/support/synthetic_chain.hpp"
+#include "openport/analytics/chain_analytics.hpp"
 #include "openport/pricing/binomial.hpp"
 #include "openport/pricing/black.hpp"
 #include "openport/pricing/implied_vol.hpp"
@@ -11,6 +13,17 @@
 namespace {
 
 using openport::pricing::OptionType;
+
+// Time a complete pass, including parity, all IVs/Greeks, exposure and gamma flip.
+void BM_AnalyzeSyntheticChain(benchmark::State& state) {
+  const openport::test::SyntheticChain chain;
+  const auto& underlying = chain.book.underlyings().at("SPX");
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(openport::analytics::analyze(underlying, chain.book, chain.as_of));
+  }
+  state.SetItemsProcessed(state.iterations() * 82);
+}
+BENCHMARK(BM_AnalyzeSyntheticChain)->Unit(benchmark::kMicrosecond);
 
 struct Quote {
   OptionType type;
@@ -65,8 +78,7 @@ void BM_ImpliedVol(benchmark::State& state) {
   std::int64_t iterations = 0;
   for (auto _ : state) {
     const Quote& q = quotes[i++ & 4095];
-    auto iv =
-        openport::pricing::implied_vol_black(q.price, q.type, q.forward, q.strike, q.expiry);
+    auto iv = openport::pricing::implied_vol_black(q.price, q.type, q.forward, q.strike, q.expiry);
     iterations += iv.iterations;
     benchmark::DoNotOptimize(iv);
   }
@@ -80,9 +92,9 @@ void BM_AmericanLeisenReimer(benchmark::State& state) {
   const openport::pricing::BsmInputs in{OptionType::Put, 100.0, 105.0, 0.5, 0.04, 0.01, 0.3};
   const int steps = static_cast<int>(state.range(0));
   for (auto _ : state) {
-    benchmark::DoNotOptimize(openport::pricing::binomial_price(
-        in, openport::pricing::ExerciseStyle::American,
-        openport::pricing::TreeMethod::LeisenReimer, steps));
+    benchmark::DoNotOptimize(
+        openport::pricing::binomial_price(in, openport::pricing::ExerciseStyle::American,
+                                          openport::pricing::TreeMethod::LeisenReimer, steps));
   }
   state.SetItemsProcessed(state.iterations());
 }

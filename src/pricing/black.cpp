@@ -12,8 +12,8 @@ namespace {
   return !(expiry > 0.0) || !(vol > 0.0);
 }
 
-/// With no time or no volatility left the option is a discounted forward
-/// intrinsic value: a step function whose only non-zero Greek is delta.
+/// Intrinsic value and its slope; deterministic carry sensitivities are added
+/// by the caller only when there is time left.
 [[nodiscard]] Greeks intrinsic_greeks(OptionType type, double forward, double strike,
                                       double discount, double delta_scale) noexcept {
   Greeks g;
@@ -31,7 +31,8 @@ namespace {
 double black_price(OptionType type, double forward, double strike, double expiry, double vol,
                    double discount) noexcept {
   const double w = omega(type);
-  if (no_optionality(expiry, vol)) return discount * std::max(w * (forward - strike), 0.0);
+  if (!(expiry > 0.0)) return std::max(w * (forward - strike), 0.0);
+  if (!(vol > 0.0)) return discount * std::max(w * (forward - strike), 0.0);
 
   const double sd = vol * std::sqrt(expiry);
   const double d1 = std::log(forward / strike) / sd + 0.5 * sd;
@@ -41,7 +42,13 @@ double black_price(OptionType type, double forward, double strike, double expiry
 
 Greeks black_greeks(OptionType type, double forward, double strike, double expiry, double vol,
                     double discount) noexcept {
-  if (no_optionality(expiry, vol)) return intrinsic_greeks(type, forward, strike, discount, 1.0);
+  if (!(expiry > 0.0)) return intrinsic_greeks(type, forward, strike, 1.0, 1.0);
+  if (!(vol > 0.0)) {
+    Greeks g = intrinsic_greeks(type, forward, strike, discount, 1.0);
+    g.theta = -std::log(discount) / expiry * g.price;
+    g.rho = -expiry * g.price;
+    return g;
+  }
 
   const double w = omega(type);
   const double sqrt_t = std::sqrt(expiry);
@@ -64,8 +71,9 @@ Greeks black_greeks(OptionType type, double forward, double strike, double expir
 }
 
 double bsm_price(const BsmInputs& in) noexcept {
-  const double discount = std::exp(-in.rate * in.expiry);
-  const double forward = in.spot * std::exp((in.rate - in.dividend) * in.expiry);
+  const double t = std::max(in.expiry, 0.0);
+  const double discount = std::exp(-in.rate * t);
+  const double forward = in.spot * std::exp((in.rate - in.dividend) * t);
   return black_price(in.type, forward, in.strike, in.expiry, in.vol, discount);
 }
 
@@ -75,7 +83,12 @@ Greeks bsm_greeks(const BsmInputs& in) noexcept {
   const double df_div = std::exp(-in.dividend * t);
   if (no_optionality(in.expiry, in.vol)) {
     // Value is max(w * (S e^{-qT} - K e^{-rT}), 0); spot delta is +-e^{-qT} in the money.
-    return intrinsic_greeks(in.type, in.spot * df_div, in.strike * df_rate, 1.0, df_div);
+    Greeks g = intrinsic_greeks(in.type, in.spot * df_div, in.strike * df_rate, 1.0, df_div);
+    if (t > 0.0 && g.price > 0.0) {
+      g.theta = omega(in.type) * (in.dividend * in.spot * df_div - in.rate * in.strike * df_rate);
+      g.rho = omega(in.type) * in.strike * t * df_rate;
+    }
+    return g;
   }
 
   const double w = omega(in.type);

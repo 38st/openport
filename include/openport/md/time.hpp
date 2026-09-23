@@ -2,6 +2,7 @@
 
 #include <compare>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -10,6 +11,7 @@ namespace openport::md {
 
 /// Nanoseconds since the Unix epoch, UTC.
 using Timestamp = std::int64_t;
+inline constexpr Timestamp kInvalidTimestamp = std::numeric_limits<Timestamp>::min();
 
 inline constexpr Timestamp kNanosPerSecond = 1'000'000'000;
 inline constexpr Timestamp kNanosPerMinute = 60 * kNanosPerSecond;
@@ -25,6 +27,8 @@ struct Date {
   friend constexpr auto operator<=>(const Date&, const Date&) = default;
 };
 
+[[nodiscard]] bool valid_date(Date date) noexcept;
+
 [[nodiscard]] std::int64_t days_since_epoch(Date date) noexcept;
 [[nodiscard]] Date date_from_days(std::int64_t days) noexcept;
 
@@ -36,12 +40,14 @@ struct Date {
 /// 02:00), otherwise -5.
 [[nodiscard]] int new_york_utc_offset_hours(Date date, int hour) noexcept;
 
-/// Converts a New York wall-clock time to a UTC timestamp.
+/// Converts a New York wall-clock time to UTC. Invalid fields, the spring DST
+/// gap, or overflow return kInvalidTimestamp. Ambiguous fall times use the first
+/// (EDT) occurrence. Uses the post-2007 US DST rules.
 [[nodiscard]] Timestamp new_york_to_utc(Date date, int hour, int minute, int second = 0) noexcept;
 
 /// Year fraction between two instants on an ACT/365 basis.
 [[nodiscard]] constexpr double years_between(Timestamp from, Timestamp to) noexcept {
-  return static_cast<double>(to - from) / kNanosPerYear;
+  return static_cast<double>(static_cast<__int128>(to) - from) / kNanosPerYear;
 }
 
 /// Current wall-clock time.
@@ -50,8 +56,26 @@ struct Date {
 enum class Zone : std::uint8_t { Utc, NewYork };
 
 /// Parses "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS", with an optional fraction
-/// of a second ("...:42.123"), as a wall-clock time in `zone`.
+/// of a second (1-9 digits), as a wall-clock time in `zone`. Z or +/-hh:mm
+/// overrides `zone`; all other suffixes, impossible dates/fields and nanosecond
+/// overflow are rejected. Unzoned New York times in the spring-forward gap are
+/// rejected; ambiguous fall-back times use the first (EDT) occurrence.
 [[nodiscard]] std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexcept;
+
+/// Regular US options session calendar: NYSE/Cboe holidays and 13:00 ET early
+/// closes for 2025-2028. Outside that range only weekdays are considered; holiday
+/// and early-close rules are unavailable. This models 09:30-16:00 ET regular
+/// hours, excluding extended/product-specific sessions and unscheduled halts.
+struct MarketSession {
+  bool open = false;
+  std::string note;
+  std::optional<Timestamp> next_open;  ///< null while open, or beyond timestamp range
+};
+[[nodiscard]] MarketSession market_session(Timestamp ts);
+
+/// Scheduled PM close hour (13 or 16). Outside 2025-2028 assumes 16:00 ET;
+/// does not roll a contract date off holidays or weekends.
+[[nodiscard]] int regular_close_hour(Date date) noexcept;
 
 /// "YYYY-MM-DD".
 [[nodiscard]] std::string format_date(Date date);

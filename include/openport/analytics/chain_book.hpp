@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -19,6 +20,8 @@ struct OptionState {
   md::OptionContract contract;
   md::Timestamp expiry_time = 0;
 
+  bool has_quote = false;  ///< receipt is independent of price (zero bid is a real market)
+  bool has_open_interest = false;
   double bid = 0.0;
   double ask = 0.0;
   double bid_size = 0.0;
@@ -28,7 +31,9 @@ struct OptionState {
   double open_interest = 0.0;
   md::VendorGreeks vendor;  ///< vendor.iv == 0 when the provider sent none
 
-  [[nodiscard]] bool two_sided() const noexcept { return bid > 0.0 && ask >= bid; }
+  [[nodiscard]] bool two_sided() const noexcept {
+    return has_quote && bid > 0.0 && ask >= bid && std::isfinite(bid) && std::isfinite(ask);
+  }
   [[nodiscard]] double mid() const noexcept { return 0.5 * (bid + ask); }
 };
 
@@ -54,7 +59,7 @@ struct UnderlyingBook {
   md::Timestamp data_time = 0;  ///< latest market-data timestamp seen for this underlying
   // OEX and XEO settle together but must not form mixed-exercise strike pairs.
   std::map<std::pair<md::Timestamp, pricing::ExerciseStyle>, ExpirySlice> expiries;
-  std::uint64_t version = 0;                      ///< bumped on every change
+  std::uint64_t version = 0;  ///< bumped on every change
 };
 
 /// The market as the feed has described it so far, rebuilt event by event. Owned

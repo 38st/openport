@@ -33,7 +33,7 @@ struct OptionContract {
   [[nodiscard]] std::string osi_symbol() const;
 
   /// The instant time value runs out: 09:30 New York for AM-settled contracts,
-  /// 16:00 for PM-settled ones.
+  /// 16:00 for PM-settled ones, or 13:00 on a published early-close date.
   [[nodiscard]] Timestamp expiry_time() const noexcept;
 };
 

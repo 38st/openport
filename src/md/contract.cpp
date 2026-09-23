@@ -81,7 +81,7 @@ std::string OptionContract::osi_symbol() const {
 
 Timestamp OptionContract::expiry_time() const noexcept {
   return settlement == Settlement::AM ? new_york_to_utc(expiry, 9, 30)
-                                      : new_york_to_utc(expiry, 16, 0);
+                                      : new_york_to_utc(expiry, regular_close_hour(expiry), 0);
 }
 
 std::optional<OptionContract> parse_osi(std::string_view symbol) {
@@ -107,7 +107,8 @@ std::optional<OptionContract> parse_osi(std::string_view symbol) {
   if (!digits(0, 2, yy) || !digits(2, 2, mm) || !digits(4, 2, dd) || !digits(7, 8, strike)) {
     return std::nullopt;
   }
-  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return std::nullopt;
+  if (!valid_date({2000 + static_cast<int>(yy), static_cast<int>(mm), static_cast<int>(dd)}))
+    return std::nullopt;
   const char right = tail[6];
   if (right != 'C' && right != 'P') return std::nullopt;
 

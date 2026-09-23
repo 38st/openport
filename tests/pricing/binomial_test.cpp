@@ -67,7 +67,47 @@ TEST(Binomial, AmericanCallIsExercisedEarlyAheadOfAHighDividendYield) {
 
 TEST(Binomial, LeisenReimerRoundsStepsUpToOdd) {
   const BsmInputs in{OptionType::Put, 100.0, 100.0, 0.5, 0.03, 0.0, 0.2};
-  EXPECT_DOUBLE_EQ(binomial_price(in, kAmerican, kLr, 100), binomial_price(in, kAmerican, kLr, 101));
+  EXPECT_DOUBLE_EQ(binomial_price(in, kAmerican, kLr, 100),
+                   binomial_price(in, kAmerican, kLr, 101));
+}
+
+TEST(Binomial, ZeroVolAmericanRespectsImmediateExercise) {
+  const BsmInputs in{OptionType::Put, 80, 100, 1, 0.1, 0, 0};
+  for (auto method : {kCrr, kLr})
+    EXPECT_NEAR(binomial_price(in, kAmerican, method, 101), 20, 1e-12);
+}
+
+TEST(Binomial, InadmissibleCrrProbabilitiesHaveAStableFallback) {
+  for (auto type : {OptionType::Put, OptionType::Call}) {
+    const BsmInputs in{type, 100, 100, 1, 0.1, 0, 0.01};
+    const double p = binomial_price(in, kEuropean, kCrr, 1);
+    EXPECT_TRUE(std::isfinite(p));
+    EXPECT_GE(p, 0);
+    EXPECT_NEAR(p, bsm_price(in), 1e-6);
+  }
+}
+
+TEST(Binomial, SaturatedLeisenReimerTailsStayFinite) {
+  for (auto type : {OptionType::Put, OptionType::Call}) {
+    for (double s : {1.0, 10000.0}) {
+      const BsmInputs in{type, s, 100, 1, 0.05, 0, 0.01};
+      const double p = binomial_price(in, kEuropean, kLr, 101);
+      EXPECT_TRUE(std::isfinite(p));
+      EXPECT_GE(p, 0);
+      EXPECT_NEAR(p, bsm_price(in), 1e-7);
+      EXPECT_GE(binomial_price(in, kAmerican, kLr, 101),
+                std::max(openport::pricing::omega(type) * (s - 100), 0.0));
+    }
+  }
+}
+
+TEST(Binomial, DeterministicAmericanCanExerciseBetweenTodayAndExpiry) {
+  const BsmInputs in{OptionType::Call, 100, 90, 10, .2, .1, 0};
+  const double optimal_time = std::log(.1 * 100 / (.2 * 90)) / (.1 - .2);
+  const double exact = 100 * std::exp(-.1 * optimal_time) - 90 * std::exp(-.2 * optimal_time);
+  EXPECT_GT(exact, std::max(10.0, bsm_price(in)));
+  for (auto method : {kCrr, kLr})
+    EXPECT_NEAR(binomial_price(in, kAmerican, method, 101), exact, 1e-10);
 }
 
 }  // namespace

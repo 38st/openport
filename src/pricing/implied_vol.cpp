@@ -27,8 +27,7 @@ struct PriceVega {
 /// Corrado and Miller (1996) closed-form estimate of vol * sqrt(T) from an
 /// undiscounted call price. Very good near the money; in the wings it can come
 /// out negative or wildly off, which the caller checks for.
-[[nodiscard]] double corrado_miller_total_vol(double call, double forward,
-                                              double strike) noexcept {
+[[nodiscard]] double corrado_miller_total_vol(double call, double forward, double strike) noexcept {
   const double gap = forward - strike;
   const double a = call - 0.5 * gap;
   const double discriminant = a * a - gap * gap / std::numbers::pi;
@@ -50,6 +49,8 @@ std::string_view to_string(IvStatus status) noexcept {
       return "not_converged";
     case IvStatus::InvalidInput:
       return "invalid_input";
+    case IvStatus::NonFiniteModel:
+      return "non_finite_model";
   }
   return "unknown";
 }
@@ -58,7 +59,11 @@ IvResult implied_vol_black(double price, OptionType type, double forward, double
                            double expiry, double discount, const IvOptions& options) noexcept {
   IvResult result;
   if (!std::isfinite(price) || !(price >= 0.0) || !(forward > 0.0) || !(strike > 0.0) ||
-      !(expiry > 0.0) || !(discount > 0.0)) {
+      !(expiry > 0.0) || !(discount > 0.0) || !std::isfinite(forward) || !std::isfinite(strike) ||
+      !std::isfinite(expiry) || !std::isfinite(discount) || !std::isfinite(options.max_vol) ||
+      !(options.max_vol > 0.0) || !std::isfinite(options.vol_tolerance) ||
+      !(options.vol_tolerance > 0.0) || !std::isfinite(options.price_tolerance) ||
+      !(options.price_tolerance > 0.0) || options.max_iterations < 1) {
     return result;
   }
 
@@ -73,6 +78,10 @@ IvResult implied_vol_black(double price, OptionType type, double forward, double
     otm = OptionType::Call;
   }
 
+  if (!std::isfinite(target)) {
+    result.status = IvStatus::NonFiniteModel;
+    return result;
+  }
   if (!(target > 0.0)) {
     result.status = IvStatus::BelowIntrinsic;
     return result;
@@ -90,7 +99,14 @@ IvResult implied_vol_black(double price, OptionType type, double forward, double
 
   double lo = 0.0;
   double hi = options.max_vol;
-  if (undiscounted(w, forward, strike, sqrt_t, x, hi).price < target) {
+  auto finite_model = [&](const PriceVega& pv) {
+    if (std::isfinite(pv.price) && std::isfinite(pv.vega)) return true;
+    result.status = IvStatus::NonFiniteModel;
+    return false;
+  };
+  const auto top = undiscounted(w, forward, strike, sqrt_t, x, hi);
+  if (!finite_model(top)) return result;
+  if (top.price < target) {
     result.status = IvStatus::AboveMaximum;
     return result;
   }
@@ -105,6 +121,7 @@ IvResult implied_vol_black(double price, OptionType type, double forward, double
   for (int i = 1; i <= options.max_iterations; ++i) {
     const PriceVega pv = undiscounted(w, forward, strike, sqrt_t, x, vol);
     result.iterations = i;
+    if (!finite_model(pv)) return result;
 
     const double diff = pv.price - target;
     if (std::abs(diff) <= options.price_tolerance * target) {
@@ -126,6 +143,7 @@ IvResult implied_vol_black(double price, OptionType type, double forward, double
     if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);  // left the bracket: bisect
 
     if (std::abs(next - vol) <= options.vol_tolerance) {
+      if (!finite_model(undiscounted(w, forward, strike, sqrt_t, x, next))) return result;
       result.vol = next;
       result.status = IvStatus::Ok;
       return result;
@@ -140,6 +158,7 @@ IvResult implied_vol_black(double price, OptionType type, double forward, double
 
 IvResult implied_vol_bsm(double price, OptionType type, double spot, double strike, double expiry,
                          double rate, double dividend, const IvOptions& options) noexcept {
+  if (!std::isfinite(spot) || !std::isfinite(rate) || !std::isfinite(dividend)) return {};
   const double discount = std::exp(-rate * expiry);
   const double forward = spot * std::exp((rate - dividend) * expiry);
   return implied_vol_black(price, type, forward, strike, expiry, discount, options);

@@ -13,9 +13,9 @@
 namespace openport::server {
 namespace {
 
-using nlohmann::json;
 using analytics::SliceMetrics;
 using analytics::UnderlyingMetrics;
+using nlohmann::json;
 
 /// Rounds to `digits` significant digits, keeping payloads small without losing
 /// anything a screen can show. Non-finite values become JSON null.
@@ -47,12 +47,33 @@ std::string expiry_id(const SliceMetrics& slice) {
          (slice.root.empty() ? "" : "-" + slice.root);
 }
 
+json coverage_json(const analytics::Coverage& c) {
+  return {{"options", c.options},
+          {"quoted", c.quoted},
+          {"priced", c.priced},
+          {"open_interest", c.open_interest}};
+}
+
+json spot_source_json(const UnderlyingMetrics& m) {
+  return m.spot_source.empty() ? json(nullptr) : json(m.spot_source);
+}
+
+json market_json(md::Timestamp ts) {
+  const auto session = md::market_session(ts);
+  return {{"open", session.open},
+          {"note", session.note},
+          {"next_open",
+           session.next_open ? json(md::format_timestamp(*session.next_open)) : json(nullptr)}};
+}
+
 json expiry_json(const SliceMetrics& slice) {
   const double rate = -std::log(slice.forward.discount) / slice.years;
   return {
       {"id", expiry_id(slice)},
       {"expiry", md::format_date(slice.expiry)},
       {"settlement", settlement_of(slice)},
+      {"style", slice.style == pricing::ExerciseStyle::American ? "american" : "european"},
+      {"coverage", coverage_json(slice.coverage)},
       {"expiry_time", md::format_timestamp(slice.expiry_time)},
       {"days", sig(slice.years * 365.0, 5)},
       {"forward", price(slice.forward.forward)},
@@ -68,6 +89,7 @@ json expiry_json(const SliceMetrics& slice) {
 
 json exposure_summary(const UnderlyingMetrics& m) {
   return {
+      {"oi_coverage", sig(m.exposure.oi_coverage)},
       {"gex", sig(m.exposure.gex)},
       {"vex", sig(m.exposure.vex)},
       {"gamma_flip", price(m.exposure.gamma_flip)},
@@ -79,10 +101,19 @@ json exposure_summary(const UnderlyingMetrics& m) {
 json option_json(const analytics::OptionMetrics& o) {
   if (o.id == analytics::kNoInstrument) return nullptr;
   return {
-      {"bid", price(o.bid)},       {"ask", price(o.ask)},       {"mid", price(o.mid)},
-      {"iv", sig(o.iv)},           {"bid_iv", sig(o.bid_iv)},   {"ask_iv", sig(o.ask_iv)},
-      {"delta", sig(o.delta)},     {"gamma", sig(o.gamma)},     {"vega", sig(o.vega)},
-      {"theta", sig(o.theta)},     {"vanna", sig(o.vanna)},     {"oi", o.open_interest},
+      {"bid", price(o.bid)},
+      {"ask", price(o.ask)},
+      {"mid", price(o.mid)},
+      {"iv", sig(o.iv)},
+      {"bid_iv", sig(o.bid_iv)},
+      {"ask_iv", sig(o.ask_iv)},
+      {"delta", sig(o.delta)},
+      {"gamma", sig(o.gamma)},
+      {"vega", sig(o.vega)},
+      {"theta", sig(o.theta)},
+      {"vanna", sig(o.vanna)},
+      {"oi",
+       o.has_open_interest && std::isfinite(o.open_interest) ? json(o.open_interest) : json(nullptr)},
       {"vendor_iv", sig(o.vendor_iv)},
   };
 }
@@ -122,7 +153,9 @@ bool bounded_number(const std::map<std::string, std::string>& query, const std::
   return std::isfinite(value) && value >= minimum && value <= maximum;
 }
 
-ApiResponse ok(const json& body) { return {200, body.dump()}; }
+ApiResponse ok(const json& body) {
+  return {200, body.dump()};
+}
 
 ApiResponse error(int status, const std::string& message) {
   return {status, json{{"error", message}}.dump()};
@@ -172,6 +205,7 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
 json status_json(const MetricsSource& source) {
   const EngineStatus s = source.status();
   return {
+      {"market", market_json(md::now())},
       {"provider",
        {{"name", s.provider},
         {"realtime", s.capabilities.realtime},
@@ -202,9 +236,12 @@ json summary_json(const UnderlyingMetrics& m) {
   for (const SliceMetrics& slice : m.slices) expiries.push_back(expiry_json(slice));
   return {{"symbol", m.symbol},
           {"spot", price(m.spot)},
+          {"spot_source", spot_source_json(m)},
           {"as_of", md::format_timestamp(m.as_of)},
           {"version", m.version},
           {"compute_ms", sig(m.compute_ms, 4)},
+          {"american_approximation", m.american_approximation},
+          {"coverage", coverage_json(m.coverage)},
           {"exposure", exposure_summary(m)},
           {"expiries", expiries}};
 }
@@ -222,6 +259,7 @@ json chain_json(const UnderlyingMetrics& m, const SliceMetrics& slice, double wi
   }
   return {{"symbol", m.symbol},
           {"spot", price(m.spot)},
+          {"spot_source", spot_source_json(m)},
           {"as_of", md::format_timestamp(m.as_of)},
           {"version", m.version},
           {"expiry", expiry_json(slice)},
@@ -267,10 +305,14 @@ json exposure_json(const UnderlyingMetrics& m, std::size_t max_expiries, double 
   }
   json total_json = json::array();
   for (double x : total) total_json.push_back(sig(x, 4));
-  return {{"symbol", m.symbol},       {"spot", price(m.spot)},
+  return {{"symbol", m.symbol},
+          {"spot", price(m.spot)},
+          {"spot_source", spot_source_json(m)},
           {"as_of", md::format_timestamp(m.as_of)},
-          {"version", m.version},     {"strikes", strikes},
-          {"expiries", expiries},     {"total_gex", total_json},
+          {"version", m.version},
+          {"strikes", strikes},
+          {"expiries", expiries},
+          {"total_gex", total_json},
           {"exposure", exposure_summary(m)}};
 }
 
@@ -301,6 +343,7 @@ json surface_json(const UnderlyingMetrics& m, std::size_t max_expiries, double w
   }
   return {{"symbol", m.symbol},
           {"spot", price(m.spot)},
+          {"spot_source", spot_source_json(m)},
           {"as_of", md::format_timestamp(m.as_of)},
           {"version", m.version},
           {"expiries", expiries}};
@@ -333,7 +376,8 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   std::string_view rest = path.substr(prefix.size());
   const std::size_t slash = rest.find('/');
   const std::string symbol(rest.substr(0, slash));
-  const std::string_view view = slash == std::string_view::npos ? "summary" : rest.substr(slash + 1);
+  const std::string_view view =
+      slash == std::string_view::npos ? "summary" : rest.substr(slash + 1);
 
   const auto metrics = source.metrics(symbol);
   if (!metrics) return error(404, "no data for " + symbol + " yet");
@@ -361,6 +405,7 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
 std::string tick_message(const MetricsSource& source) {
   const EngineStatus s = source.status();
   return json{{"type", "tick"},
+              {"market", market_json(md::now())},
               {"feed", {{"state", md::to_string(s.feed_state)}, {"message", s.feed_message}}},
               {"underlyings", underlyings_json(source, s, false)},
               {"engine",

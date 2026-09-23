@@ -24,7 +24,8 @@ struct Greeks {
 /// Black-76 price of a European option on a forward.
 ///
 /// `discount` is the discount factor to expiry, exp(-r * T). With an expired
-/// option or zero volatility the result is the discounted intrinsic value.
+/// option (T <= 0) the result is intrinsic value, ignoring discount. Positive-time
+/// zero volatility gives discounted intrinsic, including deterministic theta/rho.
 [[nodiscard]] double black_price(OptionType type, double forward, double strike, double expiry,
                                  double vol, double discount = 1.0) noexcept;
 

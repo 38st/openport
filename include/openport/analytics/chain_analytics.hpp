@@ -17,8 +17,8 @@ inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 /// position), with delta and gamma taken with respect to spot.
 struct OptionMetrics {
   md::InstrumentId id = kNoInstrument;
-  double bid = 0.0;
-  double ask = 0.0;
+  double bid = kNaN;
+  double ask = kNaN;
   double mid = kNaN;
   double iv = kNaN;  ///< implied from the mid
   double bid_iv = kNaN;
@@ -28,7 +28,8 @@ struct OptionMetrics {
   double vega = kNaN;   ///< per vol point
   double theta = kNaN;  ///< per calendar day
   double vanna = kNaN;  ///< change in delta per vol point
-  double open_interest = 0.0;
+  double open_interest = kNaN;
+  bool has_open_interest = false;
   double vendor_iv = kNaN;
 };
 
@@ -41,10 +42,21 @@ struct StrikeMetrics {
   double vex = 0.0;  ///< dollars of delta per vol point (calls add, puts subtract)
 };
 
+/// Counts over standard contracts in live expiries; quoted/OI count receipt,
+/// priced counts a successful IV solve, independently of the other side's IV.
+struct Coverage {
+  int options = 0;
+  int quoted = 0;
+  int priced = 0;
+  int open_interest = 0;
+};
+
 struct SliceMetrics {
   md::Date expiry;
   md::Timestamp expiry_time = 0;
   std::string root;
+  pricing::ExerciseStyle style = pricing::ExerciseStyle::European;
+  Coverage coverage;
   double years = 0.0;
   ForwardEstimate forward;
   double atm_iv = kNaN;
@@ -57,6 +69,8 @@ struct SliceMetrics {
 /// calls and short the puts that customers hold. That is a modelling convention,
 /// not knowledge of anyone's actual positions.
 struct ExposureSummary {
+  /// Fraction of live options with valid IV whose OI was received; NaN if none.
+  double oi_coverage = kNaN;
   double gex = 0.0;
   double vex = 0.0;
   double gamma_flip = kNaN;  ///< spot level where total GEX changes sign, nearest to spot
@@ -66,7 +80,10 @@ struct ExposureSummary {
 
 struct UnderlyingMetrics {
   std::string symbol;
-  double spot = 0.0;
+  double spot = kNaN;
+  std::string spot_source;  ///< "quote", "parity", or empty when unavailable
+  bool american_approximation = false;
+  Coverage coverage;
   md::Timestamp as_of = 0;
   std::uint64_t version = 0;  ///< version of the book this was computed from
   std::vector<SliceMetrics> slices;
@@ -76,8 +93,8 @@ struct UnderlyingMetrics {
 };
 
 struct AnalyticsOptions {
-  int parity_strikes = 12;      ///< strikes nearest the money used to fit the forward
-  double flip_range = 0.10;     ///< search for the gamma flip within +-10% of spot
+  int parity_strikes = 12;   ///< strikes nearest the money used to fit the forward
+  double flip_range = 0.10;  ///< search for the gamma flip within +-10% of spot
   int flip_steps = 81;
   double fallback_rate = 0.04;  ///< discount-rate assumption when parity cannot fit one
 
@@ -98,8 +115,11 @@ struct AnalyticsOptions {
 /// Per expiry: the forward and discount factor come from put-call parity; each
 /// option's IV is implied from its mid with Black-76 on that forward; each strike's
 /// smile IV comes from its out-of-the-money side, and both sides' Greeks use it so
-/// they stay consistent. American options are priced as European here, which is
-/// accurate for the out-of-the-money side that the smile uses.
+/// they stay consistent. American options use a European approximation, exposed
+/// in the result. Early-exercise premiums contaminate parity-derived forwards,
+/// discount factors and IVs; no de-Americanisation is performed.
+/// A single spot (quote, else nearest valid parity F*D) anchors all exposures.
+/// Exposure includes only valid-IV contracts with received, finite nonnegative OI.
 [[nodiscard]] UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain,
                                         md::Timestamp as_of, const AnalyticsOptions& options = {});
 

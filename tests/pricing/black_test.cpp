@@ -46,8 +46,8 @@ std::vector<Case> random_cases(std::size_t n, unsigned seed) {
   std::vector<Case> cases;
   for (std::size_t i = 0; i < n; ++i) {
     const double t = expiry(rng);
-    cases.push_back({100.0, 100.0 * std::exp(log_moneyness(rng)), t, vol(rng),
-                     std::exp(-rate(rng) * t)});
+    cases.push_back(
+        {100.0, 100.0 * std::exp(log_moneyness(rng)), t, vol(rng), std::exp(-rate(rng) * t)});
   }
   return cases;
 }
@@ -77,8 +77,8 @@ TEST(Black, PriceIncreasesWithVolatility) {
   }
 }
 
-TEST(Black, ExpiredOrZeroVolIsDiscountedIntrinsic) {
-  EXPECT_DOUBLE_EQ(black_price(kCall, 110.0, 100.0, 0.0, 0.3, 0.9), 9.0);
+TEST(Black, ExpiredIsIntrinsicAndZeroVolIsDiscountedIntrinsic) {
+  EXPECT_DOUBLE_EQ(black_price(kCall, 110.0, 100.0, 0.0, 0.3, 0.9), 10.0);
   EXPECT_DOUBLE_EQ(black_price(kPut, 110.0, 100.0, 1.0, 0.0, 0.9), 0.0);
   const Greeks g = black_greeks(kPut, 90.0, 100.0, 0.0, 0.3, 1.0);
   EXPECT_DOUBLE_EQ(g.price, 10.0);
@@ -160,7 +160,8 @@ TEST_P(BsmGreeksTest, AgreeWithFiniteDifferences) {
     };
     EXPECT_NEAR(g.delta, bumped(&BsmInputs::spot, 1e-3), 1e-7);
     EXPECT_NEAR(g.vega, bumped(&BsmInputs::vol, 1e-5), 1e-5);
-    EXPECT_NEAR(g.theta, -bumped(&BsmInputs::expiry, 1e-6), 1e-4 * std::max(1.0, std::abs(g.theta)));
+    EXPECT_NEAR(g.theta, -bumped(&BsmInputs::expiry, 1e-6),
+                1e-4 * std::max(1.0, std::abs(g.theta)));
     EXPECT_NEAR(g.rho, bumped(&BsmInputs::rate, 1e-6), 1e-5);
 
     BsmInputs up = in;
@@ -172,5 +173,40 @@ TEST_P(BsmGreeksTest, AgreeWithFiniteDifferences) {
 }
 
 INSTANTIATE_TEST_SUITE_P(CallsAndPuts, BsmGreeksTest, ::testing::Values(kCall, kPut));
+
+TEST(Black, NegativeExpiryMatchesExpiryForPriceAndGreeks) {
+  for (auto type : {kCall, kPut}) {
+    BsmInputs in{type, 80, 100, -1, 0.1, 0.02, 0.3};
+    const double intrinsic = type == kPut ? 20 : 0;
+    EXPECT_DOUBLE_EQ(bsm_price(in), intrinsic);
+    EXPECT_DOUBLE_EQ(bsm_greeks(in).price, intrinsic);
+    for (double t : {-1.0, 0.0}) {
+      EXPECT_DOUBLE_EQ(black_price(type, 80, 100, t, 0.3, 0.9), intrinsic);
+      const auto g = black_greeks(type, 80, 100, t, 0.3, 0.9);
+      EXPECT_DOUBLE_EQ(g.price, intrinsic);
+      EXPECT_DOUBLE_EQ(g.theta, 0);
+      EXPECT_DOUBLE_EQ(g.rho, 0);
+    }
+  }
+}
+
+TEST(Black, ZeroVolThetaAndRhoMatchDeterministicFiniteDifferences) {
+  for (auto type : {kCall, kPut}) {
+    const double s = type == kCall ? 120 : 80;
+    BsmInputs in{type, s, 100, 1, 0.1, 0.02, 0};
+    auto up = in, down = in;
+    constexpr double h = 1e-6;
+    up.expiry += h;
+    down.expiry -= h;
+    EXPECT_NEAR(bsm_greeks(in).theta, -(bsm_price(up) - bsm_price(down)) / (2 * h), 1e-7);
+    up = down = in;
+    up.rate += h;
+    down.rate -= h;
+    EXPECT_NEAR(bsm_greeks(in).rho, (bsm_price(up) - bsm_price(down)) / (2 * h), 1e-7);
+    const auto g = black_greeks(type, s, 100, 1, 0, std::exp(-0.1));
+    EXPECT_NEAR(g.theta, 0.1 * g.price, 1e-12);
+    EXPECT_NEAR(g.rho, -g.price, 1e-12);
+  }
+}
 
 }  // namespace

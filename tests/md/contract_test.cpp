@@ -80,4 +80,16 @@ TEST(Contract, RejectsMalformedSymbols) {
   EXPECT_FALSE(parse_osi("TOOLONGROOT261005P07405000"));
 }
 
+TEST(Contract, RejectsImpossibleCalendarDates) {
+  for (const auto s : {"SPXW260231C00100000", "SPXW250229C00100000", "SPXW260431C00100000"})
+    EXPECT_FALSE(parse_osi(s)) << s;
+  EXPECT_TRUE(parse_osi("SPXW280229C00100000"));
+}
+
+TEST(Contract, PmExpiryUsesEarlyClose) {
+  const auto c = parse_osi("SPXW261127C00100000");
+  ASSERT_TRUE(c);
+  EXPECT_EQ(openport::md::format_timestamp(c->expiry_time()), "2026-11-27T18:00:00.000Z");
+}
+
 }  // namespace

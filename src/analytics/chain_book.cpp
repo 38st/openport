@@ -13,6 +13,7 @@ void ChainBook::apply(const md::Event& event) {
           on_definition(e);
         } else if constexpr (std::is_same_v<T, md::OptionQuote>) {
           if (OptionState* s = defined(e.id)) {
+            s->has_quote = true;
             s->bid = e.bid;
             s->ask = e.ask;
             s->bid_size = e.bid_size;
@@ -22,6 +23,7 @@ void ChainBook::apply(const md::Event& event) {
           }
         } else if constexpr (std::is_same_v<T, md::OpenInterest>) {
           if (OptionState* s = defined(e.id)) {
+            s->has_open_interest = true;
             s->open_interest = e.contracts;
             touch(*s, 0);
           }

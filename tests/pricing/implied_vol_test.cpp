@@ -27,8 +27,8 @@ using openport::pricing::OptionType;
 // money or impossible in the wings.
 TEST(ImpliedVol, RoundTripsAcrossAWideGrid) {
   const double forward = 100.0;
-  const std::vector<double> expiries = {1.0 / (365 * 24), 1.0 / 365, 7.0 / 365, 30.0 / 365,
-                                        0.25, 1.0, 5.0};
+  const std::vector<double> expiries = {
+      1.0 / (365 * 24), 1.0 / 365, 7.0 / 365, 30.0 / 365, 0.25, 1.0, 5.0};
   const std::vector<double> vols = {0.01, 0.05, 0.2, 0.5, 1.0, 2.0, 4.0};
   int solved = 0;
   int max_iterations = 0;
@@ -40,9 +40,8 @@ TEST(ImpliedVol, RoundTripsAcrossAWideGrid) {
         const double strike = forward * std::exp(-log_moneyness);
         for (OptionType type : {OptionType::Call, OptionType::Put}) {
           const auto g = black_greeks(type, forward, strike, t, vol);
-          const double time_value = g.price - std::max(openport::pricing::omega(type) *
-                                                           (forward - strike),
-                                                       0.0);
+          const double time_value =
+              g.price - std::max(openport::pricing::omega(type) * (forward - strike), 0.0);
           // Below this the time value is lost in the rounding of the intrinsic value.
           if (time_value < 1e-10 * std::max(forward, strike)) continue;
 
@@ -113,6 +112,55 @@ TEST(ImpliedVol, RejectsInvalidInputs) {
   EXPECT_EQ(implied_vol_black(5.0, OptionType::Call, -100.0, 90.0, 1.0).status,
             IvStatus::InvalidInput);
   EXPECT_EQ(implied_vol_black(std::nan(""), OptionType::Call, 100.0, 90.0, 1.0).status,
+            IvStatus::InvalidInput);
+}
+
+TEST(ImpliedVol, RejectsEveryNonFiniteInputAndSolverOption) {
+  for (double bad : {std::nan(""), double(INFINITY), -double(INFINITY)}) {
+    for (int field = 0; field < 5; ++field) {
+      double args[] = {5, 100, 100, 1, 1};
+      args[field] = bad;
+      EXPECT_EQ(
+          implied_vol_black(args[0], OptionType::Call, args[1], args[2], args[3], args[4]).status,
+          IvStatus::InvalidInput)
+          << field;
+    }
+    for (auto member :
+         {&openport::pricing::IvOptions::max_vol, &openport::pricing::IvOptions::vol_tolerance,
+          &openport::pricing::IvOptions::price_tolerance}) {
+      openport::pricing::IvOptions options;
+      options.*member = bad;
+      EXPECT_EQ(implied_vol_black(5, OptionType::Call, 100, 100, 1, 1, options).status,
+                IvStatus::InvalidInput);
+    }
+    EXPECT_EQ(implied_vol_bsm(5, OptionType::Call, 100, 100, 1, bad, 0).status,
+              IvStatus::InvalidInput);
+    EXPECT_EQ(implied_vol_bsm(5, OptionType::Call, 100, 100, 1, 0, bad).status,
+              IvStatus::InvalidInput);
+  }
+}
+
+TEST(ImpliedVol, OverflowingModelEvaluationCannotReportOk) {
+  const auto iv = implied_vol_black(1e307, OptionType::Call, 1e308, 1e308, 100);
+  EXPECT_FALSE(iv.ok());
+  EXPECT_TRUE(std::isnan(iv.vol));
+}
+
+TEST(ImpliedVol, NonFiniteModelHasAnExplicitStatus) {
+  const auto iv = implied_vol_black(1e307, OptionType::Call, 1e308, 1e308, 100);
+  EXPECT_EQ(iv.status, IvStatus::NonFiniteModel);
+  EXPECT_EQ(openport::pricing::to_string(iv.status), "non_finite_model");
+  for (auto member :
+       {&openport::pricing::IvOptions::max_vol, &openport::pricing::IvOptions::vol_tolerance,
+        &openport::pricing::IvOptions::price_tolerance}) {
+    openport::pricing::IvOptions o;
+    o.*member = 0;
+    EXPECT_EQ(implied_vol_black(5, OptionType::Call, 100, 100, 1, 1, o).status,
+              IvStatus::InvalidInput);
+  }
+  openport::pricing::IvOptions o;
+  o.max_iterations = 0;
+  EXPECT_EQ(implied_vol_black(5, OptionType::Call, 100, 100, 1, 1, o).status,
             IvStatus::InvalidInput);
 }
 
