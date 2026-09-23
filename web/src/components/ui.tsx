@@ -92,6 +92,66 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="flex min-h-40 items-center justify-center text-sm text-muted">{children}</div>
 }
 
+export type Tone = "positive" | "negative" | "warn" | "neutral" | "accent"
+const badgeTone: Record<Tone, string> = {
+  positive: "border-bullish/40 bg-bullish/10 text-bullish",
+  negative: "border-bearish/40 bg-bearish/10 text-bearish",
+  warn: "border-warn/40 bg-warn/10 text-warn",
+  neutral: "border-border bg-raised text-muted",
+  accent: "border-accent/40 bg-accent/10 text-accent",
+}
+export function Badge({ tone = "neutral", children, title }: { tone?: Tone; children: ReactNode; title?: string }) {
+  return <span title={title} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${badgeTone[tone]}`}>{children}</span>
+}
+
+/** Sign-aware text colour for P&L values. */
+export function toneOf(value: number | string | null | undefined): Tone {
+  const n = typeof value === "string" ? Number(value) : value
+  return n == null || !Number.isFinite(n) || n === 0 ? "neutral" : n > 0 ? "positive" : "negative"
+}
+export const toneText: Record<Tone, string> = {
+  positive: "text-bullish", negative: "text-bearish", warn: "text-warn", neutral: "", accent: "text-accent",
+}
+
+/** A 0-1 progress bar; values outside the range are clamped for display. */
+export function Meter({ value, tone = "accent", label }: { value: number | null; tone?: Tone; label: string }) {
+  const clamped = value == null || !Number.isFinite(value) ? 0 : Math.min(1, Math.max(0, value))
+  const fill = tone === "positive" ? "bg-bullish" : tone === "negative" ? "bg-bearish" : tone === "warn" ? "bg-warn" : "bg-accent"
+  return (
+    <div role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(clamped * 100)}
+      className="h-1.5 overflow-hidden rounded-full bg-raised">
+      <div className={`h-full rounded-full ${fill}`} style={{ width: `${clamped * 100}%` }} />
+    </div>
+  )
+}
+
+export function PageHeader({ title, subtitle, children }: { title: ReactNode; subtitle?: ReactNode; children?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+        {subtitle && <div className="mt-0.5 text-xs text-muted">{subtitle}</div>}
+      </div>
+      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
+    </div>
+  )
+}
+
+/** Headline figure with a label, an optional coloured detail line and a meter. */
+export function Tile({ label, value, detail, tone = "neutral", meter, hint }: {
+  label: string; value: ReactNode; detail?: ReactNode; tone?: Tone; hint?: string
+  meter?: { value: number | null; tone?: Tone; label: string }
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border bg-panel px-3 py-2.5" title={hint}>
+      <div className="text-[11px] uppercase tracking-wide text-muted">{label}</div>
+      <div className={`mt-1 text-xl font-medium tabular [overflow-wrap:anywhere] ${toneText[tone]}`}>{value}</div>
+      {detail && <div className="mt-0.5 text-xs text-muted tabular">{detail}</div>}
+      {meter && <div className="mt-2"><Meter {...meter} /></div>}
+    </div>
+  )
+}
+
 export function CoverageBadge({ coverage }: { coverage: { label: string; low: boolean } | null }) {
   if (!coverage) return null
   return (

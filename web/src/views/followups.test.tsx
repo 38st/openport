@@ -53,7 +53,7 @@ afterEach(() => {
 describe("web follow-up rendering", () => {
   it("labels a matching parity snapshot, the closed session, and the actual delayed plan", () => {
     vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
-    const html = render(<Header symbol="SPY" view="chain" onSymbol={() => {}} onView={() => {}} />)
+    const html = render(<Header symbol="SPY" onSymbol={() => {}} />)
     expect(html).toContain("≈700.00")
     expect(html).toContain("No underlying quote from this provider; spot inferred from put-call parity")
     expect(html).toContain("market closed")
@@ -64,7 +64,7 @@ describe("web follow-up rendering", () => {
 
   it("does not attach another snapshot's source to the header spot and handles pending underlyings", () => {
     vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
-    const header = <Header symbol="SPY" view="chain" onSymbol={() => {}} onView={() => {}} />
+    const header = <Header symbol="SPY" onSymbol={() => {}} />
     expect(render(header, { summary: { ...summary, version: 0 } })).not.toContain("≈")
     expect(render(header, { summary: { ...summary, symbol: "SPX" } })).not.toContain("≈")
     const pending = { ...status, underlyings: [{ ...status.underlyings[0]!, spot: null, as_of: null }] }
@@ -123,7 +123,7 @@ describe("web follow-up rendering", () => {
   it("uses the selected underlying session instead of the top-level regular market", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(asOf) + 15 * 60_000)
     try {
-      const header = <Header symbol="SPY" view="chain" onSymbol={() => {}} onView={() => {}} />
+      const header = <Header symbol="SPY" onSymbol={() => {}} />
       for (const name of ["global", "curb", "closed"] as const) {
         const selected = { ...status, underlyings: [{ ...status.underlyings[0]!,
           session: { name, open: name !== "closed", note: "Product session" } }] }

@@ -493,17 +493,22 @@ kill-switch and write-access checks still apply separately. The existing `sessio
 field continues to describe the wall-clock product session.
 
 The web ticket estimates fees using `fee_per_contract`; only older servers without
-it expose a manual fee estimate. Ticket and Portfolio notices use `paper.message`,
+it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
 and `paper.accepting: false` disables ticket submission. For older servers without
 `paper`, they fall back to the session-based notice and submission gate.
 Limit prices display cents, with buttons and arrow keys following the root's tier
 tick table above (including downward steps across $3.00). Typed off-tick prices
-still receive the server's `INVALID_TICK` reason.
+still receive the server's `INVALID_TICK` reason. On wide screens the ticket docks
+beside the chain; elsewhere it is a dialog. It names the strategy from the held
+position (Long Call, Close Short Put...), sets the limit from Bid/Mid/Ask, says whether
+the order is marketable at the far side or will rest, and estimates the buying-power
+effect with the server's reservation rules. Buy-only plans and decided attempts block
+submission with the reason.
 
 After HTTP 400/403/404/409/422, the ticket shows the rejection details and **New order**,
 which preserves form values and starts a fresh client ID. **Retry same order** keeps
 the frozen request and ID only after a network failure, timeout or 503. Other
-unexpected responses direct the user to check Portfolio. Results receive keyboard
+unexpected responses direct the user to check Positions and Orders. Results receive keyboard
 focus at the top of the ticket.
 
 | Endpoint | Request / response |

@@ -31,6 +31,25 @@ export function formatMoney(value: Money | null | undefined, digits = 2): string
   const [whole = "0", fraction] = decimalString(rounded, digits).split(".")
   return `${parsed.units < 0n && rounded !== 0n ? "−" : ""}$${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${fraction ? `.${fraction}` : ""}`
 }
+/** P&L style: "+$267.50", "−$10.65", "$0.00". */
+export function signedMoney(value: Money | null | undefined, digits = 2): string {
+  const text = formatMoney(value, digits)
+  const parsed = decimal(value)
+  return parsed && parsed.units > 0n && !/^\$0(\.0+)?$/.test(text) ? `+${text}` : text
+}
+/** Display-only ratio of two decimal strings, null when undefined. */
+export function ratio(numerator: Money | null | undefined, denominator: Money | null | undefined): number | null {
+  const a = numerator == null ? NaN : Number(numerator)
+  const b = denominator == null ? NaN : Number(denominator)
+  return Number.isFinite(a) && Number.isFinite(b) && b !== 0 ? a / b : null
+}
+/** Exact difference of two decimal strings, for display. */
+export function subtractMoney(a: Money | null | undefined, b: Money | null | undefined): Money | null {
+  const x = decimal(a), y = decimal(b)
+  if (!x || !y) return null
+  const scale = Math.max(x.scale, y.scale)
+  return decimalString(x.units * 10n ** BigInt(scale - x.scale) - y.units * 10n ** BigInt(scale - y.scale), scale)
+}
 export const sideFromCell = (cell: "bid" | "ask"): Side => cell === "bid" ? "sell" : "buy"
 
 /** Preserve typed off-tick precision for server validation; pad cents for display. */

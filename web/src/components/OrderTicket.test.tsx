@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { api, ApiError } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import type { TradingStatus } from "../api/trading-types"
-import { order, quote, selection, status, trading } from "../test/trading-fixtures"
+import { account, order, portfolio, quote, selection, status, trading } from "../test/trading-fixtures"
 import { OrderTicket } from "./OrderTicket"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
@@ -21,6 +21,8 @@ beforeEach(() => {
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
   vi.spyOn(api, "orders").mockResolvedValue({ account_version: "17", orders: [] })
   vi.spyOn(api, "submitOrder").mockResolvedValue({ account_version: "18", order, fills: [] })
+  vi.spyOn(api, "account").mockResolvedValue({ ...account, rules: { ...account.rules, buy_only: false } })
+  vi.spyOn(api, "portfolio").mockResolvedValue({ ...portfolio, positions: [] })
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scroll })
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
@@ -61,16 +63,23 @@ async function setField(name: string, value: string) {
   })
 }
 async function click(name: string) { await act(async () => button(name).click()) }
+function radio(group: string, option: string) {
+  const found = [...host.querySelectorAll(`[role="radiogroup"][aria-label="${group}"] [role="radio"]`)].find((r) => r.textContent === option)
+  if (!(found instanceof HTMLButtonElement)) throw new Error(`Missing option: ${group} ${option}`)
+  return found
+}
+async function choose(group: string, option: string) { await act(async () => radio(group, option).click()) }
+const checked = (group: string, option: string) => radio(group, option).getAttribute("aria-checked") === "true"
 
 describe("order ticket interaction", () => {
   it.each([400, 403, 404, 409, 422])("starts a fresh ID after HTTP %s and keeps editable form values", async (status) => {
     vi.mocked(api.submitOrder).mockRejectedValueOnce(new ApiError(status, "Delta cap exceeded", "DELTA_LIMIT", 200, 100, "aggregate"))
     await render()
-    await setField("Side", "sell")
+    await choose("Side", "Sell")
     await setField("Quantity", "3")
-    await setField("Time in force", "ioc")
+    await choose("Time in force", "IOC")
     await setField("Limit price", "15.80")
-    await click("Submit paper order")
+    await click("Submit order")
     const first = vi.mocked(api.submitOrder).mock.calls[0]![0]
     expect(first).toMatchObject({ side: "sell", quantity: 3, time_in_force: "ioc", limit_price: "15.80" })
     expect(host.textContent).toContain("DELTA_LIMIT: Delta cap exceeded")
@@ -82,13 +91,13 @@ describe("order ticket interaction", () => {
     expect(result.compareDocumentPosition(host.querySelector("form")!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
     await click("New order")
     expect(host.querySelector("fieldset")?.disabled).toBe(false)
-    expect(document.activeElement).toBe(field("Side"))
-    expect(field("Side").value).toBe("sell")
+    expect(document.activeElement).toBe(radio("Side", "Sell"))
+    expect(checked("Side", "Sell")).toBe(true)
     expect(field("Quantity").value).toBe("3")
-    expect(field("Time in force").value).toBe("ioc")
+    expect(checked("Time in force", "IOC")).toBe(true)
     expect(field("Limit price").value).toBe("15.80")
     expect(host.textContent).not.toContain("DELTA_LIMIT")
-    await click("Submit paper order")
+    await click("Submit order")
     const second = vi.mocked(api.submitOrder).mock.calls[1]![0]
     expect(second.client_order_id).not.toBe(first.client_order_id)
     expect({ ...second, client_order_id: first.client_order_id }).toEqual(first)
@@ -100,7 +109,7 @@ describe("order ticket interaction", () => {
   ])("retries an interrupted request with its frozen ID and values: %s", async (error) => {
     vi.mocked(api.submitOrder).mockRejectedValueOnce(error)
     await render()
-    await click("Submit paper order")
+    await click("Submit order")
     expect(host.querySelector("fieldset")?.disabled).toBe(true)
     expect(host.textContent).not.toContain("New order")
     await click("Retry same order")
@@ -111,16 +120,16 @@ describe("order ticket interaction", () => {
   it("does not offer an automatic retry or fresh ID for an unknown server failure", async () => {
     vi.mocked(api.submitOrder).mockRejectedValueOnce(new ApiError(500, "Unexpected response"))
     await render()
-    await click("Submit paper order")
+    await click("Submit order")
     expect(host.textContent).not.toContain("Retry same order")
     expect(host.textContent).not.toContain("New order")
-    expect(host.textContent).toContain("Check Portfolio to confirm")
+    expect(host.textContent).toContain("Check Positions and Orders to confirm")
   })
   it("retains INVALID_TICK feedback for typed off-tick prices", async () => {
     vi.mocked(api.submitOrder).mockRejectedValueOnce(new ApiError(422, "Limit price is not a positive multiple of the product tier tick", "INVALID_TICK"))
     await render()
     await setField("Limit price", "4.61")
-    await click("Submit paper order")
+    await click("Submit order")
     expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ limit_price: "4.61" })
     expect(host.textContent).toContain("INVALID_TICK: Limit price is not a positive multiple")
     expect(button("New order")).toBeDefined()
@@ -156,14 +165,14 @@ describe("order ticket interaction", () => {
     }, "open"))
     await render()
     expect(host.textContent).toContain("SPX is in the overnight session")
-    expect(button("Submit paper order").disabled).toBe(true)
-    await click("Submit paper order")
+    expect(button("Submit order").disabled).toBe(true)
+    await click("Submit order")
     expect(api.submitOrder).not.toHaveBeenCalled()
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "regular", open: true, note: "Regular" } }] }, null, "open"))
     await render()
     expect(host.textContent).not.toContain("regular session only")
-    expect(button("Submit paper order").disabled).toBe(false)
-    await click("Submit paper order")
+    expect(button("Submit order").disabled).toBe(false)
+    await click("Submit order")
     expect(api.submitOrder).toHaveBeenCalledTimes(1)
   })
   it("blocks a regular-session ticket when paper stops accepting and resumes from a tick", async () => {
@@ -175,8 +184,8 @@ describe("order ticket interaction", () => {
     vi.mocked(useLive).mockReturnValue(liveState(stalled, null, "open"))
     await render()
     expect(host.textContent).toContain(message)
-    expect(button("Submit paper order").disabled).toBe(true)
-    await click("Submit paper order")
+    expect(button("Submit order").disabled).toBe(true)
+    await click("Submit order")
     await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
     expect(api.submitOrder).not.toHaveBeenCalled()
 
@@ -190,8 +199,8 @@ describe("order ticket interaction", () => {
     await render()
     expect(host.textContent).not.toContain(message)
     expect(host.textContent).not.toContain("regular session only")
-    expect(button("Submit paper order").disabled).toBe(false)
-    await click("Submit paper order")
+    expect(button("Submit order").disabled).toBe(false)
+    await click("Submit order")
     expect(api.submitOrder).toHaveBeenCalledTimes(1)
   })
   it("blocks on paper.accepting even when the server message is null", async () => {
@@ -201,8 +210,8 @@ describe("order ticket interaction", () => {
     }, "open"))
     await render()
     expect(host.textContent).toContain("SPX paper orders are unavailable (FEED_STALLED)")
-    expect(button("Submit paper order").disabled).toBe(true)
-    await click("Submit paper order")
+    expect(button("Submit order").disabled).toBe(true)
+    await click("Submit order")
     expect(api.submitOrder).not.toHaveBeenCalled()
   })
 })

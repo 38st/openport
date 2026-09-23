@@ -12,6 +12,8 @@ import { matchingPayload } from "../lib/payload"
 import { americanApproximation, rateSourceHint } from "../lib/model"
 import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
 import { Dialog } from "../components/Dialog"
+import { usePortfolio } from "../api/trading"
+import { useMediaQuery } from "../lib/media"
 import { sideFromCell } from "../lib/trading"
 
 const windows = [
@@ -47,6 +49,10 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const [showGreeks, setShowGreeks] = useState(false)
   const [ticket, setTicket] = useState<TicketSelection | null>(null)
   const [untradable, setUntradable] = useState<string | null>(null)
+  // Wide screens dock the ticket beside the chain so quotes stay visible.
+  const docked = useMediaQuery("(min-width: 1280px)")
+  const positions = usePortfolio().data?.positions
+  const held = useMemo(() => new Map((positions ?? []).map((p) => [p.symbol, p.quantity])), [positions])
 
   const summary = useQuery({
     queryKey: ["summary", symbol, version],
@@ -107,6 +113,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         </div>
       )}
 
+      <div className={docked && ticket ? "grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]" : ""}>
       <Panel
         title={e ? `${symbol} ${e.expiry} ${e.settlement}` : symbol}
         actions={
@@ -127,10 +134,12 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
       >
         {data ? (
           <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} provider={provider}
+            selected={ticket ? { symbol: ticket.symbol, cell: ticket.cell } : null} held={held}
             onQuote={live.trading ? (quote, row, optionType, cell) => {
               if (!quote.tradable || !quote.symbol) { setUntradable(quote.untradable_reason ?? "Contract unavailable for paper trading"); return }
               const clickedPrice = quote[cell]
-              setTicket({ symbol: quote.symbol, underlying: symbol, expiry: data.expiry, strike: row.strike, optionType, cell, price: isNum(clickedPrice) ? String(clickedPrice) : "" })
+              setTicket({ symbol: quote.symbol, underlying: symbol, expiry: data.expiry, strike: row.strike, optionType, cell,
+                price: isNum(clickedPrice) ? String(clickedPrice) : "", spot: data.spot })
             } : undefined} />
         ) : (
           <Empty>{chain.isError ? String(chain.error) : "Loading chain…"}</Empty>
@@ -146,12 +155,15 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
           </p>
         )}
       </Panel>
+      {live.trading && ticket && ticket.underlying === symbol && ticket.expiry.id === selected && <div className={docked ? "sticky top-16" : ""}>
+        <OrderTicket
+          key={`${live.accountScope}/${ticket.symbol}/${ticket.cell}`}
+          selection={ticket} trading={live.trading} variant={docked ? "panel" : "dialog"}
+          quote={data?.strikes.find((row) => row.strike === ticket.strike)?.[ticket.optionType] ?? null}
+          onClose={() => setTicket(null)} />
+      </div>}
+      </div>
       {live.trading && untradable && <Dialog title="Paper trading unavailable" onClose={() => setUntradable(null)}><p className="text-sm text-warn">{untradable}</p></Dialog>}
-      {live.trading && ticket && ticket.underlying === symbol && ticket.expiry.id === selected && <OrderTicket
-        key={`${live.accountScope}/${ticket.symbol}/${ticket.cell}`}
-        selection={ticket} trading={live.trading}
-        quote={data?.strikes.find((row) => row.strike === ticket.strike)?.[ticket.optionType] ?? null}
-        onClose={() => setTicket(null)} />}
     </div>
   )
 }
@@ -192,6 +204,8 @@ function ChainTable({
   showGreeks,
   provider,
   onQuote,
+  selected = null,
+  held,
 }: {
   rows: ChainRow[]
   forward: number | null
@@ -199,6 +213,10 @@ function ChainTable({
   showGreeks: boolean
   provider: string
   onQuote?: (quote: OptionQuote, row: ChainRow, type: "call" | "put", cell: "bid" | "ask") => void
+  /** The ticket's contract and clicked side, highlighted. */
+  selected?: { symbol: string; cell: "bid" | "ask" } | null
+  /** Held quantity by canonical OSI, marked beside the strike. */
+  held?: Map<string, number>
 }) {
   const all = columns(provider).filter((c) => showGreeks || !c.greek)
   const callColumns = all
@@ -209,7 +227,8 @@ function ChainTable({
     if (!quote) return "—"
     const key = column.key
     if (!onQuote || (key !== "bid" && key !== "ask")) return column.render(quote)
-    return <button type="button" className="rounded px-1 underline decoration-dotted underline-offset-4 hover:bg-raised hover:text-accent"
+    const active = selected != null && quote.symbol === selected.symbol && selected.cell === key
+    return <button type="button" aria-pressed={active} className={`rounded px-1 underline decoration-dotted underline-offset-4 hover:bg-raised hover:text-accent ${active ? "bg-accent/15 text-accent ring-1 ring-accent/50" : key === "bid" ? "text-bearish" : "text-bullish"}`}
       aria-label={`${sideFromCell(key)} ${row.strike} ${type} at ${key} ${price(quote[key])}${quote.tradable ? "" : `: ${quote.untradable_reason ?? "unavailable"}`}`}
       title={quote.tradable ? `${sideFromCell(key)} paper order` : quote.untradable_reason ?? "Unavailable"}
       onClick={() => onQuote(quote, row, type, key)}>{column.render(quote)}</button>
@@ -263,6 +282,11 @@ function ChainTable({
                 <td className="px-3 py-1 text-center tabular">
                   <div className={atm ? "text-warn" : ""}>{row.strike}</div>
                   <div className="text-[10px] text-faint">{vol(row.iv, 1)}</div>
+                  {(["call", "put"] as const).map((type) => {
+                    const quantity = row[type]?.symbol ? held?.get(row[type]!.symbol!) : undefined
+                    return quantity ? <div key={type} className={`text-[10px] font-medium ${quantity > 0 ? "text-bullish" : "text-bearish"}`} title={`You hold ${quantity} ${type}${Math.abs(quantity) === 1 ? "" : "s"}`}>
+                      {type === "call" ? "C" : "P"} {quantity > 0 ? "+" : "−"}{Math.abs(quantity)}</div> : null
+                  })}
                 </td>
                 {putColumns.map((c) => (
                   <td key={`p-${c.key}`} className={`${cell} ${putItm ? "bg-raised/50" : ""}`}>

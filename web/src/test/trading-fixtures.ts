@@ -1,5 +1,5 @@
 import type { Chain, Expiry, OptionQuote, Status, Summary } from "../api/types"
-import type { Bucket, Fill, Limits, Order, Portfolio, Risk, TradingStatus } from "../api/trading-types"
+import type { Account, Bucket, Fill, Limits, Order, Plan, Portfolio, Risk, Trade, TradingStatus } from "../api/trading-types"
 import type { TicketSelection } from "../components/OrderTicket"
 
 export const time = "2026-09-23T15:30:00Z"
@@ -61,3 +61,34 @@ export const risk: Risk = {
     pnl: [[null, -900, -850, -800, -500], [-700, -500, -300, -100, 400], [-800, -100, 0, 100, 1000], [-100, 200, 500, 800, 1200], [500, 700, 1000, 1500, 2000]],
     clamped: [[true, false, false, false, false], [], [], [], []], complete: false },
 }
+
+export const account: Account = {
+  account_version: "17", time,
+  rules: { plan: "Intraday 100K", profit_target: "10000.00", max_drawdown: "5000.00", drawdown_mode: "intraday", buy_only: true, buying_power: true, expiry_cutoff_seconds: 300 },
+  evaluation: {
+    enabled: true, attempt: 2, status: "active", started: "2026-09-21T14:00:00Z", starting_balance: "100000.00", equity: "100267.50",
+    marked: true, valuation_complete: true, profit: "267.50", peak: "100300.00", floor: "95300.00", drawdown_buffer: "4967.50",
+    target_equity: "110000.00", target_remaining: "9732.50", decided_at: null, decided_equity: null, decision: null,
+    day: "2026-09-23", day_open_equity: "100100.00", day_close_equity: "100267.50",
+    days: [{ day: "2026-09-22", open_equity: "100000.00", close_equity: "100100.00", peak: "100300.00", floor: "95300.00" }],
+  },
+  buying_power: { available: "99078.70", reserved: "0.00", short_requirement: "0.00" },
+  attempts: [{ attempt: 1, plan: "Practice", started: "2026-09-20T14:00:00Z", ended: "2026-09-21T14:00:00Z", starting_balance: "100000.00", final_equity: "99500.00", status: "active", decision: null }],
+}
+const trade: Trade = {
+  id: "1", attempt: 2, symbol: quote.symbol!, underlying: "SPX", expiry: expiry.expiry, settlement: "PM", strike: 7000, type: "call",
+  direction: "long", status: "closed", opened: "2026-09-22T14:19:06Z", closed: "2026-09-22T14:23:55Z", duration_seconds: 289,
+  quantity: 0, max_quantity: 5, opened_contracts: 5, closed_contracts: 5, average_open: "4.25", average_close: "4.80", cost: "2125.00",
+  gross: "275.00", fees: "6.50", net: "268.50", return: 268.5 / 2125, mark: null, unrealised: null, closure: null, fills: ["fill-1"],
+}
+export const trades: Trade[] = [
+  { ...trade, id: "3", type: "put", strike: 6900, status: "open", closed: null, duration_seconds: null, quantity: 2, max_quantity: 2,
+    opened_contracts: 2, closed_contracts: 0, average_close: null, gross: "0.00", fees: "1.30", net: "-1.30", return: null, mark: "3.10", unrealised: "-20.00" },
+  { ...trade, id: "2", opened: "2026-09-23T15:00:00Z", closed: "2026-09-23T17:30:00Z", duration_seconds: 9000, gross: "-100.00", fees: "1.30", net: "-101.30", return: -101.3 / 2125 },
+  trade,
+]
+export const plans: Plan[] = [
+  { id: "practice", name: "Practice", summary: "No target or drawdown. Buying power applies.", initial_cash: "100000.00",
+    rules: { plan: "Practice", profit_target: null, max_drawdown: null, drawdown_mode: "intraday", buy_only: false, buying_power: true, expiry_cutoff_seconds: 0 } },
+  { id: "intraday-100k", name: "Intraday 100K", summary: "Buy-only single-leg options.", initial_cash: "100000.00", rules: account.rules },
+]

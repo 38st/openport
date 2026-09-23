@@ -3,6 +3,7 @@ import type { Num } from "./types"
 /** Accounting values stay decimal strings, including request bodies. */
 export type Money = string
 export type WriteMode = "open" | "token" | "disabled"
+export type EvaluationStatus = "active" | "passed" | "failed"
 export interface TradingStatus {
   enabled: boolean
   reason: string | null
@@ -11,7 +12,99 @@ export interface TradingStatus {
   write: WriteMode
   fee_per_contract?: Money
   initial_cash?: Money
+  /** Active rules' display name; absent on older servers, null without a plan. */
+  plan?: string | null
+  /** Null without a target or drawdown rule. */
+  evaluation?: EvaluationStatus | null
 }
+export interface AccountRules {
+  plan: string | null
+  profit_target: Money | null
+  max_drawdown: Money | null
+  drawdown_mode: "intraday" | "end_of_day"
+  buy_only: boolean
+  buying_power: boolean
+  expiry_cutoff_seconds: number
+}
+export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money }
+export interface EvaluationDay { day: string; open_equity: Money; close_equity: Money; peak: Money; floor: Money | null }
+export interface Evaluation {
+  enabled: boolean
+  attempt: number
+  status: EvaluationStatus
+  started: string
+  starting_balance: Money
+  equity: Money
+  /** Every position has a mark; rules only decide on fully marked equity. */
+  marked: boolean
+  valuation_complete: boolean
+  profit: Money
+  peak: Money
+  floor: Money | null
+  drawdown_buffer: Money | null
+  target_equity: Money | null
+  target_remaining: Money | null
+  decided_at: string | null
+  decided_equity: Money | null
+  decision: string | null
+  day: string
+  day_open_equity: Money
+  day_close_equity: Money
+  days: EvaluationDay[]
+}
+export interface AttemptSummary {
+  attempt: number
+  plan: string | null
+  started: string
+  ended: string
+  starting_balance: Money
+  final_equity: Money
+  status: EvaluationStatus
+  decision: string | null
+}
+export interface Account {
+  account_version: string
+  time: string
+  rules: AccountRules
+  evaluation: Evaluation
+  buying_power: BuyingPower
+  attempts: AttemptSummary[]
+}
+export interface Trade {
+  id: string
+  attempt: number
+  symbol: string
+  underlying: string
+  expiry: string
+  settlement: "AM" | "PM"
+  strike: number
+  type: "call" | "put"
+  direction: "long" | "short"
+  status: "open" | "closed"
+  opened: string
+  closed: string | null
+  duration_seconds: number | null
+  quantity: number
+  max_quantity: number
+  opened_contracts: number
+  closed_contracts: number
+  average_open: Money | null
+  average_close: Money | null
+  cost: Money
+  gross: Money
+  fees: Money
+  net: Money
+  /** Net over entry cost, closed trades only. */
+  return: Num
+  mark: Money | null
+  unrealised: Money | null
+  closure: "settlement" | "reset" | null
+  fills: string[]
+}
+export interface TradesResponse { account_version: string; attempt: number; trades: Trade[] }
+export interface Plan { id: string; name: string; summary: string; initial_cash: Money; rules: AccountRules }
+export interface PlansResponse { plans: Plan[] }
+export type ResetRequest = { reason: string } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export type Side = "buy" | "sell"
 export type NewOrder = {
   client_order_id: string
@@ -37,6 +130,8 @@ export interface Order {
   reason: { code: string; message: string } | null
   accepted_at: string
   day_end: string | null
+  /** System orders liquidate or auto-close; absent on older servers. */
+  origin?: "user" | "system"
 }
 export interface Fill {
   id: string
@@ -83,6 +178,7 @@ export interface Portfolio {
   valuation_complete: boolean
   quality_flags: string[]
   positions: Position[]
+  buying_power?: BuyingPower
 }
 export interface RiskCaps { dollar_delta: number; vega: number }
 export interface Limits {

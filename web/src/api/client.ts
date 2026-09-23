@@ -1,5 +1,5 @@
 import type { Chain, ExposureMatrix, Status, Summary, Surface } from "./types"
-import type { FillsResponse, KillResponse, Limits, Money, NewOrder, OrderResponse, OrdersResponse, Portfolio, Risk, SettlementResponse, SubmitOrderResponse, WriteMode } from "./trading-types"
+import type { Account, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradesResponse, WriteMode } from "./trading-types"
 import { writeToken } from "../lib/write-token"
 
 export class ApiError extends Error {
@@ -63,6 +63,11 @@ export const api = {
   updateLimits: (expected_revision: string, limits: Limits, mode: WriteMode) => write<Risk>("/api/risk/limits", "PUT", mode, { expected_revision, limits }),
   setKill: (action: "trip" | "reset", reason: string, mode: WriteMode) => write<KillResponse>("/api/risk/kill", "POST", mode, { action, reason }),
   settle: (symbol: string, value: Money, mode: WriteMode) => write<SettlementResponse>("/api/settlements", "POST", mode, { symbol, value }),
+  account: (signal?: AbortSignal) => get<Account>("/api/account", signal),
+  trades: (status: "open" | "closed" | "all" = "all", attempt: "current" | "all" = "current", signal?: AbortSignal) =>
+    get<TradesResponse>(`/api/trades?status=${status}&attempt=${attempt}`, signal),
+  plans: (signal?: AbortSignal) => get<PlansResponse>("/api/plans", signal),
+  resetAccount: (request: ResetRequest, mode: WriteMode) => write<Account>("/api/account/reset", "POST", mode, request),
   status: (signal?: AbortSignal) => get<Status>("/api/status", signal),
   summary: (symbol: string, signal?: AbortSignal) => get<Summary>(`${underlying(symbol)}/summary`, signal),
   chain: (symbol: string, expiry: string, window: number, signal?: AbortSignal) =>

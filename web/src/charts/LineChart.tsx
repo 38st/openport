@@ -17,6 +17,8 @@ export interface Series {
   band?: boolean
   dots?: boolean
   dashed?: boolean
+  /** Shade between the line and the bottom of the plot. */
+  area?: boolean
 }
 
 export interface Marker {
@@ -25,40 +27,60 @@ export interface Marker {
   color: string
 }
 
+/** A horizontal level such as a target or floor, always kept in view. */
+export interface Reference {
+  y: number
+  label: string
+  color: string
+}
+
 interface Props {
   series: Series[]
   markers?: Marker[]
+  references?: Reference[]
   height?: number
   formatX: (x: number) => string
   formatY: (y: number) => string
   xLabel?: string
   /** Tick positions for a transformed axis; round numbers are chosen otherwise. */
   xTicks?: number[]
+  /** Left margin for wide y labels such as dollar balances. */
+  marginLeft?: number
 }
 
 const margin = { top: 12, right: 16, bottom: 28, left: 52 }
 
-/// Multi-series line chart with optional bid/ask bands, vertical markers and a
-/// crosshair that reads out every series at the pointer.
-export function LineChart({ series, markers = [], height = 320, formatX, formatY, xLabel, xTicks }: Props) {
+/// Multi-series line chart with optional bid/ask bands, vertical markers,
+/// horizontal reference levels and a crosshair that reads out every series.
+export function LineChart({ series, markers = [], references = [], height = 320, formatX, formatY, xLabel, xTicks, marginLeft = margin.left }: Props) {
   const [ref, { width }] = useSize<HTMLDivElement>()
   const [hoverX, setHoverX] = useState<number | null>(null)
+  const left = marginLeft
 
   const layout = useMemo(() => {
     const xs = series.flatMap((s) => s.points.map((p) => p.x))
-    const ys = series.flatMap((s) =>
+    const ys = [...series.flatMap((s) =>
       s.points.flatMap((p) => (s.band ? [p.y, p.lo, p.hi] : [p.y])),
-    )
+    ), ...references.map((r) => r.y)]
     const xDomain = extent(xs)
     const yDomain = extent(ys)
     if (!xDomain || !yDomain || width === 0) return null
-    const x = linear(xDomain, [margin.left, width - margin.right])
+    const x = linear(xDomain, [left, width - margin.right])
     const y = linear(pad(yDomain, 0.08), [height - margin.bottom, margin.top])
     const ticks = xTicks
       ? xTicks.filter((t) => t >= xDomain[0] && t <= xDomain[1])
       : niceTicks(...xDomain, Math.max(2, Math.floor(width / 110)))
     return { x, y, xTicks: ticks, yTicks: niceTicks(...y.domain, 5) }
-  }, [series, width, height, xTicks])
+  }, [series, references, width, height, xTicks, left])
+
+  const area = (points: SeriesPoint[]) => {
+    if (!layout) return ""
+    const valid = points.filter((p) => p.y != null && Number.isFinite(p.y))
+    if (valid.length < 2) return ""
+    const bottom = (height - margin.bottom).toFixed(1)
+    const line = valid.map((p, i) => `${i ? "L" : "M"}${layout.x(p.x).toFixed(1)},${layout.y(p.y as number).toFixed(1)}`).join("")
+    return `${line}L${layout.x(valid[valid.length - 1]!.x).toFixed(1)},${bottom}L${layout.x(valid[0]!.x).toFixed(1)},${bottom}Z`
+  }
 
   const path = (points: SeriesPoint[], pick: (p: SeriesPoint) => number | null | undefined) => {
     if (!layout) return ""
@@ -110,9 +132,17 @@ export function LineChart({ series, markers = [], height = 320, formatX, formatY
         <svg width={width} height={height} onPointerMove={onMove} onPointerLeave={() => setHoverX(null)} className="block">
           {layout.yTicks.map((t) => (
             <g key={`y${t}`}>
-              <line x1={margin.left} x2={width - margin.right} y1={layout.y(t)} y2={layout.y(t)} className="stroke-border" strokeDasharray="2 3" />
-              <text x={margin.left - 8} y={layout.y(t)} dy="0.32em" textAnchor="end" className="fill-muted tabular text-[10px]">
+              <line x1={left} x2={width - margin.right} y1={layout.y(t)} y2={layout.y(t)} className="stroke-border" strokeDasharray="2 3" />
+              <text x={left - 8} y={layout.y(t)} dy="0.32em" textAnchor="end" className="fill-muted tabular text-[10px]">
                 {formatY(t)}
+              </text>
+            </g>
+          ))}
+          {references.map((r) => (
+            <g key={`ref-${r.label}`} aria-label={`${r.label} ${formatY(r.y)}`}>
+              <line x1={left} x2={width - margin.right} y1={layout.y(r.y)} y2={layout.y(r.y)} style={{ stroke: r.color }} strokeDasharray="6 4" strokeWidth={1.3} />
+              <text x={width - margin.right - 4} y={layout.y(r.y) - 5} textAnchor="end" style={{ fill: r.color }} className="tabular text-[10px]">
+                {r.label} {formatY(r.y)}
               </text>
             </g>
           ))}
@@ -136,6 +166,9 @@ export function LineChart({ series, markers = [], height = 320, formatX, formatY
           ))}
           {series.map((s) =>
             s.band ? <path key={`band-${s.id}`} d={band(s.points)} style={{ fill: s.color }} fillOpacity={0.12} /> : null,
+          )}
+          {series.map((s) =>
+            s.area ? <path key={`area-${s.id}`} d={area(s.points)} style={{ fill: s.color }} fillOpacity={0.1} /> : null,
           )}
           {series.map((s) => s.dots ? (
             <g key={s.id} aria-label={s.label}>

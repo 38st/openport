@@ -10,10 +10,12 @@ import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { OrderResult, OrderTicket } from "../components/OrderTicket"
 import { ScenarioGrid } from "../components/ScenarioGrid"
-import { formatRoute, parseRoute, views } from "../lib/route"
-import { chain, fill, order, portfolio, quote, risk, selection, status, summary, trading } from "../test/trading-fixtures"
+import { Sidebar } from "../components/Sidebar"
+import { formatRoute, parseRoute, primaryViews } from "../lib/route"
+import { account, chain, fill, order, portfolio, quote, risk, selection, status, summary, trading } from "../test/trading-fixtures"
 import { ChainView } from "./ChainView"
-import { PortfolioView } from "./PortfolioView"
+import { OrdersView } from "./OrdersView"
+import { PositionsView } from "./PositionsView"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../lib/theme", () => ({ useTheme: () => ({ theme: "dark", toggleTheme: vi.fn() }) }))
@@ -26,6 +28,8 @@ function render(node: ReactNode, seed?: (client: QueryClient) => void) {
   client.setQueryData(queries.orders.queryKey, { account_version: "17", orders: [order] })
   client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [fill] })
   client.setQueryData(queries.risk.queryKey, risk)
+  client.setQueryData(queries.account.queryKey, account)
+  client.setQueryData(queries.allOrders.queryKey, { account_version: "17", orders: [order] })
   client.setQueryData(["summary", "SPX", 1], summary)
   client.setQueryData(["chain", "SPX", selection.expiry.id, .05, 1], chain)
   seed?.(client)
@@ -41,7 +45,9 @@ describe("paper trading fixtures", () => {
     expect(html).toContain("aria-labelledby=")
     expect(html).toContain("2026-10-16 PM")
     expect(html).toContain("7000 call")
-    expect(html).toContain('<option value="buy" selected="">Buy</option>')
+    expect(html).toContain('aria-checked="true" tabindex="0" class="rounded px-2 py-0.5 text-xs transition-colors bg-raised text-foreground">Buy</button>')
+    expect(html).toContain("Long Call")
+    expect(html).toContain("Buying power effect")
     expect(html).toContain("4.50 × 10")
     expect(html).toContain("4.60 × 3")
     expect(html).toContain("4.55")
@@ -51,16 +57,17 @@ describe("paper trading fixtures", () => {
     expect(html).toContain("1225.00")
     expect(html).toContain("-85.00")
     expect(html).toContain("Not provided by server")
-    expect(html).toContain("Submit paper order")
+    expect(html).toContain('aria-label="Submit order"')
+    expect(html).toContain("Buy 1 Long Call @ $4.60")
   })
   it("renders sells, null quotes and token/kill write gates", () => {
     const html = render(<OrderTicket selection={{ ...selection, cell: "bid", price: "4.50" }} quote={{ ...quote, bid: null, ask: null, mid: null, bid_size: null, ask_size: null, delta: null }} trading={{ ...trading, write: "token", kill_latched: true }} onClose={() => {}} />)
-    expect(html).toContain('<option value="sell" selected="">Sell</option>')
+    expect(html).toContain('aria-checked="true" tabindex="0" class="rounded px-2 py-0.5 text-xs transition-colors bg-raised text-foreground">Sell</button>')
     expect(html).toContain("— × —")
     expect(html).toContain("Estimated premium · credit")
     expect(html).toContain("Enter write token")
     expect(html).toContain("Kill switch latched")
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
+    expect(html).toMatch(/aria-label="Submit order" disabled=""/)
     expect(html).not.toContain("NaN")
   })
   it.each(["0.65", "0.00"])("uses the server fee %s and removes the manual override", (fee) => {
@@ -78,8 +85,8 @@ describe("paper trading fixtures", () => {
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
     expect(html).toContain("Paper orders are accepted in the regular session only; SPX is")
     expect(html).toContain(name === "global" ? "overnight session" : name)
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
-    expect(render(<PortfolioView />)).toContain("Paper orders are accepted in the regular session only; SPX is")
+    expect(html).toMatch(/aria-label="Submit order" disabled=""/)
+    expect(render(<PositionsView />)).toContain("Paper orders are accepted in the regular session only; SPX is")
   })
   it.each(["status", "tick"] as const)("uses the paper gate from %s for ticket and Portfolio notices", (source) => {
     const message = "SPX quotes are 10h 20m behind the market; the feed appears to have stalled"
@@ -92,8 +99,8 @@ describe("paper trading fixtures", () => {
       : liveState(status, { type: "tick", engine: status.engine, feed: status.feed, underlyings }, "open"))
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
     expect(html).toContain(message)
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
-    expect(render(<PortfolioView />)).toContain(message)
+    expect(html).toMatch(/aria-label="Submit order" disabled=""/)
+    expect(render(<PositionsView />)).toContain(message)
   })
   it("uses paper acceptance over wall-clock session in the ticket and Portfolio", () => {
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!,
@@ -102,8 +109,8 @@ describe("paper trading fixtures", () => {
     }] }, null, "open"))
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
     expect(html).not.toContain("regular session only")
-    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
-    expect(render(<PortfolioView />)).not.toContain("regular session only")
+    expect(html).not.toMatch(/aria-label="Submit order" disabled=""/)
+    expect(render(<PositionsView />)).not.toContain("regular session only")
   })
   it("limits Portfolio session notices to tradable underlyings, positions, or open orders", () => {
     const session = { name: "closed" as const, open: false, note: "Closed" }
@@ -111,7 +118,7 @@ describe("paper trading fixtures", () => {
       { ...status.underlyings[0]!, session },
       ...["SPY", "QQQ", "OEX", "HELD", "ORDER", "DONE", "FLAT"].map((symbol) => ({ ...status.underlyings[0]!, symbol, session, has_tradable_contracts: false })),
     ] }, null, "open"))
-    const html = render(<PortfolioView />, (client) => {
+    const html = render(<PositionsView />, (client) => {
       const queries = tradingQueries(0, "17", true)
       client.setQueryData(queries.portfolio.queryKey, { ...portfolio, positions: [
         { ...portfolio.positions[0]!, underlying: "HELD" }, { ...portfolio.positions[0]!, symbol: "flat", underlying: "FLAT", quantity: 0 },
@@ -130,7 +137,7 @@ describe("paper trading fixtures", () => {
     ] }, null, "open"))
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
     expect(html).not.toContain("regular session only")
-    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
+    expect(html).not.toMatch(/aria-label="Submit order" disabled=""/)
   })
   it.each(["working", "partially_filled", "filled", "rejected", "cancelled"] as const)("renders inline order status %s and typed risk rejections", (orderStatus) => {
     const html = render(<OrderResult order={{ ...order, status: orderStatus, reason: { code: "QUOTE_STALE", message: "Quote is too old" } }} error={new ApiError(422, "Delta cap exceeded", "DELTA_LIMIT", 200, 100, "aggregate")} />)
@@ -139,24 +146,35 @@ describe("paper trading fixtures", () => {
     expect(html).toContain("DELTA_LIMIT")
     expect(html).toContain("Actual 200.00 · Limit 100.00 · aggregate")
   })
-  it("renders portfolio values, awaiting settlement, open orders, fills and risk ranges", () => {
-    const html = render(<PortfolioView />)
-    for (const text of ["Paper portfolio", "$99,988.70", "−$11.30", "Valuation incomplete", "Awaiting settlement", "Age unavailable", "$4.55", "2 s old", "Partial fill", "Cancel", "$1.30", "Reachable including open orders", "1750000.00", "87.5%", "Spot × volatility scenarios", "Armed", "Edit limits"]) expect(html).toContain(text)
+  it("renders positions, awaiting settlement, buying power and risk ranges", () => {
+    const html = render(<PositionsView />)
+    for (const text of ["Positions", "$99,988.70", "−$11.30", "Valuation incomplete", "Awaiting settlement", "Age unavailable", "$4.55", "2 s old", "+2 long", "−$10.00", "−1.1%", "$99,078.70", "fees $1.30", "Close SPXW  261016C07000000", "Reachable including open orders", "1750000.00", "87.5%", "Spot × volatility scenarios", "Armed", "Edit limits"]) expect(html).toContain(text)
+    // Awaiting settlement cannot be closed with an order.
+    expect(html).not.toContain("Close SPX   260918P06800000")
     expect(html).toContain("overflow-x-auto")
     expect(html).not.toContain("NaN")
     expect(html).not.toContain("undefined")
   })
-  it("renders complete and empty portfolio fixtures", () => {
-    const html = render(<PortfolioView />, (client) => {
+  it("renders complete and empty position and order fixtures", () => {
+    const empty = (client: QueryClient) => {
       const queries = tradingQueries(0, "17", true)
       client.setQueryData(queries.portfolio.queryKey, { ...portfolio, valuation_complete: true, quality_flags: [], positions: [] })
-      client.setQueryData(queries.orders.queryKey, { account_version: "17", orders: [] })
+      client.setQueryData(queries.allOrders.queryKey, { account_version: "17", orders: [] })
       client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [] })
-    })
-    expect(html).toContain("No positions")
-    expect(html).toContain("No open orders")
-    expect(html).toContain("No fills yet")
+    }
+    const html = render(<PositionsView />, empty)
+    expect(html).toContain("No open positions")
     expect(html).not.toContain("Valuation incomplete")
+    expect(render(<OrdersView />, empty)).toContain("No working orders.")
+  })
+  it("groups working orders by trading day with status, reason and cancel", () => {
+    const html = render(<OrdersView />, (client) => client.setQueryData(tradingQueries(0, "17", true).allOrders.queryKey, { account_version: "17", orders: [
+      order, { ...order, id: "order-2", status: "cancelled", reason: { code: "USER_CANCEL", message: "Cancelled by caller" } },
+      { ...order, id: "order-3", status: "filled", origin: "system", client_order_id: "system:drawdown:3" }] }))
+    for (const text of ["Working · 1", "All · 3", "Wed, Sep 23, 2026", "SPX Oct 16 7000C", "BUY", "2 / 5", "$4.60", "Partial", "Cancel order order-1"]) expect(html).toContain(text)
+    // The default Working tab hides terminal orders.
+    expect(html).not.toContain("Cancelled by you")
+    expect(html).not.toContain("NaN")
   })
   it("keeps null heatmap cells distinct from the exact unchanged-spot/vol zero", () => {
     const html = render(<ScenarioGrid scenarios={risk.scenarios} />)
@@ -185,17 +203,23 @@ describe("paper trading fixtures", () => {
   })
   it("hides every trading entry point on older servers, even with cached trading payloads", () => {
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, trading: undefined }, null, "open"))
-    const header = render(<Header symbol="SPX" view="chain" onSymbol={() => {}} onView={() => {}} />)
-    expect(header).not.toContain("Portfolio")
-    expect(render(<PortfolioView />)).toBe("")
+    const header = render(<Header symbol="SPX" onSymbol={() => {}} />)
+    expect(header).not.toContain("Positions")
+    const sidebar = render(<Sidebar view="chain" onView={() => {}} open={false} onClose={() => {}} />)
+    for (const hidden of ["Dashboard", "Positions", "Orders", "Journal", "Rules", "Account summary"]) expect(sidebar).not.toContain(hidden)
+    expect(sidebar).toContain("Trade")
+    expect(render(<PositionsView />)).toBe("")
     const html = render(<ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} />)
     expect(html).not.toContain("paper order")
     expect(html).not.toContain("at bid")
   })
-  it("adds Portfolio as view five with hash routing", () => {
-    expect(views[4]).toBe("portfolio")
-    expect(parseRoute("#/SPX/portfolio").view).toBe("portfolio")
-    expect(formatRoute({ view: "portfolio", symbol: "SPX", expiry: null })).toBe("#/SPX/portfolio")
-    expect(render(<Header symbol="SPX" view="portfolio" onSymbol={() => {}} onView={() => {}} />)).toContain('title="Portfolio (5)"')
+  it("routes the simulator pages, keeps old Portfolio links and numbers the sidebar", () => {
+    expect(primaryViews).toEqual(["dashboard", "chain", "positions", "orders", "journal", "rules"])
+    expect(parseRoute("#/SPX/portfolio").view).toBe("positions")
+    expect(formatRoute({ view: "positions", symbol: "SPX", expiry: null })).toBe("#/SPX/positions")
+    const sidebar = render(<Sidebar view="positions" onView={() => {}} open={false} onClose={() => {}} />)
+    expect(sidebar).toContain('title="Positions (3)"')
+    expect(sidebar).toContain('aria-current="page"')
+    for (const text of ["Intraday 100K", ">active<", "$100,267.50", "+$267.50", "(+0.27%)", "$99,078.70", "Progress to profit target"]) expect(sidebar).toContain(text)
   })
 })

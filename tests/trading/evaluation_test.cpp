@@ -99,6 +99,20 @@ TEST(TradingEvaluation, EndOfDayFloorRatchetsOnlyAtRolloverFromThatDaysClose) {
   EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
 }
 
+TEST(TradingEvaluation, JournalsCreatedAtTimeZeroStartAtTheFirstMarketTime) {
+  ScriptedMarket f;
+  // The engine creates new journals before any market data arrives.
+  TradingSession s(rules_config("10000", drawdown("1000", "100")), 0);
+  EXPECT_EQ(s.snapshot()->evaluation.started, 0);
+  f.seed(s);
+  EXPECT_EQ(s.snapshot()->evaluation.started, f.time);
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  const auto e = s.snapshot()->evaluation;
+  EXPECT_TRUE(e.days.empty());  // 1969-12-31 was a placeholder, not a trading day
+  EXPECT_EQ(e.day, (md::Date{2026, 9, 22}));
+  EXPECT_EQ(e.day_open_equity, m("10000"));
+}
+
 TEST(TradingEvaluation, ProfitTargetPassesAndLiquidatesAtTheBid) {
   ScriptedMarket f;
   TradingSession s(rules_config("10000", drawdown("100", "1000")), f.time);

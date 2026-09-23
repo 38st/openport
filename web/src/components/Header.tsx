@@ -4,32 +4,22 @@ import { useLive } from "../api/live"
 import { count, fixed, isNum, price } from "../lib/format"
 import { matchingPayload } from "../lib/payload"
 import { providerLabel } from "../lib/provider"
-import { views, type View } from "../lib/route"
 import { useTheme } from "../lib/theme"
 import { AsOf } from "./AsOf"
 import { Flash } from "./Flash"
 import { FeedBadge } from "./ui"
 
-const viewLabels: Record<View, string> = {
-  chain: "Chain",
-  smile: "Volatility",
-  exposure: "Exposure",
-  engine: "Engine",
-  portfolio: "Portfolio",
-}
-
 export function Header({
   symbol,
-  view,
   onSymbol,
-  onView,
+  onMenu,
 }: {
   symbol: string | null
-  view: View
   onSymbol: (symbol: string) => void
-  onView: (view: View) => void
+  /** Opens the navigation drawer on narrow screens. */
+  onMenu?: () => void
 }) {
-  const { status, tick, connection, version, market, underlyings, trading } = useLive()
+  const { status, tick, connection, version, market, underlyings } = useLive()
   const { theme, toggleTheme } = useTheme()
   const current = underlyings.find((u) => u.symbol === symbol)
   const feed = tick?.feed ?? status?.feed
@@ -46,16 +36,14 @@ export function Header({
   const dataLabel = provider ? providerLabel(provider, feed?.state) : ""
 
   return (
-    <header className="border-b border-border bg-panel">
+    <header className="z-20 border-b border-border bg-panel/95 backdrop-blur lg:sticky lg:top-0">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-2">
-        <a href="#/" className="flex items-center gap-2 font-semibold tracking-tight">
-          <svg viewBox="0 0 32 32" className="h-5 w-5 text-accent" aria-hidden="true">
-            <rect width="32" height="32" rx="7" className="fill-raised" />
-            <path d="M6 22 C11 22 12 10 16 10 C20 10 21 22 26 22" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-            <circle cx="16" cy="10" r="2.2" fill="currentColor" />
-          </svg>
-          OpenPort
-        </a>
+        {onMenu && (
+          <button type="button" onClick={onMenu} aria-label="Open navigation"
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted hover:bg-raised hover:text-foreground lg:hidden">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          </button>
+        )}
 
         <nav className="flex min-w-0 flex-wrap items-center gap-1" aria-label="Underlyings">
           {underlyings.map((u) => (
@@ -82,13 +70,13 @@ export function Header({
 
         <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3 text-[11px] text-muted">
           {provider && (
-            <span className="min-w-0 [overflow-wrap:anywhere]" title={`${dataLabel}${provider.realtime_plan_dependent ? " · based on the current feed state" : ""}`}>
+            <span className="hidden min-w-0 [overflow-wrap:anywhere] sm:inline" title={`${dataLabel}${provider.realtime_plan_dependent ? " · based on the current feed state" : ""}`}>
               <span className="text-foreground">{provider.name}</span> {dataLabel}
             </span>
           )}
           {feed && <FeedBadge state={feed.state} message={feed.message} />}
           {engine && (
-            <span className="tabular" title="contracts tracked · events per second · last analytics pass">
+            <span className="hidden tabular md:inline" title="contracts tracked · events per second · last analytics pass">
               {count(engine.contracts)} contracts · {fixed(engine.analytics_ms, 1)} ms
             </span>
           )}
@@ -111,21 +99,6 @@ export function Header({
           </button>
         </div>
       </div>
-
-      <nav className="flex flex-wrap gap-1 px-3" aria-label="Views">
-        {views.filter((v) => v !== "portfolio" || trading != null).map((v, i) => (
-          <button
-            key={v}
-            onClick={() => onView(v)}
-            className={`border-b-2 px-3 py-1.5 text-sm transition-colors ${
-              v === view ? "border-accent text-foreground" : "border-transparent text-muted hover:text-foreground"
-            }`}
-            title={`${viewLabels[v]} (${i + 1})`}
-          >
-            {viewLabels[v]}
-          </button>
-        ))}
-      </nav>
     </header>
   )
 }

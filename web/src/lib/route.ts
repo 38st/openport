@@ -1,7 +1,15 @@
 import { useCallback, useSyncExternalStore } from "react"
 
-export const views = ["chain", "smile", "exposure", "engine", "portfolio"] as const
+export const views = ["dashboard", "chain", "positions", "orders", "journal", "rules", "smile", "exposure", "engine"] as const
 export type View = (typeof views)[number]
+/** Sidebar order; keys 1-6 switch between them. */
+export const primaryViews = ["dashboard", "chain", "positions", "orders", "journal", "rules"] as const satisfies readonly View[]
+/** Market analytics sit beside the chain as the Trade page's tabs. */
+export const tradeViews = ["chain", "smile", "exposure"] as const satisfies readonly View[]
+/** Pages that exist only with a paper-trading server. */
+export const accountViews: readonly View[] = ["dashboard", "positions", "orders", "journal", "rules"]
+/** Links from before the simulator redesign keep working. */
+const aliases: Record<string, View> = { portfolio: "positions" }
 
 export interface Route {
   symbol: string | null
@@ -12,15 +20,15 @@ export interface Route {
 /// "#/SPX/chain/2026-10-05PM" <-> { symbol, view, expiry }. Keeping state in the
 /// hash makes every screen linkable and survives a reload.
 export function parseRoute(hash: string): Route {
-  const [symbol, view, expiry] = hash.replace(/^#\/?/, "").split("/")
+  const [symbol, view = "", expiry] = hash.replace(/^#\/?/, "").split("/")
   try {
     return {
       symbol: symbol ? decodeURIComponent(symbol).toUpperCase() : null,
-      view: (views as readonly string[]).includes(view ?? "") ? (view as View) : "chain",
+      view: (views as readonly string[]).includes(view) ? (view as View) : aliases[view] ?? "dashboard",
       expiry: expiry ? decodeURIComponent(expiry) : null,
     }
   } catch {
-    return { symbol: null, view: "chain", expiry: null }
+    return { symbol: null, view: "dashboard", expiry: null }
   }
 }
 
@@ -36,7 +44,7 @@ function subscribe(callback: () => void) {
 }
 
 export function useRoute(): [Route, (patch: Partial<Route>) => void] {
-  const hash = useSyncExternalStore(subscribe, () => window.location.hash)
+  const hash = useSyncExternalStore(subscribe, () => window.location.hash, () => "")
   const route = parseRoute(hash)
   const navigate = useCallback((patch: Partial<Route>) => {
     const next = { ...parseRoute(window.location.hash), ...patch }

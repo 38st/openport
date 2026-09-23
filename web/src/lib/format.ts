@@ -65,3 +65,10 @@ export function expiryLabel(id: string, withSettlement = false): string {
   const label = date.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
   return withSettlement ? `${label} ${id.slice(10)}` : label
 }
+
+/// Signed percentage with a typographic minus, matching money: 0.0112 -> "+1.1%", -0.011 -> "−1.1%".
+export function signedPercent(x: Value, digits = 1): string {
+  if (!isNum(x)) return dash
+  const text = Math.abs(x * 100).toFixed(digits)
+  return Number(text) === 0 ? `${text}%` : `${x > 0 ? "+" : "−"}${text}%`
+}

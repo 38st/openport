@@ -10,13 +10,13 @@ describe("route", () => {
     expect(parseRoute(formatRoute(route))).toEqual(route)
   })
 
-  it("falls back to the chain view for anything unknown", () => {
-    expect(parseRoute("#/spy/nonsense")).toEqual({ symbol: "SPY", view: "chain", expiry: null })
-    expect(parseRoute("")).toEqual({ symbol: null, view: "chain", expiry: null })
+  it("lands on the dashboard for anything unknown", () => {
+    expect(parseRoute("#/spy/nonsense")).toEqual({ symbol: "SPY", view: "dashboard", expiry: null })
+    expect(parseRoute("")).toEqual({ symbol: null, view: "dashboard", expiry: null })
   })
 
   it.each(["#/%/chain", "#/%E0%A4/chain", "#/SPX/chain/%", "#/SPX/chain/%FF"])("safely resets a malformed encoded route: %s", (hash) => {
-    expect(parseRoute(hash)).toEqual({ symbol: null, view: "chain", expiry: null })
+    expect(parseRoute(hash)).toEqual({ symbol: null, view: "dashboard", expiry: null })
   })
 
   it("still decodes valid escaped route segments", () => {

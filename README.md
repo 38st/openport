@@ -26,13 +26,17 @@ and your data stay on your machine.
   expiry's forward and rate and where it came from.
 - **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
   call and put walls.
-- **Paper trading**: click a bid or ask in the chain to trade index options against live
-  quotes; the Portfolio tab shows positions, P&L, Greeks by underlying, limit use, a
-  spot × vol scenario grid and a kill switch.
+- **Evaluation simulator**: trade index options against live quotes under funded-account
+  style rules: a profit target and a trailing drawdown floor (intraday or end of day)
+  decide pass or fail, with buy-only and buying-power plans and auto-close before
+  expiry. The Dashboard charts equity against the target and floor; Trade docks an order
+  ticket beside the chain; Positions adds Greeks, limits, a spot × vol scenario grid and a
+  kill switch; Orders, a Journal (P&L calendar, win rate, profit factor, reports by hold
+  time, weekday and month) and Rules complete the account.
 - **Record and replay**: save any provider's feed to a file and play it back later with
   its original market times, for demos at night and reproducible bug reports.
 - **Engine**: feed health per underlying, trading session, queue and analytics timing.
-- Light and dark themes, keyboard shortcuts (1-5 switch views, arrows step expiries).
+- Light and dark themes, keyboard shortcuts (1-6 switch pages, arrows step expiries).
 
 ## Paper trading
 
@@ -45,8 +49,15 @@ and at every fill, with a kill switch that stays tripped until reset. Orders are
 accepted during the product's regular session only (09:30 to 16:15 ET for index
 options). The account survives restarts through an append-only, hash-chained journal at
 `$HOME/.openport/paper-journal.jsonl`; use `--no-paper` to disable trading. v1 leaves
-out American options (they need stock positions and exercise/assignment), margin and
-brokerage execution.
+out American options (they need stock positions and exercise/assignment), portfolio
+margin and brokerage execution.
+
+`--plan` chooses the rules for a new journal: `practice` (the default: buying power
+only), `intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new
+high) or `eod-25k|50k|100k` (any strategy, 12% target, 6% drawdown trailing each close).
+Touching the floor fails the attempt and closes every position; reaching the target
+passes it. Start a new attempt with any plan from the Dashboard or Rules page; history
+is kept across attempts.
 
 Loopback writes are open unless a token is configured. To enable writes on a
 remote bind, set `OPENPORT_WRITE_TOKEN` or `--write-token TOKEN` and send it as a
@@ -98,7 +109,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 Common flags: `--symbols SPX,SPY`, `--expiries N` (nearest N expiries), `--window F`
 (strikes within ±F of spot), `--poll-seconds N`, `--rate R` (the assumed rate when no
 index curve is available), `--address`, `--port`, `--web-root`, `--allowed-origin`,
-`--record FILE`, `--paper-journal`, `--paper-cash`, `--paper-fee`, `--no-paper`,
+`--record FILE`, `--paper-journal`, `--plan`, `--paper-cash`, `--paper-fee`, `--no-paper`,
 `--write-token`, and
 `--option KEY=VALUE` for provider settings such as `quotes=cmbp-1` for Databento. Every
 value is range-checked; see the [runtime notes](docs/runtime.md) for details.
@@ -211,6 +222,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] SVI volatility surface
 - [x] Record and replay of any provider's feed
 - [x] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
+- [x] Evaluation simulator: profit targets, trailing drawdowns, resets, trade journal
 - [ ] Paper trading for American options: stock positions, exercise and assignment
 - [ ] Paper trading in Cboe's overnight session
 - [ ] P&L attribution by delta, gamma, vega and theta

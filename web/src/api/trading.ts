@@ -12,15 +12,32 @@ export function tradingQueries(scope: number, version: string | undefined, enabl
     orders: queryOptions({ ...common, queryKey: ["trading", scope, "orders", version], queryFn: ({ signal }) => api.orders("open", signal) }),
     fills: queryOptions({ ...common, queryKey: ["trading", scope, "fills", version], queryFn: ({ signal }) => api.fills(signal) }),
     risk: queryOptions({ ...common, queryKey: ["trading", scope, "risk", version], queryFn: ({ signal }) => api.risk(signal) }),
+    account: queryOptions({ ...common, queryKey: ["trading", scope, "account", version], queryFn: ({ signal }) => api.account(signal) }),
+    allOrders: queryOptions({ ...common, queryKey: ["trading", scope, "orders-all", version], queryFn: ({ signal }) => api.orders("all", signal) }),
+    trades: (attempt: "current" | "all") => queryOptions({ ...common, queryKey: ["trading", scope, "trades", attempt, version],
+      queryFn: ({ signal }) => api.trades("all", attempt, signal) }),
   }
 }
 export function sameAccountPlaceholder<T>(data: T | undefined, key: readonly unknown[] | undefined, scope: number) {
   return key?.[0] === "trading" && key[1] === scope ? data : undefined
 }
-export function useTradingQueries() {
+function useOptions() {
   const { trading, accountScope } = useLive()
-  const options = tradingQueries(accountScope, trading?.account_version, trading?.enabled === true)
+  return tradingQueries(accountScope, trading?.account_version, trading?.enabled === true)
+}
+export function useTradingQueries() {
+  const options = useOptions()
   return { portfolio: useQuery(options.portfolio), orders: useQuery(options.orders), fills: useQuery(options.fills), risk: useQuery(options.risk) }
+}
+export const useAccount = () => useQuery(useOptions().account)
+export const usePortfolio = () => useQuery(useOptions().portfolio)
+export const useAllOrders = () => useQuery(useOptions().allOrders)
+export const useFills = () => useQuery(useOptions().fills)
+export const useRisk = () => useQuery(useOptions().risk)
+export const useTrades = (attempt: "current" | "all" = "current") => useQuery(useOptions().trades(attempt))
+/** Presets never change while the server runs. */
+export function usePlans(enabled = true) {
+  return useQuery({ queryKey: ["plans"], queryFn: ({ signal }) => api.plans(signal), enabled, staleTime: Infinity })
 }
 export function useRefreshTrading() {
   const client = useQueryClient()

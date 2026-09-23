@@ -421,6 +421,9 @@ void decide(State& s, EvaluationStatus status, Money equity, std::string message
 void monitor_rules(State& s, Events& events) {
   const auto& rules = s.config.rules;
   auto& e = s.evaluation;
+  // A journal created before any market data starts at time zero; the attempt
+  // begins at the first real market time instead.
+  if (e.started == 0 && s.time > 0) e.started = s.time;
   if (const auto equity = marked_equity(snapshot_of(s))) {
     if (local_date(s.time) == e.day) e.day_close_equity = *equity;
     if (rules.evaluation() && e.status == EvaluationStatus::Active) {
@@ -686,8 +689,11 @@ CommandResult TradingSession::roll_day(Timestamp time) {
       e.peak = e.day_close_equity;
       e.floor = floor_for(rules, e.peak);
     }
-    e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor});
-    event(events, "evaluation_day", e.days.back());
+    // A placeholder date from before the attempt started is not a trading day.
+    if (e.started > 0 && e.day >= local_date(e.started)) {
+      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor});
+      event(events, "evaluation_day", e.days.back());
+    }
     e.day = day;
     e.day_open_equity = snapshot.equity;
     e.day_close_equity = snapshot.equity;
@@ -773,7 +779,7 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
       // journal's first transaction so later schema 2 records continue it.
       auto& s = impl->state;
       Evaluation e;
-      e.started = verified.records.front().time;
+      for (const auto& r : verified.records) if (r.time > 0) { e.started = r.time; break; }
       e.starting_balance = s.config.initial_cash;
       e.peak = e.starting_balance;
       e.day = s.day;
