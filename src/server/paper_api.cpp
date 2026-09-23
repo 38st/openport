@@ -256,6 +256,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     }
     json fills = json::array();
     for (const auto id : t.fills) fills.push_back(std::to_string(id));
+    const auto a = s.annotations.find(std::to_string(t.first_fill));
     trades.push_back({{"id", std::to_string(t.first_fill)}, {"attempt", attempt}, {"symbol", t.symbol},
         {"underlying", c.underlying}, {"expiry", md::format_date(c.expiry)},
         {"settlement", c.settlement == md::Settlement::AM ? "AM" : "PM"}, {"strike", c.strike},
@@ -272,7 +273,9 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"return", open || cost == Money{} ? json(nullptr) : number(net.dollars() / cost.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
         {"closure", !t.closure ? json(nullptr) : json(*t.closure == ClosureKind::Settlement ? "settlement" : "reset")},
-        {"fills", fills}});
+        {"fills", fills},
+        {"note", a == s.annotations.end() ? std::string{} : a->second.note},
+        {"tags", a == s.annotations.end() ? json::array() : json(a->second.tags)}});
   }
   return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades}};
 }
@@ -327,7 +330,7 @@ json risk_json(const TradingView& view) {
 }
 
 int reason_status(Reason reason) {
-  if (reason == Reason::UNKNOWN_ORDER || reason == Reason::UNKNOWN_CONTRACT) return 404;
+  if (reason == Reason::UNKNOWN_ORDER || reason == Reason::UNKNOWN_CONTRACT || reason == Reason::UNKNOWN_TRADE) return 404;
   if (reason == Reason::ORDER_TERMINAL || reason == Reason::DUPLICATE_CLIENT_ID) return 409;
   if (reason == Reason::JOURNAL_IO || reason == Reason::JOURNAL_CORRUPT ||
       reason == Reason::JOURNAL_LOCKED) return 503;
@@ -384,6 +387,13 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::Settle: body["position_closed"] = true; break;
     case TradingCommand::Kind::ResetAccount:
     case TradingCommand::Kind::Payout: body = account_json(view); break;
+    case TradingCommand::Kind::Annotate: {
+      const auto a = s.annotations.find(std::to_string(command.trade));
+      body["trade"] = std::to_string(command.trade);
+      body["note"] = a == s.annotations.end() ? std::string{} : a->second.note;
+      body["tags"] = a == s.annotations.end() ? json::array() : json(a->second.tags);
+      break;
+    }
     case TradingCommand::Kind::CreateAccount:
       status = 201;
       body = {{"account", {{"id", reply.account}, {"name", command.name},
@@ -574,6 +584,23 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
     if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
     if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price or trigger_level");
+    return command;
+  }
+  if (request.method == "PUT" && path.starts_with("/api/trades/")) {
+    // PUT /api/trades/{id}/note: the note and tags replace the trade's.
+    fields(body, {}, {"note", "tags"});
+    command.kind = TradingCommand::Kind::Annotate;
+    const auto id = path.substr(std::string_view("/api/trades/").size());
+    command.trade = identifier(id.substr(0, id.size() - std::string_view("/note").size()));
+    if (body.contains("note")) command.note = string_field(body, "note");
+    if (body.contains("tags")) {
+      const auto& tags = body.at("tags");
+      if (!tags.is_array() || tags.size() > 16) throw std::invalid_argument("tags must be an array of at most 16 strings");
+      for (const auto& tag : tags) {
+        if (!tag.is_string()) throw std::invalid_argument("tags must be strings");
+        command.tags.push_back(tag.get<std::string>());
+      }
+    }
     return command;
   }
   if (path == "/api/orders/cancel") {
@@ -812,7 +839,8 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/accounts" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout")) ||
-      (request.method == "PUT" && (path == "/api/risk/limits" || path.starts_with("/api/orders/"))) ||
+      (request.method == "PUT" && (path == "/api/risk/limits" || path.starts_with("/api/orders/") ||
+                                   (path.starts_with("/api/trades/") && path.ends_with("/note")))) ||
       (request.method == "DELETE" && path.starts_with("/api/orders/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
   std::string account;

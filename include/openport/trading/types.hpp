@@ -26,10 +26,10 @@ enum class Reason {
   INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED,
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
   OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED,
-  LIMIT_ONLY
+  LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::LIMIT_ONLY;
+inline constexpr Reason kLastReason = Reason::UNKNOWN_TRADE;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -132,6 +132,12 @@ struct Order {
   [[nodiscard]] bool open() const {
     return status == OrderStatus::Working || status == OrderStatus::PartiallyFilled || status == OrderStatus::Armed;
   }
+};
+/// A trader's note and tags on one trade.
+struct Annotation {
+  std::string note;
+  std::vector<std::string> tags;
+  Timestamp time = 0;  ///< When it last changed.
 };
 struct Fill {
   std::uint64_t id = 0;

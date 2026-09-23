@@ -61,3 +61,21 @@ describe("strategies in the journal", () => {
     expect(html).toContain(">Strategies</button>")
   })
 })
+
+describe("notes and tags in the journal", () => {
+  it("shows each trade's tags, filters by tag and reports by tag", () => {
+    const tagged = trades.map((t) => t.id === "2" ? { ...t, tags: ["breakout"], note: "Chased the open" } : t)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+    clients.push(client)
+    const queries = tradingQueries(0, "17", true)
+    client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [fill] })
+    client.setQueryData(queries.allOrders.queryKey, { account_version: "17", orders: [] })
+    client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 1, trades: tagged })
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><JournalView /></QueryClientProvider>)
+    expect(html).toContain('aria-label="Tag"')
+    expect(html).toContain('<option value="breakout">breakout</option>')
+    expect(html).toContain(">breakout</span>")
+    expect(html).toContain('title="Chased the open">note</span>')
+    expect(html).toContain(">Tag</button>")
+  })
+})

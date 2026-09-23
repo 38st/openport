@@ -91,7 +91,16 @@ export function monthWeeks(year: number, month: number): (string | null)[][] {
   return weeks
 }
 
-export type Dimension = "duration" | "weekday" | "month"
+/** Every tag on the trades, alphabetically. */
+export function tradeTags(trades: readonly Trade[]): string[] {
+  return [...new Set(trades.flatMap((t) => t.tags ?? []))].sort()
+}
+/** "breakout, 0DTE ,fomc" -> ["breakout", "0dte", "fomc"]: trimmed, lowercased, each once. */
+export function parseTags(text: string): string[] {
+  return [...new Set(text.split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean))]
+}
+
+export type Dimension = "duration" | "weekday" | "month" | "tag"
 export type Side = "all" | "call" | "put"
 export const durationBuckets = [
   { label: "< 1m", max: 60 }, { label: "1–5m", max: 300 }, { label: "5–15m", max: 900 },
@@ -102,12 +111,24 @@ const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export interface Bucket { label: string; net: number; trades: number; wins: number; winRate: number | null }
-/** Closed trades grouped by holding time, closing weekday or closing month. */
+/** Closed trades grouped by holding time, closing weekday, closing month or tag (a trade counts under each of its tags). */
 export function tradeBuckets(trades: readonly Trade[], dimension: Dimension, side: Side = "all"): Bucket[] {
-  const labels = dimension === "duration" ? durationBuckets.map((b) => b.label) : dimension === "weekday" ? weekdays : months
+  const tags = dimension === "tag" ? [...tradeTags(trades), "untagged"] : []
+  const labels = dimension === "duration" ? durationBuckets.map((b) => b.label) : dimension === "weekday" ? weekdays : dimension === "month" ? months : tags
   const out = labels.map((label) => ({ label, net: 0, trades: 0, wins: 0, winRate: null as number | null }))
+  const count = (bucket: Bucket | undefined, net: number) => {
+    if (!bucket) return
+    bucket.net += net
+    bucket.trades++
+    if (net > 0) bucket.wins++
+  }
   for (const trade of trades) {
     if (trade.status !== "closed" || !trade.closed || (side !== "all" && trade.type !== side)) continue
+    if (dimension === "tag") {
+      const own = trade.tags?.length ? trade.tags : ["untagged"]
+      for (const tag of own) count(out[labels.indexOf(tag)], tradeNet(trade))
+      continue
+    }
     let index = -1
     if (dimension === "duration") {
       const seconds = trade.duration_seconds ?? 0
@@ -117,12 +138,7 @@ export function tradeBuckets(trades: readonly Trade[], dimension: Dimension, sid
       if (!day) continue
       index = dimension === "weekday" ? day.weekday - 1 : Number(day.date.slice(5, 7)) - 1
     }
-    const bucket = out[index]
-    if (!bucket) continue
-    const net = tradeNet(trade)
-    bucket.net += net
-    bucket.trades++
-    if (net > 0) bucket.wins++
+    count(out[index], tradeNet(trade))
   }
   for (const bucket of out) bucket.winRate = bucket.trades ? bucket.wins / bucket.trades : null
   return out

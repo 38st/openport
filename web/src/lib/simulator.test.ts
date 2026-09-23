@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { portfolio, quote, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
-import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, tradeBuckets } from "./journal"
+import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, tradeBuckets, tradeTags } from "./journal"
 import { heldPositions, marginRequirement, orderPowerUse, type MarginPosition } from "./margin"
 import { crossDirection, describeTrigger, marketability, nakedRequirement, opposite, split, stopDirection, strategyName } from "./ticket"
 import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
@@ -45,6 +45,17 @@ describe("journal analytics", () => {
     expect(weekday.map((b) => b.trades)).toEqual([0, 1, 1, 0, 0])
     expect(tradeBuckets(trades, "month").find((b) => b.label === "Sep")?.trades).toBe(2)
     expect(tradeBuckets(trades, "month", "put").every((b) => b.trades === 0)).toBe(true)
+  })
+  it("reads tags and buckets closed trades under each of them", () => {
+    expect(parseTags(" Breakout, 0DTE ,, breakout ")).toEqual(["breakout", "0dte"])
+    const tagged = trades.map((t, i) => i === 0 ? { ...t, tags: ["breakout", "0dte"] } : i === 1 ? { ...t, tags: ["breakout"] } : t)
+    expect(tradeTags(tagged)).toEqual(["0dte", "breakout"])
+    const buckets = tradeBuckets(tagged, "tag")
+    expect(buckets.map((b) => b.label)).toEqual(["0dte", "breakout", "untagged"])
+    const closed = tagged.filter((t) => t.status === "closed")
+    const expected = (tag: string) => closed.filter((t) => (t.tags ?? ["untagged"]).includes(tag)).length
+    for (const bucket of buckets) expect(bucket.trades).toBe(expected(bucket.label))
+    expect(tradeBuckets(trades, "tag").map((b) => b.label)).toEqual(["untagged"])
   })
   it("formats durations and contract labels", () => {
     expect(formatDuration(45)).toBe("45s")

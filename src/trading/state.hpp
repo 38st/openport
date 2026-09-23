@@ -96,6 +96,7 @@ inline void from_json(const Json& j, Evaluation& e) {
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AttemptSummary, attempt, plan, started, ended, starting_balance, final_equity, status, decision, first_order, first_fill)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Closure, symbol, quantity, price, time, kind, after_fill)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Annotation, note, tags, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(BuyingPower, available, reserved, short_requirement)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Position, contract, quantity, basis, realised, fees)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Account, cash, realised, fees)
@@ -109,7 +110,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RiskSnapshot, aggregate, underlyings, complet
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioCell, spot_percent, vol_points, pnl, clamped)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioGrid, cells, complete)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedPosition, position, mark, mark_time, mark_age, market_value, unrealised, fresh, awaiting_settlement)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations)
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
   j.at("equity").get_to(s.equity); j.at("start_of_day_equity").get_to(s.start_of_day_equity);
@@ -120,6 +121,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("quality_flags").get_to(s.quality_flags);
   added_field(j, "evaluation", s.evaluation); added_field(j, "buying_power", s.buying_power);
   added_field(j, "closures", s.closures); added_field(j, "attempts", s.attempts);
+  added_field(j, "annotations", s.annotations);
 }
 
 namespace detail {
@@ -152,10 +154,11 @@ struct State {
   Evaluation evaluation;
   std::vector<AttemptSummary> attempts;
   std::vector<Closure> closures;
+  std::map<std::string, Annotation> annotations;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Book, quote, bid_left, ask_left)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mark, price, time)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations)
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
   j.at("limits_revision").get_to(s.limits_revision); j.at("ledger").get_to(s.ledger);
@@ -164,7 +167,7 @@ inline void from_json(const Json& j, State& s) {
   j.at("orders").get_to(s.orders); j.at("fills").get_to(s.fills); j.at("settled").get_to(s.settled);
   j.at("kill").get_to(s.kill); j.at("kill_reason").get_to(s.kill_reason);
   added_field(j, "evaluation", s.evaluation); added_field(j, "attempts", s.attempts);
-  added_field(j, "closures", s.closures);
+  added_field(j, "closures", s.closures); added_field(j, "annotations", s.annotations);
 }
 }  // namespace detail
 }  // namespace openport::trading

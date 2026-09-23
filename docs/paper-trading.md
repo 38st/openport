@@ -39,7 +39,7 @@ conflicting terms under one OSI reject.
 
 Reducer commands are `define`, `submit`, `modify`, `cancel`, `cancel_all`,
 `close_positions`, `on_quotes`, `set_limits`, `trip_kill`, `reset_kill`, `settle`,
-`roll_day`, `reset_account` and `request_payout`. Every completed command, including
+`roll_day`, `reset_account`, `request_payout` and `annotate`. Every completed command, including
 a business rejection, increments `account_version`. Business failures return a
 `Decision` with code/message and numeric actual/limit/scope where applicable.
 Invalid command batches, arithmetic overflow, invalid configuration and persistence
@@ -508,6 +508,19 @@ to flat. Each replays its own fills through a fresh `Ledger`, so realised P&L us
 account's basis allocation and rounding exactly; a reversing fill closes one lifecycle
 and opens the next at the same price with its fee split pro rata.
 
+## Trade notes and tags
+
+`annotate(trade, note, tags, time)` records the trader's note and tags on a trade,
+named by the fill that opened it (the trades view's `id`). The note is trimmed and at
+most 2,000 bytes of UTF-8 text, keeping newlines and tabs; up to eight tags of 1 to 32
+bytes without commas or control characters are trimmed, lowercased and kept once
+each. Text past these limits throws `INVALID_NOTE`; a fill that opens no trade returns
+`UNKNOWN_TRADE`. An empty note without tags clears them. Notes are journaled
+(`trade_annotated`) like any command, so they recover with the account and stay with
+its history across attempts, and they are allowed whatever the account's state or
+session. The snapshot's `annotations` maps each trade's ID to its note, tags and the
+time it last changed.
+
 ## Scenarios
 
 Default spot shocks: -10, -5, -2, -1, 0, +1, +2, +5, +10 percent.
@@ -694,6 +707,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket exit cancelled by its sibling's fill, or because its position closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it |
+| `INVALID_NOTE`, `UNKNOWN_TRADE` | A trade note or tag past its limits, or a note on a fill that opens no trade |
 
 ## Engine integration and HTTP API
 
@@ -763,6 +777,14 @@ kill-switch and write-access checks still apply separately. The existing `sessio
 field continues to describe the wall-clock product session; just after 09:30 a
 15-minute delayed feed still trades the overnight session, which `paper.session` shows.
 
+The Journal page edits each trade's note and tags (a strategy's apply to each of its
+legs), filters every panel by tag and reports P&L by tag. Alerts belong to the web
+terminal alone: price alerts on an underlying and alerts on each new fill are kept in
+the browser's local storage and run while the terminal is open, on the live feed only
+(not a replay). They show on the page and, where the browser allows notifications, as
+system notifications, with an optional chime. A price alert fires once, when the
+feed's price reaches its level from the side it was set on.
+
 The web ticket estimates fees using `fee_per_contract`; only older servers without
 it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
 and `paper.accepting: false` disables ticket submission. In the overnight and curb
@@ -800,7 +822,8 @@ focus at the top of the ticket.
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position; returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised` and `qualifying`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
-| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs and attempt. Defaults: all statuses of the current attempt |
+| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`. Defaults: all statuses of the current attempt |
+| `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before expiry |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |
 | `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
@@ -898,7 +921,7 @@ conditional and bracket orders; multi-leg orders, margin and buying power; order
 changes, cancel-all and flattening; deterministic journal round trips, tampering,
 torn suffixes, exclusive writers and injected write failures; state deltas (including
 randomized round trips), checkpoints, damaged deltas, mixed-schema recovery and
-compaction. The CLI tests compact journals from earlier builds with `openportd`.
+compaction; overnight and curb sessions; trade notes and tags. The CLI tests compact journals from earlier builds with `openportd`.
 
 Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
 JSON errors, write protection, restart recovery, AM/PM settlement, named accounts and

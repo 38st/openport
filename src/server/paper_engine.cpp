@@ -573,6 +573,7 @@ void Engine::apply_command(PendingCommand& pending) {
           else result = session.reset_account(c.initial_cash, c.rules, c.reason, market_time_);
           break;
         case TradingCommand::Kind::Payout: result = session.request_payout(c.amount, market_time_); break;
+        case TradingCommand::Kind::Annotate: result = session.annotate(c.trade, c.note, c.tags, market_time_); break;
         case TradingCommand::Kind::CreateAccount: break;  // handled above
       }
       if (reply.error_code.empty()) reply.decision = result.decision;

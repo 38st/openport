@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react"
 import { useLive } from "./api/live"
 import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
+import { AlertWatcher, Toasts } from "./components/Alerts"
 import { Header } from "./components/Header"
 import { ReplayBanner } from "./components/ReplayBanner"
 import { Sidebar, viewLabels } from "./components/Sidebar"
@@ -91,6 +92,8 @@ export function App() {
         <ReplayBanner />
         <Header symbol={symbol} onSymbol={(s) => navigate({ symbol: s, expiry: null })} onMenu={() => setMenu(true)} />
         <main className="min-w-0 flex-1 p-3 lg:p-5">{content}</main>
+        <AlertWatcher />
+        <Toasts />
         <footer className="border-t border-border px-4 py-2 text-[11px] text-faint">
           OpenPort · open-source options analytics and a paper-trading simulator on your own market data · simulated fills, no order routing · not investment advice ·{" "}
           <a className="underline decoration-dotted hover:text-muted" href="https://github.com/38st/openport">

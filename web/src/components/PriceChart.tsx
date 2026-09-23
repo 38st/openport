@@ -5,9 +5,11 @@ import { useLive } from "../api/live"
 import { useOpenOrders, usePortfolio } from "../api/trading"
 import type { Expiry } from "../api/types"
 import { bandColor, CandleChart, levelColors } from "../charts/CandleChart"
-import { candleIntervals, candleLimit, chartLevels, expectedMove, intervalNames, loadChartPrefs, saveChartPrefs, type ChartPrefs } from "../lib/candles"
+import { describeAlert, useAlertSettings } from "../lib/alerts"
+import { candleIntervals, candleLimit, chartLevels, expectedMove, intervalNames, loadChartPrefs, saveChartPrefs, type ChartLevel, type ChartPrefs } from "../lib/candles"
 import { expiryLabel, isNum, price } from "../lib/format"
 import { useMediaQuery } from "../lib/media"
+import { AlertsDialog } from "./Alerts"
 import { Segmented } from "./ui"
 
 const priceText = (x: number) => x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -23,7 +25,7 @@ function Key({ color, children, title }: { color: string; children: string; titl
 
 /**
  * The underlying's candles on Trade, with the account's strikes, armed underlying
- * triggers and the selected expiry's expected move drawn over them.
+ * triggers, price alerts and the selected expiry's expected move drawn over them.
  */
 export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: number | null; expiry: Expiry | null }) {
   const live = useLive()
@@ -45,7 +47,11 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
   })
   const positions = usePortfolio().data?.positions
   const orders = useOpenOrders().data?.orders
-  const levels = useMemo(() => chartLevels(symbol, positions ?? [], orders ?? []), [symbol, positions, orders])
+  const alerts = useAlertSettings().prices
+  const [alerting, setAlerting] = useState(false)
+  const levels = useMemo(() => [...chartLevels(symbol, positions ?? [], orders ?? []),
+    ...alerts.filter((a) => a.symbol === symbol).map((a): ChartLevel => ({ price: a.level, label: `Alert: ${describeAlert(a)}`, kind: "alert" }))],
+  [symbol, positions, orders, alerts])
   const move = expectedMove(spot, expiry?.atm_iv, expiry?.days)
   const band = move != null && isNum(spot) && expiry
     ? { lo: spot - move, hi: spot + move, label: `±1σ by ${expiryLabel(expiry.id)}: ±${price(move)}` }
@@ -61,6 +67,7 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
           {symbol} <span className="normal-case text-faint">{name}</span>
         </h2>
         <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={() => setAlerting(true)} className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">Alert</button>
           {!prefs.hidden && <Segmented label="Chart interval" value={prefs.interval} options={candleIntervals} onChange={(interval) => update({ interval })} />}
           <button type="button" aria-expanded={!prefs.hidden} onClick={() => update({ hidden: !prefs.hidden })}
             className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">
@@ -84,11 +91,13 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
             {kinds.has("long") && <Key color={levelColors.long} title="Strikes you hold, net long">Long strike</Key>}
             {kinds.has("short") && <Key color={levelColors.short} title="Strikes you hold, net short">Short strike</Key>}
             {kinds.has("trigger") && <Key color={levelColors.trigger} title="Armed orders that wait for the underlying to cross a level">Trigger</Key>}
+            {kinds.has("alert") && <Key color={levelColors.alert} title="Price alerts set in this browser">Alert</Key>}
             {band && <Key color={bandColor} title={`One standard deviation by ${expiry?.expiry}: spot × ATM IV × √(days / 365)`}>Expected move</Key>}
             <span className="ml-auto text-faint">ET, market-data time · drag to pan, pinch or ⌘/Ctrl-scroll to zoom, double-click to reset</span>
           </div>
         </div>
       )}
+      {alerting && <AlertsDialog initial={{ symbol, level: spot }} onClose={() => setAlerting(false)} />}
     </section>
   )
 }

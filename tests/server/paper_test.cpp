@@ -1076,6 +1076,36 @@ TEST_F(PaperEngine, ResetToPresetStartsAttemptAndTradesSeparateAttempts) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, TradesTakeNotesAndTags) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
+  const auto id = read(*engine, "/api/trades")["trades"][0]["id"].get<std::string>();
+  EXPECT_EQ(read(*engine, "/api/trades")["trades"][0]["note"], "");
+  EXPECT_EQ(read(*engine, "/api/trades")["trades"][0]["tags"], json::array());
+  const auto path = "/api/trades/" + id + "/note";
+  const auto saved = write(*engine, "PUT", path, {{"note", "Bought the dip "}, {"tags", {"Dip", "spx"}}});
+  ASSERT_EQ(saved.status, 200) << saved.body;
+  const auto body = json::parse(saved.body);
+  EXPECT_EQ(body["trade"], id);
+  EXPECT_EQ(body["note"], "Bought the dip");
+  EXPECT_EQ(body["tags"], (json{"dip", "spx"}));
+  EXPECT_EQ(body["account_version"], read(*engine, "/api/status")["trading"]["account_version"]);
+  const auto trade = read(*engine, "/api/trades")["trades"][0];
+  EXPECT_EQ(trade["note"], "Bought the dip");
+  EXPECT_EQ(trade["tags"], (json{"dip", "spx"}));
+  expect_error(write(*engine, "PUT", "/api/trades/999/note", {{"note", "x"}}), 404, "UNKNOWN_TRADE");
+  expect_error(write(*engine, "PUT", path, {{"tags", {"a,b"}}}), 422, "INVALID_NOTE");
+  expect_error(write(*engine, "PUT", path, {{"note", 5}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "PUT", path, {{"memo", "x"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "PUT", "/api/trades/x/note", {{"note", "x"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "PUT", "/api/trades/" + id, {{"note", "x"}}), 404, "NOT_FOUND");
+  const auto cleared = write(*engine, "PUT", path, json::object());
+  ASSERT_EQ(cleared.status, 200) << cleared.body;
+  EXPECT_EQ(json::parse(cleared.body)["note"], "");
+  EXPECT_EQ(read(*engine, "/api/trades")["trades"][0]["tags"], json::array());
+  engine->stop();
+}
+
 TEST_F(PaperEngine, ResetRequestsAreStrict) {
   expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "platinum"}, {"reason", "x"}}), 400, "INVALID_REQUEST");
   expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"initial_cash", "1"}, {"reason", "x"}}), 400, "INVALID_REQUEST");

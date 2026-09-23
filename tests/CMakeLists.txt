@@ -53,6 +53,7 @@ target_sources(openport_tests PRIVATE
   trading/journal_test.cpp
   trading/journal_schema_test.cpp
   trading/sessions_test.cpp
+  trading/notes_test.cpp
   trading/evaluation_test.cpp
   trading/conditional_test.cpp
   trading/funded_test.cpp

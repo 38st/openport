@@ -21,7 +21,7 @@ interface Props {
 }
 
 const margin = { top: 8, right: 66, bottom: 22, left: 4 }
-export const levelColors: Record<ChartLevel["kind"], string> = { long: "var(--chart-4)", short: "var(--chart-2)", trigger: "var(--warn)" }
+export const levelColors: Record<ChartLevel["kind"], string> = { long: "var(--chart-4)", short: "var(--chart-2)", trigger: "var(--warn)", alert: "var(--accent)" }
 export const bandColor = "var(--chart-7)"
 const minBarWidth = 3
 const tagHeight = 16

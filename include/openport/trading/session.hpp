@@ -41,6 +41,8 @@ struct TradingSnapshot {
   BuyingPower buying_power;
   std::vector<Closure> closures;     ///< Settlements and resets, in sequence.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
+  /// Notes and tags by trade, named by its opening fill's ID.
+  std::map<std::string, Annotation> annotations;
 };
 /// A funded account's standing for its next payout: an active, flat account
 /// with the required qualifying days since the last payout. `blocked` is the
@@ -144,6 +146,12 @@ class TradingSession {
   /// (see payout_quote). The withdrawal is not a loss: the day's baseline and
   /// an unlocked trailing peak move down with it. Resets the qualifying days.
   CommandResult request_payout(Money amount, Timestamp time);
+  /// Note and tag a trade, named by its opening fill's ID (the `id` of the
+  /// trades view): a note of at most 2,000 bytes and up to eight tags of 1 to
+  /// 32 bytes without commas, lowercased and each kept once. Invalid text
+  /// throws INVALID_NOTE; an unknown trade returns UNKNOWN_TRADE. An empty note
+  /// without tags clears it. Allowed whatever the account's state or session.
+  CommandResult annotate(std::uint64_t trade, std::string note, std::vector<std::string> tags, Timestamp time);
   [[nodiscard]] std::shared_ptr<const TradingSnapshot> snapshot() const;
 
   /// Read-only integration context, owned by the reducer. The engine copies it

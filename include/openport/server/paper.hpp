@@ -43,7 +43,7 @@ struct TradingView {
 };
 
 struct TradingCommand {
-  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount };
+  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate };
   Kind kind = Kind::Submit;
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
@@ -62,6 +62,9 @@ struct TradingCommand {
   std::string underlying;        ///< CancelAll and ClosePositions: one underlying, or empty for all.
   std::string account;           ///< The account it acts on; empty for the main account.
   std::string name;              ///< CreateAccount: the new account's display name.
+  std::uint64_t trade = 0;        ///< Annotate: the trade, by its opening fill's ID.
+  std::string note;               ///< Annotate: the note; empty with no tags clears it.
+  std::vector<std::string> tags;  ///< Annotate: the trade's tags.
 };
 
 struct TradingReply {

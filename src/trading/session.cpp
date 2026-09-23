@@ -1,6 +1,7 @@
 #include "openport/trading/session.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -8,6 +9,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "openport/trading/history.hpp"
 #include "state.hpp"
 #include "state_delta.hpp"
 
@@ -303,6 +305,7 @@ TradingSnapshot snapshot_of(const State& s) {
   out.buying_power = buying_power(s).total;
   out.closures = s.closures;
   out.attempts = s.attempts;
+  out.annotations = s.annotations;
   return out;
 }
 /// Rules only act on fully marked equity: every position has a mark, fresh or not.
@@ -960,6 +963,37 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   }
   return {{}, id, 0};
 }
+/// Trims a note and its tags, and lowercases the tags: text without control
+/// characters (a note may keep newlines and tabs), a note of at most 2,000 bytes,
+/// at most eight distinct tags of 1 to 32 bytes without commas.
+Annotation clean_annotation(std::string note, const std::vector<std::string>& tags) {
+  const auto invalid = [](std::string message) { throw TradingError(Reason::INVALID_NOTE, std::move(message)); };
+  const auto trim = [](std::string text) {
+    const auto first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return std::string{};
+    return text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+  };
+  const auto text = [](std::string_view value, bool lines) {
+    return std::none_of(value.begin(), value.end(), [&](unsigned char c) {
+      return (c < 0x20 && !(lines && (c == '\n' || c == '\t'))) || c == 0x7f;
+    });
+  };
+  Annotation a;
+  a.note = trim(std::move(note));
+  if (a.note.size() > 2000 || !text(a.note, true)) invalid("A note is at most 2,000 bytes of text");
+  for (const auto& tag : tags) {
+    auto clean = trim(tag);
+    for (auto& c : clean) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (clean.empty() || clean.size() > 32 || clean.find(',') != std::string::npos || !text(clean, false))
+      invalid("A tag is 1 to 32 bytes of text without commas");
+    if (std::find(a.tags.begin(), a.tags.end(), clean) == a.tags.end()) a.tags.push_back(std::move(clean));
+  }
+  if (a.tags.size() > 8) invalid("A trade takes at most eight tags");
+  // The journal records UTF-8 only; reject anything else before it could fail a commit.
+  try { (void)Json{{"note", a.note}, {"tags", a.tags}}.dump(); }
+  catch (const Json::exception&) { invalid("Notes and tags must be UTF-8 text"); }
+  return a;
+}
 void require_reason(const std::string& reason) {
   if (reason.find_first_not_of(" \t\r\n") == std::string::npos)
     throw TradingError(Reason::INVALID_REASON, "An explicit nonblank reason is required");
@@ -1458,6 +1492,23 @@ std::optional<QuoteObservation> TradingSession::quote(const std::string& symbol)
   return it == impl_->state.books.end() ? std::nullopt : std::optional(it->second.quote);
 }
 md::Date TradingSession::trading_day() const { return impl_->state.day; }
+CommandResult TradingSession::annotate(std::uint64_t trade, std::string note, std::vector<std::string> tags, Timestamp time) {
+  auto annotation = clean_annotation(std::move(note), tags);
+  return impl_->transact(time, "annotate", [&](State& s, Events& events) {
+    const auto trades = lifecycles(s.fills, s.closures, s.contracts);
+    if (std::none_of(trades.begin(), trades.end(), [&](const Lifecycle& t) { return t.first_fill == trade; }))
+      return CommandResult{failure(Reason::UNKNOWN_TRADE, "No trade opens with fill " + std::to_string(trade)), {}, 0};
+    const auto key = std::to_string(trade);
+    event(events, "trade_annotated", Json{{"trade", key}, {"note", annotation.note}, {"tags", annotation.tags}});
+    if (annotation.note.empty() && annotation.tags.empty()) {
+      s.annotations.erase(key);
+    } else {
+      annotation.time = s.time;
+      s.annotations[key] = std::move(annotation);
+    }
+    return CommandResult{};
+  });
+}
 TradingSession TradingSession::recover(const JournalRecovery& recovery, std::shared_ptr<Journal> journal) {
   const auto verified = reverify(recovery);
   if (journal && (recovery.truncated_final_line || journal->head() != verified.head || journal->sequence() != verified.records.size()))

@@ -5,6 +5,7 @@ import { count, fixed, isNum, price } from "../lib/format"
 import { matchingPayload } from "../lib/payload"
 import { providerLabel } from "../lib/provider"
 import { useTheme } from "../lib/theme"
+import { AlertsButton } from "./Alerts"
 import { AsOf } from "./AsOf"
 import { Flash } from "./Flash"
 import { FeedBadge } from "./ui"
@@ -81,6 +82,7 @@ export function Header({
             </span>
           )}
           {connection !== "open" && <span className="text-warn">reconnecting…</span>}
+          <AlertsButton />
           <button
             type="button"
             aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}

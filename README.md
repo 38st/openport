@@ -47,8 +47,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
 - **Evaluations**: a profit target and a trailing drawdown floor (intraday or end of day)
   decide pass or fail, with buy-only and buying-power plans and auto-close before expiry.
   The Dashboard charts equity against the target and floor, and the Journal keeps a P&L
-  calendar, win rate, profit factor and reports by hold time, weekday and month, per
-  contract or per strategy. A new attempt keeps the history.
+  calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
+  per contract or per strategy. Each trade takes a note and tags, kept in the account's
+  journal. A new attempt keeps the history.
 - **Risk**: Greeks per position, dollar-delta and vega limits, a spot × volatility
   scenario grid, a daily loss limit and a kill switch. Positions close together as one
   order, or flatten an underlying or the whole account in one step.
@@ -57,6 +58,8 @@ terminal. Your API keys, your data and your trades stay on your machine.
 - **Replay**: record every session and trade any recorded day again beside the live
   feed, in its own practice account, at 1× to 300× or as fast as possible, with pause
   and skip.
+- **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
+  the terminal and as browser notifications with an optional chime while it is open.
 
 ### Operations
 
@@ -247,6 +250,7 @@ these routes, so anything it does can be scripted:
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders, fills, risk, rules and progress, and its round trips |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), change it or cancel it |
 | `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
+| `PUT /api/trades/{id}/note` | A trade's note and tags |
 | `PUT /api/risk/limits`, `POST /api/risk/kill` | Change the risk limits; trip or reset the kill switch |
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one; every route above takes `?account=ID` for one other than the main account |
@@ -303,8 +307,9 @@ with `-DOPENPORT_WERROR=ON`.
       positions, rolls, risk graph and probability of profit
 - [x] Terminal: underlying chart, order changes in place, flatten, multiple named
       accounts and trading recorded days in replay
-- [ ] Stock positions, early exercise and assignment
 - [x] Paper trading in Cboe's overnight and curb sessions
+- [x] Trade notes and tags, with reports by tag, and price and fill alerts
+- [ ] Stock positions, early exercise and assignment
 - [ ] P&L attribution by delta, gamma, vega and theta
 
 ## License

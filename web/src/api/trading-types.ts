@@ -166,6 +166,17 @@ export interface Trade {
   unrealised: Money | null
   closure: "settlement" | "reset" | null
   fills: string[]
+  /** The trader's note ("" for none) and tags; absent from older servers. */
+  note?: string
+  tags?: string[]
+}
+export interface TradeNote {
+  note: string
+  tags: string[]
+}
+export interface TradeNoteResponse extends TradeNote {
+  account_version: string
+  trade: string
 }
 export interface TradesResponse { account_version: string; attempt: number; trades: Trade[] }
 export interface Plan {
