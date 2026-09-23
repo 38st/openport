@@ -8,10 +8,22 @@
 #include <string_view>
 #include <vector>
 
+#include "openport/server/api.hpp"
+
 namespace openport::server {
 
 inline constexpr std::size_t kWebSocketMessageMax = 4 * 1024;
 inline constexpr std::size_t kWebSocketSessionMax = 256;
+
+struct WritePolicy {
+  std::string address = "127.0.0.1";
+  std::string token;
+  std::vector<std::string> allowed_origins;
+};
+[[nodiscard]] std::string write_mode(const WritePolicy& policy);
+/// One policy for all API writes, including routes that do not yet exist.
+[[nodiscard]] std::optional<ApiResponse> check_api_write(const ApiRequest& request,
+                                                        const WritePolicy& policy);
 
 struct StaticFile {
   int status = 200;

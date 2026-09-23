@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -16,6 +17,7 @@
 #include "openport/md/event_queue.hpp"
 #include "openport/md/provider.hpp"
 #include "openport/md/recording.hpp"
+#include "openport/server/paper.hpp"
 
 namespace openport::server {
 
@@ -29,6 +31,7 @@ struct UnderlyingHealth {
 
 /// A consistent picture of the feed and the engine for the status endpoint.
 struct EngineStatus {
+  TradingStatus trading;
   std::string provider;
   md::Capabilities capabilities;
   md::FeedState feed_state = md::FeedState::Connecting;
@@ -57,6 +60,10 @@ class MetricsSource {
   [[nodiscard]] virtual std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
       const std::string& symbol) const = 0;
   [[nodiscard]] virtual EngineStatus status() const = 0;
+  [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view() const { return {}; }
+  /// False means unavailable or full. Completion runs on the engine thread;
+  /// network callers must dispatch it onto their own executor.
+  virtual bool post_trading(TradingCommand, TradingCompletion) { return false; }
 };
 
 /// Owns the provider's event stream: applies every event to the chain book on one
@@ -67,6 +74,12 @@ class Engine final : public MetricsSource {
  public:
   struct Options {
     std::chrono::milliseconds analytics_interval{1000};
+    bool paper_enabled = true;
+    std::filesystem::path paper_journal;  ///< Empty only for explicit in-process simulations.
+    trading::SessionConfig paper;
+    std::shared_ptr<trading::Journal> paper_sink;  ///< Optional in-process test/simulation sink.
+    std::size_t command_capacity = 256;
+    std::string write_mode = "open";
     analytics::AnalyticsOptions analytics;
     std::filesystem::path record_file;
     md::RecordingSink::Options recording;
@@ -93,11 +106,24 @@ class Engine final : public MetricsSource {
   [[nodiscard]] std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
       const std::string& symbol) const override;
   [[nodiscard]] EngineStatus status() const override;
+  [[nodiscard]] std::shared_ptr<const TradingView> trading_view() const override;
+  bool post_trading(TradingCommand command, TradingCompletion completion) override;
   [[nodiscard]] md::RecordingStats recording_stats() const;
   [[nodiscard]] std::string recording_error() const;
 
  private:
+  struct PendingCommand {
+    std::uint64_t sequence;
+    TradingCommand command;
+    TradingCompletion completion;
+  };
   void run();
+  void start_trading();
+  void observe_trading(const md::Event& event);
+  void update_trading(const std::vector<md::Event>& batch, std::deque<PendingCommand>& commands);
+  void apply_command(PendingCommand& pending);
+  void publish_trading();
+  void fail_trading(std::string reason);
   void refresh_analytics();
   void update_health(const md::Event& event, md::Timestamp received);
 
@@ -116,6 +142,20 @@ class Engine final : public MetricsSource {
   mutable std::mutex mutex_;  // guards everything below
   std::map<std::string, std::shared_ptr<const analytics::UnderlyingMetrics>> metrics_;
   EngineStatus status_;
+  std::shared_ptr<const TradingView> trading_view_;
+
+  std::mutex command_mutex_;
+  std::deque<PendingCommand> commands_;
+  std::uint64_t next_command_ = 1;
+  bool accepting_commands_ = false;
+
+  // Engine thread only, including initialization and journal recovery.
+  std::unique_ptr<trading::TradingSession> trading_;
+  std::string trading_failure_;
+  std::map<std::string, std::string> settlement_source_;
+  md::Timestamp market_time_ = 0;
+  std::map<std::string, md::InstrumentId> instruments_;
+  std::map<std::string, std::uint64_t> observations_;
 
   // Engine thread only: quote receipt never locks the reader-facing status mutex.
   std::map<std::string, UnderlyingHealth> health_;

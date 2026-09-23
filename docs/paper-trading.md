@@ -1,4 +1,4 @@
-# Paper trading core (v1)
+# Paper trading (v1)
 
 `openport::trading` is a C++20 library linked as `openport::trading` / `openport_trading`.
 It depends on `openport_core`; JSON and OpenSSL Crypto are private dependencies.
@@ -262,8 +262,8 @@ its numeric placeholders are zero and must not be displayed as measured P&L.
 At `OptionContract::expiry_time()` orders cancel and open positions become
 `awaiting_settlement`. No underlying quote is automatically taken as settlement.
 The caller supplies the authoritative reference with `settle(OSI, value, time)`
-after expiry. The next batch must obtain PM closing prints or explicitly imported
-AM settlement values, and record their provenance outside this core.
+after expiry. The hosting engine obtains PM closing prints or explicitly imported
+AM settlement values, and records their provenance outside this core.
 
 ```text
 intrinsic = max(0, omega * (settlement_reference - strike))
@@ -353,7 +353,109 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |
 | `JOURNAL_IO`, `JOURNAL_CORRUPT` | Persistence stop condition or invalid/tampered recovery chain/schema |
 
-## Tests and next batch
+## Engine integration and HTTP API
+
+Paper trading is enabled by default in `openportd`; `--no-paper` disables it and
+reports `PAPER_DISABLED` in status. The engine thread alone owns the session. A
+bounded FIFO inbox (256 pending commands) sequences writes, applies the drained
+market batch first, then applies commands in ingress order. HTTP threads enqueue
+and return; completions are posted onto the requesting Beast session executor.
+A full inbox or stopping engine returns 503 `TRADING_UNAVAILABLE`.
+
+Every referenced listed contract is registered before its first quote batch. Held
+positions, open orders and pending-command symbols receive quotes from ChainBook
+and valuations from the latest coherent analytics frame at the strike smile IV.
+Sizes are floored to whole contracts. Observation numbers increase only for new
+OptionQuote events and resume above recovered high-water marks. Cached analytics,
+underlying prints and HTTP reads never replenish displayed option liquidity.
+**The market queue coalesces a contract’s quotes within one drain, so a fleeting
+cross can be missed on streaming feeds.** Underlying prints are retained in order
+so settlement uses the first qualifying print.
+
+Each market batch and command publishes an immutable trading view. GET endpoints
+read that view without touching the reducer. `/api/status` and WebSocket ticks
+include `trading: {enabled, reason, account_version, kill_latched, write}`; versions
+are decimal strings and `write` is `open`, `token`, or `disabled`. Clients refetch
+portfolio, orders and risk when the version changes. Chain option objects include
+canonical padded `symbol`, whole `bid_size`/`ask_size` (null when unavailable),
+`tradable` and `untradable_reason`, using the core eligibility policy.
+
+| Endpoint | Request / response |
+| --- | --- |
+| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks |
+| `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working/partially filled |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`); 201 returns version, order and its fills |
+| `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
+| `GET /api/fills` | Version and fills, newest first |
+| `GET /api/risk` | Version, limits revision, limits, complete flag, daily loss, kill state, aggregate/underlying buckets and scenario matrices |
+| `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |
+| `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
+| `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position; returns version and `position_closed` |
+
+Money is an exact decimal string, quantities are integers, IDs/versions are strings,
+and timestamps use the same UTC ISO format as `as_of`. Analytical values may be
+null. Position Greeks expose per-unit delta/gamma/vega/theta plus signed position
+dollar exposures. Incomplete scenario grids contain null P&Ls, never partial sums.
+Limits contain `max_order_contracts`, `price_band_absolute`, `price_band_relative`,
+`aggregate` and `per_underlying` (`dollar_delta`, `vega`), `max_daily_loss`,
+`max_quote_age_seconds` and `max_valuation_age_seconds`.
+
+Unknown fields, duplicate JSON keys, missing required fields, wrong types and
+noncanonical OSIs return 400 `INVALID_REQUEST`. Business rejections return 422
+and remain recorded as rejected orders; unknown contracts/orders return 404,
+terminal orders/reused client IDs return 409. Retries with a reused client ID
+are conflicts, not automatic replays. Errors always have this shape:
+
+```json
+{"error":{"code":"DELTA_LIMIT","message":"...","actual":1250000,"limit":1000000,"scope":"SPX"}}
+```
+
+Unused `actual`, `limit` and `scope` are null. Rejected writes still consume their
+client ID; GET orders shows their resulting rejection reason.
+
+### Write protection
+
+Every POST/PUT/DELETE under `/api/` uses the same protection. POST and PUT require
+`Content-Type: application/json` (an optional media-type parameter is accepted);
+DELETE has no body. The body limit remains 64 KiB. A present Origin must match Host
+or an exact `--allowed-origin`; invalid or ambiguous security headers fail closed
+with 403 `ORIGIN_REJECTED`. Non-browser clients may omit Origin.
+
+`--write-token TOKEN` overrides `OPENPORT_WRITE_TOKEN`. When configured, all writes
+require `Authorization: Bearer TOKEN`, checked with a constant-time digest comparison;
+missing/incorrect credentials return 403 `WRITE_TOKEN_REQUIRED`. Without a token,
+only loopback binds allow writes. Non-loopback binds return 403 `WRITE_DISABLED`.
+Reads remain open. Use HTTPS at your reverse proxy for remote bearer credentials
+and configure its public Origin with `--allowed-origin` when it rewrites Host.
+
+### Durable startup and settlement sources
+
+`--paper-journal PATH` defaults to `$HOME/.openport/paper-journal.jsonl`; containing
+directories are created. `--paper-cash` defaults to `100000` and `--paper-fee` to
+`0.65`. These seed new journals; recovery restores the recorded configuration.
+Existing files are verified, exclusively locked and resumed. Corrupt/torn/locked
+or unwritable journals disable trading writes with 503 `TRADING_UNAVAILABLE` and
+a status reason. They are never overwritten or silently replaced by an ephemeral
+account. A runtime journal failure preserves the last committed account and
+requires operator recovery. The Docker image journals in `/var/lib/openport`,
+which is a declared volume; mount a persistent volume there.
+
+At expiry, PM positions settle from the underlying’s **first positive finite last
+print stamped at or after the expiry instant on the expiry date**, in provider
+arrival order. This is the **provider’s closing print**, an approximation of the
+official settlement value. Bid/ask midpoints and next-day prices are not substitutes.
+If no such print arrives, the position stays awaiting settlement. AM positions
+always wait for an explicit `/api/settlements` import, whose value must come from
+the operator’s authoritative settlement source; PM imports are rejected. The
+same journal transaction records the reference value, canonical definition and
+integration `settlement_source`: `provider_closing_print` with provider and print
+time, or `manual_am_import`. Preserve the official source used for an AM import
+externally when an independent provenance audit is required. The first market
+batch on a later New York date rolls the daily baseline once marks are complete;
+the kill latch survives. All accounting uses effective market time, including
+delayed feeds, rather than HTTP receipt time.
+
+## Tests
 
 `tests/support/scripted_market.hpp` supplies reproducible contract definitions,
 market times, observations, quotes, valuations and requests for reuse by engine/API
@@ -362,7 +464,8 @@ basis residues; all execution/budget/priority/clock rules; open-order risk range
 loss/kill controls; scenarios; settlement; deterministic journal round trips,
 tampering, torn suffixes, exclusive writers and injected write failures.
 
-Engine/HTTP/web integration, feed observation identity generation, authoritative
-settlement sourcing, authentication, external idempotency, stock positions,
-assignment, trade-through matching, attribution and margin are intentionally outside
-this batch. No shared engine/provider/app/web source was changed.
+Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
+JSON errors, write protection, restart recovery and AM/PM settlement. Socket tests
+cover asynchronous POST/DELETE responses and shutdown of pending commands. External
+idempotency, stock positions, assignment, trade-through matching, attribution and
+margin remain outside v1.

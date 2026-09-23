@@ -8,14 +8,29 @@
 namespace openport::server {
 
 struct ApiRequest {
+  ApiRequest(std::string method_value = "GET", std::string target_value = {}, std::string body_value = {})
+      : method(std::move(method_value)), target(std::move(target_value)), body(std::move(body_value)) {}
   std::string method = "GET";
-  std::string target;  ///< path and query, e.g. "/api/underlyings/SPX/chain?expiry=2026-10-05PM"
+  std::string target;  ///< Path and query.
+  std::string body;
+  std::string content_type;
+  std::optional<std::string> origin;
+  std::string host;
+  std::string authorization;
+  bool ambiguous_headers = false;
 };
 
 struct ApiResponse {
   int status = 200;
   std::string body;  ///< JSON
 };
+
+using ApiCompletion = std::function<void(ApiResponse)>;
+
+[[nodiscard]] ApiResponse api_error(int status, std::string code, std::string message,
+                                    const trading::Decision& evidence = {});
+/// Writes enqueue on the owner thread. Never wait for completion on an I/O thread.
+void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete);
 
 /// Routes:
 ///   GET /api/status

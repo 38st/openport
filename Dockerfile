@@ -34,10 +34,14 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libssl3t64 zlib1g libzstd1 \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home /nonexistent openport
+    && useradd --system --uid 10001 --home /var/lib/openport openport \
+    && mkdir -p /var/lib/openport \
+    && chown openport:openport /var/lib/openport
 COPY --from=build /src/build/apps/openportd /src/build/apps/openport-probe /usr/local/bin/
 COPY --from=web /web/dist /usr/share/openport/web
+VOLUME ["/var/lib/openport"]
+ENV HOME=/var/lib/openport
 USER openport
 EXPOSE 8080
-ENTRYPOINT ["openportd", "--address", "0.0.0.0", "--web-root", "/usr/share/openport/web"]
+ENTRYPOINT ["openportd", "--address", "0.0.0.0", "--paper-journal", "/var/lib/openport/paper-journal.jsonl", "--web-root", "/usr/share/openport/web"]
 CMD ["--provider", "cboe", "--symbols", "SPX,SPY,QQQ"]

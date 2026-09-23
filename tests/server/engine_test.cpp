@@ -164,8 +164,9 @@ TEST(Engine, SerializesQueueTelemetryInStatusAndTicks) {
     std::string_view name() const noexcept override { return "backlog"; }
     md::Capabilities capabilities() const noexcept override { return {}; }
     void start(const md::Subscription&, md::EventSink& sink) override {
-      sink.publish(md::UnderlyingQuote{"SPY", 1});
-      sink.publish(md::UnderlyingQuote{"SPY", 2});
+      // Option quotes still coalesce; spot prints preserve settlement order.
+      sink.publish(md::OptionQuote{0, 1});
+      sink.publish(md::OptionQuote{0, 2});
       for (std::size_t i = 0; i < md::kEventQueueCapacity; ++i) sink.publish(md::OptionTrade{});
     }
     void stop() override {}

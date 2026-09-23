@@ -304,7 +304,7 @@ CommandResult TradingSession::define(const md::OptionContract& contract, Timesta
     return CommandResult{};
   });
 }
-CommandResult TradingSession::submit(OrderRequest request, Timestamp time) {
+CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decision rejection) {
   return impl_->transact(time, "submit", [&](State& s, Events& events) {
     monitor_loss(s, events);
     Order order;
@@ -316,7 +316,7 @@ CommandResult TradingSession::submit(OrderRequest request, Timestamp time) {
     });
     s.orders.push_back(order);
     auto& stored = s.orders.back();
-    auto decision = duplicate ? failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used") : order_check(s, stored);
+    auto decision = duplicate ? failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used") : !rejection.ok() ? rejection : order_check(s, stored);
     if (!decision.ok()) {
       stored.status = OrderStatus::Rejected;
       stored.reason = decision;
@@ -448,6 +448,14 @@ CommandResult TradingSession::roll_day(Timestamp time) {
 }
 std::shared_ptr<const TradingSnapshot> TradingSession::snapshot() const { return impl_->snapshot; }
 std::string TradingSession::snapshot_json() const { return Json(*impl_->snapshot).dump(); }
+const SessionConfig& TradingSession::config() const { return impl_->state.config; }
+const std::map<std::string, md::OptionContract>& TradingSession::contracts() const { return impl_->state.contracts; }
+const std::map<std::string, Valuation>& TradingSession::valuations() const { return impl_->state.valuations; }
+std::optional<QuoteObservation> TradingSession::quote(const std::string& symbol) const {
+  const auto it = impl_->state.books.find(symbol);
+  return it == impl_->state.books.end() ? std::nullopt : std::optional(it->second.quote);
+}
+md::Date TradingSession::trading_day() const { return impl_->state.day; }
 TradingSession TradingSession::recover(const JournalRecovery& recovery, std::shared_ptr<Journal> journal) {
   if (recovery.records.empty()) throw TradingError(Reason::JOURNAL_CORRUPT, "Recovery requires a session_start record");
   // Reverify even caller-constructed recovery objects instead of trusting them.

@@ -27,6 +27,7 @@
 #include "openport/server/api.hpp"
 #include "openport/server/engine.hpp"
 #include "openport/server/web_server.hpp"
+#include "openport/server/web_policy.hpp"
 
 namespace {
 
@@ -43,6 +44,10 @@ struct Settings {
   unsigned short port = 8080;
   std::filesystem::path web_root;
   std::filesystem::path record_file;
+  bool paper_enabled = true;
+  std::filesystem::path paper_journal;
+  trading::SessionConfig paper;
+  std::string write_token;
   int threads = 2;
   double rate = 0.04;
   std::vector<std::string> allowed_origins;
@@ -55,6 +60,10 @@ int usage(const char* error = nullptr) {
       "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
+      "                 [--paper-journal PATH] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
+      "                 [--no-paper] [--write-token TOKEN]\n\n"
+      "paper: durable European index paper trading; cash 100000, fee 0.65\n"
+      "write token: --write-token overrides OPENPORT_WRITE_TOKEN; required for remote writes\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
@@ -109,10 +118,13 @@ std::filesystem::path find_web_root(const char* argv0) {
 int run(int argc, char** argv) {
   Settings settings;
   settings.web_root = find_web_root(argv[0]);
+  if (const auto* token = std::getenv("OPENPORT_WRITE_TOKEN")) settings.write_token = token;
+  if (const auto* home = std::getenv("HOME")) settings.paper_journal = std::filesystem::path(home) / ".openport/paper-journal.jsonl";
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const bool has_value = i + 1 < argc;
     if (arg == "--help" || arg == "-h") return usage();
+    if (arg == "--no-paper") { settings.paper_enabled = false; continue; }
     if (!has_value) return usage(("missing value for " + arg).c_str());
     const std::string value = argv[++i];
     if (arg == "--provider") {
@@ -126,6 +138,17 @@ int run(int argc, char** argv) {
           static_cast<unsigned short>(providers::parse_integer(value, "--port", 1, 65535));
     } else if (arg == "--allowed-origin") {
       settings.allowed_origins.push_back(value);
+    } else if (arg == "--paper-journal") {
+      if (value.empty()) return usage("--paper-journal requires a nonempty path");
+      settings.paper_journal = value;
+    } else if (arg == "--paper-cash") {
+      settings.paper.initial_cash = trading::Money::parse(value);
+    } else if (arg == "--paper-fee") {
+      settings.paper.fee_per_contract = trading::Money::parse(value);
+      if (settings.paper.fee_per_contract < trading::Money{}) return usage("--paper-fee must be nonnegative");
+    } else if (arg == "--write-token") {
+      if (value.empty()) return usage("--write-token requires a nonempty token");
+      settings.write_token = value;
     } else if (arg == "--record") {
       if (value.empty()) return usage("--record requires a nonempty path");
       settings.record_file = value;
@@ -155,17 +178,24 @@ int run(int argc, char** argv) {
   if (settings.subscription.underlyings.empty()) return usage("no symbols");
   settings.provider.api_key = env_key_for(settings.provider.name);
 
+  if (settings.paper_enabled && settings.paper_journal.empty())
+    return usage("HOME is unavailable; specify --paper-journal or --no-paper");
   providers::validate_subscription(settings.provider.name, settings.subscription);
   auto provider = providers::make_provider(settings.provider);
 
   server::Engine::Options engine_options;
   engine_options.analytics.fallback_rate = settings.rate;
   engine_options.record_file = settings.record_file;
+  engine_options.paper_enabled = settings.paper_enabled;
+  engine_options.paper_journal = settings.paper_journal;
+  engine_options.paper = settings.paper;
+  engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins});
   server::Engine engine(*provider, settings.subscription, engine_options);
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
-      [&engine](const server::ApiRequest& request) { return server::handle_api(request, engine); },
-      settings.allowed_origins);
+      [&engine](const server::ApiRequest& request, server::ApiCompletion complete) {
+        server::handle_api_async(request, engine, std::move(complete));
+      }, settings.allowed_origins, settings.write_token);
   engine.start();
   web.start(settings.threads);
 

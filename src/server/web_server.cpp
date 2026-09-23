@@ -10,6 +10,9 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 #include <charconv>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <array>
 #include <future>
 #include <mutex>
 #include <optional>
@@ -137,6 +140,47 @@ bool websocket_origin_allowed(std::optional<std::string_view> origin, std::strin
     if (source == normalize_origin(allowed)) return true;
   }
   return false;
+}
+
+std::string write_mode(const WritePolicy& policy) {
+  if (!policy.token.empty()) return "token";
+  boost::system::error_code error;
+  const auto address = boost::asio::ip::make_address(policy.address, error);
+  return !error && address.is_loopback() ? "open" : "disabled";
+}
+
+std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy) {
+  if (!request.target.starts_with("/api/") ||
+      (request.method != "POST" && request.method != "PUT" && request.method != "DELETE")) return {};
+  if (request.ambiguous_headers || !websocket_origin_allowed(
+          request.origin ? std::optional<std::string_view>(*request.origin) : std::nullopt,
+          request.host, policy.allowed_origins))
+    return api_error(403, "ORIGIN_REJECTED", "Origin or security headers are ambiguous or not allowed");
+  if (write_mode(policy) == "disabled")
+    return api_error(403, "WRITE_DISABLED", "A non-loopback bind requires a write token");
+  if (!policy.token.empty()) {
+    constexpr std::string_view prefix = "Bearer ";
+    if (!request.authorization.starts_with(prefix))
+      return api_error(403, "WRITE_TOKEN_REQUIRED", "A valid bearer token is required");
+    const auto supplied = std::string_view(request.authorization).substr(prefix.size());
+    std::array<unsigned char, 32> expected{}, actual{};
+    unsigned int length = 0;
+    // Compare fixed-size digests: neither token contents nor matching prefix
+    // length influence the comparison's runtime.
+    const bool hashed = EVP_Digest(policy.token.data(), policy.token.size(), expected.data(), &length, EVP_sha256(), nullptr) == 1 &&
+        EVP_Digest(supplied.data(), supplied.size(), actual.data(), &length, EVP_sha256(), nullptr) == 1;
+    if (!hashed || CRYPTO_memcmp(expected.data(), actual.data(), expected.size()) != 0)
+      return api_error(403, "WRITE_TOKEN_REQUIRED", "A valid bearer token is required");
+  }
+  if (request.method == "DELETE") {
+    if (!request.body.empty()) return api_error(400, "INVALID_REQUEST", "DELETE must have no body");
+  } else {
+    auto type = request.content_type.substr(0, request.content_type.find(';'));
+    while (!type.empty() && type.back() == ' ') type.pop_back();
+    for (auto& c : type) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    if (type != "application/json") return api_error(400, "INVALID_REQUEST", "Content-Type must be application/json");
+  }
+  return {};
 }
 
 std::unique_ptr<WebSocketSlots::Lease> WebSocketSlots::acquire() {
@@ -331,7 +375,8 @@ void Hub::broadcast(const std::shared_ptr<const std::string>& message) {
 
 struct Shared {
   std::filesystem::path web_root;
-  ApiHandler api;
+  AsyncApiHandler api;
+  WritePolicy write_policy;
   Hub hub;
   WebSocketSlots slots;
   Sessions sessions;
@@ -353,6 +398,11 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     auto future = done->get_future();
     asio::post(stream_.get_executor(), [self = shared_from_this(), done] {
       self->stopped_ = true;
+      {
+        const std::lock_guard lock(self->completion_gate_->mutex);
+        self->completion_gate_->session.reset();
+      }
+      self->awaiting_.reset();
       self->close();
       done->set_value();
     });
@@ -371,6 +421,10 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
 
   void on_read(beast::error_code ec, std::size_t) {
     if (stopped_ || ec == http::error::end_of_stream) return close();
+    if (ec == http::error::body_limit) {
+      send_api(api_error(400, "INVALID_REQUEST", "Body exceeds 64 KiB"), 11, false);
+      return;
+    }
     if (ec) return;
     http::request<http::string_body> request = parser_->release();
 
@@ -398,7 +452,11 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
       }
       return;
     }
-    respond(handle(std::move(request)));
+    if (request.target().starts_with("/api/")) {
+      handle_api_request(request);
+      return;
+    }
+    respond(serve_file(request, std::string(request.target())));
   }
 
   void reject_upgrade(const http::request<http::string_body>& request, http::status status,
@@ -411,25 +469,48 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     respond(http::message_generator(std::move(response)));
   }
 
-  http::message_generator handle(http::request<http::string_body>&& request) {
-    const std::string target(request.target());
-    if (target.starts_with("/api/")) {
-      ApiResponse api;
-      try {
-        api = shared_.api(ApiRequest{std::string(request.method_string()), target});
-      } catch (const std::exception&) {
-        api = {500, std::string(R"({"error":"internal error"})")};
-      }
-      http::response<http::string_body> response{static_cast<http::status>(api.status),
-                                                 request.version()};
-      response.set(http::field::content_type, "application/json");
-      response.set(http::field::cache_control, "no-store");
-      response.keep_alive(request.keep_alive());
-      response.body() = std::move(api.body);
-      response.prepare_payload();
-      return response;
+  void send_api(ApiResponse api, unsigned version, bool keep_alive) {
+    if (stopped_) return;
+    http::response<http::string_body> response{static_cast<http::status>(api.status), version};
+    response.set(http::field::content_type, "application/json");
+    response.set(http::field::cache_control, "no-store");
+    response.keep_alive(keep_alive);
+    response.body() = std::move(api.body);
+    response.prepare_payload();
+    respond(http::message_generator(std::move(response)));
+  }
+
+  void handle_api_request(const http::request<http::string_body>& request) {
+    ApiRequest api{std::string(request.method_string()), std::string(request.target())};
+    api.body = request.body();
+    api.content_type = std::string(request[http::field::content_type]);
+    api.host = std::string(request[http::field::host]);
+    api.authorization = std::string(request[http::field::authorization]);
+    if (request.count(http::field::origin)) api.origin = std::string(request[http::field::origin]);
+    api.ambiguous_headers = request.count(http::field::origin) > 1 || request.count(http::field::host) != 1 ||
+                            request.count(http::field::authorization) > 1 || request.count(http::field::content_type) > 1;
+    if (auto rejection = check_api_write(api, shared_.write_policy))
+      return send_api(std::move(*rejection), request.version(), request.keep_alive());
+    completion_gate_ = std::make_shared<CompletionGate>();
+    awaiting_ = shared_from_this();
+    {
+      const std::lock_guard lock(completion_gate_->mutex);
+      completion_gate_->session = awaiting_;
     }
-    return serve_file(request, target);
+    // The gate severs late engine completions during stop. No executor or socket
+    // may outlive the server's io_context, even when a command is still queued.
+    auto complete = [gate = completion_gate_, version = request.version(), keep_alive = request.keep_alive()](ApiResponse response) {
+      const std::lock_guard lock(gate->mutex);
+      const auto self = gate->session.lock();
+      if (!self) return;
+      gate->session.reset();
+      asio::post(self->stream_.get_executor(), [self, response = std::move(response), version, keep_alive]() mutable {
+        self->awaiting_.reset();
+        self->send_api(std::move(response), version, keep_alive);
+      });
+    };
+    try { shared_.api(api, complete); }
+    catch (const std::exception&) { complete(api_error(500, "INTERNAL_ERROR", "Internal error")); }
   }
 
   http::message_generator serve_file(const http::request<http::string_body>& request,
@@ -493,6 +574,12 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     stream_.socket().close(ignored);
   }
 
+  struct CompletionGate {
+    std::mutex mutex;
+    std::weak_ptr<HttpSession> session;
+  };
+  std::shared_ptr<CompletionGate> completion_gate_ = std::make_shared<CompletionGate>();
+  std::shared_ptr<HttpSession> awaiting_;
   beast::tcp_stream stream_;
   beast::flat_buffer buffer_;
   std::optional<http::request_parser<http::string_body>> parser_;
@@ -558,13 +645,14 @@ struct WebServer::Impl {
 };
 
 WebServer::WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
-                     ApiHandler api, std::vector<std::string> allowed_origins)
+                     AsyncApiHandler api, std::vector<std::string> allowed_origins, std::string write_token)
     : impl_(std::make_unique<Impl>()) {
   impl_->shared.web_root = std::move(web_root);
   impl_->shared.api = std::move(api);
   for (const auto& origin : allowed_origins) {
     if (!normalize_origin(origin)) throw std::invalid_argument("invalid allowed origin: " + origin);
   }
+  impl_->shared.write_policy = {address, std::move(write_token), allowed_origins};
   impl_->shared.allowed_origins = std::move(allowed_origins);
   impl_->address = std::move(address);
   impl_->requested_port = port;

@@ -8,6 +8,8 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
 #include <fstream>
+#include <condition_variable>
+#include <future>
 #include <thread>
 #include <vector>
 
@@ -263,3 +265,96 @@ TEST(WebPolicy, FailedWebServerStartStillConsumesTheSingleStartAttempt) {
   EXPECT_THROW(web.start(), std::logic_error);
   EXPECT_NO_THROW(web.stop());
 }
+
+namespace {
+TEST(WebServer, AsyncPostDeleteRoundTripsAndSecurityHeaders) {
+  std::mutex mutex;
+  std::condition_variable ready;
+  std::optional<server::ApiCompletion> pending;
+  std::optional<server::ApiRequest> received;
+  server::WebServer web("127.0.0.1", 0, {},
+      [&](const server::ApiRequest& request, server::ApiCompletion complete) {
+        if (request.method == "GET") { complete({200, "{}"}); return; }
+        const std::lock_guard lock(mutex);
+        received = request; pending = std::move(complete); ready.notify_one();
+      }, {}, "secret");
+  web.start(1);
+  asio::io_context io;
+  beast::tcp_stream connection(io);
+  connection.expires_after(std::chrono::seconds(3));
+  connection.connect({asio::ip::make_address("127.0.0.1"), web.port()});
+  const auto host = "127.0.0.1:" + std::to_string(web.port());
+  auto request = [&](http::verb method, const std::string& target, const std::string& body) {
+    http::request<http::string_body> out{method, target, 11};
+    out.set(http::field::host, host); out.set(http::field::origin, "http://" + host);
+    out.set(http::field::authorization, "Bearer secret");
+    if (method != http::verb::delete_) out.set(http::field::content_type, "application/json");
+    out.body() = body; out.prepare_payload(); return out;
+  };
+  for (const auto method : {http::verb::post, http::verb::delete_}) {
+    const auto body = method == http::verb::post ? "{\"client_order_id\":\"socket\"}" : "";
+    auto req = request(method, method == http::verb::post ? "/api/orders" : "/api/orders/1", body);
+    http::write(connection, req);
+    server::ApiCompletion complete;
+    {
+      std::unique_lock lock(mutex);
+      ASSERT_TRUE(ready.wait_for(lock, std::chrono::seconds(3), [&] { return pending.has_value(); }));
+      EXPECT_EQ(received->body, body);
+      EXPECT_EQ(received->authorization, "Bearer secret");
+      complete = std::move(*pending); pending.reset();
+    }
+    // A second request completes on the single I/O thread while the first is
+    // waiting for its owner-thread callback. A blocking handler would deadlock.
+    beast::tcp_stream other(io);
+    other.expires_after(std::chrono::seconds(3));
+    other.connect({asio::ip::make_address("127.0.0.1"), web.port()});
+    auto get = request(http::verb::get, "/api/status", "");
+    http::write(other, get);
+    beast::flat_buffer other_buffer;
+    http::response<http::string_body> other_response;
+    http::read(other, other_buffer, other_response);
+    EXPECT_EQ(other_response.result_int(), 200);
+    std::thread engine([complete = std::move(complete), method]() mutable {
+      complete({method == http::verb::post ? 201 : 200, "{\"account_version\":\"3\"}"});
+    });
+    beast::flat_buffer buffer;
+    http::response<http::string_body> response;
+    http::read(connection, buffer, response);
+    engine.join();
+    EXPECT_EQ(response.result_int(), method == http::verb::post ? 201 : 200);
+    EXPECT_EQ(response.body(), "{\"account_version\":\"3\"}");
+  }
+  auto rejected = request(http::verb::post, "/api/orders", "{}");
+  rejected.erase(http::field::authorization);
+  http::write(connection, rejected);
+  beast::flat_buffer buffer;
+  http::response<http::string_body> response;
+  http::read(connection, buffer, response);
+  EXPECT_EQ(response.result_int(), 403);
+  EXPECT_NE(response.body().find("WRITE_TOKEN_REQUIRED"), std::string::npos);
+  web.stop();
+}
+
+TEST(WebServer, StopSeversLateCommandCompletionBeforeDestroyingExecutor) {
+  server::ApiCompletion complete;
+  std::promise<void> received;
+  asio::io_context io;
+  beast::tcp_stream connection(io);
+  {
+    server::WebServer web("127.0.0.1", 0, {},
+        [&](const server::ApiRequest&, server::ApiCompletion callback) {
+          complete = std::move(callback); received.set_value();
+        });
+    web.start();
+    connection.connect({asio::ip::make_address("127.0.0.1"), web.port()});
+    http::request<http::string_body> request{http::verb::post, "/api/risk/kill", 11};
+    request.set(http::field::host, "localhost");
+    request.set(http::field::content_type, "application/json");
+    request.body() = "{}"; request.prepare_payload();
+    http::write(connection, request);
+    ASSERT_EQ(received.get_future().wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    web.stop();
+  }
+  EXPECT_NO_THROW(complete({200, "{}"}));
+}
+}  // namespace

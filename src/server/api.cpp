@@ -14,6 +14,7 @@
 #include <type_traits>
 
 #include "openport/analytics/svi.hpp"
+#include "paper_json.hpp"
 
 namespace openport::server {
 namespace {
@@ -110,6 +111,13 @@ json exposure_summary(const UnderlyingMetrics& m) {
 json option_json(const analytics::OptionMetrics& o) {
   if (o.id == analytics::kNoInstrument) return nullptr;
   return {
+      {"symbol", o.contract.osi_symbol()},
+      {"bid_size", std::isfinite(o.bid_size) && o.bid_size >= 0 && o.bid_size < 9223372036854775808.0
+          ? json(static_cast<std::int64_t>(std::floor(o.bid_size))) : json(nullptr)},
+      {"ask_size", std::isfinite(o.ask_size) && o.ask_size >= 0 && o.ask_size < 9223372036854775808.0
+          ? json(static_cast<std::int64_t>(std::floor(o.ask_size))) : json(nullptr)},
+      {"tradable", trading::eligible(o.contract).ok()},
+      {"untradable_reason", trading::eligible(o.contract).ok() ? json(nullptr) : json(trading::to_string(trading::eligible(o.contract).code))},
       {"bid", price(o.bid)},
       {"ask", price(o.ask)},
       {"mid", price(o.mid)},
@@ -192,7 +200,7 @@ ApiResponse ok(const json& body) {
 }
 
 ApiResponse error(int status, const std::string& message) {
-  return {status, json{{"error", message}}.dump()};
+  return api_error(status, status == 400 ? "INVALID_REQUEST" : status == 404 ? "NOT_FOUND" : "METHOD_NOT_ALLOWED", message);
 }
 
 bool in_window(double strike, double spot, double window) {
@@ -247,6 +255,7 @@ json status_json(const MetricsSource& source) {
   const EngineStatus s = source.status();
   const auto now = md::now();
   return {
+      {"trading", trading_status_json(s.trading)},
       {"market", market_json(now)},
       {"provider",
        {{"name", s.provider},
@@ -446,6 +455,7 @@ json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
 
 ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   if (request.method != "GET") return error(405, "only GET is supported");
+  if (auto response = paper_read(request, source)) return *response;
   const std::string_view target = request.target;
   const std::size_t question = target.find('?');
   const std::string_view path = target.substr(0, question);
@@ -499,6 +509,7 @@ std::string tick_message(const MetricsSource& source) {
   const EngineStatus s = source.status();
   const auto now = md::now();
   return json{{"type", "tick"},
+              {"trading", trading_status_json(s.trading)},
               {"market", market_json(now)},
               {"feed", {{"state", md::to_string(s.feed_state)}, {"message", s.feed_message}}},
               {"underlyings", underlyings_json(source, s, false, now)},

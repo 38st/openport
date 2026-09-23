@@ -22,6 +22,9 @@ inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 /// Greeks are per unit of underlying (multiply by the contract multiplier for a
 /// position), with delta and gamma taken with respect to spot.
 struct OptionMetrics {
+  md::OptionContract contract;
+  double bid_size = kNaN;
+  double ask_size = kNaN;
   md::InstrumentId id = kNoInstrument;
   double bid = kNaN;
   double ask = kNaN;

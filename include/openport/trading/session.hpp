@@ -56,7 +56,9 @@ class TradingSession {
 
   /// Caller must resolve from a known definition. Conflicting OSI terms reject.
   CommandResult define(const md::OptionContract& contract, Timestamp time);
-  CommandResult submit(OrderRequest request, Timestamp time);
+  /// The integration may reject a resolved but unsupported definition before
+  /// registration; it still consumes the client ID and journals a rejected order.
+  CommandResult submit(OrderRequest request, Timestamp time, Decision rejection = {});
   CommandResult cancel(OrderId id, Timestamp time);
   /// Apply a whole batch before risk/matching. Unknown symbols and future data
   /// reject the whole batch; duplicate/older observations are ignored. Supply
@@ -73,6 +75,14 @@ class TradingSession {
   /// Kill latch persists across rollover.
   CommandResult roll_day(Timestamp time);
   [[nodiscard]] std::shared_ptr<const TradingSnapshot> snapshot() const;
+
+  /// Read-only integration context, owned by the reducer. The engine copies it
+  /// into its publication; recovery therefore needs no parallel journal schema.
+  [[nodiscard]] const SessionConfig& config() const;
+  [[nodiscard]] const std::map<std::string, md::OptionContract>& contracts() const;
+  [[nodiscard]] const std::map<std::string, Valuation>& valuations() const;
+  [[nodiscard]] std::optional<QuoteObservation> quote(const std::string& symbol) const;
+  [[nodiscard]] md::Date trading_day() const;
 
   /// Rebuild recorded outcomes without matching/repricing. Optional resumed
   /// sink must have exactly the verified recovered head and sequence.

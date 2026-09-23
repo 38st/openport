@@ -29,6 +29,21 @@ and your data stay on your machine.
 - **Engine**: feed health per underlying, trading session, queue and analytics timing.
 - Light and dark themes, keyboard shortcuts (1-4 switch views, arrows step expiries).
 
+## Paper trading
+
+The engine simulates European cash-settled index option orders against displayed
+quotes, with deterministic fills, fees, portfolio accounting, risk limits and a
+kill switch. It is enabled by default and recovers from
+`$HOME/.openport/paper-journal.jsonl`; use `--no-paper` to disable it. V1 excludes
+American exercise, stock delivery, margin and brokerage execution.
+
+Loopback writes are open unless a token is configured. To enable writes on a
+remote bind, set `OPENPORT_WRITE_TOKEN` or `--write-token TOKEN` and send it as a
+Bearer token over HTTPS. Use `--allowed-origin https://your-terminal.example` for
+a proxy that changes Host. Docker stores the journal in the `/var/lib/openport`
+volume. See [Paper trading](docs/paper-trading.md) for the HTTP contract, settlement
+sources and simulation limitations.
+
 ## Quick start
 
 With Docker (Cboe delayed SPX, SPY and QQQ, no key needed):
@@ -70,7 +85,8 @@ itself, so the numbers mean the same thing whichever provider you use.
 
 Common flags: `--symbols SPX,SPY`, `--expiries N` (nearest N expiries), `--window F`
 (strikes within ±F of spot), `--poll-seconds N`, `--rate R` (the assumed rate when no
-index curve is available), `--address`, `--port`, `--web-root`, `--allowed-origin`, and
+index curve is available), `--address`, `--port`, `--web-root`, `--allowed-origin`,
+`--paper-journal`, `--paper-cash`, `--paper-fee`, `--no-paper`, `--write-token`, and
 `--option KEY=VALUE` for provider settings such as `quotes=cmbp-1` for Databento. Every
 value is range-checked; see the [runtime notes](docs/runtime.md) for details.
 

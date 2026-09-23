@@ -1,0 +1,542 @@
+#include <gtest/gtest.h>
+
+#include <condition_variable>
+#include <future>
+#include <fstream>
+#include <nlohmann/json.hpp>
+#include <thread>
+
+#include "openport/server/api.hpp"
+#include "openport/server/web_policy.hpp"
+#include "support/scripted_market.hpp"
+
+namespace {
+using namespace openport;
+using nlohmann::json;
+using trading::Money;
+
+class PaperProvider final : public md::Provider {
+ public:
+  std::string_view name() const noexcept override { return "scripted paper"; }
+  md::Capabilities capabilities() const noexcept override { return {}; }
+  void start(const md::Subscription&, md::EventSink& out) override { sink = &out; }
+  void stop() override {}
+  md::EventSink* sink = nullptr;
+};
+template <class F> bool wait_for(F predicate) {
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!predicate()) {
+    if (std::chrono::steady_clock::now() >= end) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+server::ApiResponse write(server::MetricsSource& source, std::string method,
+                           std::string target, json body = nullptr) {
+  auto promise = std::make_shared<std::promise<server::ApiResponse>>();
+  auto future = promise->get_future();
+  server::ApiRequest request{std::move(method), std::move(target)};
+  if (!body.is_null()) request.body = body.dump();
+  request.content_type = "application/json";
+  server::handle_api_async(request, source, [promise](auto response) { promise->set_value(std::move(response)); });
+  if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+    throw std::runtime_error("Engine command did not complete");
+  return future.get();
+}
+json read(const server::MetricsSource& source, std::string path) {
+  const auto response = server::handle_api({"GET", std::move(path)}, source);
+  EXPECT_EQ(response.status, 200) << response.body;
+  return json::parse(response.body);
+}
+json order(const test::ScriptedMarket& market, std::string client = "one", std::string price = "4.00") {
+  return {{"client_order_id", client}, {"symbol", market.symbol()}, {"side", "buy"},
+          {"type", "limit"}, {"quantity", 1}, {"limit_price", price}, {"time_in_force", "day"}};
+}
+server::Engine::Options paper_options() {
+  server::Engine::Options options;
+  options.analytics_interval = std::chrono::milliseconds(0);
+  options.analytics.fallback_rate = 0;
+  return options;
+}
+class PaperEngine : public testing::Test {
+ protected:
+  void SetUp() override {
+    engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, paper_options());
+    engine->start();
+    ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  }
+  void seed(std::string bid = "4.00", std::string ask = "4.20", double size = 10) {
+    provider.sink->publish(md::ContractDefinition{0, market.contract});
+    quote(std::move(bid), std::move(ask), size);
+  }
+  void quote(std::string bid = "4.00", std::string ask = "4.20", double size = 10) {
+    provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+    provider.sink->publish(md::OptionQuote{0, market.time, Money::parse(bid).dollars(), Money::parse(ask).dollars(), size, size});
+    ASSERT_TRUE(wait_for([&] {
+      const auto metrics = engine->metrics("SPX");
+      return metrics && metrics->as_of == market.time && !metrics->slices.empty() &&
+             metrics->slices[0].strikes[0].call.ask == Money::parse(ask).dollars();
+    }));
+  }
+  void expect_error(const server::ApiResponse& response, int status, const char* code) {
+    EXPECT_EQ(response.status, status) << response.body;
+    const auto body = json::parse(response.body);
+    ASSERT_TRUE(body.contains("error"));
+    EXPECT_EQ(body["error"].size(), 5);
+    EXPECT_EQ(body["error"]["code"], code);
+    EXPECT_TRUE(body["error"]["message"].is_string());
+  }
+  PaperProvider provider;
+  test::ScriptedMarket market;
+  std::unique_ptr<server::Engine> engine;
+};
+
+TEST_F(PaperEngine, RestingLimitFillsOnlyOnLaterObservationAndPublishesContractJson) {
+  seed();
+  const auto response = write(*engine, "POST", "/api/orders", order(market));
+  ASSERT_EQ(response.status, 201) << response.body;
+  const auto accepted = json::parse(response.body);
+  EXPECT_EQ(accepted["order"]["status"], "working");
+  EXPECT_TRUE(accepted["fills"].empty());
+  const auto immutable = engine->trading_view();
+  EXPECT_EQ(read(*engine, "/api/orders?status=open")["orders"].size(), 1);
+  market.next(); quote("3.80", "4.00");
+  ASSERT_TRUE(wait_for([&] { return !engine->trading_view()->snapshot->recent_fills.empty(); }));
+  const auto portfolio = read(*engine, "/api/portfolio");
+  EXPECT_EQ(portfolio["cash"], "99599.35");
+  EXPECT_EQ(portfolio["fees"], "0.65");
+  EXPECT_EQ(portfolio["equity"], "99989.35");
+  EXPECT_EQ(portfolio["positions"][0]["average_price"], "4.00");
+  EXPECT_EQ(portfolio["positions"][0]["mark"], "3.90");
+  EXPECT_TRUE(portfolio["positions"][0]["greeks"]["delta"].is_number());
+  EXPECT_TRUE(immutable->snapshot->positions.empty());
+  const auto fills = read(*engine, "/api/fills");
+  EXPECT_EQ(fills["fills"][0]["price"], "4.00");
+  EXPECT_EQ(fills["fills"][0]["id"], "1");
+  EXPECT_EQ(fills["fills"][0]["quote_time"], md::format_timestamp(market.time));
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "filled");
+  const auto status = read(*engine, "/api/status")["trading"];
+  EXPECT_EQ(status["account_version"], portfolio["account_version"]);
+  EXPECT_EQ(status["write"], "open");
+  EXPECT_EQ(json::parse(server::tick_message(*engine))["trading"], status);
+  const auto chain = read(*engine, "/api/underlyings/SPX/chain");
+  EXPECT_EQ(chain["strikes"][0]["call"]["symbol"], market.symbol());
+  EXPECT_EQ(chain["strikes"][0]["call"]["bid_size"], 10);
+  EXPECT_EQ(chain["strikes"][0]["call"]["tradable"], true);
+  EXPECT_TRUE(chain["strikes"][0]["call"]["untradable_reason"].is_null());
+}
+
+TEST_F(PaperEngine, CancelFillOrderingKillAndRevisionChecks) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "cancel-first")).status, 201);
+  auto cancelled = write(*engine, "DELETE", "/api/orders/1");
+  ASSERT_EQ(cancelled.status, 200) << cancelled.body;
+  EXPECT_EQ(json::parse(cancelled.body)["order"]["reason"]["code"], "USER_CANCEL");
+  market.next(); quote("3.80", "4.00");
+  EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "fill-first")).status, 201);
+  expect_error(write(*engine, "DELETE", "/api/orders/2"), 409, "ORDER_TERMINAL");
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "kill", "3.80")).status, 201);
+  auto killed = write(*engine, "POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "operator test"}});
+  ASSERT_EQ(killed.status, 200) << killed.body;
+  EXPECT_EQ(json::parse(killed.body)["cancelled_orders"], json::array({"3"}));
+  EXPECT_EQ(json::parse(killed.body)["kill"]["reason"], "operator test");
+  expect_error(write(*engine, "POST", "/api/orders", order(market, "blocked")), 422, "KILL_SWITCH");
+  auto reset = write(*engine, "POST", "/api/risk/kill", {{"action", "reset"}, {"reason", "reviewed"}});
+  EXPECT_EQ(reset.status, 200);
+  EXPECT_FALSE(json::parse(reset.body)["kill"]["latched"].get<bool>());
+  auto risk = read(*engine, "/api/risk");
+  EXPECT_EQ(risk["scenarios"]["pnl"].size(), 9);
+  EXPECT_EQ(risk["scenarios"]["pnl"][0].size(), 4);
+  EXPECT_EQ(risk["scenarios"]["pnl"][4][1], 0);
+  auto limits = risk["limits"];
+  limits["max_order_contracts"] = 2;
+  const auto updated = write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "1"}, {"limits", limits}});
+  EXPECT_EQ(updated.status, 200) << updated.body;
+  EXPECT_EQ(json::parse(updated.body)["limits_revision"], "2");
+  expect_error(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "1"}, {"limits", limits}}), 409, "LIMITS_REVISION");
+  limits["max_order_contracts"] = 0;
+  expect_error(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "2"}, {"limits", limits}}), 422, "INVALID_LIMITS");
+}
+
+TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejections) {
+  seed();
+  auto request = order(market);
+  request["unexpected"] = true;
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request = order(market); request["quantity"] = 1.5;
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request["quantity"] = "1";
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request = order(market); request["quantity"] = std::numeric_limits<std::uint64_t>::max();
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request = order(market); request["limit_price"] = 4.0;
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request = order(market); request["limit_price"] = "4e0";
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  for (const auto* body : {"{", "[]", "{\"action\":\"trip\",\"action\":\"reset\",\"reason\":\"x\"}"}) {
+    server::ApiResponse response;
+    server::ApiRequest raw{"POST", "/api/risk/kill", body};
+    server::handle_api_async(raw, *engine, [&](auto r) { response = std::move(r); });
+    expect_error(response, 400, "INVALID_REQUEST");
+  }
+  expect_error(write(*engine, "DELETE", "/api/orders/bad"), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "DELETE", "/api/orders/999"), 404, "UNKNOWN_ORDER");
+  request = order(market); request["symbol"] = "SPXW  261022C05100000";
+  expect_error(write(*engine, "POST", "/api/orders", request), 404, "UNKNOWN_CONTRACT");
+  request = order(market, "bad-tick", "4.01");
+  expect_error(write(*engine, "POST", "/api/orders", request), 422, "INVALID_TICK");
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "rejected");
+  expect_error(write(*engine, "POST", "/api/orders", request), 409, "DUPLICATE_CLIENT_ID");
+  expect_error(write(*engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5000.00"}}), 422, "INVALID_SETTLEMENT");
+  expect_error(server::handle_api({"GET", "/api/orders?status=closed"}, *engine), 400, "INVALID_REQUEST");
+  expect_error(server::handle_api({"GET", "/api/missing"}, *engine), 404, "NOT_FOUND");
+}
+
+TEST_F(PaperEngine, FractionalSizesNeverRoundUpAndCachedObservationsDoNotRefill) {
+  seed("4.00", "4.20", 1.9);
+  auto first = write(*engine, "POST", "/api/orders", order(market, "first", "4.20"));
+  ASSERT_EQ(first.status, 201) << first.body;
+  EXPECT_EQ(json::parse(first.body)["order"]["status"], "filled");
+  auto second = write(*engine, "POST", "/api/orders", order(market, "second", "4.20"));
+  ASSERT_EQ(second.status, 201) << second.body;
+  EXPECT_EQ(json::parse(second.body)["order"]["status"], "working");
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time + 1, 5000, 5000, 5000});
+  EXPECT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time == market.time + 1; }));
+  EXPECT_EQ(engine->trading_view()->snapshot->recent_fills.size(), 1);
+  market.next(); quote("4.00", "4.20", 1.9);
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->recent_fills.size() == 2; }));
+}
+
+TEST_F(PaperEngine, AmericanEligibilityUsesTheDefinitionAndRecordsRejection) {
+  market.contract = *md::parse_osi("SPY261022C00500000");
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  ASSERT_TRUE(wait_for([&] { return engine->status().contracts == 1; }));
+  expect_error(write(*engine, "POST", "/api/orders", order(market)), 422, "AMERICAN_UNSUPPORTED");
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "rejected");
+}
+
+TEST_F(PaperEngine, PmUsesFirstExpiryDatePrintAndAmWaitsForImport) {
+  market.contract = *md::parse_osi("SPXW260922C05000000");
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "pm", "4.20")).status, 201);
+  auto expiry = market.contract.expiry_time();
+  provider.sink->publish(md::UnderlyingQuote{"SPX", expiry - 1, 5010, 5010, 5010});
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time == expiry - 1; }));
+  EXPECT_EQ(read(*engine, "/api/portfolio")["positions"].size(), 1);
+  provider.sink->publish(md::UnderlyingQuote{"SPX", expiry, 5012, 5012, 5012});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", expiry + 1, 5020, 5020, 5020});
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->positions.empty(); }));
+  EXPECT_EQ(read(*engine, "/api/portfolio")["cash"], "100779.35");
+
+  market.contract = *md::parse_osi("SPX260923C05000000");
+  market.time = md::new_york_to_utc({2026, 9, 22}, 16, 5);
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "am", "4.20")).status, 201);
+  expiry = market.contract.expiry_time();
+  provider.sink->publish(md::UnderlyingQuote{"SPX", expiry, 5050, 5050, 5050});
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time == expiry; }));
+  const auto waiting = read(*engine, "/api/portfolio");
+  ASSERT_EQ(waiting["positions"].size(), 1);
+  EXPECT_EQ(waiting["positions"][0]["awaiting_settlement"], true);
+  EXPECT_EQ(waiting["valuation_complete"], false);
+  EXPECT_TRUE(waiting["positions"][0]["greeks"]["delta"].is_null());
+  auto settlement = write(*engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5010.00"}});
+  ASSERT_EQ(settlement.status, 200) << settlement.body;
+  EXPECT_EQ(json::parse(settlement.body)["position_closed"], true);
+  expect_error(write(*engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5010.00"}}), 422, "ALREADY_SETTLED");
+}
+
+TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
+  const auto path = std::filesystem::temp_directory_path() / ("openport-paper-" + std::to_string(md::now()) + ".jsonl");
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket market;
+  std::string portfolio, risk;
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    provider.sink->publish(md::ContractDefinition{0, market.contract});
+    provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+    provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+    ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+    auto response = write(engine, "POST", "/api/orders", order(market, "buy", "4.20"));
+    ASSERT_EQ(response.status, 201) << response.body;
+    engine.stop();
+    portfolio = server::handle_api({"GET", "/api/portfolio"}, engine).body;
+    risk = server::handle_api({"GET", "/api/risk"}, engine).body;
+  }
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    EXPECT_EQ(server::handle_api({"GET", "/api/portfolio"}, engine).body, portfolio);
+    EXPECT_EQ(server::handle_api({"GET", "/api/risk"}, engine).body, risk);
+    auto response = write(engine, "POST", "/api/orders", order(market, "rest", "4.20"));
+    ASSERT_EQ(response.status, 201) << response.body;
+    EXPECT_EQ(json::parse(response.body)["order"]["status"], "working");
+    provider.sink->publish(md::ContractDefinition{0, market.contract});
+    market.next();
+    provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+    provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->recent_fills.size() == 2; }));
+  }
+  std::filesystem::remove(path);
+}
+
+TEST(PaperAvailability, DisabledFailedJournalFullInboxAndStoppingFailClosed) {
+  for (int mode = 0; mode < 4; ++mode) {
+    PaperProvider provider;
+    auto options = paper_options();
+    if (mode == 0) options.paper_enabled = false;
+    if (mode == 1) options.paper_journal = std::filesystem::temp_directory_path();
+    if (mode == 2) options.command_capacity = 0;
+    server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+    if (mode == 1) ASSERT_TRUE(wait_for([&] { return engine.status().trading.reason.starts_with("JOURNAL_IO"); }));
+    if (mode >= 2) ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    if (mode == 3) engine.stop();
+    const auto response = write(engine, "POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});
+    EXPECT_EQ(response.status, 503) << response.body;
+    EXPECT_EQ(json::parse(response.body)["error"]["code"], "TRADING_UNAVAILABLE");
+    if (mode == 0) EXPECT_FALSE(engine.status().trading.enabled);
+    if (mode == 1) EXPECT_EQ(engine.status().trading.write, "disabled");
+  }
+}
+
+TEST(PaperWritePolicy, ProtectsEveryWriteAndLeavesReadsOpen) {
+  for (const std::string method : {"POST", "PUT", "DELETE"}) {
+    server::ApiRequest request{method, "/api/anything"};
+    request.content_type = "application/json"; request.host = "localhost:8080";
+    for (const std::string address : {"127.0.0.1", "127.0.0.2", "::1"})
+      EXPECT_FALSE(server::check_api_write(request, {address, "", {}}));
+    auto error = server::check_api_write(request, {"0.0.0.0", "", {}});
+    ASSERT_TRUE(error); EXPECT_EQ(error->status, 403);
+    EXPECT_EQ(json::parse(error->body)["error"]["code"], "WRITE_DISABLED");
+    for (const std::string address : {"127.0.0.1", "0.0.0.0", "::"}) {
+      request.authorization = "Bearer wrong";
+      error = server::check_api_write(request, {address, "secret", {}});
+      ASSERT_TRUE(error);
+      EXPECT_EQ(json::parse(error->body)["error"]["code"], "WRITE_TOKEN_REQUIRED");
+      request.authorization = "Bearer secret";
+      EXPECT_FALSE(server::check_api_write(request, {address, "secret", {}}));
+    }
+    request.origin = "https://evil.test";
+    error = server::check_api_write(request, {});
+    ASSERT_TRUE(error); EXPECT_EQ(json::parse(error->body)["error"]["code"], "ORIGIN_REJECTED");
+    EXPECT_FALSE(server::check_api_write(request, {"127.0.0.1", "", {"https://evil.test"}}));
+    request.origin = "http://localhost:8080";
+    EXPECT_FALSE(server::check_api_write(request, {}));
+    request.content_type = "text/plain";
+    if (method != "DELETE") {
+      error = server::check_api_write(request, {});
+      ASSERT_TRUE(error); EXPECT_EQ(error->status, 400);
+    }
+    request.method = "GET";
+    EXPECT_FALSE(server::check_api_write(request, {"0.0.0.0", "secret", {}}));
+  }
+}
+}  // namespace
+
+namespace {
+TEST_F(PaperEngine, DailyLossTripsBeforeCrossingOrdersAndRolloverWaitsForMarks) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "position", "4.20")).status, 201);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "rest", "4.00")).status, 201);
+  auto limits = read(*engine, "/api/risk")["limits"];
+  limits["max_daily_loss"] = "20.00";
+  ASSERT_EQ(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "1"}, {"limits", limits}}).status, 200);
+  market.next(); quote("3.80", "4.00");
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->risk.kill_latched; }));
+  EXPECT_EQ(engine->trading_view()->snapshot->recent_fills.size(), 1);
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "cancelled");
+  market.time += md::kNanosPerDay;
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time == market.time; }));
+  EXPECT_EQ(read(*engine, "/api/portfolio")["start_of_day_equity"], "100000.00");
+  quote("3.80", "4.00");
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->valuation_complete; }));
+  const auto portfolio = read(*engine, "/api/portfolio");
+  EXPECT_EQ(portfolio["start_of_day_equity"], portfolio["equity"]);
+  EXPECT_EQ(portfolio["day_pnl"], "0.00");
+  EXPECT_TRUE(engine->status().trading.kill_latched);
+}
+
+TEST(PaperOrdering, MarketBatchPrecedesCancelAndInboxIsBoundedWhileOwnerIsBusy) {
+  struct Gate {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool armed = false, paused = false, released = false;
+  } gate;
+  auto options = paper_options(); options.command_capacity = 2;
+  options.monotonic_clock = [&] {
+    std::unique_lock lock(gate.mutex);
+    if (gate.armed) {
+      gate.armed = false; gate.paused = true; gate.changed.notify_all();
+      gate.changed.wait(lock, [&] { return gate.released; });
+    }
+    return std::chrono::steady_clock::now();
+  };
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, options);
+  engine.start();
+  struct ReleaseGate {
+    Gate& gate;
+    ~ReleaseGate() {
+      const std::lock_guard lock(gate.mutex);
+      gate.released = true;
+      gate.changed.notify_all();
+    }
+  } release{gate};
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  test::ScriptedMarket market;
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+  ASSERT_EQ(write(engine, "POST", "/api/orders", order(market)).status, 201);
+  {
+    std::unique_lock lock(gate.mutex);
+    gate.armed = true;
+    ASSERT_TRUE(gate.changed.wait_for(lock, std::chrono::seconds(3), [&] { return gate.paused; }));
+  }
+  market.next();
+  provider.sink->publish(md::OptionQuote{0, market.time, 3.8, 4, 1, 1});
+  server::TradingCommand cancel; cancel.kind = server::TradingCommand::Kind::Cancel; cancel.order_id = 1;
+  std::promise<server::TradingReply> first, second;
+  const bool accepted_first = engine.post_trading(cancel, [&](auto reply) { first.set_value(std::move(reply)); });
+  const bool accepted_second = engine.post_trading(cancel, [&](auto reply) { second.set_value(std::move(reply)); });
+  const bool full = engine.post_trading(cancel, [](auto) {});
+  {
+    const std::lock_guard lock(gate.mutex);
+    gate.released = true; gate.changed.notify_all();
+  }
+  ASSERT_TRUE(accepted_first); ASSERT_TRUE(accepted_second); EXPECT_FALSE(full);
+  const auto a = first.get_future().get(), b = second.get_future().get();
+  EXPECT_EQ(a.decision.code, trading::Reason::ORDER_TERMINAL);
+  EXPECT_EQ(a.view->snapshot->recent_fills.size(), 1);
+  EXPECT_EQ(b.view->snapshot->account_version, a.view->snapshot->account_version + 1);
+}
+
+class FailingPaperJournal final : public trading::Journal {
+ public:
+  void append(md::Timestamp, std::string_view, std::string_view) override {
+    if (failed) throw trading::TradingError(trading::Reason::JOURNAL_IO, "injected disk failure");
+    ++sequence_;
+  }
+  std::uint64_t sequence() const override { return sequence_; }
+  std::string head() const override { return std::string(64, '0'); }
+  std::atomic<bool> failed{false};
+ private:
+  std::uint64_t sequence_ = 0;
+};
+TEST(PaperAvailability, RuntimeJournalFailurePreservesAccountAndDisablesWrites) {
+  auto journal = std::make_shared<FailingPaperJournal>();
+  auto options = paper_options(); options.paper_sink = journal;
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto before = engine.trading_view()->snapshot;
+  journal->failed = true;
+  auto response = write(engine, "POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});
+  EXPECT_EQ(response.status, 503);
+  EXPECT_EQ(json::parse(response.body)["error"]["code"], "TRADING_UNAVAILABLE");
+  const auto after = engine.trading_view()->snapshot;
+  EXPECT_EQ(after->account.cash, before->account.cash);
+  EXPECT_EQ(after->account_version, before->account_version);
+  EXPECT_TRUE(after->journal_failed);
+  EXPECT_EQ(engine.status().trading.write, "disabled");
+  EXPECT_TRUE(engine.status().trading.reason.starts_with("JOURNAL_IO"));
+  EXPECT_EQ(write(engine, "POST", "/api/risk/kill", {{"action", "reset"}, {"reason", "test"}}).status, 503);
+}
+}  // namespace
+
+namespace {
+TEST(PaperQueue, PreservesClosingPrintsWhileOptionQuotesCoalesce) {
+  md::EventQueue queue(10, true);
+  const test::ScriptedMarket market;
+  const auto expiry = market.contract.expiry_time();
+  queue.publish(md::UnderlyingQuote{"SPX", expiry - 1, 0, 0, 4999});
+  queue.publish(md::UnderlyingQuote{"SPX", expiry, 0, 0, 5001});
+  queue.publish(md::UnderlyingQuote{"SPX", expiry + 1, 0, 0, 5010});
+  queue.publish(md::OptionQuote{0, expiry - 2, 3, 3.1, 1, 1});
+  queue.publish(md::OptionQuote{0, expiry - 1, 4, 4.1, 1, 1});
+  std::vector<md::Event> events;
+  EXPECT_EQ(queue.drain(events, std::chrono::milliseconds(0)), 4);
+  EXPECT_EQ(std::get<md::UnderlyingQuote>(events[1]).last, 5001);
+  EXPECT_EQ(std::get<md::OptionQuote>(events[3]).bid, 4);
+  EXPECT_EQ(queue.status().coalesced, 1);
+}
+
+TEST_F(PaperEngine, ValidatesConditionalOrderFieldsAndReturnsNumericRiskEvidence) {
+  seed();
+  auto oversized = order(market, "oversized"); oversized["quantity"] = 101;
+  const auto size_rejection = write(*engine, "POST", "/api/orders", oversized);
+  expect_error(size_rejection, 422, "MAX_ORDER_CONTRACTS");
+  EXPECT_EQ(json::parse(size_rejection.body)["error"]["scope"], "SPX");
+  auto request = order(market);
+  request.erase("limit_price");
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request = order(market); request["type"] = "market";
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request.erase("limit_price"); request["time_in_force"] = "day";
+  expect_error(write(*engine, "POST", "/api/orders", request), 422, "INVALID_ORDER");
+  request["client_order_id"] = "market"; request["time_in_force"] = "ioc";
+  const auto market_order = write(*engine, "POST", "/api/orders", request);
+  ASSERT_EQ(market_order.status, 201) << market_order.body;
+  EXPECT_EQ(json::parse(market_order.body)["order"]["limit_price"], nullptr);
+  EXPECT_EQ(json::parse(market_order.body)["order"]["status"], "filled");
+  auto limits = read(*engine, "/api/risk")["limits"];
+  limits["aggregate"]["dollar_delta"] = 0;
+  limits["per_underlying"]["dollar_delta"] = 0;
+  ASSERT_EQ(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "1"}, {"limits", limits}}).status, 200);
+  const auto rejection = write(*engine, "POST", "/api/orders", order(market, "risk"));
+  expect_error(rejection, 422, "DELTA_LIMIT");
+  const auto error = json::parse(rejection.body)["error"];
+  EXPECT_GT(error["actual"].get<double>(), 0);
+  EXPECT_EQ(error["limit"], 0);
+  EXPECT_EQ(error["scope"], "SPX");
+  limits["aggregate"]["unexpected"] = 1;
+  expect_error(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "2"}, {"limits", limits}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/risk/kill", {{"action", "reset"}, {"reason", " "}}), 422, "INVALID_REASON");
+  expect_error(write(*engine, "POST", "/api/risk/kill", {{"action", "bad"}, {"reason", "test"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", 5000}}), 400, "INVALID_REQUEST");
+}
+}  // namespace
+
+namespace {
+TEST(PaperRecovery, SettlementProvenanceIsDurableAndStopReleasesJournalWriter) {
+  const auto path = std::filesystem::temp_directory_path() / ("openport-settlement-" + std::to_string(md::now()) + ".jsonl");
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPXW260922C05000000");
+  PaperProvider provider;
+  server::Engine original(provider, {{"SPX"}}, options); original.start();
+  ASSERT_TRUE(wait_for([&] { return original.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return original.metrics("SPX") && original.metrics("SPX")->as_of == market.time; }));
+  ASSERT_EQ(write(original, "POST", "/api/orders", order(market, "pm", "4.20")).status, 201);
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.contract.expiry_time(), 0, 0, 5012});
+  ASSERT_TRUE(wait_for([&] { return original.trading_view()->snapshot->positions.empty(); }));
+  original.stop();
+  const auto recovery = trading::FileJournal::read(path.string());
+  bool found = false;
+  for (const auto& record : recovery.records) {
+    if (record.type != "settlement") continue;
+    const auto source = json::parse(record.payload)["settlement_source"];
+    EXPECT_EQ(source["kind"], "provider_closing_print");
+    EXPECT_EQ(source["provider"], "scripted paper");
+    EXPECT_EQ(source["quote_time"], md::format_timestamp(market.contract.expiry_time()));
+    found = true;
+  }
+  EXPECT_TRUE(found);
+  PaperProvider replacement_provider;
+  server::Engine replacement(replacement_provider, {{"SPX"}}, options); replacement.start();
+  ASSERT_TRUE(wait_for([&] { return replacement.trading_view() != nullptr; }));
+  EXPECT_EQ(server::handle_api({"GET", "/api/portfolio"}, replacement).body,
+            server::handle_api({"GET", "/api/portfolio"}, original).body);
+  replacement.stop();
+  std::filesystem::remove(path);
+}
+}  // namespace

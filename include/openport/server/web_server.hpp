@@ -5,11 +5,13 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <type_traits>
 
 #include "openport/server/api.hpp"
 
 namespace openport::server {
 
+using AsyncApiHandler = std::function<void(const ApiRequest&, ApiCompletion)>;
 using ApiHandler = std::function<ApiResponse(const ApiRequest&)>;
 
 /// HTTP and WebSocket server for the web terminal.
@@ -22,7 +24,15 @@ using ApiHandler = std::function<ApiResponse(const ApiRequest&)>;
 class WebServer {
  public:
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
-            ApiHandler api, std::vector<std::string> allowed_origins = {});
+            AsyncApiHandler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {});
+  template <class Handler> requires std::is_invocable_r_v<ApiResponse, Handler, const ApiRequest&>
+  WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
+            Handler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {})
+      : WebServer(std::move(address), port, std::move(web_root),
+                  AsyncApiHandler([api = std::move(api)](const ApiRequest& request, ApiCompletion complete) {
+                    complete(api(request));
+                  }), std::move(allowed_origins), std::move(write_token)) {}
+
   ~WebServer();
   WebServer(const WebServer&) = delete;
   WebServer& operator=(const WebServer&) = delete;

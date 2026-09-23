@@ -7,7 +7,8 @@
 namespace openport::server {
 
 Engine::Engine(md::Provider& provider, md::Subscription subscription, Options options)
-    : provider_(provider), subscription_(std::move(subscription)), options_(options) {
+    : provider_(provider), subscription_(std::move(subscription)), options_(options),
+      queue_(md::kEventQueueCapacity, options.paper_enabled) {
   status_.provider = std::string(provider.name());
   status_.capabilities = provider.capabilities();
   for (const auto& symbol : subscription_.underlyings) status_.underlyings.try_emplace(symbol);
@@ -53,6 +54,9 @@ void Engine::stop() {
   if (recorder_) recorder_->close();
   stopping_ = true;
   if (thread_.joinable()) thread_.join();
+  const std::lock_guard lock(mutex_);
+  if (status_.trading.enabled && status_.trading.reason.empty()) status_.trading.reason = "ENGINE_STOPPING";
+  status_.trading.write = "disabled";
 }
 
 md::RecordingStats Engine::recording_stats() const {
@@ -187,6 +191,7 @@ void Engine::update_health(const md::Event& event, md::Timestamp received) {
 }
 
 void Engine::run() {
+  start_trading();
   std::vector<md::Event> batch;
   auto last_analytics = std::chrono::steady_clock::now();
   last_rate_time_ = last_analytics;
@@ -196,9 +201,15 @@ void Engine::run() {
   while (!stopping_ || queue_.status().depth != 0) {
     batch.clear();
     queue_.drain(batch, std::chrono::milliseconds(50));
+    std::deque<PendingCommand> commands;
+    {
+      const std::lock_guard lock(command_mutex_);
+      commands.swap(commands_);
+    }
     const auto received = options_.clock();
     for (const md::Event& event : batch) {
       book_.apply(event);
+      if (options_.paper_enabled) observe_trading(event);
       ++events_;
       update_health(event, received);
     }
@@ -231,12 +242,30 @@ void Engine::run() {
       const auto* status = std::get_if<md::ProviderStatus>(&event);
       return status && status->state == md::FeedState::Stopped;
     });
-    if (ended || stopping_ || now - last_analytics >= options_.analytics_interval) {
+    if (ended || stopping_ || !commands.empty() ||
+        (trading_ && !batch.empty() && (!trading_->snapshot()->positions.empty() ||
+                                      !trading_->snapshot()->open_orders.empty())) ||
+        now - last_analytics >= options_.analytics_interval) {
       last_analytics = now;
       refresh_analytics();
     }
+    try { update_trading(batch, commands); }
+    catch (const trading::TradingError& error) {
+      fail_trading(std::string(trading::to_string(error.code())) + ": " + error.what());
+    } catch (const std::exception& error) { fail_trading(std::string("TRADING_UNAVAILABLE: ") + error.what()); }
+    for (auto& command : commands) apply_command(command);
   }
+  std::deque<PendingCommand> remaining;
+  {
+    const std::lock_guard lock(command_mutex_);
+    accepting_commands_ = false;
+    remaining.swap(commands_);
+  }
+  for (auto& command : remaining) apply_command(command);
   refresh_analytics();
+  // Release the exclusive journal writer on its owner thread. Published values
+  // remain readable, and a replacement Engine can recover as soon as stop returns.
+  trading_.reset();
 }
 
 void Engine::refresh_analytics() {

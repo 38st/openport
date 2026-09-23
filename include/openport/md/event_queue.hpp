@@ -29,7 +29,8 @@ struct QueueStatus {
 /// Storage and dense-id indexes grow in blocks, without a node allocation per event.
 class EventQueue final : public EventSink {
  public:
-  explicit EventQueue(std::size_t capacity = kEventQueueCapacity) : capacity_(capacity) {}
+  explicit EventQueue(std::size_t capacity = kEventQueueCapacity, bool preserve_spot_prints = false)
+      : capacity_(capacity), preserve_spot_prints_(preserve_spot_prints) {}
 
   void publish(Event event) override {
     {
@@ -121,6 +122,8 @@ class EventQueue final : public EventSink {
       id = interest->id;
       kind = 2;
     } else if (const auto* spot = std::get_if<UnderlyingQuote>(&event)) {
+      // Settlement consumers need the first closing print, not the last in a drain.
+      if (preserve_spot_prints_) return nullptr;
       // Only a handful of subscribed underlyings; retain their storage across drains.
       for (auto& entry : spots_) {
         if (entry.symbol != spot->symbol) continue;
@@ -145,6 +148,7 @@ class EventQueue final : public EventSink {
   }
 
   const std::size_t capacity_;
+  const bool preserve_spot_prints_;
   mutable std::mutex mutex_;
   std::condition_variable ready_;
   std::vector<std::optional<Event>> events_;

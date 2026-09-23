@@ -62,6 +62,11 @@ OptionMetrics quote_metrics(const OptionState& s, md::InstrumentId id, double fo
                             double discount, double years, double premium = kNaN) {
   OptionMetrics m;
   m.id = id;
+  m.contract = s.contract;
+  if (s.has_quote) {
+    m.bid_size = s.bid_size;
+    m.ask_size = s.ask_size;
+  }
   m.eep = premium;
   const double adjustment = std::isfinite(premium) ? premium : 0;
   if (s.has_quote) {
