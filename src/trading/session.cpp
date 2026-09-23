@@ -129,11 +129,12 @@ Quantity shares_held(const State& s, const std::string& symbol) {
   return it == s.ledger.stocks().end() ? 0 : it->second.shares;
 }
 /// The underlying's price if fresh: within max_quote_age of the market time
-/// while its options trade, or of their last session's end while they do not.
+/// while the stock market is open, or of its last close while it is not (the
+/// 16:00 close stays current while the options trade on to 16:15, and overnight).
 std::optional<Money> stock_price(const State& s, const std::string& symbol) {
   const auto it = s.stock_marks.find(symbol);
   if (it == s.stock_marks.end() || it->second.time > s.time) return std::nullopt;
-  const auto session = md::trading_session(symbol, s.time);
+  const auto session = md::stock_session(s.time);
   const auto observed = session.open || session.market_time == md::kInvalidTimestamp ? s.time : std::min(s.time, session.market_time);
   if (observed - it->second.time > s.config.limits.max_quote_age) return std::nullopt;
   return it->second.price;
@@ -1572,6 +1573,37 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     return CommandResult{};
   });
 }
+namespace {
+/// Overnight, short American equity and ETF options that the market values below
+/// their exercise value are assigned: a holder then does better exercising than
+/// selling, as with a deep put or a call before its dividend. Each is assigned in
+/// full, bought back at intrinsic value, and delivers shares at the underlying's
+/// price, together the strike. Options that expire today settle instead.
+void assign_early(State& s, Events& events) {
+  std::vector<std::string> shorts;
+  for (const auto& [symbol, position] : s.ledger.positions()) {
+    const auto& c = s.contracts.at(symbol);
+    if (position.quantity < 0 && physical(c) && s.time < c.expiry_time()) shorts.push_back(symbol);
+  }
+  for (const auto& symbol : shorts) {
+    const auto contract = s.contracts.at(symbol);
+    const auto mark = s.marks.find(symbol);
+    const auto price = stock_price(s, contract.underlying);
+    if (mark == s.marks.end() || !price) continue;
+    const Money strike = Money::from_double(contract.strike);
+    const Money intrinsic = std::max(Money{}, contract.type == pricing::OptionType::Call ? *price - strike : strike - *price);
+    if (intrinsic < Money::from_micros(10'000) || mark->second.price >= intrinsic) continue;
+    const auto contracts = -held(s, symbol);
+    const auto shares = delivered(contract, -contracts);
+    fill_position(s, symbol, contracts, intrinsic, Money{});
+    s.closures.push_back({symbol, -contracts, intrinsic, s.time, ClosureKind::Assignment, s.fills.size()});
+    trade_shares(s, contract.underlying, shares, *price, StockSource::Assignment, symbol);
+    sync_exits(s, symbol, events);
+    event(events, "assignment", Json{{"symbol", symbol}, {"contracts", contracts}, {"intrinsic", intrinsic}, {"mark", mark->second.price},
+                                     {"underlying", contract.underlying}, {"shares", shares}, {"price", *price}});
+  }
+}
+}  // namespace
 CommandResult TradingSession::roll_day(Timestamp time) {
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
     const auto day = md::trading_date(time);
@@ -1613,6 +1645,8 @@ CommandResult TradingSession::roll_day(Timestamp time) {
     for (const auto& [symbol, position] : s.ledger.positions()) start_stretch(s, symbol);
     for (const auto& [symbol, stock] : s.ledger.stocks()) start_stock_stretch(s, symbol);
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
+    // Assignments arrive overnight, so the new day takes them.
+    assign_early(s, events);
     return CommandResult{};
   });
 }

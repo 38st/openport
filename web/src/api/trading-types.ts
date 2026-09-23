@@ -180,7 +180,7 @@ export interface Trade {
   return: Num
   mark: Money | null
   unrealised: Money | null
-  closure: "settlement" | "reset" | "exercise" | null
+  closure: "settlement" | "reset" | "exercise" | "assignment" | null
   fills: string[]
   /** The trader's note ("" for none) and tags; absent from older servers. */
   note?: string

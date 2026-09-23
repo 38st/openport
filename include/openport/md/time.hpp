@@ -101,6 +101,10 @@ struct TradingSession {
   Timestamp end = kInvalidTimestamp;
 };
 [[nodiscard]] TradingSession trading_session(std::string_view root, Timestamp ts);
+/// The stock market's regular session, 09:30-16:00 ET (13:00 on an early-close
+/// day): stocks and ETFs print their close at 16:00 even where their options
+/// trade on until 16:15.
+[[nodiscard]] TradingSession stock_session(Timestamp ts);
 
 /// The trading date a moment belongs to: a business day's own New York date
 /// until 17:00 ET, when its last session (curb) ends; after that, and on

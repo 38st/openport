@@ -107,6 +107,8 @@ describe("simulator pages", () => {
     expect(texts[4]).toContain("last trade, working orders on it are cancelled")
     expect(texts[4]).toContain("4:15 pm")
     expect(texts[7]).toContain("$5,000.00")
+    expect(texts[8]).toContain("is assigned overnight in full")
+    expect(texts[8]).toContain("dividends are not paid")
     const html = render(<RulesView />)
     for (const text of ["Rules", "Profit target", "Trailing drawdown", "Evaluation plans", "Intraday 100K", "Every new high", "Buy only", "5 min before", "Start"])
       expect(html).toContain(text)

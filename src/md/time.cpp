@@ -255,12 +255,8 @@ MarketSession market_session(Timestamp ts) {
   return result;
 }
 
-TradingSession trading_session(std::string_view root, Timestamp ts) {
-  const auto underlying = conventions_for_root(root).underlying;
-  const bool global =
-      underlying == "SPX" || underlying == "XSP" || underlying == "VIX" || underlying == "RUT";
-  const bool curb = global;
-  const bool quarter_hour = is_late_close_underlying(underlying);
+namespace {
+TradingSession session_at(bool global, bool curb, bool quarter_hour, Timestamp ts) {
   const auto local = local_time(ts);
   const auto date = local.date;
   const auto days = local.days;
@@ -300,6 +296,16 @@ TradingSession trading_session(std::string_view root, Timestamp ts) {
   }
   return result;
 }
+}  // namespace
+
+TradingSession trading_session(std::string_view root, Timestamp ts) {
+  const auto underlying = conventions_for_root(root).underlying;
+  const bool global =
+      underlying == "SPX" || underlying == "XSP" || underlying == "VIX" || underlying == "RUT";
+  return session_at(global, global, is_late_close_underlying(underlying), ts);
+}
+
+TradingSession stock_session(Timestamp ts) { return session_at(false, false, false, ts); }
 
 Date trading_date(Timestamp ts) noexcept {
   const auto local = local_time(ts);

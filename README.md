@@ -84,8 +84,9 @@ fill. Every product trades in its regular session (09:30 to 16:15 ET for index
 options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
 (20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. American equity
 and ETF options deliver shares when exercised early or held into expiry a cent in the
-money; the shares are marked, risked and closed at the underlying's price. Early
-assignment is not simulated.
+money, and a short one that trades below its exercise value at the close is assigned
+overnight; the shares are marked, risked and closed at the underlying's price.
+Dividends are not paid.
 
 Buying power follows each order's real margin: a naked short holds the usual
 20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals

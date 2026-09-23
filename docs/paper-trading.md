@@ -90,16 +90,28 @@ strike, while the option's own trade records its real result and the shares' P&L
 their own move from there. `exercise(symbol, contracts, time)` exercises long, in-the-
 money contracts early in the same way against the underlying's fresh price, so any
 time value left is a cost; it takes the account's checks and, with the
-`buying_power` rule, must fit within it. Early assignment of short options and
-dividends are not simulated. Evaluation plans close positions five minutes before
-their last trade, so expiry delivery only reaches accounts without an expiry cutoff. Greeks and
+`buying_power` rule, must fit within it.
+
+**Early assignment** follows the market rather than a model: at each day rollover
+(`roll_day`, overnight), a short American equity or ETF option whose mark is below its
+intrinsic value at the underlying's fresh price is assigned in full, because a holder
+then does better exercising than selling. That is a deep put whose time value is gone,
+or a call before its dividend once the market prices the dividend in. The short is
+bought back at intrinsic value (`ClosureKind::Assignment`) and delivers 100 shares a
+contract at the underlying's price (`StockSource::Assignment`), together the strike;
+the new day takes the difference from the marks. Options expiring that day settle
+instead. **Dividends are not simulated**: no provider here publishes them, so shares
+held through an ex-date lose the dividend in price without the cash (or, short,
+without paying it). Evaluation plans close positions five minutes before their last
+trade, so expiry delivery only reaches accounts without an expiry cutoff. Greeks and
 scenarios use the analytics' European Black-76 values at the de-Americanised smile IV.
 
 Delivered shares (`TradingSnapshot::stocks`) are marked at the underlying's price,
 which `on_quotes` takes in `stocks` (the engine sends it for every underlying whose
-equity options or shares the account holds), with the same freshness rule as marks:
-the market time while the underlying's options trade, or their last session's end
-while they do not. They count in equity, daily loss and the rules, at their dollar
+equity options or shares the account holds). The price is fresh within
+`max_quote_age` of the market time while the stock market is open, or of its last
+close (16:00 ET, 13:00 early; `md::stock_session`) while it is not, so the close
+stays current while the options trade on to 16:15 and overnight. They count in equity, daily loss and the rules, at their dollar
 delta in risk limits and scenarios, and in the P&L by Greek (all delta). Short shares
 hold 150% of their value in buying power. `trade_stock(symbol, shares, time)` only
 reduces them, at the underlying's fresh price in the regular session and without a
@@ -987,5 +999,5 @@ assignment and delivered shares. The CLI tests compact journals from earlier bui
 Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
 JSON errors, write protection, restart recovery, AM/PM settlement, named accounts and
 replays. Socket tests cover asynchronous POST/DELETE responses and shutdown of pending
-commands. External idempotency, early assignment, dividends, trade-through matching
-and portfolio margin remain outside v1.
+commands. External idempotency, dividends, trade-through matching and portfolio margin
+remain outside v1.

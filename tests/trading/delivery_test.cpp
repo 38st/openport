@@ -310,6 +310,83 @@ TEST(TradingDelivery, ShareRoundTripsReverseAndCloseAtAResetsMark) {
   EXPECT_EQ(reset[0].gross, m("200"));
 }
 
+TEST(TradingDelivery, ShortsTheMarketValuesBelowTheirExerciseAreAssignedOvernight) {
+  const auto deep = *md::parse_osi("SPY261022P00600000");  // 90 in the money at 510
+  const auto near = *md::parse_osi("SPY261022P00515000");  // 5 in the money, with time value left
+  const auto call = *md::parse_osi("SPY261022C00450000");  // 60 in the money
+  const auto bought = *md::parse_osi("SPY261022P00590000");  // longs are never assigned
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  for (const auto& c : {deep, near, call, bought}) f.define(s, c);
+  f.quote(s, deep, "89.80", "90.20");
+  f.quote(s, near, "7.00", "7.20");
+  f.quote(s, call, "60.00", "60.40");
+  f.quote(s, bought, "79.80", "80.20");
+  ASSERT_TRUE(s.submit(f.market("deep", deep, 2, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("near", near, 1, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("call", call, 1, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("bought", bought, 1), f.time).decision.ok());
+  // Into the close the deep put and the call trade below their exercise value, and so does the long put.
+  f.time = md::new_york_to_utc({2026, 9, 22}, 16, 14, 30);
+  f.quote(s, deep, "89.60", "89.90");
+  f.quote(s, near, "7.00", "7.20");
+  f.quote(s, call, "59.70", "59.90");
+  f.quote(s, bought, "79.60", "79.90");
+  EXPECT_EQ(s.snapshot()->positions.size(), 4U);
+  const auto night = md::new_york_to_utc({2026, 9, 22}, 17, 30);
+  s.on_quotes({}, {}, night);
+  ASSERT_TRUE(s.roll_day(night).decision.ok());
+  const auto snap = s.snapshot();
+  ASSERT_EQ(snap->positions.size(), 2U);
+  for (const auto& p : snap->positions) {
+    const auto symbol = p.position.contract.osi_symbol();
+    EXPECT_TRUE(symbol == near.osi_symbol() || symbol == bought.osi_symbol()) << symbol;
+  }
+  // The puts bought 200 shares at 510 and the call sold 100: each pair cost its strike.
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
+  // In symbol order: the call, then the put.
+  ASSERT_EQ(snap->closures.size(), 2U);
+  EXPECT_EQ(snap->closures[0].kind, ClosureKind::Assignment);
+  EXPECT_EQ(snap->closures[0].price, m("60"));
+  EXPECT_EQ(snap->closures[1].kind, ClosureKind::Assignment);
+  EXPECT_EQ(snap->closures[1].quantity, -2);
+  EXPECT_EQ(snap->closures[1].price, m("90"));
+  ASSERT_EQ(snap->stock_fills.size(), 2U);
+  EXPECT_EQ(snap->stock_fills[0].shares, -100);
+  EXPECT_EQ(snap->stock_fills[1].source, StockSource::Assignment);
+  EXPECT_EQ(snap->stock_fills[1].shares, 200);
+  EXPECT_EQ(snap->stock_fills[1].price, m("510"));
+  EXPECT_EQ(snap->stock_fills[1].option, deep.osi_symbol());
+  // The new day takes the buy-backs above their marks: 0.25 on 200 and 0.20 on 100.
+  EXPECT_NEAR(day_pnl(s), -70, 1e-9);
+  EXPECT_NEAR(snap->attribution.total(), day_pnl(s), 1e-6);
+  const auto trades = lifecycles(snap->recent_fills, snap->closures, s.contracts());
+  std::size_t assigned = 0;
+  for (const auto& t : trades) assigned += t.closure == ClosureKind::Assignment;
+  EXPECT_EQ(assigned, 2U);
+}
+
+TEST(TradingDelivery, TheStocksCloseMarksSharesWhileTheOptionsTradeOnAndOvernight) {
+  // Cboe prints SPY's close at 16:00 while its options quote until 16:15.
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  Spy f;
+  f.spot = 520;
+  TradingSession s(roomy(), f.time);
+  f.define(s, call);
+  f.quote(s, call, "21.00", "21.20");
+  ASSERT_TRUE(s.submit(f.market("calls", call, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  const auto close = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  s.on_quotes({}, {}, close, {{"SPY", close, m("521")}});
+  s.on_quotes({}, {}, md::new_york_to_utc({2026, 9, 22}, 16, 10));
+  EXPECT_TRUE(stock(s, "SPY")->fresh);
+  EXPECT_TRUE(s.snapshot()->valuation_complete);
+  const auto night = md::new_york_to_utc({2026, 9, 22}, 18, 0);
+  s.on_quotes({}, {}, night);
+  EXPECT_TRUE(stock(s, "SPY")->fresh);
+  ASSERT_TRUE(s.roll_day(night).decision.ok());
+}
+
 TEST(TradingDelivery, SharesTradeInTheRegularSessionAndKeepTheirClose) {
   const auto call = *md::parse_osi("SPY261022C00500000");
   Spy f;

@@ -293,7 +293,8 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"return", open || cost == Money{} ? json(nullptr) : number(net.dollars() / cost.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
         {"closure", !t.closure ? json(nullptr) : json(*t.closure == ClosureKind::Settlement ? "settlement"
-                                                        : *t.closure == ClosureKind::Exercise ? "exercise" : "reset")},
+                                                        : *t.closure == ClosureKind::Exercise ? "exercise"
+                                                        : *t.closure == ClosureKind::Assignment ? "assignment" : "reset")},
         {"fills", fills},
         {"note", a == s.annotations.end() ? std::string{} : a->second.note},
         {"tags", a == s.annotations.end() ? json::array() : json(a->second.tags)}});
@@ -316,6 +317,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         const bool call = option && option->type == pricing::OptionType::Call;
         return (call ? fill.shares < 0 : fill.shares > 0) ? "assignment" : "expiry_exercise";
       }
+      case StockSource::Assignment: return "assignment";
       case StockSource::Trade: return "trade";
       case StockSource::Rule: return "rule";
       case StockSource::Reset: return "reset";

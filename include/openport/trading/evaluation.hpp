@@ -73,7 +73,8 @@ struct AttemptSummary {
 };
 
 /// Exercise: contracts exercised early into shares, at intrinsic value.
-enum class ClosureKind { Settlement, Reset, Exercise };
+/// Assignment: a short American equity or ETF option assigned early, overnight.
+enum class ClosureKind { Settlement, Reset, Exercise, Assignment };
 
 /// A position that left the ledger without a fill, so trade history can close it.
 struct Closure {
@@ -87,8 +88,9 @@ struct Closure {
 
 /// How shares changed hands: delivered by an option at settlement, delivered by
 /// an early exercise, traded to reduce them, closed by the account when an
-/// evaluation is decided, or dropped at their mark by an account reset.
-enum class StockSource { Delivery, Exercise, Trade, Rule, Reset };
+/// evaluation is decided, dropped at their mark by an account reset, or
+/// delivered by a short option's early assignment.
+enum class StockSource { Delivery, Exercise, Trade, Rule, Reset, Assignment };
 
 /// One change in the shares an account holds, so trade history can follow them.
 struct StockFill {

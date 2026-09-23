@@ -210,6 +210,10 @@ TEST(Time, ProductSessionsHaveDistinctRegularCurbAndGlobalBoundaries) {
     EXPECT_EQ(session(root, 21, 0).name, "closed");
     EXPECT_EQ(session(root, 21, 0).market_time, new_york_to_utc(date, 16, 15));
   }
+  // The stock market closes at 16:00 whatever its options do.
+  EXPECT_EQ(stock_session(new_york_to_utc(date, 16, 5)).market_time, new_york_to_utc(date, 16, 0));
+  EXPECT_TRUE(stock_session(new_york_to_utc(date, 15, 59)).open);
+  EXPECT_EQ(stock_session(new_york_to_utc({2026, 11, 27}, 14, 0)).market_time, new_york_to_utc({2026, 11, 27}, 13, 0));
   EXPECT_EQ(session("AAPL", 15, 59).name, "regular");
   EXPECT_EQ(session("AAPL", 16, 0).name, "closed");
   EXPECT_EQ(session("AAPL", 21, 0).market_time, new_york_to_utc(date, 16, 0));
