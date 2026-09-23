@@ -100,6 +100,18 @@ TEST(TradingContracts, EligibilityAndTickTable) {
     EXPECT_EQ(tick_size(root, m("3")), m("0.05"));
   }
   for (const auto* root : {"XND", "DJX", "VIX", "VIXW"}) EXPECT_EQ(tick_size(root, m("3")), m("0.01"));
+  // Equity and ETF classes: SPY, QQQ and IWM in pennies, the rest on penny-pilot tiers; OEX like SPX.
+  for (const auto* root : {"SPY", "QQQ", "IWM"}) EXPECT_EQ(tick_size(root, m("25")), m("0.01"));
+  EXPECT_EQ(tick_size("AAPL", m("2.99")), m("0.01"));
+  EXPECT_EQ(tick_size("AAPL", m("3")), m("0.05"));
+  EXPECT_EQ(tick_size("OEX", m("3")), m("0.10"));
+  // American equity, ETF and OEX contracts are eligible; style must match the root.
+  for (const auto* osi : {"SPY261022C00500000", "AAPL  261022P00200000", "OEX   261022C02800000"})
+    EXPECT_TRUE(eligible(*md::parse_osi(osi)).ok()) << osi;
+  auto european_spy = *md::parse_osi("SPY261022C00500000");
+  european_spy.style = pricing::ExerciseStyle::European;
+  EXPECT_EQ(eligible(european_spy).code, Reason::ROOT_UNSUPPORTED);
+  EXPECT_EQ(eligible(*md::parse_osi("SPY1  261022C00500000")).code, Reason::NONSTANDARD_UNSUPPORTED);
   contract = test::ScriptedMarket{}.contract;
   contract.multiplier = 50;
   EXPECT_EQ(eligible(contract).code, Reason::INVALID_CONTRACT);

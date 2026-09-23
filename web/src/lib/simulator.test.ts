@@ -3,7 +3,7 @@ import { quote, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
 import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, tradeBuckets } from "./journal"
 import { buyingPowerEffect, marketability, nakedRequirement, split, strategyName } from "./ticket"
-import { ratio, signedMoney, subtractMoney } from "./trading"
+import { ratio, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
 
 describe("journal analytics", () => {
   it("summarises closed trades only, with exact profit factor and hold time", () => {
@@ -86,6 +86,17 @@ describe("ticket logic", () => {
     expect(nakedRequirement("put", 5000, 5200)).toBeCloseTo(84_000)
     expect(nakedRequirement("call", 5200, 5000)).toBeCloseTo(80_000)
     expect(nakedRequirement("put", 5000, null)).toBeCloseTo(100_000)
+  })
+})
+
+describe("equity ticks", () => {
+  it("steps SPY in pennies, single stocks on penny-pilot tiers and OEX like SPX", () => {
+    expect(stepLimitPrice("SPY", "12.30", 1)).toBe("12.31")
+    expect(stepLimitPrice("AAPL", "2.99", 1)).toBe("3.00")
+    expect(stepLimitPrice("AAPL", "3.00", 1)).toBe("3.05")
+    expect(stepLimitPrice("AAPL", "3.00", -1)).toBe("2.99")
+    expect(stepLimitPrice("OEX", "3.00", 1)).toBe("3.10")
+    expect(stepLimitPrice("VIX", "3.00", 1)).toBe("3.01")
   })
 })
 

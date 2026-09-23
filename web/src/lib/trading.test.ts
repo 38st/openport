@@ -54,11 +54,15 @@ describe("ticket calculations", () => {
     expect(stepLimitPrice(root, "3.00", 1)).toBe("3.05")
     expect(stepLimitPrice(root, "3.00", -1)).toBe("2.99")
   })
-  it.each(["XND", "DJX", "VIX", "VIXW", "OTHER"])("uses one cent ticks for %s", (root) => {
+  it.each(["XND", "DJX", "VIX", "VIXW", "SPY", "QQQ", "IWM"])("uses one cent ticks for %s", (root) => {
     expect(limitPriceTick(root, "3.00")).toBe("0.01")
     expect(stepLimitPrice(root, "2.99", 1)).toBe("3.00")
     expect(stepLimitPrice(root, "3.00", 1)).toBe("3.01")
     expect(stepLimitPrice(root, "3.00", -1)).toBe("2.99")
+  })
+  it.each(["AAPL", "TSLA"])("uses penny-pilot tiers for single-stock %s", (root) => {
+    expect(limitPriceTick(root, "2.99")).toBe("0.01")
+    expect(limitPriceTick(root, "3.00")).toBe("0.05")
   })
   it("estimates premium, fees and the order's own signed Greeks", () => {
     expect(ticketEstimate(quote, "buy", 3, "4.60", "0.65")).toEqual({ premium: "1380.00", fees: "1.95", delta: 150, gamma: .6, vega: 3675, theta: -255 })

@@ -28,12 +28,15 @@ md::Date local_date(Timestamp time) {
 }
 Timestamp regular_end(const md::OptionContract& c, Timestamp time) {
   const auto date = local_date(time);
-  // The calendar defines every supported index's regular session through :15.
-  const auto end = md::new_york_to_utc(date, md::regular_close_hour(date), 15);
-  if (end == md::kInvalidTimestamp || md::trading_session(c.root, end - 1).name != "regular" ||
-      md::trading_session(c.root, end).name == "regular")
-    throw TradingError(Reason::SESSION_CLOSED, "No representable regular session end");
-  return end;
+  // Index and SPY/QQQ/IWM/DIA options trade through :15 past the close; other
+  // equity options stop on the hour.
+  for (const int minute : {15, 0}) {
+    const auto end = md::new_york_to_utc(date, md::regular_close_hour(date), minute);
+    if (end != md::kInvalidTimestamp && md::trading_session(c.root, end - 1).name == "regular" &&
+        md::trading_session(c.root, end).name != "regular")
+      return end;
+  }
+  throw TradingError(Reason::SESSION_CLOSED, "No representable regular session end");
 }
 Money mid(const QuoteObservation& q) {
   // Both sides are positive. Difference-first avoids overflowing their sum.
@@ -485,7 +488,8 @@ struct TradingSession::Impl {
     auto publication = std::make_shared<TradingSnapshot>(snapshot_of(next));
     if (journal) {
       // Schema 2 adds account rules, evaluation progress, closures and system orders.
-      const Json payload{{"schema", 2}, {"tick_policy", "index-v1"}, {"events", events},
+      // Tick policy v2 extends index-v1 with equity and ETF classes.
+      const Json payload{{"schema", 2}, {"tick_policy", "v2"}, {"events", events},
                          {"state", next}, {"snapshot", *publication}, {"decision", result.decision}};
       try { journal->append(time, type, payload.dump()); }
       catch (...) {
@@ -761,7 +765,8 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
     for (const auto& r : verified.records) {
       const auto payload = Json::parse(r.payload);
       const auto& schema = payload.at("schema");
-      if ((schema != 1 && schema != 2) || payload.at("tick_policy") != "index-v1")
+      const auto& ticks = payload.at("tick_policy");
+      if ((schema != 1 && schema != 2) || (ticks != "index-v1" && ticks != "v2"))
         throw TradingError(Reason::JOURNAL_CORRUPT, "Unsupported trading journal schema/policy");
       legacy = schema == 1;
       auto state = payload.at("state").get<State>();

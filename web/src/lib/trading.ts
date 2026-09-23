@@ -59,9 +59,13 @@ export function limitPriceText(value: Money): Money {
   while (parsed.scale > 2 && parsed.units % 10n === 0n) { parsed.units /= 10n; parsed.scale-- }
   return decimalString(parsed.units * 10n ** BigInt(Math.max(0, 2 - parsed.scale)), Math.max(2, parsed.scale))
 }
+const indexRoots = ["SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW", "OEX", "XEO", "XSP", "MRUT", "XND", "DJX", "VIX", "VIXW"]
+/** Mirrors the server's tick policy v2. */
 function tickCents(root: string, below: boolean): bigint {
-  if (["SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW"].includes(root)) return below ? 5n : 10n
+  if (["SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW", "OEX"].includes(root)) return below ? 5n : 10n
   if (["XSP", "MRUT"].includes(root)) return below ? 1n : 5n
+  // Equity and ETF classes: SPY, QQQ and IWM in pennies, the rest on penny-pilot tiers.
+  if (!indexRoots.includes(root) && !["SPY", "QQQ", "IWM"].includes(root)) return below ? 1n : 5n
   return 1n
 }
 export function limitPriceTick(root: string, value: Money): Money {

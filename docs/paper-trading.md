@@ -69,10 +69,19 @@ an explicitly ephemeral simulation. Production integration should provide a sink
 
 ## Instruments and prices
 
-Only standard European cash-settled index contracts with multiplier 100 are accepted:
-SPX/SPXW, XSP, NDX/NDXP, RUT/RUTW, XND, MRUT, DJX, VIX/VIXW. The underlying must
-match the root. American exercise is rejected with `AMERICAN_UNSUPPORTED` before
-other eligibility checks. Adjusted deliverables and other roots are rejected.
+Standard contracts with multiplier 100 are accepted in two families. European
+cash-settled index options: SPX/SPXW, XSP, NDX/NDXP, RUT/RUTW, XND, MRUT, DJX,
+VIX/VIXW. American equity, ETF and OEX options on any other root, e.g. SPY, QQQ, IWM,
+AAPL. The underlying and exercise style must match the root's conventions: American
+exercise on a European index root is `AMERICAN_UNSUPPORTED`, a European contract on any
+other root is `ROOT_UNSUPPORTED`. Adjusted deliverables are rejected.
+
+American options are simulated without early exercise or assignment, dividends, or
+stock positions. A position held into expiry settles in cash at intrinsic value from
+the settlement reference, as if exercised or assigned and closed at the closing print.
+Evaluation plans close positions five minutes before expiry, so this only affects
+accounts without an expiry cutoff. Greeks and scenarios use the analytics' European
+Black-76 values at the de-Americanised smile IV.
 Strikes must be positive, representable in OSI's thousandths and eight digits;
 expiry dates must be valid in OSI's 2000–2099 range. Explicit AM/PM terms from the
 known definition determine expiry; conflicting terms cannot replace a definition.
@@ -93,6 +102,9 @@ Limit prices are positive multiples of this **v1 simulation tick policy**:
 | SPX, SPXW, NDX, NDXP, RUT, RUTW | $0.05 | $0.10 |
 | XSP, MRUT | $0.01 | $0.05 |
 | XND, DJX, VIX, VIXW | $0.01 | $0.01 |
+| SPY, QQQ, IWM | $0.01 | $0.01 |
+| OEX | $0.05 | $0.10 |
+| Other equity and ETF roots | $0.01 | $0.05 |
 
 This table implements the requested policy; it is not a full exchange order-routing
 specification. Observed fill prices need not themselves be on the limit-order tick.
@@ -130,8 +142,8 @@ position, trade-through, slippage or hidden-liquidity simulation in v1.
 
 Acceptance and execution are restricted to `md::trading_session(root, time)`'s
 **regular** session. Each DAY order retains that acceptance day's regular session
-end. The current calendar gives these index roots 16:15 ET, or 13:15 on early-close
-days. Contract expiry can be earlier and takes precedence (e.g. PM expiry 16:00).
+end. The current calendar gives index roots and SPY, QQQ, IWM and DIA 16:15 ET and
+other equity options 16:00, or 13:15 and 13:00 on early-close days. Contract expiry can be earlier and takes precedence (e.g. PM expiry 16:00).
 Boundaries process on the first command at/after them, before possible fills.
 Outside 2025–2028 the existing calendar only knows weekdays; no extra calendar is
 introduced here. Extended/global/curb execution is deferred.
@@ -379,7 +391,7 @@ an active journal.
 
 Every record has exactly `seq`, `time`, `type`, `payload`, `prev_hash`, `hash`.
 Sequence starts at 1; the genesis previous hash is 64 ASCII zeroes. New payloads use
-schema 2 and tick policy `index-v1`. Schema 2 adds `config.rules`, the evaluation,
+schema 2 and tick policy `v2` (the `index-v1` table plus equity and ETF classes). Schema 2 adds `config.rules`, the evaluation,
 attempts and closures to the state and snapshot, and `system` to orders; it also
 records `evaluation_passed`, `evaluation_failed`, `evaluation_day` and `account_reset`
 outcomes. Recovery reads schema 1 journals: their original keys stay required, the

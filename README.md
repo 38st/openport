@@ -41,16 +41,18 @@ and your data stay on your machine.
 ## Paper trading
 
 The engine simulates orders on European cash-settled index options (SPX, XSP, NDX,
-RUT and their weeklies) against displayed quotes: market and marketable orders take the
+RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single stocks)
+against displayed quotes: market and marketable orders take the
 far side up to the displayed size, resting limits fill when a later quote crosses them,
 and every fill pays a per-contract fee. Positions are marked at the mid, and risk
 limits on dollar delta, vega, order size, price bands and daily loss are checked before
 and at every fill, with a kill switch that stays tripped until reset. Orders are
 accepted during the product's regular session only (09:30 to 16:15 ET for index
 options). The account survives restarts through an append-only, hash-chained journal at
-`$HOME/.openport/paper-journal.jsonl`; use `--no-paper` to disable trading. v1 leaves
-out American options (they need stock positions and exercise/assignment), portfolio
-margin and brokerage execution.
+`$HOME/.openport/paper-journal.jsonl`; use `--no-paper` to disable trading. American
+options are simulated without early exercise, assignment or stock positions: one held
+into expiry settles in cash at intrinsic value. Portfolio margin and brokerage
+execution are out of scope.
 
 `--plan` chooses the rules for a new journal: `practice` (the default: buying power
 only), `intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new
@@ -223,7 +225,8 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Record and replay of any provider's feed
 - [x] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets, trade journal
-- [ ] Paper trading for American options: stock positions, exercise and assignment
+- [x] Paper trading for American equity and ETF options (cash settlement at intrinsic)
+- [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session
 - [ ] P&L attribution by delta, gamma, vega and theta
 

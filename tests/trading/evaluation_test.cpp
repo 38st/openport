@@ -265,6 +265,36 @@ TEST(TradingEvaluation, ResetArchivesAttemptClosesAtMarkAndRestoresCash) {
   EXPECT_EQ(trades[0].fees, m("1.30"));
 }
 
+TEST(TradingEquityOptions, AmericanContractsUseTheirSessionTicksAndSettleAtIntrinsic) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPY261022C00500000");
+  TradingSession s(rules_config("100000", {}), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("spy", 2, "4.20"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_fills.at(0).price, m("4.20"));
+  EXPECT_TRUE(s.submit(f.limit("penny", 1, "4.01"), f.time).decision.ok());  // SPY quotes in pennies
+  // SPY options trade through 16:15 like the index roots.
+  EXPECT_EQ(s.snapshot()->recent_orders.at(1).day_end, md::new_york_to_utc({2026, 9, 22}, 16, 15));
+
+  ScriptedMarket g;
+  g.contract = *md::parse_osi("AAPL  261022P00200000");
+  TradingSession single(rules_config("100000", {}), g.time);
+  g.seed(single);
+  EXPECT_EQ(single.submit(g.limit("tick", 1, "4.03"), g.time).decision.code, Reason::INVALID_TICK);
+  ASSERT_TRUE(single.submit(g.limit("aapl", 1, "4.05"), g.time).decision.ok());
+  // Single-stock options stop at 16:00.
+  EXPECT_EQ(single.snapshot()->recent_orders.at(1).day_end, md::new_york_to_utc({2026, 9, 22}, 16, 0));
+
+  // Held into expiry, the SPY calls settle at intrinsic from the reference price.
+  const auto expiry = f.contract.expiry_time();
+  ASSERT_TRUE(s.settle(f.symbol(), m("510.25"), expiry).decision.ok());
+  const auto snap = s.snapshot();
+  EXPECT_TRUE(snap->positions.empty());
+  ASSERT_EQ(snap->closures.size(), 1);
+  EXPECT_EQ(snap->closures[0].price, m("10.25"));
+  EXPECT_EQ(snap->account.realised, m("1210"));  // 2 * 100 * (10.25 - 4.20)
+}
+
 TEST(TradingHistory, LifecyclesSplitReversalsAndCloseOnSettlement) {
   const auto contract = *md::parse_osi("SPXW261022C05000000");
   const auto symbol = contract.osi_symbol();

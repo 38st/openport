@@ -358,12 +358,37 @@ TEST_F(PaperEngine, FractionalSizesNeverRoundUpAndCachedObservationsDoNotRefill)
   ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->recent_fills.size() == 2; }));
 }
 
-TEST_F(PaperEngine, AmericanEligibilityUsesTheDefinitionAndRecordsRejection) {
-  market.contract = *md::parse_osi("SPY261022C00500000");
+TEST_F(PaperEngine, EligibilityUsesTheDefinitionAndRecordsRejection) {
+  // An American contract on a European index root is not listed.
+  market.contract.style = pricing::ExerciseStyle::American;
   provider.sink->publish(md::ContractDefinition{0, market.contract});
   ASSERT_TRUE(wait_for([&] { return engine->status().contracts == 1; }));
   expect_error(write(*engine, "POST", "/api/orders", order(market)), 422, "AMERICAN_UNSUPPORTED");
   EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "rejected");
+}
+
+TEST(PaperEquity, SpyOptionsAreTradableAndFillAgainstTheirOwnBook) {
+  PaperProvider provider;
+  server::Engine engine(provider, md::Subscription{{"SPY"}}, paper_options());
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPY261022C00500000");
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", market.time, 500, 500, 500});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4.00, 4.20, 10, 10});
+  ASSERT_TRUE(wait_for([&] {
+    const auto metrics = engine.metrics("SPY");
+    return metrics && metrics->as_of == market.time && !metrics->slices.empty();
+  }));
+  EXPECT_TRUE(read(engine, "/api/status")["underlyings"][0]["has_tradable_contracts"].get<bool>());
+  const auto response = write(engine, "POST", "/api/orders", order(market, "spy", "4.20"));
+  ASSERT_EQ(response.status, 201) << response.body;
+  const auto body = json::parse(response.body);
+  EXPECT_EQ(body["order"]["status"], "filled");
+  EXPECT_EQ(body["order"]["day_end"], md::format_timestamp(md::new_york_to_utc({2026, 9, 22}, 16, 15)));
+  EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["symbol"], market.symbol());
+  engine.stop();
 }
 
 TEST_F(PaperEngine, PmUsesFirstExpiryDatePrintAndAmWaitsForImport) {

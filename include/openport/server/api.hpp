@@ -50,7 +50,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 /// the data clock, provider delay and current max_quote_age. Success has null
 /// reason/message; contract, risk and write-access checks still apply separately.
 /// has_tradable_contracts is true when unexpired slices contain a contract eligible
-/// for paper trading (European, cash settled, standard supported index options).
+/// for paper trading (standard European index or American equity/ETF options).
 /// Portfolio session notices use this flag, or held positions/open orders.
 /// The top-level market remains the regular-session calendar for compatibility.
 /// All four underlying views include spot_source ("quote", "parity", or null).
