@@ -37,8 +37,9 @@ the caller. All subsequent references use its **canonical padded OSI**, never a
 provider's dense instrument ID. Re-registering identical terms is harmless;
 conflicting terms under one OSI reject.
 
-Reducer commands are `define`, `submit`, `cancel`, `on_quotes`, `set_limits`,
-`trip_kill`, `reset_kill`, `settle`, `roll_day` and `reset_account`. Every completed command, including
+Reducer commands are `define`, `submit`, `modify`, `cancel`, `cancel_all`,
+`close_positions`, `on_quotes`, `set_limits`, `trip_kill`, `reset_kill`, `settle`,
+`roll_day`, `reset_account` and `request_payout`. Every completed command, including
 a business rejection, increments `account_version`. Business failures return a
 `Decision` with code/message and numeric actual/limit/scope where applicable.
 Invalid command batches, arithmetic overflow, invalid configuration and persistence
@@ -163,29 +164,6 @@ open. The simulation clock stays at market time. Resting orders do not fill from
 stale data and are not cancelled merely because the feed stalls; they remain
 subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
 
-### Changing, cancelling and flattening
-
-A resting order changes in place (`modify`): a DAY limit order, an armed order or a
-bracket exit. It keeps its ID, its fills and its place among equal prices. The new
-quantity counts filled contracts too and must exceed them; the limit price applies
-to limit orders (a multi-leg order's signed net); the trigger level to armed orders
-with a trigger. The changed order takes every pre-trade check a new one would, with
-its own reservation released first, and a failure leaves it exactly as it was. A
-limit that becomes marketable trades at once against the cached fresh quote, and an
-armed order whose new level is reached activates in the regular session. Bracket
-exits change only their level or take-profit price (positive, on the tier tick);
-their size follows the position. The engine applies a new order's feed gate
-(`FEED_STALLED`) before a change, because a change can trade.
-
-`cancel_all` cancels every open order, armed ones and bracket exits included, or
-only one underlying's. `close_positions` flattens the account or one underlying: it
-cancels the open orders in scope, then closes each unexpired position in scope with
-a market IOC order at the displayed quote, short positions first so buying one back
-never uncovers another leg. These are the trader's own orders (client IDs
-`openport-close-{version}-{n}`) and take the normal checks; one the rules refuse is
-recorded as rejected with its reason and the others still go. Expired positions wait
-for settlement.
-
 ## Conditional and bracket orders
 
 Any order may carry a **trigger** `{source, direction, level}`. It is accepted with the
@@ -239,6 +217,29 @@ the average fill are the net per unit. The projected fill is checked for daily l
 when any leg opens contracts, buying power, exactly like a single-leg fill. A working
 multi-leg order counts as one pending exposure (its legs summed), and it is cancelled at
 its earliest leg's expiry or its session end like any DAY order.
+
+## Changing, cancelling and flattening
+
+A resting order changes in place (`modify`): a DAY limit order, an armed order or a
+bracket exit. It keeps its ID, its fills and its place among equal prices. The new
+quantity counts filled contracts too and must exceed them; the limit price applies
+to limit orders (a multi-leg order's signed net); the trigger level to armed orders
+with a trigger. The changed order takes every pre-trade check a new one would, with
+its own reservation released first, and a failure leaves it exactly as it was. A
+limit that becomes marketable trades at once against the cached fresh quote, and an
+armed order whose new level is reached activates in the regular session. Bracket
+exits change only their level or take-profit price (positive, on the tier tick);
+their size follows the position. The engine applies a new order's feed gate
+(`FEED_STALLED`) before a change, because a change can trade.
+
+`cancel_all` cancels every open order, armed ones and bracket exits included, or
+only one underlying's. `close_positions` flattens the account or one underlying: it
+cancels the open orders in scope, then closes each unexpired position in scope with
+a market IOC order at the displayed quote, short positions first so buying one back
+never uncovers another leg. These are the trader's own orders (client IDs
+`openport-close-{version}-{n}`) and take the normal checks; one the rules refuse is
+recorded as rejected with its reason and the others still go. Expired positions wait
+for settlement.
 
 ## Accounting, marks and equity
 
@@ -637,7 +638,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 ## Engine integration and HTTP API
 
 Paper trading is enabled by default in `openportd`; `--no-paper` disables it and
-reports `PAPER_DISABLED` in status. The engine thread alone owns the sessions.
+reports `PAPER_DISABLED` in status.
 
 ### Accounts
 
@@ -662,9 +663,9 @@ one account and account creation returns 503.
 
 ### Commands and views
 
-The engine thread alone owns each session. A A
-bounded FIFO inbox (256 pending commands) sequences writes, applies the drained
-market batch first, then applies commands in ingress order. HTTP threads enqueue
+The engine thread alone owns every session. A bounded FIFO inbox (256 pending
+commands) sequences writes, applies the drained market batch first, then applies
+commands in ingress order. HTTP threads enqueue
 and return; completions are posted onto the requesting Beast session executor.
 A full inbox or stopping engine returns 503 `TRADING_UNAVAILABLE`.
 
@@ -721,10 +722,8 @@ focus at the top of the ticket.
 | Endpoint | Request / response |
 | --- | --- |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks |
-| `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working/partially filled |
+| `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), takes no trigger or bracket, counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders |
-| `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
-| `POST /api/accounts` | `name` and a preset `plan`, or `initial_cash` and `rules`; 201 returns the new account's `id`, `name`, version, plan and equity (see [accounts](#accounts)) |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
@@ -739,6 +738,13 @@ focus at the top of the ticket.
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before expiry |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |
 | `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
+| `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
+| `POST /api/accounts` | `name` and a preset `plan`, or `initial_cash` and `rules`; 201 returns the new account's `id`, `name`, version, plan and equity (see [accounts](#accounts)) |
+
+Every route in this table except `/api/plans` and `/api/accounts` takes `account=ID`
+in its query for an account other than the main one (see [accounts](#accounts)).
+`/api/replay` and the routes under it serve a replay of a recording; see
+[replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
 buying_power, expiry_cutoff_seconds}` with null money for a disabled target or
@@ -790,11 +796,12 @@ and configure its public Origin with `--allowed-origin` when it rewrites Host.
 ### Durable startup and settlement sources
 
 `--paper-journal PATH` defaults to `$HOME/.openport/paper-journal.jsonl`; containing
-directories are created. `--paper-cash` defaults to `100000` and `--paper-fee` to
+directories are created, and named accounts keep their journals in `accounts/` beside
+it. `--paper-cash` defaults to `100000` and `--paper-fee` to
 `0.65`. These seed new journals; recovery restores the recorded configuration.
-Existing files are verified, exclusively locked and resumed. Corrupt/torn/locked
-or unwritable journals disable trading writes with 503 `TRADING_UNAVAILABLE` and
-a status reason. They are never overwritten or silently replaced by an ephemeral
+Existing files are verified, exclusively locked and resumed. A corrupt, torn, locked
+or unwritable journal disables its account's writes with 503 `TRADING_UNAVAILABLE`
+and a status reason; other accounts carry on. They are never overwritten or silently replaced by an ephemeral
 account. A runtime journal failure preserves the last committed account and
 requires operator recovery. The Docker image journals in `/var/lib/openport`,
 which is a declared volume; mount a persistent volume there.
@@ -820,11 +827,13 @@ delayed feeds, rather than HTTP receipt time.
 market times, observations, quotes, valuations and requests for reuse by engine/API
 tests. `tests/trading/` covers checked decimal arithmetic; long/short accounting and
 basis residues; all execution/budget/priority/clock rules; open-order risk ranges;
-loss/kill controls; scenarios; settlement; deterministic journal round trips,
-tampering, torn suffixes, exclusive writers and injected write failures.
+loss/kill controls; scenarios; settlement; evaluation and funded-account rules;
+conditional and bracket orders; multi-leg orders, margin and buying power; order
+changes, cancel-all and flattening; deterministic journal round trips, tampering,
+torn suffixes, exclusive writers and injected write failures.
 
 Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
-JSON errors, write protection, restart recovery and AM/PM settlement. Socket tests
-cover asynchronous POST/DELETE responses and shutdown of pending commands. External
-idempotency, stock positions, assignment, trade-through matching, attribution and
-margin remain outside v1.
+JSON errors, write protection, restart recovery, AM/PM settlement, named accounts and
+replays. Socket tests cover asynchronous POST/DELETE responses and shutdown of pending
+commands. External idempotency, stock positions, assignment, trade-through matching,
+attribution and portfolio margin remain outside v1.

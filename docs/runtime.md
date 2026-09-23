@@ -70,34 +70,28 @@ Record any provider before the engine's coalescing queue:
 
 Both CLIs accept `--record FILE`; the probe also accepts repeated `--option KEY=VALUE`.
 `openportd --record-dir DIR` records each run to its own file there, named by provider
-and UTC start time (`cboe-2026-09-23T184820Z.oprec`). A delayed Cboe session records at
-roughly 16 bytes per quote change after compression; budget a few hundred megabytes a
-day for SPX, SPY and QQQ during regular hours.
+and UTC start time (`cboe-2026-09-23T184820Z.oprec`), creating the directory if needed.
 
-### Replaying in the terminal
+Full chains are large. Cboe's first poll of the whole SPX and SPY chains, about 164,000
+events (definitions, quotes, open interest and Greeks), recorded as 2.7 MB, about 16
+bytes an event. While the market trades, most quotes change on every 15-second poll,
+so a full day of SPX, SPY and QQQ can run to gigabytes; `--expiries` and `--window`
+narrow what is recorded.
 
-A running `openportd` replays recordings beside its live feed, one at a time. The
-Replay page (or `/api/replay`) lists the files in `--record-dir` (default
-`~/.openport/recordings`), starts one at 1, 2, 5, 10, 30, 60, 120 or 300 times real
-time or as fast as possible, and pauses, resumes, changes speed or skips a gap such
-as an overnight close while it plays. Each replay has its own engine, an in-memory
-practice account and chart history, all on the replay's clock: the recorded receipt
-times, so sessions, the feed delay and paper-trading gates behave as they did that
-day (a recording of a stalled feed replays as stalled). "Trade this replay" points
-every page at it, `/api/X` becoming `/api/replay/X`, until "Back to live"; the live
-accounts keep trading meanwhile. Stopping the replay discards its account. Recording
-names are plain file names inside the directory; anything else is refused.
 Files are created exclusively with mode 0600: an existing pathname, including a
-symlink, fails at startup and is never overwritten. Parent directories must exist.
-The original provider name, capabilities, subscription and engine start wall time
-are saved; API keys and provider configuration options are not stored. Provider
-status text is recorded verbatim, so recordings inherit anything a provider puts
-in those messages.
+symlink, fails at startup and is never overwritten. For `--record FILE`, parent
+directories must exist. The original provider name, capabilities, subscription and
+engine start wall time are saved; API keys and provider configuration options are
+not stored. Provider status text is recorded verbatim, so recordings inherit
+anything a provider puts in those messages.
 
 Replay defaults to `speed=1` and `loop=off`. The first event starts immediately;
-subsequent receipt-time gaps use absolute monotonic deadlines, divided by 1, 10 or
-60, carrying fractional nanoseconds so rounding does not accumulate. `max` skips
-waits. A backward receipt-clock step contributes zero delay; positive subsequent
+subsequent receipt-time gaps use absolute monotonic deadlines, divided by the speed
+(1, 10 or 60 from the command line; 1, 2, 5, 10, 30, 60, 120 or 300 in the terminal),
+carrying fractional nanoseconds so rounding does not accumulate. `max` skips waits.
+A running replay can change speed, rescaling the wait in progress; pause, where the
+paused time does not count against the gap; and skip, which plays the next event at
+once. A backward receipt-clock step contributes zero delay; positive subsequent
 gaps still count. Waiting is interruptible at every speed. Filtering keeps gaps
 across omitted symbols and retains provider-wide status. Unknown symbols fail
 synchronously and list the subscription in the header; the header declares what
@@ -194,8 +188,8 @@ reproducible, while intermediate UI snapshots, book version counters, health
 receipt times and compute durations depend on consumer scheduling. Looping
 repeats into the existing book; it does not reset analytics or rewind the book's
 maximum observed market time. Use a fresh Engine and one pass for regression
-comparisons. This is not yet an execution simulator or a deterministic
-per-event paper-trading consumer. Replay stop interrupts pacing immediately;
+comparisons. Paper trading on a replay sees the same coalesced batches, so its fills
+are not a deterministic per-event simulation. Replay stop interrupts pacing immediately;
 as with other providers, it cannot interrupt a blocked OS file read or a sink
 that itself blocks.
 
@@ -221,6 +215,22 @@ Reproduce without network access:
 
 Recording uses the existing system zstd dependency, including when the Databento
 adapter is disabled; no additional Docker packages are required.
+
+### Replaying in the terminal
+
+A running `openportd` replays recordings beside its live feed, one at a time. The
+Replay page (or `/api/replay`) lists the files in `--record-dir` (default
+`~/.openport/recordings`), starts one at 1, 2, 5, 10, 30, 60, 120 or 300 times real
+time or as fast as possible, and pauses, resumes, changes speed or skips a gap such
+as an overnight close while it plays. Each replay has its own engine, an in-memory
+practice account and chart history, all on the replay's clock: the recorded receipt
+times, so sessions, the feed delay and paper-trading gates behave as they did that
+day (a recording of a stalled feed replays as stalled). "Trade this replay" points
+every page at it, `/api/X` becoming `/api/replay/X`, until "Back to live"; the live
+accounts keep trading meanwhile. Stopping the replay discards its account. Recording
+names are plain file names inside the directory; anything else is refused.
+Without a replay, `/api/replay/...` returns 404 `NO_REPLAY`; a recording that cannot
+be read fails to start with 422 `REPLAY_FAILED`.
 
 ## Price history
 
