@@ -21,21 +21,32 @@ and your data stay on your machine.
   where it publishes one. SPX (AM-settled) and SPXW (PM-settled) expiring on the same
   day stay separate. Missing quotes and open interest show as missing, never as zero,
   with coverage counts per expiry.
-- **Smile and term structure**: out-of-the-money smile per expiry and ATM term structure
-  on a square-root-of-time axis, with each expiry's forward and rate and where it came
-  from.
+- **Smile and term structure**: out-of-the-money smile per expiry with its SVI fit and
+  arbitrage checks, and the ATM term structure on a square-root-of-time axis, with each
+  expiry's forward and rate and where it came from.
 - **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
   call and put walls.
+- **Paper trading**: click a bid or ask in the chain to trade index options against live
+  quotes; the Portfolio tab shows positions, P&L, Greeks by underlying, limit use, a
+  spot × vol scenario grid and a kill switch.
+- **Record and replay**: save any provider's feed to a file and play it back later with
+  its original market times, for demos at night and reproducible bug reports.
 - **Engine**: feed health per underlying, trading session, queue and analytics timing.
-- Light and dark themes, keyboard shortcuts (1-4 switch views, arrows step expiries).
+- Light and dark themes, keyboard shortcuts (1-5 switch views, arrows step expiries).
 
 ## Paper trading
 
-The engine simulates European cash-settled index option orders against displayed
-quotes, with deterministic fills, fees, portfolio accounting, risk limits and a
-kill switch. It is enabled by default and recovers from
-`$HOME/.openport/paper-journal.jsonl`; use `--no-paper` to disable it. V1 excludes
-American exercise, stock delivery, margin and brokerage execution.
+The engine simulates orders on European cash-settled index options (SPX, XSP, NDX,
+RUT and their weeklies) against displayed quotes: market and marketable orders take the
+far side up to the displayed size, resting limits fill when a later quote crosses them,
+and every fill pays a per-contract fee. Positions are marked at the mid, and risk
+limits on dollar delta, vega, order size, price bands and daily loss are checked before
+and at every fill, with a kill switch that stays tripped until reset. Orders are
+accepted during the product's regular session only (09:30 to 16:15 ET for index
+options). The account survives restarts through an append-only, hash-chained journal at
+`$HOME/.openport/paper-journal.jsonl`; use `--no-paper` to disable trading. v1 leaves
+out American options (they need stock positions and exercise/assignment), margin and
+brokerage execution.
 
 Loopback writes are open unless a token is configured. To enable writes on a
 remote bind, set `OPENPORT_WRITE_TOKEN` or `--write-token TOKEN` and send it as a
@@ -77,6 +88,7 @@ cmake --build build -j
 | Databento | `databento` | Real-time OPRA consolidated quotes (`cbbo-1s` or `cmbp-1`), trades and open interest, streamed | `DATABENTO_API_KEY` |
 | Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
+| Replay | `replay` | A file written with `--record`, played back at 1×, 10×, 60× or full speed (`--option file=PATH --option speed=10`) | none |
 
 Providers deliver very different things: Databento sends raw exchange quotes with no
 Greeks and no underlying price, while others ship their own Greeks. OpenPort normalises
@@ -86,7 +98,8 @@ itself, so the numbers mean the same thing whichever provider you use.
 Common flags: `--symbols SPX,SPY`, `--expiries N` (nearest N expiries), `--window F`
 (strikes within ±F of spot), `--poll-seconds N`, `--rate R` (the assumed rate when no
 index curve is available), `--address`, `--port`, `--web-root`, `--allowed-origin`,
-`--paper-journal`, `--paper-cash`, `--paper-fee`, `--no-paper`, `--write-token`, and
+`--record FILE`, `--paper-journal`, `--paper-cash`, `--paper-fee`, `--no-paper`,
+`--write-token`, and
 `--option KEY=VALUE` for provider settings such as `quotes=cmbp-1` for Databento. Every
 value is range-checked; see the [runtime notes](docs/runtime.md) for details.
 
@@ -196,8 +209,11 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Web terminal
 - [x] De-Americanised implied volatility for equity options
 - [x] SVI volatility surface
-- [ ] Record and replay of any provider's feed
-- [ ] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
+- [x] Record and replay of any provider's feed
+- [x] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
+- [ ] Paper trading for American options: stock positions, exercise and assignment
+- [ ] Paper trading in Cboe's overnight session
+- [ ] P&L attribution by delta, gamma, vega and theta
 
 ## License
 
