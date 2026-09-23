@@ -387,7 +387,7 @@ requirement) must leave available buying power nonnegative, otherwise `BUYING_PO
 position, buying back a short and buying protection work even when buying power is
 negative. Selling the long leg of a spread alone needs enough buying power to carry the
 short it uncovers; buy the short back first, or close both together as one multi-leg
-order. When legging in, a short sold before its long is naked until the long is bought.
+order (the terminal's Positions page picks positions and does this with Close together). When legging in, a short sold before its long is naked until the long is bought.
 Fills recheck against the projected ledger and cancel the remainder with `RISK_CHANGED`.
 
 `reset_account(initial_cash, rules, reason, time)` starts a new attempt. It cancels

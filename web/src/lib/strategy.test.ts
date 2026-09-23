@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { quote } from "../test/trading-fixtures"
 import { legsLabel, orderLabel } from "./journal"
-import { black76, estimatedProfile, netQuote, normCdf, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, toggleLeg, type ExpiryTerms, type StrategyLeg } from "./strategy"
+import { black76, closingLegs, estimatedProfile, netQuote, normCdf, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, toggleLeg, type ExpiryTerms, type StrategyLeg } from "./strategy"
 import { comboTickCents } from "./trading"
 
 const osi = (type: "C" | "P", strike: number, date = "261022") => `SPXW  ${date}${type}${String(strike * 1000).padStart(8, "0")}`
@@ -105,5 +105,17 @@ describe("strategies", () => {
     expect(profile.breakevens[1]).toBeGreaterThan(4900)
     expect(strategyPayoff([calendar[0]!, { ...later, quote: { ...later.quote, iv: null } }], 1, 3, terms)).toBeNull()
     expect(strategyPayoff(calendar, 1, 3, new Map())).toBeNull()
+  })
+  it("reverses held positions into one closing order with ratios per unit", () => {
+    const position = (symbol: string, type: "call" | "put", strike: number, quantity: number, underlying = "SPX") =>
+      ({ symbol, underlying, expiry: "2026-10-22", settlement: "PM" as const, type, strike, quantity })
+    const spread = closingLegs([position(osi("P", 4900), "put", 4900, -2), position(osi("P", 4890), "put", 4890, 4)])
+    expect(spread).toEqual({ units: 2, legs: [
+      expect.objectContaining({ symbol: osi("P", 4900), side: "buy", ratio: 1, expiry: "2026-10-22PM" }),
+      expect.objectContaining({ symbol: osi("P", 4890), side: "sell", ratio: 2 })] })
+    expect(closingLegs([position(osi("P", 4900), "put", 4900, -1)])).toEqual({ reason: "Choose two to 4 positions." })
+    expect(closingLegs([position(osi("P", 4900), "put", 4900, -1), position("SPY   261022P00490000", "put", 490, 1, "SPY")]))
+      .toEqual({ reason: "Positions closed together must share one underlying." })
+    expect("reason" in closingLegs([position(osi("P", 4900), "put", 4900, -1), position(osi("P", 4890), "put", 4890, 11)])).toBe(true)
   })
 })

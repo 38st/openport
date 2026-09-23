@@ -229,4 +229,11 @@ describe("paper trading fixtures", () => {
     expect(sidebar).toContain('aria-current="page"')
     for (const text of ["Intraday 100K", ">active<", "$100,267.50", "+$267.50", "(+0.27%)", "$99,078.70", "Progress to profit target"]) expect(sidebar).toContain(text)
   })
+  it("picks positions to close together in one order", () => {
+    const html = render(<PositionsView />)
+    expect(html).toContain(">Pick</th>")
+    expect(html).toContain("Pick SPX Oct 16 7000C to close together")
+    expect(html).toContain("Pick positions to close them in one order")
+    expect(html).toMatch(/<button type="button" class="trade-button" disabled="">Close together<\/button>/)
+  })
 })

@@ -199,3 +199,20 @@ export function strategyPowerUse(legs: StrategyLeg[], units: number, net: number
   const after = legs.reduce((book, leg) => trade(book, leg, sign(leg.side) * leg.ratio * units, leg.quote?.mid ?? 0), held)
   return powerUse(held, after, net * 100 * units, fees, spot)
 }
+
+const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+/**
+ * Legs that close held positions together: each reversed, sizes reduced to a
+ * ratio per unit. Null with a reason when they cannot form one order.
+ */
+export function closingLegs(positions: { symbol: string; underlying: string; expiry: string; settlement: "AM" | "PM"; type: Kind; strike: number; quantity: number }[]):
+  { legs: StrategyLeg[]; units: number } | { reason: string } {
+  const held = positions.filter((p) => p.quantity !== 0)
+  if (held.length < 2 || held.length > MAX_LEGS) return { reason: `Choose two to ${MAX_LEGS} positions.` }
+  if (new Set(held.map((p) => p.underlying)).size > 1) return { reason: "Positions closed together must share one underlying." }
+  const units = held.reduce((g, p) => gcd(g, Math.abs(p.quantity)), 0)
+  const legs = held.map((p) => ({ symbol: p.symbol, underlying: p.underlying, side: (p.quantity > 0 ? "sell" : "buy") as Side,
+    ratio: Math.abs(p.quantity) / units, type: p.type, strike: p.strike, expiry: `${p.expiry}${p.settlement}`, quote: null }))
+  if (legs.some((l) => l.ratio > MAX_RATIO)) return { reason: `Sizes this uneven exceed a ${MAX_RATIO}-to-1 ratio; close them separately.` }
+  return { legs, units }
+}
