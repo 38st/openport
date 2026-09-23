@@ -63,6 +63,33 @@ describe("paper trading fixtures", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
     expect(html).not.toContain("NaN")
   })
+  it.each(["0.65", "0.00"])("uses the server fee %s and removes the manual override", (fee) => {
+    const html = render(<OrderTicket selection={{ ...selection, price: "15.8" }} quote={quote} trading={{ ...trading, fee_per_contract: fee, initial_cash: "100000.00" }} onClose={() => {}} />)
+    expect(html).toContain(`$${fee}`)
+    expect(html).not.toContain("Not provided by server")
+    expect(html).not.toContain("Fee / contract ($, estimate)")
+    expect(html).toContain('value="15.80"')
+    expect(html).toContain("Increase limit price one tick")
+    expect(html).toContain("Decrease limit price one tick")
+  })
+  it.each(["global", "curb", "closed"] as const)("shows the %s session gate in the ticket and Portfolio", (name) => {
+    const session = { name, open: name !== "closed", note: "Product session" }
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session }] }, null, "open"))
+    const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
+    expect(html).toContain("Paper orders are accepted in the regular session only; SPX is")
+    expect(html).toContain(name === "global" ? "overnight session" : name)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
+    expect(render(<PortfolioView />)).toContain("Paper orders are accepted in the regular session only; SPX is")
+  })
+  it("uses the selected underlying's regular session, even if another market is closed", () => {
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [
+      { ...status.underlyings[0]!, symbol: "SPY", session: { name: "closed", open: false, note: "Closed" } },
+      { ...status.underlyings[0]!, session: { name: "regular", open: true, note: "Regular" } },
+    ] }, null, "open"))
+    const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
+    expect(html).not.toContain("regular session only")
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
+  })
   it.each(["working", "partially_filled", "filled", "rejected", "cancelled"] as const)("renders inline order status %s and typed risk rejections", (orderStatus) => {
     const html = render(<OrderResult order={{ ...order, status: orderStatus, reason: { code: "QUOTE_STALE", message: "Quote is too old" } }} error={new ApiError(422, "Delta cap exceeded", "DELTA_LIMIT", 200, 100, "aggregate")} />)
     expect(html).toContain(orderStatus === "partially_filled" ? "Partial fill" : orderStatus)

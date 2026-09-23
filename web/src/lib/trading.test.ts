@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { quote } from "../test/trading-fixtures"
-import { formatMoney, multiplyMoney, scenarioColour, scenarioScale, sideFromCell, ticketEstimate, validMoney } from "./trading"
+import { formatMoney, limitPriceText, limitPriceTick, multiplyMoney, scenarioColour, scenarioScale, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "./trading"
 import { createTokenStore } from "./write-token"
 
 describe("decimal money", () => {
@@ -27,6 +27,39 @@ describe("decimal money", () => {
   })
 })
 describe("ticket calculations", () => {
+  it("pads cents without hiding invalid typed fractional ticks", () => {
+    expect(limitPriceText("15.8")).toBe("15.80")
+    expect(limitPriceText("15.800000")).toBe("15.80")
+    expect(limitPriceText("3")).toBe("3.00")
+    expect(limitPriceText("2.951")).toBe("2.951")
+    expect(limitPriceText("")).toBe("")
+  })
+  it.each(["SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW"])("steps %s through the $3 tier in either direction", (root) => {
+    expect(limitPriceTick(root, "2.95")).toBe("0.05")
+    expect(limitPriceTick(root, "3.00")).toBe("0.10")
+    expect(stepLimitPrice(root, "2.95", 1)).toBe("3.00")
+    expect(stepLimitPrice(root, "3.00", 1)).toBe("3.10")
+    expect(stepLimitPrice(root, "3.10", -1)).toBe("3.00")
+    expect(stepLimitPrice(root, "3.00", -1)).toBe("2.95")
+    expect(stepLimitPrice(root, "2.981", 1)).toBe("3.00")
+    expect(stepLimitPrice(root, "2.981", -1)).toBe("2.95")
+    expect(stepLimitPrice(root, "3.01", -1)).toBe("3.00")
+    expect(stepLimitPrice(root, "3.01", 1)).toBe("3.10")
+    expect(stepLimitPrice(root, "0.05", -1)).toBe("0.05")
+  })
+  it.each(["XSP", "MRUT"])("steps %s using mini index ticks", (root) => {
+    expect(limitPriceTick(root, "2.99")).toBe("0.01")
+    expect(limitPriceTick(root, "3.00")).toBe("0.05")
+    expect(stepLimitPrice(root, "2.99", 1)).toBe("3.00")
+    expect(stepLimitPrice(root, "3.00", 1)).toBe("3.05")
+    expect(stepLimitPrice(root, "3.00", -1)).toBe("2.99")
+  })
+  it.each(["XND", "DJX", "VIX", "VIXW", "OTHER"])("uses one cent ticks for %s", (root) => {
+    expect(limitPriceTick(root, "3.00")).toBe("0.01")
+    expect(stepLimitPrice(root, "2.99", 1)).toBe("3.00")
+    expect(stepLimitPrice(root, "3.00", 1)).toBe("3.01")
+    expect(stepLimitPrice(root, "3.00", -1)).toBe("2.99")
+  })
   it("estimates premium, fees and the order's own signed Greeks", () => {
     expect(ticketEstimate(quote, "buy", 3, "4.60", "0.65")).toEqual({ premium: "1380.00", fees: "1.95", delta: 150, gamma: .6, vega: 3675, theta: -255 })
     expect(ticketEstimate(quote, "sell", 3, "4.50", "0.65")).toEqual({ premium: "1350.00", fees: "1.95", delta: -150, gamma: -.6, vega: -3675, theta: 255 })

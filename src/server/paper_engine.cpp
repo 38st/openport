@@ -144,6 +144,9 @@ void Engine::publish_trading() {
   status.enabled = options_.paper_enabled;
   status.reason = trading_failure_;
   status.write = trading_failure_.empty() ? options_.write_mode : "disabled";
+  const auto& config = trading_view_ ? trading_view_->config : options_.paper;
+  status.fee_per_contract = config.fee_per_contract;
+  status.initial_cash = config.initial_cash;
   if (trading_view_) {
     status.account_version = trading_view_->snapshot->account_version;
     status.kill_latched = trading_view_->snapshot->risk.kill_latched;

@@ -14,6 +14,8 @@ struct TradingStatus {
   std::uint64_t account_version = 0;
   bool kill_latched = false;
   std::string write = "disabled";
+  trading::Money fee_per_contract;
+  trading::Money initial_cash;
 };
 
 /// The reducer snapshot and its pricing inputs are published together so HTTP

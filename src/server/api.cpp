@@ -445,7 +445,8 @@ json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
   json violations = json::array();
   for (const auto& pair : analytics::svi_calendar(fits))
     violations.push_back({{"earlier", expiry_id(m.slices[pair.earlier])},
-                          {"later", expiry_id(m.slices[pair.later])}, {"k", sig(pair.k)}});
+                          {"later", expiry_id(m.slices[pair.later])}, {"k", sig(pair.k)},
+                          {"vol_points", sig(pair.vol_points)}});
   return {{"symbol", m.symbol}, {"spot", price(m.spot)},
           {"spot_source", spot_source_json(m)}, {"as_of", md::format_timestamp(m.as_of)},
           {"version", m.version}, {"expiries", expiries}, {"calendar_violations", violations}};

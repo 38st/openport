@@ -226,7 +226,7 @@ export interface Surface {
   as_of: string | null
   version: number
   expiries: SurfaceExpiry[]
-  calendar_violations?: { earlier: string; later: string; k: number }[]
+  calendar_violations?: { earlier: string; later: string; k: number; vol_points?: number }[]
 }
 
 export interface Tick {

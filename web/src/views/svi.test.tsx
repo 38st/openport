@@ -9,7 +9,7 @@ vi.mock("../api/live", () => ({ useLive: () => ({ version: () => 1 }) }))
 const fit: SviFit = { a: -.041, b: .1331, rho: .306, m: .3586, sigma: .4153, rmse_vol_points: .002,
   points: 60, status: "ok", reason: null, fit_ms: 1, butterfly_min_g: -.02, butterfly_k: 1.1, butterfly_ok: false }
 const surface: Surface = { symbol: "SPX", spot: 5000, as_of: null, version: 1,
-  calendar_violations: [{ earlier: "2027-01-15PM", later: "2027-02-15PM", k: .1 }],
+  calendar_violations: [{ earlier: "2027-01-15PM", later: "2027-02-15PM", k: .1, vol_points: .4 }],
   expiries: [{ id: "2027-01-15PM", expiry: "2027-01-15", days: 114, forward: 5000, atm_iv: .2,
     svi: fit, points: [-.1, .1].map((k) => ({ strike: 5000 * Math.exp(k), k, iv: .2, bid_iv: .19, ask_iv: .21 })) },
   { id: "2027-02-15PM", expiry: "2027-02-15", days: 145, forward: 5000, atm_iv: .2, svi: { ...fit, butterfly_ok: true }, points: [] },
@@ -20,7 +20,8 @@ describe("SVI view", () => {
   it("shows parameters, units, explicit failures and both arbitrage badges", () => {
     const html = renderToStaticMarkup(<SviTable expiries={surface.expiries} violations={surface.calendar_violations!} />)
     expect(html).toContain("Butterfly violation")
-    expect(html.match(/Calendar violation/g)).toHaveLength(2)
+    expect(html).toContain("calendar: 0.4 vp at k=0.10 vs Feb 15")
+    expect(html).toContain("calendar: 0.4 vp at k=0.10 vs Jan 15")
     expect(html).toContain("Too few points")
     expect(html).toContain("need at least five distinct two-sided OTM IV points")
     expect(html).toContain("-0.04100")

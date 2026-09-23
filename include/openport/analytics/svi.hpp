@@ -66,9 +66,11 @@ struct SviCalendarViolation {
   std::size_t earlier;
   std::size_t later;
   double k;
+  double vol_points;  ///< Later expiry's IV increase needed to remove the violation.
 };
-/// Sorts successful fits by T, checks consecutive tenors over the union of their
-/// fitted ranges, and returns the worst violating k per pair (indices into fits).
+/// Checks consecutive successful tenors over the intersection of fitted ranges.
+/// Reports the largest later-expiry IV increase exceeding max(0.1 vp, both RMSEs).
+/// Earlier/later are indices into fits; the 2,001-point grid includes endpoints.
 [[nodiscard]] std::vector<SviCalendarViolation> svi_calendar(std::span<const SviFit> fits);
 
 }  // namespace openport::analytics

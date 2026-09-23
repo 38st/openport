@@ -9,6 +9,8 @@ export interface TradingStatus {
   account_version: string
   kill_latched: boolean
   write: WriteMode
+  fee_per_contract?: Money
+  initial_cash?: Money
 }
 export type Side = "buy" | "sell"
 export type NewOrder = {

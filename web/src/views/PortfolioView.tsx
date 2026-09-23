@@ -11,7 +11,7 @@ import { TradingError, WriteAccess, writeBlocked } from "../components/TradingCo
 import { Empty, Panel, Stat } from "../components/ui"
 import { fixed } from "../lib/format"
 import { timestampET } from "../lib/freshness"
-import { formatMoney } from "../lib/trading"
+import { formatMoney, paperSessionNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 
 function TradingTable({ label, headers, children }: { label: string; headers: string[]; children: ReactNode }) {
@@ -74,6 +74,7 @@ export function PortfolioView() {
   return <PortfolioAccount key={accountScope} trading={trading} />
 }
 function PortfolioAccount({ trading }: { trading: TradingStatus }) {
+  const { underlyings } = useLive()
   const { portfolio, orders, fills, risk } = useTradingQueries()
   const [editing, setEditing] = useState<Risk | null>(null)
   const refresh = useRefreshTrading()
@@ -83,6 +84,10 @@ function PortfolioAccount({ trading }: { trading: TradingStatus }) {
       <div><h1 className="text-sm font-medium">Paper portfolio</h1><p className="mt-1 text-xs text-muted">European cash-settled index options · account version {account?.account_version ?? trading.account_version}</p></div>
       <div className="flex flex-wrap items-center gap-2"><WriteAccess trading={trading} /><button type="button" className="trade-button" onClick={() => void refresh()}>Refresh</button></div>
     </div>
+    {underlyings.map((u) => {
+      const notice = paperSessionNotice(u.symbol, u.session)
+      return notice && <p key={u.symbol} role="status" className="text-sm text-warn">{notice}</p>
+    })}
     {!trading.enabled && <p className="rounded-md border border-warn p-3 text-sm text-warn">{trading.reason ?? "Paper trading is unavailable."}</p>}
     <TradingError error={portfolio.error} />
     {account ? <>

@@ -187,6 +187,65 @@ TEST(Svi, CalendarSortsTenorsSkipsFailuresAndReturnsWorstPairLocation) {
   EXPECT_EQ(violations[0].later, 0u);
   EXPECT_GE(violations[0].k, -.5);
   EXPECT_LE(violations[0].k, .5);
+  EXPECT_NEAR(violations[0].vol_points, 100 * (.2 - std::sqrt(.03)), 1e-12);
+}
+
+TEST(Svi, CalendarIgnoresExtrapolatedCrossingsAndDisjointRanges) {
+  SviFit early, late;
+  early.status = late.status = SviStatus::Ok;
+  early.parameters = {.03, .1, 0, 0, .05};
+  late.parameters = {.05, 0, 0, 0, .1};
+  early.years = .5; late.years = 1;
+  early.min_k = -.5; early.max_k = .1;
+  late.min_k = -.1; late.max_k = .5;
+  ASSERT_GT(svi_variance(early.parameters, -.5), svi_variance(late.parameters, -.5));
+  ASSERT_GT(svi_variance(early.parameters, .5), svi_variance(late.parameters, .5));
+  EXPECT_TRUE(svi_calendar(std::vector<SviFit>{early, late}).empty());
+  early.max_k = -.2;
+  late.min_k = .2;
+  EXPECT_TRUE(svi_calendar(std::vector<SviFit>{early, late}).empty());
+}
+
+TEST(Svi, CalendarReportsLaterExpiryVolIncreaseInsideIntersection) {
+  SviFit early, late;
+  early.status = late.status = SviStatus::Ok;
+  early.parameters = {.03, .1, .5, 0, .05};
+  late.parameters = {.04, 0, 0, 0, .1};
+  early.years = 6.0 / 365; late.years = 7.0 / 365;
+  early.min_k = -.5; early.max_k = .1;
+  late.min_k = -.1; late.max_k = .5;
+  const auto violations = svi_calendar(std::vector<SviFit>{early, late});
+  ASSERT_EQ(violations.size(), 1u);
+  EXPECT_NEAR(violations[0].k, .1, 1e-12);
+  const double expected = 100 * (std::sqrt(svi_variance(early.parameters, .1) / late.years) -
+                                  std::sqrt(.04 / late.years));
+  EXPECT_NEAR(violations[0].vol_points, expected, 1e-12);
+  const double repaired_iv = svi_iv(late.parameters, .1, late.years) + violations[0].vol_points / 100;
+  EXPECT_NEAR(repaired_iv * repaired_iv * late.years, svi_variance(early.parameters, .1), 1e-12);
+}
+
+TEST(Svi, CalendarToleranceUsesFloorAndLargerFitRmseAtLaterExpiry) {
+  SviFit early, late;
+  early.status = late.status = SviStatus::Ok;
+  early.years = 6.0 / 365; late.years = 7.0 / 365;
+  early.min_k = late.min_k = -.1;
+  early.max_k = late.max_k = .1;
+  late.parameters = {.2 * .2 * late.years, 0, 0, 0, .1};
+  for (const auto rmses : {std::pair{0.0, 0.0}, std::pair{.5, .2}, std::pair{.2, .5}}) {
+    early.rmse_vol_points = rmses.first;
+    late.rmse_vol_points = rmses.second;
+    const double tolerance = std::max({.1, rmses.first, rmses.second});
+    for (const double scale : {.99, 1.0, 1.01}) {
+      const double iv = .2 + scale * tolerance / 100;
+      early.parameters = {iv * iv * late.years, 0, 0, 0, .1};
+      const auto violations = svi_calendar(std::vector<SviFit>{early, late});
+      if (scale <= 1) EXPECT_TRUE(violations.empty());
+      else {
+        ASSERT_EQ(violations.size(), 1u);
+        EXPECT_NEAR(violations[0].vol_points, scale * tolerance, 1e-12);
+      }
+    }
+  }
 }
 
 TEST(Svi, CalendarFindsWingCrossingEvenWhenAtmVarianceIncreases) {
@@ -313,6 +372,8 @@ TEST(SviApi, PreservesFieldsAndReportsParametersNullFailuresAndCalendarPairs) {
   EXPECT_EQ(pairs[0]["earlier"], response["expiries"][0]["id"]);
   EXPECT_EQ(pairs[0]["later"], response["expiries"][1]["id"]);
   EXPECT_TRUE(pairs[0]["k"].is_number());
+  EXPECT_TRUE(pairs[0]["vol_points"].is_number());
+  EXPECT_GT(pairs[0]["vol_points"].get<double>(), .1);
 }
 
 TEST(SviApi, InvalidForwardReportsFailedReasonAndNoFittedValues) {

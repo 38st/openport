@@ -11,7 +11,7 @@ export function TradingError({ error }: { error: unknown }) {
     {error instanceof ApiError ? <>
       <strong>{error.code}</strong>: {error.message}
       {(error.actual != null || error.limit != null) && <div className="mt-1 tabular">Actual {fixed(error.actual, 2)} · Limit {fixed(error.limit, 2)}{error.scope ? ` · ${error.scope}` : ""}</div>}
-    </> : error instanceof Error ? error.message : "Request failed. Please retry."}
+    </> : error instanceof Error || error instanceof DOMException ? error.message : "Request failed. Please retry."}
   </div>
 }
 

@@ -1,4 +1,4 @@
-import type { OptionQuote } from "../api/types"
+import type { OptionQuote, TradingSession } from "../api/types"
 import type { Money, Side } from "../api/trading-types"
 
 function decimal(value: string | null | undefined) {
@@ -32,6 +32,42 @@ export function formatMoney(value: Money | null | undefined, digits = 2): string
   return `${parsed.units < 0n && rounded !== 0n ? "−" : ""}$${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${fraction ? `.${fraction}` : ""}`
 }
 export const sideFromCell = (cell: "bid" | "ask"): Side => cell === "bid" ? "sell" : "buy"
+
+/** Preserve typed off-tick precision for server validation; pad cents for display. */
+export function limitPriceText(value: Money): Money {
+  const parsed = decimal(value)
+  if (!parsed || parsed.units < 0n) return value
+  while (parsed.scale > 2 && parsed.units % 10n === 0n) { parsed.units /= 10n; parsed.scale-- }
+  return decimalString(parsed.units * 10n ** BigInt(Math.max(0, 2 - parsed.scale)), Math.max(2, parsed.scale))
+}
+function tickCents(root: string, below: boolean): bigint {
+  if (["SPX", "SPXW", "NDX", "NDXP", "RUT", "RUTW"].includes(root)) return below ? 5n : 10n
+  if (["XSP", "MRUT"].includes(root)) return below ? 1n : 5n
+  return 1n
+}
+export function limitPriceTick(root: string, value: Money): Money {
+  const parsed = decimal(value)
+  return decimalString(tickCents(root, !!parsed && parsed.units < 3n * 10n ** BigInt(parsed.scale)), 2)
+}
+/** Next valid tick in either direction, including the tier boundary and off-tick input. */
+export function stepLimitPrice(root: string, value: Money, direction: 1 | -1): Money {
+  const parsed = decimal(value)
+  if (!parsed || parsed.units < 0n) return decimalString(tickCents(root, true), 2)
+  const scale = Math.max(2, parsed.scale)
+  const units = parsed.units * 10n ** BigInt(scale - parsed.scale)
+  const threshold = 3n * 10n ** BigInt(scale)
+  const below = units < threshold || (units === threshold && direction === -1)
+  const cents = tickCents(root, below)
+  const tick = cents * 10n ** BigInt(scale - 2)
+  const steps = direction === 1 ? units / tick + 1n : (units + tick - 1n) / tick - 1n
+  return decimalString((steps > 0n ? steps : 1n) * cents, 2)
+}
+
+export function paperSessionNotice(symbol: string, session: TradingSession | null | undefined) {
+  if (!session || session.name === "regular") return null
+  const state = session.name === "closed" ? "closed" : `in the ${session.name === "global" ? "overnight" : session.name} session`
+  return `Paper orders are accepted in the regular session only; ${symbol} is ${state}.`
+}
 
 export function ticketEstimate(quote: OptionQuote | null, side: Side, quantity: number, price: Money | null, fee: Money | null) {
   const valid = Number.isSafeInteger(quantity) && quantity > 0 && Number.isSafeInteger(quantity * 100)

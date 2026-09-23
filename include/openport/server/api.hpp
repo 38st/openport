@@ -77,7 +77,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 /// Parameters describe TOTAL variance at k=ln(K/F); rmse_vol_points is in percent.
 /// Butterfly fields report a 2,001-point density check over the calibration range,
 /// not a global no-arbitrage certificate. Undefined density fails the check.
-/// calendar_violations: [{earlier: expiry id, later: expiry id, k: worst location}]
+/// calendar_violations: [{earlier: expiry id, later: expiry id, k, vol_points}]
 /// compares consecutive successful fits ordered by T on each pair's range union,
 /// with a 1e-10 total-variance tolerance. Diagnostics never repair the fits.
 /// Fitting is lazy, outside the engine, for only the requested expiry prefix;

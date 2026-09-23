@@ -11,6 +11,8 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
       queue_(md::kEventQueueCapacity, options.paper_enabled) {
   status_.provider = std::string(provider.name());
   status_.capabilities = provider.capabilities();
+  status_.trading.fee_per_contract = options_.paper.fee_per_contract;
+  status_.trading.initial_cash = options_.paper.initial_cash;
   for (const auto& symbol : subscription_.underlyings) status_.underlyings.try_emplace(symbol);
   health_ = status_.underlyings;
 }

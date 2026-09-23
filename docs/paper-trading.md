@@ -374,11 +374,27 @@ so settlement uses the first qualifying print.
 
 Each market batch and command publishes an immutable trading view. GET endpoints
 read that view without touching the reducer. `/api/status` and WebSocket ticks
-include `trading: {enabled, reason, account_version, kill_latched, write}`; versions
-are decimal strings and `write` is `open`, `token`, or `disabled`. Clients refetch
+include `trading: {enabled, reason, account_version, kill_latched, write,
+fee_per_contract, initial_cash}`. The fee and original session cash are exact money
+strings (defaults `"0.65"` and `"100000.00"`), taken from the active/recovered session
+configuration; `initial_cash` is not the current balance or daily equity baseline.
+Versions are decimal strings and `write` is `open`, `token`, or `disabled`. Clients refetch
 portfolio, orders and risk when the version changes. Chain option objects include
 canonical padded `symbol`, whole `bid_size`/`ask_size` (null when unavailable),
 `tradable` and `untradable_reason`, using the core eligibility policy.
+
+The web ticket estimates fees using `fee_per_contract`; only older servers without
+it expose a manual fee estimate. Ticket and Portfolio session notices use each
+underlying's status/tick `session`; a known non-regular session disables submission.
+Limit prices display cents, with buttons and arrow keys following the root's tier
+tick table above (including downward steps across $3.00). Typed off-tick prices
+still receive the server's `INVALID_TICK` reason.
+
+After HTTP 400/403/404/409/422, the ticket shows the rejection details and **New order**,
+which preserves form values and starts a fresh client ID. **Retry same order** keeps
+the frozen request and ID only after a network failure, timeout or 503. Other
+unexpected responses direct the user to check Portfolio. Results receive keyboard
+focus at the top of the ticket.
 
 | Endpoint | Request / response |
 | --- | --- |

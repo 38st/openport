@@ -63,9 +63,12 @@ g(k)=\left(1-\frac{kw'}{2w}\right)^2-
 on 2,001 uniformly spaced k values, including both calibration endpoints. Report
 the minimum and its k. Any negative g fails; undefined density, including zero w,
 also fails. For calendars, sort successful fits by T and compare consecutive pairs
-across all settlement families on 2,001 points over the union of their calibration
-ranges. Report the worst k for each pair with w_later−w_earlier<−1e-10. This union
-can include extrapolation beyond one member's quotes.
+across all settlement families on 2,001 points over the intersection of their
+calibration ranges; skip disjoint ranges. At each k, the later expiry's IV increase
+needed to remove a crossing is `100 * (sqrt(w_earlier / T_later) - sqrt(w_later / T_later))`
+vol points. Flag a pair only when this increase exceeds `max(0.1, RMSE_earlier,
+RMSE_later)` vol points. Report the largest increase and its k, without judging
+either fit's extrapolation beyond its quotes.
 
 These are **finite-grid diagnostics**, not a global no-arbitrage certificate:
 violations between grid points or outside the checked range can be missed, and
@@ -81,7 +84,9 @@ A failed fit has `svi: null` and null point estimates. Expiry-level `svi_status`
 `svi_reason`, `svi_points`, `svi_fit_ms` preserve failure information.
 `svi_years,svi_min_k,svi_max_k` support sampling without rounded-tenor errors.
 Parameters retain full precision. Top-level `calendar_violations` contains
-`{earlier,later,k}` using existing expiry IDs; it covers only returned expiries.
+`{earlier,later,k,vol_points}` using existing expiry IDs; it covers only returned
+expiries. `vol_points` is the full later-expiry IV increase, not the excess over
+tolerance. The table shows the size, k and counterpart expiry for both members.
 
 Fitting runs only in the surface API. A per-snapshot mutex coalesces concurrent
 requests; the engine never takes it. Cache successes and failures for each

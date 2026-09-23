@@ -377,15 +377,21 @@ std::vector<SviCalendarViolation> svi_calendar(std::span<const SviFit> fits) {
   for (std::size_t j = 1; j < order.size(); ++j) {
     const auto& earlier = fits[order[j - 1]];
     const auto& later = fits[order[j]];
-    const double lo = std::min(earlier.min_k, later.min_k);
-    const double hi = std::max(earlier.max_k, later.max_k);
-    double worst = -1e-10, location = kNaN;
+    const double lo = std::max(earlier.min_k, later.min_k);
+    const double hi = std::min(earlier.max_k, later.max_k);
+    if (!std::isfinite(lo) || !std::isfinite(hi) || lo > hi) continue;
+    double worst = std::max({0.1, earlier.rmse_vol_points, later.rmse_vol_points});
+    double location = kNaN;
     for (int i = 0; i <= kGridSteps; ++i) {
       const double k = lo + (hi - lo) * i / kGridSteps;
-      const double delta = svi_variance(later.parameters, k) - svi_variance(earlier.parameters, k);
-      if (delta < worst) { worst = delta; location = k; }
+      // Express both total variances at the later tenor, so the tolerance is
+      // an IV increase there, not a comparison of the two annualized smiles.
+      const double increase = 100 * (svi_iv(earlier.parameters, k, later.years) -
+                                     svi_iv(later.parameters, k, later.years));
+      // Do not turn roundoff at the tolerance boundary into a violation.
+      if (increase > worst + 1e-12) { worst = increase; location = k; }
     }
-    if (std::isfinite(location)) result.push_back({order[j - 1], order[j], location});
+    if (std::isfinite(location)) result.push_back({order[j - 1], order[j], location, worst});
   }
   return result;
 }

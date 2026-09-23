@@ -118,12 +118,31 @@ TEST_F(PaperEngine, RestingLimitFillsOnlyOnLaterObservationAndPublishesContractJ
   const auto status = read(*engine, "/api/status")["trading"];
   EXPECT_EQ(status["account_version"], portfolio["account_version"]);
   EXPECT_EQ(status["write"], "open");
+  EXPECT_EQ(status["fee_per_contract"], "0.65");
+  EXPECT_EQ(status["initial_cash"], "100000.00");
   EXPECT_EQ(json::parse(server::tick_message(*engine))["trading"], status);
   const auto chain = read(*engine, "/api/underlyings/SPX/chain");
   EXPECT_EQ(chain["strikes"][0]["call"]["symbol"], market.symbol());
   EXPECT_EQ(chain["strikes"][0]["call"]["bid_size"], 10);
   EXPECT_EQ(chain["strikes"][0]["call"]["tradable"], true);
   EXPECT_TRUE(chain["strikes"][0]["call"]["untradable_reason"].is_null());
+}
+
+TEST(PaperStatus, PublishesConfiguredMoneyStringsInStatusAndTick) {
+  PaperProvider provider;
+  auto options = paper_options();
+  options.paper.fee_per_contract = Money::parse("1.234567");
+  options.paper.initial_cash = Money::parse("234567.89");
+  server::Engine engine(provider, md::Subscription{{"SPX"}}, options);
+  const auto configured = read(engine, "/api/status")["trading"];
+  EXPECT_EQ(configured["fee_per_contract"], "1.234567");
+  EXPECT_EQ(configured["initial_cash"], "234567.89");
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto status = read(engine, "/api/status")["trading"];
+  EXPECT_EQ(status["fee_per_contract"], "1.234567");
+  EXPECT_EQ(status["initial_cash"], "234567.89");
+  EXPECT_EQ(json::parse(server::tick_message(engine))["trading"], status);
 }
 
 TEST_F(PaperEngine, CancelFillOrderingKillAndRevisionChecks) {
@@ -266,12 +285,19 @@ TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
     portfolio = server::handle_api({"GET", "/api/portfolio"}, engine).body;
     risk = server::handle_api({"GET", "/api/risk"}, engine).body;
   }
+  // A resumed journal owns its original cash and fee schedule, not new options.
+  options.paper.fee_per_contract = Money::parse("9.00");
+  options.paper.initial_cash = Money::parse("500.00");
   {
     PaperProvider provider;
     server::Engine engine(provider, {{"SPX"}}, options); engine.start();
     ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
     EXPECT_EQ(server::handle_api({"GET", "/api/portfolio"}, engine).body, portfolio);
     EXPECT_EQ(server::handle_api({"GET", "/api/risk"}, engine).body, risk);
+    const auto status = read(engine, "/api/status")["trading"];
+    EXPECT_EQ(status["fee_per_contract"], "0.65");
+    EXPECT_EQ(status["initial_cash"], "100000.00");
+    EXPECT_EQ(json::parse(server::tick_message(engine))["trading"], status);
     auto response = write(engine, "POST", "/api/orders", order(market, "rest", "4.20"));
     ASSERT_EQ(response.status, 201) << response.body;
     EXPECT_EQ(json::parse(response.body)["order"]["status"], "working");

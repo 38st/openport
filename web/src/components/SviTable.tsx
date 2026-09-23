@@ -25,7 +25,9 @@ export function SviTable({ expiries, violations }: { expiries: SurfaceExpiry[]; 
                   <span className="break-words" style={{ color: smileColor(i) }}>{expiryLabel(e.id, true)}</span>
                   <div className="mt-1 flex flex-wrap gap-1">
                     {fit && !fit.butterfly_ok && <span className="rounded border border-danger px-1 text-danger" title={`min g ${fixed(fit.butterfly_min_g, 5)} at k ${fixed(fit.butterfly_k, 4)}`}>Butterfly violation</span>}
-                    {pairs.length > 0 && <span className="rounded border border-danger px-1 text-danger" title={pairs.map((p) => `${p.earlier} → ${p.later} at k=${fixed(p.k, 4)}`).join("; ")}>Calendar violation</span>}
+                    {pairs.map((p) => <span key={`${p.earlier}-${p.later}`} className="rounded border border-danger px-1 text-danger" title={`Later expiry ${expiryLabel(p.later, true)} needs ${fixed(p.vol_points, 2)} vol points more IV at k=${fixed(p.k, 4)}`}>
+                      calendar: {p.vol_points == null ? "violation" : `${fixed(p.vol_points, 1)} vp`} at k={fixed(p.k, 2)} vs {expiryLabel(p.earlier === e.id ? p.later : p.earlier)}
+                    </span>)}
                     {fit?.butterfly_ok && !pairs.length && <span className="text-muted">Grid checks pass</span>}
                     {!fit && <span className="text-warn">{e.svi_status === "too_few_points" ? "Too few points" : e.svi_status === "failed" ? "Fit failed" : "Not fitted"}</span>}
                   </div>
