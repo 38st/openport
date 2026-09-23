@@ -910,6 +910,16 @@ struct TradingSession::Impl {
   std::shared_ptr<Journal> journal;
   std::shared_ptr<const TradingSnapshot> snapshot;
   bool stopped = false;
+  /// Whether moving the clock alone to `time` could change anything. Flat with
+  /// no open orders, and once the attempt has its start time, time drives no
+  /// rule: no DAY or expiry cancellation, trigger, mark, freshness flag, loss
+  /// or evaluation change. Rollover is its own command.
+  bool idle(Timestamp time) const {
+    const auto& s = state;
+    return !stopped && time >= s.time && s.ledger.positions().empty() &&
+           s.evaluation.started > 0 && s.evaluation.cycle_started > 0 &&
+           std::none_of(s.orders.begin(), s.orders.end(), [](const Order& o) { return o.open(); });
+  }
 
   CommandResult transact(Timestamp time, std::string_view type,
                          const std::function<CommandResult(State&, Events&)>& action) {
@@ -1038,6 +1048,9 @@ CommandResult TradingSession::cancel(OrderId id, Timestamp time) {
 }
 CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quotes,
     const std::vector<Valuation>& valuations, Timestamp time) {
+  // An empty batch on an idle account only moves the clock: not a transaction,
+  // so nothing is journaled. The next transaction advances the clock itself.
+  if (quotes.empty() && valuations.empty() && impl_->idle(time)) return CommandResult{{}, {}, impl_->state.version};
   return impl_->transact(time, "market", [&](State& s, Events& events) {
     std::set<std::string> seen;
     std::set<std::string> changed;

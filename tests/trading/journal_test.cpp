@@ -37,6 +37,71 @@ class FailingJournal final : public Journal {
   std::uint64_t sequence() const override { return count; }
   std::string head() const override { return std::string(64, '0'); }
 };
+TEST(TradingJournal, IdleEmptyBatchesAreNotRecordedButTimeRulesStillRun) {
+  test::ScriptedMarket f;
+  auto journal = std::make_shared<FailingJournal>();
+  TradingSession s({}, 0, journal);
+  EXPECT_EQ(journal->count, 1);  // session_start
+  // The first real market time starts the attempt, so it is recorded.
+  s.on_quotes({}, {}, f.time);
+  EXPECT_EQ(journal->count, 2);
+  EXPECT_EQ(s.snapshot()->evaluation.started, f.time);
+  // Flat with no open orders, later empty batches change nothing but the clock.
+  const auto version = s.snapshot()->account_version;
+  for (int i = 1; i <= 50; ++i) EXPECT_EQ(s.on_quotes({}, {}, f.time + i * md::kNanosPerSecond).account_version, version);
+  EXPECT_EQ(journal->count, 2);
+  EXPECT_EQ(s.snapshot()->time, f.time);
+  // Time must still move forward.
+  EXPECT_THROW(s.on_quotes({}, {}, f.time - 1), TradingError);
+  // A working order makes time matter again: empty batches are recorded, and
+  // a DAY order still ends with the session.
+  f.next();
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("rest", 1, "4.00"), f.time).decision.ok());
+  const auto working = journal->count;
+  s.on_quotes({}, {}, f.time + md::kNanosPerSecond);
+  EXPECT_EQ(journal->count, working + 1);
+  s.on_quotes({}, {}, md::new_york_to_utc({2026, 9, 22}, 16, 20));
+  EXPECT_EQ(s.snapshot()->recent_orders.back().reason.code, Reason::DAY_END);
+  // Flat again, so idle again.
+  const auto ended = journal->count;
+  s.on_quotes({}, {}, md::new_york_to_utc({2026, 9, 22}, 17, 0));
+  EXPECT_EQ(journal->count, ended);
+}
+
+TEST(TradingJournal, EmptyBatchesAreRecordedWhileAPositionIsHeld) {
+  test::ScriptedMarket f;
+  auto journal = std::make_shared<FailingJournal>();
+  TradingSession s({}, f.time, journal);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 1), f.time).decision.ok());
+  const auto held = journal->count;
+  s.on_quotes({}, {}, f.time + 2 * md::kNanosPerMinute);
+  EXPECT_EQ(journal->count, held + 1);
+  // Its mark ages, and the snapshot says so.
+  EXPECT_FALSE(s.snapshot()->valuation_complete);
+}
+
+TEST(TradingJournal, SkippedIdleBatchesRecoverToTheSameState) {
+  TemporaryJournal file;
+  test::ScriptedMarket f;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(file.path);
+    TradingSession s({}, f.time, journal);
+    f.seed(s);
+    for (int i = 1; i <= 20; ++i) s.on_quotes({}, {}, f.time + i * md::kNanosPerSecond);
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  EXPECT_EQ(FileJournal::read(file.path).records.size(), 3);  // session_start, definition, market
+  auto s = TradingSession::recover(FileJournal::read(file.path, head), FileJournal::resume(file.path));
+  EXPECT_EQ(s.snapshot_json(), expected);
+  // Commands carry on from the recorded clock.
+  ASSERT_TRUE(s.submit(f.market("after", 1), f.time + 30 * md::kNanosPerSecond).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Filled);
+}
+
 TEST(TradingJournal, ScriptedEndToEndOutcomeRecoveryProducesIdenticalSnapshot) {
   TemporaryJournal file;
   test::ScriptedMarket f;

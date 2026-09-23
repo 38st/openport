@@ -90,6 +90,9 @@ class TradingSession {
   /// reject the whole batch; duplicate/older observations are ignored. Supply
   /// at most one quote and one valuation per OSI per batch. An empty batch
   /// advances expiry, DAY cancellation, freshness and daily-loss monitoring.
+  /// On an idle account (flat, no open orders, attempt started) an empty batch
+  /// changes nothing but the clock, so it is not a transaction and nothing is
+  /// journaled; the snapshot keeps its time until the next transaction.
   CommandResult on_quotes(const std::vector<QuoteObservation>& quotes,
                           const std::vector<Valuation>& valuations, Timestamp time);
   CommandResult set_limits(Limits limits, Timestamp time);

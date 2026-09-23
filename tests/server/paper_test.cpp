@@ -111,7 +111,13 @@ class PaperFeed : public PaperEngine {
     ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
   }
   json paper_status() {
-    EXPECT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time >= market.time; }));
+    // The engine's data clock shows the batch was processed; an idle account
+    // records no transaction for it, so the account's own time may stay behind.
+    EXPECT_TRUE(wait_for([&] {
+      const auto view = engine->trading_view();
+      const auto time = view->market_times.find(market.contract.underlying);
+      return time != view->market_times.end() && time->second >= market.time;
+    }));
     const auto status = read(*engine, "/api/status")["underlyings"][0]["paper"];
     EXPECT_EQ(json::parse(server::tick_message(*engine))["underlyings"][0]["paper"], status);
     return status;
@@ -1027,6 +1033,45 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   ASSERT_EQ(custom_reset.status, 200) << custom_reset.body;
   EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["qualifying_days"], 3);
   EXPECT_EQ(json::parse(custom_reset.body)["payout"]["cap"], nullptr);
+  engine->stop();
+}
+
+TEST_F(PaperEngine, IdleQuoteBatchesAreNotRecordedButRolloverIs) {
+  const auto processed = [&] {
+    ASSERT_TRUE(wait_for([&] {
+      const auto view = engine->trading_view();
+      const auto time = view->market_times.find("SPX");
+      return time != view->market_times.end() && time->second >= market.time;
+    }));
+  };
+  const auto version = [&] { return read(*engine, "/api/status")["trading"]["account_version"].get<std::string>(); };
+  seed();
+  processed();
+  const auto idle = version();
+  for (int i = 0; i < 5; ++i) {
+    market.time += md::kNanosPerSecond;
+    quote();
+    processed();
+  }
+  EXPECT_EQ(version(), idle);
+  // A new trading day is still rolled over, once.
+  market.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  quote();
+  processed();
+  EXPECT_EQ(engine->trading_view()->snapshot->evaluation.day, (md::Date{2026, 9, 23}));
+  const auto rolled = version();
+  EXPECT_NE(rolled, idle);
+  market.time += md::kNanosPerSecond;
+  quote();
+  processed();
+  EXPECT_EQ(version(), rolled);
+  // A working order makes every batch count again.
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "rest", "4.00")).status, 201);
+  const auto working = version();
+  market.time += md::kNanosPerSecond;
+  quote();
+  processed();
+  EXPECT_NE(version(), working);
   engine->stop();
 }
 

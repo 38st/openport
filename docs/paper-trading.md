@@ -50,8 +50,12 @@ Supply at most one quote and one valuation per OSI per `on_quotes` batch. The wh
 batch is installed before any matching or risk decision. Unknown symbols, future
 or negative data times, and duplicate symbols in one batch reject the whole batch.
 An empty batch advances time, expiry, DAY cancellation, freshness and loss checks.
-A thrown invalid input does not advance time; the caller should send a valid clock
-batch when it still needs boundaries processed.
+On an idle account (no positions, no open orders, the attempt started) time drives
+none of these, so an empty batch is not a transaction: nothing is journaled, the
+account version and snapshot time stay put, and the next transaction advances the
+clock. Rollover is its own command and still happens on a new trading day. A thrown
+invalid input does not advance time; the caller should send a valid clock batch when
+it still needs boundaries processed.
 
 Each quote has a strictly increasing **per-contract observation number**, independent
 of price changes. Repeated or older IDs and backward quote times are ignored;
@@ -508,7 +512,10 @@ payload contains ordered typed outcomes (`order_accepted`, `order_rejected`,
 `settlement`, `day_rollover`, `session_start`), the resulting reducer state, and the
 published snapshot. Grouping a partial fill and IOC cancellation in one committed
 line prevents recovery from exposing half a command. The top-level type names the
-command (`submit`, `market`, etc.); outcomes are in `payload.events`.
+command (`submit`, `market`, etc.); outcomes are in `payload.events`. Empty market
+batches on an idle account are not transactions, so a flat account without working
+orders adds no records while the feed polls; with positions or open orders, every
+batch is recorded because time moves their rules and marks.
 
 Creation and resume acquire a non-blocking exclusive advisory `flock(LOCK_EX |
 LOCK_NB)` on the journal file before reading or writing its contents, held for the
