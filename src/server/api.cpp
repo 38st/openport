@@ -1,15 +1,19 @@
 #include "openport/server/api.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
 #include <string>
 #include <type_traits>
+
+#include "openport/analytics/svi.hpp"
 
 namespace openport::server {
 namespace {
@@ -358,37 +362,84 @@ json exposure_json(const UnderlyingMetrics& m, std::size_t max_expiries, double 
           {"exposure", exposure_summary(m)}};
 }
 
-json surface_json(const UnderlyingMetrics& m, std::size_t max_expiries, double window) {
+// Weak ownership ties the cache to immutable snapshots, including source identity:
+// separate engines with the same symbol/version cannot reuse each other's fits.
+// A per-snapshot lock coalesces simultaneous HTTP requests, never the engine pass.
+struct SurfaceFits {
+  std::mutex mutex;
+  std::vector<analytics::SviFit> fits;
+};
+
+std::shared_ptr<SurfaceFits> surface_cache(const std::shared_ptr<const UnderlyingMetrics>& m) {
+  using Key = std::weak_ptr<const UnderlyingMetrics>;
+  static std::mutex mutex;
+  static std::map<Key, std::shared_ptr<SurfaceFits>, std::owner_less<Key>> cache;
+  const std::lock_guard lock(mutex);
+  std::erase_if(cache, [](const auto& entry) { return entry.first.expired(); });
+  auto& entry = cache[Key(m)];
+  if (!entry) entry = std::make_shared<SurfaceFits>();
+  return entry;
+}
+
+json svi_json(const analytics::SviFit& fit) {
+  if (fit.status != analytics::SviStatus::Ok) return nullptr;
+  const auto& p = fit.parameters;
+  // Full precision: rounding parameters independently can spoil a narrow smile.
+  return {{"a", p.a}, {"b", p.b}, {"rho", p.rho}, {"m", p.m}, {"sigma", p.sigma},
+          {"rmse_vol_points", sig(fit.rmse_vol_points)}, {"points", fit.points},
+          {"status", analytics::to_string(fit.status)}, {"reason", nullptr},
+          {"fit_ms", fit.fit_ms}, {"butterfly_min_g", sig(fit.butterfly.min_g)},
+          {"butterfly_k", sig(fit.butterfly.k)}, {"butterfly_ok", fit.butterfly.ok}};
+}
+
+json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
+                  std::size_t max_expiries, double window) {
+  const auto& m = *metrics;
+  const auto count = std::min(max_expiries, m.slices.size());
+  const auto cache = surface_cache(metrics);
+  std::vector<analytics::SviFit> fits;
+  {
+    const std::lock_guard lock(cache->mutex);
+    // Only newly requested expiries are fitted; display windows never change fits.
+    while (cache->fits.size() < count)
+      cache->fits.push_back(analytics::fit_svi(m.slices[cache->fits.size()]));
+    fits.assign(cache->fits.begin(), cache->fits.begin() + static_cast<std::ptrdiff_t>(count));
+  }
   json expiries = json::array();
-  for (std::size_t i = 0; i < std::min(max_expiries, m.slices.size()); ++i) {
+  for (std::size_t i = 0; i < count; ++i) {
     const SliceMetrics& slice = m.slices[i];
+    const auto& fit = fits[i];
     json points = json::array();
     for (const auto& row : slice.strikes) {
       if (!std::isfinite(row.iv) || !in_window(row.strike, m.spot, window)) continue;
-      // Smiles are read off the out-of-the-money side. Quotes whose spread is more than
-      // half their price (0.05 bid, 0.15 offer far in the wings) imply almost any vol,
-      // so they are left out of the picture rather than drawn as spikes.
+      // Preserve the market display filter; calibration uses every usable two-sided
+      // OTM point, with wide IV spreads downweighted rather than removed.
       const auto& otm = row.strike >= slice.forward.forward ? row.call : row.put;
       if (!(otm.bid > 0.0) || !(otm.ask - otm.bid <= 0.5 * otm.mid)) continue;
-      points.push_back({{"strike", row.strike},
-                        {"k", sig(std::log(row.strike / slice.forward.forward), 6)},
-                        {"iv", sig(row.iv)},
-                        {"bid_iv", sig(otm.bid_iv)},
-                        {"ask_iv", sig(otm.ask_iv)}});
+      const double k = std::log(row.strike / slice.forward.forward);
+      points.push_back({{"strike", row.strike}, {"k", sig(k, 6)},
+                        {"iv", sig(row.iv)}, {"bid_iv", sig(otm.bid_iv)},
+                        {"ask_iv", sig(otm.ask_iv)},
+                        {"svi_iv", fit.status == analytics::SviStatus::Ok
+                            ? sig(analytics::svi_iv(fit.parameters, k, slice.years)) : json(nullptr)}});
     }
-    expiries.push_back({{"id", expiry_id(slice)},
-                        {"expiry", md::format_date(slice.expiry)},
+    expiries.push_back({{"id", expiry_id(slice)}, {"expiry", md::format_date(slice.expiry)},
                         {"days", sig(slice.years * 365.0, 4)},
                         {"forward", price(slice.forward.forward)},
-                        {"atm_iv", sig(slice.atm_iv)},
-                        {"points", points}});
+                        {"atm_iv", sig(slice.atm_iv)}, {"points", points}, {"svi", svi_json(fit)},
+                        {"svi_status", analytics::to_string(fit.status)},
+                        {"svi_reason", fit.reason.empty() ? json(nullptr) : json(fit.reason)},
+                        {"svi_points", fit.points}, {"svi_fit_ms", fit.fit_ms},
+                        {"svi_years", sig(slice.years, 15)},
+                        {"svi_min_k", sig(fit.min_k, 15)}, {"svi_max_k", sig(fit.max_k, 15)}});
   }
-  return {{"symbol", m.symbol},
-          {"spot", price(m.spot)},
-          {"spot_source", spot_source_json(m)},
-          {"as_of", md::format_timestamp(m.as_of)},
-          {"version", m.version},
-          {"expiries", expiries}};
+  json violations = json::array();
+  for (const auto& pair : analytics::svi_calendar(fits))
+    violations.push_back({{"earlier", expiry_id(m.slices[pair.earlier])},
+                          {"later", expiry_id(m.slices[pair.later])}, {"k", sig(pair.k)}});
+  return {{"symbol", m.symbol}, {"spot", price(m.spot)},
+          {"spot_source", spot_source_json(m)}, {"as_of", md::format_timestamp(m.as_of)},
+          {"version", m.version}, {"expiries", expiries}, {"calendar_violations", violations}};
 }
 
 }  // namespace
@@ -440,7 +491,7 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   if (view == "exposure")
     return ok(exposure_json(*metrics, expiries, query.contains("window") ? window : 0.08));
   if (view == "surface")
-    return ok(surface_json(*metrics, expiries, query.contains("window") ? window : 0.2));
+    return ok(surface_json(metrics, expiries, query.contains("window") ? window : 0.2));
   return error(404, "unknown view " + std::string(view));
 }
 

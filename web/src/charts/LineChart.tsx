@@ -15,6 +15,7 @@ export interface Series {
   color: string
   points: SeriesPoint[]
   band?: boolean
+  dots?: boolean
 }
 
 export interface Marker {
@@ -135,8 +136,14 @@ export function LineChart({ series, markers = [], height = 320, formatX, formatY
           {series.map((s) =>
             s.band ? <path key={`band-${s.id}`} d={band(s.points)} style={{ fill: s.color }} fillOpacity={0.12} /> : null,
           )}
-          {series.map((s) => (
-            <path key={s.id} d={path(s.points, (p) => p.y)} fill="none" style={{ stroke: s.color }} strokeWidth={1.6} strokeLinejoin="round" />
+          {series.map((s) => s.dots ? (
+            <g key={s.id} aria-label={s.label}>
+              {s.points.map((p, i) => p.y != null && Number.isFinite(p.y) && Number.isFinite(p.x) ? (
+                <circle key={i} cx={layout.x(p.x)} cy={layout.y(p.y)} r={2.2} style={{ fill: s.color }} fillOpacity={0.75} />
+              ) : null)}
+            </g>
+          ) : (
+            <path key={s.id} aria-label={s.label} d={path(s.points, (p) => p.y)} fill="none" style={{ stroke: s.color }} strokeWidth={1.6} strokeLinejoin="round" />
           ))}
           {anchor && hoverX != null && (
             <line x1={layout.x(anchor.x)} x2={layout.x(anchor.x)} y1={margin.top} y2={height - margin.bottom} className="stroke-muted" strokeOpacity={0.5} />

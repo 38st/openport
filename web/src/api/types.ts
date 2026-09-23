@@ -169,12 +169,46 @@ export interface ExposureMatrix {
   exposure: ExposureSummary
 }
 
+export interface SviFit {
+  a: number
+  b: number
+  rho: number
+  m: number
+  sigma: number
+  rmse_vol_points: number
+  points: number
+  status: "ok"
+  reason: string | null
+  fit_ms: number
+  butterfly_min_g: Num
+  butterfly_k: Num
+  butterfly_ok: boolean
+}
+
+export interface SurfaceExpiry {
+  id: string
+  expiry: string
+  days: Num
+  forward: Num
+  atm_iv: Num
+  points: SmilePoint[]
+  svi?: SviFit | null
+  svi_status?: "ok" | "too_few_points" | "failed"
+  svi_reason?: string | null
+  svi_points?: number
+  svi_fit_ms?: number
+  svi_years?: Num
+  svi_min_k?: Num
+  svi_max_k?: Num
+}
+
 export interface SmilePoint {
   strike: number
   k: Num
   iv: Num
   bid_iv: Num
   ask_iv: Num
+  svi_iv?: Num
 }
 
 export interface Surface {
@@ -183,7 +217,8 @@ export interface Surface {
   spot_source?: SpotSource
   as_of: string | null
   version: number
-  expiries: { id: string; expiry: string; days: Num; forward: Num; atm_iv: Num; points: SmilePoint[] }[]
+  expiries: SurfaceExpiry[]
+  calendar_violations?: { earlier: string; later: string; k: number }[]
 }
 
 export interface Tick {

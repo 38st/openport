@@ -3,20 +3,21 @@ import { useMemo, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { LineChart, type Series } from "../charts/LineChart"
+import { SviTable } from "../components/SviTable"
 import { Empty, Panel, Segmented } from "../components/ui"
 import { days, expiryLabel, fixed, isNum, pct, price, vol } from "../lib/format"
+import { smileSeries, type SmileMode } from "../lib/svi"
 import { matchingPayload } from "../lib/payload"
 
 // Natural tenors, placed on the square-root time axis.
 const tenorTicks = [7, 30, 91, 182, 365, 730, 1826].map(Math.sqrt)
 const tenor = (d: number) => (d < 25 ? "1w" : d < 60 ? "1m" : d < 120 ? "3m" : d < 250 ? "6m" : d < 500 ? "1y" : d < 1000 ? "2y" : "5y")
 
-const palette = Array.from({ length: 8 }, (_, i) => `var(--chart-${i + 1})`)
-
 export function SmileView({ symbol }: { symbol: string }) {
   const version = useLive().version(symbol)
   const [expiries, setExpiries] = useState(6)
   const [window, setWindow] = useState(0.1)
+  const [mode, setMode] = useState<SmileMode>("both")
   const [axis, setAxis] = useState<"strike" | "moneyness">("strike")
 
   const surface = useQuery({
@@ -32,22 +33,9 @@ export function SmileView({ symbol }: { symbol: string }) {
   const surfaceData = matchingPayload(surface.data, symbol)
   const summaryData = matchingPayload(summary.data, symbol)
 
-  const smiles = useMemo<Series[]>(() => {
-    // Skip expiries in their final hour: their smiles are all noise.
-    const slices = (surfaceData?.expiries ?? []).filter((e) => (e.days ?? 0) > 1 / 24)
-    return slices.map((e, i) => ({
-      id: e.id,
-      label: `${expiryLabel(e.id)} · ${days(e.days)}`,
-      color: palette[i % palette.length] ?? "var(--chart-1)",
-      band: i === 0,
-      points: e.points.map((p) => ({
-        x: axis === "strike" ? p.strike : (p.k ?? 0),
-        y: p.iv,
-        lo: p.bid_iv,
-        hi: p.ask_iv,
-      })),
-    }))
-  }, [surfaceData, axis])
+  const shown = useMemo(() => (surfaceData?.expiries ?? []).filter((e) => (e.days ?? 0) > 1 / 24), [surfaceData])
+  const smiles = useMemo(() => smileSeries(shown, axis, mode, { spot: surfaceData?.spot ?? null, window }),
+    [shown, axis, mode, surfaceData?.spot, window])
 
   const term = useMemo<Series[]>(() => {
     // Square-root time axis: a week and five years both stay readable.
@@ -69,6 +57,9 @@ export function SmileView({ symbol }: { symbol: string }) {
         title="Volatility smile"
         actions={
           <>
+            <Segmented label="Smile display" value={mode}
+              options={[{ value: "market", label: "Market" }, { value: "svi", label: "SVI" }, { value: "both", label: "Both" }]}
+              onChange={setMode} />
             <Segmented label="Expiries" value={expiries} options={[3, 6, 10].map((n) => ({ value: n, label: `${n} exp` }))} onChange={setExpiries} />
             <Segmented label="Window" value={window} options={[0.05, 0.1, 0.2].map((w) => ({ value: w, label: `±${w * 100}%` }))} onChange={setWindow} />
             <Segmented
@@ -94,12 +85,14 @@ export function SmileView({ symbol }: { symbol: string }) {
               xLabel={axis === "strike" ? "strike" : "log-moneyness"}
             />
             <p className="mt-2 text-[11px] text-muted">
-              Each strike uses the out-of-the-money side's implied vol. The shaded band is the nearest expiry's bid-ask range in vol terms.
+              Dots: OTM market IV. Lines: SVI fits. The nearest expiry's market bid-ask range is shaded.
+              Fits use all eligible quotes; arbitrage checks cover a finite grid.
             </p>
           </>
         ) : (
-          <Empty>Loading smiles…</Empty>
+          <Empty>{surfaceData ? "No usable points or fits for this selection." : "Loading smiles…"}</Empty>
         )}
+        <SviTable expiries={shown} violations={surfaceData?.calendar_violations ?? []} />
       </Panel>
 
       <div className="flex flex-col gap-3">

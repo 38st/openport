@@ -96,6 +96,10 @@ value is range-checked; see the [runtime notes](docs/runtime.md) for details.
   from a Corrado-Miller initial guess, with a bisection safeguard. About 0.5 µs and 5.4
   iterations per option. Each strike's smile IV comes from its out-of-the-money side,
   and both sides' Greeks use it.
+- **SVI surfaces** fit each expiry's OTM total variance with deterministic, constrained
+  quasi-explicit calibration and capped bid/ask IV weights. Fits run lazily in the
+  API, cached per analytics snapshot; butterfly and calendar grid violations remain
+  visible alongside market points. [Model, checks and timings](docs/svi.md).
 - **American-style** equity and ETF options cannot fit a rate from their own parity:
   early exercise makes puts worth more at higher strikes, which reads as rates between
   -3% and +2% for SPY and QQQ. They take the zero-rate curve fitted on a European index
@@ -175,7 +179,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Chain analytics: parity forwards, IV and Greeks, smiles, GEX and VEX
 - [x] Web terminal
 - [x] De-Americanised implied volatility for equity options
-- [ ] SVI volatility surface
+- [x] SVI volatility surface
 - [ ] Record and replay of any provider's feed
 - [ ] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
 

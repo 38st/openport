@@ -53,6 +53,22 @@ struct ApiResponse {
 /// or null for an empty set. This covers the full exposure, regardless of display
 /// window/expiry filters. Every side at those strikes with usable OI contributes risk, even without
 /// its own IV.
+/// Surface preserves the market points and adds points[].svi_iv (decimal IV/null).
+/// Each expiry adds svi: {a,b,rho,m,sigma,rmse_vol_points,points,status,reason,
+/// fit_ms,butterfly_min_g,butterfly_k,butterfly_ok}, or null when fitting fails.
+/// svi_status (ok/too_few_points/failed), svi_reason, svi_points and svi_fit_ms
+/// remain available even when svi is null. svi_years and svi_min_k/svi_max_k give
+/// the high-precision tenor and calibration range for dense client-side curve sampling.
+/// Parameters describe TOTAL variance at k=ln(K/F); rmse_vol_points is in percent.
+/// Butterfly fields report a 2,001-point density check over the calibration range,
+/// not a global no-arbitrage certificate. Undefined density fails the check.
+/// calendar_violations: [{earlier: expiry id, later: expiry id, k: worst location}]
+/// compares consecutive successful fits ordered by T on each pair's range union,
+/// with a 1e-10 total-variance tolerance. Diagnostics never repair the fits.
+/// Fitting is lazy, outside the engine, for only the requested expiry prefix;
+/// window only filters displayed points. Successes and failures are cached for
+/// the immutable (symbol, metrics version) snapshot, isolated by snapshot owner.
+/// Concurrent requests share fits; expired snapshots release their cache entries.
 [[nodiscard]] ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source);
 
 /// The small message pushed to every WebSocket client each second, so the UI knows
