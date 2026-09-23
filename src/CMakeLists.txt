@@ -16,6 +16,25 @@ target_include_directories(openport_core PUBLIC
 target_link_libraries(openport_core PRIVATE openport::options)
 set_target_properties(openport_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# Pure paper-trading reducer; only the journal performs file I/O.
+if(NOT TARGET OpenSSL::Crypto)
+  find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+endif()
+add_library(openport_trading
+  trading/money.cpp
+  trading/types.cpp
+  trading/ledger.cpp
+  trading/risk.cpp
+  trading/journal.cpp
+  trading/session.cpp
+)
+add_library(openport::trading ALIAS openport_trading)
+target_include_directories(openport_trading PUBLIC
+  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+target_link_libraries(openport_trading PUBLIC openport::core
+  PRIVATE OpenSSL::Crypto nlohmann_json::nlohmann_json openport::options)
+set_target_properties(openport_trading PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 if(OPENPORT_BUILD_PROVIDERS)
   # Recording is independent of Databento, including builds without its adapter.
   find_path(OPENPORT_ZSTD_INCLUDE_DIR zstd.h REQUIRED)

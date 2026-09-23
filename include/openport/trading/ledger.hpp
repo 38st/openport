@@ -1,0 +1,38 @@
+#pragma once
+
+#include "openport/trading/types.hpp"
+
+namespace openport::trading {
+
+struct Position {
+  md::OptionContract contract;
+  Quantity quantity = 0;
+  Money basis;  ///< Signed total acquisition notional, excludes fees.
+  Money realised;
+  Money fees;
+};
+struct Account {
+  Money cash;
+  Money realised;  ///< Gross, before fees, including settled/closed positions.
+  Money fees;
+};
+
+/// Pure accounting. Mutations have the strong exception guarantee. Reductions
+/// allocate signed basis proportionally, nearest micro-dollar (ties away); the
+/// residual stays in the position and is fully released on the last close.
+class Ledger {
+ public:
+  explicit Ledger(Money initial_cash = {}) : account_{initial_cash, {}, {}} {}
+  [[nodiscard]] const Account& account() const { return account_; }
+  [[nodiscard]] const std::map<std::string, Position>& positions() const { return positions_; }
+  void fill(const md::OptionContract& contract, Quantity signed_quantity, Money price, Money fee);
+  /// Settlement is accounting, never subject to order risk limits. No fee.
+  void settle(const std::string& symbol, Money intrinsic);
+  /// Validated journal outcomes only; public for independent outcome consumers.
+  static Ledger restore(Account account, std::map<std::string, Position> positions);
+ private:
+  Account account_;
+  std::map<std::string, Position> positions_;
+};
+
+}  // namespace openport::trading
