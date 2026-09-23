@@ -134,6 +134,17 @@ Boundaries process on the first command at/after them, before possible fills.
 Outside 2025–2028 the existing calendar only knows weekdays; no extra calendar is
 introduced here. Extended/global/curb execution is deferred.
 
+The engine also compares each underlying's market-data time with wall-clock time.
+While the product's wall-clock session is regular, a lag **greater than the
+provider's stated delay plus `max_quote_age`** rejects new orders with
+`FEED_STALLED`, including the lag in the message (for example, "SPX quotes are
+10h 20m behind the market; the feed appears to have stalled"). Ordinary closed
+market-time sessions still return `SESSION_CLOSED`: during the first 15 minutes
+after the open, a healthy 15-minute delayed feed legitimately remains before the
+open. The simulation clock stays at market time. Resting orders do not fill from
+stale data and are not cancelled merely because the feed stalls; they remain
+subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
+
 ## Accounting, marks and equity
 
 Let `q` be signed contracts, `M = 100`, `p` fill premium per unit and `f` the fill fee:
@@ -361,6 +372,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, acceptance-day session end |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside regular hours, expiry boundary, or pending settlement quality flag |
+| `FEED_STALLED` | Wall-clock product session is regular, but market-data lag exceeds provider delay plus `max_quote_age`; message includes the lag |
 | `INVALID_SETTLEMENT`, `ALREADY_SETTLED` | Invalid/premature settlement or already settled OSI |
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |
@@ -397,9 +409,19 @@ portfolio, orders and risk when the version changes. Chain option objects includ
 canonical padded `symbol`, whole `bid_size`/`ask_size` (null when unavailable),
 `tradable` and `untradable_reason`, using the core eligibility policy.
 
+Each `/api/status` and tick `underlyings[]` entry includes
+`paper: {accepting: boolean, reason: code|null, message: string|null}`. This uses the
+same session/feed check as new orders, the underlying's market time (including
+persisted quotes after recovery), provider delay and the active session's
+`max_quote_age`. An accepting entry has null reason and
+message; missing market data reports `INVALID_QUOTE`. Contract eligibility, risk,
+kill-switch and write-access checks still apply separately. The existing `session`
+field continues to describe the wall-clock product session.
+
 The web ticket estimates fees using `fee_per_contract`; only older servers without
-it expose a manual fee estimate. Ticket and Portfolio session notices use each
-underlying's status/tick `session`; a known non-regular session disables submission.
+it expose a manual fee estimate. Ticket and Portfolio notices use `paper.message`,
+and `paper.accepting: false` disables ticket submission. For older servers without
+`paper`, they fall back to the session-based notice and submission gate.
 Limit prices display cents, with buttons and arrow keys following the root's tier
 tick table above (including downward steps across $3.00). Typed off-tick prices
 still receive the server's `INVALID_TICK` reason.

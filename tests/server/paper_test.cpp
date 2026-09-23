@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <future>
 #include <fstream>
@@ -19,10 +20,15 @@ using trading::Money;
 class PaperProvider final : public md::Provider {
  public:
   std::string_view name() const noexcept override { return "scripted paper"; }
-  md::Capabilities capabilities() const noexcept override { return {}; }
+  md::Capabilities capabilities() const noexcept override {
+    md::Capabilities result;
+    result.delay = delay;
+    return result;
+  }
   void start(const md::Subscription&, md::EventSink& out) override { sink = &out; }
   void stop() override {}
   md::EventSink* sink = nullptr;
+  std::chrono::seconds delay{0};
 };
 template <class F> bool wait_for(F predicate) {
   const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -57,6 +63,7 @@ server::Engine::Options paper_options() {
   server::Engine::Options options;
   options.analytics_interval = std::chrono::milliseconds(0);
   options.analytics.fallback_rate = 0;
+  options.clock = [] { return md::new_york_to_utc({2026, 9, 22}, 10, 0); };
   return options;
 }
 class PaperEngine : public testing::Test {
@@ -91,6 +98,129 @@ class PaperEngine : public testing::Test {
   test::ScriptedMarket market;
   std::unique_ptr<server::Engine> engine;
 };
+
+class PaperFeed : public PaperEngine {
+ protected:
+  void TearDown() override { engine->stop(); }
+  void SetUp() override {
+    provider.delay = std::chrono::minutes(15);
+    auto options = paper_options();
+    options.clock = [this] { return wall_now.load(); };
+    engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX", "XSP"}}, options);
+    engine->start();
+    ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  }
+  json paper_status() {
+    EXPECT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time >= market.time; }));
+    const auto status = read(*engine, "/api/status")["underlyings"][0]["paper"];
+    EXPECT_EQ(json::parse(server::tick_message(*engine))["underlyings"][0]["paper"], status);
+    return status;
+  }
+  void expect_gate(std::string client, const char* code, const char* message = nullptr) {
+    const auto paper = paper_status();
+    EXPECT_EQ(paper["accepting"], false);
+    EXPECT_EQ(paper["reason"], code);
+    if (message) {
+      EXPECT_EQ(paper["message"], message);
+    }
+    const auto response = write(*engine, "POST", "/api/orders", order(market, std::move(client)));
+    expect_error(response, 422, code);
+    EXPECT_EQ(json::parse(response.body)["error"]["message"], paper["message"]);
+    EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["reason"]["code"], code);
+  }
+  std::atomic<md::Timestamp> wall_now{md::new_york_to_utc({2026, 9, 22}, 10, 15)};
+};
+
+TEST_F(PaperFeed, OvernightStallDuringRegularSessionAgreesWithStatusAndTick) {
+  market.time = md::new_york_to_utc({2026, 9, 21}, 23, 45);
+  wall_now = md::new_york_to_utc({2026, 9, 22}, 10, 5);
+  seed();
+  EXPECT_EQ(read(*engine, "/api/status")["underlyings"][0]["session"]["name"], "regular");
+  expect_gate("stalled", "FEED_STALLED",
+              "SPX quotes are 10h 20m behind the market; the feed appears to have stalled");
+  EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+  EXPECT_EQ(engine->trading_view()->snapshot->time, market.time);
+}
+
+TEST_F(PaperFeed, FirstFifteenMinutesOfDelayedOpenRemainSessionClosed) {
+  market.time = md::new_york_to_utc({2026, 9, 22}, 9, 15);
+  wall_now = market.time + 15 * md::kNanosPerMinute;
+  seed();
+  for (int minute = 0; minute < 15; ++minute) {
+    market.time = md::new_york_to_utc({2026, 9, 22}, 9, 15 + minute);
+    wall_now = market.time + 15 * md::kNanosPerMinute;
+    quote();
+    expect_gate("opening-" + std::to_string(minute), "SESSION_CLOSED");
+  }
+  market.time = md::new_york_to_utc({2026, 9, 22}, 9, 30);
+  wall_now = market.time + 15 * md::kNanosPerMinute;
+  quote();
+  EXPECT_EQ(paper_status(), (json{{"accepting", true}, {"reason", nullptr}, {"message", nullptr}}));
+  const auto accepted = write(*engine, "POST", "/api/orders", order(market, "regular", "4.20"));
+  ASSERT_EQ(accepted.status, 201) << accepted.body;
+  EXPECT_EQ(json::parse(accepted.body)["order"]["status"], "filled");
+}
+
+TEST_F(PaperFeed, OrdinaryClosedSessionDoesNotReportStall) {
+  market.time = md::new_york_to_utc({2026, 9, 21}, 23, 45);
+  wall_now = md::new_york_to_utc({2026, 9, 22}, 9, 0);
+  seed();
+  expect_gate("closed", "SESSION_CLOSED");
+}
+
+TEST_F(PaperFeed, AnotherUnderlyingCannotHideAStalledFeed) {
+  market.time = md::new_york_to_utc({2026, 9, 21}, 23, 45);
+  wall_now = md::new_york_to_utc({2026, 9, 22}, 10, 5);
+  seed();
+  test::ScriptedMarket fresh;
+  fresh.contract = *md::parse_osi("XSP261022C00500000");
+  fresh.time = wall_now.load() - 15 * md::kNanosPerMinute;
+  provider.sink->publish(md::ContractDefinition{1, fresh.contract});
+  provider.sink->publish(md::UnderlyingQuote{"XSP", fresh.time, 500, 500, 500});
+  provider.sink->publish(md::OptionQuote{1, fresh.time, 4, 4.2, 10, 10});
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time == fresh.time; }));
+  const auto underlyings = read(*engine, "/api/status")["underlyings"];
+  ASSERT_EQ(underlyings.size(), 2);
+  EXPECT_EQ(underlyings[1]["symbol"], "XSP");
+  EXPECT_EQ(underlyings[1]["paper"]["accepting"], true);
+  expect_gate("stalled-spx", "FEED_STALLED");
+  const auto accepted = write(*engine, "POST", "/api/orders", order(fresh, "fresh-xsp"));
+  EXPECT_EQ(accepted.status, 201) << accepted.body;
+}
+
+TEST_F(PaperFeed, StallThresholdUsesProviderDelayAndActiveQuoteAge) {
+  seed();
+  wall_now = market.time + 16 * md::kNanosPerMinute;
+  EXPECT_EQ(paper_status()["accepting"], true);  // exactly delay + max_quote_age
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", order(market, "boundary")).status, 201);
+  wall_now.fetch_add(1);
+  expect_gate("over-boundary", "FEED_STALLED");
+  auto risk = read(*engine, "/api/risk");
+  risk["limits"]["max_quote_age_seconds"] = 120;
+  ASSERT_EQ(write(*engine, "PUT", "/api/risk/limits",
+      {{"expected_revision", risk["limits_revision"]}, {"limits", risk["limits"]}}).status, 200);
+  EXPECT_EQ(paper_status()["accepting"], true);
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", order(market, "larger-age")).status, 201);
+}
+
+TEST_F(PaperFeed, StalledRestingOrderWaitsForFreshQuotesWithoutCancellation) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "resting")).status, 201);
+  wall_now = market.time + 17 * md::kNanosPerMinute;
+  market.next();
+  quote("3.80", "4.00");  // a newly received but stale crossing quote
+  expect_gate("stalled", "FEED_STALLED");
+  const auto resting = read(*engine, "/api/orders?status=open")["orders"];
+  ASSERT_EQ(resting.size(), 1);
+  EXPECT_EQ(resting[0]["status"], "working");
+  EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+  EXPECT_EQ(engine->trading_view()->snapshot->time, market.time);
+  market.time = wall_now.load() - 15 * md::kNanosPerMinute;
+  quote("3.80", "4.00");
+  ASSERT_TRUE(wait_for([&] { return !engine->trading_view()->snapshot->recent_fills.empty(); }));
+  EXPECT_EQ(paper_status()["accepting"], true);
+  EXPECT_EQ(read(*engine, "/api/fills")["fills"][0]["order_id"], "1");
+}
 
 TEST_F(PaperEngine, RestingLimitFillsOnlyOnLaterObservationAndPublishesContractJson) {
   seed();
@@ -271,6 +401,8 @@ TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
   const auto path = std::filesystem::temp_directory_path() / ("openport-paper-" + std::to_string(md::now()) + ".jsonl");
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
+  std::atomic<md::Timestamp> wall_now{market.time};
+  options.clock = [&] { return wall_now.load(); };
   std::string portfolio, risk;
   {
     PaperProvider provider;
@@ -302,12 +434,26 @@ TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
     auto response = write(engine, "POST", "/api/orders", order(market, "rest", "4.20"));
     ASSERT_EQ(response.status, 201) << response.body;
     EXPECT_EQ(json::parse(response.body)["order"]["status"], "working");
+    wall_now = market.time + 20 * md::kNanosPerMinute;
+    const auto paper = read(engine, "/api/status")["underlyings"][0]["paper"];
+    EXPECT_EQ(paper["accepting"], false);
+    EXPECT_EQ(paper["reason"], "FEED_STALLED");
+    EXPECT_EQ(json::parse(server::tick_message(engine))["underlyings"][0]["paper"], paper);
+    const auto stalled = write(engine, "POST", "/api/orders", order(market, "recovered-stall", "4.20"));
+    ASSERT_EQ(stalled.status, 422) << stalled.body;
+    EXPECT_EQ(json::parse(stalled.body)["error"]["code"], "FEED_STALLED");
+    EXPECT_EQ(json::parse(stalled.body)["error"]["message"], paper["message"]);
+    EXPECT_EQ(read(engine, "/api/orders?status=open")["orders"].size(), 1);
+    EXPECT_EQ(read(engine, "/api/fills")["fills"].size(), 1);
     provider.sink->publish(md::ContractDefinition{0, market.contract});
+    market.time = wall_now.load();
     market.next();
     provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
     provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
     ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->recent_fills.size() == 2; }));
   }
+  const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(path.string()));
+  EXPECT_EQ(recovered.snapshot()->recent_orders.back().reason.code, trading::Reason::FEED_STALLED);
   std::filesystem::remove(path);
 }
 

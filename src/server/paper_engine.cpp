@@ -78,6 +78,31 @@ Valuation valuation_for(const std::string& symbol, const md::OptionContract& con
 }
 }  // namespace
 
+trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp market_time,
+    md::Timestamp wall_time, std::chrono::seconds delay, md::Timestamp max_quote_age) {
+  if (market_time <= 0)
+    return {Reason::INVALID_QUOTE, std::string(underlying) + " is waiting for market data", {}, {}, {}};
+  if (wall_time > market_time && md::trading_session(underlying, wall_time).name == "regular") {
+    const auto lag = wall_time - market_time;
+    const auto delay_seconds = std::max<std::int64_t>(0, delay.count());
+    // Bound the seconds before multiplying, and subtract rather than adding the
+    // configured ages, which may span the entire timestamp range.
+    if (lag / md::kNanosPerSecond >= delay_seconds &&
+        lag - delay_seconds * md::kNanosPerSecond > max_quote_age) {
+      const auto minutes = lag / md::kNanosPerMinute;
+      const auto duration = minutes >= 60
+          ? std::to_string(minutes / 60) + "h " + std::to_string(minutes % 60) + "m"
+          : minutes > 0 ? std::to_string(minutes) + "m"
+                        : std::to_string(lag / md::kNanosPerSecond) + "s";
+      return {Reason::FEED_STALLED, std::string(underlying) + " quotes are " + duration +
+          " behind the market; the feed appears to have stalled", {}, {}, {}};
+    }
+  }
+  if (md::trading_session(underlying, market_time).name != "regular")
+    return {Reason::SESSION_CLOSED, "v1 accepts and executes only in the product regular session", {}, {}, {}};
+  return {};
+}
+
 std::shared_ptr<const TradingView> Engine::trading_view() const {
   const std::lock_guard lock(mutex_);
   return trading_view_;
@@ -137,6 +162,16 @@ void Engine::publish_trading() {
     view->config = trading_->config();
     view->contracts = trading_->contracts();
     view->valuations = trading_->valuations();
+    for (const auto& [symbol, contract] : view->contracts) {
+      if (const auto quote = trading_->quote(symbol)) {
+        auto& time = view->market_times[contract.underlying];
+        time = std::max(time, quote->time);
+      }
+    }
+    for (const auto& [symbol, book] : book_.underlyings()) {
+      auto& time = view->market_times[symbol];
+      time = std::max(time, book.data_time);
+    }
   }
   const std::lock_guard lock(mutex_);
   trading_view_ = std::move(view);
@@ -195,6 +230,7 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
   }
   std::vector<QuoteObservation> quotes;
   std::vector<Valuation> valuations;
+  const auto now = wall_time();
   for (const auto& symbol : symbols) {
     const auto id = instruments_.find(symbol);
     const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
@@ -212,7 +248,11 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
           a.settlement != b.settlement || a.multiplier != b.multiplier || a.standard != b.standard)
         throw TradingError(Reason::INVALID_CONTRACT, "INVALID_CONTRACT: listed terms conflict with registered definition");
     }
-    if (option && option->has_quote && option->quote_ts >= 0) {
+    // A stalled feed cannot replenish resting-order liquidity. Keep the orders
+    // and reducer clock intact; ordinary market-time DAY/expiry rules still apply.
+    if (option && option->has_quote && option->quote_ts >= 0 &&
+        paper_acceptance(definition->second.underlying, option->quote_ts, now,
+            status_.capabilities.delay, trading_->config().limits.max_quote_age).code != Reason::FEED_STALLED) {
       quotes.push_back({symbol, observations_[symbol], option->quote_ts,
                         quote_price(option->bid), quote_price(option->ask),
                         whole_size(option->bid_size), whole_size(option->ask_size)});
@@ -258,9 +298,24 @@ void Engine::apply_command(PendingCommand& pending) {
       switch (c.kind) {
         case TradingCommand::Kind::Submit: {
           Decision rejection;
+          const md::OptionContract* contract = nullptr;
           const auto id = instruments_.find(c.order.symbol);
           if (id != instruments_.end()) {
-            if (const auto* option = book_.option(id->second)) rejection = eligible(option->contract);
+            if (const auto* option = book_.option(id->second)) contract = &option->contract;
+          }
+          if (!contract) {
+            const auto saved = trading_->contracts().find(c.order.symbol);
+            if (saved != trading_->contracts().end()) contract = &saved->second;
+          }
+          if (contract) {
+            rejection = eligible(*contract);
+            if (rejection.ok()) {
+              const auto view = trading_view();
+              const auto time = view->market_times.find(contract->underlying);
+              rejection = paper_acceptance(contract->underlying,
+                  time == view->market_times.end() ? 0 : time->second,
+                  wall_time(), status_.capabilities.delay, trading_->config().limits.max_quote_age);
+            }
           }
           result = trading_->submit(c.order, market_time_, rejection);
           break;

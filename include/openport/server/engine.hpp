@@ -60,6 +60,7 @@ class MetricsSource {
   [[nodiscard]] virtual std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
       const std::string& symbol) const = 0;
   [[nodiscard]] virtual EngineStatus status() const = 0;
+  [[nodiscard]] virtual md::Timestamp wall_time() const { return md::now(); }
   [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view() const { return {}; }
   /// False means unavailable or full. Completion runs on the engine thread;
   /// network callers must dispatch it onto their own executor.
@@ -107,6 +108,7 @@ class Engine final : public MetricsSource {
   [[nodiscard]] std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
       const std::string& symbol) const override;
   [[nodiscard]] EngineStatus status() const override;
+  [[nodiscard]] md::Timestamp wall_time() const override { return options_.clock(); }
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view() const override;
   bool post_trading(TradingCommand command, TradingCompletion completion) override;
   [[nodiscard]] md::RecordingStats recording_stats() const;

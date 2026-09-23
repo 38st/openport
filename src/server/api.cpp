@@ -212,6 +212,8 @@ bool in_window(double strike, double spot, double window) {
 json underlyings_json(const MetricsSource& source, const EngineStatus& status, bool details,
                       md::Timestamp now) {
   json underlyings = json::array();
+  const auto view = source.trading_view();
+  const auto max_quote_age = view ? view->config.limits.max_quote_age : trading::Limits{}.max_quote_age;
   std::set<std::string> symbols;
   for (const auto& symbol : source.symbols()) symbols.insert(symbol);
   for (const auto& [symbol, health] : status.underlyings) symbols.insert(symbol);
@@ -239,6 +241,16 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
           h.last_error_time > 0 ? json(md::format_timestamp(h.last_error_time)) : json(nullptr);
     }
     const auto m = source.metrics(symbol);
+    auto market_time = m ? m->as_of : 0;
+    if (view) {
+      const auto time = view->market_times.find(symbol);
+      market_time = time == view->market_times.end() ? 0 : time->second;
+    }
+    const auto paper = paper_acceptance(symbol, market_time, now,
+                                        status.capabilities.delay, max_quote_age);
+    item["paper"] = {{"accepting", paper.ok()},
+                     {"reason", paper.ok() ? json(nullptr) : json(trading::to_string(paper.code))},
+                     {"message", paper.ok() ? json(nullptr) : json(paper.message)}};
     if (m) {
       item["spot"] = price(m->spot);
       item["as_of"] = md::format_timestamp(m->as_of);
@@ -261,7 +273,7 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
 
 json status_json(const MetricsSource& source) {
   const EngineStatus s = source.status();
-  const auto now = md::now();
+  const auto now = source.wall_time();
   return {
       {"trading", trading_status_json(s.trading)},
       {"market", market_json(now)},
@@ -532,7 +544,7 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
 
 std::string tick_message(const MetricsSource& source) {
   const EngineStatus s = source.status();
-  const auto now = md::now();
+  const auto now = source.wall_time();
   return json{{"type", "tick"},
               {"trading", trading_status_json(s.trading)},
               {"market", market_json(now)},

@@ -6,7 +6,7 @@ import { useRefreshTrading, useTradingSession } from "../api/trading"
 import type { NewOrder, Order, Side, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote } from "../api/types"
 import { count, fixed, price } from "../lib/format"
-import { formatMoney, limitPriceText, limitPriceTick, paperSessionNotice, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
+import { formatMoney, limitPriceText, limitPriceTick, paperNotice, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
@@ -83,8 +83,8 @@ export function OrderTicket({ selection, quote, trading, onClose }: {
   const estimate = ticketEstimate(quote, side, q, estimatedPrice, effectiveFee)
   const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee))
   const untradable = quote?.tradable !== true || quote.symbol !== selection.symbol
-  const sessionNotice = paperSessionNotice(selection.underlying, underlyings.find((u) => u.symbol === selection.underlying)?.session)
-  const blocked = writeBlocked(trading, token) || trading.kill_latched || untradable || !!sessionNotice
+  const notice = paperNotice(selection.underlying, underlyings.find((u) => u.symbol === selection.underlying))
+  const blocked = writeBlocked(trading, token) || trading.kill_latched || untradable || !!notice
   const reason = quote?.untradable_reason ?? "Contract unavailable for paper trading"
   const root = selection.symbol.slice(0, 6).trim()
 
@@ -136,7 +136,7 @@ export function OrderTicket({ selection, quote, trading, onClose }: {
       <div><span className="text-muted">Mid</span><div>{price(quote?.mid)}</div></div>
     </div>
     <WriteAccess trading={trading} />
-    {sessionNotice && <p role="status" className="text-sm text-warn">{sessionNotice}</p>}
+    {notice && <p role="status" className="text-sm text-warn">{notice}</p>}
     {(!trading.enabled || trading.kill_latched || untradable) && <p role="status" className="text-sm text-warn">{!trading.enabled ? trading.reason ?? "Trading unavailable" : trading.kill_latched ? "Kill switch latched. Reset it in Portfolio before placing orders." : reason}</p>}
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       <fieldset disabled={submitted || pending} className="grid min-w-0 grid-cols-2 gap-3 disabled:opacity-70">

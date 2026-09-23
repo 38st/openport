@@ -166,4 +166,43 @@ describe("order ticket interaction", () => {
     await click("Submit paper order")
     expect(api.submitOrder).toHaveBeenCalledTimes(1)
   })
+  it("blocks a regular-session ticket when paper stops accepting and resumes from a tick", async () => {
+    const message = "SPX quotes are 10h 20m behind the market; the feed appears to have stalled"
+    const stalled = { ...status, underlyings: [{ ...status.underlyings[0]!,
+      session: { name: "regular" as const, open: true, note: "Regular" },
+      paper: { accepting: false, reason: "FEED_STALLED", message },
+    }] }
+    vi.mocked(useLive).mockReturnValue(liveState(stalled, null, "open"))
+    await render()
+    expect(host.textContent).toContain(message)
+    expect(button("Submit paper order").disabled).toBe(true)
+    await click("Submit paper order")
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(api.submitOrder).not.toHaveBeenCalled()
+
+    vi.mocked(useLive).mockReturnValue(liveState(stalled, {
+      type: "tick", engine: status.engine, feed: status.feed,
+      underlyings: [{ ...stalled.underlyings[0]!,
+        session: { name: "closed", open: false, note: "Closed" },
+        paper: { accepting: true, reason: null, message: null },
+      }],
+    }, "open"))
+    await render()
+    expect(host.textContent).not.toContain(message)
+    expect(host.textContent).not.toContain("regular session only")
+    expect(button("Submit paper order").disabled).toBe(false)
+    await click("Submit paper order")
+    expect(api.submitOrder).toHaveBeenCalledTimes(1)
+  })
+  it("blocks on paper.accepting even when the server message is null", async () => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, {
+      type: "tick", engine: status.engine, feed: status.feed,
+      underlyings: [{ ...status.underlyings[0]!, paper: { accepting: false, reason: "FEED_STALLED", message: null } }],
+    }, "open"))
+    await render()
+    expect(host.textContent).toContain("SPX paper orders are unavailable (FEED_STALLED)")
+    expect(button("Submit paper order").disabled).toBe(true)
+    await click("Submit paper order")
+    expect(api.submitOrder).not.toHaveBeenCalled()
+  })
 })

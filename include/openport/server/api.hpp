@@ -46,6 +46,9 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 /// next_open uses the same UTC timestamp format as as_of; null while open.
 /// Each status/tick underlyings[] entry also includes session {name, open, note}
 /// at wall-clock time, where name is regular/curb/global/closed for that product.
+/// paper {accepting, reason, message} uses the new-order session/feed gate with
+/// the data clock, provider delay and current max_quote_age. Success has null
+/// reason/message; contract, risk and write-access checks still apply separately.
 /// has_tradable_contracts is true when unexpired slices contain a contract eligible
 /// for paper trading (European, cash settled, standard supported index options).
 /// Portfolio session notices use this flag, or held positions/open orders.

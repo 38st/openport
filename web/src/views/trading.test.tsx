@@ -81,6 +81,30 @@ describe("paper trading fixtures", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
     expect(render(<PortfolioView />)).toContain("Paper orders are accepted in the regular session only; SPX is")
   })
+  it.each(["status", "tick"] as const)("uses the paper gate from %s for ticket and Portfolio notices", (source) => {
+    const message = "SPX quotes are 10h 20m behind the market; the feed appears to have stalled"
+    const underlyings = [{ ...status.underlyings[0]!,
+      session: { name: "regular" as const, open: true, note: "Regular" },
+      paper: { accepting: false, reason: "FEED_STALLED", message },
+    }]
+    vi.mocked(useLive).mockReturnValue(source === "status"
+      ? liveState({ ...status, underlyings }, null, "open")
+      : liveState(status, { type: "tick", engine: status.engine, feed: status.feed, underlyings }, "open"))
+    const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
+    expect(html).toContain(message)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
+    expect(render(<PortfolioView />)).toContain(message)
+  })
+  it("uses paper acceptance over wall-clock session in the ticket and Portfolio", () => {
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!,
+      session: { name: "closed", open: false, note: "Closed" },
+      paper: { accepting: true, reason: null, message: null },
+    }] }, null, "open"))
+    const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
+    expect(html).not.toContain("regular session only")
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
+    expect(render(<PortfolioView />)).not.toContain("regular session only")
+  })
   it("limits Portfolio session notices to tradable underlyings, positions, or open orders", () => {
     const session = { name: "closed" as const, open: false, note: "Closed" }
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [

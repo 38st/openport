@@ -38,6 +38,7 @@ export interface UnderlyingSnapshot {
   as_of: string | null
   version: number
   session?: TradingSession | null
+  paper?: PaperAcceptance | null
   has_tradable_contracts?: boolean
   state?: FeedState | null
   message?: string | null
@@ -55,6 +56,12 @@ export interface TradingSession {
   name: "regular" | "curb" | "global" | "closed"
   open: boolean
   note: string
+}
+
+export interface PaperAcceptance {
+  accepting: boolean
+  reason: string | null
+  message: string | null
 }
 
 export interface MarketSession {

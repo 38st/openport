@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -7,6 +8,12 @@
 #include "openport/trading/session.hpp"
 
 namespace openport::server {
+
+/// Shared session/feed gate for new orders and status/ticks. Contract, risk and
+/// write-access checks remain separate. Never advances the reducer's data clock.
+[[nodiscard]] trading::Decision paper_acceptance(std::string_view underlying,
+    md::Timestamp market_time, md::Timestamp wall_time, std::chrono::seconds delay,
+    md::Timestamp max_quote_age);
 
 struct TradingStatus {
   bool enabled = false;
@@ -25,6 +32,8 @@ struct TradingView {
   trading::SessionConfig config;
   std::map<std::string, md::OptionContract> contracts;
   std::map<std::string, trading::Valuation> valuations;
+  /// Per-underlying data clocks, seeded from persisted quotes on recovery.
+  std::map<std::string, md::Timestamp> market_times;
 };
 
 struct TradingCommand {

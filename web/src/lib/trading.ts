@@ -1,4 +1,4 @@
-import type { OptionQuote, TradingSession } from "../api/types"
+import type { OptionQuote, TradingSession, UnderlyingSnapshot } from "../api/types"
 import type { Money, Side } from "../api/trading-types"
 
 function decimal(value: string | null | undefined) {
@@ -67,6 +67,12 @@ export function paperSessionNotice(symbol: string, session: TradingSession | nul
   if (!session || session.name === "regular") return null
   const state = session.name === "closed" ? "closed" : `in the ${session.name === "global" ? "overnight" : session.name} session`
   return `Paper orders are accepted in the regular session only; ${symbol} is ${state}.`
+}
+
+export function paperNotice(symbol: string, underlying: UnderlyingSnapshot | undefined) {
+  const paper = underlying?.paper
+  if (paper) return paper.accepting ? null : paper.message || `${symbol} paper orders are unavailable${paper.reason ? ` (${paper.reason})` : ""}.`
+  return paperSessionNotice(symbol, underlying?.session)
 }
 
 export function ticketEstimate(quote: OptionQuote | null, side: Side, quantity: number, price: Money | null, fee: Money | null) {

@@ -11,7 +11,7 @@ import { TradingError, WriteAccess, writeBlocked } from "../components/TradingCo
 import { Empty, Panel, Stat } from "../components/ui"
 import { fixed } from "../lib/format"
 import { timestampET } from "../lib/freshness"
-import { formatMoney, paperSessionNotice } from "../lib/trading"
+import { formatMoney, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 
 function TradingTable({ label, headers, children }: { label: string; headers: string[]; children: ReactNode }) {
@@ -88,7 +88,7 @@ function PortfolioAccount({ trading }: { trading: TradingStatus }) {
       account?.positions.some((p) => p.underlying === u.symbol && p.quantity !== 0) ||
       orders.data?.orders.some((o) => o.underlying === u.symbol && o.remaining_quantity > 0 &&
         (o.status === "working" || o.status === "partially_filled"))).map((u) => {
-      const notice = paperSessionNotice(u.symbol, u.session)
+      const notice = paperNotice(u.symbol, u)
       return notice && <p key={u.symbol} role="status" className="text-sm text-warn">{notice}</p>
     })}
     {!trading.enabled && <p className="rounded-md border border-warn p-3 text-sm text-warn">{trading.reason ?? "Paper trading is unavailable."}</p>}
