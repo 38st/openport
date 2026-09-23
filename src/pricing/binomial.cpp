@@ -36,19 +36,23 @@ double deterministic_american(const BsmInputs& in) {
 
 }  // namespace
 
-double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod method, int steps) {
+static double tree_value(const BsmInputs& in, ExerciseStyle style, TreeMethod method, int steps,
+                         bool premium = false) {
   if (!std::isfinite(in.spot) || !std::isfinite(in.strike) || !std::isfinite(in.expiry) ||
       !std::isfinite(in.rate) || !std::isfinite(in.dividend) || !std::isfinite(in.vol) ||
       in.spot <= 0 || in.strike <= 0 || in.vol < 0) {
     throw std::invalid_argument(
         "binomial inputs must be finite with positive spot/strike and nonnegative vol");
   }
+  if (premium && ((in.type == OptionType::Call && in.dividend <= 0 && in.rate >= 0) ||
+                  (in.type == OptionType::Put && in.rate <= 0 && in.dividend >= 0)))
+    return 0;
   const double w = omega(in.type);
   auto fallback = [&] {
     double value = std::max(bsm_price(in), 0.0);
     if (style == ExerciseStyle::American) value = std::max(value, deterministic_american(in));
     if (!std::isfinite(value)) throw std::overflow_error("binomial fallback price is not finite");
-    return value;
+    return premium ? std::max(0.0, value - bsm_price(in)) : value;
   };
   if (!(in.expiry > 0.0) || !(in.vol > 0.0) || steps < 1) return fallback();
   if (method == TreeMethod::LeisenReimer && steps % 2 == 0) ++steps;
@@ -96,6 +100,28 @@ double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod metho
     value[j] = std::max(w * (spot[j] - in.strike), 0.0);
   }
 
+  // European exercise needs only the terminal expectation on this SAME tree.
+  // Sum binomial weights outward from their mode so tails cannot underflow the
+  // entire distribution; normalization avoids factorials and a second rollback.
+  double european = 0;
+  if (premium) {
+    const int mode = std::min(steps, static_cast<int>((steps + 1.0) * p));
+    double weight_sum = 1;
+    double payoff_sum = value[mode];
+    double weight = 1;
+    for (int j = mode; j < steps; ++j) {
+      weight *= (steps - j) * p / ((j + 1) * (1 - p));
+      weight_sum += weight;
+      payoff_sum += weight * value[j + 1];
+    }
+    weight = 1;
+    for (int j = mode; j > 0; --j) {
+      weight *= j * (1 - p) / ((steps - j + 1) * p);
+      weight_sum += weight;
+      payoff_sum += weight * value[j - 1];
+    }
+    european = std::pow(discount, steps) * payoff_sum / weight_sum;
+  }
   const bool american = style == ExerciseStyle::American;
   for (int level = steps - 1; level >= 0; --level) {
     for (int j = 0; j <= level; ++j) {
@@ -105,7 +131,17 @@ double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod metho
       value[j] = v;
     }
   }
-  return std::isfinite(value[0]) && value[0] >= 0.0 ? value[0] : fallback();
+  if (!std::isfinite(value[0]) || !std::isfinite(european)) return fallback();
+  const double result = premium ? std::max(0.0, value[0] - european) : value[0];
+  return std::isfinite(result) && result >= 0.0 ? result : fallback();
+}
+
+double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod method, int steps) {
+  return tree_value(in, style, method, steps);
+}
+
+double binomial_early_exercise_premium(const BsmInputs& in, int steps) {
+  return tree_value(in, ExerciseStyle::American, TreeMethod::LeisenReimer, steps, true);
 }
 
 }  // namespace openport::pricing

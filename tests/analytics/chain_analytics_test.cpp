@@ -62,8 +62,12 @@ TEST(ChainAnalytics, ExposureFollowsTheOpenInterestConvention) {
 
   // Calls dominate above spot (positive GEX), puts below (negative GEX).
   for (const auto& row : metrics.slices[0].strikes) {
-    if (row.strike > kSpot + 1) EXPECT_GT(row.gex, 0.0) << row.strike;
-    if (row.strike < kSpot - 1) EXPECT_LT(row.gex, 0.0) << row.strike;
+    if (row.strike > kSpot + 1) {
+      EXPECT_GT(row.gex, 0.0) << row.strike;
+    }
+    if (row.strike < kSpot - 1) {
+      EXPECT_LT(row.gex, 0.0) << row.strike;
+    }
   }
   EXPECT_GT(exposure.call_wall, kSpot);
   EXPECT_LE(exposure.put_wall, kSpot);  // the at-the-money strike carries heavy put OI here
@@ -200,13 +204,17 @@ TEST(ChainAnalytics, AllExpiriesShareNearestParitySpot) {
   EXPECT_NEAR(quoted.slices[1].strikes[0].call.gamma, g.gamma * std::pow(120.0 / 110, 2), 1e-10);
 }
 
-TEST(ChainAnalytics, UnpricedSideCannotContributeItsOi) {
+TEST(ChainAnalytics, UnpricedSideContributesOiThroughTheStrikeSmile) {
   SyntheticChain chain;
   chain.book.apply(md::OptionQuote{40, chain.as_of, 0, 0, 0, 0});
   const auto m = analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of);
   EXPECT_EQ(m.options_priced, 81);
   const auto& row = m.slices[0].strikes[20];
-  EXPECT_NEAR(row.gex, -row.put.gamma * row.put.open_interest * 100 * kSpot * kSpot * .01, 1e-6);
+  EXPECT_FALSE(std::isfinite(row.call.iv));
+  EXPECT_NEAR(
+      row.gex,
+      row.put.gamma * (row.call.open_interest - row.put.open_interest) * 100 * kSpot * kSpot * .01,
+      1e-6);
 }
 
 TEST(ChainBook, ReceiptFlagsDistinguishMissingFromRealZeros) {
@@ -244,7 +252,7 @@ TEST(ChainAnalytics, LockedQuoteIsRejectedBeforePricingTheChain) {
   EXPECT_NEAR(m.slices[0].forward.forward, 100, 1e-8);
 }
 
-TEST(ChainAnalytics, ExposureCoverageRequiresOwnIvAndReceivedOiAcrossExpiries) {
+TEST(ChainAnalytics, ExposureUsesSmileIvAndReceivedOiAcrossExpiries) {
   ChainBook book;
   const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
   book.apply(md::UnderlyingQuote{"SPX", as_of, 100, 100, 100});
@@ -252,7 +260,8 @@ TEST(ChainAnalytics, ExposureCoverageRequiresOwnIvAndReceivedOiAcrossExpiries) {
   add_option(book, 1, {2026, 10, 22}, OptionType::Put, 100, as_of, 100, .5);      // missing OI
   add_option(book, 2, {2026, 11, 23}, OptionType::Call, 110, as_of, 100, .5, 0);  // received zero
   add_option(book, 3, {2026, 11, 23}, OptionType::Put, 110, as_of, 100, .5, 1000);
-  book.apply(md::OptionQuote{3, as_of, 0, 0, 0, 0});  // OI without IV must contribute nothing
+  book.apply(md::OptionQuote{3, as_of, 0, 0, 0,
+                             0});  // OI contributes through the strike smile despite no own IV
   analytics::AnalyticsOptions options;
   options.fallback_rate = 0;
   const auto m = analytics::analyze(book.underlyings().at("SPX"), book, as_of, options);
@@ -261,10 +270,12 @@ TEST(ChainAnalytics, ExposureCoverageRequiresOwnIvAndReceivedOiAcrossExpiries) {
   EXPECT_EQ(m.coverage.options, 4);
   EXPECT_EQ(m.coverage.quoted, 4);
   EXPECT_EQ(m.coverage.open_interest, 3);
-  EXPECT_NEAR(m.exposure.oi_coverage, 2.0 / 3, 1e-12);
-  EXPECT_DOUBLE_EQ(m.slices[1].gex, 0);
+  EXPECT_NEAR(m.exposure.oi_coverage, 3.0 / 4, 1e-12);
+  EXPECT_LT(m.slices[1].gex, 0);
+  EXPECT_NEAR(m.slices[1].gex, -m.slices[1].strikes[0].put.gamma * 1000 * 100 * 100, 1e-9);
   EXPECT_TRUE(std::isnan(m.exposure.gamma_flip));
-  EXPECT_NEAR(m.exposure.gex, m.slices[0].strikes[0].call.gamma * 10 * 100 * 100, 1e-9);
+  EXPECT_NEAR(m.exposure.gex, m.slices[0].strikes[0].call.gamma * 10 * 100 * 100 + m.slices[1].gex,
+              1e-9);
   EXPECT_EQ(m.spot_source, "quote");
 }
 
@@ -308,4 +319,76 @@ TEST(ChainAnalytics, GammaFlipBracketsANearZeroGridPointAcrossExpiries) {
   EXPECT_NEAR(m.exposure.gamma_flip, 100, 1e-6);
 }
 
+TEST(ChainAnalytics, EuropeanShortExpiryReportsTermOrAssumedRate) {
+  ChainBook book;
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  md::InstrumentId id = 0;
+  for (auto date : {md::Date{2026, 9, 23}, md::Date{2027, 9, 22}}) {
+    const double t = md::years_between(as_of, md::new_york_to_utc(date, 16, 0));
+    for (double k = 90; k <= 110; k += 2.5)
+      for (auto type : {OptionType::Call, OptionType::Put})
+        add_option(book, id++, date, type, k, as_of, 100, .5, 1, std::exp(-.05 * t));
+    const auto m = analytics::analyze(book.underlyings().at("SPX"), book, as_of);
+    EXPECT_EQ(m.slices[0].rate_source, m.slices.size() == 1 ? "assumed" : "term");
+    EXPECT_FALSE(m.slices[0].forward.fitted_discount);
+    if (m.slices.size() == 2) {
+      EXPECT_NEAR(-std::log(m.slices[0].forward.discount) / m.slices[0].years, .05, 1e-10);
+      EXPECT_EQ(m.slices[1].rate_source, "parity");
+    }
+  }
+}
+
+TEST(ChainAnalytics, UnpricedItmOiContributesToVexAndGammaFlip) {
+  ChainBook book;
+  const auto as_of = md::new_york_to_utc({2025, 10, 22}, 16, 0);
+  book.apply(md::UnderlyingQuote{"SPX", as_of, 100, 100, 100});
+  add_option(book, 0, {2026, 10, 22}, OptionType::Call, 100, as_of, 100, .5, 100);
+  add_option(book, 1, {2026, 10, 22}, OptionType::Call, 150, as_of, 100, .5, 0);
+  add_option(book, 2, {2026, 10, 22}, OptionType::Put, 150, as_of, 100, .5, 114);
+  book.apply(md::OptionQuote{2, as_of, 1, 2, 1, 1});  // sub-intrinsic ITM quote
+  analytics::AnalyticsOptions options;
+  options.fallback_rate = 0;
+  options.parity_strikes = 0;  // isolate positions from the deliberately bad parity quote
+  const auto m = analytics::analyze(book.underlyings().at("SPX"), book, as_of, options);
+  const auto& row = m.slices[0].strikes[1];
+  EXPECT_FALSE(std::isfinite(row.put.iv));
+  EXPECT_NEAR(row.iv, .5, 1e-9);
+  EXPECT_NEAR(row.vex, -row.put.vanna * 114 * 100 * 100, 1e-9);
+  const double root =
+      100 * std::exp(std::log(1.5) / 2 - .125 - .25 * std::log(1.14) / std::log(1.5));
+  EXPECT_NEAR(m.exposure.gamma_flip, root, 1e-6);
+  EXPECT_EQ(m.coverage.priced, 2);
+  EXPECT_EQ(m.exposure.oi_coverage, 1);
+}
+
+}  // namespace
+
+namespace {
+TEST(ChainAnalytics, IgnoresSpotMoreThanThirtyMinutesBehindOptionData) {
+  SyntheticChain chain;
+  // An ETF's 15:59:59 closing print against its options' 16:15 close stays the spot.
+  chain.book.apply(
+      md::UnderlyingQuote{"SPX", chain.as_of - 15 * md::kNanosPerMinute - md::kNanosPerSecond, 0,
+                          0, kSpot});
+  EXPECT_EQ(analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of)
+                .spot_source,
+            "quote");
+  const auto boundary = chain.as_of - 30 * md::kNanosPerMinute;
+  chain.book.apply(md::UnderlyingQuote{"SPX", boundary, 0, 0, kSpot});
+  const auto current =
+      analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of);
+  EXPECT_EQ(current.spot_source, "quote");
+  // A deliberately wrong old print must affect neither strike selection nor Greeks.
+  chain.book.apply(md::UnderlyingQuote{"SPX", boundary - 1, 0, 0, 9000});
+  const auto stale =
+      analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of);
+  chain.book.apply(md::UnderlyingQuote{"SPX", boundary - 1, 0, 0, 0});
+  const auto absent =
+      analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of);
+  EXPECT_EQ(stale.spot_source, "parity");
+  EXPECT_NEAR(stale.spot, chain.forward * chain.discount, 1e-8);
+  EXPECT_DOUBLE_EQ(stale.spot, absent.spot);
+  EXPECT_DOUBLE_EQ(stale.slices[0].forward.forward, absent.slices[0].forward.forward);
+  EXPECT_DOUBLE_EQ(stale.slices[0].strikes[20].call.gamma, absent.slices[0].strikes[20].call.gamma);
+}
 }  // namespace

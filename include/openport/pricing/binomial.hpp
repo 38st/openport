@@ -26,4 +26,9 @@ enum class TreeMethod : std::uint8_t {
 [[nodiscard]] double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod method,
                                     int steps);
 
+/// American minus European value on the SAME LR lattice: cancels European
+/// discretisation error. Exact zero when exercise cannot help (nonpositive q,
+/// nonnegative r for calls; nonpositive r, nonnegative q for puts).
+[[nodiscard]] double binomial_early_exercise_premium(const BsmInputs& in, int steps);
+
 }  // namespace openport::pricing

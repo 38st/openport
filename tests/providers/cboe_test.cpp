@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -26,7 +27,8 @@ constexpr std::string_view kChain = R"({
       {"option": "NOT-A-SYMBOL", "bid": 1.0, "ask": 2.0}
     ],
     "symbol": "^SPX", "security_type": "index", "current_price": 7777.27,
-    "price_change": 12.5, "bid": 7776.0, "ask": 7778.53
+    "price_change": 12.5, "bid": 7776.0, "ask": 7778.53,
+    "last_trade_time": "2026-09-22 15:33:42"
   }
 })";
 
@@ -76,7 +78,9 @@ TEST(Cboe, PublishesDefinitionsBeforeDataAndSkipsBadSymbols) {
   std::vector<bool> defined(3, false);
   for (const auto& event : sink.events) {
     if (const auto* d = std::get_if<md::ContractDefinition>(&event)) defined[d->id] = true;
-    if (const auto* q = std::get_if<md::OptionQuote>(&event)) EXPECT_TRUE(defined[q->id]);
+    if (const auto* q = std::get_if<md::OptionQuote>(&event)) {
+      EXPECT_TRUE(defined[q->id]);
+    }
   }
 
   EXPECT_EQ(sink.all<md::OptionQuote>().size(), 3u);
@@ -86,8 +90,9 @@ TEST(Cboe, PublishesDefinitionsBeforeDataAndSkipsBadSymbols) {
   const auto underlying = sink.all<md::UnderlyingQuote>();
   ASSERT_EQ(underlying.size(), 1u);
   EXPECT_EQ(underlying[0].symbol, "SPX");
-  // Delayed data: quotes are stamped 15 minutes before the snapshot.
-  EXPECT_EQ(md::format_timestamp(underlying[0].ts), "2026-09-22T19:33:44.000Z");
+  // Underlying and option clocks are independent.
+  EXPECT_EQ(md::format_timestamp(underlying[0].ts), "2026-09-22T19:33:42.000Z");
+  EXPECT_EQ(md::format_timestamp(sink.all<md::OptionQuote>()[0].ts), "2026-09-22T19:33:44.000Z");
 }
 
 TEST(Cboe, RepublishesOnlyWhatChanged) {
@@ -158,7 +163,7 @@ TEST(Cboe, UpdatesKnownContractsOutsideTheWindowAndRetiresOnlyTheirUnderlying) {
 }  // namespace
 
 namespace {
-TEST(Cboe, FrozenAfterHoursQuotesUseLastTradeTimeRatherThanAdvancingPublicationTime) {
+TEST(Cboe, CurbQuotesAdvancePastTheUnderlyingLastTrade) {
   // Publication is UTC; last_trade_time is New York local (EDT here).
   const auto chain = providers::parse_cboe_chain(R"({
     "timestamp":"2026-09-22 20:34:59",
@@ -170,11 +175,12 @@ TEST(Cboe, FrozenAfterHoursQuotesUseLastTradeTimeRatherThanAdvancingPublicationT
   provider.publish_chain(chain, {}, sink);
   const auto expected = *md::parse_datetime("2026-09-22 16:14:59", md::Zone::NewYork);
   EXPECT_EQ(sink.all<md::UnderlyingQuote>().at(0).ts, expected);
-  EXPECT_EQ(sink.all<md::OptionQuote>().at(0).ts, expected);
-  EXPECT_EQ(sink.all<md::VendorGreeks>().at(0).ts, expected);
+  const auto option_time = *md::parse_datetime("2026-09-22 16:19:59", md::Zone::NewYork);
+  EXPECT_EQ(sink.all<md::OptionQuote>().at(0).ts, option_time);
+  EXPECT_EQ(sink.all<md::VendorGreeks>().at(0).ts, option_time);
 }
 
-TEST(Cboe, LastTradeTimeCannotAdvanceDelayedSnapshotAndInvalidTimeFallsBack) {
+TEST(Cboe, UnderlyingRetainsItsOwnClockAndUnknownTimeStaysUnknown) {
   for (const auto* last_trade : {"2026-09-22 16:34:59", "invalid", ""}) {
     const auto chain = providers::parse_cboe_chain(
         std::string(
@@ -184,7 +190,48 @@ TEST(Cboe, LastTradeTimeCannotAdvanceDelayedSnapshotAndInvalidTimeFallsBack) {
     Collector sink;
     provider.publish_chain(chain, {}, sink);
     EXPECT_EQ(sink.all<md::UnderlyingQuote>().at(0).ts,
-              *md::parse_datetime("2026-09-22 20:19:59", md::Zone::Utc));
+              md::parse_datetime(last_trade, md::Zone::NewYork).value_or(0));
+  }
+}
+}  // namespace
+
+namespace {
+TEST(Cboe, OptionMarketTimeTracksEachProductsSessionsAndNeverRunsPastDelayedTime) {
+  for (auto symbol : {"SPXW", "SPY", "AAPL"}) {
+    for (const auto& [date, hour, minute] :
+         {std::tuple{md::Date{2026, 9, 22}, 21, 25}, std::tuple{md::Date{2026, 9, 22}, 17, 10},
+          std::tuple{md::Date{2026, 9, 23}, 9, 42}, std::tuple{md::Date{2026, 9, 26}, 21, 25},
+          std::tuple{md::Date{2026, 11, 27}, 14, 0}}) {
+      providers::CboeChain chain;
+      chain.symbol = md::conventions_for_root(symbol).underlying;
+      chain.as_of = md::new_york_to_utc(date, hour, minute);
+      chain.last_trade_time = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+      chain.price = 100;
+      chain.options.push_back({std::string(symbol) + "261218C00100000", 1, 1, 2, 1, .2});
+      providers::CboeDelayedProvider provider;
+      Collector sink;
+      provider.publish_chain(chain, {}, sink);
+      const auto delayed = chain.as_of - 15 * md::kNanosPerMinute;
+      const auto expected = md::trading_session(symbol, delayed).market_time;
+      EXPECT_EQ(sink.all<md::UnderlyingQuote>().at(0).ts, chain.last_trade_time);
+      EXPECT_EQ(sink.all<md::OptionQuote>().at(0).ts, expected);
+      EXPECT_LE(expected, delayed);
+      if (hour == 21 && date == md::Date{2026, 9, 22}) {
+        EXPECT_EQ(expected,
+                  std::string_view(symbol) == "SPXW"
+                      ? delayed
+                      : md::new_york_to_utc(date, 16, std::string_view(symbol) == "SPY" ? 15 : 0));
+        // An overnight changed quote must advance even while current_price and
+        // last_trade_time stay frozen; SnapshotPublisher still deduplicates.
+        chain.as_of += 2 * md::kNanosPerMinute;
+        chain.options[0].bid += .1;
+        sink.events.clear();
+        provider.publish_chain(chain, {}, sink);
+        ASSERT_EQ(sink.all<md::OptionQuote>().size(), 1u);
+        EXPECT_EQ(sink.all<md::OptionQuote>()[0].ts,
+                  expected + (std::string_view(symbol) == "SPXW" ? 2 * md::kNanosPerMinute : 0));
+      }
+    }
   }
 }
 }  // namespace

@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <limits>
 
+#include "openport/md/contract.hpp"
+
 namespace openport::md {
 namespace {
 
@@ -25,13 +27,20 @@ namespace {
   return ec == std::errc() && ptr == begin + len;
 }
 
-// int128 keeps the final multiply/add checked even at the two int64 endpoints.
+// Normalize a negative second with a positive fraction before multiplying:
+// the floor second at INT64_MIN would overflow even though the full time fits.
 std::optional<Timestamp> timestamp(std::int64_t seconds, Timestamp fraction = 0) noexcept {
-  const __int128 nanos = static_cast<__int128>(seconds) * kNanosPerSecond + fraction;
-  if (nanos < std::numeric_limits<Timestamp>::min() ||
-      nanos > std::numeric_limits<Timestamp>::max())
+  if (seconds < 0 && fraction > 0) {
+    ++seconds;
+    fraction -= kNanosPerSecond;
+  }
+  constexpr auto low = std::numeric_limits<Timestamp>::min();
+  constexpr auto high = std::numeric_limits<Timestamp>::max();
+  if (seconds < low / kNanosPerSecond || seconds > high / kNanosPerSecond) return std::nullopt;
+  const Timestamp nanos = seconds * kNanosPerSecond;
+  if ((fraction > 0 && nanos > high - fraction) || (fraction < 0 && nanos < low - fraction))
     return std::nullopt;
-  return static_cast<Timestamp>(nanos);
+  return nanos + fraction;
 }
 
 bool valid_time(Date date, int hour, int minute, int second) noexcept {
@@ -183,7 +192,13 @@ int regular_close_hour(Date date) noexcept {
   return 16;
 }
 
-MarketSession market_session(Timestamp ts) {
+namespace {
+struct LocalTime {
+  Date date;
+  std::int64_t days;
+  std::int64_t seconds;
+};
+LocalTime local_time(Timestamp ts) {
   // Determine DST from UTC transition instants, so the repeated fall hour cannot
   // choose the wrong local date. Work in seconds to avoid nanosecond overflow.
   auto seconds = ts / kNanosPerSecond;
@@ -202,7 +217,12 @@ MarketSession market_session(Timestamp ts) {
     rem += 86400;
     --days;
   }
-  const auto date = date_from_days(days);
+  return {date_from_days(days), days, rem};
+}
+}  // namespace
+
+MarketSession market_session(Timestamp ts) {
+  const auto [date, days, rem] = local_time(ts);
   MarketSession result;
   const int wd = weekday(date);
   if (wd == 0 || wd == 6)
@@ -226,6 +246,52 @@ MarketSession market_session(Timestamp ts) {
       result.next_open = next;
       break;
     }
+  }
+  return result;
+}
+
+TradingSession trading_session(std::string_view root, Timestamp ts) {
+  const auto underlying = conventions_for_root(root).underlying;
+  const bool global =
+      underlying == "SPX" || underlying == "XSP" || underlying == "VIX" || underlying == "RUT";
+  const bool curb = global;
+  const bool quarter_hour = is_index_underlying(underlying) || underlying == "SPY" ||
+                            underlying == "QQQ" || underlying == "IWM" || underlying == "DIA";
+  const auto local = local_time(ts);
+  const auto date = local.date;
+  const auto days = local.days;
+  TradingSession result;
+  result.note = "closed (between sessions)";
+  if (weekday(date) == 0 || weekday(date) == 6) result.note = "closed (weekend)";
+  if (const auto h = holiday(date); !h.empty())
+    result.note = "closed (holiday: " + std::string(h) + ")";
+  auto consider = [&](std::string_view name, Timestamp start, Timestamp end) {
+    if (end == kInvalidTimestamp) return;
+    if (start != kInvalidTimestamp && start <= ts && ts < end) {
+      result.name = name;
+      result.open = true;
+      result.note = name == "global" ? "overnight session"
+                    : name == "curb" ? "curb session"
+                                     : "regular session";
+      result.market_time = ts;
+    } else if (!result.open && end <= ts && end > result.market_time) {
+      result.market_time = end;
+    }
+  };
+  // Enumerate trade dates, including tomorrow for tonight's GTH. Two weeks
+  // covers every closure in the supported calendar without subtracting nanos.
+  for (int offset = -14; offset <= 1; ++offset) {
+    const auto trade_date = date_from_days(days + offset);
+    if (!business_day(trade_date)) continue;
+    if (global) {
+      const auto evening = date_from_days(days + offset - 1);
+      consider("global", new_york_to_utc(evening, 20, 15), new_york_to_utc(trade_date, 9, 25));
+    }
+    const int close_hour = regular_close_hour(trade_date);
+    consider("regular", new_york_to_utc(trade_date, 9, 30),
+             new_york_to_utc(trade_date, close_hour, quarter_hour ? 15 : 0));
+    if (curb && close_hour == 16)
+      consider("curb", new_york_to_utc(trade_date, 16, 15), new_york_to_utc(trade_date, 17, 0));
   }
   return result;
 }

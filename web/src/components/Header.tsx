@@ -75,7 +75,7 @@ export function Header({
                 {inferredSpot ? "≈" : ""}{price(current.spot)}
               </Flash>
             </span>
-            <span className="min-w-0 text-[11px] text-muted">as of <AsOf asOf={current.as_of} delaySeconds={provider?.delay_seconds} market={market} /></span>
+            <span className="min-w-0 text-[11px] text-muted">as of <AsOf asOf={current.as_of} delaySeconds={provider?.delay_seconds} market={market} session={current.session} /></span>
           </div>
         )}
 

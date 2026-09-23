@@ -7,6 +7,7 @@ add_executable(openport_tests
   md/event_queue_test.cpp
   analytics/forward_test.cpp
   analytics/chain_analytics_test.cpp
+  analytics/american_test.cpp
 )
 target_link_libraries(openport_tests PRIVATE openport::options GTest::gtest_main)
 target_include_directories(openport_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

@@ -55,11 +55,21 @@ describe("market badge", () => {
     })
   })
 
-  it("keeps stale badges for open markets and older servers", () => {
-    for (const market of [{ ...closed, open: true }, null, undefined]) {
-      expect(marketBadge(market, true)).toMatchObject({ label: "stale", tone: "warn" })
-      expect(marketBadge(market, false)).toBeNull()
+  it("only warns about stale data when a session is known to be open", () => {
+    expect(marketBadge({ ...closed, open: true }, true)).toMatchObject({ label: "stale", tone: "warn" })
+    expect(marketBadge({ ...closed, open: true }, false)).toBeNull()
+    for (const market of [null, undefined]) expect(marketBadge(market, true)).toBeNull()
+  })
+
+  it("labels global and curb sessions neutrally until their data is stale", () => {
+    for (const name of ["global", "curb"] as const) {
+      const session = { name, open: true, note: "Trading now" }
+      expect(marketBadge(session, false)).toEqual({ label: name === "global" ? "overnight session" : "curb session",
+        tone: "neutral", title: "Trading now" })
+      expect(marketBadge(session, true)).toMatchObject({ label: "stale", tone: "warn" })
     }
+    expect(marketBadge({ name: "closed", open: false, note: "Closed" }, true))
+      .toEqual({ label: "market closed", tone: "neutral", title: "Closed" })
   })
 
   it("omits unknown or invalid next opens, and handles a missing snapshot", () => {

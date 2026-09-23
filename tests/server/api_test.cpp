@@ -11,6 +11,7 @@
 #include "openport/analytics/chain_analytics.hpp"
 #include "openport/net/http.hpp"
 #include "openport/server/web_server.hpp"
+#include "support/american_chain.hpp"
 #include "support/synthetic_chain.hpp"
 
 namespace {
@@ -122,9 +123,14 @@ TEST(Api, RejectsMalformedAndOutOfRangeNumbers) {
     EXPECT_TRUE(
         get(source, "/api/underlyings/SPX/exposure?expiries=" + value, 400).contains("error"));
   }
-  for (const std::string value : {"", "-0.1", "1.01", "nan", "inf", "1e999", "0.1junk", " 0.1"}) {
+  for (const std::string value :
+       {"", "-0.1", "1.01", "nan", "inf", "1e999", "0.1junk", " 0.1", "0.1 ", "0x1p-4", "0x0", ".",
+        "+", "1e", "1e+", "1e-", "1e-999", "1e-310"}) {
     EXPECT_TRUE(get(source, "/api/underlyings/SPX/chain?window=" + value, 400).contains("error"));
   }
+  for (const auto value : {"0", "-0", "+.5", ".5", "1.", "1e-2", "+1.0E-2", "0e-999"})
+    EXPECT_FALSE(
+        get(source, std::string("/api/underlyings/SPX/chain?window=") + value).contains("error"));
   EXPECT_FALSE(get(source, "/api/underlyings/SPX/surface?expiries=500&window=1").contains("error"));
   EXPECT_FALSE(get(source, "/api/underlyings/SPX/chain?expiries=1&window=0").contains("error"));
   EXPECT_TRUE(get(source, "/api/underlyings/SPX/chain?window=2&window=0.5", 400).contains("error"));
@@ -194,6 +200,13 @@ TEST(Api, PublishesMarketAndAnalyticsProvenance) {
   auto status = get(source, "/api/status");
   auto tick = json::parse(server::tick_message(source));
   for (auto* j : {&status, &tick}) {
+    const auto& session = (*j)["underlyings"][0]["session"];
+    ASSERT_TRUE(session.is_object());
+    EXPECT_TRUE(session["open"].is_boolean());
+    EXPECT_TRUE(session["note"].is_string());
+    EXPECT_TRUE(session["name"] == "regular" || session["name"] == "curb" ||
+                session["name"] == "global" || session["name"] == "closed");
+    EXPECT_EQ(session["open"], session["name"] != "closed");
     ASSERT_TRUE((*j)["market"].is_object());
     EXPECT_TRUE((*j)["market"]["open"].is_boolean());
     EXPECT_TRUE((*j)["market"]["note"].is_string());
@@ -248,7 +261,10 @@ TEST(Api, AmericanApproximationAndPartialExposureCoverageAreExplicit) {
     book.apply(md::OptionQuote{id, original.as_of, s->bid, s->ask, 1, 1});
     if (id < 41) book.apply(md::OpenInterest{id, original.as_of, 0});
   }
-  StubSource source(analytics::analyze(book.underlyings().at("SPY"), book, original.as_of));
+  analytics::AnalyticsOptions options;
+  options.deamericanize = false;
+  StubSource source(
+      analytics::analyze(book.underlyings().at("SPY"), book, original.as_of, options));
   auto summary = get(source, "/api/underlyings/SPY/summary");
   EXPECT_EQ(summary["spot_source"], "parity");
   EXPECT_EQ(summary["american_approximation"], true);
@@ -282,6 +298,51 @@ TEST(Api, UnanchoredUnquotedChainStillReportsMissingDataAndCoverage) {
     EXPECT_TRUE(j["spot_source"].is_null());
     EXPECT_TRUE(j["spot"].is_null());
   }
+}
+
+TEST(Api, RateSourcesAndDeamericanisationAreIncludedInBothExpiryViews) {
+  for (bool curve : {false, true}) {
+    analytics::ChainBook book;
+    md::InstrumentId id = 0;
+    const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+    test::add_american_expiry(book, as_of, {2027, 9, 22}, id, 100, 80, 2.5, 17, 101);
+    analytics::AnalyticsOptions options;
+    if (curve)
+      options.discount_curve =
+          analytics::DiscountCurve::from_points("SPX", {{.25, .045}, {1, .045}});
+    StubSource source(analytics::analyze(book.underlyings().at("SPY"), book, as_of, options));
+    const auto summary = get(source, "/api/underlyings/SPY/summary");
+    const auto chain = get(source, "/api/underlyings/SPY/chain");
+    EXPECT_EQ(summary["american_approximation"], false);
+    bool positive_eep = false;
+    for (const auto& row : chain["strikes"]) {
+      for (const auto side : {"call", "put"}) {
+        const auto& quote = row[side];
+        EXPECT_TRUE(quote["eep"].is_number());
+        positive_eep = positive_eep || quote["eep"].get<double>() > .01;
+        const double strike = row["strike"].get<double>();
+        const auto& pair = book.underlyings().at("SPY").expiries.begin()->second.strikes.at(strike);
+        const auto* raw = book.option(std::string_view(side) == "call" ? pair.call : pair.put);
+        EXPECT_NEAR(quote["bid"].get<double>(), raw->bid, .000051);
+        EXPECT_NEAR(quote["ask"].get<double>(), raw->ask, .000051);
+        EXPECT_NEAR(quote["mid"].get<double>(), raw->mid(), .000051);
+      }
+    }
+    EXPECT_TRUE(positive_eep);
+    for (const auto& expiry : {summary["expiries"][0], chain["expiry"]}) {
+      EXPECT_EQ(expiry["rate_source"], curve ? "curve" : "assumed");
+      EXPECT_EQ(expiry["rate_curve_symbol"], curve ? json("SPX") : json(nullptr));
+      EXPECT_EQ(expiry["rate_fitted"], false);
+      EXPECT_EQ(expiry["deamericanized"], true);
+    }
+  }
+  StubSource european;
+  EXPECT_TRUE(get(european, "/api/underlyings/SPX/chain")["strikes"][0]["call"]["eep"].is_null());
+  const auto expiry = get(european, "/api/underlyings/SPX/chain")["expiry"];
+  EXPECT_EQ(expiry["rate_source"], "parity");
+  EXPECT_EQ(expiry["rate_fitted"], true);
+  EXPECT_EQ(expiry["deamericanized"], false);
+  EXPECT_TRUE(expiry["rate_curve_symbol"].is_null());
 }
 
 }  // namespace

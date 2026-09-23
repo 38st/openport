@@ -89,6 +89,67 @@ describe("web follow-up rendering", () => {
     expect(html).not.toContain("IVs and Greeks use a European model")
   })
 
+  it("shows curve provenance and a neutral de-Americanisation note without flagging zero bids", () => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+    const chain: Chain = {
+      symbol: "SPY", spot: 700, as_of: asOf, version: 1,
+      expiry: { ...expiry, style: "american", rate_source: "curve", rate_curve_symbol: "SPX", deamericanized: true,
+        coverage: { options: 366, quoted: 366, priced: 247, open_interest: 366 } },
+      strikes: [],
+    }
+    const html = render(<ChainView symbol="SPY" expiry={expiry.id} onExpiry={() => {}} />, { chain })
+    expect(html).toContain("From the SPX parity curve: American-style parity is distorted by early exercise")
+    expect(html).toContain("0.00%*")
+    expect(html).toContain("IVs de-Americanised: early-exercise premium removed with a Leisen-Reimer tree")
+    expect(html).toContain("priced 247/366")
+    expect(html).not.toContain("low coverage")
+    expect(html).not.toContain("IVs and Greeks use a European model")
+  })
+
+  it("keeps market quotes and explains the positive EEP in the IV tooltip", () => {
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+    const chain: Chain = { symbol: "SPY", spot: 700, as_of: asOf, version: 1, expiry,
+      strikes: [{ strike: 700, iv: .2, gex: 0, vex: 0,
+        call: { ...quote, bid: 1.1, ask: 1.3, mid: 1.2, iv: .2, eep: .12, vendor_iv: .201 },
+        put: { ...quote, eep: null } }] }
+    const html = render(<ChainView symbol="SPY" expiry={expiry.id} onExpiry={() => {}} />, { chain })
+    expect(html).toContain("IV after removing a $0.12 early-exercise premium")
+    expect(html).toContain("test 20.10")
+    expect(html).toContain("1.10")
+    expect(html).toContain("1.30")
+    expect(html).not.toContain("$0.00 early-exercise premium")
+  })
+
+  it("uses the selected underlying session instead of the top-level regular market", () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(asOf) + 15 * 60_000)
+    try {
+      const header = <Header symbol="SPY" view="chain" onSymbol={() => {}} onView={() => {}} />
+      for (const name of ["global", "curb", "closed"] as const) {
+        const selected = { ...status, underlyings: [{ ...status.underlyings[0]!,
+          session: { name, open: name !== "closed", note: "Product session" } }] }
+        vi.mocked(useLive).mockReturnValue(liveState(selected, null, "open"))
+        const label = name === "global" ? "overnight session" : name === "curb" ? "curb session" : "market closed"
+        expect(render(<EngineView />)).toContain(label)
+        const html = render(header)
+        expect(html).toContain(label)
+        expect(html).not.toContain(">stale<")
+        if (name !== "closed") expect(html).not.toContain("market closed")
+      }
+      const tick: Tick = { type: "tick", feed: { state: "delayed", message: "Receiving" }, engine: status.engine,
+        underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }] }
+      clock.mockReturnValue(Date.parse(asOf) + 25 * 60_000 + 1)
+      vi.mocked(useLive).mockReturnValue(liveState(status, tick, "open"))
+      expect(render(header)).toContain(">stale<")
+      tick.underlyings[0]!.session = { name: "closed", open: false, note: "Closed" }
+      vi.mocked(useLive).mockReturnValue(liveState(status, tick, "open"))
+      const closedHtml = render(header)
+      expect(closedHtml).toContain("market closed")
+      expect(closedHtml).not.toContain(">stale<")
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   it.each([0.97, 0.89, null])("renders exposure OI coverage %s, including unknown coverage", (ratio) => {
     vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
     const exposure: ExposureMatrix = {

@@ -1,12 +1,13 @@
 #include "openport/server/api.hpp"
 
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <string>
 #include <type_traits>
 
@@ -80,6 +81,10 @@ json expiry_json(const SliceMetrics& slice) {
       {"discount", sig(slice.forward.discount, 9)},
       {"rate", sig(rate, 4)},
       {"rate_fitted", slice.forward.fitted_discount},
+      {"rate_source", slice.rate_source},
+      {"rate_curve_symbol",
+       slice.rate_curve_symbol.empty() ? json(nullptr) : json(slice.rate_curve_symbol)},
+      {"deamericanized", slice.deamericanized},
       {"atm_iv", sig(slice.atm_iv)},
       {"gex", sig(slice.gex)},
       {"vex", sig(slice.vex)},
@@ -104,6 +109,7 @@ json option_json(const analytics::OptionMetrics& o) {
       {"bid", price(o.bid)},
       {"ask", price(o.ask)},
       {"mid", price(o.mid)},
+      {"eep", sig(o.eep)},
       {"iv", sig(o.iv)},
       {"bid_iv", sig(o.bid_iv)},
       {"ask_iv", sig(o.ask_iv)},
@@ -112,8 +118,8 @@ json option_json(const analytics::OptionMetrics& o) {
       {"vega", sig(o.vega)},
       {"theta", sig(o.theta)},
       {"vanna", sig(o.vanna)},
-      {"oi",
-       o.has_open_interest && std::isfinite(o.open_interest) ? json(o.open_interest) : json(nullptr)},
+      {"oi", o.has_open_interest && std::isfinite(o.open_interest) ? json(o.open_interest)
+                                                                   : json(nullptr)},
       {"vendor_iv", sig(o.vendor_iv)},
   };
 }
@@ -134,6 +140,34 @@ std::optional<std::map<std::string, std::string>> parse_query(std::string_view q
   return out;
 }
 
+// Strict decimal syntax before strtod: libc++ and libstdc++ streams disagree
+// on underflow. ERANGE rejects both overflow and underflow, including subnormals.
+bool decimal_number(const std::string& text, double& value) {
+  std::size_t pos = 0;
+  if (pos < text.size() && (text[pos] == '+' || text[pos] == '-')) ++pos;
+  auto digits = [&] {
+    const auto first = pos;
+    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') ++pos;
+    return pos != first;
+  };
+  bool mantissa = digits();
+  if (pos < text.size() && text[pos] == '.') {
+    ++pos;
+    mantissa = digits() || mantissa;
+  }
+  if (!mantissa) return false;
+  if (pos < text.size() && (text[pos] == 'e' || text[pos] == 'E')) {
+    ++pos;
+    if (pos < text.size() && (text[pos] == '+' || text[pos] == '-')) ++pos;
+    if (!digits()) return false;
+  }
+  if (pos != text.size()) return false;
+  errno = 0;
+  char* end = nullptr;
+  value = std::strtod(text.c_str(), &end);
+  return errno != ERANGE && end == text.c_str() + text.size() && std::isfinite(value);
+}
+
 template <typename T>
 bool bounded_number(const std::map<std::string, std::string>& query, const std::string& key,
                     T minimum, T maximum, T& value) {
@@ -144,11 +178,7 @@ bool bounded_number(const std::map<std::string, std::string>& query, const std::
     const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
     if (ec != std::errc{} || end != text.data() + text.size()) return false;
   } else {
-    // Apple's pinned libc++ lacks floating-point from_chars. A classic-locale,
-    // non-skipping stream still requires the entire value to be one number.
-    std::istringstream input(text);
-    input.imbue(std::locale::classic());
-    if (!(input >> std::noskipws >> value) || !input.eof()) return false;
+    if (!decimal_number(text, value)) return false;
   }
   return std::isfinite(value) && value >= minimum && value <= maximum;
 }
@@ -166,13 +196,20 @@ bool in_window(double strike, double spot, double window) {
   return !(window > 0.0) || !(spot > 0.0) || std::abs(strike / spot - 1.0) <= window + 1e-12;
 }
 
-json underlyings_json(const MetricsSource& source, const EngineStatus& status, bool details) {
+json underlyings_json(const MetricsSource& source, const EngineStatus& status, bool details,
+                      md::Timestamp now) {
   json underlyings = json::array();
   std::set<std::string> symbols;
   for (const auto& symbol : source.symbols()) symbols.insert(symbol);
   for (const auto& [symbol, health] : status.underlyings) symbols.insert(symbol);
   for (const std::string& symbol : symbols) {
-    json item{{"symbol", symbol}, {"spot", nullptr}, {"as_of", nullptr}, {"version", 0}};
+    const auto session = md::trading_session(symbol, now);
+    json item{
+        {"symbol", symbol},
+        {"spot", nullptr},
+        {"as_of", nullptr},
+        {"version", 0},
+        {"session", {{"name", session.name}, {"open", session.open}, {"note", session.note}}}};
     if (details) {
       item["expiries"] = 0;
       item["options"] = 0;
@@ -204,8 +241,9 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
 
 json status_json(const MetricsSource& source) {
   const EngineStatus s = source.status();
+  const auto now = md::now();
   return {
-      {"market", market_json(md::now())},
+      {"market", market_json(now)},
       {"provider",
        {{"name", s.provider},
         {"realtime", s.capabilities.realtime},
@@ -220,7 +258,7 @@ json status_json(const MetricsSource& source) {
         {"message", s.feed_message},
         {"updated",
          s.feed_updated > 0 ? json(md::format_timestamp(s.feed_updated)) : json(nullptr)}}},
-      {"underlyings", underlyings_json(source, s, true)},
+      {"underlyings", underlyings_json(source, s, true, now)},
       {"engine",
        {{"events", s.events},
         {"events_per_second", sig(s.events_per_second, 4)},
@@ -408,10 +446,11 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
 
 std::string tick_message(const MetricsSource& source) {
   const EngineStatus s = source.status();
+  const auto now = md::now();
   return json{{"type", "tick"},
-              {"market", market_json(md::now())},
+              {"market", market_json(now)},
               {"feed", {{"state", md::to_string(s.feed_state)}, {"message", s.feed_message}}},
-              {"underlyings", underlyings_json(source, s, false)},
+              {"underlyings", underlyings_json(source, s, false, now)},
               {"engine",
                {{"events_per_second", sig(s.events_per_second, 4)},
                 {"analytics_ms", sig(s.analytics_ms, 4)},

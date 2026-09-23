@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
-import type { MarketSession, Num } from "../api/types"
+import type { MarketSession, TradingSession, Num } from "../api/types"
 import { marketBadge, snapshotFreshness } from "../lib/freshness"
 
-export function AsOf({ asOf, delaySeconds = 0, market, showBadge = true }: {
+export function AsOf({ asOf, delaySeconds = 0, market, session, showBadge = true }: {
   asOf: string | null | undefined
   delaySeconds?: Num
   market?: MarketSession | null
+  session?: TradingSession | null
   showBadge?: boolean
 }) {
   const [now, setNow] = useState(Date.now)
@@ -15,7 +16,7 @@ export function AsOf({ asOf, delaySeconds = 0, market, showBadge = true }: {
     return () => window.clearInterval(timer)
   }, [])
   const { label, stale, ageSeconds } = snapshotFreshness(asOf, delaySeconds, now)
-  const badge = showBadge ? marketBadge(market, stale) : null
+  const badge = showBadge ? marketBadge(session ?? market, stale) : null
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
       <time dateTime={ageSeconds == null ? undefined : asOf ?? undefined}>{label}</time>

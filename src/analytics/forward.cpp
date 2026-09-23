@@ -115,8 +115,8 @@ ForwardEstimate implied_forward(std::span<const ParityPoint> input, double expir
   return implied_forward_given_discount(points, discount);
 }
 
-ForwardEstimate implied_forward_given_discount(std::span<const ParityPoint> input,
-                                               double discount) {
+ForwardEstimate implied_forward_given_discount(std::span<const ParityPoint> input, double discount,
+                                               bool weighted_median) {
   ForwardEstimate out;
   out.discount = discount;
   if (!(discount > 0) || !std::isfinite(discount)) return out;
@@ -124,14 +124,25 @@ ForwardEstimate implied_forward_given_discount(std::span<const ParityPoint> inpu
   if (points.empty()) return out;
   const auto use = inliers(points, discount);
   double sw = 0, swf = 0;
+  std::vector<std::pair<double, double>> forwards;
   for (std::size_t i = 0; i < points.size(); ++i) {
     if (!use[i]) continue;
     const auto& p = points[i];
     sw += p.weight;
     swf += p.weight * (p.strike + (p.call_mid - p.put_mid) / discount);
+    forwards.emplace_back(p.strike + (p.call_mid - p.put_mid) / discount, p.weight);
     ++out.points;
   }
   out.forward = sw > 0 ? swf / sw : 0;
+  if (weighted_median && sw > 0) {
+    std::sort(forwards.begin(), forwards.end());
+    double cumulative = 0;
+    for (const auto& [f, w] : forwards) {
+      cumulative += w;
+      out.forward = f;
+      if (cumulative >= sw / 2) break;
+    }
+  }
   out.ok = std::isfinite(out.forward) && out.forward > 0 && out.points > 0;
   return out;
 }

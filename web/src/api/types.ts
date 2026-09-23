@@ -36,6 +36,7 @@ export interface UnderlyingSnapshot {
   spot: Num
   as_of: string | null
   version: number
+  session?: TradingSession | null
   state?: FeedState | null
   message?: string | null
   last_success?: string | null
@@ -46,6 +47,12 @@ export interface UnderlyingSnapshot {
 export interface UnderlyingStatus extends UnderlyingSnapshot {
   expiries: number
   options: number
+}
+
+export interface TradingSession {
+  name: "regular" | "curb" | "global" | "closed"
+  open: boolean
+  note: string
 }
 
 export interface MarketSession {
@@ -81,6 +88,9 @@ export interface Expiry {
   discount: Num
   rate: Num
   rate_fitted: boolean
+  rate_source?: "parity" | "term" | "curve" | "assumed" | null
+  rate_curve_symbol?: string | null
+  deamericanized?: boolean | null
   atm_iv: Num
   gex: Num
   vex: Num
@@ -112,6 +122,7 @@ export interface Summary {
 }
 
 export interface OptionQuote {
+  eep?: Num
   bid: Num
   ask: Num
   mid: Num

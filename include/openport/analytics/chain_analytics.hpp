@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "openport/analytics/chain_book.hpp"
@@ -10,6 +12,10 @@
 
 namespace openport::analytics {
 
+inline constexpr int kDeamericanizationSteps = 31;
+// Continuous dividend/borrow yield safeguards; not a cash-dividend forecast.
+inline constexpr double kMinTreeDividend = -0.05;
+inline constexpr double kMaxTreeDividend = 0.20;
 inline constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 /// OpenPort's own numbers for one option: the same for every provider.
@@ -20,7 +26,8 @@ struct OptionMetrics {
   double bid = kNaN;
   double ask = kNaN;
   double mid = kNaN;
-  double iv = kNaN;  ///< implied from the mid
+  double eep = kNaN;  ///< EEP removed for IV solves only; displayed quotes remain raw
+  double iv = kNaN;   ///< implied from mid minus eep when available
   double bid_iv = kNaN;
   double ask_iv = kNaN;
   double delta = kNaN;
@@ -59,6 +66,9 @@ struct SliceMetrics {
   Coverage coverage;
   double years = 0.0;
   ForwardEstimate forward;
+  std::string rate_source = "assumed";  ///< parity, term, curve, or assumed
+  std::string rate_curve_symbol;
+  bool deamericanized = false;
   double atm_iv = kNaN;
   double gex = 0.0;
   double vex = 0.0;
@@ -69,7 +79,7 @@ struct SliceMetrics {
 /// calls and short the puts that customers hold. That is a modelling convention,
 /// not knowledge of anyone's actual positions.
 struct ExposureSummary {
-  /// Fraction of live options with valid IV whose OI was received; NaN if none.
+  /// Fraction of options at finite-smile-IV strikes with received OI; NaN if none.
   double oi_coverage = kNaN;
   double gex = 0.0;
   double vex = 0.0;
@@ -92,34 +102,68 @@ struct UnderlyingMetrics {
   double compute_ms = 0.0;
 };
 
+/// Continuously compounded zero rates, linear in T with flat end extrapolation.
+/// Construction rejects invalid points and requires two distinct positive tenors.
+class DiscountCurve {
+ public:
+  static std::shared_ptr<const DiscountCurve> from_points(
+      std::string symbol, std::vector<std::pair<double, double>> points);
+  [[nodiscard]] double rate(double years) const;
+  [[nodiscard]] const std::string& symbol() const { return symbol_; }
+
+ private:
+  DiscountCurve() = default;
+  std::string symbol_;
+  std::vector<std::pair<double, double>> points_;
+};
+
+/// Only European expiries whose own parity fit supplied D enter the curve.
+[[nodiscard]] std::shared_ptr<const DiscountCurve> make_discount_curve(const UnderlyingMetrics& m);
+
 struct AnalyticsOptions {
   int parity_strikes = 12;   ///< strikes nearest the money used to fit the forward
   double flip_range = 0.10;  ///< search for the gamma flip within +-10% of spot
   int flip_steps = 81;
-  double fallback_rate = 0.04;  ///< discount-rate assumption when parity cannot fit one
+  double fallback_rate = 0.04;  ///< flat rate when no eligible market-implied rate exists
+  std::shared_ptr<const DiscountCurve> discount_curve;
+  bool deamericanize = true;
 
   /// Expiries shorter than this take their discount rate from the longer expiries
   /// (the median of their fitted rates): over a few days D is within a basis point
   /// of 1, so bid/ask noise swamps the parity slope that would otherwise estimate it.
+  /// American tree dividend/borrow yield also takes the median implied q of longer
+  /// expiries below this threshold, falling back to own q when none exists. Tree
+  /// q is clamped to [-5%, 20%] to limit annualisation of spot/option clock noise.
   double min_days_for_rate = 30.0;
 
   /// Exposure (GEX, VEX, gamma flip) uses at least this much time to expiry. Local
   /// gamma of an option minutes from expiry explodes but only holds over a tiny move,
   /// so it would drown out everything else. Displayed Greeks use the true time.
   double exposure_min_days = 0.5;
+
+  /// The provider's underlying print is used as spot only while it is at most this
+  /// much older than the option data; otherwise spot is inferred from parity. Stock
+  /// and ETF prints stop at 16:00 ET while their options quote until 16:15, so the
+  /// limit sits above that gap; an index frozen at the close during Cboe's overnight
+  /// session is hours behind its options and falls back to parity.
+  double max_spot_age_minutes = 30.0;
 };
 
 /// Prices one underlying's whole chain as of `as_of` (the data's own time, not the
 /// wall clock, so delayed feeds get the right time to expiry).
 ///
-/// Per expiry: the forward and discount factor come from put-call parity; each
-/// option's IV is implied from its mid with Black-76 on that forward; each strike's
-/// smile IV comes from its out-of-the-money side, and both sides' Greeks use it so
-/// they stay consistent. American options use a European approximation, exposed
-/// in the result. Early-exercise premiums contaminate parity-derived forwards,
-/// discount factors and IVs; no de-Americanisation is performed.
-/// A single spot (quote, else nearest valid parity F*D) anchors all exposures.
-/// Exposure includes only valid-IV contracts with received, finite nonnegative OI.
+/// European expiries fit parity rates; short expiries borrow their median level.
+/// American expiries use the supplied European curve or fallback_rate, never a
+/// parity slope. One de-Americanisation pass removes same-tree Leisen-Reimer EEP
+/// at first-pass IV/carry, then refits F and Black-76 IVs. One iteration suffices
+/// for the measured S=100, r=4.5%, q=1%, vol=20%, T={.25,1} grid: maximum forward
+/// residual 0.0271%, OTM IV residual 0.0870 vol points with 31 steps. See
+/// docs/american-analytics.md for EEP convergence and the performance measurement.
+/// Greeks remain European Black-76 Greeks at the final smile IV, accurate out of
+/// the money for American contracts. A single spot (quote no more than
+/// max_spot_age_minutes behind option data, else nearest parity F*D) anchors all exposures. Every side with received,
+/// finite nonnegative OI at a finite-smile-IV strike contributes exposure; priced coverage uses own
+/// IV.
 [[nodiscard]] UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain,
                                         md::Timestamp as_of, const AnalyticsOptions& options = {});
 

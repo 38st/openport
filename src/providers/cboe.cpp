@@ -2,11 +2,14 @@
 
 // simdjson 4.6 names std::ranges::input_range under C++20 without including
 // <ranges>; libc++ does not pull it in transitively.
+// clang-format off
 #include <ranges>
 #include <simdjson.h>
+// clang-format on
 
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -130,13 +133,13 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   // Quotes describe the market 15 minutes before the snapshot was generated.
   const md::Timestamp delayed =
       chain.as_of - std::chrono::duration_cast<std::chrono::nanoseconds>(kDelay).count();
-  // The publication timestamp advances after the market closes; quotes do not.
-  const md::Timestamp ts =
-      chain.last_trade_time > 0 ? std::min(delayed, chain.last_trade_time) : delayed;
-
   std::string underlying = chain.symbol;
   if (!underlying.empty() && underlying.front() == '^') underlying.erase(0, 1);
-  sink.publish(md::UnderlyingQuote{underlying, ts, chain.bid, chain.ask, chain.price});
+  const md::Timestamp ts = md::trading_session(underlying, delayed).market_time;
+  // Stock/index prints have their own clock; they can be hours behind GTH options.
+  sink.publish(
+      md::UnderlyingQuote{underlying, chain.last_trade_time, chain.bid, chain.ask, chain.price});
+  std::map<std::string, md::Timestamp> market_times;
 
   std::vector<std::pair<const CboeOption*, md::OptionContract>> contracts;
   contracts.reserve(chain.options.size());
@@ -154,11 +157,15 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   for (auto& [option, contract] : contracts) {
     if (!publisher_.known(option->symbol) && !filter.admits(contract)) continue;
     check_cancelled();
+    const auto [clock, inserted] = market_times.try_emplace(contract.root);
+    if (inserted) clock->second = md::trading_session(contract.root, delayed).market_time;
+    const auto option_time = clock->second;
     const md::InstrumentId id = publisher_.define(option->symbol, std::move(contract), sink);
     seen.insert(id);
-    publisher_.quote(id, ts, option->bid, option->ask, option->bid_size, option->ask_size, sink);
-    publisher_.open_interest(id, ts, option->open_interest, sink);
-    publisher_.greeks(md::VendorGreeks{id, ts, option->iv, option->delta, option->gamma,
+    publisher_.quote(id, option_time, option->bid, option->ask, option->bid_size, option->ask_size,
+                     sink);
+    publisher_.open_interest(id, option_time, option->open_interest, sink);
+    publisher_.greeks(md::VendorGreeks{id, option_time, option->iv, option->delta, option->gamma,
                                        option->vega, option->theta, option->rho},
                       sink);
   }

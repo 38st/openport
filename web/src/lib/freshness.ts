@@ -1,4 +1,4 @@
-import type { MarketSession, Num } from "../api/types"
+import type { MarketSession, TradingSession, Num } from "../api/types"
 
 const snapshotDate = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
@@ -16,20 +16,25 @@ export function timestampET(iso: string | null | undefined): string {
   return Number.isFinite(timestamp) ? `${snapshotDate.format(timestamp)} ET` : "—"
 }
 
-export function marketBadge(market: MarketSession | null | undefined, stale: boolean) {
+export function marketBadge(market: MarketSession | TradingSession | null | undefined, stale: boolean) {
   if (market?.open === false) {
-    const nextOpen = timestampET(market.next_open)
+    const nextOpen = timestampET("next_open" in market ? market.next_open : null)
     return {
       label: "market closed",
       tone: "neutral" as const,
       title: [market.note, nextOpen === "—" ? null : `Next open: ${nextOpen}`].filter(Boolean).join(" · "),
     }
   }
-  return stale ? {
+  if (stale && market?.open === true) return {
     label: "stale",
     tone: "warn" as const,
     title: "Data is older than the provider's stated delay plus 10 minutes",
-  } : null
+  }
+  if (market?.open && "name" in market && (market.name === "global" || market.name === "curb")) {
+    return { label: market.name === "global" ? "overnight session" : "curb session",
+      tone: "neutral" as const, title: market.note }
+  }
+  return null
 }
 
 /** Age uses wall time, not the provider's delayed market clock. */

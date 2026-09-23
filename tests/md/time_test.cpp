@@ -173,3 +173,83 @@ TEST(Time, YearFractionPreservesNanosecondsWithoutSignedOverflow) {
 }
 
 }  // namespace
+
+namespace {
+TEST(Time, YearFractionsRetainNanosecondDifferencesAndHandleInt64Extremes) {
+  using namespace openport::md;
+  constexpr auto low = std::numeric_limits<Timestamp>::min();
+  constexpr auto high = std::numeric_limits<Timestamp>::max();
+  EXPECT_DOUBLE_EQ(years_between(low, low + 1), 1 / kNanosPerYear);
+  EXPECT_DOUBLE_EQ(years_between(high - 1, high), 1 / kNanosPerYear);
+  EXPECT_DOUBLE_EQ(years_between(high, high - 1), -1 / kNanosPerYear);
+  EXPECT_DOUBLE_EQ(years_between(low, high), -years_between(high, low));
+  EXPECT_GT(years_between(low, high), 584);
+}
+
+TEST(Time, ProductSessionsHaveDistinctRegularCurbAndGlobalBoundaries) {
+  using namespace openport::md;
+  const Date date{2026, 9, 22};
+  auto session = [&](std::string_view root, int h, int m) {
+    return trading_session(root, new_york_to_utc(date, h, m));
+  };
+  for (auto root : {"SPX", "SPXW", "XSP", "VIX", "VIXW", "RUT", "RUTW"}) {
+    EXPECT_EQ(session(root, 9, 24).name, "global") << root;
+    EXPECT_EQ(session(root, 9, 25).name, "closed");
+    EXPECT_EQ(session(root, 9, 25).market_time, new_york_to_utc(date, 9, 25));
+    EXPECT_EQ(session(root, 9, 30).name, "regular");
+    EXPECT_EQ(session(root, 16, 14).name, "regular");
+    EXPECT_EQ(session(root, 16, 15).name, "curb");
+    EXPECT_EQ(session(root, 17, 0).name, "closed");
+    EXPECT_EQ(session(root, 20, 14).market_time, new_york_to_utc(date, 17, 0));
+    EXPECT_EQ(session(root, 20, 15).name, "global");
+    EXPECT_EQ(session(root, 23, 59).market_time, new_york_to_utc(date, 23, 59));
+  }
+  for (auto root : {"SPY", "QQQ", "IWM", "DIA", "NDX", "NDXP", "XEO"}) {
+    EXPECT_EQ(session(root, 16, 14).name, "regular");
+    EXPECT_EQ(session(root, 16, 15).name, "closed");
+    EXPECT_EQ(session(root, 21, 0).name, "closed");
+    EXPECT_EQ(session(root, 21, 0).market_time, new_york_to_utc(date, 16, 15));
+  }
+  EXPECT_EQ(session("AAPL", 15, 59).name, "regular");
+  EXPECT_EQ(session("AAPL", 16, 0).name, "closed");
+  EXPECT_EQ(session("AAPL", 21, 0).market_time, new_york_to_utc(date, 16, 0));
+}
+
+TEST(Time, GlobalTradeDateSkipsWeekendsHolidaysAndHandlesDst) {
+  using namespace openport::md;
+  auto session = [](Date d, int h, int m) {
+    return trading_session("SPXW", new_york_to_utc(d, h, m));
+  };
+  EXPECT_EQ(session({2026, 9, 25}, 9, 0).name, "global");  // Friday morning
+  EXPECT_EQ(session({2026, 9, 25}, 21, 0).name, "closed");
+  EXPECT_EQ(session({2026, 9, 26}, 1, 0).name, "closed");
+  EXPECT_EQ(session({2026, 9, 27}, 20, 14).name, "closed");
+  EXPECT_EQ(session({2026, 9, 27}, 20, 15).name, "global");
+  EXPECT_EQ(session({2026, 9, 28}, 1, 0).name, "global");
+  EXPECT_EQ(session({2026, 9, 6}, 21, 0).name, "closed");  // before Labor Day
+  EXPECT_EQ(session({2026, 9, 7}, 9, 0).name, "closed");
+  EXPECT_EQ(session({2026, 9, 7}, 20, 15).name, "global");  // Tuesday's session
+  EXPECT_EQ(session({2026, 9, 6}, 21, 0).market_time, new_york_to_utc({2026, 9, 4}, 17, 0));
+  for (auto date : {Date{2026, 3, 8}, Date{2026, 11, 1}}) {
+    EXPECT_EQ(session(date, 20, 14).name, "closed");
+    EXPECT_EQ(session(date, 20, 15).name, "global");
+    EXPECT_EQ(session(date, 20, 15).market_time, new_york_to_utc(date, 20, 15));
+  }
+}
+
+TEST(Time, ProductEarlyClosesHaveNoCurbAndResumeOnTheNextTradeDate) {
+  using namespace openport::md;
+  const Date date{2026, 11, 27};
+  for (auto root : {"SPXW", "SPY", "QQQ", "RUTW"}) {
+    EXPECT_TRUE(trading_session(root, new_york_to_utc(date, 13, 14)).open);
+    const auto closed = trading_session(root, new_york_to_utc(date, 16, 30));
+    EXPECT_FALSE(closed.open);
+    EXPECT_EQ(closed.market_time, new_york_to_utc(date, 13, 15));
+  }
+  EXPECT_EQ(trading_session("AAPL", new_york_to_utc(date, 13, 1)).market_time,
+            new_york_to_utc(date, 13, 0));
+  const auto christmas = trading_session("SPX", new_york_to_utc({2026, 12, 24}, 21, 0));
+  EXPECT_FALSE(christmas.open);
+  EXPECT_EQ(christmas.market_time, new_york_to_utc({2026, 12, 24}, 13, 15));
+}
+}  // namespace

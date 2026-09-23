@@ -210,17 +210,55 @@ void Engine::run() {
 void Engine::refresh_analytics() {
   const auto started = std::chrono::steady_clock::now();
   bool recomputed = false;
-  for (const auto& [symbol, book] : book_.underlyings()) {
-    auto& seen = analysed_versions_[symbol];
-    if (book.version == seen || book.expiries.empty()) continue;
-    seen = book.version;
-    // Price as of the data's own clock, so delayed feeds get the right time to expiry.
+  const auto previous_curve = discount_curve_;
+  std::vector<std::string> european_updates;
+  auto has_style = [](const analytics::UnderlyingBook& book, pricing::ExerciseStyle style) {
+    return std::any_of(book.expiries.begin(), book.expiries.end(),
+                       [style](const auto& entry) { return entry.first.second == style; });
+  };
+  auto analyze = [&](const std::string& symbol, const analytics::UnderlyingBook& book) {
+    // Delayed feeds retain their own market-data clock.
     const md::Timestamp as_of = book.data_time > 0 ? book.data_time : md::now();
+    auto options = options_.analytics;
+    if (discount_curve_) options.discount_curve = discount_curve_;
     auto result = std::make_shared<const analytics::UnderlyingMetrics>(
-        analytics::analyze(book, book_, as_of, options_.analytics));
-    const std::lock_guard lock(mutex_);
-    metrics_[symbol] = std::move(result);
+        analytics::analyze(book, book_, as_of, options));
+    analysed_versions_[symbol] = book.version;
+    {
+      const std::lock_guard lock(mutex_);
+      metrics_[symbol] = result;
+    }
     recomputed = true;
+    return result;
+  };
+  // Build all European curves first, irrespective of symbol/map ordering. Mixed
+  // OEX/XEO books also enter this phase; only their European slices form a curve.
+  for (const auto& [symbol, book] : book_.underlyings()) {
+    if (!has_style(book, pricing::ExerciseStyle::European) ||
+        book.version == analysed_versions_[symbol])
+      continue;
+    auto curve = analytics::make_discount_curve(*analyze(symbol, book));
+    european_updates.push_back(symbol);
+    if (curve) {
+      discount_curves_[symbol] = curve;
+      discount_curve_ = std::move(curve);  // latest, unless SPX is available below
+    } else {
+      discount_curves_.erase(symbol);
+      if (discount_curve_ && discount_curve_->symbol() == symbol) discount_curve_.reset();
+    }
+  }
+  if (const auto spx = discount_curves_.find("SPX"); spx != discount_curves_.end())
+    discount_curve_ = spx->second;
+  else if (!discount_curve_ && !discount_curves_.empty())
+    discount_curve_ = discount_curves_.begin()->second;
+  const bool curve_changed = previous_curve != discount_curve_;
+  // A curve update invalidates American results even without new American quotes.
+  for (const auto& [symbol, book] : book_.underlyings()) {
+    if (book.expiries.empty() || !has_style(book, pricing::ExerciseStyle::American)) continue;
+    const bool mixed_updated = std::find(european_updates.begin(), european_updates.end(),
+                                         symbol) != european_updates.end();
+    if (book.version != analysed_versions_[symbol] || curve_changed || mixed_updated)
+      analyze(symbol, book);
   }
 
   const auto now = std::chrono::steady_clock::now();

@@ -26,6 +26,10 @@ TEST(Cli, DaemonRejectsMalformedRangesUnknownFlagsAndStartupFailures) {
     rejects("openportd", std::string("--expiries ") + expiry, "--expiries");
   for (const auto* window : {"nan", "inf", "1.1", "0.1x", "-0.1"})
     rejects("openportd", std::string("--window ") + window, "--window");
+  for (const auto* rate : {"nan", "inf", "0.251", "-0.051", "0.04x"})
+    rejects("openportd", std::string("--rate ") + rate, "--rate");
+  for (const auto* rate : {"-0.05", "0.25", "0.045"})
+    rejects("openportd", std::string("--rate ") + rate + " --provider missing", "unknown provider");
   rejects("openportd", "--poll-seconds 0", "poll_seconds");
   rejects("openportd", "--poll-seconds 1x", "poll_seconds");
   rejects("openportd", "--option unknown=1", "unknown provider option");

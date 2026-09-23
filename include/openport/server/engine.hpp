@@ -117,6 +117,8 @@ class Engine final : public MetricsSource {
   bool health_dirty_ = false;
   bool health_changed_ = false;
   std::map<std::string, std::uint64_t> analysed_versions_;
+  std::map<std::string, std::shared_ptr<const analytics::DiscountCurve>> discount_curves_;
+  std::shared_ptr<const analytics::DiscountCurve> discount_curve_;
   std::uint64_t events_ = 0;
   std::uint64_t events_at_last_rate_ = 0;
   std::chrono::steady_clock::time_point last_rate_time_;

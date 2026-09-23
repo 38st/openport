@@ -10,6 +10,40 @@
 #include "openport/pricing/normal.hpp"
 
 namespace openport::analytics {
+std::shared_ptr<const DiscountCurve> DiscountCurve::from_points(
+    std::string symbol, std::vector<std::pair<double, double>> points) {
+  std::erase_if(points, [](auto p) {
+    return !(p.first > 0) || !std::isfinite(p.first) || !std::isfinite(p.second);
+  });
+  std::sort(points.begin(), points.end());
+  points.erase(
+      std::unique(points.begin(), points.end(), [](auto a, auto b) { return a.first == b.first; }),
+      points.end());
+  if (points.size() < 2) return {};
+  auto curve = std::shared_ptr<DiscountCurve>(new DiscountCurve);
+  curve->symbol_ = std::move(symbol);
+  curve->points_ = std::move(points);
+  return curve;
+}
+
+double DiscountCurve::rate(double years) const {
+  const auto upper = std::lower_bound(points_.begin(), points_.end(), years,
+                                      [](auto p, double t) { return p.first < t; });
+  if (upper == points_.begin()) return upper->second;
+  if (upper == points_.end()) return points_.back().second;
+  const auto lower = upper - 1;
+  const double w = (years - lower->first) / (upper->first - lower->first);
+  return lower->second + w * (upper->second - lower->second);
+}
+
+std::shared_ptr<const DiscountCurve> make_discount_curve(const UnderlyingMetrics& m) {
+  std::vector<std::pair<double, double>> points;
+  for (const auto& s : m.slices)
+    if (s.style == pricing::ExerciseStyle::European && s.forward.ok && s.forward.fitted_discount)
+      points.emplace_back(s.years, -std::log(s.forward.discount) / s.years);
+  return DiscountCurve::from_points(m.symbol, std::move(points));
+}
+
 namespace {
 
 using pricing::OptionType;
@@ -25,9 +59,11 @@ double implied(double price, OptionType type, double forward, double strike, dou
 /// Quotes and implied volatilities for one side; Greeks are filled in later, once
 /// the strike's smile volatility is known.
 OptionMetrics quote_metrics(const OptionState& s, md::InstrumentId id, double forward,
-                            double discount, double years) {
+                            double discount, double years, double premium = kNaN) {
   OptionMetrics m;
   m.id = id;
+  m.eep = premium;
+  const double adjustment = std::isfinite(premium) ? premium : 0;
   if (s.has_quote) {
     m.bid = s.bid;
     m.ask = s.ask;
@@ -41,10 +77,10 @@ OptionMetrics quote_metrics(const OptionState& s, md::InstrumentId id, double fo
   const double strike = s.contract.strike;
   if (s.two_sided()) {
     m.mid = s.mid();
-    m.iv = implied(m.mid, type, forward, strike, years, discount);
+    m.iv = implied(m.mid - adjustment, type, forward, strike, years, discount);
   }
-  if (s.bid > 0.0) m.bid_iv = implied(s.bid, type, forward, strike, years, discount);
-  if (s.ask > 0.0) m.ask_iv = implied(s.ask, type, forward, strike, years, discount);
+  if (s.bid > 0.0) m.bid_iv = implied(m.bid - adjustment, type, forward, strike, years, discount);
+  if (s.ask > 0.0) m.ask_iv = implied(m.ask - adjustment, type, forward, strike, years, discount);
   return m;
 }
 
@@ -111,7 +147,9 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
   out.symbol = book.symbol;
   out.as_of = as_of;
   out.version = book.version;
-  if (book.spot > 0.0 && std::isfinite(book.spot)) {
+  const bool fresh_spot = md::years_between(book.spot_ts, book.data_time) <=
+                          options.max_spot_age_minutes * 60 / (365.0 * 86400);
+  if (fresh_spot && book.spot > 0.0 && std::isfinite(book.spot)) {
     out.spot = book.spot;
     out.spot_source = "quote";
   }
@@ -123,6 +161,10 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     double years;
     std::vector<ParityPoint> points;
     ForwardEstimate forward;
+    std::string rate_source;
+    std::map<md::InstrumentId, double> premiums;
+    double dividend = kNaN;
+    bool deamericanized = false;
   };
   std::vector<Fitted> fitted;
   std::vector<double> long_rates;
@@ -139,7 +181,7 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
       const double spread = std::max(call->ask - call->bid + put->ask - put->bid, floor);
       points.push_back({strike, call->mid(), put->mid(), 1.0 / (spread * spread)});
     }
-    double reference = book.spot;
+    double reference = out.spot;
     if (!(reference > 0.0) && !points.empty()) {
       // No spot from the feed: the strike where calls and puts cost the same is near the money.
       reference = std::min_element(points.begin(), points.end(), [](const auto& a, const auto& b) {
@@ -152,11 +194,24 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     if (points.size() > static_cast<std::size_t>(options.parity_strikes)) {
       points.resize(static_cast<std::size_t>(options.parity_strikes));
     }
-    ForwardEstimate forward = implied_forward(points, years, options.fallback_rate);
+    const bool american = key.second == pricing::ExerciseStyle::American;
+    const double rate = american && options.discount_curve ? options.discount_curve->rate(years)
+                                                           : options.fallback_rate;
+    ForwardEstimate forward = american ? implied_forward_given_discount(
+                                             points, std::exp(-rate * years), options.deamericanize)
+                                       : implied_forward(points, years, options.fallback_rate);
     if (forward.ok && forward.fitted_discount && years * 365.0 >= options.min_days_for_rate) {
       long_rates.push_back(-std::log(forward.discount) / years);
     }
-    fitted.push_back({&slice, key.second, years, std::move(points), forward});
+    fitted.push_back({&slice,
+                      key.second,
+                      years,
+                      std::move(points),
+                      forward,
+                      american ? (options.discount_curve ? "curve" : "assumed") : "parity",
+                      {},
+                      kNaN,
+                      false});
   }
 
   // Short expiries borrow the rate term structure's level from the long ones.
@@ -169,12 +224,78 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
 
   // Finish rate adjustments before choosing one reference spot for all expiries.
   for (auto& f : fitted) {
-    if (f.years * 365.0 < options.min_days_for_rate || !f.forward.fitted_discount)
+    if (f.style == pricing::ExerciseStyle::European &&
+        (f.years * 365.0 < options.min_days_for_rate || !f.forward.fitted_discount)) {
       f.forward = implied_forward_given_discount(f.points, std::exp(-term_rate * f.years));
+      f.rate_source = long_rates.empty() ? "assumed" : "term";
+    }
     if (!(out.spot > 0.0) && f.forward.ok) {
       out.spot = f.forward.forward * f.forward.discount;
       out.spot_source = "parity";
     }
+  }
+  // Short-tenor carry is dominated by small spot/option timing mismatches.
+  // Borrow the median continuous yield from this underlying's longer expiries.
+  std::vector<double> long_dividends;
+  for (auto& f : fitted) {
+    if (f.forward.ok && out.spot > 0) {
+      f.dividend = -std::log(f.forward.discount * f.forward.forward / out.spot) / f.years;
+      if (f.years * 365 >= options.min_days_for_rate && std::isfinite(f.dividend))
+        long_dividends.push_back(f.dividend);
+    }
+  }
+  double term_dividend = kNaN;
+  if (!long_dividends.empty()) {
+    const auto middle = long_dividends.begin() + long_dividends.size() / 2;
+    std::nth_element(long_dividends.begin(), middle, long_dividends.end());
+    term_dividend = *middle;
+  }
+  // One EEP correction at the first-pass Black IV and carry. Both valuations
+  // share the LR lattice, including its terminal payoffs (not analytic BSM).
+  // Measured convergence and the one-iteration residual are documented in
+  // docs/american-analytics.md; Greeks remain European at the final smile IV.
+  for (auto& f : fitted) {
+    if (f.style != pricing::ExerciseStyle::American || !options.deamericanize || !(out.spot > 0))
+      continue;
+    const double discount = f.forward.discount;
+    const double forward = f.forward.ok ? f.forward.forward : out.spot / discount;
+    const double rate = -std::log(discount) / f.years;
+    const double own_dividend = rate - std::log(forward / out.spot) / f.years;
+    const double dividend = std::clamp(
+        f.years * 365 < options.min_days_for_rate && std::isfinite(term_dividend) ? term_dividend
+                                                                                  : own_dividend,
+        kMinTreeDividend, kMaxTreeDividend);
+    if (!std::isfinite(dividend)) continue;
+    for (const auto& [strike, pair] : f.slice->strikes) {
+      const auto* call = chain.option(pair.call);
+      const auto* put = chain.option(pair.put);
+      const double cv = call && call->two_sided() ? implied(call->mid(), OptionType::Call, forward,
+                                                            strike, f.years, discount)
+                                                  : kNaN;
+      const double pv = put && put->two_sided() ? implied(put->mid(), OptionType::Put, forward,
+                                                          strike, f.years, discount)
+                                                : kNaN;
+      auto correct = [&](const OptionState* state, md::InstrumentId id, double vol, double other) {
+        if (!state || !state->two_sided()) return;
+        if (!std::isfinite(vol)) vol = other;
+        if (!(vol > 0) || !std::isfinite(vol)) return;
+        const double premium = pricing::binomial_early_exercise_premium(
+            {state->contract.type, out.spot, strike, f.years, rate, dividend, vol},
+            kDeamericanizationSteps);
+        f.premiums[id] = premium;
+      };
+      correct(call, pair.call, cv, pv);
+      correct(put, pair.put, pv, cv);
+    }
+    for (auto& p : f.points) {
+      const auto& pair = f.slice->strikes.at(p.strike);
+      if (const auto it = f.premiums.find(pair.call); it != f.premiums.end())
+        p.call_mid -= it->second;
+      if (const auto it = f.premiums.find(pair.put); it != f.premiums.end())
+        p.put_mid -= it->second;
+    }
+    if (f.forward.ok) f.forward = implied_forward_given_discount(f.points, discount);
+    f.deamericanized = true;
   }
   int exposure_options = 0, exposure_oi = 0;
   std::map<double, double> gex_by_strike;
@@ -191,8 +312,10 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     sm.style = f.style;
     sm.years = years;
     sm.forward = f.forward;
+    sm.rate_source = f.rate_source;
+    if (f.rate_source == "curve") sm.rate_curve_symbol = options.discount_curve->symbol();
+    sm.deamericanized = f.deamericanized;
     if (!sm.forward.ok) {
-      sm.forward.discount = std::exp(-term_rate * years);
       // Keep unanchored slices visible with missing analytics and receipt coverage.
       sm.forward.forward = out.spot / sm.forward.discount;
     }
@@ -209,22 +332,28 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
       row.strike = strike;
       const OptionState* call = chain.option(pair.call);
       const OptionState* put = chain.option(pair.put);
-      if (call) row.call = quote_metrics(*call, pair.call, forward, discount, years);
-      if (put) row.put = quote_metrics(*put, pair.put, forward, discount, years);
+      auto quotes = [&](const OptionState* state, md::InstrumentId id) {
+        if (!state) return OptionMetrics{};
+        const auto it = f.premiums.find(id);
+        const double premium = it == f.premiums.end() ? kNaN : it->second;
+        return quote_metrics(*state, id, forward, discount, years, premium);
+      };
+      row.call = quotes(call, pair.call);
+      row.put = quotes(put, pair.put);
 
       const double otm = strike >= forward ? row.call.iv : row.put.iv;
       const double itm = strike >= forward ? row.put.iv : row.call.iv;
       row.iv = std::isfinite(otm) ? otm : itm;
-      if (std::isfinite(row.call.iv)) fill_greeks(row.call, OptionType::Call, strike, row.iv, ctx);
-      if (std::isfinite(row.put.iv)) fill_greeks(row.put, OptionType::Put, strike, row.iv, ctx);
+      if (call) fill_greeks(row.call, OptionType::Call, strike, row.iv, ctx);
+      if (put) fill_greeks(row.put, OptionType::Put, strike, row.iv, ctx);
       double net_oi = 0;
       auto include = [&](const OptionState* state, const OptionMetrics& m, double sign) {
         if (!state) return;
         ++sm.coverage.options;
         sm.coverage.quoted += state->has_quote;
         sm.coverage.open_interest += state->has_open_interest;
-        if (!std::isfinite(m.iv)) return;
-        ++sm.coverage.priced;
+        sm.coverage.priced += std::isfinite(m.iv);
+        if (!std::isfinite(row.iv)) return;
         ++exposure_options;
         exposure_oi += state->has_open_interest;
         if (state->has_open_interest && std::isfinite(m.open_interest) && m.open_interest >= 0)
@@ -233,8 +362,8 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
       include(call, row.call, 1);
       include(put, row.put, -1);
       if (std::isfinite(row.iv) && net_oi != 0 && spot > 0) {
-        // Calls and puts share smile vol, but only independently priced sides
-        // with received OI may contribute positions to GEX, VEX or the flip.
+        // Both sides share the smile IV; received OI contributes even when
+        // that side's own quote could not produce an IV.
         OptionMetrics exposure;
         fill_greeks(exposure, OptionType::Call, strike, row.iv, exposure_ctx);
         row.gex = exposure.gamma * net_oi * spot * spot * 0.01;
@@ -253,7 +382,8 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     out.coverage.quoted += sm.coverage.quoted;
     out.coverage.priced += sm.coverage.priced;
     out.coverage.open_interest += sm.coverage.open_interest;
-    if (sm.coverage.priced > 0 && sm.style == pricing::ExerciseStyle::American)
+    if (sm.coverage.priced > 0 && sm.style == pricing::ExerciseStyle::American &&
+        !sm.deamericanized)
       out.american_approximation = true;
     sm.atm_iv = atm_vol(sm.strikes, forward);
     out.exposure.gex += sm.gex;

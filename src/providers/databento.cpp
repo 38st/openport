@@ -255,7 +255,7 @@ void DatabentoProvider::start(const md::Subscription& subscription, md::EventSin
         return db::KeepGoing::Continue;
       },
       [raw](const std::exception& error) {
-        const std::lock_guard lock(raw->client_mutex);
+        const std::lock_guard client_lock(raw->client_mutex);
         if (raw->stopping) return db::LiveThreaded::ExceptionAction::Stop;
         auto report = [raw](const std::string& message) {
           raw->status(md::FeedState::Error, message);

@@ -11,10 +11,13 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <locale>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,6 +43,7 @@ struct Settings {
   unsigned short port = 8080;
   std::filesystem::path web_root;
   int threads = 2;
+  double rate = 0.04;
   std::vector<std::string> allowed_origins;
 };
 
@@ -49,7 +53,8 @@ int usage(const char* error = nullptr) {
       stderr,
       "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
-      "                 [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
+      "                 [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
+      "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
       "providers:");
@@ -124,6 +129,13 @@ int run(int argc, char** argv) {
       settings.subscription.max_expiries = providers::parse_integer(value, "--expiries");
     } else if (arg == "--window") {
       settings.subscription.strike_window = providers::parse_fraction(value, "--window");
+    } else if (arg == "--rate") {
+      std::istringstream input(value);
+      input.imbue(std::locale::classic());
+      input >> std::noskipws >> settings.rate;
+      if (!input || input.peek() != std::char_traits<char>::eof() ||
+          !std::isfinite(settings.rate) || settings.rate < -0.05 || settings.rate > 0.25)
+        return usage("--rate must be a finite number in [-0.05, 0.25]");
     } else if (arg == "--poll-seconds") {
       settings.provider.options["poll_seconds"] = value;
     } else if (arg == "--option") {
@@ -140,7 +152,9 @@ int run(int argc, char** argv) {
   providers::validate_subscription(settings.provider.name, settings.subscription);
   auto provider = providers::make_provider(settings.provider);
 
-  server::Engine engine(*provider, settings.subscription, {});
+  server::Engine::Options engine_options;
+  engine_options.analytics.fallback_rate = settings.rate;
+  server::Engine engine(*provider, settings.subscription, engine_options);
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
       [&engine](const server::ApiRequest& request) { return server::handle_api(request, engine); },

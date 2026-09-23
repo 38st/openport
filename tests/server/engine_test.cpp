@@ -284,3 +284,69 @@ TEST(Engine, StateAndMessageChangesBypassHealthPublicationThrottle) {
   EXPECT_EQ(health.last_error, "disconnected");
 }
 }  // namespace
+
+namespace {
+// Feed an entire snapshot before launching the consumer so the first published
+// QQQ result must already use SPX, despite QQQ preceding SPX alphabetically.
+class CurveProvider final : public md::Provider {
+ public:
+  std::string_view name() const noexcept override { return "curve-test"; }
+  md::Capabilities capabilities() const noexcept override { return {}; }
+  void start(const md::Subscription&, md::EventSink& out) override {
+    sink = &out;
+    publish("QQQ", .045, 0, pricing::ExerciseStyle::American);
+    publish("SPX", .045, 1000, pricing::ExerciseStyle::European);
+    publish("XSP", .06, 2000, pricing::ExerciseStyle::European);
+  }
+  void stop() override {}
+  void publish(const std::string& symbol, double rate, md::InstrumentId id,
+               pricing::ExerciseStyle style) {
+    const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+    sink->publish(md::UnderlyingQuote{symbol, as_of, 100, 100, 100});
+    for (auto date : {md::Date{2026, 12, 22}, md::Date{2027, 9, 22}})
+      for (double strike = 90; strike <= 110; strike += 2.5)
+        for (auto type : {pricing::OptionType::Call, pricing::OptionType::Put}) {
+          auto c = *md::parse_osi("SPY261218C00100000");
+          c.underlying = c.root = symbol;
+          c.style = style;
+          c.expiry = date;
+          c.strike = strike;
+          c.type = type;
+          sink->publish(md::ContractDefinition{id, c});
+          const double years = md::years_between(as_of, c.expiry_time());
+          const double price = pricing::bsm_price({type, 100, strike, years, rate, .01, .2});
+          sink->publish(md::OptionQuote{id++, as_of, price - .001, price + .001, 1, 1});
+        }
+  }
+  md::EventSink* sink = nullptr;
+};
+
+TEST(Engine, EuropeanCurveReachesAmericanInSamePassAndRefreshesUnchangedChain) {
+  CurveProvider provider;
+  server::Engine::Options options;
+  options.analytics_interval = std::chrono::milliseconds(1);
+  server::Engine engine(provider, {{"QQQ", "SPX", "XSP"}}, options);
+  engine.start();
+  ASSERT_TRUE(eventually([&] { return engine.metrics("QQQ") != nullptr; }));
+  const auto first = engine.metrics("QQQ");
+  for (const auto& slice : first->slices) {
+    EXPECT_EQ(slice.rate_source, "curve");
+    EXPECT_EQ(slice.rate_curve_symbol, "SPX");
+    EXPECT_NEAR(-std::log(slice.forward.discount) / slice.years, .045, 1e-9);
+  }
+  provider.publish("SPX", .05, 1000, pricing::ExerciseStyle::European);
+  ASSERT_TRUE(eventually([&] {
+    const auto m = engine.metrics("QQQ");
+    return std::abs(-std::log(m->slices[0].forward.discount) / m->slices[0].years - .05) < 1e-9;
+  }));
+  EXPECT_EQ(engine.metrics("QQQ")->version, first->version);
+  // A later non-SPX update must not displace the preferred SPX curve.
+  const auto xsp_version = engine.metrics("XSP")->version;
+  provider.publish("XSP", .07, 2000, pricing::ExerciseStyle::European);
+  ASSERT_TRUE(eventually([&] { return engine.metrics("XSP")->version != xsp_version; }));
+  EXPECT_EQ(engine.metrics("QQQ")->slices[0].rate_curve_symbol, "SPX");
+  EXPECT_NEAR(-std::log(engine.metrics("QQQ")->slices[0].forward.discount) /
+                  engine.metrics("QQQ")->slices[0].years,
+              .05, 1e-9);
+}
+}  // namespace

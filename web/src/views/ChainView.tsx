@@ -9,7 +9,7 @@ import { CoverageBadge, Empty, Panel, Segmented, Stat } from "../components/ui"
 import { expiryCoverage } from "../lib/coverage"
 import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format"
 import { matchingPayload } from "../lib/payload"
-import { americanApproximation } from "../lib/model"
+import { americanApproximation, rateSourceHint } from "../lib/model"
 
 const windows = [
   { value: 0.02, label: "±2%" },
@@ -76,7 +76,8 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const e = data?.expiry
   const summaryExpiry = expiries.find((item) => item.id === selected)
   const coverage = expiryCoverage(e?.coverage === undefined ? summaryExpiry?.coverage : e.coverage)
-  const approximation = americanApproximation(symbol, summaryData.american_approximation, e?.style ?? summaryExpiry?.style)
+  const deamericanized = e?.deamericanized ?? summaryExpiry?.deamericanized
+  const approximation = americanApproximation(symbol, summaryData.american_approximation, e?.style ?? summaryExpiry?.style, deamericanized)
   return (
     <div className="flex flex-col gap-3">
       <ExpiryPicker expiries={expiries} value={selected} onChange={onExpiry} />
@@ -87,7 +88,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
           <Stat
             label="Rate"
             value={`${pct(e.rate, 2)}${e.rate_fitted ? "" : "*"}`}
-            hint={e.rate_fitted ? "Fitted from this expiry's put-call parity" : "* Borrowed from the longer expiries: parity cannot pin down the rate over a few days"}
+            hint={rateSourceHint(e)}
           />
           <Stat label="ATM vol" value={vol(e.atm_iv)} hint="Smile interpolated at the forward, in vol points" />
           <Stat label="To expiry" value={days(e.days)} hint={`Settles ${e.settlement === "AM" ? "on the opening print" : "at the close"} on ${e.expiry}`} />
@@ -123,6 +124,11 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         ) : (
           <Empty>{chain.isError ? String(chain.error) : "Loading chain…"}</Empty>
         )}
+        {deamericanized && (
+          <p className="mt-2 text-[11px] text-muted">
+            IVs de-Americanised: early-exercise premium removed with a Leisen-Reimer tree
+          </p>
+        )}
         {approximation && (
           <p className="mt-2 text-[11px] text-muted">
             IVs and Greeks use a European model, accurate for the out-of-the-money side of American-style options.
@@ -152,7 +158,10 @@ function columns(provider: string): Column[] {
       key: "iv",
       label: "IV",
       title: `Implied vol from the mid (hover a cell to compare with ${provider})`,
-      render: (o) => <span title={isNum(o.vendor_iv) ? `OpenPort ${vol(o.iv)} · ${provider} ${vol(o.vendor_iv)}` : undefined}>{vol(o.iv)}</span>,
+      render: (o) => <span title={[
+        isNum(o.eep) && o.eep >= 0.005 ? `IV after removing a $${fixed(o.eep, 2)} early-exercise premium` : null,
+        isNum(o.vendor_iv) ? `OpenPort ${vol(o.iv)} · ${provider} ${vol(o.vendor_iv)}` : null,
+      ].filter(Boolean).join(" · ") || undefined}>{vol(o.iv)}</span>,
     },
     { key: "bid", label: "Bid", title: "Best bid", render: (o) => <Flash value={o.bid}>{price(o.bid)}</Flash> },
     { key: "ask", label: "Ask", title: "Best offer", render: (o) => <Flash value={o.ask}>{price(o.ask)}</Flash> },

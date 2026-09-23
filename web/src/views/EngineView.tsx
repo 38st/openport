@@ -82,7 +82,7 @@ export function EngineView() {
                   <td className="py-1 text-right">{price(u.spot)}</td>
                   <td className="py-1 text-right">{count(u.expiries)}</td>
                   <td className="py-1 text-right">{count(u.options)}</td>
-                  <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} market={market} /></td>
+                  <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} market={market} session={u.session} /></td>
                 </tr>
               ))}
             </tbody>

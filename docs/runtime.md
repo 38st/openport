@@ -67,10 +67,40 @@ establish streaming readiness. Quote counts reflect retained events after queue
 coalescing. Printed chains group by expiry instant and AM/PM settlement, so SPX
 and SPXW on the same calendar date occupy separate groups.
 
-Cboe market timestamps use the earlier of the publication timestamp minus 15
-minutes and the parsed New York `data.last_trade_time`. Missing or invalid
-last-trade time falls back to publication time minus 15 minutes. This keeps frozen
-closing quotes from advancing with the after-hours publication clock.
+## Product sessions and Cboe clocks
+
+`md::trading_session(root, t)` returns regular, curb, global or closed, and the
+market time: `t` while open, otherwise the most recent session end at or before
+`t`. Regular trading is 09:30–16:15 ET for index roots and SPY/QQQ/IWM/DIA, and
+09:30–16:00 for other equities. Early closes are 13:15 and 13:00 respectively.
+SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW also have curb trading 16:15–17:00 and GTH
+20:15–09:25 Sunday evening through Friday morning. The current Cboe pages list
+RUT in GTH as well. See [Cboe hours](https://www.cboe.com/about/hours/us-options/)
+and [the GTH description](https://www.cboe.com/insights/posts/cboe-global-trading-hours).
+
+A GTH session is assigned to the following morning's trading date. The calendar
+uses the existing 2025–2028 holiday and early-close tables and New York DST.
+**Simplifications:** no GTH leading into a holiday (Cboe publishes special holiday
+GTH on some dates), no curb on early-close days, and no unscheduled halts.
+Outside 2025–2028 only weekdays are known. Trading sessions do not change option
+settlement/expiry times. Sunday GTH resumes only when Monday is a trading day;
+a holiday evening may open GTH for the following business day.
+
+Cboe option timestamps use `t = publication - 15 minutes`, capped to the most
+recent session end only when that option root is closed. Live overnight and
+curb quotes therefore advance while the stock/index print remains frozen.
+`UnderlyingQuote.ts` is the parsed New York `data.last_trade_time`; missing or
+invalid times remain unknown (zero), never fabricated from publication time.
+Analytics ignores an underlying print more than 30 minutes behind option data
+(`AnalyticsOptions::max_spot_age_minutes`) and infers spot from parity, so frozen
+index closes do not contaminate GTH Greeks. The limit sits above the 15-minute gap
+between a stock or ETF's 16:00 closing print and its options' 16:15 close.
+
+Status and WebSocket ticks include `{name, open, note}` under each underlying's
+`session`. The top-level `market` remains the legacy regular-session calendar.
+The as-of badge prefers the selected underlying's session: neutral overnight or
+curb labels while open, market closed when closed, and stale only in an open
+session when data age exceeds provider delay plus ten minutes.
 
 ## Reverse proxies
 
