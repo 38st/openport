@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react"
 
-export const views = ["chain", "smile", "exposure", "engine"] as const
+export const views = ["chain", "smile", "exposure", "engine", "portfolio"] as const
 export type View = (typeof views)[number]
 
 export interface Route {

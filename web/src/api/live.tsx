@@ -7,6 +7,8 @@ import type { Status, Tick, UnderlyingSnapshot, UnderlyingStatus } from "./types
 export type { Connection } from "./connection"
 
 interface Live {
+  trading: Status["trading"]
+  accountScope: number
   status: Status | undefined
   tick: Tick | null
   connection: Connection
@@ -18,9 +20,12 @@ interface Live {
 
 const LiveContext = createContext<Live | null>(null)
 
-export function liveState(status: Status | undefined, tick: Tick | null, connection: Connection): Live {
+export function liveState(status: Status | undefined, tick: Tick | null, connection: Connection, accountScope = 0): Live {
   const connectedTick = connection === "open" ? tick : null
   return {
+    // REST capability is required: old servers must never expose trading UI.
+    trading: status?.trading ? (connectedTick?.trading === undefined ? status.trading : connectedTick.trading) : undefined,
+    accountScope,
     status,
     tick: connectedTick,
     connection,
@@ -39,10 +44,14 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [tick, setTick] = useState<Tick | null>(null)
   const [connection, setConnection] = useState<Connection>("connecting")
+  const [accountScope, setAccountScope] = useState(0)
 
   useEffect(() => {
     const scheme = window.location.protocol === "https:" ? "wss" : "ws"
-    return connectLive(`${scheme}://${window.location.host}/ws`, queryClient, setTick, setConnection)
+    return connectLive(`${scheme}://${window.location.host}/ws`, queryClient, setTick, (next) => {
+      setConnection(next)
+      setAccountScope((scope) => scope + 1)
+    })
   }, [queryClient])
 
   const status = useQuery({
@@ -52,8 +61,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   })
 
   const value = useMemo<Live>(
-    () => liveState(status.data, tick, connection),
-    [status.data, tick, connection],
+    () => liveState(status.data, tick, connection, accountScope),
+    [status.data, tick, connection, accountScope],
   )
   return <LiveContext value={value}>{children}</LiveContext>
 }

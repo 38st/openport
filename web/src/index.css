@@ -108,6 +108,35 @@
 }
 
 @layer base {
+  .trade-input {
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    background: var(--background);
+    padding: 0.5rem;
+    color: var(--foreground);
+    font-size: 0.875rem;
+  }
+  .trade-label {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.375rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  .trade-button {
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    padding: 0.375rem 0.75rem;
+    font-size: 0.75rem;
+    background: var(--raised);
+    color: var(--foreground);
+    cursor: pointer;
+  }
+  .trade-button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .trade-button:hover:not(:disabled) { border-color: var(--accent); }
   html,
   body,
   #root {

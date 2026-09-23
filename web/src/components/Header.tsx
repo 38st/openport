@@ -15,6 +15,7 @@ const viewLabels: Record<View, string> = {
   smile: "Volatility",
   exposure: "Exposure",
   engine: "Engine",
+  portfolio: "Portfolio",
 }
 
 export function Header({
@@ -28,7 +29,7 @@ export function Header({
   onSymbol: (symbol: string) => void
   onView: (view: View) => void
 }) {
-  const { status, tick, connection, version, market, underlyings } = useLive()
+  const { status, tick, connection, version, market, underlyings, trading } = useLive()
   const { theme, toggleTheme } = useTheme()
   const current = underlyings.find((u) => u.symbol === symbol)
   const feed = tick?.feed ?? status?.feed
@@ -112,7 +113,7 @@ export function Header({
       </div>
 
       <nav className="flex flex-wrap gap-1 px-3" aria-label="Views">
-        {views.map((v, i) => (
+        {views.filter((v) => v !== "portfolio" || trading != null).map((v, i) => (
           <button
             key={v}
             onClick={() => onView(v)}

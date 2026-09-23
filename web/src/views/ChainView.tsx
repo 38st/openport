@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
-import { useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import type { ChainRow, Expiry, OptionQuote } from "../api/types"
@@ -10,6 +10,9 @@ import { expiryCoverage } from "../lib/coverage"
 import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format"
 import { matchingPayload } from "../lib/payload"
 import { americanApproximation, rateSourceHint } from "../lib/model"
+import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
+import { Dialog } from "../components/Dialog"
+import { sideFromCell } from "../lib/trading"
 
 const windows = [
   { value: 0.02, label: "±2%" },
@@ -42,6 +45,8 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const version = live.version(symbol)
   const [window, setWindow] = useState(0.05)
   const [showGreeks, setShowGreeks] = useState(false)
+  const [ticket, setTicket] = useState<TicketSelection | null>(null)
+  const [untradable, setUntradable] = useState<string | null>(null)
 
   const summary = useQuery({
     queryKey: ["summary", symbol, version],
@@ -51,6 +56,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const summaryData = matchingPayload(summary.data, symbol)
   const expiries = summaryData?.expiries ?? []
   const selected = expiry && expiries.some((e) => e.id === expiry) ? expiry : defaultExpiry(expiries)
+  useEffect(() => { setTicket(null); setUntradable(null) }, [symbol, selected, live.accountScope])
 
   const chain = useQuery({
     queryKey: ["chain", symbol, selected, window, version],
@@ -120,7 +126,12 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         }
       >
         {data ? (
-          <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} provider={provider} />
+          <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} provider={provider}
+            onQuote={live.trading ? (quote, row, optionType, cell) => {
+              if (!quote.tradable || !quote.symbol) { setUntradable(quote.untradable_reason ?? "Contract unavailable for paper trading"); return }
+              const clickedPrice = quote[cell]
+              setTicket({ symbol: quote.symbol, underlying: symbol, expiry: data.expiry, strike: row.strike, optionType, cell, price: isNum(clickedPrice) ? String(clickedPrice) : "" })
+            } : undefined} />
         ) : (
           <Empty>{chain.isError ? String(chain.error) : "Loading chain…"}</Empty>
         )}
@@ -135,6 +146,12 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
           </p>
         )}
       </Panel>
+      {live.trading && untradable && <Dialog title="Paper trading unavailable" onClose={() => setUntradable(null)}><p className="text-sm text-warn">{untradable}</p></Dialog>}
+      {live.trading && ticket && ticket.underlying === symbol && ticket.expiry.id === selected && <OrderTicket
+        key={`${live.accountScope}/${ticket.symbol}/${ticket.cell}`}
+        selection={ticket} trading={live.trading}
+        quote={data?.strikes.find((row) => row.strike === ticket.strike)?.[ticket.optionType] ?? null}
+        onClose={() => setTicket(null)} />}
     </div>
   )
 }
@@ -174,17 +191,29 @@ function ChainTable({
   atmStrike,
   showGreeks,
   provider,
+  onQuote,
 }: {
   rows: ChainRow[]
   forward: number | null
   atmStrike: number | null
   showGreeks: boolean
   provider: string
+  onQuote?: (quote: OptionQuote, row: ChainRow, type: "call" | "put", cell: "bid" | "ask") => void
 }) {
   const all = columns(provider).filter((c) => showGreeks || !c.greek)
   const callColumns = all
   const putColumns = [...all].reverse()
   const cell = "px-2 py-1 text-right tabular whitespace-nowrap"
+  const quoteCell = (column: Column, row: ChainRow, type: "call" | "put") => {
+    const quote = row[type]
+    if (!quote) return "—"
+    const key = column.key
+    if (!onQuote || (key !== "bid" && key !== "ask")) return column.render(quote)
+    return <button type="button" className="rounded px-1 underline decoration-dotted underline-offset-4 hover:bg-raised hover:text-accent"
+      aria-label={`${sideFromCell(key)} ${row.strike} ${type} at ${key} ${price(quote[key])}${quote.tradable ? "" : `: ${quote.untradable_reason ?? "unavailable"}`}`}
+      title={quote.tradable ? `${sideFromCell(key)} paper order` : quote.untradable_reason ?? "Unavailable"}
+      onClick={() => onQuote(quote, row, type, key)}>{column.render(quote)}</button>
+  }
 
   // Open centred on the money, and re-centre when the expiry (and so the ATM strike) changes.
   const scroller = useRef<HTMLDivElement>(null)
@@ -228,7 +257,7 @@ function ChainTable({
               >
                 {callColumns.map((c) => (
                   <td key={`c-${c.key}`} className={`${cell} ${callItm ? "bg-raised/50" : ""}`}>
-                    {row.call ? c.render(row.call) : "—"}
+                    {quoteCell(c, row, "call")}
                   </td>
                 ))}
                 <td className="px-3 py-1 text-center tabular">
@@ -237,7 +266,7 @@ function ChainTable({
                 </td>
                 {putColumns.map((c) => (
                   <td key={`p-${c.key}`} className={`${cell} ${putItm ? "bg-raised/50" : ""}`}>
-                    {row.put ? c.render(row.put) : "—"}
+                    {quoteCell(c, row, "put")}
                   </td>
                 ))}
               </tr>

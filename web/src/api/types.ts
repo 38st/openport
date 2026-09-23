@@ -1,4 +1,5 @@
 // Shapes of openportd's JSON API. Numbers the engine could not compute are null.
+import type { TradingStatus } from "./trading-types"
 
 export type Num = number | null
 
@@ -62,6 +63,7 @@ export interface MarketSession {
 }
 
 export interface Status {
+  trading?: TradingStatus | null
   provider: ProviderInfo
   feed: { state: FeedState; message: string; updated: string | null }
   underlyings: UnderlyingStatus[]
@@ -122,6 +124,12 @@ export interface Summary {
 }
 
 export interface OptionQuote {
+  // Absent on servers predating paper trading.
+  symbol?: string
+  bid_size?: Num
+  ask_size?: Num
+  tradable?: boolean
+  untradable_reason?: string | null
   eep?: Num
   bid: Num
   ask: Num
@@ -222,6 +230,7 @@ export interface Surface {
 }
 
 export interface Tick {
+  trading?: TradingStatus | null
   type: "tick"
   feed: { state: FeedState; message: string }
   underlyings: UnderlyingSnapshot[]

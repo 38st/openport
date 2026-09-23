@@ -10,6 +10,7 @@ import { ChainView, defaultExpiry } from "./views/ChainView"
 import { EngineView } from "./views/EngineView"
 import { ExposureView } from "./views/ExposureView"
 import { SmileView } from "./views/SmileView"
+import { PortfolioView } from "./views/PortfolioView"
 
 export function App() {
   const [route, navigate] = useRoute()
@@ -18,8 +19,9 @@ export function App() {
   const symbols = (live.tick?.underlyings ?? live.status?.underlyings ?? []).map((u) => u.symbol)
   const symbol = route.symbol && symbols.includes(route.symbol) ? route.symbol : (symbols[0] ?? null)
   const version = symbol ? live.version(symbol) : 0
+  const view = route.view === "portfolio" && !live.trading ? "chain" : route.view
 
-  // 1-4 switch views; left/right step through expiries on the chain.
+  // 1-5 switch views; left/right step through expiries on the chain.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null
@@ -28,7 +30,7 @@ export function App() {
       )) return
       const index = Number(event.key) - 1
       const view = views[index]
-      if (view) {
+      if (view && (view !== "portfolio" || live.trading)) {
         event.preventDefault()
         navigate({ view })
         return
@@ -46,7 +48,7 @@ export function App() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [navigate, queryClient, route.expiry, route.view, symbol, version])
+  }, [navigate, queryClient, route.expiry, route.view, symbol, version, live.trading])
 
   const waiting = live.status?.feed.message || "Connecting to openportd…"
 
@@ -54,12 +56,14 @@ export function App() {
     <div className="flex min-h-full flex-col">
       <Header
         symbol={symbol}
-        view={route.view}
+        view={view}
         onSymbol={(s) => navigate({ symbol: s, expiry: null })}
         onView={(view) => navigate({ view })}
       />
-      <main className="flex-1 p-3">
-        {route.view === "engine" ? (
+      <main className="min-w-0 flex-1 p-3">
+        {view === "portfolio" ? (
+          <PortfolioView />
+        ) : view === "engine" ? (
           <EngineView />
         ) : !symbol ? (
           <Empty>
@@ -68,9 +72,9 @@ export function App() {
               <div className="mt-1 text-xs text-faint">{waiting}</div>
             </div>
           </Empty>
-        ) : route.view === "chain" ? (
+        ) : view === "chain" ? (
           <ChainView symbol={symbol} expiry={route.expiry} onExpiry={(expiry) => navigate({ expiry })} />
-        ) : route.view === "smile" ? (
+        ) : view === "smile" ? (
           <SmileView symbol={symbol} />
         ) : (
           <ExposureView symbol={symbol} />
