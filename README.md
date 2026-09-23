@@ -35,8 +35,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
   Strategies of up to four legs (spreads, straddles, condors, butterflies, calendars and
   diagonals) are picked on the chain and fill together at a net debit or credit, with
   their payoff at expiry, and buying power nets them: a credit spread holds its width
-  and a calendar its debit, not a naked requirement. Positions can be closed together
-  as one order.
+  and a calendar its debit, not a naked requirement. Working orders change in place
+  (size, limit or trigger), and positions close together as one order, or all at once
+  with a flatten that buys shorts back first.
   The Dashboard charts equity against the target and floor; Trade charts the underlying
   (one-minute to daily candles, backfilled from Cboe's free history) with your strikes,
   armed triggers and the selected expiry's expected move on it, and docks an order ticket
@@ -219,8 +220,9 @@ Expiry ids are the date plus settlement, for example `2026-10-16AM`.
 
 With paper trading on, the same API is the account: `GET /api/portfolio`, `/api/orders`,
 `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` and `/api/plans`, and writes
-with `POST /api/orders`, `DELETE /api/orders/{id}`, `PUT /api/risk/limits`,
-`POST /api/risk/kill` and `POST /api/account/reset`. The web terminal uses exactly
+with `POST /api/orders`, `PUT` and `DELETE /api/orders/{id}` (change or cancel),
+`POST /api/orders/cancel` and `POST /api/positions/close` (cancel all, flatten),
+`PUT /api/risk/limits`, `POST /api/risk/kill` and `POST /api/account/reset`. The web terminal uses exactly
 these routes, so anything it does can be scripted. An order takes one contract, or
 `legs` for a strategy; this calendar buys the later put and sells the nearer one at a
 net debit of at most 6.60:

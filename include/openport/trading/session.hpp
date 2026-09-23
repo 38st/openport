@@ -1,6 +1,9 @@
 #pragma once
 
+#include <map>
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "openport/trading/evaluation.hpp"
 #include "openport/trading/journal.hpp"
@@ -66,6 +69,14 @@ struct CommandResult {
   std::uint64_t account_version = 0;
 };
 
+/// New terms for an open order; each field left empty keeps its value.
+struct OrderChange {
+  std::optional<Quantity> quantity;    ///< The total, filled contracts (or units) included.
+  std::optional<Money> limit_price;    ///< Limit orders only; a multi-leg order's net per unit.
+  std::optional<Money> trigger_level;  ///< Armed orders with a trigger only.
+  [[nodiscard]] bool empty() const { return !quantity && !limit_price && !trigger_level; }
+};
+
 /// Single-threaded, deterministic reducer. Every timestamp is caller market
 /// time (UTC nanoseconds), monotone and nonnegative. No networking or clocks.
 /// Business failures return Decisions; invalid commands/arithmetic/journal
@@ -86,6 +97,28 @@ class TradingSession {
   /// registration; it still consumes the client ID and journals a rejected order.
   CommandResult submit(OrderRequest request, Timestamp time, Decision rejection = {});
   CommandResult cancel(OrderId id, Timestamp time);
+  /// Change a resting order in place: a DAY limit order, an armed order or a
+  /// bracket exit. Its ID, fills and place among equal prices stay. The new
+  /// terms pass every check a new order takes, its own reservation released
+  /// first; a failure leaves the order unchanged. A limit that becomes
+  /// marketable trades at once, and an armed order whose new level is already
+  /// reached activates in the regular session. The quantity must stay above
+  /// the filled quantity. Bracket exits change only their level or price:
+  /// their size follows the position. `rejection` is the integration's
+  /// acceptance gate, as for submit.
+  CommandResult modify(OrderId id, OrderChange change, Timestamp time, Decision rejection = {});
+  /// Cancel every open order, or every open order on one underlying.
+  CommandResult cancel_all(std::optional<std::string> underlying, Timestamp time);
+  /// Flatten the account, or one underlying: cancel the open orders in scope,
+  /// then close each unexpired position in scope with a market IOC at the
+  /// displayed quotes, short positions first so a spread never leaves a naked
+  /// short. Expired positions wait for their settlement.
+  /// Every closing order takes the checks any order does; one that cannot
+  /// trade is recorded as rejected (with an underlying's entry in `rejections`
+  /// when the integration refuses it) and the others still go. The decision
+  /// is always success: outcomes are on the orders.
+  CommandResult close_positions(std::optional<std::string> underlying, Timestamp time,
+                                const std::map<std::string, Decision>& rejections = {});
   /// Apply a whole batch before risk/matching. Unknown symbols and future data
   /// reject the whole batch; duplicate/older observations are ignored. Supply
   /// at most one quote and one valuation per OSI per batch. An empty batch

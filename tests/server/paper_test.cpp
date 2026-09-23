@@ -265,6 +265,47 @@ TEST_F(PaperEngine, RestingLimitFillsOnlyOnLaterObservationAndPublishesContractJ
   EXPECT_TRUE(chain["strikes"][0]["call"]["untradable_reason"].is_null());
 }
 
+TEST_F(PaperEngine, OrdersChangeInPlaceAndPositionsCloseOverHttp) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "rest", "3.90")).status, 201);
+  auto changed = write(*engine, "PUT", "/api/orders/1", {{"limit_price", "4.00"}});
+  ASSERT_EQ(changed.status, 200) << changed.body;
+  auto body = json::parse(changed.body);
+  EXPECT_EQ(body["order"]["id"], "1");
+  EXPECT_EQ(body["order"]["limit_price"], "4.00");
+  EXPECT_EQ(body["order"]["status"], "working");
+  EXPECT_TRUE(body["fills"].empty());
+  expect_error(write(*engine, "PUT", "/api/orders/1", json::object()), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "PUT", "/api/orders/1", {{"side", "sell"}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "PUT", "/api/orders/1", {{"quantity", 0}}), 422, "INVALID_ORDER");
+  expect_error(write(*engine, "PUT", "/api/orders/1", {{"limit_price", "4.03"}}), 422, "INVALID_TICK");
+  expect_error(write(*engine, "PUT", "/api/orders/9", {{"quantity", 2}}), 404, "UNKNOWN_ORDER");
+  // Marketable at its new price, it fills in place.
+  changed = write(*engine, "PUT", "/api/orders/1", {{"limit_price", "4.20"}, {"quantity", 2}});
+  ASSERT_EQ(changed.status, 200) << changed.body;
+  body = json::parse(changed.body);
+  EXPECT_EQ(body["order"]["status"], "filled");
+  EXPECT_EQ(body["fills"].size(), 1);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "second", "3.90")).status, 201);
+  expect_error(write(*engine, "POST", "/api/orders/cancel", {{"underlying", "spx"}}), 400, "INVALID_REQUEST");
+  const auto cancelled = write(*engine, "POST", "/api/orders/cancel", {{"underlying", "SPX"}});
+  ASSERT_EQ(cancelled.status, 200) << cancelled.body;
+  EXPECT_EQ(json::parse(cancelled.body)["cancelled_orders"], json::array({"2"}));
+  // Flatten: resting orders go first, then each position closes at market.
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "third", "3.90")).status, 201);
+  const auto closed = write(*engine, "POST", "/api/positions/close", json::object());
+  ASSERT_EQ(closed.status, 200) << closed.body;
+  body = json::parse(closed.body);
+  EXPECT_EQ(body["cancelled_orders"], json::array({"3"}));
+  ASSERT_EQ(body["orders"].size(), 1);
+  EXPECT_EQ(body["orders"][0]["side"], "sell");
+  EXPECT_EQ(body["orders"][0]["type"], "market");
+  EXPECT_EQ(body["orders"][0]["quantity"], 2);
+  EXPECT_EQ(body["orders"][0]["status"], "filled");
+  EXPECT_EQ(body["fills"].size(), 1);
+  EXPECT_TRUE(read(*engine, "/api/portfolio")["positions"].empty());
+}
+
 TEST(PaperStatus, PublishesConfiguredMoneyStringsInStatusAndTick) {
   PaperProvider provider;
   auto options = paper_options();

@@ -301,6 +301,13 @@ void Engine::apply_command(PendingCommand& pending) {
   } else {
     const auto before = trading_->snapshot();
     const auto& c = pending.command;
+    // New orders need the underlying's feed to be current, as the ticket shows.
+    const auto acceptance = [&](const std::string& underlying) {
+      const auto view = trading_view();
+      const auto time = view->market_times.find(underlying);
+      return paper_acceptance(underlying, time == view->market_times.end() ? 0 : time->second,
+                              wall_time(), status_.capabilities.delay, trading_->config().limits.max_quote_age);
+    };
     try {
       CommandResult result;
       switch (c.kind) {
@@ -319,16 +326,35 @@ void Engine::apply_command(PendingCommand& pending) {
             }
             if (!contract) continue;
             rejection = eligible(*contract);
-            if (rejection.ok()) {
-              const auto view = trading_view();
-              const auto time = view->market_times.find(contract->underlying);
-              rejection = paper_acceptance(contract->underlying,
-                  time == view->market_times.end() ? 0 : time->second,
-                  wall_time(), status_.capabilities.delay, trading_->config().limits.max_quote_age);
-            }
+            if (rejection.ok()) rejection = acceptance(contract->underlying);
             if (!rejection.ok()) break;
           }
           result = trading_->submit(c.order, market_time_, rejection);
+          break;
+        }
+        case TradingCommand::Kind::Modify: {
+          // A change can trade at once, so it takes a new order's feed gate.
+          Decision rejection;
+          for (const auto& order : before->open_orders)
+            if (order.id == c.order_id) {
+              const auto contract = trading_->contracts().find(order_symbols(order.request).front());
+              if (contract != trading_->contracts().end()) rejection = acceptance(contract->second.underlying);
+            }
+          result = trading_->modify(c.order_id, c.change, market_time_, rejection);
+          break;
+        }
+        case TradingCommand::Kind::CancelAll:
+          result = trading_->cancel_all(c.underlying.empty() ? std::nullopt : std::optional(c.underlying), market_time_);
+          break;
+        case TradingCommand::Kind::ClosePositions: {
+          std::map<std::string, Decision> rejections;
+          for (const auto& p : before->positions) {
+            const auto& underlying = p.position.contract.underlying;
+            if ((c.underlying.empty() || underlying == c.underlying) && !rejections.contains(underlying))
+              if (auto rejection = acceptance(underlying); !rejection.ok()) rejections.emplace(underlying, std::move(rejection));
+          }
+          result = trading_->close_positions(c.underlying.empty() ? std::nullopt : std::optional(c.underlying),
+                                             market_time_, rejections);
           break;
         }
         case TradingCommand::Kind::Cancel: result = trading_->cancel(c.order_id, market_time_); break;
@@ -362,11 +388,12 @@ void Engine::apply_command(PendingCommand& pending) {
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;
       publish_trading();
+      const auto& orders = trading_->snapshot()->recent_orders;
       for (const auto& order : before->open_orders) {
-        const auto& orders = trading_->snapshot()->recent_orders;
         if (orders.at(static_cast<std::size_t>(order.id - 1)).status == OrderStatus::Cancelled)
           reply.cancelled_orders.push_back(order.id);
       }
+      for (auto i = before->recent_orders.size(); i < orders.size(); ++i) reply.created_orders.push_back(orders[i].id);
     } catch (const TradingError& error) {
       reply.decision = {error.code(), error.what(), {}, {}, {}};
       if (error.code() == Reason::JOURNAL_IO || error.code() == Reason::JOURNAL_CORRUPT ||

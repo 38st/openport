@@ -39,7 +39,7 @@ struct TradingView {
 };
 
 struct TradingCommand {
-  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout };
+  enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions };
   Kind kind = Kind::Submit;
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
@@ -54,6 +54,8 @@ struct TradingCommand {
   /// passed (funded presets); empty for no requirement.
   std::string required_pass;
   trading::Money amount;         ///< Payout: the withdrawal.
+  trading::OrderChange change;   ///< Modify: the order's new terms.
+  std::string underlying;        ///< CancelAll and ClosePositions: one underlying, or empty for all.
 };
 
 struct TradingReply {
@@ -62,6 +64,7 @@ struct TradingReply {
   std::optional<trading::OrderId> order_id;
   std::shared_ptr<const TradingView> view;
   std::vector<trading::OrderId> cancelled_orders;
+  std::vector<trading::OrderId> created_orders;  ///< Orders the command added, in sequence.
 };
 using TradingCompletion = std::function<void(TradingReply)>;
 

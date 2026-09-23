@@ -328,5 +328,10 @@ export interface OrdersResponse { account_version: string; orders: Order[] }
 export interface FillsResponse { account_version: string; fills: Fill[] }
 export interface OrderResponse { account_version: string; order: Order }
 export interface SubmitOrderResponse extends OrderResponse { fills: Fill[] }
+/** New terms for a resting order; omitted fields keep their value. */
+export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money }
+export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
+/** Each closing order with its outcome; a rejected one carries its reason. */
+export interface ClosePositionsResponse extends CancelAllResponse { orders: Order[]; fills: Fill[] }
 export interface KillResponse { account_version: string; kill: KillState; cancelled_orders: string[] }
 export interface SettlementResponse { account_version: string; position_closed: boolean }

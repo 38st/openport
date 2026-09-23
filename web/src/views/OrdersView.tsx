@@ -3,9 +3,11 @@ import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTradingSession } from "../api/trading"
 import type { Fill, Order, TradingStatus } from "../api/trading-types"
+import { CancelAllDialog, EditOrderDialog } from "../components/OrderActions"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented, type Tone } from "../components/ui"
 import { newYorkDate, orderLabel, osiLabel } from "../lib/journal"
+import { editable } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -66,6 +68,8 @@ function OrdersAccount({ trading }: { trading: TradingStatus }) {
     (!query || [o.symbol ?? "", ...(o.legs ?? []).map((leg) => leg.symbol), o.id, o.client_order_id, orderLabel(o), o.type, o.side ?? "strategy"]
       .some((v) => v.toLowerCase().includes(query)))),
   [tab, working, all, side, status, origin, query])
+  const [cancelAll, setCancelAll] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const fillRows = (fills.data?.fills ?? []).filter((f) => (side === "all" || f.side === side) &&
     (!query || [f.symbol, f.order_id, osiLabel(f.symbol, f.underlying)].some((v) => v.toLowerCase().includes(query))))
 
@@ -94,9 +98,13 @@ function OrdersAccount({ trading }: { trading: TradingStatus }) {
     <TradingError error={tab === "fills" ? fills.error : orders.error} />
     {tab === "fills"
       ? <Panel title="Fills">{fills.data ? <FillsTable fills={fillRows} /> : <Empty>Loading fills…</Empty>}</Panel>
-      : <Panel title={tab === "working" ? "Working orders" : "Order history"}>
+      : <Panel title={tab === "working" ? "Working orders" : "Order history"} actions={tab === "working" && trading.enabled && working.length > 0
+          ? <button type="button" className="trade-button" onClick={() => { setNotice(null); setCancelAll(true) }}>Cancel all</button> : undefined}>
+        {notice && <p className="mb-2 text-xs text-muted" role="status">{notice}</p>}
         {orders.data ? <OrdersTable orders={visible} trading={trading} empty={tab === "working" ? "No working orders." : "No orders match."} /> : <Empty>Loading orders…</Empty>}
       </Panel>}
+    {cancelAll && <CancelAllDialog orders={working} trading={trading} onClose={() => setCancelAll(false)}
+      onDone={(message) => { setNotice(message); setCancelAll(false) }} />}
   </div>
 }
 
@@ -107,6 +115,7 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<unknown>()
   const [result, setResult] = useState<string | null>(null)
+  const [editing, setEditing] = useState<Order | null>(null)
   const busy = useRef(false)
   async function cancel(id: string) {
     if (busy.current || writeBlocked(trading, token)) return
@@ -142,11 +151,17 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
             <Badge tone={statusTone[order.status]}>{statusLabel[order.status]}</Badge>
             {order.reason && <span className="max-w-64 truncate text-[10px] text-muted" title={order.reason.message}>{order.reason.code === "USER_CANCEL" ? "Cancelled by you" : order.reason.code}</span>}
           </div></td>
-          <td>{open(order) && order.origin !== "system" && <button type="button" className="trade-button" aria-label={`Cancel order ${order.id} for ${orderLabel(order)}`}
-            disabled={pending != null || writeBlocked(trading, token)} onClick={() => void cancel(order.id)}>{pending === order.id ? "Cancelling…" : "Cancel"}</button>}</td>
+          <td><div className="flex justify-end gap-1">
+            {editable(order) && <button type="button" className="trade-button" aria-label={`Edit order ${order.id} for ${orderLabel(order)}`}
+              disabled={pending != null || writeBlocked(trading, token)} onClick={() => { setResult(null); setEditing(order) }}>Edit</button>}
+            {open(order) && order.origin !== "system" && <button type="button" className="trade-button" aria-label={`Cancel order ${order.id} for ${orderLabel(order)}`}
+              disabled={pending != null || writeBlocked(trading, token)} onClick={() => void cancel(order.id)}>{pending === order.id ? "Cancelling…" : "Cancel"}</button>}
+          </div></td>
         </tr>),
       ])}
     </Table>
+    {editing && <EditOrderDialog order={editing} trading={trading} onClose={() => setEditing(null)}
+      onDone={(order) => { setResult(`${orderLabel(order)}: changed, ${order.status === "partially_filled" ? "partially filled" : order.status}`); setEditing(null) }} />}
   </div>
 }
 

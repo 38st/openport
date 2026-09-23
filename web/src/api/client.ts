@@ -1,5 +1,5 @@
 import type { CandleInterval, Candles, Chain, ExposureMatrix, Status, Summary, Surface } from "./types"
-import type { Account, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradesResponse, WriteMode } from "./trading-types"
+import type { Account, CancelAllResponse, ClosePositionsResponse, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderChange, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradesResponse, WriteMode } from "./trading-types"
 import { writeToken } from "../lib/write-token"
 
 export class ApiError extends Error {
@@ -60,6 +60,9 @@ export const api = {
   risk: (signal?: AbortSignal) => get<Risk>("/api/risk", signal),
   submitOrder: (order: NewOrder, mode: WriteMode) => write<SubmitOrderResponse>("/api/orders", "POST", mode, order),
   cancelOrder: (id: string, mode: WriteMode) => write<OrderResponse>(`/api/orders/${encodeURIComponent(id)}`, "DELETE", mode),
+  modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(`/api/orders/${encodeURIComponent(id)}`, "PUT", mode, change),
+  cancelAllOrders: (underlying: string | null, mode: WriteMode) => write<CancelAllResponse>("/api/orders/cancel", "POST", mode, underlying ? { underlying } : {}),
+  closePositions: (underlying: string | null, mode: WriteMode) => write<ClosePositionsResponse>("/api/positions/close", "POST", mode, underlying ? { underlying } : {}),
   updateLimits: (expected_revision: string, limits: Limits, mode: WriteMode) => write<Risk>("/api/risk/limits", "PUT", mode, { expected_revision, limits }),
   setKill: (action: "trip" | "reset", reason: string, mode: WriteMode) => write<KillResponse>("/api/risk/kill", "POST", mode, { action, reason }),
   settle: (symbol: string, value: Money, mode: WriteMode) => write<SettlementResponse>("/api/settlements", "POST", mode, { symbol, value }),

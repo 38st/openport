@@ -163,6 +163,29 @@ open. The simulation clock stays at market time. Resting orders do not fill from
 stale data and are not cancelled merely because the feed stalls; they remain
 subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
 
+### Changing, cancelling and flattening
+
+A resting order changes in place (`modify`): a DAY limit order, an armed order or a
+bracket exit. It keeps its ID, its fills and its place among equal prices. The new
+quantity counts filled contracts too and must exceed them; the limit price applies
+to limit orders (a multi-leg order's signed net); the trigger level to armed orders
+with a trigger. The changed order takes every pre-trade check a new one would, with
+its own reservation released first, and a failure leaves it exactly as it was. A
+limit that becomes marketable trades at once against the cached fresh quote, and an
+armed order whose new level is reached activates in the regular session. Bracket
+exits change only their level or take-profit price (positive, on the tier tick);
+their size follows the position. The engine applies a new order's feed gate
+(`FEED_STALLED`) before a change, because a change can trade.
+
+`cancel_all` cancels every open order, armed ones and bracket exits included, or
+only one underlying's. `close_positions` flattens the account or one underlying: it
+cancels the open orders in scope, then closes each unexpired position in scope with
+a market IOC order at the displayed quote, short positions first so buying one back
+never uncovers another leg. These are the trader's own orders (client IDs
+`openport-close-{version}-{n}`) and take the normal checks; one the rules refuse is
+recorded as rejected with its reason and the others still go. Expired positions wait
+for settlement.
+
 ## Conditional and bracket orders
 
 Any order may carry a **trigger** `{source, direction, level}`. It is accepted with the
@@ -675,6 +698,9 @@ focus at the top of the ticket.
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working/partially filled |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), takes no trigger or bracket, counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
+| `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
+| `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
+| `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope and closes its positions at market, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason) and their `fills` |
 | `GET /api/fills` | Version and fills, newest first |
 | `GET /api/risk` | Version, limits revision, limits, complete flag, daily loss, kill state, aggregate/underlying buckets and scenario matrices |
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |

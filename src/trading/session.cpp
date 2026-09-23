@@ -865,6 +865,103 @@ void monitor_rules(State& s, Events& events) {
     }
   }
 }
+/// Accept or reject one new order; once accepted, arm it or match it at once.
+CommandResult place(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
+  Order order;
+  order.id = static_cast<OrderId>(s.orders.size() + 1);
+  order.request = std::move(request);
+  order.accepted_at = time;
+  const bool duplicate = std::any_of(s.orders.begin(), s.orders.end(), [&](const auto& o) {
+    return o.request.client_order_id == order.request.client_order_id;
+  });
+  s.orders.push_back(order);
+  auto& stored = s.orders.back();
+  auto decision = duplicate ? failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used") : !rejection.ok() ? rejection : order_check(s, stored);
+  if (!decision.ok()) {
+    stored.status = OrderStatus::Rejected;
+    stored.reason = decision;
+    event(events, "order_rejected", stored);
+    return CommandResult{decision, stored.id, 0};
+  }
+  const auto id = stored.id;
+  const auto symbols = order_symbols(stored.request);
+  const auto& contract = s.contracts.at(symbols.front());
+  if (stored.request.trigger) {
+    // Armed until reached, and good until expiry; a level already reached
+    // activates at once.
+    stored.status = OrderStatus::Armed;
+    stored.day_end = contract.expiry_time();
+    event(events, "order_accepted", stored);
+    if (md::trading_session(contract.root, s.time).name == "regular" &&
+        reached(s, s.orders.at(static_cast<std::size_t>(id - 1))))
+      activate(s, id, events);
+    return CommandResult{{}, id, 0};
+  }
+  stored.day_end = regular_end(contract, time);
+  event(events, "order_accepted", stored);
+  // Existing better orders share any remaining budget even on command ingress.
+  // Matching can append bracket exits, so re-read the order by ID afterwards.
+  match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
+  auto& accepted = s.orders.at(static_cast<std::size_t>(id - 1));
+  if (accepted.open() && accepted.request.tif == TimeInForce::Ioc)
+    cancel_order(accepted, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+  return CommandResult{{}, id, 0};
+}
+std::string underlying_of(const State& s, const Order& o) {
+  const auto c = s.contracts.find(order_symbols(o.request).front());
+  return c == s.contracts.end() ? std::string{} : c->second.underlying;
+}
+/// Apply new terms to a resting order, or leave it untouched with the reason.
+CommandResult change_order(State& s, OrderId id, const OrderChange& change, const Decision& rejection, Events& events) {
+  if (id == 0 || id > s.orders.size()) return {failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), {}, 0};
+  auto& order = s.orders.at(static_cast<std::size_t>(id - 1));
+  if (!order.open()) return {failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
+  const auto& r = order.request;
+  const bool exit = order.role != OrderRole::Normal;
+  const bool resting = order.status == OrderStatus::Armed || (r.type == OrderType::Limit && r.tif == TimeInForce::Day);
+  if (order.system || !resting)
+    return {failure(Reason::INVALID_ORDER, "Only resting orders change: DAY limit orders, armed orders and bracket exits"), id, 0};
+  if (change.empty()) return {failure(Reason::INVALID_ORDER, "Give a new quantity, limit price or trigger level"), id, 0};
+  if (change.quantity && exit)
+    return {failure(Reason::INVALID_ORDER, "A bracket exit's size follows its position; change its level or price instead"), id, 0};
+  if (change.quantity && *change.quantity <= order.filled_quantity)
+    return {{Reason::INVALID_ORDER, "The new quantity must exceed the filled quantity; cancel the order instead",
+             static_cast<double>(*change.quantity), static_cast<double>(order.filled_quantity), {}}, id, 0};
+  if (change.limit_price && r.type != OrderType::Limit)
+    return {failure(Reason::INVALID_ORDER, "Only limit orders have a limit price"), id, 0};
+  if (change.trigger_level && (!r.trigger || order.status != OrderStatus::Armed))
+    return {failure(Reason::INVALID_ORDER, "Only armed orders with a trigger have a trigger level"), id, 0};
+  if (!rejection.ok()) return {rejection, id, 0};
+  const Order before = order;
+  if (change.quantity) order.request.quantity = *change.quantity;
+  if (change.limit_price) order.request.limit_price = *change.limit_price;
+  if (change.trigger_level) order.request.trigger->level = *change.trigger_level;
+  Decision decision;
+  if (exit) {
+    // Exits only ever reduce a position, so they skip the entry checks; their terms must still be valid.
+    const auto& root = s.contracts.at(order.request.symbol).root;
+    const auto& limit = order.request.limit_price;
+    if ((order.request.trigger && order.request.trigger->level <= Money{}) || (limit && *limit <= Money{}))
+      decision = failure(Reason::INVALID_ORDER, "Trigger levels and exit prices must be positive");
+    else if (limit && limit->micros() % tick_size(root, *limit).micros() != 0)
+      decision = failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
+  } else {
+    decision = order_check(s, order);
+  }
+  if (!decision.ok()) {
+    order = before;
+    return {decision, id, 0};
+  }
+  event(events, "order_modified", order);
+  const auto symbols = order_symbols(order.request);
+  if (order.status == OrderStatus::Armed) {
+    if (md::trading_session(s.contracts.at(symbols.front()).root, s.time).name == "regular" && reached(s, order))
+      activate(s, id, events);
+  } else {
+    match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
+  }
+  return {{}, id, 0};
+}
 void require_reason(const std::string& reason) {
   if (reason.find_first_not_of(" \t\r\n") == std::string::npos)
     throw TradingError(Reason::INVALID_REASON, "An explicit nonblank reason is required");
@@ -996,45 +1093,7 @@ CommandResult TradingSession::define(const md::OptionContract& contract, Timesta
 CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decision rejection) {
   return impl_->transact(time, "submit", [&](State& s, Events& events) {
     monitor_loss(s, events);
-    Order order;
-    order.id = static_cast<OrderId>(s.orders.size() + 1);
-    order.request = std::move(request);
-    order.accepted_at = time;
-    const bool duplicate = std::any_of(s.orders.begin(), s.orders.end(), [&](const auto& o) {
-      return o.request.client_order_id == order.request.client_order_id;
-    });
-    s.orders.push_back(order);
-    auto& stored = s.orders.back();
-    auto decision = duplicate ? failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used") : !rejection.ok() ? rejection : order_check(s, stored);
-    if (!decision.ok()) {
-      stored.status = OrderStatus::Rejected;
-      stored.reason = decision;
-      event(events, "order_rejected", stored);
-      return CommandResult{decision, stored.id, 0};
-    }
-    const auto id = stored.id;
-    const auto symbols = order_symbols(stored.request);
-    const auto& contract = s.contracts.at(symbols.front());
-    if (stored.request.trigger) {
-      // Armed until reached, and good until expiry; a level already reached
-      // activates at once.
-      stored.status = OrderStatus::Armed;
-      stored.day_end = contract.expiry_time();
-      event(events, "order_accepted", stored);
-      if (md::trading_session(contract.root, s.time).name == "regular" &&
-          reached(s, s.orders.at(static_cast<std::size_t>(id - 1))))
-        activate(s, id, events);
-      return CommandResult{{}, id, 0};
-    }
-    stored.day_end = regular_end(contract, time);
-    event(events, "order_accepted", stored);
-    // Existing better orders share any remaining budget even on command ingress.
-    // Matching can append bracket exits, so re-read the order by ID afterwards.
-    match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
-    auto& accepted = s.orders.at(static_cast<std::size_t>(id - 1));
-    if (accepted.open() && accepted.request.tif == TimeInForce::Ioc)
-      cancel_order(accepted, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
-    return CommandResult{{}, id, 0};
+    return place(s, std::move(request), time, rejection, events);
   });
 }
 CommandResult TradingSession::cancel(OrderId id, Timestamp time) {
@@ -1044,6 +1103,53 @@ CommandResult TradingSession::cancel(OrderId id, Timestamp time) {
     if (!order.open()) return CommandResult{failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
     cancel_order(order, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
     return CommandResult{{}, id, 0};
+  });
+}
+CommandResult TradingSession::modify(OrderId id, OrderChange change, Timestamp time, Decision rejection) {
+  return impl_->transact(time, "modify", [&](State& s, Events& events) {
+    monitor_loss(s, events);
+    return change_order(s, id, change, rejection, events);
+  });
+}
+CommandResult TradingSession::cancel_all(std::optional<std::string> underlying, Timestamp time) {
+  return impl_->transact(time, "cancel_all", [&](State& s, Events& events) {
+    for (auto& o : s.orders)
+      if (o.open() && (!underlying || underlying_of(s, o) == *underlying))
+        cancel_order(o, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::close_positions(std::optional<std::string> underlying, Timestamp time,
+                                              const std::map<std::string, Decision>& rejections) {
+  return impl_->transact(time, "close_positions", [&](State& s, Events& events) {
+    monitor_loss(s, events);
+    const auto in_scope = [&](const std::string& name) { return !underlying || name == *underlying; };
+    for (auto& o : s.orders)
+      if (o.open() && in_scope(underlying_of(s, o)))
+        cancel_order(o, failure(Reason::USER_CANCEL, "Cancelled to close positions"), events);
+    std::vector<std::pair<std::string, Quantity>> closing;
+    // Expired contracts cannot trade; they close at settlement.
+    for (const auto& [symbol, position] : s.ledger.positions()) {
+      const auto& contract = s.contracts.at(symbol);
+      if (position.quantity != 0 && in_scope(contract.underlying) && s.time < contract.expiry_time())
+        closing.emplace_back(symbol, position.quantity);
+    }
+    // Shorts first: buying one back never uncovers another leg.
+    std::stable_partition(closing.begin(), closing.end(), [](const auto& p) { return p.second < 0; });
+    const auto prefix = "openport-close-" + std::to_string(s.version + 1) + "-";
+    std::size_t count = 0;
+    for (const auto& [symbol, quantity] : closing) {
+      OrderRequest request;
+      request.client_order_id = prefix + std::to_string(++count);
+      request.symbol = symbol;
+      request.side = quantity > 0 ? Side::Sell : Side::Buy;
+      request.type = OrderType::Market;
+      request.tif = TimeInForce::Ioc;
+      request.quantity = magnitude(quantity);
+      const auto gate = rejections.find(s.contracts.at(symbol).underlying);
+      place(s, std::move(request), time, gate == rejections.end() ? Decision{} : gate->second, events);
+    }
+    return CommandResult{};
   });
 }
 CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quotes,

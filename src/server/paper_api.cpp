@@ -345,14 +345,32 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
   int status = 200;
   switch (command.kind) {
     case TradingCommand::Kind::Submit:
-    case TradingCommand::Kind::Cancel: {
+    case TradingCommand::Kind::Cancel:
+    case TradingCommand::Kind::Modify: {
       const auto it = std::find_if(s.recent_orders.begin(), s.recent_orders.end(), [&](const auto& o) { return o.id == reply.order_id; });
       if (it == s.recent_orders.end()) return api_error(503, "TRADING_UNAVAILABLE", "Order publication missing");
       body["order"] = order_json(*it, view);
-      if (command.kind == TradingCommand::Kind::Submit) {
-        status = 201; body["fills"] = json::array();
+      if (command.kind != TradingCommand::Kind::Cancel) {
+        if (command.kind == TradingCommand::Kind::Submit) status = 201;
+        body["fills"] = json::array();
         for (const auto& fill : s.recent_fills)
           if (fill.order_id == it->id) body["fills"].push_back(fill_json(fill, view));
+      }
+      break;
+    }
+    case TradingCommand::Kind::CancelAll:
+    case TradingCommand::Kind::ClosePositions: {
+      body["cancelled_orders"] = json::array();
+      for (auto id : reply.cancelled_orders) body["cancelled_orders"].push_back(std::to_string(id));
+      if (command.kind == TradingCommand::Kind::CancelAll) break;
+      // Each closing order with its outcome: a rejection carries its reason.
+      body["orders"] = json::array();
+      body["fills"] = json::array();
+      for (auto id : reply.created_orders) {
+        const auto& order = s.recent_orders.at(static_cast<std::size_t>(id - 1));
+        body["orders"].push_back(order_json(order, view));
+        for (const auto& fill : s.recent_fills)
+          if (fill.order_id == id) body["fills"].push_back(fill_json(fill, view));
       }
       break;
     }
@@ -516,6 +534,16 @@ json strict_json(const std::string& body) {
     return true;
   });
 }
+/// The optional scope of a bulk command: one underlying, or every one.
+std::string scope_field(const json& body) {
+  fields(body, {}, {"underlying"});
+  if (!body.contains("underlying")) return {};
+  auto underlying = string_field(body, "underlying");
+  if (underlying.empty() || underlying.size() > 16 ||
+      !std::all_of(underlying.begin(), underlying.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'); }))
+    throw std::invalid_argument("underlying must be an uppercase symbol such as SPX");
+  return underlying;
+}
 TradingCommand parse_command(const ApiRequest& request) {
   TradingCommand command;
   if (request.method == "DELETE") {
@@ -526,6 +554,26 @@ TradingCommand parse_command(const ApiRequest& request) {
   }
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
   const auto body = strict_json(request.body);
+  if (request.method == "PUT" && request.target.starts_with("/api/orders/")) {
+    fields(body, {}, {"quantity", "limit_price", "trigger_level"});
+    command.kind = TradingCommand::Kind::Modify;
+    command.order_id = identifier(std::string_view(request.target).substr(std::string_view("/api/orders/").size()));
+    if (body.contains("quantity")) command.change.quantity = integer_field(body, "quantity");
+    if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
+    if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
+    if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price or trigger_level");
+    return command;
+  }
+  if (request.target == "/api/orders/cancel") {
+    command.kind = TradingCommand::Kind::CancelAll;
+    command.underlying = scope_field(body);
+    return command;
+  }
+  if (request.target == "/api/positions/close") {
+    command.kind = TradingCommand::Kind::ClosePositions;
+    command.underlying = scope_field(body);
+    return command;
+  }
   if (request.target == "/api/orders") {
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
@@ -685,9 +733,10 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
 void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete) {
   if (request.method == "GET") { complete(handle_api(request, source)); return; }
   const bool route = (request.method == "POST" && (request.target == "/api/orders" ||
+      request.target == "/api/orders/cancel" || request.target == "/api/positions/close" ||
       request.target == "/api/risk/kill" || request.target == "/api/settlements" ||
       request.target == "/api/account/reset" || request.target == "/api/account/payout")) ||
-      (request.method == "PUT" && request.target == "/api/risk/limits") ||
+      (request.method == "PUT" && (request.target == "/api/risk/limits" || request.target.starts_with("/api/orders/"))) ||
       (request.method == "DELETE" && request.target.starts_with("/api/orders/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
   const auto trading = source.status().trading;

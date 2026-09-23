@@ -7,6 +7,7 @@ import type { Order, Position, Risk, TradingStatus } from "../api/trading-types"
 import { Dialog } from "../components/Dialog"
 import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
+import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
 import { StrategyTicket } from "../components/StrategyTicket"
 import { RiskPanel } from "../components/RiskPanel"
@@ -130,6 +131,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const [closing, setClosing] = useState<Position | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [together, setTogether] = useState(false)
+  const [flatten, setFlatten] = useState<{ underlying: string | null } | null>(null)
   const refresh = useRefreshTrading()
   const data = portfolio.data
   return <div className="min-w-0 space-y-4">
@@ -159,10 +161,13 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <Tile label="Realized" value={signedMoney(data.realised)} tone={toneOf(data.realised)} detail={`fees ${formatMoney(data.fees)}`} />
       </div>
       <p className="text-[11px] text-muted">Valued {timestampET(data.time)}</p>
-      <Panel title={`Open positions · ${data.positions.length}`} actions={trading.enabled && data.positions.length > 1 ? <>
-        <span className="text-[11px] text-muted">{picked.size ? `${picked.size} picked` : "Pick positions to close them in one order"}</span>
-        {picked.size > 0 && <button type="button" className="trade-button" onClick={() => setPicked(new Set())}>Clear</button>}
-        <button type="button" className="trade-button" disabled={picked.size < 2} onClick={() => setTogether(true)}>Close together</button>
+      <Panel title={`Open positions · ${data.positions.length}`} actions={trading.enabled && data.positions.length > 0 ? <>
+        {data.positions.length > 1 && <>
+          <span className="text-[11px] text-muted">{picked.size ? `${picked.size} picked` : "Pick positions to close them in one order"}</span>
+          {picked.size > 0 && <button type="button" className="trade-button" onClick={() => setPicked(new Set())}>Clear</button>}
+          <button type="button" className="trade-button" disabled={picked.size < 2} onClick={() => setTogether(true)}>Close together</button>
+        </>}
+        <button type="button" className="trade-button" onClick={() => setFlatten({ underlying: null })}>Close all</button>
       </> : undefined}>
         <Positions positions={data.positions} orders={allOrders} onClose={trading.enabled ? setClosing : undefined}
           selected={trading.enabled && data.positions.length > 1 ? picked : undefined}
@@ -176,6 +181,8 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
     <Panel title="Kill switch"><KillSwitch kill={risk.data?.kill ?? { latched: trading.kill_latched, reason: null }} trading={trading} /></Panel>
     {editing && <LimitsEditor initial={editing} trading={trading} onClose={() => setEditing(null)} />}
     {closing && <CloseTicket position={closing} trading={trading} onClose={() => setClosing(null)} />}
+    {flatten && data && <FlattenDialog positions={data.positions} orders={allOrders ?? []} trading={trading}
+      initial={flatten.underlying} onClose={() => setFlatten(null)} />}
     {together && data && <CloseTogether positions={data.positions.filter((p) => picked.has(p.symbol))} trading={trading}
       onClose={() => { setTogether(false); setPicked(new Set()) }} />}
   </div>
