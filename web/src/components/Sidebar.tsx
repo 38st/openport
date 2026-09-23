@@ -3,7 +3,8 @@ import { useLive } from "../api/live"
 import { useAccount, usePortfolio } from "../api/trading"
 import type { Account } from "../api/trading-types"
 import { signedPercent } from "../lib/format"
-import { accountViews, primaryViews, type View } from "../lib/route"
+import { payoutsVisible } from "../lib/payouts"
+import { navigableViews, type View } from "../lib/route"
 import { formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
 import { Badge, Meter, toneOf, toneText } from "./ui"
 
@@ -97,8 +98,9 @@ export function AccountSummary() {
 
 export function Sidebar({ view, onView, open, onClose }: { view: View; onView: (view: View) => void; open: boolean; onClose: () => void }) {
   const { trading } = useLive()
+  const account = useAccount().data
   const current = view === "smile" || view === "exposure" ? "chain" : view
-  const items = primaryViews.filter((v) => trading != null || !accountViews.includes(v))
+  const items = navigableViews(trading != null, payoutsVisible(account))
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose() }
@@ -128,7 +130,7 @@ export function Sidebar({ view, onView, open, onClose }: { view: View; onView: (
         <nav className="flex-1 space-y-4 overflow-y-auto px-2 py-3" aria-label="Pages">
           <div className="space-y-0.5">
             <div className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-faint">{trading ? "Account" : "Market"}</div>
-            {items.map((v) => link(v, primaryViews.indexOf(v)))}
+            {items.map((v, index) => link(v, index))}
           </div>
           <div className="space-y-0.5">
             <div className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-faint">System</div>

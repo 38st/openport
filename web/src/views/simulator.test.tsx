@@ -9,6 +9,7 @@ import { account, fill, plans, portfolio, risk, status, trades } from "../test/t
 import { DashboardView, equitySeries } from "./DashboardView"
 import { JournalView } from "./JournalView"
 import { RulesView, ruleText } from "./RulesView"
+import { ResetDialog } from "../components/ResetDialog"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 const clients: QueryClient[] = []
@@ -77,5 +78,18 @@ describe("simulator pages", () => {
     const html = render(<RulesView />)
     for (const text of ["Rules", "Profit target", "Trailing drawdown", "Evaluation plans", "Intraday 100K", "Every new high", "Buy only", "5 min before", "Start"])
       expect(html).toContain(text)
+  })
+  it("hides funded plans, their unlock and payouts in the practice simulator", () => {
+    const passed: Account = { ...account, evaluation: { ...account.evaluation, status: "passed", decided_at: "2026-09-23T15:00:00Z",
+      decided_equity: "110000.00", decision: "Equity $110000.00 reached the profit target $110000.00" } }
+    const dialog = render(<ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} onClose={() => {}} />, passed)
+    expect(dialog).toContain("Intraday 100K")
+    expect(dialog).not.toContain("Funded")
+    const rules = render(<RulesView />, passed)
+    expect(rules).toContain("Evaluation plans")
+    expect(rules).not.toContain("Funded accounts")
+    const dashboard = render(<DashboardView />, passed)
+    expect(dashboard).toContain("Evaluation passed")
+    expect(dashboard).not.toContain("Funded")
   })
 })

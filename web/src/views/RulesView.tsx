@@ -6,7 +6,7 @@ import { ResetDialog } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
-import { lockReason, payoutCap } from "../lib/payouts"
+import { lockReason, offeredPlans, payoutCap } from "../lib/payouts"
 import { formatMoney } from "../lib/trading"
 
 function Rule({ title, children }: { title: string; children: ReactNode }) {
@@ -84,6 +84,7 @@ function Rules({ trading }: { trading: TradingStatus }) {
       </Panel>
       <TradingError error={plans.error} />
       {plans.data ? <>
+        {/* Funded plans appear only when the terminal offers them (lib/features). */}
         <Panel title="Evaluation plans">
           <PlanTable label="Evaluation plans" plans={plans.data.plans.filter((p) => p.rules.phase !== "funded")} columns={[
             ["Profit target", (p) => p.rules.profit_target ? formatMoney(p.rules.profit_target, 0) : "—", true],
@@ -93,8 +94,8 @@ function Rules({ trading }: { trading: TradingStatus }) {
             ["Expiry auto-close", (p) => p.rules.expiry_cutoff_seconds ? `${Math.round(p.rules.expiry_cutoff_seconds / 60)} min before` : "—"],
           ]} lock={() => null} enabled={trading.enabled} onStart={setStart} />
         </Panel>
-        <Panel title="Funded accounts">
-          <PlanTable label="Funded accounts" plans={plans.data.plans.filter((p) => p.rules.phase === "funded")} columns={[
+        {offeredPlans(plans.data.plans).some((p) => p.rules.phase === "funded") && <Panel title="Funded accounts">
+          <PlanTable label="Funded accounts" plans={offeredPlans(plans.data.plans).filter((p) => p.rules.phase === "funded")} columns={[
             ["Trailing drawdown", (p) => p.rules.max_drawdown
               ? `${formatMoney(p.rules.max_drawdown, 0)} ${p.rules.drawdown_mode === "intraday" ? "intraday" : "at close"}` : "—"],
             ["Floor locks at", (p) => p.rules.lock_balance ? formatMoney(p.rules.lock_balance, 0) : "—", true],
@@ -102,7 +103,7 @@ function Rules({ trading }: { trading: TradingStatus }) {
             ["Payout after", (p) => p.rules.payouts ? `${p.rules.payouts.qualifying_days} days of ${formatMoney(p.rules.payouts.qualifying_profit, 0)}+` : "—"],
             ["Your share", (p) => p.rules.payouts ? `${p.rules.payouts.split_percent}%` : "—"],
           ]} lock={(p) => lockReason(p, plans.data.plans, data)} enabled={trading.enabled} onStart={setStart} />
-        </Panel>
+        </Panel>}
       </> : !plans.error && <p className="text-sm text-muted">Loading plans…</p>}
       {start && <ResetDialog trading={trading} attempt={data.evaluation.attempt} initial={start} onClose={() => setStart(null)} />}
     </div>

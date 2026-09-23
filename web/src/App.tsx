@@ -1,11 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useState } from "react"
 import { useLive } from "./api/live"
+import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
 import { Header } from "./components/Header"
 import { Sidebar, viewLabels } from "./components/Sidebar"
 import { Empty } from "./components/ui"
-import { accountViews, primaryViews, useRoute } from "./lib/route"
+import { payoutsVisible } from "./lib/payouts"
+import { accountViews, navigableViews, useRoute } from "./lib/route"
 import { matchingPayload } from "./lib/payload"
 import { defaultExpiry } from "./views/ChainView"
 import { DashboardView } from "./views/DashboardView"
@@ -26,20 +28,23 @@ export function App() {
   const symbols = (live.tick?.underlyings ?? live.status?.underlyings ?? []).map((u) => u.symbol)
   const symbol = route.symbol && symbols.includes(route.symbol) ? route.symbol : (symbols[0] ?? null)
   const version = symbol ? live.version(symbol) : 0
+  const payouts = payoutsVisible(useAccount().data)
   // Account pages need a paper-trading server; analytics-only servers land on Trade.
-  const view = accountViews.includes(route.view) && !live.trading ? "chain" : route.view
+  const view = accountViews.includes(route.view) && !live.trading ? "chain"
+    : route.view === "payouts" && !payouts ? "dashboard" : route.view
+  const pages = navigableViews(live.trading != null, payouts)
 
   useEffect(() => { document.title = `${viewLabels[view]} · OpenPort` }, [view])
 
-  // 1-7 switch pages; left/right step through expiries on the chain.
+  // Number keys switch between the sidebar's pages; left/right step through expiries on the chain.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || target?.closest(
         'input, textarea, select, button, [contenteditable]:not([contenteditable="false"]), [role="radiogroup"], [role="tablist"], [role="textbox"], [role="combobox"], [role="slider"], [role="spinbutton"]',
       )) return
-      const next = primaryViews[Number(event.key) - 1]
-      if (next && (live.trading || !accountViews.includes(next))) {
+      const next = pages[Number(event.key) - 1]
+      if (next) {
         event.preventDefault()
         navigate({ view: next })
         return
@@ -57,7 +62,7 @@ export function App() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [navigate, queryClient, route.expiry, view, symbol, version, live.trading])
+  }, [navigate, queryClient, route.expiry, view, symbol, version, pages])
 
   const waiting = live.status?.feed.message || "Connecting to openportd…"
   const content = view === "dashboard" ? <DashboardView />

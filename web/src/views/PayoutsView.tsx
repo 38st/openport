@@ -8,7 +8,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Check, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { timestampET } from "../lib/freshness"
-import { cycleDays, lockReason, payoutAmountError, payoutCap, payoutChecks, unlockedFundedPlan } from "../lib/payouts"
+import { cycleDays, lockReason, offeredPlans, payoutAmountError, payoutCap, payoutChecks, unlockedFundedPlan } from "../lib/payouts"
 import { useRoute } from "../lib/route"
 import { formatMoney, percentOfMoney, signedMoney, sumMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -28,7 +28,7 @@ function Payouts({ trading }: { trading: TradingStatus }) {
   const data = account.data
   if (account.error) return <TradingError error={account.error} />
   if (!data) return <Empty>Loading payouts…</Empty>
-  const list = plans.data?.plans ?? []
+  const list = offeredPlans(plans.data?.plans ?? [])
   return (
     <div className="min-w-0 space-y-4">
       <PageHeader title={<span className="flex flex-wrap items-center gap-2">Payouts {evaluationBadge(data, data.rules.plan)}</span>}

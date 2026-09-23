@@ -428,8 +428,10 @@ date ends and before rollover) and an unlocked peak and floor all move down by t
 amount, so the day's P&L and the drawdown room are unchanged and an end-of-day ratchet
 compares closes net of it; a locked floor stays where it is.
 
-The server offers a funded preset for each evaluation preset (`funded-intraday-25k`
-and so on). A reset into one requires that the current attempt passed the evaluation
+The web terminal hides funded plans and the Payouts page (this simulator funds no one)
+unless the account is already funded; `showFundedAccounts` in `web/src/lib/features.ts`
+offers them again. The server offers a funded preset for each evaluation preset
+(`funded-intraday-25k` and so on). A reset into one requires that the current attempt passed the evaluation
 it names, otherwise `PLAN_LOCKED`; `--plan` can start a new journal on one directly,
 and custom rules may set `phase` freely. Preset parameters are this project's own,
 modelled on common prop-firm terms: the evaluation's drawdown and strategy rules, the

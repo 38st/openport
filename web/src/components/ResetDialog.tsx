@@ -2,7 +2,7 @@ import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useAccount, useRefreshTrading, usePlans, useTradingSession } from "../api/trading"
 import type { Plan, TradingStatus } from "../api/trading-types"
-import { lockReason } from "../lib/payouts"
+import { lockReason, offeredPlans } from "../lib/payouts"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -37,7 +37,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
-  const list = plans.data?.plans ?? []
+  const list = offeredPlans(plans.data?.plans ?? [])
   const selected = list.find((p) => p.id === choice && lockReason(p, list, account) == null) ?? null
   async function submit() {
     if (!selected || busy.current || writeBlocked(trading, token)) return

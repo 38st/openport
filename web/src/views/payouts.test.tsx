@@ -12,6 +12,8 @@ import { PayoutsView } from "./PayoutsView"
 import { RulesView, ruleText } from "./RulesView"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
+// The terminal hides funded plans by default; these tests cover the kept code with them shown.
+vi.mock("../lib/features", () => ({ showFundedAccounts: true }))
 const clients: QueryClient[] = []
 function render(node: ReactNode, value: Account) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })

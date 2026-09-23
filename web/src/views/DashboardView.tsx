@@ -10,7 +10,7 @@ import { Check, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../comp
 import { money, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { contractLabel, formatDuration } from "../lib/journal"
-import { unlockedFundedPlan } from "../lib/payouts"
+import { offeredPlans, unlockedFundedPlan } from "../lib/payouts"
 import { useRoute } from "../lib/route"
 import { formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
 
@@ -71,7 +71,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const recent = (trades.data?.trades ?? []).filter((t) => t.status === "closed").slice(0, 5)
   const funded = r.phase === "funded"
   const payout = data.payout
-  const unlocked = unlockedFundedPlan(plans.data?.plans ?? [], data)
+  const unlocked = unlockedFundedPlan(offeredPlans(plans.data?.plans ?? []), data)
 
   return (
     <div className="min-w-0 space-y-4">

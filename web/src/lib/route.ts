@@ -8,6 +8,10 @@ export const primaryViews = ["dashboard", "chain", "positions", "orders", "journ
 export const tradeViews = ["chain", "smile", "exposure"] as const satisfies readonly View[]
 /** Pages that exist only with a paper-trading server. */
 export const accountViews: readonly View[] = ["dashboard", "positions", "orders", "journal", "rules", "payouts"]
+/** Sidebar pages that apply: account pages need trading, and Payouts is shown only when offered. */
+export function navigableViews(trading: boolean, payouts: boolean): View[] {
+  return primaryViews.filter((v) => (trading || !accountViews.includes(v)) && (v !== "payouts" || payouts))
+}
 /** Links from before the simulator redesign keep working. */
 const aliases: Record<string, View> = { portfolio: "positions" }
 

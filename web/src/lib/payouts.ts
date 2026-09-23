@@ -1,5 +1,15 @@
 import type { Account, EvaluationDay, Money, PayoutStatus, Plan } from "../api/trading-types"
+import { showFundedAccounts } from "./features"
 import { compareMoney, formatMoney } from "./trading"
+
+/** Plans the terminal offers: funded plans only when they are shown. */
+export function offeredPlans(plans: Plan[]): Plan[] {
+  return showFundedAccounts ? plans : plans.filter((p) => p.rules.phase !== "funded")
+}
+/** The Payouts page is shown with funded plans, or for an account that is already funded. */
+export function payoutsVisible(account: Pick<Account, "rules"> | undefined): boolean {
+  return showFundedAccounts || account?.rules.phase === "funded"
+}
 
 /** A payout number's cap: the last cap repeats; null when uncapped. */
 export function payoutCap(caps: Money[], number: number): Money | null {
