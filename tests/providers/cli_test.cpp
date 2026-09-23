@@ -2,14 +2,28 @@
 #include <sys/wait.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <stdexcept>
 #include <string>
 
 #include "support/recording.hpp"
 
 namespace {
+/// A private HOME for launched binaries, so a daemon that gets far enough to start never
+/// touches the user's real ~/.openport paper journal.
+std::string isolated_home() {
+  static const auto home = [] {
+    std::string pattern = (std::filesystem::temp_directory_path() / "openport-cli-home-XXXXXX").string();
+    if (!mkdtemp(pattern.data())) throw std::runtime_error("mkdtemp failed");
+    return pattern;
+  }();
+  return "HOME='" + home + "' ";
+}
+
 void rejects(const std::string& application, const std::string& args, const std::string& reason) {
-  const auto command =
-      std::string("\"") + OPENPORT_APPS_DIR + "/" + application + "\" " + args + " 2>&1";
+  const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/" + application + "\" " +
+                       args + " 2>&1";
   FILE* pipe = popen(command.c_str(), "r");
   ASSERT_NE(pipe, nullptr);
   std::string output;
@@ -84,7 +98,7 @@ TEST(Cli, ProbeCanReplayAndRecordANewFileWithoutNetwork) {
                        md::OptionQuote{0, 100, 100, 101, 10, 10},
                        md::UnderlyingQuote{"SPX", 100, 5000, 5001, 5000.5},
                        md::ProviderStatus{100, md::FeedState::Live, "snapshot complete", "SPX"}});
-  const auto command = std::string("\"") + OPENPORT_APPS_DIR +
+  const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR +
                        "/openport-probe\" replay SPX --option file='" + source.path.string() +
                        "' --option speed=max --option loop=off --record '" +
                        recorded.path.string() + "' 2>&1";
