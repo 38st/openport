@@ -83,12 +83,21 @@ json exit_json(const std::optional<ExitSpec>& e) {
   return {{"trigger", trigger_json(e->trigger)}, {"limit_price", money(e->limit_price)}};
 }
 json id_or_null(OrderId id) { return id == 0 ? json(nullptr) : json(std::to_string(id)); }
+const char* side_name(Side side) { return side == Side::Buy ? "buy" : "sell"; }
 json order_json(const Order& o, const TradingView& view) {
   constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
   constexpr const char* roles[] = {"", "stop_loss", "take_profit"};
+  const bool multi = multi_leg(o.request);
+  json legs = nullptr;
+  if (multi) {
+    legs = json::array();
+    for (const auto& leg : o.request.legs)
+      legs.push_back({{"symbol", leg.symbol}, {"side", side_name(leg.side)}, {"ratio", leg.ratio}});
+  }
   return {{"id", std::to_string(o.id)}, {"client_order_id", o.request.client_order_id},
-          {"symbol", o.request.symbol}, {"underlying", underlying(view, o.request.symbol)},
-          {"side", o.request.side == Side::Buy ? "buy" : "sell"},
+          {"symbol", multi ? json(nullptr) : json(o.request.symbol)},
+          {"underlying", underlying(view, order_symbols(o.request).front())},
+          {"side", multi ? json(nullptr) : json(side_name(o.request.side))}, {"legs", legs},
           {"type", o.request.type == OrderType::Limit ? "limit" : "market"},
           {"time_in_force", o.request.tif == TimeInForce::Day ? "day" : "ioc"},
           {"quantity", o.request.quantity}, {"filled_quantity", o.filled_quantity},
@@ -518,20 +527,41 @@ TradingCommand parse_command(const ApiRequest& request) {
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
   const auto body = strict_json(request.body);
   if (request.target == "/api/orders") {
-    fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket"});
+    // A single contract (symbol and side), or legs for a multi-leg order.
+    const bool legs = body.is_object() && body.contains("legs");
+    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price"});
+    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket"});
     auto& order = command.order;
     order.client_order_id = string_field(body, "client_order_id");
-    order.symbol = symbol_field(body);
-    const auto side = string_field(body, "side"), type = string_field(body, "type"), tif = string_field(body, "time_in_force");
-    if ((side != "buy" && side != "sell") || (type != "limit" && type != "market") || (tif != "day" && tif != "ioc"))
-      throw std::invalid_argument("Invalid side, type or time_in_force");
-    order.side = side == "buy" ? Side::Buy : Side::Sell;
+    const auto type = string_field(body, "type"), tif = string_field(body, "time_in_force");
+    if ((type != "limit" && type != "market") || (tif != "day" && tif != "ioc"))
+      throw std::invalid_argument("Invalid type or time_in_force");
     order.type = type == "limit" ? OrderType::Limit : OrderType::Market;
     order.tif = tif == "day" ? TimeInForce::Day : TimeInForce::Ioc;
     order.quantity = integer_field(body, "quantity");
     if ((order.type == OrderType::Limit) != body.contains("limit_price"))
       throw std::invalid_argument("limit_price is required for limit orders and forbidden for market orders");
     if (body.contains("limit_price")) order.limit_price = decimal_field(body, "limit_price");
+    if (legs) {
+      const auto& list = body.at("legs");
+      if (!list.is_array() || list.size() < 2 || list.size() > kMaxLegs)
+        throw std::invalid_argument("legs must be an array of two to four legs");
+      for (const auto& item : list) {
+        fields(item, {"symbol", "side"}, {"ratio"});
+        Leg leg;
+        leg.symbol = symbol_field(item);
+        const auto side = string_field(item, "side");
+        if (side != "buy" && side != "sell") throw std::invalid_argument("Leg side must be buy or sell");
+        leg.side = side == "buy" ? Side::Buy : Side::Sell;
+        if (item.contains("ratio")) leg.ratio = integer_field(item, "ratio");
+        order.legs.push_back(std::move(leg));
+      }
+      return command;
+    }
+    order.symbol = symbol_field(body);
+    const auto side = string_field(body, "side");
+    if (side != "buy" && side != "sell") throw std::invalid_argument("Invalid side, type or time_in_force");
+    order.side = side == "buy" ? Side::Buy : Side::Sell;
     if (body.contains("trigger")) order.trigger = parse_trigger(body.at("trigger"));
     if (body.contains("bracket")) {
       const auto& bracket = body.at("bracket");

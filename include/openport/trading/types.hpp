@@ -77,9 +77,19 @@ struct Bracket {
   std::optional<ExitSpec> take_profit;
 };
 
+/// One leg of a multi-leg order: `ratio` contracts of `symbol` per unit, bought
+/// or sold as `side` says.
+struct Leg {
+  std::string symbol;  ///< Canonical padded OSI of a registered definition.
+  Side side = Side::Buy;
+  Quantity ratio = 1;
+};
+inline constexpr std::size_t kMaxLegs = 4;
+inline constexpr Quantity kMaxRatio = 10;
+
 struct OrderRequest {
   std::string client_order_id;
-  std::string symbol;  ///< Canonical padded OSI of a registered definition.
+  std::string symbol;  ///< Canonical padded OSI of a registered definition; empty with legs.
   Side side = Side::Buy;
   OrderType type = OrderType::Limit;
   TimeInForce tif = TimeInForce::Day;
@@ -89,7 +99,15 @@ struct OrderRequest {
   std::optional<Trigger> trigger;
   /// Exits created as this entry fills, one cancelling the other.
   std::optional<Bracket> bracket;
+  /// Multi-leg order: two to four legs on one underlying, filled together. The
+  /// symbol is empty and the side Buy; `quantity` counts units and
+  /// `limit_price` is the net per unit: positive a debit to pay at most,
+  /// negative a credit to receive at least. No trigger or bracket.
+  std::vector<Leg> legs;
 };
+[[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }
+/// Every contract an order trades: its symbol, or each leg's.
+[[nodiscard]] std::vector<std::string> order_symbols(const OrderRequest& request);
 enum class OrderRole { Normal, StopLoss, TakeProfit };
 struct Order {
   OrderId id = 0;  ///< Also the acceptance priority sequence; never reused.

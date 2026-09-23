@@ -52,6 +52,7 @@ target_sources(openport_tests PRIVATE
   trading/evaluation_test.cpp
   trading/conditional_test.cpp
   trading/funded_test.cpp
+  trading/multileg_test.cpp
 )
 target_link_libraries(openport_tests PRIVATE openport::trading nlohmann_json::nlohmann_json)
 

@@ -24,6 +24,12 @@ std::string_view to_string(Reason reason) noexcept {
 #undef CASE
   return "UNKNOWN";
 }
+std::vector<std::string> order_symbols(const OrderRequest& request) {
+  if (!multi_leg(request)) return {request.symbol};
+  std::vector<std::string> symbols;
+  for (const auto& leg : request.legs) symbols.push_back(leg.symbol);
+  return symbols;
+}
 Decision eligible(const md::OptionContract& c) {
   const auto conventions = md::conventions_for_root(c.root);
   if (c.style == pricing::ExerciseStyle::American && conventions.style != pricing::ExerciseStyle::American)

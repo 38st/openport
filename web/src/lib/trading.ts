@@ -89,6 +89,10 @@ function tickCents(root: string, below: boolean): bigint {
   if (!indexRoots.includes(root) && !["SPY", "QQQ", "IWM"].includes(root)) return below ? 1n : 5n
   return 1n
 }
+/** A multi-leg net price's tick in cents: the smallest leg's lower-tier tick. */
+export function comboTickCents(roots: string[]): number {
+  return roots.length ? Math.min(...roots.map((root) => Number(tickCents(root, true)))) : 1
+}
 /** Nearest valid limit on the root's tier tick, for suggested prices. */
 export function roundToTick(root: string, value: number): Money | null {
   if (!Number.isFinite(value) || value <= 0) return null

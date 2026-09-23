@@ -16,7 +16,7 @@ and monotone. Delayed feeds must pass their delayed market time, not receipt tim
 | `risk.hpp` | `portfolio_risk`, `check_exposure`, `scenario_grid`, risk buckets and scenario cells |
 | `journal.hpp` | `Journal`, `FileJournal::create/read/resume`, `verify_journal`, `JournalRecovery` |
 | `session.hpp` | `TradingSession`, `CommandResult`, immutable `TradingSnapshot`, `PayoutQuote`, `payout_quote` |
-| `evaluation.hpp` | `Evaluation`, `EvaluationDay`, `Payout`, `AttemptSummary`, `Closure`, `BuyingPower`, `naked_requirement` |
+| `evaluation.hpp` | `Evaluation`, `EvaluationDay`, `Payout`, `AttemptSummary`, `Closure`, `BuyingPower`, `naked_requirement`, `MarginLeg`, `margin_requirement` |
 | `history.hpp` | `Lifecycle`, `lifecycles` (round trips rebuilt from fills and closures) |
 
 Typical ingress:
@@ -185,6 +185,34 @@ price band or loss projection, and good-until-expiry exits wait for the next reg
 session. A bracket pair counts once in reachable exposure and buying power (fees only);
 exits never count against buy-only sells, so a manual close is always possible.
 
+## Multi-leg orders
+
+An order with **legs** trades two to four contracts together: each leg names a
+registered contract, a side and a ratio from 1 to 10, all on one underlying (expiries may
+differ, so calendars and diagonals are allowed). The order has no symbol, side, trigger
+or bracket; its `quantity` counts units, and `limit_price` is the net per unit, positive
+for a debit paid at most and negative for a credit received at least (zero is even).
+Market orders are IOC as usual. The net must be a multiple of the smallest lower-tier
+tick among the legs ($0.05 for SPX-class roots, $0.01 for XSP and equities).
+
+Checks run per leg where they apply: registration, expiry, the regular session, a fresh
+executable book, and `units * ratio` within `max_order_contracts`. The net price must lie
+in the price band around the net mid, where the band is as wide as the one for the legs'
+gross premium (`max(absolute, relative * sum of ratio * mid)`). Buy-only plans reject
+multi-leg orders (`BUY_ONLY`), a leg inside the pre-expiry cutoff rejects the order
+(`EXPIRY_CUTOFF`), and daily loss, exposure and buying power apply to the whole order.
+
+A multi-leg order fills **all legs together**, in ratio, when the net at the far sides
+(asks for bought legs, bids for sold legs) is at or below its limit. Each leg fills at
+its own far side, so the net may improve on the limit, and units are bounded by every
+leg's remaining displayed size. Multi-leg orders match after single-leg orders on the
+same books, in acceptance order, and only on quotes newer than their acceptance (except
+at submission). Each leg's fill is recorded under the order's ID; `filled_notional` and
+the average fill are the net per unit. The projected fill is checked for daily loss and,
+when any leg opens contracts, buying power, exactly like a single-leg fill. A working
+multi-leg order counts as one pending exposure (its legs summed), and it is cancelled at
+its earliest leg's expiry or its session end like any DAY order.
+
 ## Accounting, marks and equity
 
 Let `q` be signed contracts, `M = 100`, `p` fill premium per unit and `f` the fill fee:
@@ -324,17 +352,30 @@ latch, price band, daily-loss, exposure, rule and buying-power checks because th
 only reduce risk. Without executable liquidity nothing is recorded; the monitor retries
 on later transactions until the account is flat, so system orders never accumulate.
 
-**Buying power** is cash less short requirements less working-order reservations. Long
-premium is paid in full. A short option holds its buy-back value (last mark, or its
-entry credit without one) plus the naked requirement
+**Buying power** is cash less the positions' margin requirement less working-order
+reservations. Long premium is paid in full. A naked short option holds its buy-back
+value (last mark, or its entry credit without one) plus the naked requirement
 `100 * max(20% of spot - OTM amount, 10% of spot for calls or of strike for puts)`,
-with the strike standing in for a missing spot. Working orders reserve in acceptance
-order, consuming closing capacity so two sells cannot both claim the same long:
-opening buys reserve premium plus fees, opening sells reserve the naked requirement plus
-fees (their credit covers the buy-back value), and closing orders reserve only fees.
-Spreads are not netted; each short leg is naked. An order that opens contracts is
-rejected if the result is negative; closing orders are always allowed. Fills recheck
-against the projected ledger and cancel the remainder with `RISK_CHANGED`.
+with the strike standing in for a missing spot. `margin_requirement` nets spreads:
+positions that expire together on one underlying need the least of (a) their shorts
+paired with same-type longs as verticals, a put long below or a call long above its
+short costing the width and one at or beyond it nothing, each pair never more than
+naked and the rest naked; and (b) the group's worst loss at expiry, when no net short
+calls make it unbounded. So a credit spread holds its width, an iron condor one wing, a
+long butterfly nothing, and a short strangle both naked requirements. Longs in another
+expiry do not cover a short.
+
+Working orders reserve in acceptance order, consuming closing capacity so two sells
+cannot both claim the same long: opening buys reserve premium plus fees, opening sells
+reserve the naked requirement plus fees (their credit covers the buy-back value), and
+closing orders reserve only fees. A multi-leg order reserves as if it stood alone: its
+fees plus `max(0, margin requirement of its legs + net * 100 * units)`, so a credit
+spread reserves its width less its credit and a debit spread its debit. Legging into a
+spread with single-leg orders reserves the short as naked; use a multi-leg order. An
+order that opens contracts is rejected if the result is negative; closing orders are
+always allowed, even the long leg of a spread (buying power may then go negative,
+blocking new opening orders). Fills recheck against the projected ledger and cancel
+the remainder with `RISK_CHANGED`.
 
 `reset_account(initial_cash, rules, reason, time)` starts a new attempt. It cancels
 working orders with `ACCOUNT_RESET`, records each open position as a `Reset` closure
@@ -474,7 +515,7 @@ attempts and closures to the state and snapshot, and `system` to orders; it also
 records `evaluation_passed`, `evaluation_failed`, `evaluation_day`, `account_reset`
 and `payout` outcomes. Later schema 2 fields (conditional and bracket orders, the
 funded phase, payout rules and records, qualifying days) default when absent, so
-earlier schema 2 journals recover unchanged. Recovery reads schema 1 journals: their
+earlier schema 2 journals recover unchanged; multi-leg orders record their `legs`. Recovery reads schema 1 journals: their
 original keys stay required, the added ones default, and the evaluation starts from
 the first record with the recorded starting cash. Resumed schema 1 journals continue with schema 2 records; an older build
 refuses them rather than silently dropping rule state. The canonical encoding is compact nlohmann JSON
@@ -610,7 +651,7 @@ focus at the top of the ticket.
 | --- | --- |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working/partially filled |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`; 201 returns version, order and its fills |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), takes no trigger or bracket, counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `GET /api/fills` | Version and fills, newest first |
 | `GET /api/risk` | Version, limits revision, limits, complete flag, daily loss, kill state, aggregate/underlying buckets and scenario matrices |

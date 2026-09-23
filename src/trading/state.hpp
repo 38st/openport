@@ -38,12 +38,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Decision, code, message, actual, limit, scope
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Trigger, source, direction, level)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExitSpec, trigger, limit_price)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Bracket, stop_loss, take_profit)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(OrderRequest, client_order_id, symbol, side, type, tif, quantity, limit_price, trigger, bracket)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Leg, symbol, side, ratio)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(OrderRequest, client_order_id, symbol, side, type, tif, quantity, limit_price, trigger, bracket, legs)
 inline void from_json(const Json& j, OrderRequest& r) {
   j.at("client_order_id").get_to(r.client_order_id); j.at("symbol").get_to(r.symbol); j.at("side").get_to(r.side);
   j.at("type").get_to(r.type); j.at("tif").get_to(r.tif); j.at("quantity").get_to(r.quantity);
   j.at("limit_price").get_to(r.limit_price);
-  added_field(j, "trigger", r.trigger); added_field(j, "bracket", r.bracket);
+  added_field(j, "trigger", r.trigger); added_field(j, "bracket", r.bracket); added_field(j, "legs", r.legs);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Order, id, request, status, filled_quantity, filled_notional, accepted_at, day_end, reason, system, role, parent, oco, stop_loss, take_profit, triggered_at)
 inline void from_json(const Json& j, Order& o) {

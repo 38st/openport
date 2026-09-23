@@ -46,10 +46,12 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         {payoutCap(p.caps, e.payouts.length + 1) && <> Your next payout is number {e.payouts.length + 1}, capped at {formatMoney(payoutCap(p.caps, e.payouts.length + 1))}.</>}
       </> }] : []),
     { title: "Strategies", body: r.buy_only
-      ? "Buy-only: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells."
-      : "Any single-leg strategy: buy or sell calls and puts. Short options hold a naked requirement against buying power." },
+      ? "Buy-only and single-leg: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells. Multi-leg orders are not available."
+      : "Any strategy: buy or sell calls and puts, or place spreads, straddles, condors and butterflies of up to four legs as one order from the Trade page's Strategy mode. All legs fill together at a net debit or credit." },
     { title: "Buying power", body: r.buying_power
-      ? <>Orders that open contracts must fit within buying power, now {formatMoney(account.buying_power.available)}: cash, less working orders' reservations, less each short option's buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike). Closing orders are always allowed.</>
+      ? <>Orders that open contracts must fit within buying power, now {formatMoney(account.buying_power.available)}: cash, less working orders' reservations, less the margin your short options hold.
+        A naked short holds its buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike). Spreads are netted: a vertical holds its width,
+        an iron condor one wing, and a position with a bounded worst case at expiry never more than that loss. Closing orders are always allowed.</>
       : "Buying power is not enforced; cash may go negative." },
     { title: "Expiring positions", body: minutes > 0
       ? `From ${minutes} minutes before expiry, working orders on a held contract are cancelled, the position is closed at the bid or ask, and only closing orders are accepted.`

@@ -1030,6 +1030,71 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, MultiLegOrdersOverHttp) {
+  seed();
+  // A second strike, the 5010 call, beside the fixture's 5000 call.
+  const auto upper = *md::parse_osi("SPXW261022C05010000");
+  provider.sink->publish(md::ContractDefinition{1, upper});
+  provider.sink->publish(md::OptionQuote{1, market.time, 3.00, 3.20, 10, 10});
+  ASSERT_TRUE(wait_for([&] {
+    const auto metrics = engine->metrics("SPX");
+    if (!metrics || metrics->slices.empty()) return false;
+    const auto& strikes = metrics->slices[0].strikes;
+    return std::any_of(strikes.begin(), strikes.end(), [](const auto& s) { return s.strike == 5010 && s.call.ask == 3.20; });
+  }));
+  const json legs = json::array({{{"symbol", market.symbol()}, {"side", "buy"}},
+                                 {{"symbol", upper.osi_symbol()}, {"side", "sell"}, {"ratio", 1}}});
+  // Buy the 5000 call at 4.20 and sell the 5010 call at 3.00: a 1.20 debit.
+  const json spread{{"client_order_id", "vertical"}, {"legs", legs}, {"type", "limit"}, {"quantity", 2},
+                    {"limit_price", "1.20"}, {"time_in_force", "day"}};
+  const auto response = write(*engine, "POST", "/api/orders", spread);
+  ASSERT_EQ(response.status, 201) << response.body;
+  const auto body = json::parse(response.body);
+  const auto order = body["order"];
+  EXPECT_EQ(order["symbol"], nullptr);
+  EXPECT_EQ(order["side"], nullptr);
+  EXPECT_EQ(order["underlying"], "SPX");
+  EXPECT_EQ(order["legs"], json::array({{{"symbol", market.symbol()}, {"side", "buy"}, {"ratio", 1}},
+                                        {{"symbol", upper.osi_symbol()}, {"side", "sell"}, {"ratio", 1}}}));
+  EXPECT_EQ(order["status"], "filled");
+  EXPECT_EQ(order["limit_price"], "1.20");
+  EXPECT_EQ(order["average_fill_price"], "1.20");
+  ASSERT_EQ(body["fills"].size(), 2);
+  EXPECT_EQ(body["fills"][0]["price"], "4.20");
+  EXPECT_EQ(body["fills"][1]["side"], "sell");
+  EXPECT_EQ(body["fills"][1]["price"], "3.00");
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["legs"].size(), 2);
+  EXPECT_EQ(read(*engine, "/api/portfolio")["positions"].size(), 2);
+
+  // A credit is a negative net limit; strict shapes otherwise.
+  auto credit = spread;
+  credit["client_order_id"] = "credit";
+  credit["legs"][0]["side"] = "sell";
+  credit["legs"][1]["side"] = "buy";
+  credit["limit_price"] = "-1.00";
+  const auto resting = write(*engine, "POST", "/api/orders", credit);
+  ASSERT_EQ(resting.status, 201) << resting.body;
+  EXPECT_EQ(json::parse(resting.body)["order"]["status"], "working");
+  EXPECT_EQ(json::parse(resting.body)["order"]["limit_price"], "-1.00");
+  auto bad = spread;
+  bad["client_order_id"] = "bad";
+  bad["symbol"] = market.symbol();
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad.erase("symbol");
+  bad["legs"] = json::array({legs[0]});
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["legs"] = legs;
+  bad["legs"][1]["side"] = "hold";
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["legs"] = legs;
+  bad["legs"][1]["ratio"] = 1.5;
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["legs"] = legs;
+  bad["legs"][1]["ratio"] = 11;
+  expect_error(write(*engine, "POST", "/api/orders", bad), 422, "INVALID_ORDER");
+  engine->stop();
+}
+
 TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
   seed();
   const json stop{{"source", "option"}, {"direction", "at_or_below"}, {"level", "3.50"}};

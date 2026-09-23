@@ -65,32 +65,54 @@ RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orde
     const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now) {
   RiskSnapshot result;
   result.aggregate.limits = limits.aggregate;
-  auto accumulate = [&](const md::OptionContract& c, Quantity q, bool pending) {
-    auto& bucket = result.underlyings[c.underlying];
-    const auto override = limits.underlying_overrides.find(c.underlying);
-    bucket.limits = override == limits.underlying_overrides.end() ? limits.per_underlying : override->second;
+  auto exposure_of = [&](const md::OptionContract& c, Quantity q) -> std::optional<Exposure> {
     const auto it = valuations.find(c.osi_symbol());
-    if (now >= c.expiry_time() || it == valuations.end() || !fresh(it->second, now, limits.max_valuation_age)) {
-      result.complete = false;
-      return;
-    }
+    if (now >= c.expiry_time() || it == valuations.end() || !fresh(it->second, now, limits.max_valuation_age)) return std::nullopt;
     const auto e = exposure(q, it->second);
-    if (!finite(e)) { result.complete = false; return; }
+    if (!finite(e)) return std::nullopt;
+    return e;
+  };
+  auto add_exposure = [&](const std::string& underlying, const std::optional<Exposure>& e, bool pending) {
+    auto& bucket = result.underlyings[underlying];
+    const auto override = limits.underlying_overrides.find(underlying);
+    bucket.limits = override == limits.underlying_overrides.end() ? limits.per_underlying : override->second;
+    if (!e) { result.complete = false; return; }
     auto next_bucket = bucket;
     auto next_aggregate = result.aggregate;
-    if (!add(next_bucket, e, pending) || !add(next_aggregate, e, pending)) {
+    if (!add(next_bucket, *e, pending) || !add(next_aggregate, *e, pending)) {
       result.complete = false;
       return;
     }
     bucket = next_bucket;
     result.aggregate = next_aggregate;
   };
-  for (const auto& [symbol, p] : ledger.positions()) accumulate(p.contract, p.quantity, false);
+  for (const auto& [symbol, p] : ledger.positions()) add_exposure(p.contract.underlying, exposure_of(p.contract, p.quantity), false);
   for (const auto& o : orders) {
     if (!o.open()) continue;
+    if (multi_leg(o.request)) {
+      // The legs fill together, so a multi-leg order is one pending exposure.
+      std::optional<Exposure> sum = Exposure{};
+      std::string underlying;
+      for (const auto& leg : o.request.legs) {
+        const auto it = contracts.find(leg.symbol);
+        if (it == contracts.end()) { sum.reset(); break; }
+        underlying = it->second.underlying;
+        const auto q = o.remaining() * leg.ratio;
+        const auto e = exposure_of(it->second, leg.side == Side::Buy ? q : -q);
+        if (!e) { sum.reset(); break; }
+        sum->dollar_delta += e->dollar_delta;
+        sum->dollar_gamma_1pct += e->dollar_gamma_1pct;
+        sum->vega += e->vega;
+        sum->theta += e->theta;
+      }
+      if (underlying.empty()) { result.complete = false; continue; }
+      add_exposure(underlying, sum && finite(*sum) ? sum : std::nullopt, true);
+      continue;
+    }
     const auto it = contracts.find(o.request.symbol);
     if (it == contracts.end()) { result.complete = false; continue; }
-    accumulate(it->second, o.request.side == Side::Buy ? o.remaining() : -o.remaining(), true);
+    const auto q = o.request.side == Side::Buy ? o.remaining() : -o.remaining();
+    add_exposure(it->second.underlying, exposure_of(it->second, q), true);
   }
   finish(result.aggregate);
   for (auto& [name, bucket] : result.underlyings) finish(bucket);

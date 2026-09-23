@@ -83,9 +83,9 @@ struct Closure {
   std::uint64_t after_fill = 0;  ///< Fills recorded before the closure, for ordering.
 };
 
-/// Cash buying power. Long premium is paid in full. A short option holds its
-/// buy-back value plus the naked requirement; working orders reserve their
-/// worst-case cash use. Spreads are not netted: each short leg is naked.
+/// Cash buying power. Long premium is paid in full. Short options hold a
+/// requirement from margin_requirement; working orders reserve their
+/// worst-case cash use.
 struct BuyingPower {
   Money available;          ///< cash - short_requirement - reserved; may be negative.
   Money reserved;
@@ -96,5 +96,21 @@ struct BuyingPower {
 /// less the out-of-the-money amount, 10% of spot for calls or of strike for puts).
 /// Without a valid spot the strike stands in for it.
 [[nodiscard]] Money naked_requirement(const md::OptionContract& contract, std::optional<double> spot);
+
+/// An option position for margin: one entry per contract.
+struct MarginLeg {
+  md::OptionContract contract;
+  Quantity quantity = 0;         ///< Signed contracts.
+  Money value;                   ///< Shorts: buy-back value of all the contracts.
+  std::optional<double> spot;    ///< For the naked rule.
+};
+/// Requirement for option positions, grouped by underlying and expiry time. Each
+/// group needs the least of: its shorts paired with longs of the same type as
+/// verticals (a put long below or a call long above its short costs the width,
+/// one at or beyond it nothing), each pair never charged more than naked and
+/// unpaired shorts naked at their buy-back value plus naked_requirement; and the
+/// group's worst loss at expiry when that is bounded (no net short calls).
+/// Longs need nothing: their premium is paid in full.
+[[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs);
 
 }  // namespace openport::trading

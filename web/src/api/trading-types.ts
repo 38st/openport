@@ -185,21 +185,36 @@ export interface Trigger { source: "option" | "underlying"; direction: "at_or_be
 /** A stop takes a trigger (then trades at market); a take-profit takes a limit or a trigger. */
 export type ExitSpec = { trigger: Trigger; limit_price?: never } | { limit_price: Money; trigger?: never }
 export interface Bracket { stop_loss?: ExitSpec; take_profit?: ExitSpec }
-export type NewOrder = {
+/** One leg of a multi-leg order: `ratio` contracts per unit. */
+export interface OrderLeg { symbol: string; side: Side; ratio: number }
+type Pricing = { type: "limit"; limit_price: Money; time_in_force: "day" | "ioc" }
+  | { type: "market"; time_in_force: "ioc"; limit_price?: never }
+export type NewOrder = ({
   client_order_id: string
   symbol: string
   side: Side
   quantity: number
   trigger?: Trigger
   bracket?: Bracket
-} & ({ type: "limit"; limit_price: Money; time_in_force: "day" | "ioc" }
-  | { type: "market"; time_in_force: "ioc"; limit_price?: never })
+  legs?: never
+} | {
+  client_order_id: string
+  /** Two to four legs on one underlying, filled together. */
+  legs: OrderLeg[]
+  /** Units of the strategy. */
+  quantity: number
+  symbol?: never
+  side?: never
+}) & Pricing
 export interface Order {
   id: string
   client_order_id: string
-  symbol: string
+  /** Null for a multi-leg order; see `legs`. */
+  symbol: string | null
   underlying: string
-  side: Side
+  side: Side | null
+  /** A multi-leg order's legs; its prices are net per unit, negative for a credit. */
+  legs?: OrderLeg[] | null
   type: "limit" | "market"
   time_in_force: "day" | "ioc"
   quantity: number

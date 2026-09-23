@@ -229,9 +229,11 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
   if (batch.empty() && commands.empty()) return;
   std::set<std::string> symbols;
   for (const auto& p : trading_->snapshot()->positions) symbols.insert(p.position.contract.osi_symbol());
-  for (const auto& order : trading_->snapshot()->open_orders) symbols.insert(order.request.symbol);
+  for (const auto& order : trading_->snapshot()->open_orders)
+    for (const auto& symbol : order_symbols(order.request)) symbols.insert(symbol);
   for (const auto& pending : commands) {
-    if (pending.command.kind == TradingCommand::Kind::Submit) symbols.insert(pending.command.order.symbol);
+    if (pending.command.kind == TradingCommand::Kind::Submit)
+      for (const auto& symbol : order_symbols(pending.command.order)) symbols.insert(symbol);
     if (pending.command.kind == TradingCommand::Kind::Settle) symbols.insert(pending.command.symbol);
   }
   std::vector<QuoteObservation> quotes;
@@ -303,17 +305,19 @@ void Engine::apply_command(PendingCommand& pending) {
       CommandResult result;
       switch (c.kind) {
         case TradingCommand::Kind::Submit: {
+          // Every contract the order trades (each leg of a multi-leg order).
           Decision rejection;
-          const md::OptionContract* contract = nullptr;
-          const auto id = instruments_.find(c.order.symbol);
-          if (id != instruments_.end()) {
-            if (const auto* option = book_.option(id->second)) contract = &option->contract;
-          }
-          if (!contract) {
-            const auto saved = trading_->contracts().find(c.order.symbol);
-            if (saved != trading_->contracts().end()) contract = &saved->second;
-          }
-          if (contract) {
+          for (const auto& symbol : order_symbols(c.order)) {
+            const md::OptionContract* contract = nullptr;
+            const auto id = instruments_.find(symbol);
+            if (id != instruments_.end()) {
+              if (const auto* option = book_.option(id->second)) contract = &option->contract;
+            }
+            if (!contract) {
+              const auto saved = trading_->contracts().find(symbol);
+              if (saved != trading_->contracts().end()) contract = &saved->second;
+            }
+            if (!contract) continue;
             rejection = eligible(*contract);
             if (rejection.ok()) {
               const auto view = trading_view();
@@ -322,6 +326,7 @@ void Engine::apply_command(PendingCommand& pending) {
                   time == view->market_times.end() ? 0 : time->second,
                   wall_time(), status_.capabilities.delay, trading_->config().limits.max_quote_age);
             }
+            if (!rejection.ok()) break;
           }
           result = trading_->submit(c.order, market_time_, rejection);
           break;

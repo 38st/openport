@@ -11,6 +11,8 @@ import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format
 import { matchingPayload } from "../lib/payload"
 import { americanApproximation, rateSourceHint } from "../lib/model"
 import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
+import { StrategyTicket } from "../components/StrategyTicket"
+import { MAX_LEGS, strategyLabel, toggleLeg, type StrategyLeg } from "../lib/strategy"
 import { Dialog } from "../components/Dialog"
 import { usePortfolio } from "../api/trading"
 import { useMediaQuery } from "../lib/media"
@@ -48,6 +50,11 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const [window, setWindow] = useState(0.05)
   const [showGreeks, setShowGreeks] = useState(false)
   const [ticket, setTicket] = useState<TicketSelection | null>(null)
+  // Strategy mode collects up to four legs from the chain for one multi-leg order.
+  const [mode, setMode] = useState<"single" | "strategy">("single")
+  const [legs, setLegs] = useState<StrategyLeg[]>([])
+  // Narrow screens collect legs in a bar and open the ticket only to review, so the chain stays usable.
+  const [reviewing, setReviewing] = useState(false)
   const [untradable, setUntradable] = useState<string | null>(null)
   // Wide screens dock the ticket beside the chain so quotes stay visible.
   const docked = useMediaQuery("(min-width: 1280px)")
@@ -62,7 +69,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const summaryData = matchingPayload(summary.data, symbol)
   const expiries = summaryData?.expiries ?? []
   const selected = expiry && expiries.some((e) => e.id === expiry) ? expiry : defaultExpiry(expiries)
-  useEffect(() => { setTicket(null); setUntradable(null) }, [symbol, selected, live.accountScope])
+  useEffect(() => { setTicket(null); setLegs([]); setReviewing(false); setUntradable(null) }, [symbol, selected, live.accountScope])
 
   const chain = useQuery({
     queryKey: ["chain", symbol, selected, window, version],
@@ -80,6 +87,12 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
     return best
   }, [data, forward])
   const agreement = useMemo(() => (data ? vendorAgreement(data.strikes, forward) : null), [data, forward])
+  // Legs follow the chain's latest quotes.
+  const liveLegs = useMemo(() => legs.map((leg) => ({ ...leg, quote: data?.strikes.find((row) => row.strike === leg.strike)?.[leg.type] ?? leg.quote })), [legs, data])
+  const highlighted = useMemo(() => new Map<string, "bid" | "ask">(mode === "strategy"
+    ? legs.map((leg) => [leg.symbol, leg.side === "buy" ? "ask" : "bid"])
+    : ticket ? [[ticket.symbol, ticket.cell]] : []), [mode, legs, ticket])
+  const strategyOpen = mode === "strategy" && legs.length > 0
   const provider = live.status?.provider.name ?? "vendor"
 
   if (summary.isError) return <Empty>{String(summary.error)}</Empty>
@@ -113,12 +126,14 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         </div>
       )}
 
-      <div className={docked && ticket ? "grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]" : ""}>
+      <div className={docked && (ticket || strategyOpen) ? "grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]" : ""}>
       <Panel
         title={e ? `${symbol} ${e.expiry} ${e.settlement}` : symbol}
         actions={
           <>
             <CoverageBadge coverage={coverage} />
+            {live.trading && <Segmented label="Ticket mode" value={mode} onChange={(next) => { setMode(next); setTicket(null); setLegs([]); setReviewing(false) }}
+              options={[{ value: "single", label: "Single" }, { value: "strategy", label: "Strategy" }]} />}
             <Segmented label="Strike window" value={window} options={windows} onChange={setWindow} />
             <Segmented
               label="Columns"
@@ -134,9 +149,15 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
       >
         {data ? (
           <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} provider={provider}
-            selected={ticket ? { symbol: ticket.symbol, cell: ticket.cell } : null} held={held}
+            selected={highlighted} held={held}
             onQuote={live.trading ? (quote, row, optionType, cell) => {
               if (!quote.tradable || !quote.symbol) { setUntradable(quote.untradable_reason ?? "Contract unavailable for paper trading"); return }
+              if (mode === "strategy") {
+                if (legs.length >= MAX_LEGS && !legs.some((leg) => leg.symbol === quote.symbol)) { setUntradable(`A strategy has at most ${MAX_LEGS} legs.`); return }
+                setLegs((current) => toggleLeg(current, { symbol: quote.symbol!, side: sideFromCell(cell), ratio: 1, type: optionType,
+                  strike: row.strike, expiry: data.expiry.id, quote }))
+                return
+              }
               const clickedPrice = quote[cell]
               setTicket({ symbol: quote.symbol, underlying: symbol, expiry: data.expiry, strike: row.strike, optionType, cell,
                 price: isNum(clickedPrice) ? String(clickedPrice) : "", spot: data.spot })
@@ -155,7 +176,22 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
           </p>
         )}
       </Panel>
-      {live.trading && ticket && ticket.underlying === symbol && ticket.expiry.id === selected && <div className={docked ? "sticky top-16" : ""}>
+      {live.trading && strategyOpen && data && (docked ? <div className="sticky top-16">
+        <StrategyTicket key={live.accountScope} legs={liveLegs} onLegs={setLegs} expiry={data.expiry} underlying={symbol} spot={data.spot}
+          trading={live.trading} variant="panel" onClose={() => setLegs([])} />
+      </div> : reviewing ? <StrategyTicket key={live.accountScope} legs={liveLegs} onLegs={(next) => { setLegs(next); if (!next.length) setReviewing(false) }}
+          expiry={data.expiry} underlying={symbol} spot={data.spot} trading={live.trading} variant="dialog" onClose={() => setReviewing(false)} />
+      : <div role="region" aria-label="Strategy legs" className="fixed inset-x-3 bottom-3 z-20 flex items-center justify-between gap-3 rounded-lg border border-accent/50 bg-panel p-3 shadow-chart">
+          <div className="min-w-0 text-sm">
+            <div className="truncate font-medium">{symbol} {strategyLabel(liveLegs)}</div>
+            <div className="text-xs text-muted">{legs.length} of {MAX_LEGS} legs · {legs.length < 2 ? "tap another bid or ask" : "tap to add or remove"}</div>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <button type="button" className="trade-button" onClick={() => setLegs([])}>Clear</button>
+            <button type="button" className="trade-button border-accent" disabled={legs.length < 2} onClick={() => setReviewing(true)}>Review</button>
+          </div>
+        </div>)}
+      {live.trading && mode === "single" && ticket && ticket.underlying === symbol && ticket.expiry.id === selected && <div className={docked ? "sticky top-16" : ""}>
         <OrderTicket
           key={`${live.accountScope}/${ticket.symbol}/${ticket.cell}`}
           selection={ticket} trading={live.trading} variant={docked ? "panel" : "dialog"}
@@ -213,8 +249,8 @@ function ChainTable({
   showGreeks: boolean
   provider: string
   onQuote?: (quote: OptionQuote, row: ChainRow, type: "call" | "put", cell: "bid" | "ask") => void
-  /** The ticket's contract and clicked side, highlighted. */
-  selected?: { symbol: string; cell: "bid" | "ask" } | null
+  /** Cells in the ticket, by canonical OSI: the side each contract trades on. */
+  selected?: Map<string, "bid" | "ask"> | null
   /** Held quantity by canonical OSI, marked beside the strike. */
   held?: Map<string, number>
 }) {
@@ -227,7 +263,7 @@ function ChainTable({
     if (!quote) return "—"
     const key = column.key
     if (!onQuote || (key !== "bid" && key !== "ask")) return column.render(quote)
-    const active = selected != null && quote.symbol === selected.symbol && selected.cell === key
+    const active = quote.symbol != null && selected?.get(quote.symbol) === key
     return <button type="button" aria-pressed={active} className={`rounded px-1 underline decoration-dotted underline-offset-4 hover:bg-raised hover:text-accent ${active ? "bg-accent/15 text-accent ring-1 ring-accent/50" : key === "bid" ? "text-bearish" : "text-bullish"}`}
       aria-label={`${sideFromCell(key)} ${row.strike} ${type} at ${key} ${price(quote[key])}${quote.tradable ? "" : `: ${quote.untradable_reason ?? "unavailable"}`}`}
       title={quote.tradable ? `${sideFromCell(key)} paper order` : quote.untradable_reason ?? "Unavailable"}

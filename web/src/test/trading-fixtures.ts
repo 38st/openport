@@ -32,12 +32,12 @@ export const order: Order = {
   quantity: 5, filled_quantity: 2, remaining_quantity: 3, limit_price: "4.60", average_fill_price: "4.60", status: "partially_filled",
   reason: null, accepted_at: time, day_end: "2026-09-23T20:15:00Z",
 }
-export const fill: Fill = { id: "fill-1", order_id: order.id, symbol: order.symbol, underlying: "SPX", side: "buy", quantity: 2, price: "4.60", fee: "1.30", quote_time: time, time }
+export const fill: Fill = { id: "fill-1", order_id: order.id, symbol: quote.symbol!, underlying: "SPX", side: "buy", quantity: 2, price: "4.60", fee: "1.30", quote_time: time, time }
 export const portfolio: Portfolio = {
   account_version: "17", time, cash: "99078.70", equity: "99988.70", start_of_day_equity: "100000.00", day_pnl: "-11.30",
   realised: "0.00", unrealised: "-10.00", fees: "1.30", valuation_complete: false, quality_flags: ["AWAITING_SETTLEMENT"],
   positions: [{
-    symbol: order.symbol, underlying: "SPX", expiry: expiry.expiry, settlement: "PM", strike: 7000, type: "call", quantity: 2,
+    symbol: quote.symbol!, underlying: "SPX", expiry: expiry.expiry, settlement: "PM", strike: 7000, type: "call", quantity: 2,
     average_price: "4.60", basis: "920.00", mark: "4.55", mark_age_seconds: 2, market_value: "910.00", unrealised: "-10.00", realised: "0.00", fees: "1.30",
     fresh: true, awaiting_settlement: false,
     greeks: { delta: 100, gamma: .4, vega: 2450, theta: -170, dollar_delta: 700000, dollar_gamma_1pct: 196000, vega_dollars: 2450, theta_dollars: -170 },

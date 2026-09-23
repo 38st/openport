@@ -5,7 +5,7 @@ import { useAllOrders, useFills, useRefreshTrading, useTradingSession } from "..
 import type { Fill, Order, TradingStatus } from "../api/trading-types"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented, type Tone } from "../components/ui"
-import { newYorkDate, osiLabel } from "../lib/journal"
+import { newYorkDate, orderLabel, osiLabel } from "../lib/journal"
 import { describeTrigger } from "../lib/ticket"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -20,6 +20,11 @@ const statusLabel: Record<Order["status"], string> = {
 }
 const timeFormat = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit", second: "2-digit" })
 const dayFormat = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", year: "numeric" })
+/** A multi-leg net price: "$1.20 db" or "$0.80 cr". */
+export function netLabel(value: string): string {
+  const n = Number(value)
+  return !Number.isFinite(n) ? value : n === 0 ? "even" : `${formatMoney(value.replace("-", ""))} ${n > 0 ? "db" : "cr"}`
+}
 export const open = (order: Order) => order.status === "working" || order.status === "partially_filled" || order.status === "armed"
 
 /** Newest first, split into New York trading days for day headers. */
@@ -58,7 +63,8 @@ function OrdersAccount({ trading }: { trading: TradingStatus }) {
   const visible = useMemo(() => (tab === "working" ? working : all).filter((o) =>
     (side === "all" || o.side === side) && (status === "all" || o.status === status) &&
     (origin === "all" || (o.origin ?? "user") === origin) &&
-    (!query || [o.symbol, o.id, o.client_order_id, osiLabel(o.symbol, o.underlying), o.type, o.side].some((v) => v.toLowerCase().includes(query)))),
+    (!query || [o.symbol ?? "", ...(o.legs ?? []).map((leg) => leg.symbol), o.id, o.client_order_id, orderLabel(o), o.type, o.side ?? "strategy"]
+      .some((v) => v.toLowerCase().includes(query)))),
   [tab, working, all, side, status, origin, query])
   const fillRows = (fills.data?.fills ?? []).filter((f) => (side === "all" || f.side === side) &&
     (!query || [f.symbol, f.order_id, osiLabel(f.symbol, f.underlying)].some((v) => v.toLowerCase().includes(query))))
@@ -107,7 +113,7 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
     busy.current = true; setPending(id); setError(undefined)
     try {
       const response = await api.cancelOrder(id, trading.write)
-      if (sameSession()) setResult(`${osiLabel(response.order.symbol, response.order.underlying)}: ${response.order.status}`)
+      if (sameSession()) setResult(`${orderLabel(response.order)}: ${response.order.status}`)
     } catch (failure) { if (sameSession()) setError(failure) }
     finally { busy.current = false; if (sameSession()) setPending(null); void refresh() }
   }
@@ -120,22 +126,23 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
         <tr key={`day-${group.day}`} className="bg-raised/40"><td colSpan={9} className="!py-1 text-[10px] uppercase tracking-wide text-muted">{group.label}</td></tr>,
         ...group.items.map((order) => <tr key={order.id}>
           <td className="text-muted">{Number.isFinite(Date.parse(order.accepted_at)) ? timeFormat.format(Date.parse(order.accepted_at)) : "—"}</td>
-          <td className="!text-left"><div className="flex items-center gap-1.5 font-medium">{osiLabel(order.symbol, order.underlying)}
+          <td className="!text-left"><div className="flex items-center gap-1.5 font-medium">{orderLabel(order)}
+              {order.legs && <Badge tone="accent">{order.legs.length} legs</Badge>}
               {order.role && <Badge tone={order.role === "stop_loss" ? "negative" : "positive"}>{order.role === "stop_loss" ? "Stop" : "Target"}</Badge>}
               {order.bracket && <Badge tone="neutral">Bracket</Badge>}</div>
             <div className="text-[10px] text-faint">#{order.id}{order.origin === "system" ? " · system" : ""}{order.parent ? ` · for #${order.parent}` : ""}
-              {order.trigger ? ` · when ${describeTrigger(order.trigger, order.side, order.underlying)}` : ""}
+              {order.trigger && order.side ? ` · when ${describeTrigger(order.trigger, order.side, order.underlying)}` : ""}
               {order.triggered_at ? " · triggered" : ""}</div></td>
-          <td className={order.side === "buy" ? "text-bullish" : "text-bearish"}>{order.side.toUpperCase()}</td>
+          <td className={order.side === "buy" ? "text-bullish" : order.side === "sell" ? "text-bearish" : "text-accent"}>{order.side ? order.side.toUpperCase() : "NET"}</td>
           <td>{order.type} · {order.time_in_force}</td>
           <td>{order.filled_quantity} / {order.quantity}</td>
-          <td>{order.limit_price ? formatMoney(order.limit_price) : "MKT"}</td>
-          <td>{formatMoney(order.average_fill_price)}</td>
+          <td>{order.limit_price ? order.legs ? netLabel(order.limit_price) : formatMoney(order.limit_price) : "MKT"}</td>
+          <td>{order.legs && order.average_fill_price ? netLabel(order.average_fill_price) : formatMoney(order.average_fill_price)}</td>
           <td><div className="flex flex-col items-end gap-1">
             <Badge tone={statusTone[order.status]}>{statusLabel[order.status]}</Badge>
             {order.reason && <span className="max-w-64 truncate text-[10px] text-muted" title={order.reason.message}>{order.reason.code === "USER_CANCEL" ? "Cancelled by you" : order.reason.code}</span>}
           </div></td>
-          <td>{open(order) && order.origin !== "system" && <button type="button" className="trade-button" aria-label={`Cancel order ${order.id} for ${order.symbol}`}
+          <td>{open(order) && order.origin !== "system" && <button type="button" className="trade-button" aria-label={`Cancel order ${order.id} for ${orderLabel(order)}`}
             disabled={pending != null || writeBlocked(trading, token)} onClick={() => void cancel(order.id)}>{pending === order.id ? "Cancelling…" : "Cancel"}</button>}</td>
         </tr>),
       ])}

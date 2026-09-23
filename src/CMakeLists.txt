@@ -29,6 +29,7 @@ add_library(openport_trading
   trading/journal.cpp
   trading/session.cpp
   trading/history.cpp
+  trading/margin.cpp
 )
 add_library(openport::trading ALIAS openport_trading)
 target_include_directories(openport_trading PUBLIC

@@ -19,10 +19,11 @@ describe("trading API", () => {
     expect(mapApiError(503, null, "fallback").message).toBe("fallback")
   })
   it("sends exact JSON money and a bearer token only in token write mode, including bodyless DELETE", async () => {
+    const symbol = order.symbol!
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ account_version: "18", order, fills: [fill] }), { status: 201 }))
     vi.stubGlobal("fetch", fetcher)
     writeToken.set("fixture-token")
-    const request = { client_order_id: "client-1", symbol: order.symbol, side: "buy", type: "limit", quantity: 3, limit_price: "4.60", time_in_force: "day" } as const
+    const request = { client_order_id: "client-1", symbol, side: "buy", type: "limit", quantity: 3, limit_price: "4.60", time_in_force: "day" } as const
     await api.submitOrder(request, "token")
     expect(fetcher).toHaveBeenLastCalledWith("/api/orders", expect.objectContaining({ method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: "Bearer fixture-token" }, body: JSON.stringify(request) }))
     await api.cancelOrder("a/b", "open")
@@ -31,10 +32,13 @@ describe("trading API", () => {
     expect(fetcher).toHaveBeenLastCalledWith("/api/risk/limits", expect.objectContaining({ method: "PUT", body: JSON.stringify({ expected_revision: "3", limits }) }))
     await api.setKill("trip", "Risk review", "token")
     expect(fetcher).toHaveBeenLastCalledWith("/api/risk/kill", expect.objectContaining({ method: "POST", body: JSON.stringify({ action: "trip", reason: "Risk review" }) }))
-    await api.settle(order.symbol, "7812.34", "token")
-    expect(fetcher).toHaveBeenLastCalledWith("/api/settlements", expect.objectContaining({ body: JSON.stringify({ symbol: order.symbol, value: "7812.34" }) }))
-    await api.submitOrder({ client_order_id: "market-id", symbol: order.symbol, side: "sell", type: "market", quantity: 1, time_in_force: "ioc" }, "open")
-    expect(fetcher).toHaveBeenLastCalledWith("/api/orders", expect.objectContaining({ body: JSON.stringify({ client_order_id: "market-id", symbol: order.symbol, side: "sell", type: "market", quantity: 1, time_in_force: "ioc" }) }))
+    await api.settle(symbol, "7812.34", "token")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/settlements", expect.objectContaining({ body: JSON.stringify({ symbol, value: "7812.34" }) }))
+    await api.submitOrder({ client_order_id: "market-id", symbol, side: "sell", type: "market", quantity: 1, time_in_force: "ioc" }, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/orders", expect.objectContaining({ body: JSON.stringify({ client_order_id: "market-id", symbol, side: "sell", type: "market", quantity: 1, time_in_force: "ioc" }) }))
+    const legs = [{ symbol, side: "sell", ratio: 1 }, { symbol: "SPXW  261016C07010000", side: "buy", ratio: 1 }] as const
+    await api.submitOrder({ client_order_id: "spread", legs: [...legs], quantity: 2, type: "limit", limit_price: "-0.80", time_in_force: "day" }, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/orders", expect.objectContaining({ body: JSON.stringify({ client_order_id: "spread", legs, quantity: 2, type: "limit", limit_price: "-0.80", time_in_force: "day" }) }))
   })
   it("blocks disabled writes and missing tokens before fetch; turns rejected HTTP responses into typed errors", async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: { code: "LIMITS_REVISION", message: "Reload limits", actual: null, limit: null, scope: null } }), { status: 409 }))

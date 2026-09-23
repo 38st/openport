@@ -151,6 +151,20 @@ export function osiLabel(symbol: string, underlying: string): string {
   return terms ? contractLabel({ underlying: underlying || terms.root, expiry: terms.expiry, strike: terms.strike, type: terms.type }) : symbol
 }
 
+/** A multi-leg order: "SPX Oct 22 −4900P +4890P", with ratios above one ("+2×4890P") and each leg's date when they differ. */
+export function legsLabel(legs: { symbol: string; side: "buy" | "sell"; ratio: number }[], underlying: string): string {
+  const terms = legs.map((leg) => ({ leg, terms: parseOsi(leg.symbol) }))
+  if (terms.some((t) => !t.terms)) return legs.map((leg) => `${leg.side === "buy" ? "+" : "−"}${leg.symbol}`).join(" ")
+  const dates = new Set(terms.map((t) => t.terms!.expiry))
+  const day = (expiry: string) => new Date(`${expiry}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })
+  const parts = terms.map(({ leg, terms: t }) => `${leg.side === "buy" ? "+" : "−"}${leg.ratio > 1 ? `${leg.ratio}×` : ""}${dates.size > 1 ? `${day(t!.expiry)} ` : ""}${t!.strike}${t!.type === "call" ? "C" : "P"}`)
+  return `${underlying || terms[0]!.terms!.root}${dates.size === 1 ? ` ${day(terms[0]!.terms!.expiry)}` : ""} ${parts.join(" ")}`
+}
+/** An order's contract, or its legs. */
+export function orderLabel(order: { symbol: string | null; underlying: string; legs?: { symbol: string; side: "buy" | "sell"; ratio: number }[] | null }): string {
+  return order.legs?.length ? legsLabel(order.legs, order.underlying) : osiLabel(order.symbol ?? "", order.underlying)
+}
+
 /** "SPXW  261022C05000000"-style trade -> "SPX Oct 22 5000C". */
 export function contractLabel(t: { underlying: string; expiry: string; strike: number; type: "call" | "put" }): string {
   const date = new Date(`${t.expiry}T12:00:00Z`)

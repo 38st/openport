@@ -31,6 +31,9 @@ and your data stay on your machine.
   decide pass or fail, with buy-only and buying-power plans and auto-close before
   expiry. Orders can wait for the underlying to cross a level, and brackets attach a
   stop-loss and take-profit (on the option or the underlying) that cancel each other.
+  Strategies of up to four legs (spreads, straddles, condors, butterflies) are picked
+  on the chain and fill together at a net debit or credit, with their expiry payoff,
+  and buying power nets them: a credit spread holds its width, not a naked requirement.
   Passing an evaluation unlocks a funded account of the same size: no target, a floor
   that locks at the starting balance, and payouts after enough qualifying days. The
   Dashboard charts equity against the target and floor; Trade docks an order ticket
@@ -238,6 +241,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets, trade journal
 - [x] Funded accounts: locking drawdown floors, qualifying days and payouts
+- [x] Multi-leg orders with spread-aware buying power
 - [x] Paper trading for American equity and ETF options (cash settlement at intrinsic)
 - [ ] Stock positions, early exercise and assignment
 - [ ] Paper trading in Cboe's overnight session

@@ -280,18 +280,22 @@ class CapturingJournal final : public Journal {
   std::uint64_t sequence() const override { return entries.size(); }
   std::string head() const override { return std::string(64, '0'); }
 };
-/// Rewrite a transaction as the schema 2 record written before funded accounts.
-std::string before_payouts(std::string_view payload) {
+/// Rewrite a transaction as the schema 2 record written before funded accounts
+/// and multi-leg orders.
+std::string earlier_schema_two(std::string_view payload) {
   auto j = nlohmann::json::parse(payload);
   for (auto* e : {&j["state"]["evaluation"], &j["snapshot"]["evaluation"]}) {
     for (const auto* key : {"floor_locked", "day_open_realised", "qualifying_days", "cycle_started", "payouts"}) e->erase(key);
     for (auto& day : (*e)["days"]) { day.erase("realised"); day.erase("qualifying"); }
   }
   for (const auto* key : {"phase", "lock_balance", "payouts"}) j["state"]["config"]["rules"].erase(key);
+  for (auto& order : j["state"]["orders"]) order["request"].erase("legs");
+  for (const auto* list : {"recent_orders", "open_orders"})
+    for (auto& order : j["snapshot"][list]) order["request"].erase("legs");
   return j.dump();
 }
 
-TEST(TradingFunded, JournalsFromBeforePayoutsRecoverAsEvaluations) {
+TEST(TradingFunded, EarlierSchemaTwoJournalsRecoverAsEvaluations) {
   std::string pattern = (std::filesystem::temp_directory_path() / "openport-funded-XXXXXX").string();
   ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
   const std::filesystem::path directory = pattern;
@@ -309,10 +313,12 @@ TEST(TradingFunded, JournalsFromBeforePayoutsRecoverAsEvaluations) {
   }
   {
     auto file = FileJournal::create(path);
-    for (const auto& entry : capture->entries) file->append(entry.time, entry.type, before_payouts(entry.payload));
+    for (const auto& entry : capture->entries) file->append(entry.time, entry.type, earlier_schema_two(entry.payload));
   }
   auto s = TradingSession::recover(FileJournal::read(path), FileJournal::resume(path));
   EXPECT_EQ(s.config().rules.phase, Phase::Evaluation);
+  EXPECT_FALSE(s.snapshot()->recent_orders.empty());
+  EXPECT_TRUE(s.snapshot()->recent_orders.front().request.legs.empty());
   EXPECT_EQ(s.config().rules.lock_balance, Money{});
   auto e = s.snapshot()->evaluation;
   EXPECT_FALSE(e.floor_locked);
