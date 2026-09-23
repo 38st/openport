@@ -92,7 +92,8 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
   // Conditional entry and bracket exits.
   const spot = selection.spot != null && Number.isFinite(selection.spot) ? selection.spot : null
   const [condition, setCondition] = useState<"now" | "cross">("now")
-  const [crossLevel, setCrossLevel] = useState(() => (spot != null ? spot.toFixed(2) : ""))
+  // No default level: one at spot would sit on the boundary, so the trader picks it.
+  const [crossLevel, setCrossLevel] = useState("")
   const [protect, setProtect] = useState(false)
   const [stopOn, setStopOn] = useState(true)
   const [stopSource, setStopSource] = useState<"option" | "underlying">("option")
@@ -273,10 +274,11 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
             options={[{ value: "now", label: "Now" }, { value: "cross", label: `When ${selection.underlying} crosses` }]} />
           {condition === "cross" && <>
             <label className="trade-label">{selection.underlying} level
-              <input className="trade-input" inputMode="decimal" value={crossLevel} onChange={(e) => setCrossLevel(e.target.value)} pattern="[0-9]+([.][0-9]+)?" required /></label>
+              <input className="trade-input" inputMode="decimal" value={crossLevel} placeholder={spot != null ? spot.toFixed(2) : undefined}
+                onChange={(e) => setCrossLevel(e.target.value)} pattern="[0-9]+([.][0-9]+)?" required /></label>
             <span className="text-[11px] text-muted">{trigger
               ? `Arms now and activates when ${describeTrigger(trigger, side, selection.underlying)}${spot != null ? ` (now ${spot.toFixed(2)})` : ""}; good until expiry.`
-              : "Enter the level that activates the order."}</span>
+              : `Enter the level that activates the order${spot != null ? `; ${selection.underlying} is at ${spot.toFixed(2)}` : ""}.`}</span>
           </>}
         </div>
         <div className="col-span-2 space-y-2 rounded-md border border-border p-3">
