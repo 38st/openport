@@ -21,6 +21,7 @@
 #include "openport/analytics/chain_analytics.hpp"
 #include "openport/analytics/chain_book.hpp"
 #include "openport/md/event_queue.hpp"
+#include "openport/md/recording.hpp"
 #include "openport/providers/factory.hpp"
 #include "openport/providers/options.hpp"
 #include "state.hpp"
@@ -44,7 +45,8 @@ int usage() {
   std::fprintf(
       stderr,
       "usage: openport-probe <provider> <underlying>... [--expiries N] [--window F] "
-      "[--seconds S] [--quotes N] [--analyze]\n"
+      "[--seconds S] [--quotes N] [--analyze] [--record FILE] [--option KEY=VALUE]...\n"
+      "replay: --option file=PATH [--option speed=1|10|60|max] [--option loop=on|off]\n"
       "streaming: definitions and N quotes per underlying (default 100), else timeout failure\n"
       "polling: one complete snapshot per underlying\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream "
@@ -65,7 +67,7 @@ std::string env_key_for(std::string name) {
 /// Runs OpenPort's analytics over the snapshot and compares its IVs with the vendor's.
 void print_analytics(const analytics::ChainBook& book) {
   for (const auto& [symbol, underlying] : book.underlyings()) {
-    const md::Timestamp as_of = underlying.spot_ts > 0 ? underlying.spot_ts : underlying.data_time;
+    const md::Timestamp as_of = underlying.data_time > 0 ? underlying.data_time : underlying.spot_ts;
     const analytics::UnderlyingMetrics m = analytics::analyze(underlying, book, as_of);
     std::printf("\n%s analytics: %d options priced in %.1f ms (as of %s)\n", symbol.c_str(),
                 m.options_priced, m.compute_ms, md::format_timestamp(as_of).c_str());
@@ -116,6 +118,7 @@ int run(int argc, char** argv) {
   if (argc < 3) return usage();
   md::ProviderConfig config{argv[1], env_key_for(argv[1]), {}};
   md::Subscription subscription;
+  std::filesystem::path record_file;
   int seconds = 60;
   bool analyze = false;
   int minimum_quotes = 100;
@@ -131,6 +134,14 @@ int run(int argc, char** argv) {
       minimum_quotes = providers::parse_integer(argv[++i], arg, 1);
     } else if (arg == "--seconds" && i + 1 < argc) {
       seconds = providers::parse_integer(argv[++i], arg, 1);
+    } else if (arg == "--record" && i + 1 < argc) {
+      record_file = argv[++i];
+      if (record_file.empty()) throw std::invalid_argument("--record requires a nonempty path");
+    } else if (arg == "--option" && i + 1 < argc) {
+      const std::string value = argv[++i];
+      const auto eq = value.find('=');
+      if (eq == std::string::npos) throw std::invalid_argument("--option takes KEY=VALUE");
+      config.options[value.substr(0, eq)] = value.substr(eq + 1);
     } else if (arg.starts_with("-")) {
       throw std::invalid_argument("unknown option or missing value: " + arg);
     } else {
@@ -153,13 +164,18 @@ int run(int argc, char** argv) {
               caps.vendor_greeks ? "yes" : "no");
 
   md::EventQueue queue;
+  std::unique_ptr<md::RecordingSink> recorder;
+  if (!record_file.empty())
+    recorder = std::make_unique<md::RecordingSink>(record_file,
+        md::RecordingHeader{std::string(provider->name()), caps, subscription, md::now()},
+        queue, md::RecordingSink::Options{});
   const auto started = std::chrono::steady_clock::now();
   // Stop while the queue is still alive, including exceptions during startup/output.
   struct StopProvider {
     md::Provider& provider;
     ~StopProvider() { provider.stop(); }
   } stop_provider{*provider};
-  provider->start(subscription, queue);
+  provider->start(subscription, recorder ? static_cast<md::EventSink&>(*recorder) : queue);
 
   std::unordered_map<md::InstrumentId, md::OptionContract> contracts;
   std::unordered_map<md::InstrumentId, md::OptionQuote> quotes;
@@ -169,11 +185,12 @@ int run(int argc, char** argv) {
   probe::Readiness readiness(subscription, caps.poll_interval.count() == 0,
                              static_cast<std::size_t>(minimum_quotes));
   bool failed = false;
+  bool ended = false;
 
   analytics::ChainBook book;
   std::vector<md::Event> batch;
   const auto deadline = started + std::chrono::seconds(seconds);
-  while (std::chrono::steady_clock::now() < deadline && !readiness.all_ready() && !failed) {
+  while (std::chrono::steady_clock::now() < deadline && !readiness.all_ready() && !failed && !ended) {
     batch.clear();
     queue.drain(batch, std::chrono::milliseconds(200));
     for (md::Event& event : batch) {
@@ -200,15 +217,23 @@ int run(int argc, char** argv) {
                                    static_cast<int>(md::to_string(e.state).size()),
                                    md::to_string(e.state).data(), e.message.c_str());
                        if (e.state == md::FeedState::Error) failed = true;
+                       if (e.state == md::FeedState::Stopped && e.underlying.empty()) ended = true;
                      },
                  },
                  event);
     }
   }
   provider->stop();
+  if (recorder) {
+    recorder->close();
+    if (const auto error = recorder->error(); !error.empty()) {
+      std::fprintf(stderr, "openport-probe: %s\n", error.c_str());
+      failed = true;
+    }
+  }
   for (const auto& symbol : subscription.underlyings) {
     if (!readiness.ready(symbol))
-      std::fprintf(stderr, "openport-probe: %s not ready before timeout or provider failure\n",
+      std::fprintf(stderr, "openport-probe: %s not ready before timeout, end of recording or provider failure\n",
                    symbol.c_str());
   }
 

@@ -42,6 +42,7 @@ struct Settings {
   std::string address = "127.0.0.1";
   unsigned short port = 8080;
   std::filesystem::path web_root;
+  std::filesystem::path record_file;
   int threads = 2;
   double rate = 0.04;
   std::vector<std::string> allowed_origins;
@@ -53,10 +54,12 @@ int usage(const char* error = nullptr) {
       stderr,
       "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
-      "                 [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
+      "                 [--record FILE] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
+      "record: create a new compressed event file (existing files are never overwritten)\n"
+      "replay: --option file=PATH [--option speed=1|10|60|max] [--option loop=on|off]\n"
       "providers:");
   for (auto name : providers::provider_names()) {
     std::fprintf(stderr, " %.*s", static_cast<int>(name.size()), name.data());
@@ -123,6 +126,9 @@ int run(int argc, char** argv) {
           static_cast<unsigned short>(providers::parse_integer(value, "--port", 1, 65535));
     } else if (arg == "--allowed-origin") {
       settings.allowed_origins.push_back(value);
+    } else if (arg == "--record") {
+      if (value.empty()) return usage("--record requires a nonempty path");
+      settings.record_file = value;
     } else if (arg == "--web-root") {
       settings.web_root = value;
     } else if (arg == "--expiries") {
@@ -154,13 +160,14 @@ int run(int argc, char** argv) {
 
   server::Engine::Options engine_options;
   engine_options.analytics.fallback_rate = settings.rate;
+  engine_options.record_file = settings.record_file;
   server::Engine engine(*provider, settings.subscription, engine_options);
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
       [&engine](const server::ApiRequest& request) { return server::handle_api(request, engine); },
       settings.allowed_origins);
-  web.start(settings.threads);
   engine.start();
+  web.start(settings.threads);
 
   std::string symbols;
   for (const auto& symbol : settings.subscription.underlyings) {
@@ -173,13 +180,32 @@ int run(int argc, char** argv) {
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+  std::string recording_error;
   while (!g_stop) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     web.broadcast(server::tick_message(engine));
+    const auto error = engine.recording_error();
+    if (!error.empty() && error != recording_error) {
+      recording_error = error;
+      std::fprintf(stderr, "openportd: %s\n", error.c_str());
+    }
   }
   std::printf("\nshutting down\n");
   web.stop();
   engine.stop();
+  if (!settings.record_file.empty()) {
+    const auto stats = engine.recording_stats();
+    const double count = static_cast<double>(stats.events);
+    std::printf("recording: %llu events, %llu bytes, %.1f ns/event publish, %.2f bytes/event\n",
+                static_cast<unsigned long long>(stats.events),
+                static_cast<unsigned long long>(stats.bytes),
+                count > 0 ? static_cast<double>(stats.publish_nanoseconds) / count : 0,
+                count > 0 ? static_cast<double>(stats.bytes) / count : 0);
+    if (const auto error = engine.recording_error(); !error.empty()) {
+      std::fprintf(stderr, "openportd: %s\n", error.c_str());
+      return 1;
+    }
+  }
   return 0;
 }
 

@@ -26,24 +26,41 @@ void Engine::start() {
     status_.started = options_.clock();
   }
   try {
+    if (!options_.record_file.empty()) {
+      auto recording = options_.recording;
+      recording.clock = options_.clock;
+      recorder_ = std::make_unique<md::RecordingSink>(
+          options_.record_file, md::RecordingHeader{std::string(provider_.name()),
+          provider_.capabilities(), subscription_, status_.started}, queue_, std::move(recording));
+    }
     provider_started_ = true;
-    provider_.start(subscription_, queue_);
+    provider_.start(subscription_, recorder_ ? static_cast<md::EventSink&>(*recorder_) : queue_);
     thread_ = options_.launch([this] { run(); });
   } catch (...) {
     // Even a partially started provider must stop before the queue can be destroyed.
-    provider_.stop();
+    if (provider_started_) provider_.stop();
     provider_started_ = false;
+    if (recorder_) recorder_->close();
     throw;
   }
 }
 
 void Engine::stop() {
-  stopping_ = true;
   if (provider_started_) {
     provider_.stop();
     provider_started_ = false;
   }
+  if (recorder_) recorder_->close();
+  stopping_ = true;
   if (thread_.joinable()) thread_.join();
+}
+
+md::RecordingStats Engine::recording_stats() const {
+  return recorder_ ? recorder_->stats() : md::RecordingStats{};
+}
+
+std::string Engine::recording_error() const {
+  return recorder_ ? recorder_->error() : std::string{};
 }
 
 std::vector<std::string> Engine::symbols() const {
@@ -104,6 +121,16 @@ EngineStatus Engine::status() const {
     }
     if (!out.feed_message.empty()) out.feed_message += "; ";
     out.feed_message += health.message.empty() ? symbol + ": connecting" : health.message;
+  }
+  // Persist storage failures even if subsequent market events report healthy.
+  if (const auto error = recording_error(); !error.empty()) {
+    out.feed_state = md::FeedState::Error;
+    out.feed_message = error;
+    for (auto& [symbol, health] : out.underlyings) {
+      health.state = md::FeedState::Error;
+      health.message = error;
+      health.last_error = error;
+    }
   }
   return out;
 }
@@ -166,7 +193,7 @@ void Engine::run() {
   auto last_health = options_.monotonic_clock();
   constexpr auto kHealthInterval = std::chrono::milliseconds(100);
 
-  while (!stopping_) {
+  while (!stopping_ || queue_.status().depth != 0) {
     batch.clear();
     queue_.drain(batch, std::chrono::milliseconds(50));
     const auto received = options_.clock();
@@ -200,11 +227,16 @@ void Engine::run() {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (now - last_analytics >= options_.analytics_interval) {
+    const bool ended = std::any_of(batch.begin(), batch.end(), [](const md::Event& event) {
+      const auto* status = std::get_if<md::ProviderStatus>(&event);
+      return status && status->state == md::FeedState::Stopped;
+    });
+    if (ended || stopping_ || now - last_analytics >= options_.analytics_interval) {
       last_analytics = now;
       refresh_analytics();
     }
   }
+  refresh_analytics();
 }
 
 void Engine::refresh_analytics() {

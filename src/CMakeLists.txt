@@ -17,6 +17,14 @@ target_link_libraries(openport_core PRIVATE openport::options)
 set_target_properties(openport_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(OPENPORT_BUILD_PROVIDERS)
+  # Recording is independent of Databento, including builds without its adapter.
+  find_path(OPENPORT_ZSTD_INCLUDE_DIR zstd.h REQUIRED)
+  find_library(OPENPORT_ZSTD_LIBRARY NAMES zstd REQUIRED)
+  add_library(openport_recording md/recording.cpp)
+  add_library(openport::recording ALIAS openport_recording)
+  target_include_directories(openport_recording PRIVATE ${OPENPORT_ZSTD_INCLUDE_DIR})
+  target_link_libraries(openport_recording PUBLIC openport::core PRIVATE ${OPENPORT_ZSTD_LIBRARY} Threads::Threads openport::options)
+
   # HTTPS and WebSocket plumbing shared by the provider adapters.
   add_library(openport_net
     net/http.cpp
@@ -31,12 +39,14 @@ if(OPENPORT_BUILD_PROVIDERS)
   # One adapter per market-data provider.
   add_library(openport_providers
     providers/factory.cpp
+    providers/replay.cpp
     providers/snapshot.cpp
     providers/cboe.cpp
     providers/massive.cpp
     providers/thetadata.cpp
   )
   add_library(openport::providers ALIAS openport_providers)
+  target_link_libraries(openport_providers PUBLIC openport::recording)
   target_link_libraries(openport_providers
     PUBLIC openport::core openport::net
     PRIVATE simdjson::simdjson openport::options)
@@ -56,6 +66,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/web_server.cpp
   )
   add_library(openport::server ALIAS openport_server)
+  target_link_libraries(openport_server PUBLIC openport::recording)
   target_link_libraries(openport_server
     PUBLIC openport::core openport::net
     PRIVATE nlohmann_json::nlohmann_json openport::options)

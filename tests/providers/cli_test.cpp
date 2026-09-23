@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <string>
 
+#include "support/recording.hpp"
+
 namespace {
 void rejects(const std::string& application, const std::string& args, const std::string& reason) {
   const auto command =
@@ -52,4 +54,57 @@ TEST(Cli, ProbeRejectsBadValuesUnknownFlagsAndDatabentoFilters) {
   rejects("openport-probe", "missing SPY", "unknown provider");
   rejects("openport-probe", "databento SPX --expiries 1", "whole chain upstream");
 }
+TEST(Cli, ReplayAndRecordValidationWorksInBothApplications) {
+  openport::test::RecordingFile file;
+  openport::test::record_events(file.path, {});
+  const auto path = " --option file='" + file.path.string() + "'";
+  rejects("openportd", "--provider replay", "file=PATH is required");
+  rejects("openport-probe", "replay SPX", "file=PATH is required");
+  for (const auto& option : {"speed=2", "speed=nan", "loop=yes", "unknown=1"}) {
+    const auto reason = std::string(option).substr(0, std::string(option).find('='));
+    rejects("openportd", "--provider replay" + path + " --option " + option, reason);
+    rejects("openport-probe", "replay SPX" + path + " --option " + option, reason);
+  }
+  rejects("openportd", "--provider replay --symbols QQQ" + path, "file contains: SPX, SPY");
+  rejects("openport-probe", "replay QQQ" + path, "file contains: SPX, SPY");
+  rejects("openportd", "--provider replay" + path + " --record '" + file.path.string() + "'",
+          "File exists");
+  rejects("openport-probe", "replay SPX" + path + " --record '" + file.path.string() + "'",
+          "File exists");
+  rejects("openportd", "--record ''", "nonempty path");
+  rejects("openport-probe", "cboe SPX --record ''", "nonempty path");
+  rejects("openport-probe", "replay SPX --option missing-equals", "KEY=VALUE");
+}
+
+TEST(Cli, ProbeCanReplayAndRecordANewFileWithoutNetwork) {
+  using namespace openport;
+  test::RecordingFile source, recorded;
+  test::record_events(source.path,
+                      {md::ContractDefinition{0, *md::parse_osi("SPXW261022C05000000")},
+                       md::OptionQuote{0, 100, 100, 101, 10, 10},
+                       md::UnderlyingQuote{"SPX", 100, 5000, 5001, 5000.5},
+                       md::ProviderStatus{100, md::FeedState::Live, "snapshot complete", "SPX"}});
+  const auto command = std::string("\"") + OPENPORT_APPS_DIR +
+                       "/openport-probe\" replay SPX --option file='" + source.path.string() +
+                       "' --option speed=max --option loop=off --record '" +
+                       recorded.path.string() + "' 2>&1";
+  FILE* pipe = popen(command.c_str(), "r");
+  ASSERT_NE(pipe, nullptr);
+  std::string output;
+  char buffer[512];
+  while (fgets(buffer, sizeof buffer, pipe)) output += buffer;
+  const auto status = pclose(pipe);
+  ASSERT_TRUE(WIFEXITED(status)) << output;
+  EXPECT_EQ(WEXITSTATUS(status), 0) << output;
+  EXPECT_NE(output.find("replay (synthetic)"), std::string::npos) << output;
+  EXPECT_NE(output.find("quotes=1"), std::string::npos) << output;
+  md::RecordingReader reader(recorded.path);
+  EXPECT_EQ(reader.header().provider, "replay (synthetic)");
+  EXPECT_EQ(reader.header().subscription.underlyings, std::vector<std::string>{"SPX"});
+  std::size_t events = 0;
+  while (reader.next()) ++events;
+  EXPECT_GE(events, 4u);
+  EXPECT_TRUE(reader.diagnostic().empty());
+}
+
 }  // namespace

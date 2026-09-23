@@ -8,6 +8,7 @@
 #include "openport/providers/cboe.hpp"
 #include "openport/providers/massive.hpp"
 #include "openport/providers/options.hpp"
+#include "openport/providers/replay.hpp"
 #include "openport/providers/thetadata.hpp"
 #ifdef OPENPORT_WITH_DATABENTO
 #include "openport/providers/databento.hpp"
@@ -47,6 +48,7 @@ std::vector<std::string_view> provider_names() {
 #endif
       "massive",
       "thetadata",
+      "replay",
   };
 }
 
@@ -54,6 +56,10 @@ void validate_subscription(std::string_view provider, const md::Subscription& su
   if (subscription.max_expiries < 0 || !std::isfinite(subscription.strike_window) ||
       subscription.strike_window < 0 || subscription.strike_window > 1)
     throw std::invalid_argument("expiries must be >= 0 and window must be in [0, 1]");
+  if (provider == "replay" &&
+      (subscription.max_expiries != 0 || subscription.strike_window != 0))
+    throw std::invalid_argument("replay: --expiries and --window must be zero; "
+                                "the recording already contains the original subscription filters");
   if (provider == "databento" &&
       (subscription.max_expiries != 0 || subscription.strike_window != 0))
     throw std::invalid_argument(
@@ -62,6 +68,21 @@ void validate_subscription(std::string_view provider, const md::Subscription& su
 }
 
 std::unique_ptr<md::Provider> make_provider(const md::ProviderConfig& config) {
+  if (config.name == "replay") {
+    validate_keys(config, {"file", "speed", "loop"});
+    ReplayProvider::Options options;
+    options.file = option_or(config, "file", "");
+    if (options.file.empty()) throw std::invalid_argument("replay: --option file=PATH is required");
+    const auto speed = option_or(config, "speed", "1");
+    if (speed != "1" && speed != "10" && speed != "60" && speed != "max")
+      throw std::invalid_argument("replay: speed must be 1, 10, 60 or max");
+    options.speed = speed == "max" ? 0 : parse_integer(speed, "speed", 1);
+    const auto loop = option_or(config, "loop", "off");
+    if (loop != "on" && loop != "off")
+      throw std::invalid_argument("replay: loop must be on or off");
+    options.loop = loop == "on";
+    return std::make_unique<ReplayProvider>(std::move(options));
+  }
   if (config.name == "cboe") {
     validate_keys(config, {"poll_seconds"});
     CboeDelayedProvider::Options options;

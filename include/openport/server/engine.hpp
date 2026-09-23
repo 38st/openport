@@ -15,6 +15,7 @@
 #include "openport/analytics/chain_book.hpp"
 #include "openport/md/event_queue.hpp"
 #include "openport/md/provider.hpp"
+#include "openport/md/recording.hpp"
 
 namespace openport::server {
 
@@ -67,6 +68,8 @@ class Engine final : public MetricsSource {
   struct Options {
     std::chrono::milliseconds analytics_interval{1000};
     analytics::AnalyticsOptions analytics;
+    std::filesystem::path record_file;
+    md::RecordingSink::Options recording;
     std::function<md::Timestamp()> clock = md::now;
     /// Monotonic cadence for publishing receipt timestamps, independent of wall-clock jumps.
     std::function<std::chrono::steady_clock::time_point()> monotonic_clock =
@@ -90,6 +93,8 @@ class Engine final : public MetricsSource {
   [[nodiscard]] std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
       const std::string& symbol) const override;
   [[nodiscard]] EngineStatus status() const override;
+  [[nodiscard]] md::RecordingStats recording_stats() const;
+  [[nodiscard]] std::string recording_error() const;
 
  private:
   void run();
@@ -100,6 +105,7 @@ class Engine final : public MetricsSource {
   md::Subscription subscription_;
   Options options_;
   md::EventQueue queue_;
+  std::unique_ptr<md::RecordingSink> recorder_;
   analytics::ChainBook book_;  // engine thread only
 
   std::thread thread_;
