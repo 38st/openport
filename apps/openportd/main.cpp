@@ -191,12 +191,15 @@ int run(int argc, char** argv) {
   engine_options.paper = settings.paper;
   engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins});
   server::Engine engine(*provider, settings.subscription, engine_options);
+  engine.start();
+  const auto trading_status = engine.status().trading;
+  if (trading_status.reason.starts_with("JOURNAL_LOCKED:"))
+    std::fprintf(stderr, "openportd: %s\n", trading_status.reason.c_str());
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
       [&engine](const server::ApiRequest& request, server::ApiCompletion complete) {
         server::handle_api_async(request, engine, std::move(complete));
       }, settings.allowed_origins, settings.write_token);
-  engine.start();
   web.start(settings.threads);
 
   std::string symbols;

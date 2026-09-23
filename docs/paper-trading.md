@@ -289,6 +289,19 @@ published snapshot. Grouping a partial fill and IOC cancellation in one committe
 line prevents recovery from exposing half a command. The top-level type names the
 command (`submit`, `market`, etc.); outcomes are in `payload.events`.
 
+Creation and resume acquire a non-blocking exclusive advisory `flock(LOCK_EX |
+LOCK_NB)` on the journal file before reading or writing its contents, held for the
+session's lifetime and released when the journal closes on destruction (including
+engine shutdown). `flock` is used instead of process-owned `fcntl` record locks so
+separate opens in the same process also conflict, and closing a recovery reader
+does not release the writer's lock. Another owner causes `JOURNAL_LOCKED` without
+reading or changing the journal: analytics continue, paper trading is disabled,
+and all trading writes return 503 `TRADING_UNAVAILABLE`. `/api/status`'s
+`trading.reason` and the daemon's startup diagnostic name the path and say it is
+in use by another openportd; use `--paper-journal` to choose another file or
+`--no-paper`. All writers must honor the advisory lock; do not replace or unlink
+an active journal.
+
 Every record has exactly `seq`, `time`, `type`, `payload`, `prev_hash`, `hash`.
 Sequence starts at 1; the genesis previous hash is 64 ASCII zeroes. Payload schema
 is 1 and tick policy is `index-v1`. The canonical encoding is compact nlohmann JSON
@@ -352,6 +365,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |
 | `JOURNAL_IO`, `JOURNAL_CORRUPT` | Persistence stop condition or invalid/tampered recovery chain/schema |
+| `JOURNAL_LOCKED` | Journal already owned by another writer; analytics remain available |
 
 ## Engine integration and HTTP API
 

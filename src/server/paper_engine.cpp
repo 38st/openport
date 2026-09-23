@@ -141,7 +141,7 @@ void Engine::publish_trading() {
   const std::lock_guard lock(mutex_);
   trading_view_ = std::move(view);
   auto& status = status_.trading;
-  status.enabled = options_.paper_enabled;
+  status.enabled = options_.paper_enabled && trading_failure_.empty();
   status.reason = trading_failure_;
   status.write = trading_failure_.empty() ? options_.write_mode : "disabled";
   const auto& config = trading_view_ ? trading_view_->config : options_.paper;
@@ -295,7 +295,8 @@ void Engine::apply_command(PendingCommand& pending) {
       }
     } catch (const TradingError& error) {
       reply.decision = {error.code(), error.what(), {}, {}, {}};
-      if (error.code() == Reason::JOURNAL_IO || error.code() == Reason::JOURNAL_CORRUPT) {
+      if (error.code() == Reason::JOURNAL_IO || error.code() == Reason::JOURNAL_CORRUPT ||
+          error.code() == Reason::JOURNAL_LOCKED) {
         fail_trading(std::string(to_string(error.code())) + ": " + error.what());
         reply.error_code = "TRADING_UNAVAILABLE";
       }

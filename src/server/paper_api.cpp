@@ -144,7 +144,8 @@ json risk_json(const TradingView& view) {
 int reason_status(Reason reason) {
   if (reason == Reason::UNKNOWN_ORDER || reason == Reason::UNKNOWN_CONTRACT) return 404;
   if (reason == Reason::ORDER_TERMINAL || reason == Reason::DUPLICATE_CLIENT_ID) return 409;
-  if (reason == Reason::JOURNAL_IO || reason == Reason::JOURNAL_CORRUPT) return 503;
+  if (reason == Reason::JOURNAL_IO || reason == Reason::JOURNAL_CORRUPT ||
+      reason == Reason::JOURNAL_LOCKED) return 503;
   return 422;
 }
 ApiResponse command_response(const TradingCommand& command, const TradingReply& reply) {
@@ -352,6 +353,11 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       (request.method == "PUT" && request.target == "/api/risk/limits") ||
       (request.method == "DELETE" && request.target.starts_with("/api/orders/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
+  const auto trading = source.status().trading;
+  if (trading.reason.starts_with("JOURNAL_LOCKED:")) {
+    complete(api_error(503, "TRADING_UNAVAILABLE", trading.reason));
+    return;
+  }
   try {
     const auto command = parse_command(request);
     if (!source.post_trading(command, [command, complete](TradingReply reply) {

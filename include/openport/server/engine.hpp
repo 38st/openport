@@ -99,6 +99,7 @@ class Engine final : public MetricsSource {
   Engine& operator=(const Engine&) = delete;
 
   /// One attempt per instance; construct a new Engine to restart.
+  /// Returns after paper journal initialization; failures are reported in status.
   void start();
   void stop();
 
@@ -149,7 +150,7 @@ class Engine final : public MetricsSource {
   std::uint64_t next_command_ = 1;
   bool accepting_commands_ = false;
 
-  // Engine thread only, including initialization and journal recovery.
+  // Initialized/recovered by start(), then owned exclusively by the engine thread.
   std::unique_ptr<trading::TradingSession> trading_;
   std::string trading_failure_;
   std::map<std::string, std::string> settlement_source_;

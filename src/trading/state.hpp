@@ -23,7 +23,7 @@ inline void from_json(const Json& j, Money& m) { m = Money::from_micros(j.get<st
 inline void to_json(Json& j, Reason r) { j = to_string(r); }
 inline void from_json(const Json& j, Reason& r) {
   const auto text = j.get<std::string>();
-  for (int i = 0; i <= static_cast<int>(Reason::JOURNAL_CORRUPT); ++i) {
+  for (int i = 0; i <= static_cast<int>(Reason::JOURNAL_LOCKED); ++i) {
     const auto candidate = static_cast<Reason>(i);
     if (to_string(candidate) == text) { r = candidate; return; }
   }

@@ -183,5 +183,52 @@ TEST(TradingJournal, ExclusiveWriterAndInvalidPathsFailLoudly) {
   EXPECT_THROW(FileJournal::create(file.path + "/missing"), TradingError);
   EXPECT_THROW(FileJournal::read(file.path + ".missing"), TradingError);
 }
+TEST(TradingJournal, LockRejectsSeparateOpensAndIsReleasedOnDestruction) {
+  TemporaryJournal file;
+  const auto message = "paper journal '" + file.path +
+      "' is in use by another openportd; use --paper-journal to choose another file or --no-paper";
+  auto expect_locked = [&](bool create) {
+    try {
+      const auto second = create ? FileJournal::create(file.path) : FileJournal::resume(file.path);
+      FAIL() << "A second writer acquired the journal";
+    } catch (const TradingError& error) {
+      EXPECT_EQ(error.code(), Reason::JOURNAL_LOCKED);
+      EXPECT_EQ(error.what(), message);
+    }
+  };
+  {
+    auto journal = FileJournal::create(file.path);
+    journal->append(1, "first", "{}");
+    const auto before = file.read();
+    expect_locked(true);
+    expect_locked(false);
+    EXPECT_EQ(file.read(), before);
+    // Closing a separate reader must not release the writer's lock.
+    EXPECT_EQ(FileJournal::read(file.path).records.size(), 1u);
+    expect_locked(false);
+    journal->append(2, "second", "{}");
+    EXPECT_EQ(FileJournal::read(file.path).records.size(), 2u);
+  }
+  {
+    auto resumed = FileJournal::resume(file.path);
+    EXPECT_EQ(resumed->sequence(), 2u);
+    expect_locked(false);
+    resumed->append(3, "third", "{}");
+  }
+  auto later = FileJournal::resume(file.path);
+  EXPECT_EQ(later->sequence(), 3u);
+}
+TEST(TradingJournal, LockedJournalIsRejectedBeforeReadingOrRepairingItsContents) {
+  TemporaryJournal file;
+  const auto journal = FileJournal::create(file.path);
+  file.write("invalid journal contents\n");
+  try {
+    const auto second = FileJournal::resume(file.path);
+    FAIL() << "A second writer acquired the journal";
+  } catch (const TradingError& error) {
+    EXPECT_EQ(error.code(), Reason::JOURNAL_LOCKED);
+  }
+  EXPECT_EQ(file.read(), "invalid journal contents\n");
+}
 }  // namespace
 }  // namespace openport::trading

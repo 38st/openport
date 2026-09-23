@@ -4,6 +4,7 @@
 #include <future>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <thread>
 
 #include "openport/server/api.hpp"
@@ -335,6 +336,82 @@ TEST(PaperAvailability, DisabledFailedJournalFullInboxAndStoppingFailClosed) {
       EXPECT_EQ(engine.status().trading.write, "disabled");
     }
   }
+}
+
+TEST(PaperAvailability, LockedJournalDisablesEveryWriteButKeepsAnalyticsAndOwnerWorking) {
+  const auto path = std::filesystem::temp_directory_path() /
+      ("openport-locked-" + std::to_string(md::now()) + ".jsonl");
+  auto bytes = [&] {
+    std::ifstream file(path, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+  };
+  auto options = paper_options();
+  options.paper_journal = path;
+  PaperProvider first_provider;
+  server::Engine first(first_provider, {{"SPX"}}, options);
+  first.start();
+  ASSERT_NE(first.trading_view(), nullptr);
+  const auto limits = read(first, "/api/risk")["limits"];
+  const auto before = bytes();
+  ASSERT_FALSE(before.empty());
+  {
+    PaperProvider second_provider;
+    server::Engine second(second_provider, {{"SPX"}}, options);
+    second.start();
+    const auto reason = "JOURNAL_LOCKED: paper journal '" + path.string() +
+        "' is in use by another openportd; use --paper-journal to choose another file or --no-paper";
+    const auto status = read(second, "/api/status")["trading"];
+    EXPECT_FALSE(status["enabled"].get<bool>());
+    EXPECT_EQ(status["write"], "disabled");
+    EXPECT_EQ(status["reason"], reason);
+    EXPECT_EQ(second.trading_view(), nullptr);
+    EXPECT_EQ(bytes(), before);
+
+    test::ScriptedMarket market;
+    second_provider.sink->publish(md::ContractDefinition{0, market.contract});
+    second_provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+    second_provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+    ASSERT_TRUE(wait_for([&] {
+      const auto metrics = second.metrics("SPX");
+      return metrics && metrics->as_of == market.time && !metrics->slices.empty();
+    }));
+    struct Request { std::string method; std::string path; json body; };
+    const std::vector<Request> requests{
+        {"POST", "/api/orders", order(market)},
+        {"DELETE", "/api/orders/1", nullptr},
+        {"PUT", "/api/risk/limits", {{"expected_revision", "1"}, {"limits", limits}}},
+        {"POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}}},
+        {"POST", "/api/risk/kill", {{"action", "reset"}, {"reason", "test"}}},
+        {"POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5000.00"}}},
+        // Unavailability also takes precedence over malformed command bodies.
+        {"POST", "/api/orders", json::object()}};
+    for (const auto& request : requests) {
+      const auto response = write(second, request.method, request.path, request.body);
+      EXPECT_EQ(response.status, 503) << response.body;
+      EXPECT_EQ(json::parse(response.body)["error"]["code"], "TRADING_UNAVAILABLE");
+      EXPECT_EQ(json::parse(response.body)["error"]["message"], reason);
+    }
+    EXPECT_EQ(bytes(), before);
+    ASSERT_EQ(write(first, "POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "owner"}}).status, 200);
+    EXPECT_TRUE(first.status().trading.enabled);
+    EXPECT_TRUE(first.status().trading.reason.empty());
+    const auto after_owner_write = bytes();
+    EXPECT_NE(after_owner_write, before);
+    second.stop();
+    EXPECT_EQ(bytes(), after_owner_write);
+    // Neither the rejected opens nor the second engine's shutdown released the owner's lock.
+    EXPECT_THROW(trading::FileJournal::resume(path.string()), trading::TradingError);
+  }
+  first.stop();
+  const auto recovery = trading::FileJournal::read(path.string());
+  EXPECT_FALSE(recovery.truncated_final_line);
+  const auto recovered = trading::TradingSession::recover(recovery).snapshot();
+  EXPECT_TRUE(recovered->risk.kill_latched);
+  EXPECT_EQ(recovered->risk.kill_reason, "owner");
+  EXPECT_EQ(recovered->account_version, first.trading_view()->snapshot->account_version);
+  std::filesystem::remove(path);
 }
 
 TEST(PaperWritePolicy, ProtectsEveryWriteAndLeavesReadsOpen) {

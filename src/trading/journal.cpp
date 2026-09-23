@@ -33,16 +33,31 @@ std::string digest(const std::string& input) {
   return result;
 }
 int open_locked(const std::string& path, bool create) {
-  const int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | (create ? O_CREAT | O_EXCL : 0), 0600);
+  const int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC | (create ? O_CREAT | O_EXCL : 0), 0600);
+  if (fd < 0 && create && errno == EEXIST) {
+    // Preserve create's no-overwrite contract, but report contention consistently,
+    // including a concurrent creator winning the Engine's existence-check race.
+    const int existing = open_locked(path, false);
+    ::close(existing);
+    io("Cannot create journal '" + path + "': file already exists");
+  }
   if (fd < 0) io("Cannot open journal: " + std::string(std::strerror(errno)));
   struct stat info {};
   if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
     ::close(fd);
     io("Journal must be a regular file");
   }
-  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+  // flock belongs to this open file description, unlike process-owned fcntl locks:
+  // another open in this process conflicts, and closing recovery reads cannot unlock it.
+  int result;
+  do { result = ::flock(fd, LOCK_EX | LOCK_NB); } while (result != 0 && errno == EINTR);
+  if (result != 0) {
+    const int error = errno;
     ::close(fd);
-    io("Journal already has a writer");
+    if (error == EWOULDBLOCK || error == EAGAIN)
+      throw TradingError(Reason::JOURNAL_LOCKED, "paper journal '" + path +
+          "' is in use by another openportd; use --paper-journal to choose another file or --no-paper");
+    io("Cannot lock paper journal '" + path + "': " + std::strerror(error));
   }
   return fd;
 }

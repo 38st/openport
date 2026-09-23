@@ -38,12 +38,20 @@ void Engine::start() {
     }
     provider_started_ = true;
     provider_.start(subscription_, recorder_ ? static_cast<md::EventSink&>(*recorder_) : queue_);
+    // Complete journal startup before returning so the daemon can report failures
+    // even if constructing or binding its web server subsequently fails.
+    start_trading();
     thread_ = options_.launch([this] { run(); });
   } catch (...) {
     // Even a partially started provider must stop before the queue can be destroyed.
     if (provider_started_) provider_.stop();
     provider_started_ = false;
     if (recorder_) recorder_->close();
+    trading_.reset();
+    {
+      const std::lock_guard lock(command_mutex_);
+      accepting_commands_ = false;
+    }
     throw;
   }
 }
@@ -193,7 +201,6 @@ void Engine::update_health(const md::Event& event, md::Timestamp received) {
 }
 
 void Engine::run() {
-  start_trading();
   std::vector<md::Event> batch;
   auto last_analytics = std::chrono::steady_clock::now();
   last_rate_time_ = last_analytics;

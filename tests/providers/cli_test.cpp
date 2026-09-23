@@ -8,6 +8,7 @@
 #include <string>
 
 #include "support/recording.hpp"
+#include "openport/trading/journal.hpp"
 
 namespace {
 /// A private HOME for launched binaries, so a daemon that gets far enough to start never
@@ -119,6 +120,25 @@ TEST(Cli, ProbeCanReplayAndRecordANewFileWithoutNetwork) {
   while (reader.next()) ++events;
   EXPECT_GE(events, 4u);
   EXPECT_TRUE(reader.diagnostic().empty());
+}
+
+TEST(Cli, DaemonReportsJournalLockedByAnotherProcessBeforeWebStartupFails) {
+  using namespace openport;
+  test::RecordingFile source, journal_file;
+  test::record_events(source.path, {});
+  const auto journal = trading::FileJournal::create(journal_file.path.string());
+  journal->append(0, "test", "{}");
+  const auto head = journal->head();
+  const auto command = "--provider replay --option file='" + source.path.string() +
+      "' --option speed=max --paper-journal '" + journal_file.path.string() +
+      "' --address invalid-address";
+  rejects("openportd", command, "JOURNAL_LOCKED: paper journal '" + journal_file.path.string() +
+      "' is in use by another openportd; use --paper-journal to choose another file or --no-paper");
+  const auto recovery = trading::FileJournal::read(journal_file.path.string(), head);
+  EXPECT_EQ(recovery.records.size(), 1u);
+  EXPECT_FALSE(recovery.truncated_final_line);
+  journal->append(1, "still-owned", "{}");
+  EXPECT_EQ(journal->sequence(), 2u);
 }
 
 }  // namespace

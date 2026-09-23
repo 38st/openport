@@ -35,6 +35,7 @@ class Journal {
 };
 
 /// Exclusive single-writer file, O_EXCL on creation, write + fsync before return.
+/// Non-blocking flock excludes other opens (including in this process) until destruction.
 /// Resume requires a clean verified file. A torn suffix is never silently erased.
 class FileJournal final : public Journal {
  public:
@@ -42,6 +43,8 @@ class FileJournal final : public Journal {
   static std::shared_ptr<FileJournal> resume(const std::string& path);
   static JournalRecovery read(const std::string& path, std::string_view expected_head = {});
   ~FileJournal() override;
+  FileJournal(const FileJournal&) = delete;
+  FileJournal& operator=(const FileJournal&) = delete;
   void append(Timestamp time, std::string_view type, std::string_view payload) override;
   [[nodiscard]] std::uint64_t sequence() const override { return sequence_; }
   [[nodiscard]] std::string head() const override { return head_; }
