@@ -204,7 +204,7 @@ TEST(Time, ProductSessionsHaveDistinctRegularCurbAndGlobalBoundaries) {
     EXPECT_EQ(session(root, 20, 15).name, "global");
     EXPECT_EQ(session(root, 23, 59).market_time, new_york_to_utc(date, 23, 59));
   }
-  for (auto root : {"SPY", "QQQ", "IWM", "DIA", "NDX", "NDXP", "XEO"}) {
+  for (auto root : {"SPY", "QQQ", "IWM", "DIA", "GLD", "TLT", "XLF", "NDX", "NDXP", "XEO"}) {
     EXPECT_EQ(session(root, 16, 14).name, "regular");
     EXPECT_EQ(session(root, 16, 15).name, "closed");
     EXPECT_EQ(session(root, 21, 0).name, "closed");

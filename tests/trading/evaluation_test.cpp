@@ -216,6 +216,37 @@ TEST(TradingEvaluation, ExpiryCutoffCancelsWorkingOrdersAutoClosesAndBlocksOpeni
   EXPECT_EQ(s.submit(f.market("late"), f.time).decision.code, Reason::EXPIRY_CUTOFF);
 }
 
+TEST(TradingEvaluation, TheCutoffCountsBackFromEachContractsLastTrade) {
+  AccountRules rules;
+  rules.expiry_cutoff = 5 * md::kNanosPerMinute;
+  // SPY options trade until 16:15, so they open until 16:10 and close then.
+  ScriptedMarket spy;
+  spy.contract = *md::parse_osi("SPY261022C00500000");
+  spy.time = md::new_york_to_utc({2026, 10, 22}, 16, 5);
+  TradingSession s(rules_config("100000", rules), spy.time);
+  spy.seed(s);
+  ASSERT_TRUE(s.submit(spy.market("open", 2), spy.time).decision.ok());
+  spy.time = md::new_york_to_utc({2026, 10, 22}, 16, 10);
+  ++spy.observation;
+  s.on_quotes({spy.quote()}, {spy.valuation()}, spy.time);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_TRUE(s.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:expiry:"));
+  EXPECT_EQ(s.submit(spy.market("late"), spy.time).decision.code, Reason::EXPIRY_CUTOFF);
+
+  // AM-settled series last trade at the regular close the afternoon before expiry.
+  ScriptedMarket am;
+  am.contract = *md::parse_osi("SPX261016C05000000");
+  am.time = md::new_york_to_utc({2026, 10, 15}, 16, 0);
+  TradingSession t(rules_config("100000", rules), am.time);
+  am.seed(t);
+  ASSERT_TRUE(t.submit(am.market("open"), am.time).decision.ok());
+  am.time = md::new_york_to_utc({2026, 10, 15}, 16, 10);
+  ++am.observation;
+  t.on_quotes({am.quote()}, {am.valuation()}, am.time);
+  EXPECT_TRUE(t.snapshot()->positions.empty());
+  EXPECT_TRUE(t.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:expiry:"));
+}
+
 TEST(TradingEvaluation, ResetArchivesAttemptClosesAtMarkAndRestoresCash) {
   ScriptedMarket f;
   auto first = drawdown("1000", "100");

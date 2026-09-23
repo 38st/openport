@@ -8,7 +8,8 @@ const number = (value: string | null | undefined) => (value == null ? null : Num
 const expiryId = (p: Position) => `${p.expiry}${p.settlement}`
 const newYorkHour = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hourCycle: "h23" })
 
-/** When a contract settles: 09:30 ET on its date for AM settlement, 16:00 ET for PM. */
+/** When a contract settles: 09:30 ET on its date for AM settlement, 16:00 ET for PM. Servers send each
+ * position's own `expiry_time`, which is 16:15 for ETF options that trade until then. */
 export function settlementTime(date: string, settlement: "AM" | "PM"): number | null {
   const [y, m, d] = date.split("-").map(Number)
   if (!y || !m || !d) return null
@@ -105,7 +106,8 @@ export function strategyGroups(positions: readonly Position[], orders: readonly 
       greeks: { dollar_delta: sum((p) => p.greeks.dollar_delta), vega_dollars: sum((p) => p.greeks.vega_dollars), theta_dollars: sum((p) => p.greeks.theta_dollars) },
       profile: cost == null ? null : riskProfile(strategy, units, cost),
       expiry: strategy.map((l) => l.expiry).sort()[0]!,
-      expires: Math.min(...members.map(({ position: p }) => settlementTime(p.expiry, p.settlement) ?? Infinity)),
+      expires: Math.min(...members.map(({ position: p }) =>
+        (p.expiry_time ? Date.parse(p.expiry_time) : settlementTime(p.expiry, p.settlement)) ?? Infinity)),
     })
   }
   return groups

@@ -968,6 +968,44 @@ TEST(PaperRecovery, SettlementProvenanceIsDurableAndStopReleasesJournalWriter) {
   std::filesystem::remove(path);
 }
 
+TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
+  const auto path = std::filesystem::temp_directory_path() / ("openport-etf-settlement-" + std::to_string(md::now()) + ".jsonl");
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPY260922C00500000");
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPY"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", market.time, 500, 500, 500});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPY") && engine.metrics("SPY")->as_of == market.time; }));
+  const auto placed = write(engine, "POST", "/api/orders", order(market, "spy", "4.20"));
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  // The 16:00 print is the close, but the options trade on until 16:15.
+  const auto close = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  const auto later = close + 10 * md::kNanosPerMinute;
+  provider.sink->publish(md::UnderlyingQuote{"SPY", close, 0, 0, 501});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", later, 0, 0, 510});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == later; }));
+  EXPECT_EQ(engine.trading_view()->snapshot->positions.size(), 1);
+  // At 16:15 it settles on the close, a dollar in the money: 100 shares at the strike.
+  provider.sink->publish(md::UnderlyingQuote{"SPY", market.contract.expiry_time(), 0, 0, 499});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->positions.empty(); }));
+  const auto snapshot = engine.trading_view()->snapshot;
+  ASSERT_EQ(snapshot->stocks.size(), 1);
+  EXPECT_EQ(snapshot->stocks[0].position.shares, 100);
+  engine.stop();
+  bool found = false;
+  for (const auto& record : trading::FileJournal::read(path.string()).records) {
+    if (record.type != "settlement") continue;
+    EXPECT_EQ(json::parse(record.payload)["settlement_source"]["quote_time"], md::format_timestamp(close));
+    found = true;
+  }
+  EXPECT_TRUE(found);
+  std::filesystem::remove(path);
+}
+
 TEST(PaperPlans, PresetsListExactRules) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());

@@ -1,5 +1,6 @@
 #include "openport/md/contract.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -38,6 +39,17 @@ constexpr std::array<IndexRoot, 14> kIndexRoots{{
     {"XEO", "OEX", Settlement::PM},
 }};
 
+// ETFs whose options trade until 16:15 ET, sorted. Expiring series trade until
+// then too; only the cash-settled index series stop at 16:00 on their last day.
+// https://www.nasdaqtrader.com/Trader.aspx?id=optionshours (September 2026)
+constexpr std::array<std::string_view, 62> kLateCloseEtfs{{
+    "DBA", "DBB", "DBC", "DBO", "DIA", "DRAM", "EEM", "EFA", "EWY", "EWZ", "FXI", "GLD", "HYG", "IBIT", "IEF", "IVV",
+    "IWM", "IWN", "IWO", "IYR", "KBE", "KRE", "KWEB", "LQD", "MDY", "MOO", "OEF", "QQQ", "RSP", "SLV", "SMH", "SOXL",
+    "SOXX", "SPY", "SVIX", "SVXY", "TIP", "TLT", "UNG", "UUP", "UVIX", "UVXY", "VIXM", "VIXY", "VOO", "VXX", "VXZ",
+    "XHB", "XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY", "XME", "XOP", "XRT",
+}};
+static_assert(std::is_sorted(kLateCloseEtfs.begin(), kLateCloseEtfs.end()));
+
 }  // namespace
 
 bool is_index_underlying(std::string_view underlying) {
@@ -45,6 +57,11 @@ bool is_index_underlying(std::string_view underlying) {
     if (index.underlying == underlying) return true;
   }
   return false;
+}
+
+bool is_late_close_underlying(std::string_view underlying) {
+  return is_index_underlying(underlying) ||
+         std::binary_search(kLateCloseEtfs.begin(), kLateCloseEtfs.end(), underlying);
 }
 
 std::vector<std::string> option_roots(std::string_view underlying) {
@@ -80,8 +97,9 @@ std::string OptionContract::osi_symbol() const {
 }
 
 Timestamp OptionContract::expiry_time() const noexcept {
-  return settlement == Settlement::AM ? new_york_to_utc(expiry, 9, 30)
-                                      : new_york_to_utc(expiry, regular_close_hour(expiry), 0);
+  if (settlement == Settlement::AM) return new_york_to_utc(expiry, 9, 30);
+  const bool late = !is_index_underlying(underlying) && is_late_close_underlying(underlying);
+  return new_york_to_utc(expiry, regular_close_hour(expiry), late ? 15 : 0);
 }
 
 Timestamp OptionContract::last_trade_time() const noexcept {

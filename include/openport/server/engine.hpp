@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "openport/analytics/chain_analytics.hpp"
@@ -191,6 +192,8 @@ class Engine final : public MetricsSource {
   // Initialized/recovered by start(), then owned exclusively by the engine thread.
   std::vector<PaperAccount> accounts_;  // the main account first
   std::map<std::string, std::string> settlement_source_;
+  /// Each underlying's first print at or after a date's regular close.
+  std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> closing_prints_;
   md::Timestamp market_time_ = 0;
   std::map<std::string, md::InstrumentId> instruments_;
   std::map<std::string, std::uint64_t> observations_;

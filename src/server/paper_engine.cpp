@@ -395,6 +395,16 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
   if (accounts_.empty()) return;
   if (batch.empty() && commands.empty()) return;
   const auto now = wall_time();
+  // Underlying prints retain ingress order. The first valid last on a date at or
+  // after its regular close (16:00, 13:00 early) is our documented PM
+  // closing-print approximation.
+  for (const auto& event : batch) {
+    const auto* spot = std::get_if<md::UnderlyingQuote>(&event);
+    if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
+    const auto date = new_york_date(spot->ts);
+    if (spot->ts >= md::new_york_to_utc(date, md::regular_close_hour(date), 0))
+      closing_prints_.try_emplace({spot->symbol, date}, *spot);
+  }
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
     auto& session = *account.session;
@@ -456,21 +466,17 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         if (const auto price = quote_price(book->second.spot)) stocks.push_back({symbol, book->second.spot_ts, *price});
       }
       session.on_quotes(quotes, valuations, market_time_, stocks);
-      // Underlying prints retain ingress order. The first valid post-expiry last on
-      // the expiry date is our documented PM closing-print approximation.
-      for (const auto& event : batch) {
-        const auto* spot = std::get_if<md::UnderlyingQuote>(&event);
-        if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
-        const auto snapshot = session.snapshot();
-        for (const auto& p : snapshot->positions) {
-          const auto& contract = p.position.contract;
-          if (contract.settlement == md::Settlement::PM && contract.underlying == spot->symbol &&
-              spot->ts >= contract.expiry_time() && new_york_date(spot->ts) == contract.expiry) {
-            settlement_source_ = {{"kind", "provider_closing_print"}, {"provider", std::string(provider_.name())},
-                                  {"symbol", spot->symbol}, {"quote_time", md::format_timestamp(spot->ts)}};
-            session.settle(contract.osi_symbol(), Money::from_double(spot->last), market_time_);
-          }
-        }
+      // A PM contract settles on its expiry date's closing print once it expires:
+      // at the close, or a quarter hour later for ETF options that trade until 16:15.
+      for (const auto& p : session.snapshot()->positions) {
+        const auto& contract = p.position.contract;
+        if (contract.settlement != md::Settlement::PM || market_time_ < contract.expiry_time()) continue;
+        const auto print = closing_prints_.find({contract.underlying, contract.expiry});
+        if (print == closing_prints_.end()) continue;
+        const auto& spot = print->second;
+        settlement_source_ = {{"kind", "provider_closing_print"}, {"provider", std::string(provider_.name())},
+                              {"symbol", spot.symbol}, {"quote_time", md::format_timestamp(spot.ts)}};
+        session.settle(contract.osi_symbol(), Money::from_double(spot.last), market_time_);
       }
       // An overnight session belongs to the next trading date, so a day ends
       // when the last session of the one before (curb) does.

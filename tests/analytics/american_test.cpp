@@ -16,8 +16,9 @@ TEST(AmericanAnalytics, CurveAndOneCorrectionRecoverForwardAndOtmVol) {
     analytics::ChainBook book;
     md::InstrumentId id = 0;
     const md::Date expiry{2027, 9, 22};
+    // SPY options trade, and expire, at 16:15.
     const auto as_of =
-        md::new_york_to_utc(expiry, 16, 0) - static_cast<md::Timestamp>(years * md::kNanosPerYear);
+        md::new_york_to_utc(expiry, 16, 15) - static_cast<md::Timestamp>(years * md::kNanosPerYear);
     test::add_american_expiry(book, as_of, expiry, id);
     const auto& underlying = book.underlyings().at("SPY");
     std::vector<analytics::ParityPoint> points;

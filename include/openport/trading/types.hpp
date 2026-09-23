@@ -264,7 +264,7 @@ struct AccountRules {
   DrawdownMode drawdown_mode = DrawdownMode::Intraday;
   bool buy_only = false;      ///< Sells may only reduce existing long positions.
   bool buying_power = false;  ///< Enforce cash buying power, with naked-short requirements.
-  Timestamp expiry_cutoff = 0;  ///< Auto-close this long before contract expiry; zero disables.
+  Timestamp expiry_cutoff = 0;  ///< Auto-close this long before a contract's last trade; zero disables.
   Phase phase = Phase::Evaluation;
   Money lock_balance;         ///< Once the floor reaches it, the floor stops trailing; zero disables.
   PayoutRules payouts;        ///< Funded phase only.

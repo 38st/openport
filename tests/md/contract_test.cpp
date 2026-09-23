@@ -105,4 +105,28 @@ TEST(Contract, PmExpiryUsesEarlyClose) {
   EXPECT_EQ(openport::md::format_timestamp(c->expiry_time()), "2026-11-27T18:00:00.000Z");
 }
 
+TEST(Contract, EtfOptionsTradeAndExpireAQuarterHourAfterTheClose) {
+  using openport::md::format_timestamp;
+  using openport::md::is_late_close_underlying;
+  const auto spy = parse_osi("SPY261022C00500000");
+  const auto adjusted = parse_osi("SPY1261022C00500000");
+  const auto gld = parse_osi("GLD261022C00300000");
+  const auto aapl = parse_osi("AAPL261022C00200000");
+  const auto index = parse_osi("SPXW261022C05000000");
+  const auto early = parse_osi("QQQ261127C00500000");
+  ASSERT_TRUE(spy && adjusted && gld && aapl && index && early);
+  EXPECT_EQ(format_timestamp(spy->expiry_time()), "2026-10-22T20:15:00.000Z");
+  EXPECT_EQ(spy->last_trade_time(), spy->expiry_time());
+  EXPECT_EQ(adjusted->expiry_time(), spy->expiry_time());
+  EXPECT_EQ(gld->expiry_time(), spy->expiry_time());
+  // Single stocks close at 16:00, and expiring index series stop then too.
+  EXPECT_EQ(format_timestamp(aapl->expiry_time()), "2026-10-22T20:00:00.000Z");
+  EXPECT_EQ(format_timestamp(index->expiry_time()), "2026-10-22T20:00:00.000Z");
+  EXPECT_EQ(format_timestamp(early->expiry_time()), "2026-11-27T18:15:00.000Z");
+  EXPECT_TRUE(is_late_close_underlying("XLF"));
+  EXPECT_TRUE(is_late_close_underlying("NDX"));
+  EXPECT_FALSE(is_late_close_underlying("AAPL"));
+  EXPECT_FALSE(is_late_close_underlying("SPY1"));
+}
+
 }  // namespace

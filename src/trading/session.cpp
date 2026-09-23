@@ -558,7 +558,7 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
     return failure(Reason::INVALID_TICK, "Net price is not a multiple of the legs' smallest tick");
   if (rules.buy_only) return failure(Reason::BUY_ONLY, "This plan is buy-only and single-leg; multi-leg orders need a plan that allows any strategy");
   for (const auto& leg : r.legs) {
-    if (rules.expiry_cutoff > 0 && s.time >= s.contracts.at(leg.symbol).expiry_time() - rules.expiry_cutoff)
+    if (rules.expiry_cutoff > 0 && s.time >= s.contracts.at(leg.symbol).last_trade_time() - rules.expiry_cutoff)
       return failure(Reason::EXPIRY_CUTOFF, "A leg is inside the pre-expiry cutoff; close positions with single-leg orders");
     if (auto d = quote_check(s, leg.symbol); !d.ok()) { d.scope = leg.symbol; return d; }
   }
@@ -624,7 +624,7 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
     return failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
   if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
     return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
-  if (rules.expiry_cutoff > 0 && s.time >= c->second.expiry_time() - rules.expiry_cutoff && !closing_only(s, o))
+  if (rules.expiry_cutoff > 0 && s.time >= c->second.last_trade_time() - rules.expiry_cutoff && !closing_only(s, o))
     return failure(Reason::EXPIRY_CUTOFF, "Contract is inside the pre-expiry cutoff; only closing orders are accepted");
   if (const auto d = quote_check(s, request.symbol); !d.ok()) return d;
   const auto& quote = s.books.at(request.symbol).quote;
@@ -1005,9 +1005,11 @@ void monitor_rules(State& s, Events& events) {
       flatten(s, symbol, e.status == EvaluationStatus::Passed ? "target" : "drawdown", events);
       continue;
     }
+    // The cutoff counts back from the last trade: 15:55 for SPXW, 16:10 for SPY,
+    // and the afternoon before expiry for AM-settled series.
     const auto& contract = s.contracts.at(symbol);
-    if (rules.expiry_cutoff > 0 && s.time >= contract.expiry_time() - rules.expiry_cutoff &&
-        s.time < contract.expiry_time()) {
+    if (rules.expiry_cutoff > 0 && s.time >= contract.last_trade_time() - rules.expiry_cutoff &&
+        s.time < contract.last_trade_time()) {
       for (auto& o : s.orders)
         if (!o.system && touches(o.request, symbol))
           cancel_order(o, failure(Reason::EXPIRY_CUTOFF, "Pre-expiry cutoff: the position is being closed"), events);

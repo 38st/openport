@@ -31,6 +31,10 @@ describe("held strategies", () => {
     expect(spread!.greeks.dollar_delta).toBe(0)  // −200 and +200, all of both positions
     expect(spread!.profile).toEqual({ maxProfit: 240, maxLoss: 1760, breakevens: [6898.8] })
     expect(spread!.expires).toBe(Date.parse("2026-10-16T20:00:00Z"))
+    // The server's own expiry wins: ETF options such as SPY's trade until 16:15.
+    const late = (p: typeof short) => ({ ...p, expiry_time: "2026-10-16T20:15:00Z" })
+    const [etf] = strategyGroups([late(short), late(long)], [combo("7", [[6900, "sell"], [6890, "buy"]], 2, "-1.20")], null)
+    expect(etf!.expires).toBe(Date.parse("2026-10-16T20:15:00Z"))
   })
 
   it("keep what is still held together, sharing a contract between strategies", () => {

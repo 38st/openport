@@ -260,8 +260,7 @@ TradingSession trading_session(std::string_view root, Timestamp ts) {
   const bool global =
       underlying == "SPX" || underlying == "XSP" || underlying == "VIX" || underlying == "RUT";
   const bool curb = global;
-  const bool quarter_hour = is_index_underlying(underlying) || underlying == "SPY" ||
-                            underlying == "QQQ" || underlying == "IWM" || underlying == "DIA";
+  const bool quarter_hour = is_late_close_underlying(underlying);
   const auto local = local_time(ts);
   const auto date = local.date;
   const auto days = local.days;

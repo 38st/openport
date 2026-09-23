@@ -169,6 +169,7 @@ json portfolio_json(const TradingView& view) {
     const auto average = average_price(position);
     positions.push_back({{"symbol", c.osi_symbol()}, {"underlying", c.underlying},
         {"expiry", md::format_date(c.expiry)}, {"settlement", c.settlement == md::Settlement::AM ? "AM" : "PM"},
+        {"expiry_time", md::format_timestamp(c.expiry_time())}, {"last_trade_time", md::format_timestamp(c.last_trade_time())},
         {"strike", c.strike}, {"type", c.type == pricing::OptionType::Call ? "call" : "put"},
         {"quantity", q}, {"average_price", average.str()}, {"basis", position.basis.str()},
         {"mark", money(p.mark)}, {"mark_age_seconds", p.mark ? json(static_cast<double>(p.mark_age) / md::kNanosPerSecond) : json(nullptr)},

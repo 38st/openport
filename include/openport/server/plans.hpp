@@ -26,7 +26,7 @@ struct PlanPreset {
 ///             starting balance; a payout every 8 days of $100/$150/$200+ net
 ///             realised profit (25K/50K/100K), up to 50% of profit (minimum 1%,
 ///             caps 2/3/4/6% of the balance for payouts 1/2/3/4+), 80% to the trader
-/// Evaluations auto-close positions five minutes before expiry.
+/// Evaluations auto-close positions five minutes before their last trade.
 [[nodiscard]] const std::vector<PlanPreset>& plan_presets();
 [[nodiscard]] const PlanPreset* find_plan(std::string_view id);
 

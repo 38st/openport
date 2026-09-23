@@ -24,6 +24,32 @@ void tick(TradingSession& s, ScriptedMarket& f, Timestamp time, std::string_view
 }
 const Order& order(const TradingSession& s, OrderId id) { return s.snapshot()->recent_orders.at(static_cast<std::size_t>(id - 1)); }
 
+TEST(TradingSessions, ExpiringEtfOptionsTradeAQuarterHourAfterTheClose) {
+  constexpr md::Date expiry{2026, 10, 22};
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPY261022C00500000");
+  f.time = at(expiry, 16, 5);
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("after the close"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("rest", 1, "4.40", Side::Sell), f.time).decision.ok());
+  EXPECT_FALSE(s.snapshot()->positions.front().awaiting_settlement);
+  // At 16:15 the contract expires: the resting order cancels and the position waits for settlement.
+  f.time = at(expiry, 16, 15);
+  s.on_quotes({}, {}, f.time);
+  EXPECT_EQ(order(s, 2).reason.code, Reason::EXPIRED);
+  EXPECT_TRUE(s.snapshot()->positions.front().awaiting_settlement);
+  EXPECT_EQ(s.submit(f.market("too late"), f.time).decision.code, Reason::EXPIRED);
+
+  // Expiring index series stop at 16:00.
+  ScriptedMarket index;
+  index.contract = *md::parse_osi("SPXW261022C05000000");
+  index.time = at(expiry, 16, 5);
+  TradingSession t(roomy(), index.time);
+  index.seed(t);
+  EXPECT_EQ(t.submit(index.market("late"), index.time).decision.code, Reason::EXPIRED);
+}
+
 TEST(TradingSessions, TheOvernightSessionTakesLimitOrdersThatLastUntilItEnds) {
   ScriptedMarket f;
   f.time = at(kTuesday, 21, 0);  // Wednesday's overnight session

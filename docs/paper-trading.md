@@ -92,7 +92,7 @@ money contracts early in the same way against the underlying's fresh price, so a
 time value left is a cost; it takes the account's checks and, with the
 `buying_power` rule, must fit within it. Early assignment of short options and
 dividends are not simulated. Evaluation plans close positions five minutes before
-expiry, so expiry delivery only reaches accounts without an expiry cutoff. Greeks and
+their last trade, so expiry delivery only reaches accounts without an expiry cutoff. Greeks and
 scenarios use the analytics' European Black-76 values at the de-Americanised smile IV.
 
 Delivered shares (`TradingSnapshot::stocks`) are marked at the underlying's price,
@@ -164,9 +164,11 @@ respect existing better orders when sharing the current budget. There is no queu
 position, trade-through, slippage or hidden-liquidity simulation in v1.
 
 Orders trade in the sessions `md::trading_session(root, time)` gives each product.
-Every product has its **regular** session: 09:30 to 16:15 ET for index roots and SPY,
-QQQ, IWM and DIA, 16:00 for other equity options, or 13:15 and 13:00 on early-close
-days. SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW options also trade in Cboe's **overnight**
+Every product has its **regular** session: 09:30 to 16:15 ET for index roots and the
+ETFs whose options trade until then (SPY, QQQ, IWM, DIA, GLD, TLT, the sector SPDRs and
+others, `md::is_late_close_underlying`), 16:00 for other equity options, or 13:15 and
+13:00 on early-close days. On expiry day, expiring index series stop at 16:00 while
+expiring ETF options trade on to 16:15. SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW options also trade in Cboe's **overnight**
 (global trading hours) session, 20:15 to 09:25 ET, which belongs to the next trading
 date, and in the **curb** session, 16:15 to 17:00 ET after a full day (see
 [runtime notes](runtime.md#product-sessions-and-cboe-clocks)). As on Cboe, the overnight and curb
@@ -426,7 +428,7 @@ side, no buying-power check. All rule money is exact.
 | `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date |
 | `buy_only` | A sell must close contracts already held, counting working sells on the same contract; otherwise `BUY_ONLY` |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
-| `expiry_cutoff` | From expiry − cutoff until expiry, working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
+| `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
 | `lock_balance` | Once peak − drawdown reaches it, the floor stays there and stops trailing (zero disables) |
 | `payouts` | Funded phase: qualifying days, withdrawal share, trader split, minimum and caps (see Funded accounts and payouts) |
@@ -590,7 +592,9 @@ its numeric placeholders are zero and must not be displayed as measured P&L.
 ## Expiry and explicit settlement
 
 At `OptionContract::expiry_time()` orders cancel and open positions become
-`awaiting_settlement`. No underlying quote is automatically taken as settlement.
+`awaiting_settlement`: 09:30 ET for AM-settled contracts, and for PM-settled ones their
+last trade, 16:00 or 16:15 for ETF options that trade until then (13:00 and 13:15 on
+early-close days). No underlying quote is automatically taken as settlement.
 The caller supplies the authoritative reference with `settle(OSI, value, time)`
 after expiry. The hosting engine obtains PM closing prints or explicitly imported
 AM settlement values, and records their provenance outside this core.
@@ -604,8 +608,8 @@ realised settlement P&L = cash payment - signed remaining basis
 Settlement removes the position, charges no fee and is exactly once per OSI. OTM
 options pay zero and release their entire basis into realised P&L. Negative
 references, premature settlement, missing positions or unknown contracts reject.
-The existing expiry API does not model the prior-day last-trading cutoff for all
-AM products; this v1 uses the requested expiry boundary and regular-session policy.
+AM-settled series stop trading at the regular close the business day before expiry
+(`last_trade_time`) and wait for an explicit settlement value.
 American equity and ETF options held into expiry deliver shares at settlement (see
 [instruments](#instruments-and-prices)); the settlement closure keeps the option's
 trade at intrinsic value.
@@ -873,7 +877,7 @@ focus at the top of the ticket.
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised`, `qualifying` and `attribution`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`. Defaults: all statuses of the current attempt |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
-| `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before expiry |
+| `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |
 | `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
 | `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
@@ -945,8 +949,9 @@ requires operator recovery. The Docker image journals in `/var/lib/openport`,
 which is a declared volume; mount a persistent volume there.
 
 At expiry, PM positions settle from the underlying’s **first positive finite last
-print stamped at or after the expiry instant on the expiry date**, in provider
-arrival order. This is the **provider’s closing print**, an approximation of the
+print stamped at or after the regular close (16:00 ET, 13:00 early) on the expiry
+date**, in provider arrival order. ETF options that trade until 16:15 settle then, on
+that 16:00 print, as OCC exercises on the closing price. This is the **provider’s closing print**, an approximation of the
 official settlement value. Bid/ask midpoints and next-day prices are not substitutes.
 If no such print arrives, the position stays awaiting settlement. AM positions
 always wait for an explicit `/api/settlements` import, whose value must come from

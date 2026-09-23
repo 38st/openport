@@ -281,6 +281,9 @@ export interface Position {
   underlying: string
   expiry: string
   settlement: "AM" | "PM"
+  /** When it expires and awaits settlement, and when it last trades (the business day before, for AM settlement); absent on older servers. */
+  expiry_time?: string
+  last_trade_time?: string
   strike: number
   type: "call" | "put"
   quantity: number

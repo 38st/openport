@@ -32,8 +32,10 @@ struct OptionContract {
   /// times 1000 in eight digits. For example "SPXW  261005P07405000".
   [[nodiscard]] std::string osi_symbol() const;
 
-  /// The instant time value runs out: 09:30 New York for AM-settled contracts,
-  /// 16:00 for PM-settled ones, or 13:00 on a published early-close date.
+  /// The instant time value runs out: 09:30 New York for AM-settled contracts;
+  /// for PM-settled ones the last trade, 16:00 (13:00 on a published early-close
+  /// date), or 16:15 (13:15) for ETF options that trade a quarter hour past the
+  /// close. Those still settle on the 16:00 closing price.
   [[nodiscard]] Timestamp expiry_time() const noexcept;
   /// When trading ends: the expiry for PM-settled contracts; AM-settled ones
   /// stop at the regular close (16:15 ET, 13:15 on an early-close day) of the
@@ -57,6 +59,11 @@ struct RootConventions {
 /// True for cash-settled index underlyings (SPX, NDX, RUT, VIX, ...). Providers
 /// often name these differently from stocks: "_SPX" at Cboe, "I:SPX" at Massive.
 [[nodiscard]] bool is_index_underlying(std::string_view underlying);
+
+/// True where options trade until 16:15 ET (13:15 on an early-close day), a
+/// quarter hour past the equity close: every index above and a list of ETFs,
+/// SPY, QQQ, IWM and DIA among them.
+[[nodiscard]] bool is_late_close_underlying(std::string_view underlying);
 
 /// Every OCC root an underlying's options trade under: SPX -> {"SPX", "SPXW"},
 /// SPY -> {"SPY"}.

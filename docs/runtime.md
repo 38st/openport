@@ -281,8 +281,10 @@ and SPXW on the same calendar date occupy separate groups.
 
 `md::trading_session(root, t)` returns regular, curb, global or closed, and the
 market time: `t` while open, otherwise the most recent session end at or before
-`t`. Regular trading is 09:30–16:15 ET for index roots and SPY/QQQ/IWM/DIA, and
-09:30–16:00 for other equities. Early closes are 13:15 and 13:00 respectively.
+`t`. Regular trading is 09:30–16:15 ET for index roots and the ETFs Nasdaq lists as
+trading until 16:15 (SPY, QQQ, IWM, DIA and about 60 more,
+`md::is_late_close_underlying`; see [Nasdaq's options hours](https://www.nasdaqtrader.com/Trader.aspx?id=optionshours)),
+and 09:30–16:00 for other equities. Early closes are 13:15 and 13:00 respectively.
 SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW also have curb trading 16:15–17:00 and GTH
 20:15–09:25 Sunday evening through Friday morning. The current Cboe pages list
 RUT in GTH as well. See [Cboe hours](https://www.cboe.com/about/hours/us-options/)
@@ -293,7 +295,9 @@ A GTH session is assigned to the following morning's trading date:
 ends, and the next business day after that and over weekends and holidays. Paper
 accounts roll their day on it, and open sessions report their `end`, which ends DAY
 orders. AM-settled series stop trading at the regular close before expiry
-(`OptionContract::last_trade_time`). The calendar
+(`OptionContract::last_trade_time`). On expiry day, expiring PM index series stop at
+16:00 and expiring ETF options at 16:15, which is their `expiry_time`; both settle on
+the 16:00 closing print. The calendar
 uses the existing 2025–2028 holiday and early-close tables and New York DST.
 **Simplifications:** no GTH leading into a holiday (Cboe publishes special holiday
 GTH on some dates), no curb on early-close days, and no unscheduled halts.
