@@ -145,24 +145,39 @@ lexical order after atomic installation of the entire batch. Submissions also
 respect existing better orders when sharing the current budget. There is no queue
 position, trade-through, slippage or hidden-liquidity simulation in v1.
 
-Acceptance and execution are restricted to `md::trading_session(root, time)`'s
-**regular** session. Each DAY order retains that acceptance day's regular session
-end. The current calendar gives index roots and SPY, QQQ, IWM and DIA 16:15 ET and
-other equity options 16:00, or 13:15 and 13:00 on early-close days. Contract expiry can be earlier and takes precedence (e.g. PM expiry 16:00).
-Boundaries process on the first command at/after them, before possible fills.
-Outside 2025–2028 the existing calendar only knows weekdays; no extra calendar is
-introduced here. Extended/global/curb execution is deferred.
+Orders trade in the sessions `md::trading_session(root, time)` gives each product.
+Every product has its **regular** session: 09:30 to 16:15 ET for index roots and SPY,
+QQQ, IWM and DIA, 16:00 for other equity options, or 13:15 and 13:00 on early-close
+days. SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW options also trade in Cboe's **overnight**
+(global trading hours) session, 20:15 to 09:25 ET, which belongs to the next trading
+date, and in the **curb** session, 16:15 to 17:00 ET after a full day (see
+[runtime notes](runtime.md#product-sessions-and-cboe-clocks)). As on Cboe, the overnight and curb
+sessions take limit orders only; openport also leaves triggers and brackets out of
+them, so they take plain limit orders, single or multi-leg, DAY or IOC. Anything else
+rejects with `LIMIT_ONLY`, and orders between sessions with `SESSION_CLOSED`. A DAY
+order lasts the session it was accepted in: an overnight order ends at 09:25 with
+`DAY_END` and does not carry into the regular session. Bracket exits, triggered
+orders and the account's own closing orders (liquidation, expiry close) act in the
+regular session only, and flattening sends market orders, so it rejects outside it.
+AM-settled series stop trading at the regular close of the business day before their
+expiry, so no curb or overnight session trades them then (`SESSION_CLOSED`); PM
+series trade the overnight session of their expiry date. Contract expiry can be
+earlier than a session end and takes precedence (e.g. PM expiry 16:00). Boundaries
+process on the first command at/after them, before possible fills. Outside
+2025–2028 the calendar only knows weekdays.
 
-The engine also compares each underlying's market-data time with wall-clock time.
-While the product's wall-clock session is regular, a lag **greater than the
-provider's stated delay plus `max_quote_age`** rejects new orders with
-`FEED_STALLED`, including the lag in the message (for example, "SPX quotes are
-10h 20m behind the market; the feed appears to have stalled"). Ordinary closed
-market-time sessions still return `SESSION_CLOSED`: during the first 15 minutes
-after the open, a healthy 15-minute delayed feed legitimately remains before the
-open. The simulation clock stays at market time. Resting orders do not fill from
-stale data and are not cancelled merely because the feed stalls; they remain
-subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
+The engine also compares each underlying's market-data time with wall-clock time. A
+healthy feed shows the market as it was the provider's stated delay ago, stopping at
+the end of a session. When that moment is in one of the product's sessions, or data
+stopped inside a session that should since have ended, a lag **greater than
+`max_quote_age`** beyond it rejects new orders with `FEED_STALLED`, including the lag
+behind the wall clock in the message (for example, "SPX quotes are 10h 20m behind the
+market; the feed appears to have stalled"). A feed that rightly shows a closed market
+returns `SESSION_CLOSED`, naming why (between sessions, a weekend or a holiday): for
+the first 15 minutes of a session, a healthy 15-minute delayed feed still shows the
+market before it. The simulation clock stays at market time. Resting orders do not
+fill from stale data and are not cancelled merely because the feed stalls; they
+remain subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
 
 ## Conditional and bracket orders
 
@@ -200,7 +215,7 @@ for a debit paid at most and negative for a credit received at least (zero is ev
 Market orders are IOC as usual. The net must be a multiple of the smallest lower-tier
 tick among the legs ($0.05 for SPX-class roots, $0.01 for XSP and equities).
 
-Checks run per leg where they apply: registration, expiry, the regular session, a fresh
+Checks run per leg where they apply: registration, expiry, the session, a fresh
 executable book, and `units * ratio` within `max_order_contracts`. The net price must lie
 in the price band around the net mid, where the band is as wide as the one for the legs'
 gross premium (`max(absolute, relative * sum of ratio * mid)`). Buy-only plans reject
@@ -269,7 +284,11 @@ Fresh valid two-sided books establish a midpoint mark, rounded to the nearest
 micro-dollar (a half micro-dollar rounds up). An invalid or stale observation never
 replaces the last valid mark with zero. Snapshots retain mark time/age, the last-mark
 equity estimate and `valuation_complete = false`. Execution fails closed if any
-held position lacks a fresh mark. Awaiting-settlement positions retain their last
+held position lacks a fresh mark. Freshness (`max_quote_age`, and `max_valuation_age`
+for Greeks) is measured at the market time while the contract's market is open, and at
+its last session's end while it is closed, so a position in a closed market keeps its
+closing mark: an SPY position held overnight does not block SPX trading in the
+overnight session, and the day rolls over on it. Awaiting-settlement positions retain their last
 mark and are always incomplete. If no mark exists, market value/unrealised are null;
 the equity field is only a partial estimate and must be read with its completeness
 flag. Normal session fills always establish a mark first.
@@ -311,7 +330,7 @@ otherwise common defaults) and the aggregate. Zero limits are allowed; positive
 exposure against zero reports the largest finite double utilisation and rejects.
 Overflowing analytical exposures mark risk incomplete and block trading.
 
-Pre-trade checks require a supported registered unexpired contract, regular session,
+Pre-trade checks require a supported registered unexpired contract, an open session that takes the order,
 valid order/tick, max order quantity, valid fresh quote, price band, complete marks
 and valuations, daily-loss allowance, exposure reservations and an unlatched kill
 switch. Price protection is inclusive:
@@ -337,9 +356,13 @@ same. New orders reject with `KILL_SWITCH`. `reset_kill` requires a nonblank rea
 records the reset, and immediately re-trips if the loss still breaches. A reset
 cannot make stale data tradable. Settlement is still permitted while killed.
 
-`roll_day` is an explicit command on a later New York date, requiring complete marked
-equity. It first monitors the old daily baseline, then stores the new baseline.
-Repeated same-day rollover rejects. The kill latch survives rollover and recovery.
+`roll_day` is an explicit command on a later trading date, requiring complete marked
+equity. A trading date (`md::trading_date`) is a business day's New York date until
+17:00 ET, when its last session (curb) ends; after that, and over weekends and
+holidays, it is the next business day, whose overnight session opens that evening. So
+an overnight trade counts toward the day it trades for, and a day's close is the last
+marked equity before 17:00. Rollover first monitors the old daily baseline, then
+stores the new baseline. Repeated same-day rollover rejects. The kill latch survives rollover and recovery.
 There are no deposits/withdrawals, cash interest or reduce-only exceptions. Without
 the `buying_power` rule, negative cash and short positions are permitted subject to
 the stated limits. With it, the naked-option requirement below applies; neither is a
@@ -426,7 +449,7 @@ order and fill history is kept; `Evaluation::first_order/first_fill` mark where 
 attempt begins. Settlements are also recorded as closures.
 
 `Evaluation` carries the attempt number, start time, starting balance, peak, floor,
-status and decision, plus one `EvaluationDay` per finished New York date (open and
+status and decision, plus one `EvaluationDay` per finished trading date (open and
 close equity, peak and floor after that day's ratchet, net realised P&L after fees,
 and whether it qualified toward a payout), appended at `roll_day`.
 
@@ -656,8 +679,9 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or kill latch active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, acceptance-day session end |
-| `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside regular hours, expiry boundary, or pending settlement quality flag |
-| `FEED_STALLED` | Wall-clock product session is regular, but market-data lag exceeds provider delay plus `max_quote_age`; message includes the lag |
+| `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry boundary, or pending settlement quality flag |
+| `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, triggers or brackets |
+| `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age`; message includes the lag behind the wall clock |
 | `INVALID_SETTLEMENT`, `ALREADY_SETTLED` | Invalid/premature settlement or already settled OSI |
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |
@@ -728,18 +752,24 @@ canonical padded `symbol`, whole `bid_size`/`ask_size` (null when unavailable),
 `tradable` and `untradable_reason`, using the core eligibility policy.
 
 Each `/api/status` and tick `underlyings[]` entry includes
-`paper: {accepting: boolean, reason: code|null, message: string|null}`. This uses the
+`paper: {accepting: boolean, reason: code|null, message: string|null, session}`, where
+`session` is the session new orders enter by the underlying's market-data clock
+(`regular`, `global`, `curb` or `closed`; null before any data). This uses the
 same session/feed check as new orders, the underlying's market time (including
 persisted quotes after recovery), provider delay and the active session's
 `max_quote_age`. An accepting entry has null reason and
 message; missing market data reports `INVALID_QUOTE`. Contract eligibility, risk,
 kill-switch and write-access checks still apply separately. The existing `session`
-field continues to describe the wall-clock product session.
+field continues to describe the wall-clock product session; just after 09:30 a
+15-minute delayed feed still trades the overnight session, which `paper.session` shows.
 
 The web ticket estimates fees using `fee_per_contract`; only older servers without
 it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
-and `paper.accepting: false` disables ticket submission. For older servers without
-`paper`, they fall back to the session-based notice and submission gate.
+and `paper.accepting: false` disables ticket submission. In the overnight and curb
+sessions (by `paper.session`) the tickets offer limit orders only, without a condition
+or bracket, and Close all is disabled because flattening sends market orders. For
+older servers without `paper`, they fall back to the session-based notice and
+submission gate.
 Limit prices display cents, with buttons and arrow keys following the root's tier
 tick table above (including downward steps across $3.00). Typed off-tick prices
 still receive the server's `INVALID_TICK` reason. On wide screens the ticket docks
@@ -853,7 +883,7 @@ same journal transaction records the reference value, canonical definition and
 integration `settlement_source`: `provider_closing_print` with provider and print
 time, or `manual_am_import`. Preserve the official source used for an AM import
 externally when an independent provenance audit is required. The first market
-batch on a later New York date rolls the daily baseline once marks are complete;
+batch on a later trading date rolls the daily baseline once marks are complete;
 the kill latch survives. All accounting uses effective market time, including
 delayed feeds, rather than HTTP receipt time.
 

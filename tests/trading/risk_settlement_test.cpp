@@ -231,14 +231,19 @@ TEST(TradingSettlement, AmSettlementRequiresExplicitValueAndWorksWhileKilled) {
   EXPECT_EQ(s.snapshot()->account.cash, m("100579.35"));
   EXPECT_TRUE(s.snapshot()->risk.kill_latched);
 }
-TEST(TradingRisk, RolloverUsesNewYorkDateAcrossDstTransitionMidnight) {
-  const auto initial = *md::parse_datetime("2026-03-07T12:00:00Z", md::Zone::Utc);
-  TradingSession s({}, initial);
-  // 04:30 UTC on spring-forward date is still 23:30 EST the previous date.
-  const auto previous_day = *md::parse_datetime("2026-03-08T04:30:00Z", md::Zone::Utc);
-  EXPECT_EQ(s.roll_day(previous_day).decision.code, Reason::INVALID_TIME);
-  const auto new_day = *md::parse_datetime("2026-03-08T05:00:00Z", md::Zone::Utc);
-  EXPECT_TRUE(s.roll_day(new_day).decision.ok());
+TEST(TradingRisk, RolloverFollowsTheTradingDateAcrossDst) {
+  // A trading date ends at 17:00 New York time, 22:00 UTC in winter and 21:00 in summer.
+  const auto at = [](const char* text) { return *md::parse_datetime(text, md::Zone::Utc); };
+  TradingSession s({}, at("2026-03-06T17:00:00Z"));  // Friday before the spring-forward weekend
+  EXPECT_EQ(s.trading_day(), (md::Date{2026, 3, 6}));
+  EXPECT_EQ(s.roll_day(at("2026-03-06T21:59:59Z")).decision.code, Reason::INVALID_TIME);
+  EXPECT_TRUE(s.roll_day(at("2026-03-06T22:00:00Z")).decision.ok());
+  EXPECT_EQ(s.trading_day(), (md::Date{2026, 3, 9}));
+  // The weekend, and Sunday evening's overnight session, belong to Monday.
+  EXPECT_EQ(s.roll_day(at("2026-03-08T23:00:00Z")).decision.code, Reason::INVALID_TIME);
+  EXPECT_EQ(s.roll_day(at("2026-03-09T20:59:59Z")).decision.code, Reason::INVALID_TIME);
+  EXPECT_TRUE(s.roll_day(at("2026-03-09T21:00:00Z")).decision.ok());
+  EXPECT_EQ(s.trading_day(), (md::Date{2026, 3, 10}));
 }
 TEST(TradingSettlement, AwaitingAndItmOtmCashSettlementForBothSignsAndRights) {
   for (const auto type : {pricing::OptionType::Call, pricing::OptionType::Put}) {

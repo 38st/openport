@@ -19,27 +19,25 @@ Decision failure(Reason code, std::string message) { return {code, std::move(mes
 void event(Events& events, std::string_view type, Json payload) {
   events.push_back(Json{{"type", type}, {"payload", std::move(payload)}});
 }
-md::Date local_date(Timestamp time) {
-  // At regular trading hours UTC and New York share the same date; this also
-  // handles explicit overnight rollover commands using the correct DST offset.
-  auto date = md::date_from_days(time / md::kNanosPerDay);
-  const auto offset = md::new_york_utc_offset_hours(date, 0);
-  auto seconds = time / md::kNanosPerSecond + offset * 3600;
-  auto days = seconds / 86400;
-  if (seconds < 0 && seconds % 86400 != 0) --days;
-  return md::date_from_days(days);
+bool regular(const md::OptionContract& c, Timestamp time) { return md::trading_session(c.root, time).name == "regular"; }
+/// Whether the contract trades now, and the order with it: every order in the
+/// regular session; plain limit orders in the overnight (global) and curb sessions.
+Decision session_check(const md::OptionContract& c, Timestamp time, const OrderRequest& r) {
+  if (time >= c.last_trade_time())
+    return failure(Reason::SESSION_CLOSED, "AM-settled series stop trading at the regular close before expiry");
+  const auto session = md::trading_session(c.root, time);
+  if (!session.open) return failure(Reason::SESSION_CLOSED, "Outside the contract's trading sessions");
+  if (session.name != "regular" && (r.type != OrderType::Limit || r.trigger || r.bracket))
+    return failure(Reason::LIMIT_ONLY, "The overnight and curb sessions take plain limit orders only: "
+                   "no market orders, triggers or brackets");
+  return {};
 }
-Timestamp regular_end(const md::OptionContract& c, Timestamp time) {
-  const auto date = local_date(time);
-  // Index and SPY/QQQ/IWM/DIA options trade through :15 past the close; other
-  // equity options stop on the hour.
-  for (const int minute : {15, 0}) {
-    const auto end = md::new_york_to_utc(date, md::regular_close_hour(date), minute);
-    if (end != md::kInvalidTimestamp && md::trading_session(c.root, end - 1).name == "regular" &&
-        md::trading_session(c.root, end).name != "regular")
-      return end;
-  }
-  throw TradingError(Reason::SESSION_CLOSED, "No representable regular session end");
+/// A DAY order lasts the session it was accepted in.
+Timestamp session_end(const md::OptionContract& c, Timestamp time) {
+  const auto session = md::trading_session(c.root, time);
+  if (!session.open || session.end == md::kInvalidTimestamp)
+    throw TradingError(Reason::SESSION_CLOSED, "No representable session end");
+  return session.end;
 }
 Money mid(const QuoteObservation& q) {
   // Both sides are positive. Difference-first avoids overflowing their sum.
@@ -50,7 +48,7 @@ Decision quote_check(const State& s, const std::string& symbol) {
   if (it == s.books.end() || !valid_quote(it->second.quote))
     return failure(Reason::INVALID_QUOTE, "A noncrossed positive two-sided quote with both sizes is required");
   const auto time = it->second.quote.time;
-  if (time > s.time || s.time - time > s.config.limits.max_quote_age)
+  if (time > s.time || observation_time(s.contracts.at(symbol), s.time) - time > s.config.limits.max_quote_age)
     return failure(Reason::STALE_QUOTE, "Quote is outside the configured market-time freshness window");
   return {};
 }
@@ -375,7 +373,7 @@ void advance(State& s, Timestamp time, Events& events) {
     auto expiry = std::numeric_limits<Timestamp>::max();
     for (const auto& symbol : order_symbols(o.request)) expiry = std::min(expiry, s.contracts.at(symbol).expiry_time());
     if (time >= expiry) cancel_order(o, failure(Reason::EXPIRED, "Contract reached expiry and awaits settlement"), events);
-    else if (time >= o.day_end) cancel_order(o, failure(Reason::DAY_END, "Regular session ended"), events);
+    else if (time >= o.day_end) cancel_order(o, failure(Reason::DAY_END, "The order's session ended"), events);
   }
 }
 Decision account_check(const State& s) {
@@ -411,8 +409,7 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
     if (first && c->second.underlying != first->underlying) return failure(Reason::INVALID_ORDER, "All legs must share one underlying");
     first = &c->second;
     if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "A leg's contract has expired");
-    if (md::trading_session(c->second.root, s.time).name != "regular")
-      return failure(Reason::SESSION_CLOSED, "v1 accepts and executes only in the product regular session");
+    if (auto d = session_check(c->second, s.time, r); !d.ok()) { d.scope = leg.symbol; return d; }
     if (r.quantity > s.config.limits.max_order_contracts / leg.ratio)
       return {Reason::MAX_ORDER_CONTRACTS, "A leg's contract count exceeds the order limit",
               static_cast<double>(r.quantity) * static_cast<double>(leg.ratio), static_cast<double>(s.config.limits.max_order_contracts), leg.symbol};
@@ -462,8 +459,7 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
   const auto c = s.contracts.find(request.symbol);
   if (c == s.contracts.end()) return failure(Reason::UNKNOWN_CONTRACT, "Order must reference a registered canonical OSI definition");
   if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "Contract has expired");
-  if (md::trading_session(c->second.root, s.time).name != "regular")
-    return failure(Reason::SESSION_CLOSED, "v1 accepts and executes only in the product regular session");
+  if (const auto d = session_check(c->second, s.time, request); !d.ok()) return d;
   if (request.client_order_id.empty() || request.quantity <= 0 ||
       (request.side != Side::Buy && request.side != Side::Sell) ||
       (request.type != OrderType::Market && request.type != OrderType::Limit) ||
@@ -517,8 +513,8 @@ Decision system_check(const State& s, const Order& o) {
   const auto c = s.contracts.find(o.request.symbol);
   if (c == s.contracts.end()) return failure(Reason::UNKNOWN_CONTRACT, "Order must reference a registered canonical OSI definition");
   if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "Contract has expired");
-  if (md::trading_session(c->second.root, s.time).name != "regular")
-    return failure(Reason::SESSION_CLOSED, "v1 accepts and executes only in the product regular session");
+  if (!regular(c->second, s.time))
+    return failure(Reason::SESSION_CLOSED, "Closing orders the account places itself and bracket exits trade in the regular session only");
   return quote_check(s, o.request.symbol);
 }
 bool marketable(const Order& o, const QuoteObservation& q) {
@@ -530,8 +526,9 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
   if (!o.open() || o.status == OrderStatus::Armed) return;
   if (incoming != id && s.books.at(o.request.symbol).quote.time < o.accepted_at) return;
-  // Good-until-expiry exits outlive a session; they wait for the next one.
-  if (md::trading_session(s.contracts.at(o.request.symbol).root, s.time).name != "regular" && o.role != OrderRole::Normal) return;
+  // Good-until-expiry exits and triggered orders outlive a session; outside
+  // the regular session they wait for the next one.
+  if ((o.role != OrderRole::Normal || o.request.trigger) && !regular(s.contracts.at(o.request.symbol), s.time)) return;
   if (!quote_check(s, o.request.symbol).ok() || !marketable(o, s.books.at(o.request.symbol).quote)) return;
   // System orders and bracket exits only ever reduce a position (exits are kept
   // within it), so they skip the price band and loss projection when executing.
@@ -760,7 +757,7 @@ void activate(State& s, OrderId id, Events& events) {
     auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
     auto d = o.role != OrderRole::Normal ? system_check(s, o) : order_check(s, o);
     if (d.code == Reason::STALE_QUOTE || d.code == Reason::INVALID_QUOTE || d.code == Reason::MISSING_VALUATION ||
-        d.code == Reason::SESSION_CLOSED)
+        d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY)
       return;
     if (!d.ok()) {
       d.message = std::string(to_string(d.code)) + ": " + d.message;
@@ -781,8 +778,7 @@ void activate(State& s, OrderId id, Events& events) {
 void check_triggers(State& s, Events& events) {
   for (std::size_t i = 0; i < s.orders.size(); ++i) {
     const auto& o = s.orders[i];
-    if (o.status != OrderStatus::Armed ||
-        md::trading_session(s.contracts.at(o.request.symbol).root, s.time).name != "regular" || !reached(s, o))
+    if (o.status != OrderStatus::Armed || !regular(s.contracts.at(o.request.symbol), s.time) || !reached(s, o))
       continue;
     activate(s, o.id, events);
   }
@@ -794,7 +790,7 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   const auto q = held(s, symbol);
   const auto contract = s.contracts.find(symbol);
   if (q == 0 || contract == s.contracts.end() || s.time >= contract->second.expiry_time() ||
-      md::trading_session(contract->second.root, s.time).name != "regular" || !quote_check(s, symbol).ok())
+      !regular(contract->second, s.time) || !quote_check(s, symbol).ok())
     return;
   const auto side = q > 0 ? Side::Sell : Side::Buy;
   const auto& book = s.books.at(symbol);
@@ -835,7 +831,7 @@ void monitor_rules(State& s, Events& events) {
   // Likewise the first payout cycle; journals from before payouts start it here too.
   if (e.cycle_started == 0) e.cycle_started = e.started;
   if (const auto equity = marked_equity(snapshot_of(s))) {
-    if (local_date(s.time) == e.day) e.day_close_equity = *equity;
+    if (md::trading_date(s.time) == e.day) e.day_close_equity = *equity;
     if (rules.evaluation() && e.status == EvaluationStatus::Active) {
       if (rules.drawdown_mode == DrawdownMode::Intraday && *equity > e.peak) {
         e.peak = *equity;
@@ -895,12 +891,11 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
     stored.status = OrderStatus::Armed;
     stored.day_end = contract.expiry_time();
     event(events, "order_accepted", stored);
-    if (md::trading_session(contract.root, s.time).name == "regular" &&
-        reached(s, s.orders.at(static_cast<std::size_t>(id - 1))))
+    if (regular(contract, s.time) && reached(s, s.orders.at(static_cast<std::size_t>(id - 1))))
       activate(s, id, events);
     return CommandResult{{}, id, 0};
   }
-  stored.day_end = regular_end(contract, time);
+  stored.day_end = session_end(contract, time);
   event(events, "order_accepted", stored);
   // Existing better orders share any remaining budget even on command ingress.
   // Matching can append bracket exits, so re-read the order by ID afterwards.
@@ -958,7 +953,7 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   event(events, "order_modified", order);
   const auto symbols = order_symbols(order.request);
   if (order.status == OrderStatus::Armed) {
-    if (md::trading_session(s.contracts.at(symbols.front()).root, s.time).name == "regular" && reached(s, order))
+    if (regular(s.contracts.at(symbols.front()), s.time) && reached(s, order))
       activate(s, id, events);
   } else {
     match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
@@ -1162,7 +1157,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
   if (journal && journal->sequence() != 0) throw TradingError(Reason::JOURNAL_CORRUPT, "Use recover for a nonempty journal");
   impl_->state.config = std::move(config);
   impl_->state.time = time;
-  impl_->state.day = local_date(time);
+  impl_->state.day = md::trading_date(time);
   impl_->state.ledger = Ledger(impl_->state.config.initial_cash);
   impl_->state.start_equity = impl_->state.config.initial_cash;
   impl_->state.evaluation = fresh_evaluation(impl_->state, 1);
@@ -1356,8 +1351,8 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
 }
 CommandResult TradingSession::roll_day(Timestamp time) {
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
-    const auto day = local_date(time);
-    if (day <= s.day) return CommandResult{failure(Reason::INVALID_TIME, "Rollover requires a later New York date"), {}, 0};
+    const auto day = md::trading_date(time);
+    if (day <= s.day) return CommandResult{failure(Reason::INVALID_TIME, "Rollover requires a later trading date"), {}, 0};
     monitor_loss(s, events);
     const auto snapshot = snapshot_of(s);
     if (!snapshot.valuation_complete) return CommandResult{failure(Reason::STALE_QUOTE, "Rollover requires complete marked equity"), {}, 0};
@@ -1374,7 +1369,7 @@ CommandResult TradingSession::roll_day(Timestamp time) {
     // A placeholder date from before the attempt started is not a trading day.
     // On a funded account, a day with enough net realised profit counts once,
     // toward the payout cycle in progress when it closes.
-    if (e.started > 0 && e.day >= local_date(e.started)) {
+    if (e.started > 0 && e.day >= md::trading_date(e.started)) {
       const auto realised = net_realised(s) - e.day_open_realised;
       const auto& payouts = rules.payouts;
       const bool qualifying = rules.phase == Phase::Funded && e.status == EvaluationStatus::Active &&

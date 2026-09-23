@@ -118,10 +118,27 @@ export function stepLimitPrice(root: string, value: Money, direction: 1 | -1): M
   return decimalString((steps > 0n ? steps : 1n) * cents, 2)
 }
 
+/** For servers without `paper`: orders wait while the product's sessions are closed. */
 export function paperSessionNotice(symbol: string, session: TradingSession | null | undefined) {
-  if (!session || session.name === "regular") return null
-  const state = session.name === "closed" ? "closed" : `in the ${session.name === "global" ? "overnight" : session.name} session`
-  return `Paper orders are accepted in the regular session only; ${symbol} is ${state}.`
+  if (!session || session.open) return null
+  return `${symbol} options are not trading now (${session.note}); paper orders wait for the next session.`
+}
+
+/**
+ * The overnight (global) and curb sessions take plain limit orders only: no
+ * market orders, triggers or brackets. Uses the session of the market-data
+ * clock, which a delayed feed keeps behind the wall clock, when the server gives it.
+ */
+export function extendedSession(underlying: UnderlyingSnapshot | undefined): "overnight" | "curb" | null {
+  const name = underlying?.paper?.session ?? (underlying?.session?.open ? underlying.session.name : null)
+  return name === "global" ? "overnight" : name === "curb" ? "curb" : null
+}
+export function limitOnlyNotice(symbol: string, underlying: UnderlyingSnapshot | undefined) {
+  const session = extendedSession(underlying)
+  if (!session) return null
+  return session === "overnight"
+    ? `${symbol} is in its overnight session (8:15 pm to 9:25 am ET): limit orders only, with no triggers or brackets. A Day order lasts until 9:25 am.`
+    : `${symbol} is in its curb session (4:15 to 5:00 pm ET): limit orders only, with no triggers or brackets. A Day order lasts until 5:00 pm.`
 }
 
 export function paperNotice(symbol: string, underlying: UnderlyingSnapshot | undefined) {

@@ -35,6 +35,10 @@ struct OptionContract {
   /// The instant time value runs out: 09:30 New York for AM-settled contracts,
   /// 16:00 for PM-settled ones, or 13:00 on a published early-close date.
   [[nodiscard]] Timestamp expiry_time() const noexcept;
+  /// When trading ends: the expiry for PM-settled contracts; AM-settled ones
+  /// stop at the regular close (16:15 ET, 13:15 on an early-close day) of the
+  /// business day before expiry, so no curb or overnight session trades them.
+  [[nodiscard]] Timestamp last_trade_time() const noexcept;
 };
 
 /// Exercise and settlement conventions implied by an OCC root.

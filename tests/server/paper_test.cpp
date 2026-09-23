@@ -7,6 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <thread>
+#include <tuple>
+#include <vector>
 
 #include "openport/server/api.hpp"
 #include "openport/server/web_policy.hpp"
@@ -148,30 +150,49 @@ TEST_F(PaperFeed, OvernightStallDuringRegularSessionAgreesWithStatusAndTick) {
   EXPECT_EQ(engine->trading_view()->snapshot->time, market.time);
 }
 
-TEST_F(PaperFeed, FirstFifteenMinutesOfDelayedOpenRemainSessionClosed) {
-  market.time = md::new_york_to_utc({2026, 9, 22}, 9, 15);
-  wall_now = market.time + 15 * md::kNanosPerMinute;
-  seed();
-  for (int minute = 0; minute < 15; ++minute) {
-    market.time = md::new_york_to_utc({2026, 9, 22}, 9, 15 + minute);
+TEST_F(PaperFeed, FirstMinutesOfEachDelayedSessionRemainSessionClosed) {
+  // SPX's overnight session opens at 20:15 and its regular one at 09:30; a
+  // 15-minute delayed feed still shows the closed market just after each.
+  const std::vector<std::tuple<md::Date, int, int, int, std::string>> openings{
+      {{2026, 9, 21}, 20, 0, 15, "overnight"}, {{2026, 9, 22}, 9, 25, 5, "regular"}};
+  bool seeded = false;
+  for (const auto& [date, hour, minute, closed, name] : openings) {
+    for (int i = 0; i < closed; ++i) {
+      market.time = md::new_york_to_utc(date, hour, minute + i);
+      wall_now = market.time + 15 * md::kNanosPerMinute;
+      if (seeded) quote(); else seed();
+      seeded = true;
+      expect_gate(name + "-" + std::to_string(i), "SESSION_CLOSED");
+    }
+    market.time = md::new_york_to_utc(date, hour, minute + closed);
     wall_now = market.time + 15 * md::kNanosPerMinute;
     quote();
-    expect_gate("opening-" + std::to_string(minute), "SESSION_CLOSED");
+    EXPECT_EQ(paper_status(), (json{{"accepting", true}, {"reason", nullptr}, {"message", nullptr},
+                                    {"session", name == "overnight" ? "global" : "regular"}}));
+    const auto accepted = write(*engine, "POST", "/api/orders", order(market, name, "4.20"));
+    ASSERT_EQ(accepted.status, 201) << accepted.body;
+    EXPECT_EQ(json::parse(accepted.body)["order"]["status"], "filled");
   }
-  market.time = md::new_york_to_utc({2026, 9, 22}, 9, 30);
-  wall_now = market.time + 15 * md::kNanosPerMinute;
-  quote();
-  EXPECT_EQ(paper_status(), (json{{"accepting", true}, {"reason", nullptr}, {"message", nullptr}}));
-  const auto accepted = write(*engine, "POST", "/api/orders", order(market, "regular", "4.20"));
-  ASSERT_EQ(accepted.status, 201) << accepted.body;
-  EXPECT_EQ(json::parse(accepted.body)["order"]["status"], "filled");
 }
 
-TEST_F(PaperFeed, OrdinaryClosedSessionDoesNotReportStall) {
-  market.time = md::new_york_to_utc({2026, 9, 21}, 23, 45);
-  wall_now = md::new_york_to_utc({2026, 9, 22}, 9, 0);
+TEST_F(PaperFeed, ClosedMarketsDoNotReportStall) {
+  // After the curb session, and over a weekend, a healthy feed sits at the last close.
+  market.time = md::new_york_to_utc({2026, 9, 22}, 17, 0);
+  wall_now = md::new_york_to_utc({2026, 9, 22}, 19, 0);
   seed();
-  expect_gate("closed", "SESSION_CLOSED");
+  expect_gate("evening", "SESSION_CLOSED", "SPX options are closed (between sessions)");
+  market.time = md::new_york_to_utc({2026, 9, 25}, 17, 0);
+  wall_now = md::new_york_to_utc({2026, 9, 26}, 12, 0);
+  quote();
+  expect_gate("weekend", "SESSION_CLOSED", "SPX options are closed (weekend)");
+}
+
+TEST_F(PaperFeed, AFeedThatStopsInsideASessionIsStalledOnceItShouldHaveEnded) {
+  market.time = md::new_york_to_utc({2026, 9, 22}, 16, 50);  // curb
+  wall_now = md::new_york_to_utc({2026, 9, 22}, 18, 0);
+  seed();
+  expect_gate("frozen-curb", "FEED_STALLED",
+              "SPX quotes are 1h 10m behind the market; the feed appears to have stalled");
 }
 
 TEST_F(PaperFeed, AnotherUnderlyingCannotHideAStalledFeed) {
@@ -184,7 +205,11 @@ TEST_F(PaperFeed, AnotherUnderlyingCannotHideAStalledFeed) {
   provider.sink->publish(md::ContractDefinition{1, fresh.contract});
   provider.sink->publish(md::UnderlyingQuote{"XSP", fresh.time, 500, 500, 500});
   provider.sink->publish(md::OptionQuote{1, fresh.time, 4, 4.2, 10, 10});
-  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time == fresh.time; }));
+  ASSERT_TRUE(wait_for([&] {
+    const auto view = engine->trading_view();
+    const auto time = view->market_times.find("XSP");
+    return time != view->market_times.end() && time->second >= fresh.time;
+  }));
   const auto underlyings = read(*engine, "/api/status")["underlyings"];
   ASSERT_EQ(underlyings.size(), 2);
   EXPECT_EQ(underlyings[1]["symbol"], "XSP");

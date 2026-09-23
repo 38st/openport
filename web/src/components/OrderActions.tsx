@@ -1,10 +1,12 @@
 import { useRef, useState } from "react"
 import { api } from "../api/client"
+import { useLive } from "../api/live"
 import { useRefreshTrading, useTradingSession } from "../api/trading"
 import type { ClosePositionsResponse, Order, Position, TradingStatus } from "../api/trading-types"
 import { contractLabel, orderLabel } from "../lib/journal"
 import { closingAction, editableFields, flattenPlan, isOpen, orderChange, orderDraft, outcome, underlyingsOf } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
+import { extendedSession } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
@@ -147,9 +149,13 @@ export function FlattenDialog({ positions, orders, trading, initial = null, onCl
   positions: readonly Position[]; orders: readonly Order[]; trading: TradingStatus; initial?: string | null; onClose: () => void
 }) {
   const write = useWrite(trading)
+  const { underlyings } = useLive()
   const [scope, setScope] = useState<string | null>(initial)
   const [done, setDone] = useState<ClosePositionsResponse | null>(null)
   const plan = flattenPlan(positions, orders, scope)
+  // Flattening sends market orders, which the overnight and curb sessions refuse.
+  const limitOnly = [...new Set(plan.closing.map((p) => p.underlying))]
+    .filter((symbol) => extendedSession(underlyings.find((u) => u.symbol === symbol)) != null)
   const waiting = positions.filter((p) => p.awaiting_settlement && (scope == null || p.underlying === scope)).length
   return (
     <Dialog title={scope ? `Flatten ${scope}` : "Close all positions"} onClose={onClose}>
@@ -186,9 +192,12 @@ export function FlattenDialog({ positions, orders, trading, initial = null, onCl
             An order the account's rules refuse is reported and the rest still close.
           </p>
           {waiting > 0 && <p className="text-xs text-muted">{waiting === 1 ? "1 expired position waits" : `${waiting} expired positions wait`} for settlement.</p>}
+          {limitOnly.length > 0 && <p role="status" className="text-sm text-warn">
+            {limitOnly.join(", ")} {limitOnly.length === 1 ? "is" : "are"} outside the regular session, which takes limit orders only.
+            Close with a limit order from the position's Close button, or flatten once the regular session opens.</p>}
           <WriteAccess trading={trading} />
           <TradingError error={write.error} />
-          <button type="button" className="trade-button" disabled={!plan.closing.length || write.pending || write.blocked}
+          <button type="button" className="trade-button" disabled={!plan.closing.length || limitOnly.length > 0 || write.pending || write.blocked}
             onClick={() => void write.run(() => api.closePositions(scope, trading.write), setDone)}>
             {write.pending ? "Closing…" : `Close ${plan.closing.length} ${plan.closing.length === 1 ? "position" : "positions"}`}
           </button>

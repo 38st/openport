@@ -25,10 +25,11 @@ enum class Reason {
   UNKNOWN_ORDER, ORDER_TERMINAL, INVALID_LIMITS, INVALID_TIME, INVALID_SCENARIO,
   INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED,
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
-  OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED
+  OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED,
+  LIMIT_ONLY
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::PLAN_LOCKED;
+inline constexpr Reason kLastReason = Reason::LIMIT_ONLY;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {

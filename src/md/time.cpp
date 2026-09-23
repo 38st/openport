@@ -275,6 +275,7 @@ TradingSession trading_session(std::string_view root, Timestamp ts) {
     if (start != kInvalidTimestamp && start <= ts && ts < end) {
       result.name = name;
       result.open = true;
+      result.end = end;
       result.note = name == "global" ? "overnight session"
                     : name == "curb" ? "curb session"
                                      : "regular session";
@@ -299,6 +300,22 @@ TradingSession trading_session(std::string_view root, Timestamp ts) {
       consider("curb", new_york_to_utc(trade_date, 16, 15), new_york_to_utc(trade_date, 17, 0));
   }
   return result;
+}
+
+Date trading_date(Timestamp ts) noexcept {
+  const auto local = local_time(ts);
+  if (business_day(local.date) && local.seconds < 17 * 3600) return local.date;
+  // Two weeks covers every closure in the supported calendar.
+  for (int ahead = 1; ahead <= 14; ++ahead)
+    if (const auto date = date_from_days(local.days + ahead); business_day(date)) return date;
+  return date_from_days(local.days + 1);
+}
+
+Date previous_business_day(Date date) noexcept {
+  const auto days = days_since_epoch(date);
+  for (int back = 1; back <= 14; ++back)
+    if (const auto earlier = date_from_days(days - back); business_day(earlier)) return earlier;
+  return date_from_days(days - 1);
 }
 
 std::string format_date(Date date) {

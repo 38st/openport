@@ -120,24 +120,31 @@ trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp ma
     md::Timestamp wall_time, std::chrono::seconds delay, md::Timestamp max_quote_age) {
   if (market_time <= 0)
     return {Reason::INVALID_QUOTE, std::string(underlying) + " is waiting for market data", {}, {}, {}};
-  if (wall_time > market_time && md::trading_session(underlying, wall_time).name == "regular") {
+  const auto delay_seconds = std::max<std::int64_t>(0, delay.count());
+  // A healthy feed shows the market as it was `delay` ago, and stops at the end
+  // of a session. Data more than max_quote_age behind that is a stalled feed;
+  // a feed that rightly shows a closed market (as in a session's first minutes
+  // on a delayed feed) is not.
+  const auto shown = delay_seconds >= wall_time / md::kNanosPerSecond ? 0 : wall_time - delay_seconds * md::kNanosPerSecond;
+  const auto session = md::trading_session(underlying, market_time);
+  auto expected = market_time;
+  if (md::trading_session(underlying, shown).open) expected = shown;
+  else if (session.open && session.end <= shown) expected = session.end;
+  if (expected > market_time && expected - market_time > max_quote_age) {
     const auto lag = wall_time - market_time;
-    const auto delay_seconds = std::max<std::int64_t>(0, delay.count());
-    // Bound the seconds before multiplying, and subtract rather than adding the
-    // configured ages, which may span the entire timestamp range.
-    if (lag / md::kNanosPerSecond >= delay_seconds &&
-        lag - delay_seconds * md::kNanosPerSecond > max_quote_age) {
-      const auto minutes = lag / md::kNanosPerMinute;
-      const auto duration = minutes >= 60
-          ? std::to_string(minutes / 60) + "h " + std::to_string(minutes % 60) + "m"
-          : minutes > 0 ? std::to_string(minutes) + "m"
-                        : std::to_string(lag / md::kNanosPerSecond) + "s";
-      return {Reason::FEED_STALLED, std::string(underlying) + " quotes are " + duration +
-          " behind the market; the feed appears to have stalled", {}, {}, {}};
-    }
+    const auto minutes = lag / md::kNanosPerMinute;
+    const auto duration = minutes >= 60
+        ? std::to_string(minutes / 60) + "h " + std::to_string(minutes % 60) + "m"
+        : minutes > 0 ? std::to_string(minutes) + "m"
+                      : std::to_string(lag / md::kNanosPerSecond) + "s";
+    return {Reason::FEED_STALLED, std::string(underlying) + " quotes are " + duration +
+        " behind the market; the feed appears to have stalled", {}, {}, {}};
   }
-  if (md::trading_session(underlying, market_time).name != "regular")
-    return {Reason::SESSION_CLOSED, "v1 accepts and executes only in the product regular session", {}, {}, {}};
+  if (!session.open) {
+    // Say why the market is closed now (a weekend, say), not at the feed's last close.
+    const auto now = md::trading_session(underlying, shown);
+    return {Reason::SESSION_CLOSED, std::string(underlying) + " options are " + (now.open ? session.note : now.note), {}, {}, {}};
+  }
   return {};
 }
 
@@ -452,7 +459,9 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
           }
         }
       }
-      const auto day = new_york_date(market_time_);
+      // An overnight session belongs to the next trading date, so a day ends
+      // when the last session of the one before (curb) does.
+      const auto day = md::trading_date(market_time_);
       if (!batch.empty() && day > session.trading_day() &&
           md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
           session.snapshot()->valuation_complete) session.roll_day(market_time_);

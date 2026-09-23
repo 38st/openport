@@ -237,6 +237,42 @@ TEST(Time, GlobalTradeDateSkipsWeekendsHolidaysAndHandlesDst) {
   }
 }
 
+TEST(Time, OpenSessionsReportWhenTheyEnd) {
+  using namespace openport::md;
+  const Date date{2026, 9, 22};
+  auto end = [&](std::string_view root, int h, int m) { return trading_session(root, new_york_to_utc(date, h, m)).end; };
+  EXPECT_EQ(end("SPXW", 9, 0), new_york_to_utc(date, 9, 25));
+  EXPECT_EQ(end("SPXW", 12, 0), new_york_to_utc(date, 16, 15));
+  EXPECT_EQ(end("SPXW", 16, 30), new_york_to_utc(date, 17, 0));
+  EXPECT_EQ(end("SPXW", 21, 0), new_york_to_utc({2026, 9, 23}, 9, 25));
+  EXPECT_EQ(end("AAPL", 12, 0), new_york_to_utc(date, 16, 0));
+  EXPECT_EQ(end("SPY", 18, 0), kInvalidTimestamp);
+  EXPECT_EQ(trading_session("SPXW", new_york_to_utc({2026, 11, 27}, 12, 0)).end, new_york_to_utc({2026, 11, 27}, 13, 15));
+}
+
+TEST(Time, TradingDatesEndWithTheCurbSessionAndSkipClosures) {
+  using namespace openport::md;
+  auto date = [](Date d, int h, int m) { return trading_date(new_york_to_utc(d, h, m)); };
+  EXPECT_EQ(date({2026, 9, 22}, 0, 30), (Date{2026, 9, 22}));
+  EXPECT_EQ(date({2026, 9, 22}, 16, 59), (Date{2026, 9, 22}));
+  // Tonight's overnight session trades the next date.
+  EXPECT_EQ(date({2026, 9, 22}, 17, 0), (Date{2026, 9, 23}));
+  EXPECT_EQ(date({2026, 9, 22}, 21, 0), (Date{2026, 9, 23}));
+  EXPECT_EQ(date({2026, 9, 25}, 17, 0), (Date{2026, 9, 28}));  // Friday evening
+  EXPECT_EQ(date({2026, 9, 26}, 12, 0), (Date{2026, 9, 28}));
+  EXPECT_EQ(date({2026, 9, 27}, 20, 15), (Date{2026, 9, 28}));
+  EXPECT_EQ(date({2026, 9, 4}, 18, 0), (Date{2026, 9, 8}));    // over Labor Day
+  EXPECT_EQ(date({2026, 9, 7}, 12, 0), (Date{2026, 9, 8}));
+  EXPECT_EQ(date({2026, 11, 27}, 14, 0), (Date{2026, 11, 27}));  // after an early close
+  for (auto day : {Date{2026, 3, 6}, Date{2026, 3, 9}}) {        // either side of DST
+    EXPECT_EQ(date(day, 16, 59), day);
+    EXPECT_NE(date(day, 17, 0), day);
+  }
+  EXPECT_EQ(previous_business_day({2026, 9, 28}), (Date{2026, 9, 25}));
+  EXPECT_EQ(previous_business_day({2026, 9, 8}), (Date{2026, 9, 4}));
+  EXPECT_EQ(previous_business_day({2026, 9, 23}), (Date{2026, 9, 22}));
+}
+
 TEST(Time, ProductEarlyClosesHaveNoCurbAndResumeOnTheNextTradeDate) {
   using namespace openport::md;
   const Date date{2026, 11, 27};

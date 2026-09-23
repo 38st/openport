@@ -248,9 +248,12 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
     }
     const auto paper = paper_acceptance(symbol, market_time, now,
                                         status.capabilities.delay, max_quote_age);
+    // The session new orders enter: the market-data clock's, which a delayed
+    // feed keeps behind the wall clock's `session`.
     item["paper"] = {{"accepting", paper.ok()},
                      {"reason", paper.ok() ? json(nullptr) : json(trading::to_string(paper.code))},
-                     {"message", paper.ok() ? json(nullptr) : json(paper.message)}};
+                     {"message", paper.ok() ? json(nullptr) : json(paper.message)},
+                     {"session", market_time > 0 ? json(md::trading_session(symbol, market_time).name) : json(nullptr)}};
     if (m) {
       item["spot"] = price(m->spot);
       item["as_of"] = md::format_timestamp(m->as_of);

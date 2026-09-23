@@ -82,14 +82,23 @@ describe("paper trading fixtures", () => {
     expect(html).toContain("Increase limit price one tick")
     expect(html).toContain("Decrease limit price one tick")
   })
-  it.each(["global", "curb", "closed"] as const)("shows the %s session gate in the ticket and Portfolio", (name) => {
-    const session = { name, open: name !== "closed", note: "Product session" }
+  it("blocks the ticket and notes Portfolio while the session is closed", () => {
+    const session = { name: "closed" as const, open: false, note: "closed (weekend)" }
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session }] }, null, "open"))
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
-    expect(html).toContain("Paper orders are accepted in the regular session only; SPX is")
-    expect(html).toContain(name === "global" ? "overnight session" : name)
+    expect(html).toContain("SPX options are not trading now (closed (weekend)); paper orders wait for the next session.")
     expect(html).toMatch(/aria-label="Submit order" disabled=""/)
-    expect(render(<PositionsView />)).toContain("Paper orders are accepted in the regular session only; SPX is")
+    expect(render(<PositionsView />)).toContain("SPX options are not trading now")
+  })
+  it.each(["global", "curb"] as const)("takes limit orders only in the %s session", (name) => {
+    const session = { name, open: true, note: "Product session" }
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session }] }, null, "open"))
+    const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
+    expect(html).toContain(name === "global" ? "SPX is in its overnight session (8:15 pm to 9:25 am ET)" : "SPX is in its curb session (4:15 to 5:00 pm ET)")
+    expect(html).toContain("limit orders only, with no triggers or brackets")
+    expect(html).not.toContain(">Market</button>")
+    expect(html).not.toMatch(/aria-label="Submit order" disabled=""/)
+    expect(render(<PositionsView />)).not.toContain("not trading now")
   })
   it.each(["status", "tick"] as const)("uses the paper gate from %s for ticket and Portfolio notices", (source) => {
     const message = "SPX quotes are 10h 20m behind the market; the feed appears to have stalled"
@@ -111,9 +120,9 @@ describe("paper trading fixtures", () => {
       paper: { accepting: true, reason: null, message: null },
     }] }, null, "open"))
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
-    expect(html).not.toContain("regular session only")
+    expect(html).not.toContain("not trading now")
     expect(html).not.toMatch(/aria-label="Submit order" disabled=""/)
-    expect(render(<PositionsView />)).not.toContain("regular session only")
+    expect(render(<PositionsView />)).not.toContain("not trading now")
   })
   it("limits Portfolio session notices to tradable underlyings, positions, or open orders", () => {
     const session = { name: "closed" as const, open: false, note: "Closed" }
@@ -130,8 +139,8 @@ describe("paper trading fixtures", () => {
         { ...order, underlying: "ORDER" }, { ...order, id: "done", underlying: "DONE", status: "cancelled" },
       ] })
     })
-    for (const symbol of ["SPX", "HELD", "ORDER"]) expect(html).toContain(`regular session only; ${symbol} is`)
-    for (const symbol of ["SPY", "QQQ", "OEX", "DONE", "FLAT"]) expect(html).not.toContain(`regular session only; ${symbol} is`)
+    for (const symbol of ["SPX", "HELD", "ORDER"]) expect(html).toContain(`${symbol} options are not trading now`)
+    for (const symbol of ["SPY", "QQQ", "OEX", "DONE", "FLAT"]) expect(html).not.toContain(`${symbol} options are not trading now`)
   })
   it("uses the selected underlying's regular session, even if another market is closed", () => {
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [
@@ -139,7 +148,7 @@ describe("paper trading fixtures", () => {
       { ...status.underlyings[0]!, session: { name: "regular", open: true, note: "Regular" } },
     ] }, null, "open"))
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
-    expect(html).not.toContain("regular session only")
+    expect(html).not.toContain("not trading now")
     expect(html).not.toMatch(/aria-label="Submit order" disabled=""/)
   })
   it.each(["working", "partially_filled", "filled", "rejected", "cancelled"] as const)("renders inline order status %s and typed risk rejections", (orderStatus) => {

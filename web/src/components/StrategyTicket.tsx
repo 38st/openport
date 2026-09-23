@@ -11,7 +11,7 @@ import { isNum, money, price } from "../lib/format"
 import { heldPositions } from "../lib/margin"
 import { probabilityOfProfit, smileVol, valueToday } from "../lib/probability"
 import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, type StrategyLeg } from "../lib/strategy"
-import { comboTickCents, formatMoney, paperNotice } from "../lib/trading"
+import { comboTickCents, extendedSession, formatMoney, limitOnlyNotice, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { OrderResult } from "./OrderTicket"
@@ -74,7 +74,11 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const tick = comboTickCents(roots)
   const quote = netQuote(legs)
   const [units, setUnits] = useState(String(initialUnits ?? 1))
-  const [type, setType] = useState<"limit" | "market">("limit")
+  const status = underlyings.find((u) => u.symbol === underlying)
+  // The overnight and curb sessions take a net limit only.
+  const extended = extendedSession(status)
+  const [chosenType, setType] = useState<"limit" | "market">("limit")
+  const type = extended ? "limit" : chosenType
   const [tif, setTif] = useState<"day" | "ioc">("day")
   const [amount, setAmount] = useState(() => quote.mid != null ? Math.abs(roundNet(quote.mid, tick)).toFixed(2) : "")
   const [direction, setDirection] = useState<"debit" | "credit">(() => (quote.mid ?? 0) < 0 ? "credit" : "debit")
@@ -138,7 +142,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const available = account ? Number(account.buying_power.available) : null
   const after = effect != null && available != null ? available + effect : null
   const marketable = quote.ask != null && (type === "market" || (net != null && quote.ask <= net + 1e-9))
-  const notice = paperNotice(underlying, underlyings.find((u) => u.symbol === underlying))
+  const notice = paperNotice(underlying, status)
+  const limitOnly = notice ? null : limitOnlyNotice(underlying, status)
   const untradable = legs.find((l) => l.quote?.tradable !== true)
   const rules = account?.rules
   const closed = account?.evaluation.enabled && account.evaluation.status !== "active"
@@ -236,6 +241,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       </div>
       <WriteAccess trading={trading} />
       {notice && <p role="status" className="text-sm text-warn">{notice}</p>}
+      {limitOnly && <p role="status" className="text-xs text-muted">{limitOnly}</p>}
       {untradable && <p role="status" className="text-sm text-warn">{untradable.strike} {untradable.type}: {untradable.quote?.untradable_reason ?? "unavailable for paper trading"}</p>}
       {trading.kill_latched && <p role="status" className="text-sm text-warn">Kill switch latched. Reset it in Positions before placing orders.</p>}
       {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Start a new attempt from the Dashboard to trade again.</p>}
@@ -252,7 +258,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           </div>
           <div className="trade-label">Order type
             <Segmented label="Order type" value={type} onChange={(next) => { setType(next); if (next === "market") setTif("ioc") }}
-              options={[{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
+              options={extended ? [{ value: "limit", label: "Limit" }] : [{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
           </div>
           <div className="trade-label">Time in force
             <Segmented label="Time in force" value={type === "market" ? "ioc" : tif} onChange={(next) => { if (type !== "market") setTif(next) }}

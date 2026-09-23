@@ -11,8 +11,10 @@
 
 namespace openport::server {
 
-/// Shared session/feed gate for new orders and status/ticks. Contract, risk and
-/// write-access checks remain separate. Never advances the reducer's data clock.
+/// Shared session/feed gate for new orders and status/ticks: open while the
+/// underlying's options are in any session (regular, overnight or curb; the
+/// reducer decides which orders each takes). Contract, risk and write-access
+/// checks remain separate. Never advances the reducer's data clock.
 [[nodiscard]] trading::Decision paper_acceptance(std::string_view underlying,
     md::Timestamp market_time, md::Timestamp wall_time, std::chrono::seconds delay,
     md::Timestamp max_quote_age);

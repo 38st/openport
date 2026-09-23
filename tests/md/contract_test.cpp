@@ -86,6 +86,19 @@ TEST(Contract, RejectsImpossibleCalendarDates) {
   EXPECT_TRUE(parse_osi("SPXW280229C00100000"));
 }
 
+TEST(Contract, AmSettledSeriesStopTradingAtThePreviousRegularClose) {
+  using openport::md::format_timestamp;
+  const auto monthly = parse_osi("SPX261016C00200000");  // Friday
+  const auto vix = parse_osi("VIX261021C00020000");      // Wednesday
+  const auto weekly = parse_osi("SPXW261016C00200000");
+  const auto after_early_close = parse_osi("SPX261130C00200000");  // the Monday after Nov 27
+  ASSERT_TRUE(monthly && vix && weekly && after_early_close);
+  EXPECT_EQ(format_timestamp(monthly->last_trade_time()), "2026-10-15T20:15:00.000Z");
+  EXPECT_EQ(format_timestamp(vix->last_trade_time()), "2026-10-20T20:15:00.000Z");
+  EXPECT_EQ(weekly->last_trade_time(), weekly->expiry_time());
+  EXPECT_EQ(format_timestamp(after_early_close->last_trade_time()), "2026-11-27T18:15:00.000Z");
+}
+
 TEST(Contract, PmExpiryUsesEarlyClose) {
   const auto c = parse_osi("SPXW261127C00100000");
   ASSERT_TRUE(c);

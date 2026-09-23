@@ -286,7 +286,12 @@ SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW also have curb trading 16:15–17:00 and GT
 RUT in GTH as well. See [Cboe hours](https://www.cboe.com/about/hours/us-options/)
 and [the GTH description](https://www.cboe.com/insights/posts/cboe-global-trading-hours).
 
-A GTH session is assigned to the following morning's trading date. The calendar
+A GTH session is assigned to the following morning's trading date:
+`md::trading_date(t)` is a business day's New York date until 17:00 ET, when curb
+ends, and the next business day after that and over weekends and holidays. Paper
+accounts roll their day on it, and open sessions report their `end`, which ends DAY
+orders. AM-settled series stop trading at the regular close before expiry
+(`OptionContract::last_trade_time`). The calendar
 uses the existing 2025–2028 holiday and early-close tables and New York DST.
 **Simplifications:** no GTH leading into a holiday (Cboe publishes special holiday
 GTH on some dates), no curb on early-close days, and no unscheduled halts.

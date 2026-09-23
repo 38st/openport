@@ -91,4 +91,12 @@ describe("closing positions", () => {
     expect(html).toContain("Flatten SPX")
     expect(html).toContain("Close 1 position</button>")
   })
+
+  it("waits for the regular session, since it sends market orders", () => {
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!,
+      session: { name: "global", open: true, note: "overnight session" } }] }, null, "open"))
+    const html = render(<FlattenDialog positions={[portfolio.positions[0]!]} orders={[]} trading={trading} initial="SPX" onClose={() => {}} />)
+    expect(html).toContain("SPX is outside the regular session, which takes limit orders only.")
+    expect(html).toMatch(/disabled="">Close 1 position<\/button>/)
+  })
 })

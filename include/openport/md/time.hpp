@@ -97,8 +97,19 @@ struct TradingSession {
   /// ts while open, otherwise the most recent session end <= ts. Invalid if no
   /// preceding session end is representable in the nanosecond timestamp range.
   Timestamp market_time = kInvalidTimestamp;
+  /// While open, when this session ends.
+  Timestamp end = kInvalidTimestamp;
 };
 [[nodiscard]] TradingSession trading_session(std::string_view root, Timestamp ts);
+
+/// The trading date a moment belongs to: a business day's own New York date
+/// until 17:00 ET, when its last session (curb) ends; after that, and on
+/// weekends and holidays, the next business day, whose overnight session opens
+/// that evening. Outside 2025-2028 only weekdays are known.
+[[nodiscard]] Date trading_date(Timestamp ts) noexcept;
+
+/// The business day before `date`, skipping weekends and calendar holidays.
+[[nodiscard]] Date previous_business_day(Date date) noexcept;
 
 /// Scheduled PM close hour (13 or 16). Outside 2025-2028 assumes 16:00 ET;
 /// does not roll a contract date off holidays or weekends.

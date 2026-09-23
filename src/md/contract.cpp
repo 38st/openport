@@ -84,6 +84,13 @@ Timestamp OptionContract::expiry_time() const noexcept {
                                       : new_york_to_utc(expiry, regular_close_hour(expiry), 0);
 }
 
+Timestamp OptionContract::last_trade_time() const noexcept {
+  if (settlement != Settlement::AM) return expiry_time();
+  // Every AM-settled root is an index root, whose regular session ends at :15.
+  const auto day = previous_business_day(expiry);
+  return new_york_to_utc(day, regular_close_hour(day), 15);
+}
+
 std::optional<OptionContract> parse_osi(std::string_view symbol) {
   // The last 15 characters are always YYMMDD + C/P + 8-digit strike.
   if (symbol.size() < 16) return std::nullopt;

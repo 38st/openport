@@ -9,7 +9,7 @@ import { count, days, fixed, isNum, price } from "../lib/format"
 import { heldPositions, orderPowerUse } from "../lib/margin"
 import { probabilityOfProfit, singleLeg, smileVol } from "../lib/probability"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
-import { formatMoney, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
+import { extendedSession, formatMoney, limitOnlyNotice, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
@@ -89,17 +89,23 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
   const account = useAccount().data
   const portfolio = usePortfolio().data
   const [side, setSide] = useState<Side>(sideFromCell(selection.cell))
-  const [type, setType] = useState<"limit" | "market">("limit")
+  const underlying = underlyings.find((u) => u.symbol === selection.underlying)
+  // The overnight and curb sessions take plain limit orders only.
+  const extended = extendedSession(underlying)
+  const [chosenType, setType] = useState<"limit" | "market">("limit")
+  const type = extended ? "limit" : chosenType
   const [tif, setTif] = useState<"day" | "ioc">("day")
   const [quantity, setQuantity] = useState(String(selection.quantity ?? 1))
   const [limitPrice, setLimitPrice] = useState(() => limitPriceText(selection.price))
   const [fee, setFee] = useState("")
   // Conditional entry and bracket exits.
   const spot = selection.spot != null && Number.isFinite(selection.spot) ? selection.spot : null
-  const [condition, setCondition] = useState<"now" | "cross">("now")
+  const [chosenCondition, setCondition] = useState<"now" | "cross">("now")
+  const condition = extended ? "now" : chosenCondition
   // No default level: one at spot would sit on the boundary, so the trader picks it.
   const [crossLevel, setCrossLevel] = useState("")
-  const [protect, setProtect] = useState(false)
+  const [chosenProtect, setProtect] = useState(false)
+  const protect = !extended && chosenProtect
   const [stopOn, setStopOn] = useState(true)
   const [stopSource, setStopSource] = useState<"option" | "underlying">("option")
   const [stopLevel, setStopLevel] = useState("")
@@ -150,7 +156,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
   const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee)) &&
     (condition === "now" || trigger != null) && bracketValid
   const untradable = quote?.tradable !== true || quote.symbol !== selection.symbol
-  const notice = paperNotice(selection.underlying, underlyings.find((u) => u.symbol === selection.underlying))
+  const notice = paperNotice(selection.underlying, underlying)
+  const limitOnly = notice ? null : limitOnlyNotice(selection.underlying, underlying)
   const rules = account?.rules
   const closed = account?.evaluation.enabled && account.evaluation.status !== "active"
   const opening = split(side, Number.isSafeInteger(q) ? q : 0, held).opening
@@ -251,6 +258,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
     </div>
     <WriteAccess trading={trading} />
     {notice && <p role="status" className="text-sm text-warn">{notice}</p>}
+    {limitOnly && <p role="status" className="text-xs text-muted">{limitOnly}</p>}
     {(!trading.enabled || trading.kill_latched || untradable) && <p role="status" className="text-sm text-warn">{!trading.enabled ? trading.reason ?? "Trading unavailable" : trading.kill_latched ? "Kill switch latched. Reset it in Positions before placing orders." : reason}</p>}
     {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Start a new attempt from the Dashboard to trade again.</p>}
     {buyOnlyBlock && <p role="status" className="text-sm text-warn">{rules?.plan ?? "This plan"} is buy-only: sells may only close contracts you hold{held > 0 ? ` (${held} long)` : ""}.</p>}
@@ -262,7 +270,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
         </div>
         <div className="trade-label">Order type
           <Segmented label="Order type" value={type} onChange={(next) => { setType(next); if (next === "market") setTif("ioc") }}
-            options={[{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
+            options={extended ? [{ value: "limit", label: "Limit" }] : [{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
         </div>
         <div className="trade-label col-span-2">
           <label className="trade-label">Quantity<input className="trade-input" inputMode="numeric" type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required /></label>
@@ -286,7 +294,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
         </div>}
         {serverFee == null ? <label className="trade-label col-span-2">Fee / contract ($, estimate)<input className="trade-input" inputMode="decimal" value={fee} placeholder="Not provided by server" onChange={(e) => setFee(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
           : <div className="trade-label col-span-2">Fee / contract<div className="tabular text-foreground">{formatMoney(serverFee)}</div></div>}
-        <div className="trade-label col-span-2">Condition
+        {!extended && <div className="trade-label col-span-2">Condition
           <Segmented label="Condition" value={condition} onChange={setCondition}
             options={[{ value: "now", label: "Now" }, { value: "cross", label: `When ${selection.underlying} crosses` }]} />
           {condition === "cross" && <>
@@ -297,8 +305,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
               ? `Arms now and activates when ${describeTrigger(trigger, side, selection.underlying)}${spot != null ? ` (now ${spot.toFixed(2)})` : ""}; good until expiry.`
               : `Enter the level that activates the order${spot != null ? `; ${selection.underlying} is at ${spot.toFixed(2)}` : ""}.`}</span>
           </>}
-        </div>
-        <div className="col-span-2 space-y-2 rounded-md border border-border p-3">
+        </div>}
+        {!extended && <div className="col-span-2 space-y-2 rounded-md border border-border p-3">
           <label className="flex items-center justify-between gap-2 text-xs text-muted">
             <span>Protect with a stop-loss and take-profit</span>
             <input type="checkbox" role="switch" aria-label="Bracket" checked={protect} onChange={(e) => enableProtection(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
@@ -313,7 +321,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
                 : `${side === "buy" ? "Sells" : "Buys"} at market when ${describeTrigger({ source: "underlying", direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel }, side, selection.underlying)}.`} />
             <p className="text-[11px] text-muted">Exits are placed as the entry fills, sized to the fill; one cancels the other. Both are good until expiry.</p>
           </>}
-        </div>
+        </div>}
       </fieldset>
       <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{fill.message}</p>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">

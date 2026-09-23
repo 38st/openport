@@ -191,22 +191,37 @@ describe("order ticket interaction", () => {
     expect(host.querySelector('input[placeholder="Not provided by server"]')).toBeNull()
     expect(host.textContent).toContain("Estimated fees$1.95")
   })
-  it("updates the session gate from live ticks and allows submission only in regular", async () => {
+  it("updates the session gate from live ticks: closed blocks, overnight takes limit orders only", async () => {
     vi.mocked(useLive).mockReturnValue(liveState(status, {
       type: "tick", engine: status.engine, feed: status.feed,
-      underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }],
+      underlyings: [{ ...status.underlyings[0]!, session: { name: "closed", open: false, note: "closed (weekend)" } }],
     }, "open"))
     await render()
-    expect(host.textContent).toContain("SPX is in the overnight session")
+    expect(host.textContent).toContain("SPX options are not trading now (closed (weekend)); paper orders wait for the next session.")
     expect(button("Submit order").disabled).toBe(true)
     await click("Submit order")
     expect(api.submitOrder).not.toHaveBeenCalled()
-    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "regular", open: true, note: "Regular" } }] }, null, "open"))
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }] }, null, "open"))
     await render()
-    expect(host.textContent).not.toContain("regular session only")
+    expect(host.textContent).not.toContain("not trading now")
+    expect(host.textContent).toContain("SPX is in its overnight session (8:15 pm to 9:25 am ET): limit orders only")
+    expect(host.querySelectorAll('[role="radiogroup"][aria-label="Order type"] [role="radio"]')).toHaveLength(1)
+    expect(host.querySelector('[role="radiogroup"][aria-label="Condition"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Bracket"]')).toBeNull()
     expect(button("Submit order").disabled).toBe(false)
     await click("Submit order")
     expect(api.submitOrder).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ type: "limit", time_in_force: "day" })
+  })
+  it("follows the feed's session over the wall clock's", async () => {
+    // Just after 09:30 a 15-minute delayed feed still shows the overnight session.
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!,
+      session: { name: "regular", open: true, note: "Regular" },
+      paper: { accepting: true, reason: null, message: null, session: "global" },
+    }] }, null, "open"))
+    await render()
+    expect(host.textContent).toContain("limit orders only")
+    expect(host.querySelectorAll('[role="radiogroup"][aria-label="Order type"] [role="radio"]')).toHaveLength(1)
   })
   it("blocks a regular-session ticket when paper stops accepting and resumes from a tick", async () => {
     const message = "SPX quotes are 10h 20m behind the market; the feed appears to have stalled"
@@ -231,7 +246,7 @@ describe("order ticket interaction", () => {
     }, "open"))
     await render()
     expect(host.textContent).not.toContain(message)
-    expect(host.textContent).not.toContain("regular session only")
+    expect(host.textContent).not.toContain("not trading now")
     expect(button("Submit order").disabled).toBe(false)
     await click("Submit order")
     expect(api.submitOrder).toHaveBeenCalledTimes(1)

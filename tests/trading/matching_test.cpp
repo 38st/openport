@@ -136,7 +136,9 @@ TEST(TradingMatching, SessionEndEarlyCloseAndExpiryCancelBeforeFill) {
     s.on_quotes({f.quote("4", "4.10")}, {f.valuation()}, f.time);
     EXPECT_EQ(s.snapshot()->recent_orders[0].reason.code, Reason::DAY_END);
     EXPECT_TRUE(s.snapshot()->recent_fills.empty());
-    EXPECT_EQ(s.submit(f.market("closed"), f.time).decision.code, Reason::SESSION_CLOSED);
+    // SPX's curb session follows a full day but not an early close, and takes limit orders only.
+    const bool early = md::regular_close_hour(date) == 13;
+    EXPECT_EQ(s.submit(f.market("closed"), f.time).decision.code, early ? Reason::SESSION_CLOSED : Reason::LIMIT_ONLY);
   }
   ScriptedMarket f;
   f.contract.expiry = {2026, 9, 22};

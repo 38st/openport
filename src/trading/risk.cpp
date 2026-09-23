@@ -8,8 +8,8 @@
 
 namespace openport::trading {
 namespace {
-bool fresh(const Valuation& v, Timestamp now, Timestamp max_age) {
-  return valid_valuation(v) && v.time >= 0 && v.time <= now && now - v.time <= max_age;
+bool fresh(const Valuation& v, const md::OptionContract& c, Timestamp now, Timestamp max_age) {
+  return valid_valuation(v) && v.time >= 0 && v.time <= now && observation_time(c, now) - v.time <= max_age;
 }
 Exposure exposure(Quantity q, const Valuation& v) {
   const double units = static_cast<double>(q) * 100;
@@ -60,6 +60,10 @@ Decision check_bucket(const RiskBucket& b, const std::string& scope) {
   return {};
 }
 }  // namespace
+Timestamp observation_time(const md::OptionContract& contract, Timestamp now) {
+  const auto session = md::trading_session(contract.root, now);
+  return session.open || session.market_time == md::kInvalidTimestamp ? now : std::min(now, session.market_time);
+}
 RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orders,
     const std::map<std::string, md::OptionContract>& contracts,
     const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now) {
@@ -67,7 +71,7 @@ RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orde
   result.aggregate.limits = limits.aggregate;
   auto exposure_of = [&](const md::OptionContract& c, Quantity q) -> std::optional<Exposure> {
     const auto it = valuations.find(c.osi_symbol());
-    if (now >= c.expiry_time() || it == valuations.end() || !fresh(it->second, now, limits.max_valuation_age)) return std::nullopt;
+    if (now >= c.expiry_time() || it == valuations.end() || !fresh(it->second, c, now, limits.max_valuation_age)) return std::nullopt;
     const auto e = exposure(q, it->second);
     if (!finite(e)) return std::nullopt;
     return e;
@@ -143,7 +147,7 @@ ScenarioGrid scenario_grid(const Ledger& ledger, const std::map<std::string, Val
       ScenarioCell cell{spot, vol, 0, false};
       for (const auto& [symbol, p] : ledger.positions()) {
         const auto it = valuations.find(symbol);
-        if (now >= p.contract.expiry_time() || it == valuations.end() || !fresh(it->second, now, max_age)) {
+        if (now >= p.contract.expiry_time() || it == valuations.end() || !fresh(it->second, p.contract, now, max_age)) {
           result.complete = false;
           continue;
         }

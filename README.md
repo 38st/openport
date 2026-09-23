@@ -72,8 +72,9 @@ against displayed quotes: market and marketable orders take the far side up to t
 displayed size, resting limits fill when a later quote crosses them, and every fill
 pays a per-contract fee. Positions are marked at the mid, and risk limits on dollar
 delta, vega, order size, price bands and daily loss are checked before and at every
-fill. Orders are accepted during the product's regular session only (09:30 to 16:15 ET
-for index options). American options are simulated without early exercise, assignment
+fill. Every product trades in its regular session (09:30 to 16:15 ET for index
+options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
+(20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. American options are simulated without early exercise, assignment
 or stock positions: one held into expiry settles in cash at intrinsic value.
 
 Buying power follows each order's real margin: a naked short holds the usual
@@ -303,7 +304,7 @@ with `-DOPENPORT_WERROR=ON`.
 - [x] Terminal: underlying chart, order changes in place, flatten, multiple named
       accounts and trading recorded days in replay
 - [ ] Stock positions, early exercise and assignment
-- [ ] Paper trading in Cboe's overnight session
+- [x] Paper trading in Cboe's overnight and curb sessions
 - [ ] P&L attribution by delta, gamma, vega and theta
 
 ## License

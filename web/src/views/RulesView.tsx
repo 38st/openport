@@ -56,7 +56,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
     { title: "Expiring positions", body: minutes > 0
       ? `From ${minutes} minutes before expiry, working orders on a held contract are cancelled, the position is closed at the bid or ask, and only closing orders are accepted.`
       : "Positions are held into expiry and settle at intrinsic value." },
-    { title: "Trading hours", body: "Orders are accepted and filled only during each product's regular session. A delayed or stalled feed refuses new orders rather than filling on stale quotes." },
+    { title: "Trading hours", body: "Every product trades in its regular session. SPX, XSP, VIX and RUT options also trade overnight, 8:15 pm to 9:25 am ET, and in the 4:15 to 5:00 pm curb session. Those sessions take plain limit orders only, a day order lasts until its session ends, and stops, triggered orders and the account's own closing orders wait for the regular session. A trading day ends at 5:00 pm ET, so an overnight trade counts toward the next day. A delayed or stalled feed refuses new orders rather than filling on stale quotes." },
     { title: "Fills", body: <>Buys fill at the ask and sells at the bid, up to the displayed size. Limit orders fill at your limit or better; unfilled day orders rest until the session ends. Each contract costs {fee ? formatMoney(fee) : "the configured fee"}.</> },
     { title: "Daily loss limit", body: dailyLoss ? <>Losing more than {formatMoney(dailyLoss)} from the day's starting equity trips the kill switch and cancels working orders.</> : "Set in Positions → Edit limits." },
   ]

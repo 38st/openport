@@ -62,6 +62,8 @@ export interface PaperAcceptance {
   accepting: boolean
   reason: string | null
   message: string | null
+  /** The session new orders enter, by the market-data clock; null before any data. */
+  session?: TradingSession["name"] | null
 }
 
 export interface MarketSession {

@@ -27,6 +27,12 @@ struct RiskSnapshot {
   std::uint64_t limits_revision = 1;
 };
 
+/// The market time a contract's quotes and valuations must be recent to: `now`
+/// while one of its sessions is open, otherwise the end of its last session, so
+/// a closed market's close stays current until it reopens (an SPY position
+/// overnight, while SPX trades).
+[[nodiscard]] Timestamp observation_time(const md::OptionContract& contract, Timestamp now);
+
 [[nodiscard]] RiskSnapshot portfolio_risk(
     const Ledger& ledger, const std::vector<Order>& orders,
     const std::map<std::string, md::OptionContract>& contracts,
