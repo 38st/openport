@@ -231,7 +231,7 @@ TEST(Svi, CalendarToleranceUsesFloorAndLargerFitRmseAtLaterExpiry) {
   early.min_k = late.min_k = -.1;
   early.max_k = late.max_k = .1;
   late.parameters = {.2 * .2 * late.years, 0, 0, 0, .1};
-  for (const auto rmses : {std::pair{0.0, 0.0}, std::pair{.5, .2}, std::pair{.2, .5}}) {
+  for (const auto& rmses : {std::pair{0.0, 0.0}, std::pair{.5, .2}, std::pair{.2, .5}}) {
     early.rmse_vol_points = rmses.first;
     late.rmse_vol_points = rmses.second;
     const double tolerance = std::max({.1, rmses.first, rmses.second});
@@ -239,8 +239,9 @@ TEST(Svi, CalendarToleranceUsesFloorAndLargerFitRmseAtLaterExpiry) {
       const double iv = .2 + scale * tolerance / 100;
       early.parameters = {iv * iv * late.years, 0, 0, 0, .1};
       const auto violations = svi_calendar(std::vector<SviFit>{early, late});
-      if (scale <= 1) EXPECT_TRUE(violations.empty());
-      else {
+      if (scale <= 1) {
+        EXPECT_TRUE(violations.empty());
+      } else {
         ASSERT_EQ(violations.size(), 1u);
         EXPECT_NEAR(violations[0].vol_points, scale * tolerance, 1e-12);
       }

@@ -318,14 +318,22 @@ TEST(PaperAvailability, DisabledFailedJournalFullInboxAndStoppingFailClosed) {
     if (mode == 1) options.paper_journal = std::filesystem::temp_directory_path();
     if (mode == 2) options.command_capacity = 0;
     server::Engine engine(provider, {{"SPX"}}, options); engine.start();
-    if (mode == 1) ASSERT_TRUE(wait_for([&] { return engine.status().trading.reason.starts_with("JOURNAL_IO"); }));
-    if (mode >= 2) ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    if (mode == 1) {
+      ASSERT_TRUE(wait_for([&] { return engine.status().trading.reason.starts_with("JOURNAL_IO"); }));
+    }
+    if (mode >= 2) {
+      ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    }
     if (mode == 3) engine.stop();
     const auto response = write(engine, "POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});
     EXPECT_EQ(response.status, 503) << response.body;
     EXPECT_EQ(json::parse(response.body)["error"]["code"], "TRADING_UNAVAILABLE");
-    if (mode == 0) EXPECT_FALSE(engine.status().trading.enabled);
-    if (mode == 1) EXPECT_EQ(engine.status().trading.write, "disabled");
+    if (mode == 0) {
+      EXPECT_FALSE(engine.status().trading.enabled);
+    }
+    if (mode == 1) {
+      EXPECT_EQ(engine.status().trading.write, "disabled");
+    }
   }
 }
 
