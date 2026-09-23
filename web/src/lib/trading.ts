@@ -68,6 +68,13 @@ function tickCents(root: string, below: boolean): bigint {
   if (!indexRoots.includes(root) && !["SPY", "QQQ", "IWM"].includes(root)) return below ? 1n : 5n
   return 1n
 }
+/** Nearest valid limit on the root's tier tick, for suggested prices. */
+export function roundToTick(root: string, value: number): Money | null {
+  if (!Number.isFinite(value) || value <= 0) return null
+  const cents = Number(tickCents(root, value < 3))
+  const rounded = Math.max(cents, Math.round((value * 100) / cents) * cents)
+  return (rounded / 100).toFixed(2)
+}
 export function limitPriceTick(root: string, value: Money): Money {
   const parsed = decimal(value)
   return decimalString(tickCents(root, !!parsed && parsed.units < 3n * 10n ** BigInt(parsed.scale)), 2)

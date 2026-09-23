@@ -24,11 +24,11 @@ struct ScriptedMarket {
   trading::OrderRequest limit(std::string client, trading::Quantity quantity = 1,
       std::string_view price = "4.20", trading::Side side = trading::Side::Buy,
       trading::TimeInForce tif = trading::TimeInForce::Day) const {
-    return {std::move(client), symbol(), side, trading::OrderType::Limit, tif, quantity, trading::Money::parse(price)};
+    return {std::move(client), symbol(), side, trading::OrderType::Limit, tif, quantity, trading::Money::parse(price), {}, {}};
   }
   trading::OrderRequest market(std::string client, trading::Quantity quantity = 1,
                               trading::Side side = trading::Side::Buy) const {
-    return {std::move(client), symbol(), side, trading::OrderType::Market, trading::TimeInForce::Ioc, quantity, {}};
+    return {std::move(client), symbol(), side, trading::OrderType::Market, trading::TimeInForce::Ioc, quantity, {}, {}, {}};
   }
   void next() { ++observation; time += md::kNanosPerSecond; }
   void seed(trading::TradingSession& session, std::string_view bid = "4.00",

@@ -71,11 +71,19 @@ std::optional<double> spot_for(const State& s, const std::string& symbol) {
   if (it == s.valuations.end() || !valid_valuation(it->second)) return std::nullopt;
   return it->second.spot;
 }
-/// Working user orders on one side of a contract, excluding one order.
-Quantity pending(const State& s, const std::string& symbol, Side side, OrderId exclude) {
+/// A bracket's two exits can fill only once between them: checks count the pair
+/// through its earlier order, so the later one is shadowed while both are open.
+bool shadowed(const State& s, const Order& o) {
+  return o.oco != 0 && o.oco < o.id && s.orders.at(static_cast<std::size_t>(o.oco - 1)).open();
+}
+/// Open ordinary user orders on one side of a contract, excluding `self`. Bracket
+/// exits are left out: they shrink with the position, so they never oversell and
+/// never block a manual close.
+Quantity pending(const State& s, const std::string& symbol, Side side, const Order& self) {
   Quantity total = 0;
   for (const auto& o : s.orders)
-    if (o.open() && !o.system && o.id != exclude && o.request.symbol == symbol && o.request.side == side)
+    if (o.open() && !o.system && o.role == OrderRole::Normal && o.id != self.id &&
+        o.request.symbol == symbol && o.request.side == side)
       total += o.remaining();
   return total;
 }
@@ -84,7 +92,7 @@ Quantity pending(const State& s, const std::string& symbol, Side side, OrderId e
 bool closing_only(const State& s, const Order& o) {
   const auto q = held(s, o.request.symbol);
   const auto side = o.request.side;
-  const auto others = pending(s, o.request.symbol, side, o.id);
+  const auto others = pending(s, o.request.symbol, side, o);
   return side == Side::Sell ? q > 0 && o.remaining() + others <= q
                             : q < 0 && o.remaining() + others <= -q;
 }
@@ -117,7 +125,7 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
   std::map<std::string, std::pair<Quantity, Quantity>> capacity;
   Money reserved;
   for (const auto& o : s.orders) {
-    if (!o.open() || o.remaining() <= 0) continue;
+    if (!o.open() || o.remaining() <= 0 || shadowed(s, o)) continue;
     const auto& symbol = o.request.symbol;
     const auto contract = s.contracts.find(symbol);
     if (contract == s.contracts.end()) continue;
@@ -130,7 +138,10 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
       price = o.request.side == Side::Buy ? *book->second.quote.ask : *book->second.quote.bid;
     Money reservation = s.config.fee_per_contract * remaining;
     Quantity opening = 0;
-    if (o.request.side == Side::Buy) {
+    if (o.role != OrderRole::Normal) {
+      // Bracket exits stay within the position, so they only ever close; they
+      // leave closing capacity to ordinary orders such as a manual close.
+    } else if (o.request.side == Side::Buy) {
       const auto closing = std::min(remaining, short_left);
       short_left -= closing;
       opening = remaining - closing;
@@ -177,7 +188,14 @@ TradingSnapshot snapshot_of(const State& s) {
     out.valuation_complete &= p.fresh;
     out.positions.push_back(std::move(p));
   }
-  out.risk = portfolio_risk(s.ledger, s.orders, s.contracts, s.valuations, s.config.limits, s.time);
+  if (std::any_of(s.orders.begin(), s.orders.end(), [&](const Order& o) { return shadowed(s, o); })) {
+    // Reachable exposure counts each open bracket pair once.
+    auto orders = s.orders;
+    for (auto& o : orders) if (shadowed(s, o)) o.status = OrderStatus::Cancelled;
+    out.risk = portfolio_risk(s.ledger, orders, s.contracts, s.valuations, s.config.limits, s.time);
+  } else {
+    out.risk = portfolio_risk(s.ledger, s.orders, s.contracts, s.valuations, s.config.limits, s.time);
+  }
   out.risk.daily_loss = std::max(Money{}, s.start_equity - out.equity);
   out.risk.kill_latched = s.kill;
   out.risk.kill_reason = s.kill_reason;
@@ -275,6 +293,18 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
             static_cast<double>(s.config.limits.max_order_contracts), request.symbol};
   if (request.limit_price && request.limit_price->micros() % tick_size(c->second.root, *request.limit_price).micros() != 0)
     return failure(Reason::INVALID_TICK, "Limit price is not a positive multiple of the product tier tick");
+  const auto positive = [](const std::optional<Trigger>& t) { return !t || t->level > Money{}; };
+  const auto exit_ok = [&](const std::optional<ExitSpec>& e) {
+    return !e || (e->trigger.has_value() != e->limit_price.has_value() && positive(e->trigger) &&
+                  (!e->limit_price || *e->limit_price > Money{}));
+  };
+  const auto& bracket = request.bracket;
+  if (!positive(request.trigger) ||
+      (bracket && (!exit_ok(bracket->stop_loss) || !exit_ok(bracket->take_profit) || (!bracket->stop_loss && !bracket->take_profit))))
+    return failure(Reason::INVALID_ORDER, "Trigger levels and exit prices must be positive; each exit takes either a trigger or a limit price");
+  if (bracket && bracket->take_profit && bracket->take_profit->limit_price &&
+      bracket->take_profit->limit_price->micros() % tick_size(c->second.root, *bracket->take_profit->limit_price).micros() != 0)
+    return failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
   if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
     return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
   if (rules.expiry_cutoff > 0 && s.time >= c->second.expiry_time() - rules.expiry_cutoff && !closing_only(s, o))
@@ -313,12 +343,18 @@ bool marketable(const Order& o, const QuoteObservation& q) {
   if (o.request.type == OrderType::Market) return true;
   return o.request.side == Side::Buy ? *q.ask <= *o.request.limit_price : *q.bid >= *o.request.limit_price;
 }
+void on_fill(State& s, OrderId id, Events& events);
 void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
   auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
-  if (!o.open()) return;
+  if (!o.open() || o.status == OrderStatus::Armed) return;
   if (incoming != id && s.books.at(o.request.symbol).quote.time < o.accepted_at) return;
+  // Good-until-expiry exits outlive a session; they wait for the next one.
+  if (md::trading_session(s.contracts.at(o.request.symbol).root, s.time).name != "regular" && o.role != OrderRole::Normal) return;
   if (!quote_check(s, o.request.symbol).ok() || !marketable(o, s.books.at(o.request.symbol).quote)) return;
-  auto decision = o.system ? system_check(s, o) : order_check(s, o, true);
+  // System orders and bracket exits only ever reduce a position (exits are kept
+  // within it), so they skip the price band and loss projection when executing.
+  const bool reducing = o.system || o.role != OrderRole::Normal;
+  auto decision = reducing ? system_check(s, o) : order_check(s, o, true);
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
     decision.code = Reason::RISK_CHANGED;
@@ -331,9 +367,9 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   auto& budget = o.request.side == Side::Buy ? book.ask_left : book.bid_left;
   const Quantity quantity = std::min(o.remaining(), budget);
   if (quantity <= 0) return;
-  decision = o.system ? Decision{} : price_check(s, book.quote, price);
+  decision = reducing ? Decision{} : price_check(s, book.quote, price);
   const Money fee = s.config.fee_per_contract * quantity;
-  if (decision.ok() && !o.system) {
+  if (decision.ok() && !reducing) {
     // Check the proposed accounting before committing any liquidity or fill.
     const Quantity signed_quantity = o.request.side == Side::Buy ? quantity : -quantity;
     const auto before = held(s, o.request.symbol);
@@ -363,6 +399,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
             quantity, price, fee, book.quote.observation, book.quote.time, s.time};
   s.fills.push_back(fill);
   event(events, "fill", fill);
+  on_fill(s, id, events);
 }
 void match_symbols(State& s, const std::set<std::string>& symbols, Events& events,
                    std::optional<OrderId> incoming = {}) {
@@ -370,7 +407,8 @@ void match_symbols(State& s, const std::set<std::string>& symbols, Events& event
     for (const auto side : {Side::Buy, Side::Sell}) {
       std::vector<OrderId> priority;
       for (const auto& o : s.orders)
-        if (o.open() && o.request.symbol == symbol && o.request.side == side) priority.push_back(o.id);
+        if (o.open() && o.status != OrderStatus::Armed && o.request.symbol == symbol && o.request.side == side)
+          priority.push_back(o.id);
       std::stable_sort(priority.begin(), priority.end(), [&](OrderId a, OrderId b) {
         const auto& x = s.orders.at(static_cast<std::size_t>(a - 1));
         const auto& y = s.orders.at(static_cast<std::size_t>(b - 1));
@@ -380,6 +418,124 @@ void match_symbols(State& s, const std::set<std::string>& symbols, Events& event
       });
       for (auto id : priority) match_one(s, id, events, incoming);
     }
+  }
+}
+/// Keep bracket exits within the position they protect: shrink them when it
+/// shrinks and cancel them once it is closed, so an exit can never open one.
+void sync_exits(State& s, const std::string& symbol, Events& events) {
+  const auto q = held(s, symbol);
+  for (auto& o : s.orders) {
+    if (!o.open() || o.role == OrderRole::Normal || o.request.symbol != symbol) continue;
+    const Quantity capacity = o.request.side == Side::Sell ? std::max<Quantity>(q, 0) : std::max<Quantity>(-q, 0);
+    if (capacity == 0) {
+      cancel_order(o, failure(Reason::POSITION_CLOSED, "The position this exit protected is closed"), events);
+    } else if (o.remaining() > capacity) {
+      o.request.quantity = o.filled_quantity + capacity;
+      event(events, "order_resized", o);
+    }
+  }
+}
+/// Create a bracket's exits on the entry's first fill and grow them with later
+/// fills. A stop is armed until reached, a limit take-profit rests; both are good
+/// until expiry, sized to the filled quantity, and cancel each other on a fill.
+void attach_exits(State& s, OrderId entry_id, Events& events) {
+  const auto entry = s.orders.at(static_cast<std::size_t>(entry_id - 1));  // pushes below invalidate references
+  const auto& bracket = *entry.request.bracket;
+  const auto expiry = s.contracts.at(entry.request.symbol).expiry_time();
+  auto make = [&](const ExitSpec& spec, OrderRole role) {
+    Order exit;
+    exit.id = static_cast<OrderId>(s.orders.size() + 1);
+    exit.request = {entry.request.client_order_id + (role == OrderRole::StopLoss ? ":stop" : ":target"),
+                    entry.request.symbol, entry.request.side == Side::Buy ? Side::Sell : Side::Buy,
+                    spec.trigger ? OrderType::Market : OrderType::Limit, spec.trigger ? TimeInForce::Ioc : TimeInForce::Day,
+                    entry.filled_quantity, spec.limit_price, spec.trigger, {}};
+    exit.role = role;
+    exit.parent = entry.id;
+    exit.status = spec.trigger ? OrderStatus::Armed : OrderStatus::Working;
+    exit.accepted_at = s.time;
+    exit.day_end = expiry;
+    s.orders.push_back(exit);
+    event(events, "order_accepted", exit);
+    return exit.id;
+  };
+  auto grow = [&](OrderId id) {
+    auto& exit = s.orders.at(static_cast<std::size_t>(id - 1));
+    if (exit.open() && exit.filled_quantity == 0 && exit.request.quantity < entry.filled_quantity) {
+      exit.request.quantity = entry.filled_quantity;
+      event(events, "order_resized", exit);
+    }
+  };
+  auto stop = entry.stop_loss, target = entry.take_profit;
+  const bool created = (bracket.stop_loss && stop == 0) || (bracket.take_profit && target == 0);
+  if (bracket.stop_loss) { if (stop == 0) stop = make(*bracket.stop_loss, OrderRole::StopLoss); else grow(stop); }
+  if (bracket.take_profit) { if (target == 0) target = make(*bracket.take_profit, OrderRole::TakeProfit); else grow(target); }
+  auto& stored = s.orders.at(static_cast<std::size_t>(entry_id - 1));
+  stored.stop_loss = stop;
+  stored.take_profit = target;
+  if (created && stop != 0 && target != 0) {
+    s.orders.at(static_cast<std::size_t>(stop - 1)).oco = target;
+    s.orders.at(static_cast<std::size_t>(target - 1)).oco = stop;
+  }
+}
+void on_fill(State& s, OrderId id, Events& events) {
+  const auto oco = s.orders.at(static_cast<std::size_t>(id - 1)).oco;
+  if (oco != 0) {
+    auto& sibling = s.orders.at(static_cast<std::size_t>(oco - 1));
+    if (sibling.open()) cancel_order(sibling, failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
+  }
+  if (s.orders.at(static_cast<std::size_t>(id - 1)).request.bracket) attach_exits(s, id, events);
+  sync_exits(s, s.orders.at(static_cast<std::size_t>(id - 1)).request.symbol, events);
+}
+/// Option triggers read the order's executable side from a fresh book; underlying
+/// triggers read spot from a fresh valuation. Missing data never triggers.
+bool reached(const State& s, const Order& o) {
+  const auto& t = *o.request.trigger;
+  std::optional<Money> value;
+  if (t.source == TriggerSource::Underlying) {
+    const auto it = s.valuations.find(o.request.symbol);
+    if (it != s.valuations.end() && valid_valuation(it->second) && it->second.time <= s.time &&
+        s.time - it->second.time <= s.config.limits.max_valuation_age) {
+      try { value = Money::from_double(it->second.spot); } catch (const TradingError&) {}
+    }
+  } else if (quote_check(s, o.request.symbol).ok()) {
+    const auto& q = s.books.at(o.request.symbol).quote;
+    value = o.request.side == Side::Buy ? *q.ask : *q.bid;
+  }
+  return value && (t.direction == TriggerDirection::AtOrBelow ? *value <= t.level : *value >= t.level);
+}
+/// A reached order runs its checks now: exits need only an executable book;
+/// entries take every pre-trade check. Stale data or a closed session keeps it
+/// armed for a later batch; any other failure cancels it with RISK_CHANGED.
+void activate(State& s, OrderId id, Events& events) {
+  {
+    auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
+    auto d = o.role != OrderRole::Normal ? system_check(s, o) : order_check(s, o);
+    if (d.code == Reason::STALE_QUOTE || d.code == Reason::INVALID_QUOTE || d.code == Reason::MISSING_VALUATION ||
+        d.code == Reason::SESSION_CLOSED)
+      return;
+    if (!d.ok()) {
+      d.message = std::string(to_string(d.code)) + ": " + d.message;
+      d.code = Reason::RISK_CHANGED;
+      cancel_order(o, d, events);
+      return;
+    }
+    o.status = OrderStatus::Working;
+    o.triggered_at = s.time;
+    event(events, "order_triggered", o);
+  }
+  match_symbols(s, {s.orders.at(static_cast<std::size_t>(id - 1)).request.symbol}, events, id);
+  auto& stored = s.orders.at(static_cast<std::size_t>(id - 1));
+  if (stored.open() && stored.request.tif == TimeInForce::Ioc)
+    cancel_order(stored, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+}
+/// Armed orders activate only in their contract's regular session.
+void check_triggers(State& s, Events& events) {
+  for (std::size_t i = 0; i < s.orders.size(); ++i) {
+    const auto& o = s.orders[i];
+    if (o.status != OrderStatus::Armed ||
+        md::trading_session(s.contracts.at(o.request.symbol).root, s.time).name != "regular" || !reached(s, o))
+      continue;
+    activate(s, o.id, events);
   }
 }
 /// Submit a reducer-owned market IOC that closes one position against the
@@ -397,7 +553,7 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = {"system:" + std::string(why) + ":" + std::to_string(order.id), symbol, side,
-                   OrderType::Market, TimeInForce::Ioc, magnitude(q), {}};
+                   OrderType::Market, TimeInForce::Ioc, magnitude(q), {}, {}, {}};
   order.accepted_at = s.time;
   order.day_end = s.time;  // IOC: never rests past this transaction.
   order.system = true;
@@ -564,13 +720,28 @@ CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decis
       event(events, "order_rejected", stored);
       return CommandResult{decision, stored.id, 0};
     }
-    stored.day_end = regular_end(s.contracts.at(stored.request.symbol), time);
+    const auto id = stored.id;
+    const auto& contract = s.contracts.at(stored.request.symbol);
+    if (stored.request.trigger) {
+      // Armed until reached, and good until expiry; a level already reached
+      // activates at once.
+      stored.status = OrderStatus::Armed;
+      stored.day_end = contract.expiry_time();
+      event(events, "order_accepted", stored);
+      if (md::trading_session(contract.root, s.time).name == "regular" &&
+          reached(s, s.orders.at(static_cast<std::size_t>(id - 1))))
+        activate(s, id, events);
+      return CommandResult{{}, id, 0};
+    }
+    stored.day_end = regular_end(contract, time);
     event(events, "order_accepted", stored);
     // Existing better orders share any remaining budget even on command ingress.
-    match_symbols(s, {stored.request.symbol}, events, stored.id);
-    if (stored.open() && stored.request.tif == TimeInForce::Ioc)
-      cancel_order(stored, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
-    return CommandResult{{}, stored.id, 0};
+    // Matching can append bracket exits, so re-read the order by ID afterwards.
+    match_symbols(s, {s.orders.at(static_cast<std::size_t>(id - 1)).request.symbol}, events, id);
+    auto& accepted = s.orders.at(static_cast<std::size_t>(id - 1));
+    if (accepted.open() && accepted.request.tif == TimeInForce::Ioc)
+      cancel_order(accepted, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+    return CommandResult{{}, id, 0};
   });
 }
 CommandResult TradingSession::cancel(OrderId id, Timestamp time) {
@@ -617,7 +788,11 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     for (auto it = changed.begin(); it != changed.end();) {
       if (!quote_check(s, *it).ok()) it = changed.erase(it); else ++it;
     }
-    if (!s.kill) match_symbols(s, changed, events);
+    if (!s.kill) {
+      match_symbols(s, changed, events);
+      // Triggers read the batch's books and valuations after resting orders match.
+      check_triggers(s, events);
+    }
     return CommandResult{};
   });
 }
@@ -672,6 +847,7 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     s.ledger.settle(symbol, intrinsic);
     s.settled.insert(symbol);
     s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
+    sync_exits(s, symbol, events);
     event(events, "settlement", Json{{"symbol", symbol}, {"reference", settlement}, {"intrinsic", intrinsic}});
     return CommandResult{};
   });

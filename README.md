@@ -29,7 +29,8 @@ and your data stay on your machine.
 - **Evaluation simulator**: trade index options against live quotes under funded-account
   style rules: a profit target and a trailing drawdown floor (intraday or end of day)
   decide pass or fail, with buy-only and buying-power plans and auto-close before
-  expiry. The Dashboard charts equity against the target and floor; Trade docks an order
+  expiry. Orders can wait for the underlying to cross a level, and brackets attach a
+  stop-loss and take-profit (on the option or the underlying) that cancel each other. The Dashboard charts equity against the target and floor; Trade docks an order
   ticket beside the chain; Positions adds Greeks, limits, a spot × vol scenario grid and a
   kill switch; Orders, a Journal (P&L calendar, win rate, profit factor, reports by hold
   time, weekday and month) and Rules complete the account.

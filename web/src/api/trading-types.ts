@@ -106,11 +106,18 @@ export interface Plan { id: string; name: string; summary: string; initial_cash:
 export interface PlansResponse { plans: Plan[] }
 export type ResetRequest = { reason: string } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export type Side = "buy" | "sell"
+/** Option triggers compare the order's executable side; underlying ones compare spot. */
+export interface Trigger { source: "option" | "underlying"; direction: "at_or_below" | "at_or_above"; level: Money }
+/** A stop takes a trigger (then trades at market); a take-profit takes a limit or a trigger. */
+export type ExitSpec = { trigger: Trigger; limit_price?: never } | { limit_price: Money; trigger?: never }
+export interface Bracket { stop_loss?: ExitSpec; take_profit?: ExitSpec }
 export type NewOrder = {
   client_order_id: string
   symbol: string
   side: Side
   quantity: number
+  trigger?: Trigger
+  bracket?: Bracket
 } & ({ type: "limit"; limit_price: Money; time_in_force: "day" | "ioc" }
   | { type: "market"; time_in_force: "ioc"; limit_price?: never })
 export interface Order {
@@ -126,12 +133,20 @@ export interface Order {
   remaining_quantity: number
   limit_price: Money | null
   average_fill_price: Money | null
-  status: "working" | "partially_filled" | "filled" | "cancelled" | "rejected"
+  status: "working" | "partially_filled" | "filled" | "cancelled" | "rejected" | "armed"
   reason: { code: string; message: string } | null
   accepted_at: string
   day_end: string | null
   /** System orders liquidate or auto-close; absent on older servers. */
   origin?: "user" | "system"
+  trigger?: Trigger | null
+  triggered_at?: string | null
+  bracket?: { stop_loss: { trigger: Trigger | null; limit_price: Money | null } | null; take_profit: { trigger: Trigger | null; limit_price: Money | null } | null } | null
+  role?: "stop_loss" | "take_profit" | null
+  parent?: string | null
+  oco?: string | null
+  stop_loss_order?: string | null
+  take_profit_order?: string | null
 }
 export interface Fill {
   id: string

@@ -67,3 +67,27 @@ export function buyingPowerEffect(order: { side: Side; quantity: number; price: 
   if (side === "buy") return price == null || !Number.isFinite(price) ? null : -(opening * 100 * price + fee * quantity)
   return -(opening * nakedRequirement(order.type, order.strike, order.spot) + fee * quantity)
 }
+
+export type Direction = "at_or_below" | "at_or_above"
+export const opposite = (direction: Direction): Direction => (direction === "at_or_below" ? "at_or_above" : "at_or_below")
+/**
+ * Where a stop sits for an entry. Option-price stops watch the exit's side
+ * (the bid when selling out of a long), so they trigger on the way down for
+ * longs and up for shorts. Underlying stops trigger when spot moves against the
+ * position: down for long calls and short puts, up for long puts and short calls.
+ */
+export function stopDirection(source: "option" | "underlying", entry: Side, type: Kind): Direction {
+  if (source === "option") return entry === "buy" ? "at_or_below" : "at_or_above"
+  return (entry === "buy") === (type === "call") ? "at_or_below" : "at_or_above"
+}
+/** A conditional entry fires when spot reaches the level from where it is now. */
+export function crossDirection(level: number, spot: number | null | undefined): Direction {
+  return spot != null && Number.isFinite(spot) && level < spot ? "at_or_below" : "at_or_above"
+}
+/** "bid ≤ $3.50" or "SPX ≥ 5,010.00". */
+export function describeTrigger(trigger: { source: "option" | "underlying"; direction: Direction; level: string }, side: Side, underlying: string): string {
+  const sign = trigger.direction === "at_or_below" ? "≤" : "≥"
+  const level = Number(trigger.level)
+  const text = Number.isFinite(level) ? level.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : trigger.level
+  return trigger.source === "option" ? `${side === "buy" ? "ask" : "bid"} ${sign} $${text}` : `${underlying} ${sign} ${text}`
+}

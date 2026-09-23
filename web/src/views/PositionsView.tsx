@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query"
 import { useState, type ReactNode } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
-import { useAccount, useRefreshTrading, useTradingQueries } from "../api/trading"
-import type { Position, Risk, TradingStatus } from "../api/trading-types"
+import { useAccount, useAllOrders, useRefreshTrading, useTradingQueries } from "../api/trading"
+import type { Order, Position, Risk, TradingStatus } from "../api/trading-types"
 import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { OrderTicket } from "../components/OrderTicket"
@@ -14,6 +14,7 @@ import { Badge, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../comp
 import { fixed, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { contractLabel } from "../lib/journal"
+import { describeTrigger } from "../lib/ticket"
 import { formatMoney, paperNotice, ratio, signedMoney } from "../lib/trading"
 
 /** Right-aligned numeric table; the first `left` columns are labels, aligned left. */
@@ -45,7 +46,15 @@ function CloseTicket({ position, trading, onClose }: { position: Position; tradi
   }} />
 }
 
-function Positions({ positions, onClose }: { positions: Position[]; onClose?: (position: Position) => void }) {
+/** Open bracket exits protecting a position, e.g. "Stop bid ≤ $3.50 · Target $5.00". */
+function protection(position: Position, orders: Order[]): string | null {
+  const exits = orders.filter((o) => o.symbol === position.symbol && o.role &&
+    (o.status === "working" || o.status === "partially_filled" || o.status === "armed"))
+  if (!exits.length) return null
+  return exits.map((o) => `${o.role === "stop_loss" ? "Stop" : "Target"} ${o.trigger ? describeTrigger(o.trigger, o.side, o.underlying)
+    : formatMoney(o.limit_price)}`).join(" · ")
+}
+function Positions({ positions, onClose, orders = [] }: { positions: Position[]; onClose?: (position: Position) => void; orders?: Order[] }) {
   if (!positions.length) return <p className="text-sm text-muted">No open positions. Click a bid or ask on the Trade page to build a ticket.</p>
   return <Table label="Positions" headers={["Contract", "Qty", "Avg price", "Mark / age", "Market value", "Unrealized", "P&L %", "Dollar delta", "Vega", "Theta", ""]}>
     {positions.map((position) => {
@@ -55,6 +64,7 @@ function Positions({ positions, onClose }: { positions: Position[]; onClose?: (p
           <div className="font-medium">{contractLabel(position)} <span className="text-muted">{position.settlement}</span></div>
           <div className="mt-1 text-[11px] text-faint">{position.symbol}</div>
           {position.awaiting_settlement && <span className="mt-1 inline-block rounded-full border border-warn px-2 py-0.5 text-[10px] text-warn">Awaiting settlement</span>}
+          {protection(position, orders) && <div className="mt-1 text-[10px] text-accent">{protection(position, orders)}</div>}
         </td>
         <td><Badge tone={position.quantity > 0 ? "positive" : "negative"}>{position.quantity > 0 ? `+${position.quantity} long` : `${position.quantity} short`}</Badge></td>
         <td>{formatMoney(position.average_price)}</td>
@@ -79,6 +89,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const { underlyings } = useLive()
   const { portfolio, orders, risk } = useTradingQueries()
   const account = useAccount().data
+  const allOrders = useAllOrders().data?.orders
   const [editing, setEditing] = useState<Risk | null>(null)
   const [closing, setClosing] = useState<Position | null>(null)
   const refresh = useRefreshTrading()
@@ -110,7 +121,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <Tile label="Realized" value={signedMoney(data.realised)} tone={toneOf(data.realised)} detail={`fees ${formatMoney(data.fees)}`} />
       </div>
       <p className="text-[11px] text-muted">Valued {timestampET(data.time)}</p>
-      <Panel title={`Open positions · ${data.positions.length}`}><Positions positions={data.positions} onClose={trading.enabled ? setClosing : undefined} /></Panel>
+      <Panel title={`Open positions · ${data.positions.length}`}><Positions positions={data.positions} orders={allOrders} onClose={trading.enabled ? setClosing : undefined} /></Panel>
     </> : trading.enabled && !portfolio.error ? <Empty>Loading positions…</Empty> : null}
     <Panel title="Portfolio risk" actions={<button type="button" className="trade-button" disabled={!risk.data || !trading.enabled} onClick={() => { if (risk.data) setEditing(risk.data) }}>Edit limits</button>}>
       <TradingError error={risk.error} />{risk.data ? <RiskPanel risk={risk.data} /> : <p className="text-sm text-muted">{trading.enabled ? "Loading risk…" : "Risk unavailable"}</p>}

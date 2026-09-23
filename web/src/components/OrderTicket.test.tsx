@@ -125,6 +125,39 @@ describe("order ticket interaction", () => {
     expect(host.textContent).not.toContain("New order")
     expect(host.textContent).toContain("Check Positions and Orders to confirm")
   })
+  it("sends a conditional entry with a bracket whose exits oppose the position", async () => {
+    await render({ ...trading, fee_per_contract: "0.65" })
+    await choose("Condition", "When SPX crosses")
+    await setField("SPX level", "7010")
+    expect(host.textContent).toContain("Arms now and activates when SPX ≥ 7,010.00")
+    await act(async () => (host.querySelector('input[aria-label="Bracket"]') as HTMLInputElement).click())
+    // Suggestions snap to the SPXW tick: 25% below and 50% above the $4.60 entry.
+    expect(field("Stop loss price").value).toBe("3.50")
+    expect(field("Take profit price").value).toBe("6.90")
+    expect(host.textContent).toContain("Sells at market when bid ≤ $3.50.")
+    expect(host.textContent).toContain("Rests as a $6.90 limit to sell.")
+    await choose("Take profit source", "SPX")
+    await setField("Take profit SPX level", "7100")
+    expect(button("Submit order").textContent).toBe("Arm · Buy 1 Long Call @ $4.60 · bracket")
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({
+      trigger: { source: "underlying", direction: "at_or_above", level: "7010" },
+      bracket: {
+        stop_loss: { trigger: { source: "option", direction: "at_or_below", level: "3.50" } },
+        take_profit: { trigger: { source: "underlying", direction: "at_or_above", level: "7100" } },
+      },
+    })
+  })
+  it("blocks submission until conditional and bracket levels are entered", async () => {
+    await render({ ...trading, fee_per_contract: "0.65" })
+    await choose("Condition", "When SPX crosses")
+    expect(button("Submit order").disabled).toBe(true)
+    await setField("SPX level", "7010")
+    expect(button("Submit order").disabled).toBe(false)
+    await act(async () => (host.querySelector('input[aria-label="Bracket"]') as HTMLInputElement).click())
+    await setField("Stop loss price", "")
+    expect(button("Submit order").disabled).toBe(true)
+  })
   it("retains INVALID_TICK feedback for typed off-tick prices", async () => {
     vi.mocked(api.submitOrder).mockRejectedValueOnce(new ApiError(422, "Limit price is not a positive multiple of the product tier tick", "INVALID_TICK"))
     await render()

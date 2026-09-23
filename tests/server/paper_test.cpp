@@ -946,4 +946,45 @@ TEST_F(PaperEngine, CustomDrawdownBreachLiquidatesWithSystemOrders) {
   expect_error(write(*engine, "POST", "/api/orders", order(market, "after", "4.20")), 422, "EVALUATION_CLOSED");
   engine->stop();
 }
+
+TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
+  seed();
+  const json stop{{"source", "option"}, {"direction", "at_or_below"}, {"level", "3.50"}};
+  auto entry = order(market, "entry", "4.20");
+  entry["bracket"] = {{"stop_loss", {{"trigger", stop}}}, {"take_profit", {{"limit_price", "5.00"}}}};
+  const auto response = write(*engine, "POST", "/api/orders", entry);
+  ASSERT_EQ(response.status, 201) << response.body;
+  const auto body = json::parse(response.body)["order"];
+  EXPECT_EQ(body["status"], "filled");
+  EXPECT_EQ(body["stop_loss_order"], "2");
+  EXPECT_EQ(body["take_profit_order"], "3");
+  EXPECT_EQ(body["bracket"]["take_profit"]["limit_price"], "5.00");
+  EXPECT_EQ(body["role"], nullptr);
+  const auto open = read(*engine, "/api/orders?status=open")["orders"];
+  ASSERT_EQ(open.size(), 2);
+  EXPECT_EQ(open[0]["role"], "take_profit");
+  EXPECT_EQ(open[0]["status"], "working");
+  EXPECT_EQ(open[0]["oco"], "2");
+  EXPECT_EQ(open[1]["role"], "stop_loss");
+  EXPECT_EQ(open[1]["status"], "armed");
+  EXPECT_EQ(open[1]["parent"], "1");
+  EXPECT_EQ(open[1]["trigger"], stop);
+  EXPECT_EQ(open[1]["day_end"], md::format_timestamp(market.contract.expiry_time()));
+
+  auto bad = order(market, "empty-bracket", "4.20");
+  bad["bracket"] = json::object();
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["bracket"] = {{"stop_loss", {{"trigger", stop}, {"limit_price", "3.00"}}}};
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["bracket"] = {{"stop_loss", {{"trigger", {{"source", "spot"}, {"direction", "at_or_below"}, {"level", "1"}}}}}};
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+
+  auto armed = order(market, "armed", "4.20");
+  armed["trigger"] = {{"source", "underlying"}, {"direction", "at_or_above"}, {"level", "5100"}};
+  const auto conditional = write(*engine, "POST", "/api/orders", armed);
+  ASSERT_EQ(conditional.status, 201) << conditional.body;
+  EXPECT_EQ(json::parse(conditional.body)["order"]["status"], "armed");
+  EXPECT_EQ(json::parse(conditional.body)["order"]["triggered_at"], nullptr);
+  engine->stop();
+}
 }  // namespace

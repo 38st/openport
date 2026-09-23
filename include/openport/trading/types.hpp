@@ -24,10 +24,11 @@ enum class Reason {
   DAY_END, EXPIRED, AWAITING_SETTLEMENT, INVALID_SETTLEMENT, ALREADY_SETTLED,
   UNKNOWN_ORDER, ORDER_TERMINAL, INVALID_LIMITS, INVALID_TIME, INVALID_SCENARIO,
   INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED,
-  EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES
+  EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
+  OCO_FILLED, POSITION_CLOSED
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::INVALID_RULES;
+inline constexpr Reason kLastReason = Reason::POSITION_CLOSED;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -51,7 +52,30 @@ struct Decision {
 enum class Side { Buy, Sell };
 enum class OrderType { Market, Limit };
 enum class TimeInForce { Day, Ioc };
-enum class OrderStatus { Working, PartiallyFilled, Filled, Cancelled, Rejected };
+/// Armed orders wait for their trigger; they are open (cancellable, reserving
+/// risk and buying power) but never match until activated.
+enum class OrderStatus { Working, PartiallyFilled, Filled, Cancelled, Rejected, Armed };
+
+/// A price level that activates an order. Option triggers compare the order's
+/// executable side (ask for buys, bid for sells); underlying triggers compare
+/// the spot from the contract's fresh valuation. Levels are inclusive.
+enum class TriggerSource { Option, Underlying };
+enum class TriggerDirection { AtOrBelow, AtOrAbove };
+struct Trigger {
+  TriggerSource source = TriggerSource::Option;
+  TriggerDirection direction = TriggerDirection::AtOrBelow;
+  Money level;
+};
+/// A bracket exit: a trigger makes it a market order when reached (a stop); a
+/// limit price makes it a resting limit (a take-profit). Exactly one is set.
+struct ExitSpec {
+  std::optional<Trigger> trigger;
+  std::optional<Money> limit_price;
+};
+struct Bracket {
+  std::optional<ExitSpec> stop_loss;
+  std::optional<ExitSpec> take_profit;
+};
 
 struct OrderRequest {
   std::string client_order_id;
@@ -61,7 +85,12 @@ struct OrderRequest {
   TimeInForce tif = TimeInForce::Day;
   Quantity quantity = 0;
   std::optional<Money> limit_price;
+  /// Conditional order: armed until reached, good until contract expiry.
+  std::optional<Trigger> trigger;
+  /// Exits created as this entry fills, one cancelling the other.
+  std::optional<Bracket> bracket;
 };
+enum class OrderRole { Normal, StopLoss, TakeProfit };
 struct Order {
   OrderId id = 0;  ///< Also the acceptance priority sequence; never reused.
   OrderRequest request;
@@ -74,9 +103,15 @@ struct Order {
   /// Reducer-generated closing order (rule liquidation or expiry auto-close).
   /// Always market IOC against a fresh book; never user-submitted.
   bool system = false;
+  OrderRole role = OrderRole::Normal;
+  OrderId parent = 0;         ///< Bracket exits: the entry that created them.
+  OrderId oco = 0;            ///< Bracket exits: the other exit, cancelled when this one fills.
+  OrderId stop_loss = 0;      ///< Bracket entries: their stop-loss exit, once created.
+  OrderId take_profit = 0;    ///< Bracket entries: their take-profit exit, once created.
+  Timestamp triggered_at = 0; ///< When an armed order activated.
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   [[nodiscard]] bool open() const {
-    return status == OrderStatus::Working || status == OrderStatus::PartiallyFilled;
+    return status == OrderStatus::Working || status == OrderStatus::PartiallyFilled || status == OrderStatus::Armed;
   }
 };
 struct Fill {

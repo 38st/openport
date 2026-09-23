@@ -159,6 +159,32 @@ open. The simulation clock stays at market time. Resting orders do not fill from
 stale data and are not cancelled merely because the feed stalls; they remain
 subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
 
+## Conditional and bracket orders
+
+Any order may carry a **trigger** `{source, direction, level}`. It is accepted with the
+normal pre-trade checks, then rests as `Armed`: open, cancellable, reserving exposure and
+buying power, but never matched. Option triggers compare the order's executable side
+(ask for buys, bid for sells) from a fresh book; underlying triggers compare spot from
+the contract's fresh valuation. Levels are inclusive (`at_or_below`, `at_or_above`), and
+missing or stale data never triggers. Triggers are checked after each market batch's
+resting orders match, and at submission, only during the contract's regular session.
+A reached order is activated: entries rerun every pre-trade check, while bracket exits
+need only an executable book. Stale data or a closed session keeps it armed; any other
+failure cancels it with `RISK_CHANGED`. It then trades like any order (market orders
+IOC). Armed orders are good until the contract expires.
+
+A **bracket** `{stop_loss, take_profit}` on an entry creates exits as the entry fills.
+Each exit takes exactly one of a trigger (a stop: market IOC when reached) or a limit
+price (a resting take-profit). Exits take the opposite side and are sized to the entry's
+filled quantity; later entry fills grow them. Client IDs are the entry's with `:stop` or
+`:target`. The two exits are linked: the first fill of one cancels the other with
+`OCO_FILLED`. Exits never exceed the position they protect: they shrink when it shrinks
+and are cancelled with `POSITION_CLOSED` once it is flat, so they never open a
+position. Because they only reduce risk, they execute like system orders, without the
+price band or loss projection, and good-until-expiry exits wait for the next regular
+session. A bracket pair counts once in reachable exposure and buying power (fees only);
+exits never count against buy-only sells, so a manual close is always possible.
+
 ## Accounting, marks and equity
 
 Let `q` be signed contracts, `M = 100`, `p` fill premium per unit and `f` the fill fee:
@@ -464,6 +490,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules) |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
 | `INVALID_RULES` | Negative rule money, cutoff of a day or more, or a plan name over 64 bytes |
+| `OCO_FILLED`, `POSITION_CLOSED` | Bracket exit cancelled by its sibling's fill, or because its position closed |
 
 ## Engine integration and HTTP API
 
@@ -527,7 +554,7 @@ focus at the top of the ticket.
 | --- | --- |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working/partially filled |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`); 201 returns version, order and its fills |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`; 201 returns version, order and its fills |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `GET /api/fills` | Version and fills, newest first |
 | `GET /api/risk` | Version, limits revision, limits, complete flag, daily loss, kill state, aggregate/underlying buckets and scenario matrices |
@@ -543,7 +570,9 @@ Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
 buying_power, expiry_cutoff_seconds}` with null money for a disabled target or
 drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `buying_power: {available, reserved, short_requirement}`; orders add `origin`
-(`user` or `system`); status and ticks add `trading.plan` and `trading.evaluation`
+(`user` or `system`), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`
+(`stop_loss`/`take_profit`/null), `parent`, `oco`, `stop_loss_order` and
+`take_profit_order`; status and ticks add `trading.plan` and `trading.evaluation`
 (`active`/`passed`/`failed`, null without a target or drawdown rule). `--plan ID`
 chooses the rules for a new journal (default `practice`); `--paper-cash` then overrides
 its starting balance. Recovery keeps the recorded rules.

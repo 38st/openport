@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest"
 import { quote, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
 import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, tradeBuckets } from "./journal"
-import { buyingPowerEffect, marketability, nakedRequirement, split, strategyName } from "./ticket"
-import { ratio, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
+import { buyingPowerEffect, crossDirection, describeTrigger, marketability, nakedRequirement, opposite, split, stopDirection, strategyName } from "./ticket"
+import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
 
 describe("journal analytics", () => {
   it("summarises closed trades only, with exact profit factor and hold time", () => {
@@ -86,6 +86,31 @@ describe("ticket logic", () => {
     expect(nakedRequirement("put", 5000, 5200)).toBeCloseTo(84_000)
     expect(nakedRequirement("call", 5200, 5000)).toBeCloseTo(80_000)
     expect(nakedRequirement("put", 5000, null)).toBeCloseTo(100_000)
+  })
+})
+
+describe("conditional orders", () => {
+  it("places stops against the position and conditional entries by the level's side of spot", () => {
+    expect(stopDirection("option", "buy", "call")).toBe("at_or_below")
+    expect(stopDirection("option", "sell", "put")).toBe("at_or_above")
+    expect(stopDirection("underlying", "buy", "call")).toBe("at_or_below")
+    expect(stopDirection("underlying", "buy", "put")).toBe("at_or_above")
+    expect(stopDirection("underlying", "sell", "call")).toBe("at_or_above")
+    expect(stopDirection("underlying", "sell", "put")).toBe("at_or_below")
+    expect(opposite("at_or_below")).toBe("at_or_above")
+    expect(crossDirection(5010, 5000)).toBe("at_or_above")
+    expect(crossDirection(4990, 5000)).toBe("at_or_below")
+    expect(crossDirection(4990, null)).toBe("at_or_above")
+    expect(describeTrigger({ source: "option", direction: "at_or_below", level: "3.5" }, "sell", "SPX")).toBe("bid ≤ $3.50")
+    expect(describeTrigger({ source: "underlying", direction: "at_or_above", level: "5010" }, "buy", "SPX")).toBe("SPX ≥ 5,010.00")
+  })
+  it("rounds suggested prices to the root's tier tick", () => {
+    expect(roundToTick("SPXW", 6.31)).toBe("6.30")
+    expect(roundToTick("SPXW", 2.93)).toBe("2.95")
+    expect(roundToTick("SPY", 6.317)).toBe("6.32")
+    expect(roundToTick("AAPL", 3.12)).toBe("3.10")
+    expect(roundToTick("SPXW", 0.01)).toBe("0.05")
+    expect(roundToTick("SPXW", -1)).toBeNull()
   })
 })
 

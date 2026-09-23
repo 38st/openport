@@ -3,11 +3,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { api, ApiError } from "../api/client"
 import { useLive } from "../api/live"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
-import type { NewOrder, Order, Side, TradingStatus } from "../api/trading-types"
+import type { Bracket, NewOrder, Order, Side, Trigger, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote } from "../api/types"
 import { count, days, fixed, price } from "../lib/format"
-import { buyingPowerEffect, marketability, split, strategyName } from "../lib/ticket"
-import { formatMoney, limitPriceText, limitPriceTick, paperNotice, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
+import { buyingPowerEffect, crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
+import { formatMoney, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
@@ -89,6 +89,17 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
   const [quantity, setQuantity] = useState(String(selection.quantity ?? 1))
   const [limitPrice, setLimitPrice] = useState(() => limitPriceText(selection.price))
   const [fee, setFee] = useState("")
+  // Conditional entry and bracket exits.
+  const spot = selection.spot != null && Number.isFinite(selection.spot) ? selection.spot : null
+  const [condition, setCondition] = useState<"now" | "cross">("now")
+  const [crossLevel, setCrossLevel] = useState(() => (spot != null ? spot.toFixed(2) : ""))
+  const [protect, setProtect] = useState(false)
+  const [stopOn, setStopOn] = useState(true)
+  const [stopSource, setStopSource] = useState<"option" | "underlying">("option")
+  const [stopLevel, setStopLevel] = useState("")
+  const [targetOn, setTargetOn] = useState(true)
+  const [targetSource, setTargetSource] = useState<"option" | "underlying">("option")
+  const [targetLevel, setTargetLevel] = useState("")
   const [pending, setPending] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [order, setOrder] = useState<Order>()
@@ -112,7 +123,17 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
   const serverFee = trading.fee_per_contract
   const effectiveFee = serverFee ?? (fee || null)
   const estimate = ticketEstimate(quote, side, q, estimatedPrice, effectiveFee)
-  const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee))
+  const trigger: Trigger | undefined = condition === "cross" && validMoney(crossLevel) && Number(crossLevel) > 0
+    ? { source: "underlying", direction: crossDirection(Number(crossLevel), spot), level: crossLevel } : undefined
+  const exitLevel = (value: string) => validMoney(value) && Number(value) > 0
+  const bracket: Bracket | undefined = protect ? {
+    ...(stopOn && exitLevel(stopLevel) ? { stop_loss: { trigger: { source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel } } } : {}),
+    ...(targetOn && exitLevel(targetLevel) ? { take_profit: targetSource === "option" ? { limit_price: targetLevel }
+      : { trigger: { source: "underlying" as const, direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel } } } : {}),
+  } : undefined
+  const bracketValid = !protect || ((stopOn || targetOn) && (!stopOn || exitLevel(stopLevel)) && (!targetOn || exitLevel(targetLevel)))
+  const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee)) &&
+    (condition === "now" || trigger != null) && bracketValid
   const untradable = quote?.tradable !== true || quote.symbol !== selection.symbol
   const notice = paperNotice(selection.underlying, underlyings.find((u) => u.symbol === selection.underlying))
   const rules = account?.rules
@@ -145,6 +166,7 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
       request.current ??= {
         client_order_id: crypto.randomUUID(), symbol: selection.symbol, side, quantity: q,
         ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitPrice }),
+        ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
       }
       setSubmitted(true)
       const response = await api.submitOrder(request.current, trading.write)
@@ -158,6 +180,25 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
     }
   }
   const setPrice = (value: number | null | undefined) => { if (value != null && Number.isFinite(value)) setLimitPrice(limitPriceText(value.toFixed(2))) }
+  const entryPrice = Number(estimatedPrice)
+  // Suggested exits: 25% of premium at risk, 50% target, or 0.5% of spot.
+  const suggest = (kind: "stop" | "target", source: "option" | "underlying") => {
+    const worse = kind === "stop"
+    if (source === "option") {
+      if (!Number.isFinite(entryPrice) || entryPrice <= 0) return ""
+      const long = side === "buy"
+      const factor = worse ? (long ? 0.75 : 1.25) : (long ? 1.5 : 0.5)
+      return roundToTick(root, entryPrice * factor) ?? ""
+    }
+    if (spot == null) return ""
+    const down = stopDirection("underlying", side, selection.optionType) === "at_or_below"
+    return (spot * ((down === worse) ? 0.995 : 1.005)).toFixed(2)
+  }
+  const enableProtection = (on: boolean) => {
+    setProtect(on)
+    if (on && !stopLevel) setStopLevel(suggest("stop", stopSource))
+    if (on && !targetLevel) setTargetLevel(suggest("target", targetSource))
+  }
   const stepQuantity = (delta: number) => setQuantity(String(Math.max(1, (Number.isSafeInteger(q) ? q : 1) + delta)))
 
   return <>
@@ -227,6 +268,33 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
         </div>}
         {serverFee == null ? <label className="trade-label col-span-2">Fee / contract ($, estimate)<input className="trade-input" inputMode="decimal" value={fee} placeholder="Not provided by server" onChange={(e) => setFee(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
           : <div className="trade-label col-span-2">Fee / contract<div className="tabular text-foreground">{formatMoney(serverFee)}</div></div>}
+        <div className="trade-label col-span-2">Condition
+          <Segmented label="Condition" value={condition} onChange={setCondition}
+            options={[{ value: "now", label: "Now" }, { value: "cross", label: `When ${selection.underlying} crosses` }]} />
+          {condition === "cross" && <>
+            <label className="trade-label">{selection.underlying} level
+              <input className="trade-input" inputMode="decimal" value={crossLevel} onChange={(e) => setCrossLevel(e.target.value)} pattern="[0-9]+([.][0-9]+)?" required /></label>
+            <span className="text-[11px] text-muted">{trigger
+              ? `Arms now and activates when ${describeTrigger(trigger, side, selection.underlying)}${spot != null ? ` (now ${spot.toFixed(2)})` : ""}; good until expiry.`
+              : "Enter the level that activates the order."}</span>
+          </>}
+        </div>
+        <div className="col-span-2 space-y-2 rounded-md border border-border p-3">
+          <label className="flex items-center justify-between gap-2 text-xs text-muted">
+            <span>Protect with a stop-loss and take-profit</span>
+            <input type="checkbox" role="switch" aria-label="Bracket" checked={protect} onChange={(e) => enableProtection(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
+          </label>
+          {protect && <>
+            <ExitRow label="Stop loss" on={stopOn} setOn={setStopOn} source={stopSource} setSource={(next) => { setStopSource(next); setStopLevel(suggest("stop", next)) }}
+              level={stopLevel} setLevel={setStopLevel} underlying={selection.underlying}
+              hint={exitLevel(stopLevel) ? `${side === "buy" ? "Sells" : "Buys"} at market when ${describeTrigger({ source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel }, side === "buy" ? "sell" : "buy", selection.underlying)}.` : "Enter a stop level."} />
+            <ExitRow label="Take profit" on={targetOn} setOn={setTargetOn} source={targetSource} setSource={(next) => { setTargetSource(next); setTargetLevel(suggest("target", next)) }}
+              level={targetLevel} setLevel={setTargetLevel} underlying={selection.underlying}
+              hint={!exitLevel(targetLevel) ? "Enter a target." : targetSource === "option" ? `Rests as a ${formatMoney(targetLevel)} limit to ${side === "buy" ? "sell" : "buy"}.`
+                : `${side === "buy" ? "Sells" : "Buys"} at market when ${describeTrigger({ source: "underlying", direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel }, side, selection.underlying)}.`} />
+            <p className="text-[11px] text-muted">Exits are placed as the entry fills, sized to the fill; one cancels the other. Both are good until expiry.</p>
+          </>}
+        </div>
       </fieldset>
       <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{fill.message}</p>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
@@ -244,8 +312,25 @@ function TicketBody({ selection, quote, trading, onClose, variant }: {
       <p className="text-[11px] text-muted">Estimates use the {type === "limit" ? "limit price" : "current executable quote"}. Fills and fees are determined by the server.{type === "market" ? " Market orders always use IOC." : ""}</p>
       {(!submitted || pending) && <button className={`w-full rounded-md px-3 py-2.5 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50 ${side === "buy" ? "bg-bullish" : "bg-bearish"}`}
         type="submit" aria-label="Submit order" disabled={!valid || blocked || pending}>
-        {pending ? "Submitting…" : `${side === "buy" ? "Buy" : "Sell"} ${valid ? q : ""} ${name}${type === "limit" && validMoney(limitPrice) ? ` @ ${formatMoney(limitPrice)}` : type === "market" ? " at market" : ""}`}
+        {pending ? "Submitting…" : `${trigger ? "Arm · " : ""}${side === "buy" ? "Buy" : "Sell"} ${valid ? q : ""} ${name}${type === "limit" && validMoney(limitPrice) ? ` @ ${formatMoney(limitPrice)}` : type === "market" ? " at market" : ""}${bracket?.stop_loss || bracket?.take_profit ? " · bracket" : ""}`}
       </button>}
     </form>
   </>
+}
+
+function ExitRow({ label, on, setOn, source, setSource, level, setLevel, underlying, hint }: {
+  label: string; on: boolean; setOn: (on: boolean) => void; source: "option" | "underlying"; setSource: (source: "option" | "underlying") => void
+  level: string; setLevel: (level: string) => void; underlying: string; hint: string
+}) {
+  return <div className="space-y-1.5">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} className="accent-[var(--accent)]" />{label}</label>
+      {on && <Segmented label={`${label} source`} value={source} onChange={setSource} options={[{ value: "option", label: "Option" }, { value: "underlying", label: underlying }]} />}
+    </div>
+    {on && <>
+      <label className="trade-label">{label} {source === "option" ? "price ($)" : `${underlying} level`}
+        <input className="trade-input" inputMode="decimal" value={level} onChange={(e) => setLevel(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
+      <span className="text-[11px] text-muted">{hint}</span>
+    </>}
+  </div>
 }

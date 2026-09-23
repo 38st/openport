@@ -35,13 +35,24 @@ template <class T> void added_field(const Json& j, const char* key, T& value) {
   if (const auto it = j.find(key); it != j.end()) it->get_to(value);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Decision, code, message, actual, limit, scope)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(OrderRequest, client_order_id, symbol, side, type, tif, quantity, limit_price)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Order, id, request, status, filled_quantity, filled_notional, accepted_at, day_end, reason, system)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Trigger, source, direction, level)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExitSpec, trigger, limit_price)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Bracket, stop_loss, take_profit)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(OrderRequest, client_order_id, symbol, side, type, tif, quantity, limit_price, trigger, bracket)
+inline void from_json(const Json& j, OrderRequest& r) {
+  j.at("client_order_id").get_to(r.client_order_id); j.at("symbol").get_to(r.symbol); j.at("side").get_to(r.side);
+  j.at("type").get_to(r.type); j.at("tif").get_to(r.tif); j.at("quantity").get_to(r.quantity);
+  j.at("limit_price").get_to(r.limit_price);
+  added_field(j, "trigger", r.trigger); added_field(j, "bracket", r.bracket);
+}
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Order, id, request, status, filled_quantity, filled_notional, accepted_at, day_end, reason, system, role, parent, oco, stop_loss, take_profit, triggered_at)
 inline void from_json(const Json& j, Order& o) {
   j.at("id").get_to(o.id); j.at("request").get_to(o.request); j.at("status").get_to(o.status);
   j.at("filled_quantity").get_to(o.filled_quantity); j.at("filled_notional").get_to(o.filled_notional);
   j.at("accepted_at").get_to(o.accepted_at); j.at("day_end").get_to(o.day_end); j.at("reason").get_to(o.reason);
-  added_field(j, "system", o.system);
+  added_field(j, "system", o.system); added_field(j, "role", o.role); added_field(j, "parent", o.parent);
+  added_field(j, "oco", o.oco); added_field(j, "stop_loss", o.stop_loss); added_field(j, "take_profit", o.take_profit);
+  added_field(j, "triggered_at", o.triggered_at);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Fill, id, order_id, symbol, side, quantity, price, fee, observation, quote_time, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(QuoteObservation, symbol, observation, time, bid, ask, bid_size, ask_size)

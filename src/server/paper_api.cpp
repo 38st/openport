@@ -44,8 +44,20 @@ std::string underlying(const TradingView& view, const std::string& symbol) {
   const auto parsed = md::parse_osi(symbol);
   return parsed ? parsed->underlying : "";
 }
+json trigger_json(const std::optional<Trigger>& t) {
+  if (!t) return nullptr;
+  return {{"source", t->source == TriggerSource::Option ? "option" : "underlying"},
+          {"direction", t->direction == TriggerDirection::AtOrBelow ? "at_or_below" : "at_or_above"},
+          {"level", t->level.str()}};
+}
+json exit_json(const std::optional<ExitSpec>& e) {
+  if (!e) return nullptr;
+  return {{"trigger", trigger_json(e->trigger)}, {"limit_price", money(e->limit_price)}};
+}
+json id_or_null(OrderId id) { return id == 0 ? json(nullptr) : json(std::to_string(id)); }
 json order_json(const Order& o, const TradingView& view) {
-  constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected"};
+  constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
+  constexpr const char* roles[] = {"", "stop_loss", "take_profit"};
   return {{"id", std::to_string(o.id)}, {"client_order_id", o.request.client_order_id},
           {"symbol", o.request.symbol}, {"underlying", underlying(view, o.request.symbol)},
           {"side", o.request.side == Side::Buy ? "buy" : "sell"},
@@ -59,7 +71,13 @@ json order_json(const Order& o, const TradingView& view) {
           {"reason", o.reason.ok() ? json(nullptr) : json{{"code", to_string(o.reason.code)}, {"message", o.reason.message}}},
           {"accepted_at", md::format_timestamp(o.accepted_at)},
           {"day_end", o.day_end > 0 ? json(md::format_timestamp(o.day_end)) : json(nullptr)},
-          {"origin", o.system ? "system" : "user"}};
+          {"origin", o.system ? "system" : "user"},
+          {"trigger", trigger_json(o.request.trigger)},
+          {"triggered_at", o.triggered_at > 0 ? json(md::format_timestamp(o.triggered_at)) : json(nullptr)},
+          {"bracket", o.request.bracket ? json{{"stop_loss", exit_json(o.request.bracket->stop_loss)},
+                                               {"take_profit", exit_json(o.request.bracket->take_profit)}} : json(nullptr)},
+          {"role", nullable(roles[static_cast<int>(o.role)])}, {"parent", id_or_null(o.parent)}, {"oco", id_or_null(o.oco)},
+          {"stop_loss_order", id_or_null(o.stop_loss)}, {"take_profit_order", id_or_null(o.take_profit)}};
 }
 json fill_json(const Fill& f, const TradingView& view) {
   return {{"id", std::to_string(f.id)}, {"order_id", std::to_string(f.order_id)},
@@ -370,6 +388,23 @@ Limits parse_limits(const json& j) {
   limits.max_valuation_age = age("max_valuation_age_seconds");
   return limits;
 }
+Trigger parse_trigger(const json& j) {
+  fields(j, {"source", "direction", "level"});
+  const auto source = string_field(j, "source"), direction = string_field(j, "direction");
+  if ((source != "option" && source != "underlying") || (direction != "at_or_below" && direction != "at_or_above"))
+    throw std::invalid_argument("trigger source must be option or underlying, direction at_or_below or at_or_above");
+  return {source == "option" ? TriggerSource::Option : TriggerSource::Underlying,
+          direction == "at_or_below" ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove, decimal_field(j, "level")};
+}
+ExitSpec parse_exit(const json& j) {
+  fields(j, {}, {"trigger", "limit_price"});
+  ExitSpec exit;
+  if (j.contains("trigger")) exit.trigger = parse_trigger(j.at("trigger"));
+  if (j.contains("limit_price")) exit.limit_price = decimal_field(j, "limit_price");
+  if (exit.trigger.has_value() == exit.limit_price.has_value())
+    throw std::invalid_argument("A bracket exit takes either a trigger or a limit_price");
+  return exit;
+}
 bool boolean_field(const json& j, const char* key) {
   if (!j.at(key).is_boolean()) throw std::invalid_argument(std::string(key) + " must be a boolean");
   return j.at(key).get<bool>();
@@ -415,7 +450,7 @@ TradingCommand parse_command(const ApiRequest& request) {
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
   const auto body = strict_json(request.body);
   if (request.target == "/api/orders") {
-    fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price"});
+    fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket"});
     auto& order = command.order;
     order.client_order_id = string_field(body, "client_order_id");
     order.symbol = symbol_field(body);
@@ -429,6 +464,16 @@ TradingCommand parse_command(const ApiRequest& request) {
     if ((order.type == OrderType::Limit) != body.contains("limit_price"))
       throw std::invalid_argument("limit_price is required for limit orders and forbidden for market orders");
     if (body.contains("limit_price")) order.limit_price = decimal_field(body, "limit_price");
+    if (body.contains("trigger")) order.trigger = parse_trigger(body.at("trigger"));
+    if (body.contains("bracket")) {
+      const auto& bracket = body.at("bracket");
+      fields(bracket, {}, {"stop_loss", "take_profit"});
+      order.bracket = Bracket{};
+      if (bracket.contains("stop_loss")) order.bracket->stop_loss = parse_exit(bracket.at("stop_loss"));
+      if (bracket.contains("take_profit")) order.bracket->take_profit = parse_exit(bracket.at("take_profit"));
+      if (!order.bracket->stop_loss && !order.bracket->take_profit)
+        throw std::invalid_argument("A bracket needs a stop_loss, a take_profit or both");
+    }
   } else if (request.target == "/api/risk/limits") {
     fields(body, {"expected_revision", "limits"});
     command.kind = TradingCommand::Kind::Limits;
