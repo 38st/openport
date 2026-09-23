@@ -1,57 +1,184 @@
 # OpenPort
 
-An open-source, self-hosted options platform. Plug in the market data provider you
-already pay for and get live option chains, implied volatility and Greeks, volatility
-surfaces, gamma and vanna exposure maps, paper trading and portfolio risk in a web
-terminal.
+Self-hosted options analytics on your own market data. Plug in the provider you already
+pay for, or start with Cboe's free delayed quotes, and get a live web terminal: option
+chains with implied volatility and Greeks computed by OpenPort itself, smiles and term
+structure, and gamma and vanna exposure maps.
 
-Your API keys and your data stay on your machine: OpenPort runs locally under your own
-data licence and never sends either anywhere else.
+One C++20 binary runs the feed, the analytics engine and the web terminal. Your API keys
+and your data stay on your machine.
 
-> Work in progress, built milestone by milestone. See the roadmap below.
+![SPX option chain during Cboe's overnight session](docs/screenshots/chain-dark.png)
 
-## Providers
+| Volatility (light theme) | Exposure |
+| --- | --- |
+| ![SPX smiles, term structure and forwards](docs/screenshots/volatility-light.png) | ![SPX gamma exposure by strike and expiry](docs/screenshots/exposure-dark.png) |
 
-| Provider | Data | Key |
-| --- | --- | --- |
-| Cboe delayed quotes | US index and equity options, 15 minutes delayed | none |
-| Databento | Real-time OPRA quotes, trades and open interest | yours |
-| ThetaData | Real-time and historical options data | yours |
-| Massive | Options snapshots and streaming quotes | yours |
+## What you get
 
-Providers deliver very different things: Databento sends raw exchange quotes with no
-Greeks, while others ship their own. OpenPort normalises every provider into the same
-contracts, quotes, trades and open interest, then computes implied volatility and Greeks
-itself, so the numbers on screen mean the same thing whichever provider you use. Where a
-provider publishes its own Greeks, OpenPort shows them alongside for comparison.
+- **Chain**: bid, ask and mid with bid/mid/ask IV, delta, gamma, vega, theta, vanna and
+  open interest per strike, centred on the money, with the provider's own IV alongside
+  where it publishes one. SPX (AM-settled) and SPXW (PM-settled) expiring on the same
+  day stay separate. Missing quotes and open interest show as missing, never as zero,
+  with coverage counts per expiry.
+- **Smile and term structure**: out-of-the-money smile per expiry and ATM term structure
+  on a square-root-of-time axis, with each expiry's forward and rate and where it came
+  from.
+- **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
+  call and put walls.
+- **Engine**: feed health per underlying, trading session, queue and analytics timing.
+- Light and dark themes, keyboard shortcuts (1-4 switch views, arrows step expiries).
 
-## Roadmap
+## Quick start
 
-- [x] **Pricing core**: Black-76 and Black-Scholes-Merton with full Greeks (including
-      vanna and volga), a safeguarded Newton implied-vol solver, and Cox-Ross-Rubinstein
-      and Leisen-Reimer binomial trees for American exercise.
-- [ ] **Provider layer**: normalised contracts, quotes, trades and open interest, with
-      adapters for Cboe, Databento, ThetaData and Massive.
-- [ ] **Chain analytics**: implied forwards from put-call parity, American implied
-      volatility, SVI volatility surfaces, gamma and vanna exposure by strike.
-- [ ] **Record and replay** of any provider's feed.
-- [ ] **Paper trading and risk**: fills against live quotes, Greeks limits, scenario
-      grids, P&L attribution and a kill switch.
-- [ ] **Web terminal**
-- [ ] **One-command install**, docs and benchmarks.
+With Docker (Cboe delayed SPX, SPY and QQQ, no key needed):
 
-## Building
+```bash
+docker build -t openport .
+docker run --rm -p 127.0.0.1:8080:8080 openport
+```
 
-Needs CMake 3.25+, a C++20 compiler, OpenSSL 3 and Boost 1.83+. Other dependencies are
-fetched and pinned by checksum at configure time.
+Then open http://localhost:8080. To use your own provider, pass its key and arguments:
+
+```bash
+docker run --rm -p 127.0.0.1:8080:8080 -e DATABENTO_API_KEY openport --provider databento --symbols SPX,QQQ
+```
+
+From source (CMake 3.25+, a C++20 compiler, Boost 1.83+, OpenSSL 3, zlib, zstd and
+Node 22+; everything else is fetched and pinned by checksum):
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build
-./build/bench/openport_bench
+(cd web && npm ci && npm run build)
+./build/apps/openportd --symbols SPX,SPY,QQQ --web-root web/dist
 ```
+
+## Providers
+
+| Provider | `--provider` | Data | Key |
+| --- | --- | --- | --- |
+| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with open interest and Cboe's Greeks, polled every 15 s | none |
+| Databento | `databento` | Real-time OPRA consolidated quotes (`cbbo-1s` or `cmbp-1`), trades and open interest, streamed | `DATABENTO_API_KEY` |
+| Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
+| ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
+
+Providers deliver very different things: Databento sends raw exchange quotes with no
+Greeks and no underlying price, while others ship their own Greeks. OpenPort normalises
+all of them into the same contracts, quotes and open interest, then computes everything
+itself, so the numbers mean the same thing whichever provider you use.
+
+Common flags: `--symbols SPX,SPY`, `--expiries N` (nearest N expiries), `--window F`
+(strikes within ±F of spot), `--poll-seconds N`, `--rate R` (the assumed rate when no
+index curve is available), `--address`, `--port`, `--web-root`, `--allowed-origin`, and
+`--option KEY=VALUE` for provider settings such as `quotes=cmbp-1` for Databento. Every
+value is range-checked; see the [runtime notes](docs/runtime.md) for details.
+
+## How the numbers are made
+
+- **Time to expiry** runs from the data's own market time, not the wall clock, to the
+  settlement instant: 09:30 ET for AM-settled, 16:00 ET for PM-settled, 13:00 ET on
+  early-close days, from a holiday and early-close calendar. Each product knows its
+  sessions, including Cboe's overnight session for SPX, XSP, VIX and RUT options, so a
+  delayed snapshot taken after the close keeps the closing time while one taken
+  overnight uses the overnight quotes' time.
+- **Spot** is the provider's underlying price while it is current. When there is none
+  (Databento) or it is more than 30 minutes behind the options (the SPX index is frozen
+  overnight while its options trade), spot is inferred from put-call parity and shown
+  with ≈.
+- **Forward and discount factor** come from a weighted put-call parity fit over the
+  strikes nearest the money, per expiry, with capped weights and median-based outlier
+  rejection so one bad quote cannot move it. No dividend or borrow assumptions are
+  needed. Expiries under 30 days borrow the median rate of the longer ones: over a few
+  days the discount factor is within a basis point of 1, so bid/ask noise swamps the
+  slope.
+- **Implied volatility** is Black-76 on that forward: Newton's method in log-price space
+  from a Corrado-Miller initial guess, with a bisection safeguard. About 0.5 µs and 5.4
+  iterations per option. Each strike's smile IV comes from its out-of-the-money side,
+  and both sides' Greeks use it.
+- **American-style** equity and ETF options cannot fit a rate from their own parity:
+  early exercise makes puts worth more at higher strikes, which reads as rates between
+  -3% and +2% for SPY and QQQ. They take the zero-rate curve fitted on a European index
+  (SPX when subscribed) or the flat `--rate`. Each option's early-exercise premium,
+  American minus European value on the same Leisen-Reimer tree, is removed before the
+  forward and IVs are fitted; displayed quotes stay as quoted.
+  [Accuracy and cost](docs/american-analytics.md).
+- **Greeks**: delta and gamma with respect to spot, vega per vol point, and theta per
+  calendar day with the forward held fixed, which is how Cboe quotes it. For American
+  options they are European Greeks at the de-Americanised IV, accurate out of the money.
+- **Exposure** uses the common open-interest convention: dealers are assumed long the
+  calls and short the puts customers hold. That is a modelling convention, not knowledge
+  of anyone's positions. GEX per strike is gamma × OI × multiplier × S² × 1%, dollars of
+  hedging per 1% move; VEX is vanna × OI × multiplier × S per vol point. Exposure uses at
+  least half a day to expiry so the local gamma of an option minutes from expiry does not
+  drown out everything else. The gamma flip is where total GEX changes sign, found by
+  bisection over the same positions as the total.
+
+Checked against Cboe's own published IVs on 2026-09-22 after the close: across every
+expiry, the median difference on out-of-the-money options within 10% of the forward is
+0.009 vol points for SPX, 0.025 for QQQ and 0.037 for SPY. Theta matches Cboe's within
+about 1.3%.
+
+## Performance
+
+On an Apple M2 Max, a full analytics pass over the SPX chain (29,942 options across 62
+expiries) takes about 55 ms, and SPY with de-Americanisation (12,066 options across 31
+expiries) about 33 ms. The engine recomputes at most once a second, and only for
+underlyings whose data or rate curve changed; each pass publishes an immutable snapshot,
+so HTTP readers never block the feed. While the engine is busy, the queue from the
+providers keeps only the latest quote per contract.
+
+```
+provider thread ──events──▶ queue ──▶ engine thread: chain book ──▶ analytics
+                                                                        │
+                        web terminal ◀── JSON API + WebSocket ticks ◀── immutable snapshot
+```
+
+## API
+
+| Route | Returns |
+| --- | --- |
+| `GET /api/status` | Provider, market and per-underlying sessions, feed health, engine counters |
+| `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX and coverage |
+| `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks and early-exercise premium |
+| `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
+| `GET /api/underlyings/{symbol}/surface?expiries=12` | Smile points per expiry |
+| `WS /ws` | A small tick each second with versions, so clients refetch only what changed |
+
+Expiry ids are the date plus settlement, for example `2026-10-16AM`.
+
+## Security
+
+openportd binds to 127.0.0.1 by default and has no authentication. If you expose it,
+put it behind a reverse proxy that authenticates. Static files are confined to the web
+root, and WebSocket upgrades must come from the same origin; behind a proxy that
+rewrites the Host header, list your public origin with `--allowed-origin`. Check your
+data provider's terms before sharing an instance with anyone else.
+
+## Development
+
+```bash
+./build/tests/openport_tests        # C++ unit tests
+./build/bench/openport_bench        # pricing benchmarks
+cd web && npm run dev               # Vite on :5173, proxying /api and /ws to :8080
+cd web && npx vitest run            # web unit tests
+```
+
+The C++ suite passes with Apple Clang on macOS and with GCC 13 on Ubuntu 24.04 built
+with `-DOPENPORT_WERROR=ON`.
+
+## Roadmap
+
+- [x] Pricing core: Black-76 and Black-Scholes-Merton with full Greeks, safeguarded IV
+      solver, Cox-Ross-Rubinstein and Leisen-Reimer trees
+- [x] Providers: Cboe, Databento, Massive and ThetaData
+- [x] Chain analytics: parity forwards, IV and Greeks, smiles, GEX and VEX
+- [x] Web terminal
+- [x] De-Americanised implied volatility for equity options
+- [ ] SVI volatility surface
+- [ ] Record and replay of any provider's feed
+- [ ] Paper trading and risk: fills against live quotes, Greeks limits, scenarios
 
 ## License
 
-MIT
+MIT. Not investment advice.
