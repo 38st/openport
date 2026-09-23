@@ -1,11 +1,15 @@
-import type { Trade } from "../api/trading-types"
+import type { ShareSource, ShareTrade, Trade } from "../api/trading-types"
+
+/** A closed or open trade in the journal: an option contract's, or shares from exercise and assignment. */
+export type JournalTrade = Trade | ShareTrade
+export const isShares = (trade: JournalTrade): trade is ShareTrade => "kind" in trade && trade.kind === "shares"
 
 /** Journal analytics are display summaries in dollars; accounting stays exact on the server. */
 const dollars = (value: string | null | undefined) => {
   const parsed = value == null ? NaN : Number(value)
   return Number.isFinite(parsed) ? parsed : 0
 }
-export const tradeNet = (trade: Trade) => dollars(trade.net)
+export const tradeNet = (trade: JournalTrade) => dollars(trade.net)
 
 export interface JournalStats {
   trades: number
@@ -20,23 +24,25 @@ export interface JournalStats {
   profitFactor: number | null
   averageWin: number | null
   averageLoss: number | null
-  best: Trade | null
-  worst: Trade | null
+  best: JournalTrade | null
+  worst: JournalTrade | null
   contracts: number
+  shares: number
   averageHoldSeconds: number | null
   fees: number
 }
 
-export function journalStats(trades: readonly Trade[]): JournalStats {
+export function journalStats(trades: readonly JournalTrade[]): JournalStats {
   const closed = trades.filter((t) => t.status === "closed")
-  let wins = 0, losses = 0, grossWin = 0, grossLoss = 0, contracts = 0, fees = 0, hold = 0, held = 0
-  let best: Trade | null = null, worst: Trade | null = null
+  let wins = 0, losses = 0, grossWin = 0, grossLoss = 0, contracts = 0, shares = 0, fees = 0, hold = 0, held = 0
+  let best: JournalTrade | null = null, worst: JournalTrade | null = null
   for (const trade of closed) {
     const net = tradeNet(trade)
     if (net > 0) { wins++; grossWin += net } else if (net < 0) { losses++; grossLoss += net }
     if (!best || net > tradeNet(best)) best = trade
     if (!worst || net < tradeNet(worst)) worst = trade
-    contracts += trade.opened_contracts
+    if (isShares(trade)) shares += trade.opened_shares
+    else contracts += trade.opened_contracts
     fees += dollars(trade.fees)
     if (trade.duration_seconds != null) { hold += trade.duration_seconds; held++ }
   }
@@ -47,7 +53,7 @@ export function journalStats(trades: readonly Trade[]): JournalStats {
     profitFactor: grossLoss < 0 ? grossWin / -grossLoss : wins > 0 ? Infinity : null,
     averageWin: wins ? grossWin / wins : null,
     averageLoss: losses ? grossLoss / losses : null,
-    best, worst, contracts, fees,
+    best, worst, contracts, shares, fees,
     averageHoldSeconds: held ? hold / held : null,
   }
 }
@@ -63,7 +69,7 @@ export function newYorkDate(iso: string): { date: string; weekday: number } | nu
 
 export interface DayResult { date: string; net: number; trades: number; wins: number }
 /** Closed trades by the New York date they closed. */
-export function dailyResults(trades: readonly Trade[]): Map<string, DayResult> {
+export function dailyResults(trades: readonly JournalTrade[]): Map<string, DayResult> {
   const days = new Map<string, DayResult>()
   for (const trade of trades) {
     if (trade.status !== "closed" || !trade.closed) continue
@@ -92,8 +98,8 @@ export function monthWeeks(year: number, month: number): (string | null)[][] {
 }
 
 /** Every tag on the trades, alphabetically. */
-export function tradeTags(trades: readonly Trade[]): string[] {
-  return [...new Set(trades.flatMap((t) => t.tags ?? []))].sort()
+export function tradeTags(trades: readonly JournalTrade[]): string[] {
+  return [...new Set(trades.flatMap((t) => (isShares(t) ? [] : t.tags ?? [])))].sort()
 }
 /** "breakout, 0DTE ,fomc" -> ["breakout", "0dte", "fomc"]: trimmed, lowercased, each once. */
 export function parseTags(text: string): string[] {
@@ -111,8 +117,8 @@ const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export interface Bucket { label: string; net: number; trades: number; wins: number; winRate: number | null }
-/** Closed trades grouped by holding time, closing weekday, closing month or tag (a trade counts under each of its tags). */
-export function tradeBuckets(trades: readonly Trade[], dimension: Dimension, side: Side = "all"): Bucket[] {
+/** Closed trades grouped by holding time, closing weekday, closing month or tag (a trade counts under each of its tags). Shares count only without a call or put side. */
+export function tradeBuckets(trades: readonly JournalTrade[], dimension: Dimension, side: Side = "all"): Bucket[] {
   const tags = dimension === "tag" ? [...tradeTags(trades), "untagged"] : []
   const labels = dimension === "duration" ? durationBuckets.map((b) => b.label) : dimension === "weekday" ? weekdays : dimension === "month" ? months : tags
   const out = labels.map((label) => ({ label, net: 0, trades: 0, wins: 0, winRate: null as number | null }))
@@ -123,9 +129,9 @@ export function tradeBuckets(trades: readonly Trade[], dimension: Dimension, sid
     if (net > 0) bucket.wins++
   }
   for (const trade of trades) {
-    if (trade.status !== "closed" || !trade.closed || (side !== "all" && trade.type !== side)) continue
+    if (trade.status !== "closed" || !trade.closed || (side !== "all" && (isShares(trade) || trade.type !== side))) continue
     if (dimension === "tag") {
-      const own = trade.tags?.length ? trade.tags : ["untagged"]
+      const own = !isShares(trade) && trade.tags?.length ? trade.tags : ["untagged"]
       for (const tag of own) count(out[labels.indexOf(tag)], tradeNet(trade))
       continue
     }
@@ -179,6 +185,25 @@ export function legsLabel(legs: { symbol: string; side: "buy" | "sell"; ratio: n
 /** An order's contract, or its legs. */
 export function orderLabel(order: { symbol: string | null; underlying: string; legs?: { symbol: string; side: "buy" | "sell"; ratio: number }[] | null }): string {
   return order.legs?.length ? legsLabel(order.legs, order.underlying) : osiLabel(order.symbol ?? "", order.underlying)
+}
+
+/** A trade's name in the journal: "SPX Oct 22 5000C", or "SPY 200 shares" (short ones say so). */
+export function journalLabel(trade: JournalTrade): string {
+  return isShares(trade) ? `${trade.symbol} ${trade.max_shares} shares${trade.direction === "short" ? " short" : ""}` : contractLabel(trade)
+}
+
+/** How shares came or went: "Exercised SPY Oct 16 500C at expiry", "Assigned SPY Oct 16 500P", "Sold". */
+export function shareSourceLabel(source: ShareSource | null, option: string | null, underlying: string, shares: "opened" | "closed", direction: "long" | "short"): string {
+  const contract = option ? osiLabel(option, underlying) : "an option"
+  switch (source) {
+    case "expiry_exercise": return `Exercised ${contract} at expiry`
+    case "early_exercise": return `Exercised ${contract} early`
+    case "assignment": return `Assigned ${contract}`
+    case "trade": return (shares === "closed") === (direction === "long") ? "Sold" : "Bought"
+    case "rule": return "Closed by the evaluation"
+    case "reset": return "Account reset"
+    default: return "—"
+  }
 }
 
 /** "SPXW  261022C05000000"-style trade -> "SPX Oct 22 5000C". */

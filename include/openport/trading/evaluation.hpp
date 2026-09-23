@@ -85,6 +85,22 @@ struct Closure {
   std::uint64_t after_fill = 0;  ///< Fills recorded before the closure, for ordering.
 };
 
+/// How shares changed hands: delivered by an option at settlement, delivered by
+/// an early exercise, traded to reduce them, closed by the account when an
+/// evaluation is decided, or dropped at their mark by an account reset.
+enum class StockSource { Delivery, Exercise, Trade, Rule, Reset };
+
+/// One change in the shares an account holds, so trade history can follow them.
+struct StockFill {
+  std::uint64_t id = 0;  ///< 1, 2, ...: its place in the account's stock fills.
+  std::string symbol;    ///< The underlying, e.g. "SPY".
+  Quantity shares = 0;   ///< Signed: bought positive.
+  Money price;
+  Timestamp time = 0;
+  StockSource source = StockSource::Trade;
+  std::string option;  ///< The OSI that delivered them, for Delivery and Exercise.
+};
+
 /// Cash buying power. Long premium is paid in full. Short options hold a
 /// requirement from margin_requirement; working orders reserve their
 /// worst-case cash use.

@@ -50,6 +50,7 @@ struct TradingSnapshot {
   BuyingPower buying_power;
   std::vector<Closure> closures;     ///< Settlements and resets, in sequence.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
+  std::vector<StockFill> stock_fills;    ///< Every change in shares held, oldest first.
   /// Notes and tags by trade, named by its opening fill's ID.
   std::map<std::string, Annotation> annotations;
   /// Today's P&L by Greek for the account, and for each contract held or traded

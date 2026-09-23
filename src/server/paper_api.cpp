@@ -298,7 +298,71 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"note", a == s.annotations.end() ? std::string{} : a->second.note},
         {"tags", a == s.annotations.end() ? json::array() : json(a->second.tags)}});
   }
-  return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades}};
+  // Shares from exercise and assignment, round trip by round trip, newest first.
+  auto attempt_at = [&](Timestamp time) {
+    if (time >= e.started) return e.attempt;
+    for (auto it = s.attempts.rbegin(); it != s.attempts.rend(); ++it)
+      if (time >= it->started) return it->attempt;
+    return std::uint64_t{1};
+  };
+  const auto source = [&](std::uint64_t id) -> json {
+    if (id == 0 || id > s.stock_fills.size()) return nullptr;
+    const auto& fill = s.stock_fills[id - 1];
+    switch (fill.source) {
+      case StockSource::Exercise: return "early_exercise";
+      case StockSource::Delivery: {
+        // Long calls and short puts buy at expiry; the short side is assigned.
+        const auto option = md::parse_osi(fill.option);
+        const bool call = option && option->type == pricing::OptionType::Call;
+        return (call ? fill.shares < 0 : fill.shares > 0) ? "assignment" : "expiry_exercise";
+      }
+      case StockSource::Trade: return "trade";
+      case StockSource::Rule: return "rule";
+      case StockSource::Reset: return "reset";
+    }
+    return nullptr;
+  };
+  const auto option_of = [&](std::uint64_t id) -> json {
+    if (id == 0 || id > s.stock_fills.size() || s.stock_fills[id - 1].option.empty()) return nullptr;
+    return s.stock_fills[id - 1].option;
+  };
+  const auto shares = share_lifecycles(s.stock_fills);
+  json share_trades = json::array();
+  for (auto it = shares.rbegin(); it != shares.rend(); ++it) {
+    const auto& t = *it;
+    const bool open = !t.closed;
+    if ((status == "open" && !open) || (status == "closed" && open)) continue;
+    const auto attempt = attempt_at(t.opened);
+    if (current_only && attempt != e.attempt) continue;
+    json mark = nullptr, unrealised = nullptr;
+    if (open) {
+      for (const auto& held : s.stocks) {
+        if (held.position.symbol != t.symbol) continue;
+        mark = money(held.mark);
+        unrealised = money(held.unrealised);
+      }
+    }
+    json fills = json::array();
+    for (const auto id : t.fills) fills.push_back(std::to_string(id));
+    const auto first = t.fills.front();
+    const auto last = open ? std::uint64_t{0} : t.fills.back();
+    share_trades.push_back({{"kind", "shares"}, {"id", "s" + std::to_string(first)}, {"attempt", attempt},
+        {"symbol", t.symbol}, {"direction", t.direction > 0 ? "long" : "short"}, {"status", open ? "open" : "closed"},
+        {"opened", md::format_timestamp(t.opened)},
+        {"closed", open ? json(nullptr) : json(md::format_timestamp(*t.closed))},
+        {"duration_seconds", open ? json(nullptr) : json((*t.closed - t.opened) / md::kNanosPerSecond)},
+        {"shares", t.shares}, {"max_shares", t.max_shares},
+        {"opened_shares", t.opened_shares}, {"closed_shares", t.closed_shares},
+        {"average_open", average(t.open_notional, t.opened_shares)},
+        {"average_close", average(t.close_notional, t.closed_shares)},
+        {"cost", t.open_notional.str()}, {"gross", t.gross.str()}, {"fees", Money{}.str()}, {"net", t.gross.str()},
+        {"return", open || t.open_notional == Money{} ? json(nullptr) : number(t.gross.dollars() / t.open_notional.dollars())},
+        {"mark", mark}, {"unrealised", unrealised},
+        {"opened_by", source(first)}, {"option", option_of(first)},
+        {"closed_by", source(last)}, {"closing_option", option_of(last)}, {"fills", fills}});
+  }
+  return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades},
+          {"share_trades", share_trades}};
 }
 json plans_json() {
   json plans = json::array();

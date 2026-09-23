@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { portfolio, quote, trades } from "../test/trading-fixtures"
+import { portfolio, quote, shareTrades, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
-import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, tradeBuckets, tradeTags } from "./journal"
+import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, shareSourceLabel, tradeBuckets, tradeTags } from "./journal"
 import { heldPositions, marginRequirement, orderPowerUse, type MarginPosition } from "./margin"
 import { crossDirection, describeTrigger, marketability, nakedRequirement, opposite, split, stopDirection, strategyName } from "./ticket"
 import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
@@ -23,6 +23,34 @@ describe("journal analytics", () => {
     expect(stats.averageHoldSeconds).toBe((289 + 9000) / 2)
     expect(journalStats([trades[2]!]).profitFactor).toBe(Infinity)
     expect(journalStats([]).winRate).toBeNull()
+  })
+  it("counts share round trips beside the options", () => {
+    const both = [...trades, ...shareTrades]
+    const stats = journalStats(both)
+    expect(stats.trades).toBe(3)
+    expect(stats.net).toBeCloseTo(167.2 + 320)
+    expect(stats.contracts).toBe(10)
+    expect(stats.shares).toBe(100)
+    expect(stats.best?.id).toBe("s1")
+    expect(journalLabel(stats.best!)).toBe("SPY 100 shares")
+    expect(journalLabel({ ...shareTrades[1]!, direction: "short" })).toBe("SPY 100 shares short")
+    expect(journalLabel(trades[2]!)).toBe(contractLabel(trades[2]!))
+    expect(dailyResults(both).get("2026-09-23")).toEqual({ date: "2026-09-23", net: 320 - 101.3, trades: 2, wins: 1 })
+    // Shares are neither calls nor puts, and carry no tags.
+    expect(tradeBuckets(both, "month").find((b) => b.label === "Sep")?.trades).toBe(3)
+    expect(tradeBuckets(both, "month", "call").find((b) => b.label === "Sep")?.trades).toBe(2)
+    expect(tradeBuckets(both, "tag").find((b) => b.label === "untagged")?.trades).toBe(3)
+    expect(tradeTags(both)).toEqual([])
+  })
+  it("says how shares came and went", () => {
+    expect(shareSourceLabel("expiry_exercise", "SPY   260922C00500000", "SPY", "opened", "long")).toBe("Exercised SPY Sep 22 500C at expiry")
+    expect(shareSourceLabel("early_exercise", "SPY   261016C00500000", "SPY", "opened", "long")).toBe("Exercised SPY Oct 16 500C early")
+    expect(shareSourceLabel("assignment", "QQQ   260923P00480000", "QQQ", "opened", "long")).toBe("Assigned QQQ Sep 23 480P")
+    expect(shareSourceLabel("trade", null, "SPY", "closed", "long")).toBe("Sold")
+    expect(shareSourceLabel("trade", null, "SPY", "closed", "short")).toBe("Bought")
+    expect(shareSourceLabel("rule", null, "SPY", "closed", "long")).toBe("Closed by the evaluation")
+    expect(shareSourceLabel("reset", null, "SPY", "closed", "long")).toBe("Account reset")
+    expect(shareSourceLabel(null, null, "SPY", "closed", "long")).toBe("—")
   })
   it("groups by the New York close date across the UTC midnight", () => {
     expect(newYorkDate("2026-09-23T03:30:00Z")).toEqual({ date: "2026-09-22", weekday: 2 })

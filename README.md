@@ -48,8 +48,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
   decide pass or fail, with buy-only and buying-power plans and auto-close before expiry.
   The Dashboard charts equity against the target and floor, and the Journal keeps a P&L
   calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
-  per contract or per strategy. Each trade takes a note and tags, kept in the account's
-  journal. A new attempt keeps the history.
+  per contract or per strategy, with shares from exercise and assignment as trades of
+  their own. Each trade takes a note and tags, kept in the account's journal. A new
+  attempt keeps the history.
 - **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
   (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a kill switch. Positions close together as one

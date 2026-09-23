@@ -995,6 +995,21 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
   const auto snapshot = engine.trading_view()->snapshot;
   ASSERT_EQ(snapshot->stocks.size(), 1);
   EXPECT_EQ(snapshot->stocks[0].position.shares, 100);
+  // The journal follows the shares: an open round trip from the expiry exercise.
+  const auto trades = read(engine, "/api/trades?status=all");
+  ASSERT_EQ(trades["share_trades"].size(), 1);
+  const auto& shares = trades["share_trades"][0];
+  EXPECT_EQ(shares["kind"], "shares");
+  EXPECT_EQ(shares["id"], "s1");
+  EXPECT_EQ(shares["symbol"], "SPY");
+  EXPECT_EQ(shares["status"], "open");
+  EXPECT_EQ(shares["direction"], "long");
+  EXPECT_EQ(shares["shares"], 100);
+  EXPECT_EQ(shares["average_open"], "501.00");
+  EXPECT_EQ(shares["opened_by"], "expiry_exercise");
+  EXPECT_EQ(shares["option"], market.symbol());
+  EXPECT_EQ(shares["closed_by"], nullptr);
+  EXPECT_EQ(read(engine, "/api/trades?status=closed")["share_trades"].size(), 0);
   engine.stop();
   bool found = false;
   for (const auto& record : trading::FileJournal::read(path.string()).records) {

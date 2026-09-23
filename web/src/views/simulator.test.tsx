@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import type { Account } from "../api/trading-types"
-import { account, fill, plans, portfolio, risk, status, trades } from "../test/trading-fixtures"
+import { account, fill, plans, portfolio, risk, shareTrades, status, trades } from "../test/trading-fixtures"
 import { DashboardView, equitySeries } from "./DashboardView"
 import { JournalView } from "./JournalView"
 import { RulesView, ruleText } from "./RulesView"
@@ -84,6 +84,19 @@ describe("simulator pages", () => {
       "4m 49s", "+12.6%", "$4.25", "$4.80"])
       expect(html).toContain(text)
     expect(html).not.toContain("NaN")
+  })
+  it("puts shares from exercise and assignment in the journal", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+    clients.push(client)
+    const queries = tradingQueries(0, "17", true)
+    client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [fill] })
+    client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 2, trades, share_trades: shareTrades })
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><JournalView /></QueryClientProvider>)
+    for (const text of ["3 closed trades · attempt 2", "+$487.20", "10 contracts · 100 shares", "SPY 100 shares", "Share trades",
+      "Exercised SPY Sep 22 500C at expiry", "Sold", "Assigned QQQ Sep 23 480P", "$504.20", "+$320.00", "−$300.00"])
+      expect(html).toContain(text)
+    // Older servers send no shares, and the panel stays away.
+    expect(render(<JournalView />)).not.toContain("Share trades")
   })
   it("explains the active rules with the account's numbers and lists presets", () => {
     const texts = ruleText(account, "0.65", "5000.00").map((rule) => renderToStaticMarkup(<>{rule.body}</>))

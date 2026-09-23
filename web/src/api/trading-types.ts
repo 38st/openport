@@ -194,7 +194,41 @@ export interface TradeNoteResponse extends TradeNote {
   account_version: string
   trade: string
 }
-export interface TradesResponse { account_version: string; attempt: number; trades: Trade[] }
+/** How shares changed hands: an option's exercise or assignment, a trade that reduced them, the account closing them when an evaluation is decided, or a reset. */
+export type ShareSource = "expiry_exercise" | "assignment" | "early_exercise" | "trade" | "rule" | "reset"
+/** One round trip in an underlying's shares from exercise and assignment, flat to flat or still open. */
+export interface ShareTrade {
+  kind: "shares"
+  id: string
+  attempt: number
+  symbol: string
+  direction: "long" | "short"
+  status: "open" | "closed"
+  opened: string
+  closed: string | null
+  duration_seconds: number | null
+  /** Signed shares held now; zero once closed. */
+  shares: number
+  max_shares: number
+  opened_shares: number
+  closed_shares: number
+  average_open: Money | null
+  average_close: Money | null
+  cost: Money
+  gross: Money
+  fees: Money
+  net: Money
+  return: Num
+  mark: Money | null
+  unrealised: Money | null
+  opened_by: ShareSource
+  /** The option whose exercise or assignment opened them, or null. */
+  option: string | null
+  closed_by: ShareSource | null
+  closing_option: string | null
+  fills: string[]
+}
+export interface TradesResponse { account_version: string; attempt: number; trades: Trade[]; share_trades?: ShareTrade[] }
 export interface Plan {
   id: string
   name: string

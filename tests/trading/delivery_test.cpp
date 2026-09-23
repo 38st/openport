@@ -237,10 +237,77 @@ TEST(TradingDelivery, SharesAreMarkedRiskedAndClosedAtTheUnderlyingsPrice) {
     ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
     EXPECT_TRUE(s.snapshot()->stocks.empty());
     EXPECT_NEAR(s.snapshot()->attribution.total(), day_pnl(s), 1e-6);
+    // The history has one round trip in the shares: opened by the exercise, closed by the two sales.
+    const auto& fills = s.snapshot()->stock_fills;
+    ASSERT_EQ(fills.size(), 3U);
+    EXPECT_EQ(fills[0].source, StockSource::Exercise);
+    EXPECT_EQ(fills[0].option, call.osi_symbol());
+    EXPECT_EQ(fills[0].shares, 300);
+    EXPECT_EQ(fills[1].source, StockSource::Trade);
+    EXPECT_EQ(fills[2].source, StockSource::Trade);
+    EXPECT_EQ(fills[2].shares, -200);
+    const auto trips = share_lifecycles(fills);
+    ASSERT_EQ(trips.size(), 1U);
+    EXPECT_EQ(trips[0].symbol, "SPY");
+    EXPECT_EQ(trips[0].direction, 1);
+    EXPECT_EQ(trips[0].closed, f.time);
+    EXPECT_EQ(trips[0].max_shares, 300);
+    EXPECT_EQ(trips[0].gross, m("1500"));  // 300 bought at 520 by the exercise, sold at 525
+    EXPECT_EQ(trips[0].fills, (std::vector<std::uint64_t>{1, 2, 3}));
     expected = s.snapshot_json();
   }
   EXPECT_EQ(TradingSession::recover(FileJournal::read(path)).snapshot_json(), expected);
   std::filesystem::remove_all(directory);
+}
+
+TEST(TradingDelivery, ShareRoundTripsReverseAndCloseAtAResetsMark) {
+  const auto t = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const std::vector<StockFill> fills{
+      {1, "SPY", 100, m("500"), t, StockSource::Delivery, "SPY   260922P00500000"},
+      {2, "SPY", -300, m("503"), t + 1, StockSource::Delivery, "SPY   260922C00503000"},
+      {3, "QQQ", -100, m("400"), t + 2, StockSource::Delivery, "QQQ   260922C00400000"},
+      {4, "SPY", 200, m("501.50"), t + 3, StockSource::Trade, ""}};
+  const auto trips = share_lifecycles(fills);
+  ASSERT_EQ(trips.size(), 3U);
+  // Long 100, then short 300 against them: the round trip closes at 503 and a short of 200 opens there.
+  EXPECT_EQ(trips[0].direction, 1);
+  EXPECT_EQ(trips[0].closed, t + 1);
+  EXPECT_EQ(trips[0].gross, m("300"));
+  EXPECT_EQ(trips[0].fills, (std::vector<std::uint64_t>{1, 2}));
+  EXPECT_EQ(trips[1].symbol, "SPY");
+  EXPECT_EQ(trips[1].direction, -1);
+  EXPECT_EQ(trips[1].opened, t + 1);
+  EXPECT_EQ(trips[1].opened_shares, 200);
+  EXPECT_EQ(trips[1].closed, t + 3);
+  EXPECT_EQ(trips[1].gross, m("300"));  // 200 short at 503, bought back at 501.50
+  EXPECT_EQ(trips[1].fills, (std::vector<std::uint64_t>{2, 4}));
+  EXPECT_EQ(trips[2].symbol, "QQQ");
+  EXPECT_FALSE(trips[2].closed);
+  EXPECT_EQ(trips[2].shares, -100);
+
+  // A reset drops held shares from the ledger at their mark, which closes the round trip.
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  Spy f;
+  f.spot = 520;
+  TradingSession s(roomy(), f.time);
+  f.define(s, call);
+  f.quote(s, call, "21.00", "21.20");
+  ASSERT_TRUE(s.submit(f.market("calls", call, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  f.time += md::kNanosPerSecond;
+  f.spot = 522;
+  f.price(s);
+  ASSERT_TRUE(s.reset_account(m("100000"), {}, "fresh start", f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->stocks.empty());
+  const auto& after = s.snapshot()->stock_fills;
+  ASSERT_EQ(after.size(), 2U);
+  EXPECT_EQ(after[1].source, StockSource::Reset);
+  EXPECT_EQ(after[1].shares, -100);
+  EXPECT_EQ(after[1].price, m("522"));
+  const auto reset = share_lifecycles(after);
+  ASSERT_EQ(reset.size(), 1U);
+  EXPECT_EQ(reset[0].closed, f.time);
+  EXPECT_EQ(reset[0].gross, m("200"));
 }
 
 TEST(TradingDelivery, SharesTradeInTheRegularSessionAndKeepTheirClose) {

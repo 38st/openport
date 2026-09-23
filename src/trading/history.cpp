@@ -125,4 +125,53 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
   return out;
 }
 
+std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills) {
+  std::vector<ShareLifecycle> out;
+  std::map<std::string, Open> open;
+  auto start = [&](const StockFill& fill, Quantity signed_shares) {
+    ShareLifecycle life;
+    life.symbol = fill.symbol;
+    life.direction = signed_shares > 0 ? 1 : -1;
+    life.opened = fill.time;
+    out.push_back(std::move(life));
+    open[fill.symbol] = Open{out.size() - 1, Ledger{}};
+  };
+  // Each fill opens, adds, reduces or reverses; the ledger keeps the basis.
+  auto trade = [&](Open& o, const StockFill& fill, Quantity signed_shares) {
+    auto& life = out[o.index];
+    const auto held = life.shares;
+    o.ledger.trade_stock(fill.symbol, signed_shares, fill.price, Money{});
+    life.shares = held + signed_shares;
+    if (held == 0 || (held > 0) == (signed_shares > 0)) {
+      life.opened_shares += magnitude(signed_shares);
+      life.open_notional = life.open_notional + fill.price * magnitude(signed_shares);
+    } else {
+      life.closed_shares += magnitude(signed_shares);
+      life.close_notional = life.close_notional + fill.price * magnitude(signed_shares);
+    }
+    life.max_shares = std::max(life.max_shares, magnitude(life.shares));
+    life.gross = o.ledger.account().realised;
+  };
+  for (const auto& fill : fills) {
+    if (fill.shares == 0) continue;
+    if (!open.contains(fill.symbol)) start(fill, fill.shares);
+    auto* o = &open.at(fill.symbol);
+    const auto held = out[o->index].shares;
+    const bool reverses = held != 0 && (held > 0) != (fill.shares > 0) && magnitude(fill.shares) > magnitude(held);
+    trade(*o, fill, reverses ? -held : fill.shares);
+    out[o->index].fills.push_back(fill.id);
+    if (out[o->index].shares == 0) {
+      out[o->index].closed = fill.time;
+      open.erase(fill.symbol);
+      if (!reverses) continue;
+      const auto remainder = fill.shares + held;
+      start(fill, remainder);
+      o = &open.at(fill.symbol);
+      trade(*o, fill, remainder);
+      out[o->index].fills.push_back(fill.id);
+    }
+  }
+  return out;
+}
+
 }  // namespace openport::trading

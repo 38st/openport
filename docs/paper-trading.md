@@ -103,8 +103,11 @@ while they do not. They count in equity, daily loss and the rules, at their doll
 delta in risk limits and scenarios, and in the P&L by Greek (all delta). Short shares
 hold 150% of their value in buying power. `trade_stock(symbol, shares, time)` only
 reduces them, at the underlying's fresh price in the regular session and without a
-fee; flattening closes them too, and a decided attempt liquidates them. Shares stay
-out of the trade history, which follows the options.
+fee; flattening closes them too, and a decided attempt liquidates them, and a reset
+drops them at their mark. Every change is a `StockFill` in `TradingSnapshot::stock_fills`,
+with how it came about (`StockSource`: delivery at settlement, early exercise, a trade,
+the rule, a reset) and the delivering option, so the trade history follows the shares
+too.
 Strikes must be positive, representable in OSI's thousandths and eight digits;
 expiry dates must be valid in OSI's 2000–2099 range. Explicit AM/PM terms from the
 known definition determine expiry; conflicting terms cannot replace a definition.
@@ -554,6 +557,9 @@ balance and caps of 2%, 3%, 4% and then 6% of the balance for payouts 1, 2, 3 an
 to flat. Each replays its own fills through a fresh `Ledger`, so realised P&L uses the
 account's basis allocation and rounding exactly; a reversing fill closes one lifecycle
 and opens the next at the same price with its fee split pro rata.
+`share_lifecycles(stock_fills)` does the same for shares, per underlying: an
+assignment that takes more shares than are held closes the round trip and opens the
+opposite one at the same price.
 
 ## Trade notes and tags
 
@@ -875,7 +881,7 @@ focus at the top of the ticket.
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position; returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised`, `qualifying` and `attribution`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
-| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`. Defaults: all statuses of the current attempt |
+| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`. Defaults: all statuses of the current attempt. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |

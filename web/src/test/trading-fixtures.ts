@@ -1,5 +1,5 @@
 import type { Chain, Expiry, OptionQuote, Status, Summary } from "../api/types"
-import type { Account, Bucket, Fill, Limits, Order, Plan, Portfolio, Risk, Trade, TradingStatus } from "../api/trading-types"
+import type { Account, Bucket, Fill, Limits, Order, Plan, Portfolio, Risk, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
 import type { TicketSelection } from "../components/OrderTicket"
 
 export const time = "2026-09-23T15:30:00Z"
@@ -89,6 +89,17 @@ export const trades: Trade[] = [
     opened_contracts: 2, closed_contracts: 0, average_close: null, gross: "0.00", fees: "1.30", net: "-1.30", return: null, mark: "3.10", unrealised: "-20.00" },
   { ...trade, id: "2", opened: "2026-09-23T15:00:00Z", closed: "2026-09-23T17:30:00Z", duration_seconds: 9000, gross: "-100.00", fees: "1.30", net: "-101.30", return: -101.3 / 2125 },
   trade,
+]
+/** Shares from an exercise at expiry, sold the next morning, and an assignment still held. */
+export const shareTrades: ShareTrade[] = [
+  { kind: "shares", id: "s3", attempt: 2, symbol: "QQQ", direction: "long", status: "open", opened: "2026-09-23T20:00:00Z", closed: null,
+    duration_seconds: null, shares: 200, max_shares: 200, opened_shares: 200, closed_shares: 0, average_open: "480.00", average_close: null,
+    cost: "96000.00", gross: "0.00", fees: "0.00", net: "0.00", return: null, mark: "478.50", unrealised: "-300.00",
+    opened_by: "assignment", option: "QQQ   260923P00480000", closed_by: null, closing_option: null, fills: ["3"] },
+  { kind: "shares", id: "s1", attempt: 2, symbol: "SPY", direction: "long", status: "closed", opened: "2026-09-22T20:15:00Z",
+    closed: "2026-09-23T14:00:00Z", duration_seconds: 63_900, shares: 0, max_shares: 100, opened_shares: 100, closed_shares: 100,
+    average_open: "501.00", average_close: "504.20", cost: "50100.00", gross: "320.00", fees: "0.00", net: "320.00", return: 320 / 50_100,
+    mark: null, unrealised: null, opened_by: "expiry_exercise", option: "SPY   260922C00500000", closed_by: "trade", closing_option: null, fills: ["1", "2"] },
 ]
 export const plans: Plan[] = [
   { id: "practice", name: "Practice", summary: "No target or drawdown. Buying power applies.", initial_cash: "100000.00",

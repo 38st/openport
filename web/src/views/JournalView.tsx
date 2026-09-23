@@ -2,13 +2,13 @@ import { Fragment, useMemo, useState } from "react"
 import { api } from "../api/client"
 import { marketNow, useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTrades } from "../api/trading"
-import type { Fill, Trade, TradingStatus } from "../api/trading-types"
+import type { Fill, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Empty, PageHeader, Panel, Segmented, Tile, toneOf, toneText } from "../components/ui"
 import { signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
-import { contractLabel, dailyResults, formatDuration, journalStats, monthWeeks, newYorkDate, parseTags, tradeBuckets, tradeNet, tradeTags, type Dimension, type Side } from "../lib/journal"
+import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, parseTags, shareSourceLabel, tradeBuckets, tradeNet, tradeTags, type Dimension, type JournalTrade, type Side } from "../lib/journal"
 import { tradeGroups, type TradeGroup } from "../lib/positions"
 import { formatMoney, signedMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -29,10 +29,13 @@ function Journal({ trading }: { trading: TradingStatus }) {
   const [tag, setTag] = useState("")
   const trades = useTrades(scope)
   const all = useMemo(() => trades.data?.trades ?? [], [trades.data])
+  const shares = useMemo(() => trades.data?.share_trades ?? [], [trades.data])
   const tags = useMemo(() => tradeTags(all), [all])
-  // Every panel reads the trades with the chosen tag.
+  // Every panel reads the trades with the chosen tag; shares from exercise and
+  // assignment count beside the options, and carry no tags.
   const list = useMemo(() => tag ? all.filter((t) => t.tags?.includes(tag)) : all, [all, tag])
-  const stats = useMemo(() => journalStats(list), [list])
+  const entries = useMemo<JournalTrade[]>(() => tag ? list : [...list, ...shares], [list, shares, tag])
+  const stats = useMemo(() => journalStats(entries), [entries])
   if (trades.error) return <TradingError error={trades.error} />
   if (!trades.data) return <Empty>{trading.enabled ? "Loading journal…" : trading.reason ?? "Paper trading is unavailable"}</Empty>
   const pf = stats.profitFactor
@@ -53,20 +56,21 @@ function Journal({ trading }: { trading: TradingStatus }) {
         <Tile label="Profit factor" value={pf == null ? "—" : Number.isFinite(pf) ? pf.toFixed(2) : "∞"} detail="gross wins ÷ gross losses" />
         <Tile label="Average win" value={stats.averageWin == null ? "—" : usd(stats.averageWin)} tone="positive" />
         <Tile label="Average loss" value={stats.averageLoss == null ? "—" : usd(stats.averageLoss)} tone={stats.averageLoss == null ? "neutral" : "negative"} />
-        <Tile label="Best trade" value={stats.best ? usd(tradeNet(stats.best)) : "—"} tone={stats.best ? toneOf(tradeNet(stats.best)) : "neutral"} detail={stats.best ? contractLabel(stats.best) : undefined} />
-        <Tile label="Worst trade" value={stats.worst ? usd(tradeNet(stats.worst)) : "—"} tone={stats.worst ? toneOf(tradeNet(stats.worst)) : "neutral"} detail={stats.worst ? contractLabel(stats.worst) : undefined} />
-        <Tile label="Trades" value={String(stats.trades)} detail={`${stats.contracts} contracts`} />
+        <Tile label="Best trade" value={stats.best ? usd(tradeNet(stats.best)) : "—"} tone={stats.best ? toneOf(tradeNet(stats.best)) : "neutral"} detail={stats.best ? journalLabel(stats.best) : undefined} />
+        <Tile label="Worst trade" value={stats.worst ? usd(tradeNet(stats.worst)) : "—"} tone={stats.worst ? toneOf(tradeNet(stats.worst)) : "neutral"} detail={stats.worst ? journalLabel(stats.worst) : undefined} />
+        <Tile label="Trades" value={String(stats.trades)} detail={`${stats.contracts} contracts${stats.shares ? ` · ${stats.shares} shares` : ""}`} />
         <Tile label="Average hold" value={formatDuration(stats.averageHoldSeconds)} />
-        <Tile label="Open trades" value={String(list.filter((t) => t.status === "open").length)} />
+        <Tile label="Open trades" value={String(entries.filter((t) => t.status === "open").length)} />
       </div>
-      <Calendar trades={list} />
-      <Reports trades={list} />
+      <Calendar trades={entries} />
+      <Reports trades={entries} />
       <History trades={list} trading={trading} />
+      {!tag && shares.length > 0 && <Shares trades={shares} />}
     </div>
   )
 }
 
-function Calendar({ trades }: { trades: Trade[] }) {
+function Calendar({ trades }: { trades: JournalTrade[] }) {
   const days = useMemo(() => dailyResults(trades), [trades])
   const live = useLive()
   const today = newYorkDate(new Date(marketNow(live)).toISOString())?.date ?? ""
@@ -129,7 +133,7 @@ function Calendar({ trades }: { trades: Trade[] }) {
   )
 }
 
-function Reports({ trades }: { trades: Trade[] }) {
+function Reports({ trades }: { trades: JournalTrade[] }) {
   const [side, setSide] = useState<Side>("all")
   const [dimension, setDimension] = useState<Dimension>("duration")
   const buckets = tradeBuckets(trades, dimension, side)
@@ -309,6 +313,45 @@ function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus 
           </span>
         </div>}
       </>}
+    </Panel>
+  )
+}
+
+const shareHeaders = ["Shares", "Side", "Opened", "From", "Closed", "By", "Held", "Avg open", "Avg close", "Net P&L", "Return"]
+
+/** Shares from exercise and assignment, round trip by round trip: how each came and went. */
+function Shares({ trades }: { trades: ShareTrade[] }) {
+  const net = trades.filter((t) => t.status === "closed").reduce((sum, t) => sum + tradeNet(t), 0)
+  return (
+    <Panel title="Shares" actions={<span className="text-xs text-muted">Net <span className={`tabular ${toneText[toneOf(net)]}`}>{usd(net)}</span></span>}>
+      <div className="max-w-full overflow-x-auto" tabIndex={0} role="region" aria-label="Share trades">
+        <table className="w-full text-right text-xs tabular whitespace-nowrap">
+          <thead className="text-[11px] uppercase tracking-wide text-muted"><tr>
+            {shareHeaders.map((h, i) => <th key={h} scope="col" className={`px-2 py-2 font-normal ${i === 0 ? "text-left" : ""}`}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {trades.map((t) => <tr key={t.id} className="border-t border-border/40">
+              <td className="px-2 py-2 text-left">
+                <span className={`mr-2 inline-block h-3 w-0.5 align-middle ${t.status === "open" ? "bg-accent" : tradeNet(t) >= 0 ? "bg-bullish" : "bg-bearish"}`} />
+                <span className="font-medium">{t.symbol} {t.max_shares}</span>
+              </td>
+              <td className={`px-2 py-2 ${t.direction === "long" ? "text-bullish" : "text-bearish"}`}>{t.direction}</td>
+              <td className="px-2 py-2 text-muted">{short.format(Date.parse(t.opened))}</td>
+              <td className="px-2 py-2 text-left">{shareSourceLabel(t.opened_by, t.option, t.symbol, "opened", t.direction)}</td>
+              <td className="px-2 py-2 text-muted">{t.closed ? short.format(Date.parse(t.closed)) : "open"}</td>
+              <td className="px-2 py-2 text-left">{t.closed ? shareSourceLabel(t.closed_by, t.closing_option, t.symbol, "closed", t.direction) : "—"}</td>
+              <td className="px-2 py-2">{formatDuration(t.duration_seconds)}</td>
+              <td className="px-2 py-2">{formatMoney(t.average_open)}</td>
+              <td className="px-2 py-2">{formatMoney(t.average_close)}</td>
+              <td className={`px-2 py-2 ${toneText[toneOf(t.status === "open" ? t.unrealised : t.net)]}`}>
+                {t.status === "open" ? <span title="Unrealized">{signedMoney(t.unrealised)}</span> : signedMoney(t.net)}
+              </td>
+              <td className={`px-2 py-2 ${toneText[toneOf(t.return)]}`}>{signedPercent(t.return)}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-[11px] text-muted">Shares come only from exercise and assignment and trade without fees; they count in the totals, calendar and reports above.</p>
     </Panel>
   )
 }
