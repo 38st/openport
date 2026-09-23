@@ -7,7 +7,7 @@ export const trading: TradingStatus = { enabled: true, reason: null, account_ver
 export const status: Status = {
   trading, provider: { name: "fixture", realtime: true, delay_seconds: 0, trades: true, open_interest: true, vendor_greeks: true },
   feed: { state: "live", message: "Connected", updated: time },
-  underlyings: [{ symbol: "SPX", spot: 7000, as_of: time, version: 1, expiries: 1, options: 2 }],
+  underlyings: [{ symbol: "SPX", spot: 7000, as_of: time, version: 1, expiries: 1, options: 2, has_tradable_contracts: true }],
   engine: { events: 100, events_per_second: 2, analytics_ms: 1, contracts: 2, uptime_seconds: 60 },
 }
 export const expiry: Expiry = {

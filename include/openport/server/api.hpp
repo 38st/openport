@@ -46,6 +46,9 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 /// next_open uses the same UTC timestamp format as as_of; null while open.
 /// Each status/tick underlyings[] entry also includes session {name, open, note}
 /// at wall-clock time, where name is regular/curb/global/closed for that product.
+/// has_tradable_contracts is true when unexpired slices contain a contract eligible
+/// for paper trading (European, cash settled, standard supported index options).
+/// Portfolio session notices use this flag, or held positions/open orders.
 /// The top-level market remains the regular-session calendar for compatibility.
 /// All four underlying views include spot_source ("quote", "parity", or null).
 /// Summary includes american_approximation (any priced American expiry without
@@ -77,13 +80,25 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 /// Parameters describe TOTAL variance at k=ln(K/F); rmse_vol_points is in percent.
 /// Butterfly fields report a 2,001-point density check over the calibration range,
 /// not a global no-arbitrage certificate. Undefined density fails the check.
-/// calendar_violations: [{earlier: expiry id, later: expiry id, k, vol_points}]
-/// compares consecutive successful fits ordered by T on each pair's range union,
-/// with a 1e-10 total-variance tolerance. Diagnostics never repair the fits.
-/// Fitting is lazy, outside the engine, for only the requested expiry prefix;
-/// window only filters displayed points. Successes and failures are cached for
-/// the immutable (symbol, metrics version) snapshot, isolated by snapshot owner.
-/// Concurrent requests share fits; expired snapshots release their cache entries.
+/// calendar_violations: [{earlier: expiry id, later: expiry id, k, vol_points,
+/// tolerance_vol_points}] compares consecutive successful fits ordered by T over
+/// their calibration-range intersection. vol_points is the later-expiry IV increase
+/// needed to remove the crossing; tolerance is max(0.1 vp, both fit RMSEs, both
+/// locally interpolated quoted IV half-spreads in vp). Reports the largest flagged
+/// increase and its local tolerance. Diagnostics never repair raw SVI fits.
+/// Top-level ssvi: {rho,eta,gamma,rmse_vol_points,status,reason,monotone_adjusted,
+/// fit_ms} describes one modified-power-law SSVI surface for all usable expiries.
+/// status is ok/too_few_points/failed; parameters/RMSE are null on failure. Each
+/// expiry adds ssvi_theta (ATM total variance), ssvi_rmse_vol_points, ssvi_reason,
+/// ssvi_min_k/ssvi_max_k; points[].ssvi_iv is decimal IV/null. Missing ATM brackets
+/// or unusable quotes skip that expiry (null theta/RMSE/IV, explicit reason).
+/// A failed surface has null estimates and a top-level reason. Theta and parameters
+/// retain full precision. See analytics/ssvi.hpp and docs/svi.md for constraints.
+/// Fitting is lazy, outside the engine. Raw SVI fits only the requested expiry
+/// prefix; SSVI fits the entire snapshot once, independent of window/prefix.
+/// Successes and failures are cached for the immutable (symbol, metrics version)
+/// snapshot, isolated by snapshot owner. Concurrent requests share fits; expired
+/// snapshots release their cache entries. Window only filters displayed points.
 [[nodiscard]] ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source);
 
 /// The small message pushed to every WebSocket client each second, so the UI knows

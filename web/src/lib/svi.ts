@@ -1,10 +1,10 @@
-import type { SurfaceExpiry, SviFit } from "../api/types"
+import type { SurfaceExpiry, SviFit, SsviFit } from "../api/types"
 import type { Series } from "../charts/LineChart"
 import { days, expiryLabel, isNum } from "./format"
 
 interface DisplayRange { spot: number | null; window: number }
 
-export type SmileMode = "market" | "svi" | "both"
+export type SmileMode = "market" | "svi" | "ssvi" | "all"
 export const smileColor = (i: number) => `var(--chart-${i % 8 + 1})`
 
 export function sviVol(p: SviFit, k: number, years: number): number | null {
@@ -12,6 +12,33 @@ export function sviVol(p: SviFit, k: number, years: number): number | null {
   const x = k - p.m
   const w = p.a + p.b * (p.rho * x + Math.hypot(x, p.sigma))
   return w >= 0 && Number.isFinite(w) ? Math.sqrt(w / years) : null
+}
+
+export function ssviVol(p: SsviFit, k: number, theta: number, years: number): number | null {
+  if (p.status !== "ok" || !isNum(p.rho) || !isNum(p.eta) || !isNum(p.gamma) ||
+    Math.abs(p.rho) >= 1 || p.eta <= 0 || p.gamma <= 0 || p.gamma > .5 ||
+    p.eta * (1 + Math.abs(p.rho)) > 2 + 1e-12 || !(theta > 0) || !(years > 0)) return null
+  const phi = p.eta / (theta ** p.gamma * (1 + theta) ** (1 - p.gamma))
+  const z = phi * k
+  const w = theta / 2 * (1 + p.rho * z + Math.hypot(z + p.rho, Math.sqrt(1 - p.rho ** 2)))
+  const iv = Math.sqrt(w / years)
+  return Number.isFinite(iv) ? iv : null
+}
+
+/** SSVI is safe beyond quoted strikes; sample the whole requested window. */
+export function sampleSsvi(e: SurfaceExpiry, p: SsviFit | undefined, axis: "strike" | "moneyness", display?: DisplayRange): Series["points"] {
+  if (!p || p.status !== "ok" || !isNum(e.ssvi_theta) || !isNum(e.forward) || e.forward <= 0) return []
+  const years = e.svi_years ?? (e.days ?? 0) / 365
+  if (ssviVol(p, 0, e.ssvi_theta, years) == null) return []
+  const ks = e.points.map((point) => point.k).filter(isNum)
+  const hasWindow = isNum(display?.spot) && display.spot > 0 && display.window > 0 && display.window < 1
+  const lo = hasWindow ? Math.log(display.spot! * (1 - display.window) / e.forward) : e.ssvi_min_k ?? Math.min(...ks)
+  const hi = hasWindow ? Math.log(display.spot! * (1 + display.window) / e.forward) : e.ssvi_max_k ?? Math.max(...ks)
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) return []
+  return Array.from({ length: 241 }, (_, i) => {
+    const k = lo + (hi - lo) * i / 240
+    return { x: axis === "strike" ? e.forward! * Math.exp(k) : k, y: ssviVol(p, k, e.ssvi_theta!, years) }
+  })
 }
 
 /** Uniform in k, clipped to the selected window and calibration range.
@@ -34,17 +61,21 @@ export function sampleSvi(e: SurfaceExpiry, axis: "strike" | "moneyness", displa
   })
 }
 
-export function smileSeries(expiries: SurfaceExpiry[], axis: "strike" | "moneyness", mode: SmileMode, display?: DisplayRange): Series[] {
+export function smileSeries(expiries: SurfaceExpiry[], axis: "strike" | "moneyness", mode: SmileMode, display?: DisplayRange, ssvi?: SsviFit): Series[] {
   return expiries.flatMap((e, i) => {
     const base = { label: `${expiryLabel(e.id)} · ${days(e.days)}`, color: smileColor(i) }
     const series: Series[] = []
-    if (mode !== "svi") series.push({ ...base, id: `${e.id}-market`, label: `${base.label} market`, dots: true, band: i === 0,
+    if (mode === "market" || mode === "all") series.push({ ...base, id: `${e.id}-market`, label: `${base.label} market`, dots: true, band: i === 0,
       points: e.points.filter((p) => axis === "strike" || isNum(p.k)).map((p) => ({
         x: axis === "strike" ? p.strike : p.k!, y: p.iv, lo: p.bid_iv, hi: p.ask_iv,
       })) })
-    if (mode !== "market") {
+    if (mode === "svi" || mode === "all") {
       const points = sampleSvi(e, axis, display)
       if (points.length) series.push({ ...base, id: `${e.id}-svi`, label: `${base.label} SVI`, points })
+    }
+    if (mode === "ssvi" || mode === "all") {
+      const points = sampleSsvi(e, ssvi, axis, display)
+      if (points.length) series.push({ ...base, id: `${e.id}-ssvi`, label: `${base.label} SSVI`, dashed: true, points })
     }
     return series
   })

@@ -8,6 +8,7 @@ add_executable(openport_tests
   analytics/forward_test.cpp
   analytics/chain_analytics_test.cpp
   analytics/svi_test.cpp
+  analytics/ssvi_test.cpp
   analytics/american_test.cpp
 )
 target_link_libraries(openport_tests PRIVATE openport::options GTest::gtest_main)

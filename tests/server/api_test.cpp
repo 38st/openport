@@ -64,6 +64,27 @@ TEST(Api, StatusDescribesProviderFeedAndUnderlyings) {
   EXPECT_DOUBLE_EQ(status["underlyings"][0]["spot"].get<double>(), 5000.0);
 }
 
+TEST(Api, TradableUnderlyingFlagUsesContractsAndIsIncludedInTicks) {
+  test::SyntheticChain chain;
+  auto m = analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of);
+  StubSource european(m);
+  EXPECT_TRUE(get(european, "/api/status")["underlyings"][0]["has_tradable_contracts"].get<bool>());
+  EXPECT_TRUE(json::parse(server::tick_message(european))["underlyings"][0]["has_tradable_contracts"].get<bool>());
+  for (auto& slice : m.slices) {
+    slice.style = pricing::ExerciseStyle::American;
+    for (auto& row : slice.strikes) {
+      row.call.contract.style = pricing::ExerciseStyle::American;
+      row.put.contract.style = pricing::ExerciseStyle::American;
+    }
+  }
+  StubSource american(m);
+  EXPECT_FALSE(get(american, "/api/status")["underlyings"][0]["has_tradable_contracts"].get<bool>());
+  EXPECT_FALSE(json::parse(server::tick_message(american))["underlyings"][0]["has_tradable_contracts"].get<bool>());
+  m.slices.clear();
+  StubSource empty(m);
+  EXPECT_FALSE(get(empty, "/api/status")["underlyings"][0]["has_tradable_contracts"].get<bool>());
+}
+
 TEST(Api, SummaryListsExpiriesWithSettlementInTheirIds) {
   StubSource source;
   const json summary = get(source, "/api/underlyings/SPX/summary");

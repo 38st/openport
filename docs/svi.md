@@ -1,4 +1,4 @@
-# SVI volatility surface
+# SVI and SSVI volatility surfaces
 
 OpenPort fits raw SVI independently to each expiry's out-of-the-money smile:
 
@@ -48,9 +48,9 @@ an explicit reason, eligible point count and measured time.
 ## Constraints and diagnostics
 
 Enforce b≥0, |ρ|≤1−1e-7, σ>0 and a+bσ√(1−ρ²)≥0. The wing limit is
-b(1+|ρ|)≤min(2,4/T), with numerical admissibility tolerance 1e-12.
-**Lee's total-variance wing bound is 2, not 4/T.** The latter is retained as the
-additional requested cap; for T>2 it is more restrictive than Lee's bound.
+b(1+|ρ|)≤2, with numerical admissibility tolerance 1e-12, at every tenor.
+Lee's moment formula bounds the slope of **total variance**, independent of T.
+The previous 4/T cap was incorrect and has been removed, including for T>2.
 See [Lee's moment formula](https://math.uchicago.edu/~rl/moment.pdf).
 
 With x=k−m and h=√(x²+σ²), derivatives are w′=b(ρ+x/h), w″=bσ²/h³. Evaluate
@@ -66,14 +66,91 @@ also fails. For calendars, sort successful fits by T and compare consecutive pai
 across all settlement families on 2,001 points over the intersection of their
 calibration ranges; skip disjoint ranges. At each k, the later expiry's IV increase
 needed to remove a crossing is `100 * (sqrt(w_earlier / T_later) - sqrt(w_later / T_later))`
-vol points. Flag a pair only when this increase exceeds `max(0.1, RMSE_earlier,
-RMSE_later)` vol points. Report the largest increase and its k, without judging
-either fit's extrapolation beyond its quotes.
+vol points. At each k, linearly interpolate each expiry's eligible two-sided
+quoted IV half-width `(ask_iv - bid_iv)/2`, convert to vol points, and use the wider
+of the two. The tolerance is `max(0.1, RMSE_earlier, RMSE_later,
+100 * half_width_earlier(k), 100 * half_width_later(k))` vol points. Duplicate
+quote k values use the widest half-spread. The full observed half-width is used,
+without the weighting floor/cap. Fits with no quote metadata use the floor/RMSEs.
+Flag only increases strictly above that local tolerance (plus 1e-12 roundoff).
+Report the largest **flagged** increase, its k and the tolerance at that k;
+a larger crossing inside a wider spread does not hide a smaller significant one.
+No judgement is made about raw SVI extrapolation beyond quotes.
 
 These are **finite-grid diagnostics**, not a global no-arbitrage certificate:
 violations between grid points or outside the checked range can be missed, and
 wing conditions alone do not ensure a valid density. Fits remain unchanged when a
-check fails. The UI says “Grid checks pass”, never “arbitrage-free”.
+check fails. Raw-SVI diagnostics say “Grid checks pass”, never “arbitrage-free”.
+
+## SSVI: one arbitrage-free surface
+
+For the entire underlying, fit a shared (ρ,η,γ) and an ATM total variance θ_t
+per usable expiry:
+
+\[
+w(k,\theta_t)=\frac{\theta_t}{2}\left[1+\rho\varphi(\theta_t)k+
+\sqrt{(\varphi(\theta_t)k+\rho)^2+1-\rho^2}\right],\qquad
+\varphi(\theta)=\frac{\eta}{\theta^\gamma(1+\theta)^{1-\gamma}}.
+\]
+
+IV is √(w/T). This is Gatheral–Jacquier (2014), Eq. (4.1) with the modified
+power law of Eq. (4.5), Remark 4.4. The implementation enforces θ_t>0,
+nondecreasing θ_t in T, |ρ|<1, η>0, 0<γ≤1/2 and η(1+|ρ|)≤2.
+The paper's **Theorem 4.1** requires nondecreasing θ and
+
+\[
+0\leq\frac{\partial_\theta(\theta\varphi)}{\varphi}
+\leq\frac{1+\sqrt{1-\rho^2}}{\rho^2}
+\quad\text{(upper bound infinite at ρ=0)}.
+\]
+
+For this φ the middle quantity equals (1−γ)/(1+θ), so the condition holds.
+**Theorem 4.2** requires θφ(1+|ρ|)<4 and θφ²(1+|ρ|)≤4 for butterflies.
+Writing x=θ/(1+θ), θφ=ηx^(1−γ)<η and
+θφ²=η²x^(1−2γ)(1−x)≤η². Our η bound implies both inequalities, including
+strictness of the first. Thus **Corollary 4.1** supplies a static-arbitrage
+certificate, rather than relying on the finite diagnostic grid.
+See the [paper's Section 4](https://arxiv.org/html/1204.0646#S4).
+
+The initial condition is θ_0=0 and θφ(θ)→0 as θ→0. If interpolating in time,
+use a continuous nondecreasing θ curve (piecewise linear through (0,0) and the
+calibrated knots is sufficient), and preserve monotonicity when extending it.
+The API currently returns the fitted expiry knots rather than time interpolation.
+The calendar interpretation uses proportional dividends and forward log-moneyness,
+as in the paper's Lemma 2.1. No guarantee is asserted for market quotes themselves.
+
+Calibration has two stages:
+
+1. Reuse SVI's eligible OTM quotes. Interpolate **IV**, linearly in k at zero,
+   then set θ=ATM IV²T. An exact ATM quote takes precedence; duplicate k values
+   average their IVs. Require five distinct points spanning at least 1e-5 in k
+   and quotes bracketing zero; skip unusable expiries with explicit reasons.
+   Require at least two usable distinct tenors for a surface fit. Sort by T and
+   run equal-expiry-weight pool-adjacent-violators regression on θ. Equal tenors
+   are pooled first, ensuring identical θ there. `monotone_adjusted` reports
+   whether the repair changed any θ beyond relative roundoff (1e-14).
+2. Hold repaired θ fixed and minimize the weighted total-variance squared error
+   across every usable expiry. Quote weights are **exactly** the same normalized
+   per-expiry weights as SVI, so expiries have equal aggregate weight. Optimize
+   (ρ,q,γ), where q=η(1+|ρ|)/2. Bounds are ρ∈[−1+1e-7,1−1e-7],
+   q∈[1e-8,1], γ∈[1e-6,1/2]; small positive numerical floors exclude degenerate
+   parameters. Evaluate 45 fixed seeds: ρ∈{−.8,−.4,0,.4,.8}, q∈{.15,.4,.8},
+   γ∈{.15,.35,.5}. Refine the best four with bounded three-dimensional
+   Nelder–Mead, at most 600 iterations each, until all simplex coordinate widths
+   are <1e-9. This deterministic local search has no random restarts and no
+   global-optimum claim. An unconverged fit returns a failure reason and null
+   parameters. Per-expiry RMSE uses the same IV-unit diagnostic as SVI; overall
+   RMSE is the square root of the mean per-expiry squared RMSE. Time includes
+   quote preparation, theta repair, optimization and RMSE calculation.
+
+Raw SVI uses five independent parameters per expiry and usually fits each smile
+more tightly. Its ρ alone does not identify observed skew (m and σ also affect it),
+and neither wing caps nor grid checks remove static arbitrage. SSVI ties the
+expiries together, with ATM skew having the sign of its common ρ; it may have
+larger residuals but supplies globally safe strike extrapolation. Sparse or flat
+surfaces can still have weakly identified parameters. Tests convert SSVI to its
+exact raw-SVI representation for the existing density and calendar checks, and
+also test total-variance ordering directly without calendar tolerance.
 
 ## API and display
 
@@ -84,22 +161,38 @@ A failed fit has `svi: null` and null point estimates. Expiry-level `svi_status`
 `svi_reason`, `svi_points`, `svi_fit_ms` preserve failure information.
 `svi_years,svi_min_k,svi_max_k` support sampling without rounded-tenor errors.
 Parameters retain full precision. Top-level `calendar_violations` contains
-`{earlier,later,k,vol_points}` using existing expiry IDs; it covers only returned
-expiries. `vol_points` is the full later-expiry IV increase, not the excess over
-tolerance. The table shows the size, k and counterpart expiry for both members.
+`{earlier,later,k,vol_points,tolerance_vol_points}` using existing expiry IDs;
+it covers only returned expiries. `vol_points` is the full later-expiry IV increase, not the excess over
+tolerance. `tolerance_vol_points` is the local threshold used. The table shows
+the size, k and counterpart expiry for both members.
+
+Top-level `ssvi` always contains
+`{rho,eta,gamma,rmse_vol_points,status,reason,monotone_adjusted,fit_ms}`.
+Parameters/RMSE are null on failure; status and reason remain available.
+Each expiry adds `ssvi_theta`, `ssvi_rmse_vol_points`, `ssvi_reason`,
+`ssvi_min_k`, `ssvi_max_k`, and each market point adds decimal `ssvi_iv`.
+Skipped expiry theta/RMSE/IV are null with an expiry reason; if the entire
+surface fails, all estimates are null and the top-level reason explains why.
+Theta and shared parameters retain full precision for client curve sampling.
 
 Fitting runs only in the surface API. A per-snapshot mutex coalesces concurrent
 requests; the engine never takes it. Cache successes and failures for each
 immutable (symbol, metrics version) snapshot, using weak snapshot ownership to
 isolate different sources and remove expired entries on subsequent requests.
-Larger expiry prefixes fit only the additional expiries. Changing the display
-window reuses fits; calendar comparisons and JSON serialization still run.
+Larger expiry prefixes fit only the additional raw-SVI expiries. SSVI fits all
+usable expiries in the underlying snapshot on its first request, independently
+of the requested prefix; both successes and failures are cached. Changing the
+prefix/window reuses the same shared SSVI fit. Calendar comparisons and JSON
+serialization still run.
 
-The Volatility view offers Market / SVI / Both, draws market dots and 241 curve
-samples uniform in k (also on the strike axis), and clips curves to the requested
-window and calibration range. Each shown expiry has parameters, RMSE, point count
-and explicit butterfly/calendar or failure labels. Parameter cells wrap on narrow
-screens and colors use the existing light/dark theme tokens.
+The Volatility view offers Market / SVI / SSVI / All, draws market dots and 241
+samples uniform in k (also on the strike axis). Solid raw-SVI curves are clipped
+to the requested window and calibration range; dashed SSVI curves cover the
+requested window, including beyond quotes. The table shows shared SSVI parameters,
+overall RMSE, fit time, any monotone adjustment, per-expiry θ and SSVI RMSE next to
+SVI parameters/RMSE/counts and butterfly/calendar or failure labels. The explanation
+reads “one surface, arbitrage-free by construction; per-expiry SVI fits tighter but
+can admit arbitrage”. Colors use existing light/dark theme tokens.
 
 ## Validation and timing
 
@@ -108,20 +201,26 @@ small deterministic noise; short and long tenors; active constraints and flat
 smiles; invalid, missing and degenerate inputs; capped quote weighting; determinism;
 flat and known safe densities; Vogt's published butterfly counterexample; calendar
 ordering; API fields, nulls, concurrent cache reuse, windows, prefixes and version
-invalidation; and web sampling, toggles and diagnostic rendering.
+invalidation; and web sampling, toggles and diagnostic rendering. SSVI tests cover
+exact and noisy recovery (positive/negative/zero ρ, including γ=1/2), constrained endpoints,
+wide outlier weighting, ATM interpolation, missing ATM, invalid inputs, equal
+maturity pooling and PAVA repair, determinism, grids to |k|=100 and θ from 1e-8
+to 100, API fields/nulls, concurrent cold fits and cache invalidation.
 
 Run the repeatable synthetic workload with `./build/bench/openport_measure_svi`.
 It uses 250 OTM points per expiry, deterministic small IV noise, varying quote
 spreads, 60 tenors from 2 days to about 2 years, five warmups and 25 timed samples.
+The SSVI timing is one shared fit over all 15,000 points, including quote preparation and theta repair.
 It is SPX-sized, **not a live SPX calibration accuracy measurement**. Local Release
 build timings (ms):
 
 | Workload | Median | p90 |
 | --- | ---: | ---: |
-| One fit, 250 points, including butterfly check | 1.487 | 1.848 |
-| 60 fits plus butterfly and calendar checks | 89.984 | 90.783 |
-| Full API, cold fits and 15,000 serialized market points | 133.998 | 138.867 |
-| Full API, cached fits, same points and calendar checks | 43.037 | 50.637 |
+| One SSVI surface fit, 60 × 250 points | 40.404 | 40.660 |
+| One raw-SVI fit, 250 points, including butterfly check | 2.651 | 2.716 |
+| 60 raw-SVI fits plus butterfly and calendar checks | 155.363 | 157.282 |
+| Full API, cold SVI + SSVI and 15,000 serialized market points | 248.623 | 253.399 |
+| Full API, cached fits, same points and calendar checks | 55.621 | 60.360 |
 
 No time is added to the engine analytics pass. The first surface response pays
 calibration cost on its API worker; repeated responses still pay serialization cost.

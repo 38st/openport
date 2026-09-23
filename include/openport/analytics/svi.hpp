@@ -33,6 +33,11 @@ struct SviButterfly {
   bool ok = false;
 };
 
+struct SviHalfSpread {
+  double k;
+  double vol_points;
+};
+
 struct SviFit {
   SviParameters parameters;
   SviStatus status = SviStatus::Failed;
@@ -44,6 +49,7 @@ struct SviFit {
   double max_k = kNaN;
   double fit_ms = 0.0;
   SviButterfly butterfly;
+  std::vector<SviHalfSpread> half_spreads;  ///< Sorted eligible quotes; linear in k.
 };
 
 [[nodiscard]] double svi_variance(const SviParameters& p, double k);
@@ -52,7 +58,7 @@ struct SviFit {
 [[nodiscard]] double svi_density(const SviParameters& p, double k);
 /// Includes both endpoints on a 2,001-point grid; this is a diagnostic, not a proof.
 [[nodiscard]] SviButterfly svi_butterfly(const SviParameters& p, double min_k, double max_k);
-/// Checks the total-variance Lee bound AND the requested additional 4/T cap.
+/// Checks Lee's total-variance wing bound b(1+|rho|)<=2 at every tenor.
 [[nodiscard]] bool svi_admissible(const SviParameters& p, double years);
 
 /// Deterministic quasi-explicit weighted least squares in total variance. At least
@@ -67,9 +73,11 @@ struct SviCalendarViolation {
   std::size_t later;
   double k;
   double vol_points;  ///< Later expiry's IV increase needed to remove the violation.
+  double tolerance_vol_points;  ///< Floor, both RMSEs and local quoted half-spreads.
 };
 /// Checks consecutive successful tenors over the intersection of fitted ranges.
-/// Reports the largest later-expiry IV increase exceeding max(0.1 vp, both RMSEs).
+/// Reports the largest later-expiry IV increase exceeding the local tolerance:
+/// max(0.1 vp, both RMSEs, both interpolated quoted IV half-spreads).
 /// Earlier/later are indices into fits; the 2,001-point grid includes endpoints.
 [[nodiscard]] std::vector<SviCalendarViolation> svi_calendar(std::span<const SviFit> fits);
 

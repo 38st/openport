@@ -81,6 +81,24 @@ describe("paper trading fixtures", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Submit paper order/)
     expect(render(<PortfolioView />)).toContain("Paper orders are accepted in the regular session only; SPX is")
   })
+  it("limits Portfolio session notices to tradable underlyings, positions, or open orders", () => {
+    const session = { name: "closed" as const, open: false, note: "Closed" }
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [
+      { ...status.underlyings[0]!, session },
+      ...["SPY", "QQQ", "OEX", "HELD", "ORDER", "DONE", "FLAT"].map((symbol) => ({ ...status.underlyings[0]!, symbol, session, has_tradable_contracts: false })),
+    ] }, null, "open"))
+    const html = render(<PortfolioView />, (client) => {
+      const queries = tradingQueries(0, "17", true)
+      client.setQueryData(queries.portfolio.queryKey, { ...portfolio, positions: [
+        { ...portfolio.positions[0]!, underlying: "HELD" }, { ...portfolio.positions[0]!, symbol: "flat", underlying: "FLAT", quantity: 0 },
+      ] })
+      client.setQueryData(queries.orders.queryKey, { account_version: "17", orders: [
+        { ...order, underlying: "ORDER" }, { ...order, id: "done", underlying: "DONE", status: "cancelled" },
+      ] })
+    })
+    for (const symbol of ["SPX", "HELD", "ORDER"]) expect(html).toContain(`regular session only; ${symbol} is`)
+    for (const symbol of ["SPY", "QQQ", "OEX", "DONE", "FLAT"]) expect(html).not.toContain(`regular session only; ${symbol} is`)
+  })
   it("uses the selected underlying's regular session, even if another market is closed", () => {
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [
       { ...status.underlyings[0]!, symbol: "SPY", session: { name: "closed", open: false, note: "Closed" } },

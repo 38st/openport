@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import type { SurfaceExpiry, SviFit } from "../api/types"
-import { sampleSvi, smileSeries, sviVol } from "./svi"
+import type { SurfaceExpiry, SviFit, SsviFit } from "../api/types"
+import { sampleSvi, sampleSsvi, smileSeries, sviVol, ssviVol } from "./svi"
 
 const fit: SviFit = { a: .02, b: .1, rho: -.4, m: .02, sigma: .15, rmse_vol_points: .01,
   points: 50, status: "ok", reason: null, fit_ms: 1, butterfly_min_g: .3, butterfly_k: .2, butterfly_ok: true }
@@ -40,7 +40,7 @@ describe("SVI curves", () => {
     expect(points[240]!.x).toBeCloseTo(Math.log(1.1))
   })
   it("selects market dots, SVI lines, or both with stable expiry colors", () => {
-    const both = smileSeries([expiry], "moneyness", "both")
+    const both = smileSeries([expiry], "moneyness", "all")
     expect(both).toHaveLength(2)
     expect(both[0]!.dots).toBe(true)
     expect(both[0]!.band).toBe(true)
@@ -49,5 +49,39 @@ describe("SVI curves", () => {
     expect(both[0]!.color).toBe(both[1]!.color)
     expect(smileSeries([expiry], "strike", "market").map((s) => s.id)).toEqual([`${expiry.id}-market`])
     expect(smileSeries([expiry], "strike", "svi").map((s) => s.id)).toEqual([`${expiry.id}-svi`])
+  })
+})
+
+const ssvi: SsviFit = { rho: -.6, eta: .8, gamma: .3, status: "ok", reason: null, monotone_adjusted: false, rmse_vol_points: .2, fit_ms: 8 }
+const ssviExpiry = { ...expiry, ssvi_theta: .02, ssvi_rmse_vol_points: .15, ssvi_min_k: -.3, ssvi_max_k: .3 }
+describe("SSVI surface curves", () => {
+  it("recovers ATM total variance and samples densely even outside quotes", () => {
+    expect(ssviVol(ssvi, 0, .02, .5)).toBeCloseTo(.2, 14)
+    const display = { spot: 5000, window: .5 }
+    const points = sampleSsvi(ssviExpiry, ssvi, "moneyness", display)
+    expect(points).toHaveLength(241)
+    expect(points[0]!.x).toBeCloseTo(Math.log(.5))
+    expect(points[240]!.x).toBeCloseTo(Math.log(1.5))
+    expect(points[120]!.x).toBeCloseTo((Math.log(.5) + Math.log(1.5)) / 2)
+    const strikes = sampleSsvi({ ...ssviExpiry, points: [] }, ssvi, "strike", display)
+    expect(strikes).toHaveLength(241)
+    expect(strikes[0]!.x).toBeCloseTo(2500)
+    expect(strikes[240]!.x).toBeCloseTo(7500)
+    expect(points.every((p) => p.y != null && Number.isFinite(p.y))).toBe(true)
+  })
+  it("does not invent estimates for failed surfaces or omitted expiries", () => {
+    expect(sampleSsvi(expiry, ssvi, "strike")).toEqual([])
+    expect(sampleSsvi(ssviExpiry, { ...ssvi, status: "failed" }, "strike")).toEqual([])
+    expect(ssviVol({ ...ssvi, gamma: .6 }, 0, .02, .5)).toBeNull()
+    expect(ssviVol(ssvi, 0, 0, .5)).toBeNull()
+  })
+  it("selects all four modes and distinguishes curves with dashes and stable colors", () => {
+    const all = smileSeries([ssviExpiry], "moneyness", "all", undefined, ssvi)
+    expect(all.map((s) => s.id)).toEqual([`${expiry.id}-market`, `${expiry.id}-svi`, `${expiry.id}-ssvi`])
+    expect(all[2]!.dashed).toBe(true)
+    expect(all[2]!.color).toBe(all[1]!.color)
+    for (const mode of ["market", "svi", "ssvi"] as const) {
+      expect(smileSeries([ssviExpiry], "strike", mode, undefined, ssvi).map((s) => s.id)).toEqual([`${expiry.id}-${mode}`])
+    }
   })
 })

@@ -84,7 +84,10 @@ function PortfolioAccount({ trading }: { trading: TradingStatus }) {
       <div><h1 className="text-sm font-medium">Paper portfolio</h1><p className="mt-1 text-xs text-muted">European cash-settled index options · account version {account?.account_version ?? trading.account_version}</p></div>
       <div className="flex flex-wrap items-center gap-2"><WriteAccess trading={trading} /><button type="button" className="trade-button" onClick={() => void refresh()}>Refresh</button></div>
     </div>
-    {underlyings.map((u) => {
+    {underlyings.filter((u) => u.has_tradable_contracts ||
+      account?.positions.some((p) => p.underlying === u.symbol && p.quantity !== 0) ||
+      orders.data?.orders.some((o) => o.underlying === u.symbol && o.remaining_quantity > 0 &&
+        (o.status === "working" || o.status === "partially_filled"))).map((u) => {
       const notice = paperSessionNotice(u.symbol, u.session)
       return notice && <p key={u.symbol} role="status" className="text-sm text-warn">{notice}</p>
     })}

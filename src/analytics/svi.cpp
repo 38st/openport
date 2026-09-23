@@ -1,11 +1,14 @@
 #include "openport/analytics/svi.hpp"
 
+#include "svi_data.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <tuple>
 
 namespace openport::analytics {
 namespace {
@@ -14,7 +17,7 @@ constexpr double kRhoLimit = 1.0 - 1e-7;
 constexpr int kGridSteps = 2000;
 using Vec = std::array<double, 3>;
 using Mat = std::array<Vec, 3>;
-struct Datum { double k, iv, w, weight; };
+using Datum = detail::SviDatum;
 struct Plane { Vec normal; double bound; };  // normal . x <= bound
 struct Candidate {
   double m = 0, log_sigma = 0;
@@ -128,7 +131,7 @@ std::optional<Vec> inner(const Mat& h, const Vec& q, double wing_cap) {
 }
 
 Candidate evaluate(double m, double log_sigma, const std::vector<Datum>& data,
-                   double years, double span, double center) {
+                   double span, double center) {
   Candidate result;
   result.m = m;
   result.log_sigma = log_sigma;
@@ -145,7 +148,7 @@ Candidate evaluate(double m, double log_sigma, const std::vector<Datum>& data,
       for (int j = 0; j < 3; ++j) h[i][j] += p.weight * row[i] * row[j];
     }
   }
-  const auto x = inner(h, q, sigma * std::min(2.0, 4.0 / years));
+  const auto x = inner(h, q, sigma * 2.0);
   if (!x) return result;
   result.x = *x;
   result.loss = 0;
@@ -157,9 +160,9 @@ Candidate evaluate(double m, double log_sigma, const std::vector<Datum>& data,
   return result;
 }
 
-Candidate refine(Candidate seed, const std::vector<Datum>& data, double years,
+Candidate refine(Candidate seed, const std::vector<Datum>& data,
                  double span, double center) {
-  auto at = [&](double m, double s) { return evaluate(m, s, data, years, span, center); };
+  auto at = [&](double m, double s) { return evaluate(m, s, data, span, center); };
   std::array<Candidate, 3> simplex{seed, at(seed.m + span * .07, seed.log_sigma),
                                 at(seed.m, seed.log_sigma + .15)};
   for (int iteration = 0; iteration < 400; ++iteration) {
@@ -197,7 +200,9 @@ Candidate refine(Candidate seed, const std::vector<Datum>& data, double years,
   });
 }
 
-std::vector<Datum> prepare(std::span<const SviPoint> points, double years) {
+}  // namespace
+
+std::vector<detail::SviDatum> detail::prepare_svi(std::span<const SviPoint> points, double years) {
   std::vector<Datum> data;
   for (const auto& p : points) {
     if (!std::isfinite(p.k) || !std::isfinite(p.iv) || !std::isfinite(p.bid_iv) ||
@@ -206,9 +211,11 @@ std::vector<Datum> prepare(std::span<const SviPoint> points, double years) {
     const double w = p.iv * p.iv * years;
     if (!std::isfinite(w) || !(w > 0)) continue;
     const double spread = std::max(1e-4, p.ask_iv - p.bid_iv);
-    data.push_back({p.k, p.iv, w, 1 / (spread * spread)});
+    data.push_back({p.k, p.iv, w, 1 / (spread * spread), 50 * (p.ask_iv - p.bid_iv)});
   }
-  std::sort(data.begin(), data.end(), [](const auto& a, const auto& b) { return a.k < b.k; });
+  std::sort(data.begin(), data.end(), [](const auto& a, const auto& b) {
+    return std::tie(a.k, a.iv, a.weight) < std::tie(b.k, b.iv, b.weight);
+  });
   if (data.empty()) return data;
   std::vector<double> weights;
   for (const auto& p : data) weights.push_back(p.weight);
@@ -226,8 +233,6 @@ std::vector<Datum> prepare(std::span<const SviPoint> points, double years) {
   for (auto& p : data) p.weight /= sum;
   return data;
 }
-
-}  // namespace
 
 const char* to_string(SviStatus status) {
   switch (status) {
@@ -254,7 +259,7 @@ bool svi_admissible(const SviParameters& p, double years) {
          std::isfinite(p.m) && std::isfinite(p.sigma) && std::isfinite(years) &&
          years > 0 && p.b >= 0 && std::abs(p.rho) < 1 && p.sigma > 0 &&
          minimum >= -1e-12 &&
-         p.b * (1 + std::abs(p.rho)) <= std::min(2.0, 4.0 / years) + 1e-12;
+         p.b * (1 + std::abs(p.rho)) <= 2.0 + 1e-12;
 }
 
 double svi_density(const SviParameters& p, double k) {
@@ -294,7 +299,12 @@ SviFit fit_svi(std::span<const SviPoint> points, double years) {
     fit.reason = "time to expiry must be finite and positive";
     return finish();
   }
-  const auto data = prepare(points, years);
+  const auto data = detail::prepare_svi(points, years);
+  for (const auto& p : data) {
+    if (!fit.half_spreads.empty() && fit.half_spreads.back().k == p.k)
+      fit.half_spreads.back().vol_points = std::max(fit.half_spreads.back().vol_points, p.half_spread);
+    else fit.half_spreads.push_back({p.k, p.half_spread});
+  }
   fit.points = data.size();
   std::size_t distinct = 0;
   for (std::size_t i = 0; i < data.size(); ++i)
@@ -315,12 +325,12 @@ SviFit fit_svi(std::span<const SviPoint> points, double years) {
   std::vector<Candidate> seeds;
   for (double offset : {-.5, -.25, 0.0, .25, .5})
     for (double width : {.05, .15, .4, 1.0})
-      seeds.push_back(evaluate(center + offset * span, std::log(width * span), data, years, span, center));
+      seeds.push_back(evaluate(center + offset * span, std::log(width * span), data, span, center));
   std::stable_sort(seeds.begin(), seeds.end(), [](const auto& a, const auto& b) { return a.loss < b.loss; });
   Candidate best;
   for (std::size_t i = 0; i < 4; ++i) {
     if (!std::isfinite(seeds[i].loss)) continue;
-    const auto candidate = refine(seeds[i], data, years, span, center);
+    const auto candidate = refine(seeds[i], data, span, center);
     if (candidate.converged && candidate.loss < best.loss) best = candidate;
   }
   if (!std::isfinite(best.loss)) {
@@ -358,6 +368,11 @@ SviFit fit_svi(const SliceMetrics& slice) {
     result.reason = "forward must be finite and positive";
     return finish(result);
   }
+  return finish(fit_svi(detail::svi_points(slice), slice.years));
+}
+
+std::vector<SviPoint> detail::svi_points(const SliceMetrics& slice) {
+  if (!(slice.forward.forward > 0) || !std::isfinite(slice.forward.forward)) return {};
   std::vector<SviPoint> points;
   for (const auto& row : slice.strikes) {
     const auto& otm = row.strike >= slice.forward.forward ? row.call : row.put;
@@ -365,8 +380,20 @@ SviFit fit_svi(const SliceMetrics& slice) {
         !std::isfinite(otm.bid) || !std::isfinite(otm.ask) || otm.ask < otm.bid) continue;
     points.push_back({std::log(row.strike / slice.forward.forward), row.iv, otm.bid_iv, otm.ask_iv});
   }
-  return finish(fit_svi(points, slice.years));
+  return points;
 }
+
+namespace {
+double half_spread_at(const std::vector<SviHalfSpread>& quotes, double k) {
+  if (quotes.empty()) return 0;
+  const auto hi = std::lower_bound(quotes.begin(), quotes.end(), k,
+      [](const auto& quote, double x) { return quote.k < x; });
+  if (hi == quotes.begin()) return hi->vol_points;
+  if (hi == quotes.end()) return quotes.back().vol_points;
+  const auto& lo = *(hi - 1);
+  return std::lerp(lo.vol_points, hi->vol_points, (k - lo.k) / (hi->k - lo.k));
+}
+}  // namespace
 
 std::vector<SviCalendarViolation> svi_calendar(std::span<const SviFit> fits) {
   std::vector<std::size_t> order;
@@ -380,7 +407,9 @@ std::vector<SviCalendarViolation> svi_calendar(std::span<const SviFit> fits) {
     const double lo = std::max(earlier.min_k, later.min_k);
     const double hi = std::min(earlier.max_k, later.max_k);
     if (!std::isfinite(lo) || !std::isfinite(hi) || lo > hi) continue;
-    double worst = std::max({0.1, earlier.rmse_vol_points, later.rmse_vol_points});
+    const double floor = std::max({0.1, earlier.rmse_vol_points, later.rmse_vol_points});
+    double worst = 0;
+    double used_tolerance = floor;
     double location = kNaN;
     for (int i = 0; i <= kGridSteps; ++i) {
       const double k = lo + (hi - lo) * i / kGridSteps;
@@ -388,10 +417,14 @@ std::vector<SviCalendarViolation> svi_calendar(std::span<const SviFit> fits) {
       // an IV increase there, not a comparison of the two annualized smiles.
       const double increase = 100 * (svi_iv(earlier.parameters, k, later.years) -
                                      svi_iv(later.parameters, k, later.years));
+      const double tolerance = std::max({floor, half_spread_at(earlier.half_spreads, k),
+                                         half_spread_at(later.half_spreads, k)});
       // Do not turn roundoff at the tolerance boundary into a violation.
-      if (increase > worst + 1e-12) { worst = increase; location = k; }
+      if (increase > tolerance + 1e-12 && increase > worst) {
+        worst = increase; location = k; used_tolerance = tolerance;
+      }
     }
-    if (std::isfinite(location)) result.push_back({order[j - 1], order[j], location, worst});
+    if (std::isfinite(location)) result.push_back({order[j - 1], order[j], location, worst, used_tolerance});
   }
   return result;
 }

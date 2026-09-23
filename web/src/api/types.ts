@@ -38,6 +38,7 @@ export interface UnderlyingSnapshot {
   as_of: string | null
   version: number
   session?: TradingSession | null
+  has_tradable_contracts?: boolean
   state?: FeedState | null
   message?: string | null
   last_success?: string | null
@@ -193,6 +194,17 @@ export interface SviFit {
   butterfly_ok: boolean
 }
 
+export interface SsviFit {
+  rho: Num
+  eta: Num
+  gamma: Num
+  rmse_vol_points: Num
+  status: "ok" | "too_few_points" | "failed"
+  reason: string | null
+  monotone_adjusted: boolean
+  fit_ms: number
+}
+
 export interface SurfaceExpiry {
   id: string
   expiry: string
@@ -200,6 +212,11 @@ export interface SurfaceExpiry {
   forward: Num
   atm_iv: Num
   points: SmilePoint[]
+  ssvi_theta?: Num
+  ssvi_rmse_vol_points?: Num
+  ssvi_reason?: string | null
+  ssvi_min_k?: Num
+  ssvi_max_k?: Num
   svi?: SviFit | null
   svi_status?: "ok" | "too_few_points" | "failed"
   svi_reason?: string | null
@@ -217,6 +234,7 @@ export interface SmilePoint {
   bid_iv: Num
   ask_iv: Num
   svi_iv?: Num
+  ssvi_iv?: Num
 }
 
 export interface Surface {
@@ -226,7 +244,8 @@ export interface Surface {
   as_of: string | null
   version: number
   expiries: SurfaceExpiry[]
-  calendar_violations?: { earlier: string; later: string; k: number; vol_points?: number }[]
+  ssvi?: SsviFit
+  calendar_violations?: { earlier: string; later: string; k: number; vol_points?: number; tolerance_vol_points?: number }[]
 }
 
 export interface Tick {

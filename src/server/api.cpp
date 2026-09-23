@@ -14,6 +14,7 @@
 #include <type_traits>
 
 #include "openport/analytics/svi.hpp"
+#include "openport/analytics/ssvi.hpp"
 #include "paper_json.hpp"
 
 namespace openport::server {
@@ -221,6 +222,7 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
         {"spot", nullptr},
         {"as_of", nullptr},
         {"version", 0},
+        {"has_tradable_contracts", false},
         {"session", {{"name", session.name}, {"open", session.open}, {"note", session.note}}}};
     if (details) {
       item["expiries"] = 0;
@@ -241,6 +243,12 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
       item["spot"] = price(m->spot);
       item["as_of"] = md::format_timestamp(m->as_of);
       item["version"] = m->version;
+      item["has_tradable_contracts"] = std::any_of(m->slices.begin(), m->slices.end(), [](const auto& slice) {
+        return slice.years > 0 && std::any_of(slice.strikes.begin(), slice.strikes.end(), [](const auto& row) {
+          return (row.call.id != analytics::kNoInstrument && trading::eligible(row.call.contract).ok()) ||
+                 (row.put.id != analytics::kNoInstrument && trading::eligible(row.put.contract).ok());
+        });
+      });
       if (details) {
         item["expiries"] = m->slices.size();
         item["options"] = m->options_priced;
@@ -377,6 +385,7 @@ json exposure_json(const UnderlyingMetrics& m, std::size_t max_expiries, double 
 struct SurfaceFits {
   std::mutex mutex;
   std::vector<analytics::SviFit> fits;
+  std::optional<analytics::SsviFit> ssvi;
 };
 
 std::shared_ptr<SurfaceFits> surface_cache(const std::shared_ptr<const UnderlyingMetrics>& m) {
@@ -407,17 +416,21 @@ json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
   const auto count = std::min(max_expiries, m.slices.size());
   const auto cache = surface_cache(metrics);
   std::vector<analytics::SviFit> fits;
+  analytics::SsviFit ssvi;
   {
     const std::lock_guard lock(cache->mutex);
     // Only newly requested expiries are fitted; display windows never change fits.
     while (cache->fits.size() < count)
       cache->fits.push_back(analytics::fit_svi(m.slices[cache->fits.size()]));
+    if (!cache->ssvi) cache->ssvi = analytics::fit_ssvi(m.slices);
+    ssvi = *cache->ssvi;
     fits.assign(cache->fits.begin(), cache->fits.begin() + static_cast<std::ptrdiff_t>(count));
   }
   json expiries = json::array();
   for (std::size_t i = 0; i < count; ++i) {
     const SliceMetrics& slice = m.slices[i];
     const auto& fit = fits[i];
+    const auto& surface_fit = ssvi.expiries[i];
     json points = json::array();
     for (const auto& row : slice.strikes) {
       if (!std::isfinite(row.iv) || !in_window(row.strike, m.spot, window)) continue;
@@ -430,12 +443,17 @@ json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
                         {"iv", sig(row.iv)}, {"bid_iv", sig(otm.bid_iv)},
                         {"ask_iv", sig(otm.ask_iv)},
                         {"svi_iv", fit.status == analytics::SviStatus::Ok
-                            ? sig(analytics::svi_iv(fit.parameters, k, slice.years)) : json(nullptr)}});
+                            ? sig(analytics::svi_iv(fit.parameters, k, slice.years)) : json(nullptr)},
+                        {"ssvi_iv", sig(analytics::ssvi_iv(ssvi.parameters, k, surface_fit.theta, slice.years))}});
     }
     expiries.push_back({{"id", expiry_id(slice)}, {"expiry", md::format_date(slice.expiry)},
                         {"days", sig(slice.years * 365.0, 4)},
                         {"forward", price(slice.forward.forward)},
                         {"atm_iv", sig(slice.atm_iv)}, {"points", points}, {"svi", svi_json(fit)},
+                        {"ssvi_theta", sig(surface_fit.theta, 17)},
+                        {"ssvi_rmse_vol_points", sig(surface_fit.rmse_vol_points)},
+                        {"ssvi_reason", surface_fit.reason.empty() ? json(nullptr) : json(surface_fit.reason)},
+                        {"ssvi_min_k", sig(surface_fit.min_k, 15)}, {"ssvi_max_k", sig(surface_fit.max_k, 15)},
                         {"svi_status", analytics::to_string(fit.status)},
                         {"svi_reason", fit.reason.empty() ? json(nullptr) : json(fit.reason)},
                         {"svi_points", fit.points}, {"svi_fit_ms", fit.fit_ms},
@@ -446,10 +464,16 @@ json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
   for (const auto& pair : analytics::svi_calendar(fits))
     violations.push_back({{"earlier", expiry_id(m.slices[pair.earlier])},
                           {"later", expiry_id(m.slices[pair.later])}, {"k", sig(pair.k)},
-                          {"vol_points", sig(pair.vol_points)}});
+                          {"vol_points", sig(pair.vol_points)},
+                          {"tolerance_vol_points", sig(pair.tolerance_vol_points)}});
   return {{"symbol", m.symbol}, {"spot", price(m.spot)},
           {"spot_source", spot_source_json(m)}, {"as_of", md::format_timestamp(m.as_of)},
-          {"version", m.version}, {"expiries", expiries}, {"calendar_violations", violations}};
+          {"version", m.version}, {"expiries", expiries}, {"calendar_violations", violations},
+          {"ssvi", {{"rho", sig(ssvi.parameters.rho, 17)}, {"eta", sig(ssvi.parameters.eta, 17)},
+                    {"gamma", sig(ssvi.parameters.gamma, 17)}, {"rmse_vol_points", sig(ssvi.rmse_vol_points)},
+                    {"status", analytics::to_string(ssvi.status)},
+                    {"reason", ssvi.reason.empty() ? json(nullptr) : json(ssvi.reason)},
+                    {"monotone_adjusted", ssvi.monotone_adjusted}, {"fit_ms", ssvi.fit_ms}}}};
 }
 
 }  // namespace

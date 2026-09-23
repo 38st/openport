@@ -1,4 +1,5 @@
 #include "openport/analytics/svi.hpp"
+#include "openport/analytics/ssvi.hpp"
 
 #include <gtest/gtest.h>
 
@@ -107,7 +108,8 @@ TEST(Svi, EnforcesConstraintsAndAcceptsFlatSmile) {
   EXPECT_TRUE(svi_admissible({.1, 2, 0, 0, .1}, 1));
   EXPECT_FALSE(svi_admissible({.1, 2.01, 0, 0, .1}, 1));
   EXPECT_TRUE(svi_admissible({.1, 1, 0, 0, .1}, 4));
-  EXPECT_FALSE(svi_admissible({.1, 1.01, 0, 0, .1}, 4));
+  EXPECT_TRUE(svi_admissible({.1, 1.8, 0, 0, .1}, 4));
+  EXPECT_FALSE(svi_admissible({.1, 2.01, 0, 0, .1}, 4));
   EXPECT_FALSE(svi_admissible({.1, 2, 0, 0, 1e308}, 1));
   for (const auto& p : {SviParameters{.04, 0, 0, 0, .1},
                         SviParameters{.1, 2.2, .5, 0, .1},
@@ -129,9 +131,10 @@ TEST(Svi, ActiveMinimumVarianceConstraintAndLongTenorWingCap) {
   ASSERT_EQ(fit.status, SviStatus::Ok) << fit.reason;
   EXPECT_TRUE(svi_admissible(fit.parameters, 1));
   EXPECT_GT(fit.rmse_vol_points, .001);
-  const auto long_fit = fit_svi(smile({.1, 1.2, .5, 0, .1}, 4), 4);
+  const auto long_fit = fit_svi(smile({.1, 1.2, .5, 0, .1}, 3), 3);
   ASSERT_EQ(long_fit.status, SviStatus::Ok) << long_fit.reason;
-  EXPECT_LE(long_fit.parameters.b * (1 + std::abs(long_fit.parameters.rho)), 1 + 1e-12);
+  EXPECT_NEAR(long_fit.parameters.b * (1 + std::abs(long_fit.parameters.rho)), 1.8, 1e-6);
+  EXPECT_LT(long_fit.rmse_vol_points, 1e-6);
 }
 
 TEST(Svi, RecoversAcrossTenorsAndRetainsButterflyViolations) {
@@ -249,6 +252,32 @@ TEST(Svi, CalendarToleranceUsesFloorAndLargerFitRmseAtLaterExpiry) {
   }
 }
 
+TEST(Svi, CalendarUsesInterpolatedLocalHalfSpreadFromWiderExpiry) {
+  SviFit early, late;
+  early.status = late.status = SviStatus::Ok;
+  early.years = .5; late.years = 1;
+  early.min_k = late.min_k = 0;
+  early.max_k = late.max_k = 0;  // Probe the midpoint of quoted spreads.
+  late.parameters = {.04, 0, 0, 0, .1};
+  early.half_spreads = {{-.1, .2}, {.1, .8}};
+  late.half_spreads = {{-.1, .1}, {.1, .3}};
+  for (double increase : {.49, .5, .51}) {
+    early.parameters = {std::pow(.2 + increase / 100, 2), 0, 0, 0, .1};
+    const auto violations = svi_calendar(std::vector<SviFit>{early, late});
+    if (increase <= .5) {
+      EXPECT_TRUE(violations.empty());
+    } else {
+      ASSERT_EQ(violations.size(), 1u);
+      EXPECT_NEAR(violations[0].vol_points, increase, 1e-12);
+      EXPECT_DOUBLE_EQ(violations[0].tolerance_vol_points, .5);
+    }
+  }
+  std::swap(early.half_spreads, late.half_spreads);
+  const auto violations = svi_calendar(std::vector<SviFit>{early, late});
+  ASSERT_EQ(violations.size(), 1u);
+  EXPECT_DOUBLE_EQ(violations[0].tolerance_vol_points, .5);
+}
+
 TEST(Svi, CalendarFindsWingCrossingEvenWhenAtmVarianceIncreases) {
   SviFit early, late;
   early.status = late.status = SviStatus::Ok;
@@ -282,6 +311,8 @@ TEST(Svi, SliceUsesOnlyTheOtmSidesTwoSidedMarket) {
   const auto fit = fit_svi(slice);
   ASSERT_EQ(fit.status, SviStatus::Ok) << fit.reason;
   EXPECT_EQ(fit.points, 58u);
+  ASSERT_EQ(fit.half_spreads.size(), 58u);
+  EXPECT_NEAR(fit.half_spreads.front().vol_points, .2, 1e-12);
   EXPECT_LT(fit.rmse_vol_points, 1e-6);
   slice.forward.forward = kNaN;
   EXPECT_EQ(fit_svi(slice).status, SviStatus::Failed);
@@ -347,7 +378,19 @@ TEST(SviApi, PreservesFieldsAndReportsParametersNullFailuresAndCalendarPairs) {
   const auto response = surface_get(source, "?window=0");
   for (const auto key : {"symbol", "spot", "spot_source", "as_of", "version", "expiries"})
     EXPECT_TRUE(response.contains(key));
+  const auto& ssvi = response["ssvi"];
+  EXPECT_EQ(ssvi["status"], "ok");
+  EXPECT_TRUE(ssvi["reason"].is_null());
+  EXPECT_TRUE(ssvi["monotone_adjusted"].get<bool>());
+  for (const auto* key : {"rho", "eta", "gamma", "rmse_vol_points", "fit_ms"})
+    EXPECT_TRUE(ssvi[key].is_number()) << key;
+  const SsviParameters parameters{ssvi["rho"].get<double>(), ssvi["eta"].get<double>(), ssvi["gamma"].get<double>()};
+  EXPECT_TRUE(ssvi_admissible(parameters));
   const auto& e = response["expiries"][0];
+  EXPECT_TRUE(e["ssvi_theta"].is_number());
+  EXPECT_TRUE(e["ssvi_rmse_vol_points"].is_number());
+  EXPECT_TRUE(e["ssvi_reason"].is_null());
+  EXPECT_EQ(e["ssvi_theta"], response["expiries"][1]["ssvi_theta"]);
   for (const auto key : {"id", "expiry", "days", "forward", "atm_iv", "points"})
     EXPECT_TRUE(e.contains(key));
   const auto& fit = e["svi"];
@@ -361,19 +404,28 @@ TEST(SviApi, PreservesFieldsAndReportsParametersNullFailuresAndCalendarPairs) {
     for (const auto key : {"strike", "k", "iv", "bid_iv", "ask_iv", "svi_iv"})
       EXPECT_TRUE(p[key].is_number()) << key;
     EXPECT_NEAR(p["svi_iv"].get<double>(), p["iv"].get<double>(), 1e-6);
+    EXPECT_NEAR(p["ssvi_iv"].get<double>(), ssvi_iv(parameters, p["k"].get<double>(),
+        e["ssvi_theta"].get<double>(), e["svi_years"].get<double>()), 1e-6);
   }
   const auto& failure = response["expiries"][2];
   EXPECT_TRUE(failure["svi"].is_null());
   EXPECT_EQ(failure["svi_status"], "too_few_points");
   EXPECT_TRUE(failure["svi_reason"].is_string());
   EXPECT_EQ(failure["svi_points"], 4);
-  for (const auto& p : failure["points"]) EXPECT_TRUE(p["svi_iv"].is_null());
+  EXPECT_TRUE(failure["ssvi_theta"].is_null());
+  EXPECT_TRUE(failure["ssvi_rmse_vol_points"].is_null());
+  EXPECT_TRUE(failure["ssvi_reason"].is_string());
+  for (const auto& p : failure["points"]) {
+    EXPECT_TRUE(p["svi_iv"].is_null());
+    EXPECT_TRUE(p["ssvi_iv"].is_null());
+  }
   const auto& pairs = response["calendar_violations"];
   ASSERT_EQ(pairs.size(), 1u);
   EXPECT_EQ(pairs[0]["earlier"], response["expiries"][0]["id"]);
   EXPECT_EQ(pairs[0]["later"], response["expiries"][1]["id"]);
   EXPECT_TRUE(pairs[0]["k"].is_number());
   EXPECT_TRUE(pairs[0]["vol_points"].is_number());
+  EXPECT_NEAR(pairs[0]["tolerance_vol_points"].get<double>(), .2, 1e-6);
   EXPECT_GT(pairs[0]["vol_points"].get<double>(), .1);
 }
 
@@ -387,7 +439,28 @@ TEST(SviApi, InvalidForwardReportsFailedReasonAndNoFittedValues) {
   EXPECT_TRUE(e["svi"].is_null());
   EXPECT_EQ(e["svi_status"], "failed");
   EXPECT_EQ(e["svi_reason"], "forward must be finite and positive");
+  EXPECT_EQ(response["ssvi"]["status"], "too_few_points");
+  EXPECT_TRUE(response["ssvi"]["rho"].is_null());
+  EXPECT_TRUE(response["ssvi"]["reason"].is_string());
+  EXPECT_TRUE(e["ssvi_theta"].is_null());
+  EXPECT_EQ(response, surface_get(source, "?expiries=1"));
   EXPECT_TRUE(response["calendar_violations"].empty());
+}
+
+TEST(SviApi, CoalescesConcurrentColdSsviRequestsAndCachesFailures) {
+  for (bool failure : {false, true}) {
+    SviSource source;
+    auto m = surface_fixture();
+    if (failure) m.slices.resize(1);
+    source.snapshot = std::make_shared<const analytics::UnderlyingMetrics>(m);
+    auto request = [&] { return surface_get(source, "?window=0"); };
+    auto a = std::async(std::launch::async, request);
+    auto b = std::async(std::launch::async, request);
+    const auto response = a.get();
+    EXPECT_EQ(response, b.get());
+    EXPECT_EQ(response, request());
+    EXPECT_EQ(response["ssvi"]["status"], failure ? "too_few_points" : "ok");
+  }
 }
 
 TEST(SviApi, ReusesFitsAcrossWindowsPrefixesAndConcurrentRequestsInvalidatesNewVersions) {
@@ -400,6 +473,8 @@ TEST(SviApi, ReusesFitsAcrossWindowsPrefixesAndConcurrentRequestsInvalidatesNewV
   const auto other = concurrent.get();
   EXPECT_EQ(full, other);  // Includes original nanosecond-resolution measured fit times.
   EXPECT_EQ(one["expiries"][0]["svi"], full["expiries"][0]["svi"]);
+  EXPECT_EQ(one["ssvi"], full["ssvi"]);  // One full-underlying fit, even for a prefix.
+  EXPECT_EQ(one["expiries"][0]["ssvi_theta"], full["expiries"][0]["ssvi_theta"]);
   EXPECT_LT(one["expiries"][0]["points"].size(), full["expiries"][0]["points"].size());
   EXPECT_TRUE(one["calendar_violations"].empty());
   EXPECT_EQ(full, request());  // Failure timings are also cached.
@@ -409,12 +484,15 @@ TEST(SviApi, ReusesFitsAcrossWindowsPrefixesAndConcurrentRequestsInvalidatesNewV
   source.snapshot = std::make_shared<const analytics::UnderlyingMetrics>(next);
   const auto changed = surface_get(source, "?expiries=1");
   EXPECT_EQ(changed["version"], 124);
+  EXPECT_EQ(changed["ssvi"]["status"], "too_few_points");
+  EXPECT_NE(changed["ssvi"], one["ssvi"]);
   EXPECT_TRUE(changed["expiries"][0]["svi"].is_null());
   // Another source with the same symbol and version must not share the old fit.
   SviSource isolated;
   next.version = 123;
   isolated.snapshot = std::make_shared<const analytics::UnderlyingMetrics>(next);
   EXPECT_TRUE(surface_get(isolated)["expiries"][0]["svi"].is_null());
+  EXPECT_EQ(surface_get(isolated)["ssvi"]["status"], "too_few_points");
 }
 }  // namespace
 #endif

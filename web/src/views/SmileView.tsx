@@ -17,7 +17,7 @@ export function SmileView({ symbol }: { symbol: string }) {
   const version = useLive().version(symbol)
   const [expiries, setExpiries] = useState(6)
   const [window, setWindow] = useState(0.1)
-  const [mode, setMode] = useState<SmileMode>("both")
+  const [mode, setMode] = useState<SmileMode>("all")
   const [axis, setAxis] = useState<"strike" | "moneyness">("strike")
 
   const surface = useQuery({
@@ -34,8 +34,8 @@ export function SmileView({ symbol }: { symbol: string }) {
   const summaryData = matchingPayload(summary.data, symbol)
 
   const shown = useMemo(() => (surfaceData?.expiries ?? []).filter((e) => (e.days ?? 0) > 1 / 24), [surfaceData])
-  const smiles = useMemo(() => smileSeries(shown, axis, mode, { spot: surfaceData?.spot ?? null, window }),
-    [shown, axis, mode, surfaceData?.spot, window])
+  const smiles = useMemo(() => smileSeries(shown, axis, mode, { spot: surfaceData?.spot ?? null, window }, surfaceData?.ssvi),
+    [shown, axis, mode, surfaceData?.spot, surfaceData?.ssvi, window])
 
   const term = useMemo<Series[]>(() => {
     // Square-root time axis: a week and five years both stay readable.
@@ -58,7 +58,7 @@ export function SmileView({ symbol }: { symbol: string }) {
         actions={
           <>
             <Segmented label="Smile display" value={mode}
-              options={[{ value: "market", label: "Market" }, { value: "svi", label: "SVI" }, { value: "both", label: "Both" }]}
+              options={[{ value: "market", label: "Market" }, { value: "svi", label: "SVI" }, { value: "ssvi", label: "SSVI" }, { value: "all", label: "All" }]}
               onChange={setMode} />
             <Segmented label="Expiries" value={expiries} options={[3, 6, 10].map((n) => ({ value: n, label: `${n} exp` }))} onChange={setExpiries} />
             <Segmented label="Window" value={window} options={[0.05, 0.1, 0.2].map((w) => ({ value: w, label: `±${w * 100}%` }))} onChange={setWindow} />
@@ -85,14 +85,14 @@ export function SmileView({ symbol }: { symbol: string }) {
               xLabel={axis === "strike" ? "strike" : "log-moneyness"}
             />
             <p className="mt-2 text-[11px] text-muted">
-              Dots: OTM market IV. Lines: SVI fits. The nearest expiry's market bid-ask range is shaded.
-              Fits use all eligible quotes; arbitrage checks cover a finite grid.
+              Dots: OTM market IV. Solid: SVI. Dashed: SSVI. The nearest expiry's market bid-ask range is shaded.
+              Fits use all eligible quotes; SVI arbitrage checks cover a finite grid.
             </p>
           </>
         ) : (
           <Empty>{surfaceData ? "No usable points or fits for this selection." : "Loading smiles…"}</Empty>
         )}
-        <SviTable expiries={shown} violations={surfaceData?.calendar_violations ?? []} />
+        <SviTable ssvi={surfaceData?.ssvi} expiries={shown} violations={surfaceData?.calendar_violations ?? []} />
       </Panel>
 
       <div className="flex flex-col gap-3">

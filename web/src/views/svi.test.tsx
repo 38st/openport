@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
-import type { Surface, SviFit } from "../api/types"
+import type { Surface, SviFit, SsviFit } from "../api/types"
 import { SviTable } from "../components/SviTable"
 import { SmileView } from "./SmileView"
 
@@ -30,7 +30,7 @@ describe("SVI view", () => {
     expect(html).not.toContain("Grid checks pass")
     expect(html).not.toContain("NaN")
   })
-  it("renders a keyboard accessible market/SVI/both control and scoped grid pass label", () => {
+  it("renders a keyboard accessible market/SVI/SSVI/All control and scoped grid pass label", () => {
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, gcTime: Infinity } } })
     client.setQueryData(["surface", "SPX", 6, .1, 1], { ...surface, calendar_violations: [] })
     const html = renderToStaticMarkup(<QueryClientProvider client={client}><SmileView symbol="SPX" /></QueryClientProvider>)
@@ -39,8 +39,21 @@ describe("SVI view", () => {
     expect(html).toContain('aria-checked="true" tabindex="0" class=')
     expect(html).toContain(">Market</button>")
     expect(html).toContain(">SVI</button>")
-    expect(html).toContain(">Both</button>")
+    expect(html).toContain(">All</button>")
+    expect(html).toContain(">SSVI</button>")
     expect(html).toContain("Grid checks pass")
     expect(html).toContain("finite grid")
   })
+})
+
+const ssvi: SsviFit = { rho: -.65, eta: .9, gamma: .3, rmse_vol_points: .22, status: "ok", reason: null, monotone_adjusted: true, fit_ms: 12.3 }
+it("shows the shared SSVI parameters, adjustment, timing, and per-expiry RMSE next to SVI", () => {
+  const html = renderToStaticMarkup(<SviTable ssvi={ssvi} expiries={[{ ...surface.expiries[0]!, ssvi_theta: .02, ssvi_rmse_vol_points: .15 }]} violations={[]} />)
+  for (const text of ["SSVI surface parameters", "-0.65000", "0.90000", "0.30000", "0.1500", "0.02000", "0.0020", "12.30", "adjusted for monotonicity", "one surface, arbitrage-free by construction"]) expect(html).toContain(text)
+})
+it("reports a failed SSVI surface and missing ATM expiry without fabricating parameters", () => {
+  const html = renderToStaticMarkup(<SviTable ssvi={{ ...ssvi, status: "too_few_points", rho: null, reason: "need two usable tenors" }} expiries={[{ ...surface.expiries[0]!, ssvi_reason: "quotes must bracket ATM" }]} violations={[]} />)
+  expect(html).toContain("need two usable tenors")
+  expect(html).toContain("quotes must bracket ATM")
+  expect(html).not.toContain("NaN")
 })

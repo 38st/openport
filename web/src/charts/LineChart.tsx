@@ -16,6 +16,7 @@ export interface Series {
   points: SeriesPoint[]
   band?: boolean
   dots?: boolean
+  dashed?: boolean
 }
 
 export interface Marker {
@@ -143,7 +144,7 @@ export function LineChart({ series, markers = [], height = 320, formatX, formatY
               ) : null)}
             </g>
           ) : (
-            <path key={s.id} aria-label={s.label} d={path(s.points, (p) => p.y)} fill="none" style={{ stroke: s.color }} strokeWidth={1.6} strokeLinejoin="round" />
+            <path key={s.id} aria-label={s.label} d={path(s.points, (p) => p.y)} fill="none" style={{ stroke: s.color }} strokeWidth={1.6} strokeDasharray={s.dashed ? "5 3" : undefined} strokeLinejoin="round" />
           ))}
           {anchor && hoverX != null && (
             <line x1={layout.x(anchor.x)} x2={layout.x(anchor.x)} y1={margin.top} y2={height - margin.bottom} className="stroke-muted" strokeOpacity={0.5} />

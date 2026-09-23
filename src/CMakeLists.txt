@@ -9,6 +9,7 @@ add_library(openport_core
   analytics/forward.cpp
   analytics/chain_analytics.cpp
   analytics/svi.cpp
+  analytics/ssvi.cpp
 )
 add_library(openport::core ALIAS openport_core)
 target_include_directories(openport_core PUBLIC

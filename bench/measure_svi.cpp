@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "openport/analytics/svi.hpp"
+#include "openport/analytics/ssvi.hpp"
 #ifdef OPENPORT_SVI_API_BENCH
 #include "openport/server/api.hpp"
 #endif
@@ -82,6 +83,7 @@ int main(int argc, char** argv) {
 #else
   (void)argc; (void)argv;
 #endif
+  measure("ssvi_surface_60x250", [&] { return analytics::fit_ssvi(m.slices).status == analytics::SviStatus::Ok; });
   measure("single_fit_250_points", [&] { return analytics::fit_svi(m.slices[20]).status == analytics::SviStatus::Ok; });
   measure("surface_60x250_fit_and_diagnostics", [&] {
     std::vector<analytics::SviFit> fits;
