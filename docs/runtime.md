@@ -327,13 +327,25 @@ accounts roll their day on it, and open sessions report their `end`, which ends 
 orders. AM-settled series stop trading at the regular close before expiry
 (`OptionContract::last_trade_time`). On expiry day, expiring PM index series stop at
 16:00 and expiring ETF options at 16:15, which is their `expiry_time`; both settle on
-the 16:00 closing print. The calendar
-uses the existing 2025–2028 holiday and early-close tables and New York DST.
-**Simplifications:** no GTH leading into a holiday (Cboe publishes special holiday
-GTH on some dates), no curb on early-close days, and no unscheduled halts.
-Outside 2025–2028 only weekdays are known. Trading sessions do not change option
-settlement/expiry times. Sunday GTH resumes only when Monday is a trading day;
-a holiday evening may open GTH for the following business day.
+the 16:00 closing print.
+
+The calendar computes holidays and early closes from NYSE's rules, which Cboe's
+options markets observe, for every year from 2022 on: a holiday on a Saturday closes
+the Friday before (except New Year's Day, whose Friday would end the year), one on a
+Sunday the Monday after, and the day before Independence Day and Christmas Eve close
+at 13:00 when they fall Monday to Thursday, as does the day after Thanksgiving. The
+tests check the rules against NYSE's published 2025–2028 calendars. Special closures
+are listed as they are announced (the National Day of Mourning on 2025-01-09); one
+announced later is unknown until added. Before 2022 only weekdays are known.
+
+Around holidays GTH follows Cboe's schedule. It does not run into a weekend, New
+Year's Day, Good Friday or Christmas; into the other seven holidays it runs from
+20:15 the evening before until 11:30 ET on the holiday, for the next business day's
+trading date, and the holiday evening opens the next business day's session as usual
+([Cboe's holiday schedule](https://www.cboe.com/about/hours/us-options/)). On an
+early-close day index options trade until 13:15 with no curb afterwards, as Cboe's
+notices set out. Unscheduled halts are not modelled, and trading sessions do not
+change option settlement or expiry times.
 
 The Cboe adapter polls the CDN files (`cdn.cboe.com/api/global/delayed_quotes/options/`)
 every 15 seconds. When a file's own timestamp is more than five minutes behind the

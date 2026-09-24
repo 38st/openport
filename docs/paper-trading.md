@@ -213,8 +213,9 @@ AM-settled series stop trading at the regular close of the business day before t
 expiry, so no curb or overnight session trades them then (`SESSION_CLOSED`); PM
 series trade the overnight session of their expiry date. Contract expiry can be
 earlier than a session end and takes precedence (e.g. PM expiry 16:00). Boundaries
-process on the first command at/after them, before possible fills. Outside
-2025–2028 the calendar only knows weekdays.
+process on the first command at/after them, before possible fills. Holidays and
+early closes follow NYSE's rules from 2022 on, and the overnight session runs into
+most holidays until 11:30 ET, as Cboe schedules it (see the runtime notes).
 
 The engine also compares each underlying's market-data time with wall-clock time. A
 healthy feed shows the market as it was the provider's stated delay ago, stopping at

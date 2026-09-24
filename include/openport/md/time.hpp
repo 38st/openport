@@ -76,9 +76,10 @@ enum class Zone : std::uint8_t { Utc, NewYork };
 [[nodiscard]] std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexcept;
 
 /// Regular US options session calendar: NYSE/Cboe holidays and 13:00 ET early
-/// closes for 2025-2028. Outside that range only weekdays are considered; holiday
-/// and early-close rules are unavailable. This models 09:30-16:00 ET regular
-/// hours, excluding extended/product-specific sessions and unscheduled halts.
+/// closes by NYSE's rules from 2022 on, with the special closures announced so far
+/// (a future one is unknown until added). Before 2022 only weekdays are considered.
+/// This models 09:30-16:00 ET regular hours, excluding extended/product-specific
+/// sessions and unscheduled halts.
 struct MarketSession {
   bool open = false;
   std::string note;
@@ -87,9 +88,10 @@ struct MarketSession {
 [[nodiscard]] MarketSession market_session(Timestamp ts);
 
 /// Per-root option sessions, independent of the underlying stock/index clock.
-/// GTH belongs to the following trading date; no GTH before a holiday/weekend.
-/// Simplifications: no special holiday GTH or curb on early-close days; outside
-/// 2025-2028 only weekdays are known. Expiry settlement times remain separate.
+/// GTH belongs to the following trading date. Before a weekend, New Year's Day,
+/// Good Friday or Christmas it does not run; into the other holidays it runs from
+/// 20:15 the evening before until 11:30 ET, as Cboe schedules it. Early-close days
+/// have no curb, as at Cboe. Expiry settlement times remain separate.
 struct TradingSession {
   std::string name = "closed";  ///< regular, curb, global, closed
   bool open = false;
@@ -109,14 +111,14 @@ struct TradingSession {
 /// The trading date a moment belongs to: a business day's own New York date
 /// until 17:00 ET, when its last session (curb) ends; after that, and on
 /// weekends and holidays, the next business day, whose overnight session opens
-/// that evening. Outside 2025-2028 only weekdays are known.
+/// that evening. Before 2022 only weekdays are known.
 [[nodiscard]] Date trading_date(Timestamp ts) noexcept;
 
 /// The business day before `date`, skipping weekends and calendar holidays.
 [[nodiscard]] Date previous_business_day(Date date) noexcept;
 
-/// Scheduled PM close hour (13 or 16). Outside 2025-2028 assumes 16:00 ET;
-/// does not roll a contract date off holidays or weekends.
+/// Scheduled PM close hour (13 or 16). Before 2022 assumes 16:00 ET; does not
+/// roll a contract date off holidays or weekends.
 [[nodiscard]] int regular_close_hour(Date date) noexcept;
 
 /// "YYYY-MM-DD".

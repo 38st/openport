@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <limits>
+#include <optional>
 
 #include "openport/md/contract.hpp"
 
@@ -52,37 +53,77 @@ bool spring_gap(Date date, int hour) noexcept {
   return date.month == 3 && date.day == nth_sunday(date.year, 3, 2) && hour == 2;
 }
 
-// Published regular-session calendars (product-specific extended hours excluded):
+// Holidays follow NYSE's rules (Rule 7.2), which Cboe's options markets observe: a
+// holiday on a Saturday closes the Friday before, except New Year's Day, whose
+// Friday would end the year; one on a Sunday closes the Monday after. They
+// reproduce the published 2025-2028 calendars, which the tests check:
 // https://ir.theice.com/press/news-details/2024/NYSE-Group-Announces-2025-2026-and-2027-Holiday-and-Early-Closings-Calendar/default.aspx
 // https://ir.theice.com/press/news-details/2025/NYSE-Group-Announces-2026-2027-and-2028-Holiday-and-Early-Closings-Calendar/
+// Cboe's hours, and its overnight sessions into seven of the holidays:
 // https://www.cboe.com/about/hours/us-options
-// Special closure:
+// Special closures are announced one at a time:
 // https://cdn.cboe.com/resources/schedule_update/2025/Update-Cboe-to-Observe-National-Day-of-Mourning-on-Thursday-January-9-2025.pdf
+constexpr int kFirstCalendarYear = 2022;  // Juneteenth's first
+
 struct Holiday {
   std::string_view name;
-  std::array<int, 4> month_day;  // 2025..2028, MMDD; zero means not observed
+  /// Cboe's overnight session runs into it, from 20:15 the evening before to 11:30.
+  bool overnight = false;
 };
-constexpr Holiday kHolidays[] = {
-    {"New Year's Day", {101, 101, 101, 0}},
-    {"National Day of Mourning", {109, 0, 0, 0}},
-    {"Martin Luther King Jr. Day", {120, 119, 118, 117}},
-    {"Washington's Birthday", {217, 216, 215, 221}},
-    {"Good Friday", {418, 403, 326, 414}},
-    {"Memorial Day", {526, 525, 531, 529}},
-    {"Juneteenth", {619, 619, 618, 619}},
-    {"Independence Day", {704, 703, 705, 704}},
-    {"Labor Day", {901, 907, 906, 904}},
-    {"Thanksgiving Day", {1127, 1126, 1125, 1123}},
-    {"Christmas Day", {1225, 1225, 1224, 1225}},
-};
-constexpr Date kEarlyCloses[] = {{2025, 7, 3},   {2025, 11, 28}, {2025, 12, 24}, {2026, 11, 27},
-                                 {2026, 12, 24}, {2027, 11, 26}, {2028, 7, 3},   {2028, 11, 24}};
+
+Date add_days(Date date, std::int64_t days) noexcept { return date_from_days(days_since_epoch(date) + days); }
+/// The n-th (n >= 1) weekday `wd` (0 for Sunday) of a month.
+Date nth_weekday(int year, int month, int wd, int n) noexcept {
+  const Date first{year, month, 1};
+  return add_days(first, (wd - weekday(first) + 7) % 7 + 7 * (n - 1));
+}
+/// The last weekday `wd` of a month.
+Date last_weekday(int year, int month, int wd) noexcept {
+  const Date last = add_days(month == 12 ? Date{year + 1, 1, 1} : Date{year, month + 1, 1}, -1);
+  return add_days(last, -((weekday(last) - wd + 7) % 7));
+}
+/// Easter Sunday, by the anonymous Gregorian algorithm.
+Date easter(int year) noexcept {
+  const int a = year % 19, b = year / 100, c = year % 100, d = b / 4, e = b % 4, f = (b + 8) / 25;
+  const int g = (b - f + 1) / 3, h = (19 * a + b - d - g + 15) % 30, i = c / 4, k = c % 4;
+  const int l = (32 + 2 * e + 2 * i - h - k) % 7, m = (a + 11 * h + 22 * l) / 451;
+  return {year, (h + l - 7 * m + 114) / 31, (h + l - 7 * m + 114) % 31 + 1};
+}
+/// The weekday a fixed-date holiday closes the market.
+Date observed(Date date) noexcept {
+  const int wd = weekday(date);
+  return wd == 6 ? add_days(date, -1) : wd == 0 ? add_days(date, 1) : date;
+}
+
+std::optional<Holiday> holiday_on(Date date) noexcept {
+  if (date.year < kFirstCalendarYear) return std::nullopt;
+  if (date == Date{2025, 1, 9}) return Holiday{"National Day of Mourning"};
+  const int y = date.year;
+  if (weekday({y, 1, 1}) != 6 && date == observed({y, 1, 1})) return Holiday{"New Year's Day"};
+  if (date == nth_weekday(y, 1, 1, 3)) return Holiday{"Martin Luther King Jr. Day", true};
+  if (date == nth_weekday(y, 2, 1, 3)) return Holiday{"Washington's Birthday", true};
+  if (date == add_days(easter(y), -2)) return Holiday{"Good Friday"};
+  if (date == last_weekday(y, 5, 1)) return Holiday{"Memorial Day", true};
+  if (date == observed({y, 6, 19})) return Holiday{"Juneteenth", true};
+  if (date == observed({y, 7, 4})) return Holiday{"Independence Day", true};
+  if (date == nth_weekday(y, 9, 1, 1)) return Holiday{"Labor Day", true};
+  if (date == nth_weekday(y, 11, 4, 4)) return Holiday{"Thanksgiving Day", true};
+  if (date == observed({y, 12, 25})) return Holiday{"Christmas Day"};
+  return std::nullopt;
+}
 
 std::string_view holiday(Date date) noexcept {
-  if (date.year < 2025 || date.year > 2028) return {};
-  for (const auto& h : kHolidays)
-    if (h.month_day[date.year - 2025] == date.month * 100 + date.day) return h.name;
-  return {};
+  const auto h = holiday_on(date);
+  return h ? h->name : std::string_view{};
+}
+
+/// 13:00 closes: the day before Independence Day and Christmas Eve when they fall
+/// Monday to Thursday, and the day after Thanksgiving.
+bool early_close(Date date) noexcept {
+  if (date.year < kFirstCalendarYear || holiday_on(date)) return false;
+  if ((date.month == 7 && date.day == 3) || (date.month == 12 && date.day == 24))
+    return weekday(date) >= 1 && weekday(date) <= 4;
+  return date == add_days(nth_weekday(date.year, 11, 4, 4), 1);
 }
 
 bool business_day(Date date) noexcept {
@@ -186,11 +227,7 @@ std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexce
   return timestamp(seconds, fraction);
 }
 
-int regular_close_hour(Date date) noexcept {
-  for (const auto early : kEarlyCloses)
-    if (early == date) return 13;
-  return 16;
-}
+int regular_close_hour(Date date) noexcept { return early_close(date) ? 13 : 16; }
 
 namespace {
 struct LocalTime {
@@ -283,6 +320,9 @@ TradingSession session_at(bool global, bool curb, bool quarter_hour, Timestamp t
   // covers every closure in the supported calendar without subtracting nanos.
   for (int offset = -14; offset <= 1; ++offset) {
     const auto trade_date = date_from_days(days + offset);
+    // Into most holidays an overnight session runs until 11:30, for the next trade date.
+    if (const auto h = holiday_on(trade_date); global && h && h->overnight)
+      consider("global", new_york_to_utc(date_from_days(days + offset - 1), 20, 15), new_york_to_utc(trade_date, 11, 30));
     if (!business_day(trade_date)) continue;
     if (global) {
       const auto evening = date_from_days(days + offset - 1);

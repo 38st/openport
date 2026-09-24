@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <set>
+
 namespace {
 
 using openport::md::Date;
@@ -133,7 +135,7 @@ TEST(Time, MarketSessionNotesBoundariesAndNextOpen) {
 }
 
 TEST(Time, CalendarCoversPublishedHolidaysAndOnlyPublishedEarlyCloses) {
-  using openport::md::market_session;
+  using namespace openport::md;
   const int holidays[][11] = {{101, 109, 120, 217, 418, 526, 619, 704, 901, 1127, 1225},
                               {101, 119, 216, 403, 525, 619, 703, 907, 1126, 1225, 0},
                               {101, 118, 215, 326, 531, 618, 705, 906, 1125, 1224, 0},
@@ -159,9 +161,68 @@ TEST(Time, CalendarCoversPublishedHolidaysAndOnlyPublishedEarlyCloses) {
   // July 2 is not an early close in 2026; New Year 2028 has no observed Friday closure.
   EXPECT_TRUE(market_session(new_york_to_utc({2026, 7, 2}, 15, 0)).open);
   EXPECT_TRUE(market_session(new_york_to_utc({2027, 12, 31}, 12, 0)).open);
-  // Outside the published range use weekday rules, not extrapolated holidays.
-  EXPECT_TRUE(market_session(new_york_to_utc({2029, 1, 1}, 12, 0)).open);
-  EXPECT_FALSE(market_session(new_york_to_utc({2029, 1, 6}, 12, 0)).open);
+  // The rules make exactly the published calendars: no other day of 2025-2028 closes.
+  std::set<int> closed, early;
+  for (int y = 2025; y <= 2028; ++y)
+    for (int md : holidays[y - 2025])
+      if (md != 0) closed.insert(y * 10000 + md);
+  for (int key : {20250703, 20251128, 20251224, 20261127, 20261224, 20271126, 20280703, 20281124}) early.insert(key);
+  for (auto days = days_since_epoch({2025, 1, 1}); days <= days_since_epoch({2028, 12, 31}); ++days) {
+    const auto d = date_from_days(days);
+    if (weekday(d) == 0 || weekday(d) == 6) continue;
+    const int key = d.year * 10000 + d.month * 100 + d.day;
+    const auto s = market_session(new_york_to_utc(d, 12, 0));
+    EXPECT_EQ(s.open, !closed.contains(key)) << key;
+    EXPECT_EQ(s.note == "open, early close 13:00 ET", early.contains(key)) << key;
+  }
+}
+
+TEST(Time, CalendarRulesCarryPastThePublishedYears) {
+  using namespace openport::md;
+  const auto note = [](Date d) { return market_session(new_york_to_utc(d, 12, 0)).note; };
+  // 2029: New Year's Day on a Monday, Easter on April 1, Christmas Eve on a Monday.
+  EXPECT_EQ(note({2029, 1, 1}), "closed (holiday: New Year's Day)");
+  EXPECT_EQ(note({2029, 3, 30}), "closed (holiday: Good Friday)");
+  EXPECT_EQ(note({2029, 11, 22}), "closed (holiday: Thanksgiving Day)");
+  for (Date d : {Date{2029, 7, 3}, Date{2029, 11, 23}, Date{2029, 12, 24}}) EXPECT_EQ(note(d), "open, early close 13:00 ET");
+  EXPECT_EQ(regular_close_hour({2029, 12, 24}), 13);
+  // 2032: Juneteenth and Christmas on Saturdays close the Fridays before.
+  EXPECT_EQ(note({2032, 6, 18}), "closed (holiday: Juneteenth)");
+  EXPECT_EQ(note({2032, 12, 24}), "closed (holiday: Christmas Day)");
+  EXPECT_EQ(note({2033, 1, 3}), "open");  // New Year's Day 2033 is a Saturday
+  // 2022-2024 follow the same rules, including Sunday holidays moving to Monday.
+  EXPECT_EQ(note({2022, 6, 20}), "closed (holiday: Juneteenth)");
+  EXPECT_EQ(note({2022, 12, 26}), "closed (holiday: Christmas Day)");
+  EXPECT_EQ(note({2023, 1, 2}), "closed (holiday: New Year's Day)");
+  EXPECT_EQ(note({2024, 3, 29}), "closed (holiday: Good Friday)");
+  EXPECT_EQ(note({2024, 7, 3}), "open, early close 13:00 ET");
+  // Before 2022 only weekdays are known.
+  EXPECT_EQ(note({2021, 12, 24}), "open");
+}
+
+TEST(Time, CboeRunsAnOvernightSessionIntoMostHolidays) {
+  using namespace openport::md;
+  const auto at = [](std::string_view root, Date d, int h, int m) { return trading_session(root, new_york_to_utc(d, h, m)); };
+  // Martin Luther King Jr. Day 2026: Sunday 20:15 to Monday 11:30, then Tuesday's from 20:15.
+  EXPECT_EQ(at("SPXW", {2026, 1, 18}, 20, 14).name, "closed");
+  EXPECT_EQ(at("SPXW", {2026, 1, 18}, 20, 15).name, "global");
+  EXPECT_EQ(at("SPXW", {2026, 1, 19}, 11, 29).end, new_york_to_utc({2026, 1, 19}, 11, 30));
+  EXPECT_EQ(at("VIX", {2026, 1, 19}, 11, 30).name, "closed");
+  EXPECT_EQ(at("VIX", {2026, 1, 19}, 15, 0).market_time, new_york_to_utc({2026, 1, 19}, 11, 30));
+  EXPECT_EQ(at("XSP", {2026, 1, 19}, 20, 15).name, "global");
+  EXPECT_EQ(trading_date(new_york_to_utc({2026, 1, 18}, 21, 0)), (Date{2026, 1, 20}));
+  EXPECT_EQ(trading_date(new_york_to_utc({2026, 1, 19}, 10, 0)), (Date{2026, 1, 20}));
+  EXPECT_EQ(at("SPY", {2026, 1, 19}, 10, 0).name, "closed");  // only the overnight products
+  // Thanksgiving: Wednesday 20:15 to Thursday 11:30. A Friday holiday leaves Friday evening closed.
+  EXPECT_EQ(at("SPX", {2026, 11, 26}, 9, 30).name, "global");
+  EXPECT_EQ(at("SPX", {2026, 6, 19}, 11, 0).name, "global");
+  EXPECT_EQ(at("SPX", {2026, 6, 19}, 21, 0).name, "closed");
+  // Not into New Year's Day, Good Friday or Christmas.
+  EXPECT_EQ(at("SPX", {2025, 12, 31}, 21, 0).name, "closed");
+  EXPECT_EQ(at("SPX", {2026, 4, 2}, 21, 0).name, "closed");
+  EXPECT_EQ(at("SPX", {2025, 12, 24}, 21, 0).name, "closed");
+  EXPECT_EQ(at("SPX", {2025, 12, 25}, 9, 0).name, "closed");
+  EXPECT_EQ(at("SPX", {2025, 12, 25}, 20, 15).name, "global");  // Friday's, from Christmas evening
 }
 
 TEST(Time, YearFractionPreservesNanosecondsWithoutSignedOverflow) {
@@ -230,10 +291,11 @@ TEST(Time, GlobalTradeDateSkipsWeekendsHolidaysAndHandlesDst) {
   EXPECT_EQ(session({2026, 9, 27}, 20, 14).name, "closed");
   EXPECT_EQ(session({2026, 9, 27}, 20, 15).name, "global");
   EXPECT_EQ(session({2026, 9, 28}, 1, 0).name, "global");
-  EXPECT_EQ(session({2026, 9, 6}, 21, 0).name, "closed");  // before Labor Day
-  EXPECT_EQ(session({2026, 9, 7}, 9, 0).name, "closed");
+  EXPECT_EQ(session({2026, 9, 6}, 20, 14).name, "closed");  // before Labor Day
+  EXPECT_EQ(session({2026, 9, 6}, 20, 14).market_time, new_york_to_utc({2026, 9, 4}, 17, 0));
+  EXPECT_EQ(session({2026, 9, 6}, 21, 0).name, "global");  // into the holiday, until 11:30
+  EXPECT_EQ(session({2026, 9, 7}, 12, 0).name, "closed");
   EXPECT_EQ(session({2026, 9, 7}, 20, 15).name, "global");  // Tuesday's session
-  EXPECT_EQ(session({2026, 9, 6}, 21, 0).market_time, new_york_to_utc({2026, 9, 4}, 17, 0));
   for (auto date : {Date{2026, 3, 8}, Date{2026, 11, 1}}) {
     EXPECT_EQ(session(date, 20, 14).name, "closed");
     EXPECT_EQ(session(date, 20, 15).name, "global");
