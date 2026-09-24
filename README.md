@@ -1,5 +1,7 @@
 # OpenPort
 
+[![CI](https://github.com/38st/openport/actions/workflows/ci.yml/badge.svg)](https://github.com/38st/openport/actions/workflows/ci.yml)
+
 Self-hosted options analytics and a trading simulator on your own market data. Plug in
 the provider you already pay for, or start with Cboe's free delayed quotes, and get a
 live web terminal: option chains with implied volatility and Greeks computed by OpenPort
@@ -15,6 +17,27 @@ terminal. Your API keys, your data and your trades stay on your machine.
 | Volatility (light theme) | Exposure |
 | --- | --- |
 | ![SPX smiles, term structure and forwards](docs/screenshots/volatility-light.png) | ![SPX gamma exposure by strike and expiry](docs/screenshots/exposure-dark.png) |
+
+## At a glance
+
+- **One C++20 process** runs the feed, the analytics engine, the simulator and the web
+  server; the terminal is React and TypeScript. [Architecture](docs/architecture.md).
+- **Implied volatility** in about 0.4 µs and 5.4 Newton iterations per option, and a
+  full analytics pass over the SPX chain (29,942 options, 62 expiries) in about 55 ms.
+- **Within a few hundredths of a vol point** of Cboe's published IVs: median
+  differences of 0.009 (SPX), 0.025 (QQQ) and 0.037 (SPY) out of the money.
+- **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
+  under evaluation rules, with a hash-chained journal that survives restarts.
+- **440 C++ and 280 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+  macOS, warnings as errors.
+
+Timings are medians on an Apple M2 Max: the IV solve from `openport_bench` on
+2026-09-24, the SPX pass and the Cboe comparison on live data on 2026-09-22.
+
+No market open, or no data? The **demo market** plays a simulated trading day you can
+trade, with generated prices labelled as simulated on every page:
+
+![The demo market: a simulated SPX session trading at 60 times real time](docs/screenshots/demo-market.gif)
 
 ## What you get
 
@@ -122,7 +145,8 @@ docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport openport
 ```
 
 Then open http://localhost:8080. The `openport` volume keeps your accounts and chart
-history between runs. To use your own provider, pass its key and arguments:
+history between runs. When nothing is trading, the terminal offers the demo market,
+which needs no data at all. To use your own provider, pass its key and arguments:
 
 ```bash
 docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e DATABENTO_API_KEY openport --provider databento --symbols SPX,QQQ
@@ -153,7 +177,7 @@ recording all day.
 
 | Provider | `--provider` | Data | Key |
 | --- | --- | --- | --- |
-| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with open interest and Cboe's Greeks, polled every 15 s | none |
+| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with open interest and Cboe's Greeks, polled every 15 s. **Known issue:** Cboe's files stopped updating on 2026-09-23 and the terminal shows the feed as stalled; a fix is in progress | none |
 | Databento | `databento` | Real-time OPRA consolidated quotes (`cbbo-1s` or `cmbp-1`), trades and open interest, streamed | `DATABENTO_API_KEY` |
 | Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
@@ -198,7 +222,7 @@ Every value is range-checked; `openportd --help` lists every flag, and the
   days the discount factor is within a basis point of 1, so bid/ask noise swamps the
   slope.
 - **Implied volatility** is Black-76 on that forward: Newton's method in log-price space
-  from a Corrado-Miller initial guess, with a bisection safeguard. About 0.5 µs and 5.4
+  from a Corrado-Miller initial guess, with a bisection safeguard. About 0.4 µs and 5.4
   iterations per option. Each strike's smile IV comes from its out-of-the-money side,
   and both sides' Greeks use it.
 - **SVI surfaces** fit each expiry's OTM total variance with deterministic, constrained
@@ -304,9 +328,10 @@ cd web && npm run dev               # Vite on :5173, proxying /api and /ws to :8
 cd web && npx vitest run            # web unit tests
 ```
 
-The C++ suite passes with Apple Clang on macOS and with GCC 13 on Ubuntu 24.04 built
-with `-DOPENPORT_WERROR=ON`. The CI workflow runs on demand while the repository is
-private. `tools/release.sh` builds a release on your own machine instead: it checks and
+CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
+Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, the web checks and a Docker
+smoke test. Publishing a GitHub release builds the image for amd64 and arm64 and pushes
+it to `ghcr.io/38st/openport`. `tools/release.sh` builds a release on your own machine: it checks and
 tests the web terminal and the engine, packages this machine's build and a Linux build
 from the Docker image with checksums and release notes into `dist/`, and smoke-tests
 the image. Nothing is published unless you pass `--publish`, which tags the version
@@ -331,6 +356,12 @@ from `CMakeLists.txt` and creates a draft GitHub release.
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
 - [x] P&L attribution by delta, gamma, vega and theta
 - [x] Stock positions from early exercise and from exercise and assignment at expiry
+- [x] Expiry hours as the exchanges run them: ETF options to 16:15, auto-close five
+      minutes before each contract's last trade
+- [x] Demo market: a simulated day to trade when nothing else does
+- [x] Shares in the journal, and early assignment of shorts trading below exercise value
+- [ ] Cboe's delayed feed again (its files stopped updating on 2026-09-23)
+- [ ] Dividends from a file you supply
 
 ## License
 
