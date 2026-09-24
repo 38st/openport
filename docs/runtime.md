@@ -265,12 +265,13 @@ starts any of them at any speed. `ReplayHost::Options::demo` turns it off.
 
 The chart on Trade reads `GET /api/underlyings/{symbol}/candles` from two sources:
 
-- **The engine's own spot.** Every analysis adds the spot it priced with to a
-  one-minute bar, stamped with the time of that price: the underlying's print time
-  when spot is a quote, the option data's market time when it is inferred from
-  parity. Delayed feeds therefore land on the minute the price was traded, not the
-  minute it arrived, and an index frozen at its close adds nothing overnight while
-  its parity spot moves with the global session.
+- **The engine's own spot.** Every index or ETF print the feed delivers is added to
+  a one-minute bar at its print time, however many arrive between analytics passes,
+  so a fast replay or a streaming feed keeps each minute's high and low. An
+  underlying without prints is charted from the spot each analysis infers from
+  parity, at the option data's market time. Delayed feeds therefore land on the
+  minute the price was traded, not the minute it arrived, and an index frozen at its
+  close adds nothing overnight while its parity spot moves with the global session.
 - **Cboe's free chart files.** `openportd` fetches the latest regular session's
   one-minute bars (every minute while a session is open or just closed, every 15
   minutes otherwise) and the daily history (hourly) for each symbol. An official

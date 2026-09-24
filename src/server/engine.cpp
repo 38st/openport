@@ -218,6 +218,11 @@ void Engine::run() {
     const auto received = options_.clock();
     for (const md::Event& event : batch) {
       book_.apply(event);
+      if (const auto* quote = std::get_if<md::UnderlyingQuote>(&event); quote && options_.candles) {
+        // Every print reaches the chart, however many arrive between analytics passes.
+        const auto& book = book_.underlyings().at(quote->symbol);
+        options_.candles->sample(quote->symbol, book.spot_ts, book.spot);
+      }
       if (options_.paper_enabled) observe_trading(event);
       ++events_;
       update_health(event, received);
@@ -294,11 +299,10 @@ void Engine::refresh_analytics() {
     auto result = std::make_shared<const analytics::UnderlyingMetrics>(
         analytics::analyze(book, book_, as_of, options));
     analysed_versions_[symbol] = book.version;
-    if (options_.candles) {
-      // A quoted spot carries its own print time, which can differ from the option clock.
-      const bool quoted = result->spot_source == "quote" && book.spot_ts > 0;
-      options_.candles->sample(symbol, quoted ? book.spot_ts : result->as_of, result->spot);
-    }
+    // Quoted prints are charted as they arrive; a spot inferred from parity is charted
+    // at the option data's market time.
+    if (options_.candles && result->spot_source != "quote")
+      options_.candles->sample(symbol, result->as_of, result->spot);
     {
       const std::lock_guard lock(mutex_);
       metrics_[symbol] = result;

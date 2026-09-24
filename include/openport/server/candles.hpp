@@ -21,8 +21,9 @@ enum class BarInterval : std::uint8_t { Minute, FiveMinutes, FifteenMinutes, Thi
 [[nodiscard]] std::optional<BarInterval> parse_bar_interval(std::string_view text) noexcept;
 [[nodiscard]] std::string_view to_string(BarInterval interval) noexcept;
 
-/// Price history of each underlying, for charts. One-minute bars are built from the
-/// spot the engine prices with; a vendor's official bars replace them minute by
+/// Price history of each underlying, for charts. One-minute bars are built from its
+/// prints, or from the spot the engine infers from parity when it has none; a
+/// vendor's official bars replace them minute by
 /// minute where it has them, and later samples never alter an official minute.
 /// Intraday intervals group minutes from the Unix epoch, except hours, which start
 /// at half past so they line up with the 09:30 ET open. Daily bars are the

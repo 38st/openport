@@ -303,7 +303,7 @@ class CurveProvider final : public md::Provider {
   void publish(const std::string& symbol, double rate, md::InstrumentId id,
                pricing::ExerciseStyle style) {
     const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
-    sink->publish(md::UnderlyingQuote{symbol, as_of, 100, 100, 100});
+    if (quote_underlying) sink->publish(md::UnderlyingQuote{symbol, as_of, 100, 100, 100});
     for (auto date : {md::Date{2026, 12, 22}, md::Date{2027, 9, 22}})
       for (double strike = 90; strike <= 110; strike += 2.5)
         for (auto type : {pricing::OptionType::Call, pricing::OptionType::Put}) {
@@ -320,6 +320,7 @@ class CurveProvider final : public md::Provider {
         }
   }
   md::EventSink* sink = nullptr;
+  bool quote_underlying = true;
 };
 
 TEST(Engine, EuropeanCurveReachesAmericanInSamePassAndRefreshesUnchangedChain) {
@@ -367,5 +368,37 @@ TEST(Engine, SamplesEachAnalysedSpotAtThePriceTimeForCharts) {
       server::handle_api({"GET", "/api/underlyings/SPX/candles?interval=1m"}, engine);
   EXPECT_EQ(response.status, 200);
   EXPECT_EQ(nlohmann::json::parse(response.body)["bars"].size(), 1u);
+}
+
+TEST(Engine, ChartsEveryPrintBetweenAnalyticsPasses) {
+  ManualProvider provider;
+  server::Engine::Options options;
+  options.analytics_interval = std::chrono::hours(1);
+  options.candles = std::make_shared<server::CandleStore>();
+  server::Engine engine(provider, {{"SPX"}}, options);
+  engine.start();
+  const auto minute = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  for (const auto& [second, price] : std::vector<std::pair<int, double>>{{5, 100}, {20, 103}, {40, 98}, {55, 101}})
+    provider.sink->publish(md::UnderlyingQuote{"SPX", minute + second * md::kNanosPerSecond, 0, 0, price});
+  ASSERT_TRUE(eventually([&] { return engine.status().events == 4; }));
+  EXPECT_EQ(engine.metrics("SPX"), nullptr);  // no analytics pass has run
+  EXPECT_EQ(options.candles->bars("SPX", server::BarInterval::Minute, 10),
+            (std::vector<md::Bar>{{minute, 100, 103, 98, 101}}));
+}
+
+TEST(Engine, ChartsTheParitySpotOfAnUnderlyingWithoutPrints) {
+  CurveProvider provider;
+  provider.quote_underlying = false;
+  server::Engine::Options options;
+  options.analytics_interval = std::chrono::milliseconds(1);
+  options.candles = std::make_shared<server::CandleStore>();
+  server::Engine engine(provider, {{"QQQ", "SPX", "XSP"}}, options);
+  engine.start();
+  ASSERT_TRUE(eventually([&] { return engine.metrics("SPX") != nullptr; }));
+  EXPECT_EQ(engine.metrics("SPX")->spot_source, "parity");
+  const auto bars = options.candles->bars("SPX", server::BarInterval::Minute, 10);
+  ASSERT_EQ(bars.size(), 1u);
+  EXPECT_EQ(bars[0].start, md::new_york_to_utc({2026, 9, 22}, 16, 0));
+  EXPECT_NEAR(bars[0].close, engine.metrics("SPX")->spot, 1e-9);
 }
 }  // namespace
