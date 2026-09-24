@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react"
-import type { Fill } from "../api/trading-types"
+import type { DividendPaid, Fill, StockFill } from "../api/trading-types"
 import { osiLabel } from "./journal"
-import { formatMoney } from "./trading"
+import { formatMoney, signedMoney } from "./trading"
 
 /** One-shot alert on an underlying's price reaching a level. */
 export interface PriceAlert {
@@ -77,6 +77,21 @@ export function priceAlertMessage(alert: PriceAlert, price: number) {
 export function fillMessage(fill: Fill) {
   const verb = fill.side === "buy" ? "Bought" : "Sold"
   return { title: "Order filled", body: `${verb} ${fill.quantity} ${osiLabel(fill.symbol, fill.underlying)} at ${formatMoney(fill.price)}` }
+}
+/** Shares that changed hands without an order: an assignment or an exercise at expiry. */
+export const unordered = (fill: StockFill) => fill.source === "assignment" || fill.source === "expiry_exercise"
+/** "Assigned SPY Oct 16 600P" / "Bought 200 SPY at $510.00" */
+export function deliveryMessage(fill: StockFill) {
+  const contract = fill.option ? osiLabel(fill.option, fill.symbol) : `a ${fill.symbol} option`
+  return {
+    title: fill.source === "assignment" ? `Assigned ${contract}` : `Exercised ${contract} at expiry`,
+    body: `${fill.shares > 0 ? "Bought" : "Sold"} ${Math.abs(fill.shares)} ${fill.symbol} at ${formatMoney(fill.price)}`,
+  }
+}
+/** "SPY dividend" / "+$380.00 on 200 shares at $1.90", or "on 100 shares short" when paid. */
+export function dividendMessage(dividend: DividendPaid) {
+  const shares = dividend.shares < 0 ? `${-dividend.shares} shares short` : `${dividend.shares} shares`
+  return { title: `${dividend.symbol} dividend`, body: `${signedMoney(dividend.amount)} on ${shares} at ${formatMoney(dividend.per_share)}` }
 }
 /** Fills after the newest one already seen, oldest first. */
 export function newFills(fills: readonly Fill[], after: number): Fill[] {

@@ -233,7 +233,19 @@ export interface ShareTrade {
   note?: string
   tags?: string[]
 }
-export interface TradesResponse { account_version: string; attempt: number; trades: Trade[]; share_trades?: ShareTrade[] }
+/** One change in shares held, and how it came about. */
+export interface StockFill { id: string; symbol: string; shares: number; price: Money; time: string; source: ShareSource; option: string | null }
+/** A dividend paid on (negative: charged to short) shares held into its ex-date. */
+export interface DividendPaid { symbol: string; ex_date: string; per_share: Money; shares: number; amount: Money; time: string }
+export interface TradesResponse {
+  account_version: string
+  attempt: number
+  trades: Trade[]
+  share_trades?: ShareTrade[]
+  /** Every change in shares and every dividend, oldest first; absent from older servers. */
+  stock_fills?: StockFill[]
+  dividends?: DividendPaid[]
+}
 export interface Plan {
   id: string
   name: string

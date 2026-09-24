@@ -87,7 +87,8 @@ trade, with generated prices labelled as simulated on every page:
   a simulated day in SPX and SPY options to trade instead, generated on your machine
   and labelled as simulated prices everywhere it shows.
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
-  the terminal and as browser notifications with an optional chime while it is open.
+  the terminal and as browser notifications with an optional chime while it is open;
+  assignments, exercises at expiry and dividends are always announced.
 
 ### Operations
 

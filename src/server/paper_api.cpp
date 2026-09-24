@@ -367,8 +367,18 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"note", note == s.annotations.end() ? std::string{} : note->second.note},
         {"tags", note == s.annotations.end() ? json::array() : json(note->second.tags)}});
   }
+  // Every change in shares and every dividend, oldest first, for the terminal's alerts.
+  json stock_fills = json::array();
+  for (const auto& fill : s.stock_fills)
+    stock_fills.push_back({{"id", std::to_string(fill.id)}, {"symbol", fill.symbol}, {"shares", fill.shares},
+        {"price", fill.price.str()}, {"time", md::format_timestamp(fill.time)}, {"source", source(fill.id)},
+        {"option", option_of(fill.id)}});
+  json dividends = json::array();
+  for (const auto& d : s.dividends)
+    dividends.push_back({{"symbol", d.symbol}, {"ex_date", md::format_date(d.ex_date)}, {"per_share", d.per_share.str()},
+        {"shares", d.shares}, {"amount", d.amount.str()}, {"time", md::format_timestamp(d.time)}});
   return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades},
-          {"share_trades", share_trades}};
+          {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}};
 }
 json plans_json() {
   json plans = json::array();

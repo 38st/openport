@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { fill } from "../test/trading-fixtures"
-import { createAlertStore, describeAlert, directionFor, fillMessage, newestFill, newFills, noAlerts, parseAlerts, priceAlertMessage, reached, type PriceAlert } from "./alerts"
+import { createAlertStore, deliveryMessage, describeAlert, directionFor, dividendMessage, fillMessage, newestFill, newFills, noAlerts, parseAlerts, priceAlertMessage, reached, unordered, type PriceAlert } from "./alerts"
 import { createToasts } from "./notify"
 
 const alert: PriceAlert = { id: "a", symbol: "SPX", direction: "above", level: 5000, created: "2026-09-23T19:00:00.000Z" }
@@ -54,6 +54,20 @@ describe("fill alerts", () => {
     const message = fillMessage({ ...fill, side: "sell", quantity: 2, price: "4.20" })
     expect(message.title).toBe("Order filled")
     expect(message.body).toMatch(/^Sold 2 .+ at \$4\.20$/)
+  })
+})
+
+describe("delivery alerts", () => {
+  it("name the option and the shares that changed hands", () => {
+    const exercised = { id: "1", symbol: "SPY", shares: 100, price: "501.00", time: "2026-09-22T20:15:00Z", source: "expiry_exercise" as const, option: "SPY   260922C00500000" }
+    expect(deliveryMessage(exercised)).toEqual({ title: "Exercised SPY Sep 22 500C at expiry", body: "Bought 100 SPY at $501.00" })
+    expect(deliveryMessage({ ...exercised, source: "assignment", shares: -100, option: null }))
+      .toEqual({ title: "Assigned a SPY option", body: "Sold 100 SPY at $501.00" })
+    expect(unordered(exercised)).toBe(true)
+    expect(unordered({ ...exercised, source: "early_exercise" })).toBe(false)
+    expect(unordered({ ...exercised, source: "trade" })).toBe(false)
+    expect(dividendMessage({ symbol: "SPY", ex_date: "2026-12-18", per_share: "1.90", shares: -100, amount: "-190.00", time: "2026-12-17T23:00:00Z" }))
+      .toEqual({ title: "SPY dividend", body: "−$190.00 on 100 shares short at $1.90" })
   })
 })
 

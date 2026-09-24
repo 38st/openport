@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useLive } from "../api/live"
-import { useFills } from "../api/trading"
-import { alertStore, describeAlert, directionFor, fillMessage, newestFill, newFills, priceAlertMessage, reached, useAlertSettings } from "../lib/alerts"
+import { useFills, useTrades } from "../api/trading"
+import { alertStore, describeAlert, directionFor, dividendMessage, deliveryMessage, fillMessage, newestFill, newFills, priceAlertMessage, reached, unordered, useAlertSettings } from "../lib/alerts"
 import { isNum } from "../lib/format"
 import { notificationPermission, notify, requestNotifications, toasts, useToasts } from "../lib/notify"
 import { Dialog } from "./Dialog"
@@ -23,7 +23,38 @@ export function AlertWatcher() {
       notify(title, body, settings.sound)
     }
   }, [settings, underlyings, source])
-  return settings.fills && source === "live" ? <FillWatcher sound={settings.sound} /> : null
+  if (source !== "live") return null
+  return <>
+    {settings.fills && <FillWatcher sound={settings.sound} />}
+    <DeliveryWatcher sound={settings.sound} />
+  </>
+}
+
+/** Assignments, exercises at expiry and dividends arrive without an order, often
+ * overnight: each new one is announced once, whatever the fill setting. */
+function DeliveryWatcher({ sound }: { sound: boolean }) {
+  const { accountScope, trading } = useLive()
+  const data = useTrades("current").data
+  const seen = useRef<{ scope: number; fill: number; dividends: number } | null>(null)
+  useEffect(() => {
+    if (!data || !trading?.enabled) return
+    const fills = data.stock_fills ?? []
+    const dividends = data.dividends ?? []
+    const newest = fills.reduce((max, f) => Math.max(max, Number(f.id) || 0), 0)
+    const last = seen.current
+    seen.current = { scope: accountScope, fill: newest, dividends: dividends.length }
+    // The first list for an account is history.
+    if (last?.scope !== accountScope) return
+    for (const fill of fills.filter((f) => Number(f.id) > last.fill && unordered(f))) {
+      const { title, body } = deliveryMessage(fill)
+      notify(title, body, sound)
+    }
+    for (const dividend of dividends.slice(last.dividends)) {
+      const { title, body } = dividendMessage(dividend)
+      notify(title, body, sound)
+    }
+  }, [data, accountScope, trading?.enabled, sound])
+  return null
 }
 
 /** Only fills after the first list it sees, so history and account switches stay quiet. */

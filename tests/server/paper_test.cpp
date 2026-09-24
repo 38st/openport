@@ -1007,6 +1007,10 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
   EXPECT_EQ(shares["shares"], 100);
   EXPECT_EQ(shares["average_open"], "501.00");
   EXPECT_EQ(shares["dividends"], "0.00");
+  const auto fills = read(engine, "/api/trades?status=all")["stock_fills"];
+  ASSERT_EQ(fills.size(), 1);
+  EXPECT_EQ(fills[0], json({{"id", "1"}, {"symbol", "SPY"}, {"shares", 100}, {"price", "501.00"},
+      {"time", md::format_timestamp(market.contract.expiry_time())}, {"source", "expiry_exercise"}, {"option", market.symbol()}}));
   EXPECT_EQ(shares["opened_by"], "expiry_exercise");
   EXPECT_EQ(shares["option"], market.symbol());
   EXPECT_EQ(shares["closed_by"], nullptr);

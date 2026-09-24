@@ -4,15 +4,15 @@ import { act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
-import { useFills } from "../api/trading"
-import type { Fill } from "../api/trading-types"
+import { useFills, useTrades } from "../api/trading"
+import type { DividendPaid, Fill, StockFill } from "../api/trading-types"
 import { alertStore, noAlerts } from "../lib/alerts"
 import { toasts } from "../lib/notify"
 import { fill, status } from "../test/trading-fixtures"
 import { AlertsDialog, AlertWatcher, Toasts } from "./Alerts"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
-vi.mock("../api/trading", async (original) => ({ ...await original<typeof import("../api/trading")>(), useFills: vi.fn() }))
+vi.mock("../api/trading", async (original) => ({ ...await original<typeof import("../api/trading")>(), useFills: vi.fn(), useTrades: vi.fn() }))
 
 let root: Root
 let host: HTMLDivElement
@@ -30,6 +30,13 @@ function live(spot: number, source: "live" | "replay" = "live", scope = 0) {
 function fills(list: Fill[] | undefined) {
   vi.mocked(useFills).mockReturnValue({ data: list ? { account_version: "1", fills: list } : undefined } as ReturnType<typeof useFills>)
 }
+function deliveries(stock_fills: StockFill[] | undefined, dividends: DividendPaid[] = []) {
+  vi.mocked(useTrades).mockReturnValue({ data: stock_fills ? { account_version: "1", attempt: 1, trades: [], stock_fills, dividends } : undefined } as ReturnType<typeof useTrades>)
+}
+const exercised: StockFill = { id: "1", symbol: "SPY", shares: 100, price: "501.00", time: "2026-09-22T20:15:00Z", source: "expiry_exercise", option: "SPY   260922C00500000" }
+const sold: StockFill = { id: "2", symbol: "SPY", shares: -100, price: "503.00", time: "2026-09-23T14:00:00Z", source: "trade", option: null }
+const assigned: StockFill = { id: "3", symbol: "QQQ", shares: 200, price: "480.00", time: "2026-09-23T21:30:00Z", source: "assignment", option: "QQQ   261016P00490000" }
+const dividend: DividendPaid = { symbol: "QQQ", ex_date: "2026-09-24", per_share: "0.70", shares: 200, amount: "140.00", time: "2026-09-23T21:30:00Z" }
 async function render(node: ReactNode) {
   await act(async () => root.render(<QueryClientProvider client={client}>{node}<Toasts /></QueryClientProvider>))
 }
@@ -45,6 +52,7 @@ beforeEach(() => {
   root = createRoot(host)
   alertStore.set(noAlerts)
   fills(undefined)
+  deliveries(undefined)
 })
 afterEach(async () => {
   await act(async () => root.unmount())
@@ -56,6 +64,26 @@ afterEach(async () => {
 })
 
 describe("the alert watcher", () => {
+  it("announces assignments, exercises at expiry and dividends once, but not history or trades", async () => {
+    live(5000)
+    deliveries([exercised])
+    await render(<AlertWatcher />)
+    expect(titles()).toEqual([])
+    deliveries([exercised, sold, assigned], [dividend])
+    await render(<AlertWatcher />)
+    expect(titles()).toEqual(["Assigned QQQ Oct 16 490P", "QQQ dividend"])
+    expect(shown).toEqual([{ title: "Assigned QQQ Oct 16 490P", body: "Bought 200 QQQ at $480.00" },
+      { title: "QQQ dividend", body: "+$140.00 on 200 shares at $0.70" }])
+    deliveries([exercised, sold, assigned], [dividend])
+    await render(<AlertWatcher />)
+    expect(titles()).toHaveLength(2)
+    // Without fill alerts on, and whatever the account switch, only new ones speak.
+    live(5000, "live", 1)
+    deliveries([exercised, sold, assigned, { ...assigned, id: "4" }], [dividend])
+    await render(<AlertWatcher />)
+    expect(titles()).toHaveLength(2)
+  })
+
   it("fires a price alert once, in the page and as a browser notification", async () => {
     alertStore.set({ fills: false, sound: false, prices: [
       { id: "up", symbol: "SPX", direction: "above", level: 5000, created: "2026-09-23T19:00:00.000Z" },
