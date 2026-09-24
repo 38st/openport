@@ -66,16 +66,19 @@ struct Trigger {
   TriggerSource source = TriggerSource::Option;
   TriggerDirection direction = TriggerDirection::AtOrBelow;
   Money level;
+  bool operator==(const Trigger&) const = default;
 };
 /// A bracket exit: a trigger makes it a market order when reached (a stop); a
 /// limit price makes it a resting limit (a take-profit). Exactly one is set.
 struct ExitSpec {
   std::optional<Trigger> trigger;
   std::optional<Money> limit_price;
+  bool operator==(const ExitSpec&) const = default;
 };
 struct Bracket {
   std::optional<ExitSpec> stop_loss;
   std::optional<ExitSpec> take_profit;
+  bool operator==(const Bracket&) const = default;
 };
 
 /// One leg of a multi-leg order: `ratio` contracts of `symbol` per unit, bought
@@ -84,6 +87,7 @@ struct Leg {
   std::string symbol;  ///< Canonical padded OSI of a registered definition.
   Side side = Side::Buy;
   Quantity ratio = 1;
+  bool operator==(const Leg&) const = default;
 };
 inline constexpr std::size_t kMaxLegs = 4;
 inline constexpr Quantity kMaxRatio = 10;
@@ -105,6 +109,7 @@ struct OrderRequest {
   /// `limit_price` is the net per unit: positive a debit to pay at most,
   /// negative a credit to receive at least. No trigger or bracket.
   std::vector<Leg> legs;
+  bool operator==(const OrderRequest&) const = default;
 };
 [[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }
 /// Every contract an order trades: its symbol, or each leg's.

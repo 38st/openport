@@ -1442,6 +1442,15 @@ CommandResult TradingSession::define(const md::OptionContract& contract, Timesta
   });
 }
 CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decision rejection) {
+  // A client retrying an order it may have lost the answer to gets that answer,
+  // not a second order or a duplicate-key rejection; other terms still reject.
+  if (!impl_->stopped) {
+    const auto& state = impl_->state;
+    const auto first = std::find_if(state.orders.begin(), state.orders.end(),
+                                    [&](const Order& o) { return o.request.client_order_id == request.client_order_id; });
+    if (first != state.orders.end() && first->request == request)
+      return CommandResult{first->status == OrderStatus::Rejected ? first->reason : Decision{}, first->id, state.version, true};
+  }
   return impl_->transact(time, "submit", [&](State& s, Events& events) {
     monitor_loss(s, events);
     return place(s, std::move(request), time, rejection, events);

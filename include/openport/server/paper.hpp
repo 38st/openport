@@ -79,6 +79,7 @@ struct TradingReply {
   std::vector<trading::OrderId> cancelled_orders;
   std::vector<trading::OrderId> created_orders;  ///< Orders the command added, in sequence.
   std::string account;  ///< The account the command acted on (a new account's ID for CreateAccount).
+  bool replayed = false;  ///< A retried order answered as first submitted.
 };
 using TradingCompletion = std::function<void(TradingReply)>;
 

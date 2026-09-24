@@ -87,6 +87,9 @@ struct CommandResult {
   Decision decision;
   std::optional<OrderId> order_id;
   std::uint64_t account_version = 0;
+  /// A retried order, its client_order_id and terms already submitted: the first
+  /// answer, with nothing recorded.
+  bool replayed = false;
 };
 
 /// New terms for an open order; each field left empty keeps its value.

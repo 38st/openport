@@ -410,10 +410,26 @@ TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejection
   request = order(market, "bad-tick", "4.01");
   expect_error(write(*engine, "POST", "/api/orders", request), 422, "INVALID_TICK");
   EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "rejected");
+  // A retry gets the first answer; the same key with other terms is a conflict.
+  const auto recorded = read(*engine, "/api/orders")["orders"].size();
+  expect_error(write(*engine, "POST", "/api/orders", request), 422, "INVALID_TICK");
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), recorded);
+  request["limit_price"] = "4.05";
   expect_error(write(*engine, "POST", "/api/orders", request), 409, "DUPLICATE_CLIENT_ID");
   expect_error(write(*engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5000.00"}}), 422, "INVALID_SETTLEMENT");
   expect_error(server::handle_api({"GET", "/api/orders?status=closed"}, *engine), 400, "INVALID_REQUEST");
   expect_error(server::handle_api({"GET", "/api/missing"}, *engine), 404, "NOT_FOUND");
+}
+
+TEST_F(PaperEngine, ARetriedOrderGetsItsFirstAnswer) {
+  seed();
+  const auto first = write(*engine, "POST", "/api/orders", order(market, "retry", "4.20"));
+  ASSERT_EQ(first.status, 201) << first.body;
+  const auto again = write(*engine, "POST", "/api/orders", order(market, "retry", "4.20"));
+  ASSERT_EQ(again.status, 200) << again.body;
+  EXPECT_EQ(json::parse(again.body)["order"], json::parse(first.body)["order"]);
+  EXPECT_EQ(json::parse(again.body)["fills"], json::parse(first.body)["fills"]);
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), 1);
 }
 
 TEST_F(PaperEngine, FractionalSizesNeverRoundUpAndCachedObservationsDoNotRefill) {

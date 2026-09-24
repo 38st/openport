@@ -461,7 +461,7 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       if (it == s.recent_orders.end()) return api_error(503, "TRADING_UNAVAILABLE", "Order publication missing");
       body["order"] = order_json(*it, view);
       if (command.kind != TradingCommand::Kind::Cancel) {
-        if (command.kind == TradingCommand::Kind::Submit) status = 201;
+        if (command.kind == TradingCommand::Kind::Submit && !reply.replayed) status = 201;
         body["fills"] = json::array();
         for (const auto& fill : s.recent_fills)
           if (fill.order_id == it->id) body["fills"].push_back(fill_json(fill, view));

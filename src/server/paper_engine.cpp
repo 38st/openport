@@ -654,6 +654,7 @@ void Engine::apply_command(PendingCommand& pending) {
       }
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;
+      reply.replayed = result.replayed;
       publish_trading();
       const auto& orders = session.snapshot()->recent_orders;
       for (const auto& order : before->open_orders) {

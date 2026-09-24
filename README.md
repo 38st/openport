@@ -314,7 +314,9 @@ curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{
            {"symbol": "SPXW  260923P07700000", "side": "sell"}]}'
 ```
 
-[Paper trading](docs/paper-trading.md) documents every field, rule and reason code.
+Sending the same order again with the same `client_order_id` is safe: it returns the
+first answer instead of placing a second order. [Paper trading](docs/paper-trading.md)
+documents every field, rule and reason code.
 
 ## Security
 

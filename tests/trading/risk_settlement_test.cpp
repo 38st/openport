@@ -25,8 +25,20 @@ TEST(TradingRisk, OrderValidationAndExplicitNumericChecks) {
   EXPECT_EQ(band.code, Reason::PRICE_BAND);
   EXPECT_DOUBLE_EQ(*band.actual, 0.9);
   EXPECT_DOUBLE_EQ(*band.limit, 0.82);
-  EXPECT_TRUE(s.submit(f.limit("okay", 1, "4.10"), f.time).decision.ok());
-  EXPECT_EQ(s.submit(f.limit("okay", 1, "4.10"), f.time).decision.code, Reason::DUPLICATE_CLIENT_ID);
+  const auto okay = s.submit(f.limit("okay", 1, "4.10"), f.time);
+  EXPECT_TRUE(okay.decision.ok());
+  // A retry with the same terms gets the first answer and records nothing; other terms reject.
+  const auto orders = s.snapshot()->recent_orders.size();
+  const auto retry = s.submit(f.limit("okay", 1, "4.10"), f.time);
+  EXPECT_TRUE(retry.decision.ok());
+  EXPECT_TRUE(retry.replayed);
+  EXPECT_EQ(retry.order_id, okay.order_id);
+  EXPECT_EQ(retry.account_version, okay.account_version);
+  const auto band_retry = s.submit(f.limit("band", 1, "5.00"), f.time);
+  EXPECT_EQ(band_retry.decision.code, Reason::PRICE_BAND);
+  EXPECT_TRUE(band_retry.replayed);
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), orders);
+  EXPECT_EQ(s.submit(f.limit("okay", 2, "4.10"), f.time).decision.code, Reason::DUPLICATE_CLIENT_ID);
   auto limits = Limits{};
   limits.price_band_relative = 0;
   limits.price_band_absolute = m("0.05");
