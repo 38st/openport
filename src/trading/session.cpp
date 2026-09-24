@@ -533,10 +533,46 @@ Quantity uncovered(const State& s, const std::vector<std::pair<std::string, Quan
   return naked_shorts(legs);
 }
 /// A defined-risk plan refuses an order that would leave more shorts uncovered.
-Decision defined_risk_check(const State& s, const std::vector<std::pair<std::string, Quantity>>& order) {
+Decision defined_risk_check(const State& s, const std::vector<std::pair<std::string, Quantity>>& order,
+                            std::string_view message = "This plan allows defined risk only: cover each short option with a "
+                                                       "long of the same type that expires with it or later, or open the "
+                                                       "spread as one order") {
   if (!s.config.rules.defined_risk || uncovered(s, order) <= uncovered(s, {})) return {};
-  return failure(Reason::DEFINED_RISK, "This plan allows defined risk only: cover each short option with a long of the same "
-                 "type that expires with it or later, or open the spread as one order");
+  return failure(Reason::DEFINED_RISK, std::string(message));
+}
+/// Shorts left uncovered once every open order but `except` has sold all it
+/// offers and bought nothing; a multi-leg order fills whole, and a bracket's two
+/// exits sell its position once.
+Quantity uncovered_if_sold(const State& s, OrderId except, std::vector<std::pair<std::string, Quantity>> extra) {
+  std::map<OrderId, std::pair<std::string, Quantity>> exits;
+  for (const auto& o : s.orders) {
+    if (!o.open() || o.id == except) continue;
+    if (multi_leg(o.request)) {
+      for (const auto& leg : o.request.legs) extra.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
+    } else if (o.request.side == Side::Sell && o.role != OrderRole::Normal) {
+      auto& [symbol, quantity] = exits[o.parent];
+      symbol = o.request.symbol;
+      quantity = std::max(quantity, o.remaining());
+    } else if (o.request.side == Side::Sell) {
+      extra.emplace_back(o.request.symbol, -o.remaining());
+    }
+  }
+  for (const auto& [parent, exit] : exits) extra.emplace_back(exit.first, -exit.second);
+  return uncovered(s, extra);
+}
+/// A new or changed order must not leave more shorts uncovered with the open
+/// orders filled either, so a working sell never takes the long a short needs.
+Decision open_orders_risk_check(const State& s, const Order& o) {
+  if (!s.config.rules.defined_risk) return {};
+  std::vector<std::pair<std::string, Quantity>> order;
+  if (multi_leg(o.request)) {
+    for (const auto& leg : o.request.legs) order.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
+  } else {
+    order.emplace_back(o.request.symbol, o.request.side == Side::Buy ? o.remaining() : -o.remaining());
+  }
+  if (uncovered_if_sold(s, o.id, order) <= uncovered_if_sold(s, o.id, {})) return {};
+  return failure(Reason::DEFINED_RISK, "With your open orders filled, this would leave a short option uncovered: cancel "
+                 "the order that sells its long, or that opens the short, first, or trade the spread as one order");
 }
 Decision account_check(const State& s) {
   if (s.kill) return failure(Reason::KILL_SWITCH, s.kill_reason);
@@ -687,6 +723,12 @@ Decision system_check(const State& s, const Order& o) {
   if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "Contract has expired");
   if (!regular(c->second, s.time))
     return failure(Reason::SESSION_CLOSED, "Closing orders the account places itself and bracket exits trade in the regular session only");
+  // A bracket exit keeps a defined-risk plan's shorts covered; the account's own closing orders need not.
+  if (!o.system && o.request.side == Side::Sell)
+    if (auto d = defined_risk_check(s, {{o.request.symbol, -o.remaining()}},
+                                    "Selling this long would leave a short option uncovered; close the short first");
+        !d.ok())
+      return d;
   return quote_check(s, o.request.symbol);
 }
 bool marketable(const Order& o, const QuoteObservation& q) {
@@ -1063,6 +1105,7 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   s.orders.push_back(order);
   auto& stored = s.orders.back();
   auto decision = duplicate ? failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used") : !rejection.ok() ? rejection : order_check(s, stored);
+  if (decision.ok()) decision = open_orders_risk_check(s, stored);
   if (!decision.ok()) {
     stored.status = OrderStatus::Rejected;
     stored.reason = decision;
@@ -1132,6 +1175,7 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
       decision = failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
   } else {
     decision = order_check(s, order);
+    if (decision.ok()) decision = open_orders_risk_check(s, order);
   }
   if (!decision.ok()) {
     order = before;
@@ -1837,6 +1881,10 @@ CommandResult TradingSession::exercise(const std::string& symbol, Quantity contr
     if (s.time >= contract.expiry_time()) return CommandResult{failure(Reason::EXPIRED, "The contract has expired; settlement exercises it"), {}, 0};
     if (const auto d = account_check(s); !d.ok()) return CommandResult{d, {}, 0};
     if (held(s, symbol) < contracts) return CommandResult{failure(Reason::INVALID_ORDER, "Exercise needs that many long contracts"), {}, 0};
+    if (const auto d = defined_risk_check(s, {{symbol, -contracts}},
+                                          "Exercising this long would leave a short option uncovered; close the short first");
+        !d.ok())
+      return CommandResult{d, {}, 0};
     const auto price = stock_price(s, contract.underlying);
     if (!price) return CommandResult{failure(Reason::STALE_QUOTE, "Exercise needs a fresh price for " + contract.underlying), {}, 0};
     const Money strike = Money::from_double(contract.strike);

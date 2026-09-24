@@ -48,7 +48,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
     { title: "Strategies", body: r.buy_only
       ? "Buy-only and single-leg: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells. Multi-leg orders are not available."
       : r.defined_risk
-        ? "Defined risk only: each short option needs a long of the same type on the same underlying that expires with it or later, so no position can lose without limit. Open spreads, condors and butterflies as one order from the Trade page's Strategy mode, or buy the long first; an order that would leave a short uncovered is refused, and closing a short is always allowed."
+        ? "Defined risk only: each short option needs a long of the same type on the same underlying that expires with it or later, so no position can lose without limit. Open spreads, condors and butterflies as one order from the Trade page's Strategy mode, or buy the long first; an order that would leave a short uncovered, now or once your open orders fill, is refused, and closing a short is always allowed."
         : "Any strategy: buy or sell calls and puts, or place spreads, straddles, condors and butterflies of up to four legs as one order from the Trade page's Strategy mode. All legs fill together at a net debit or credit." },
     { title: "Buying power", body: r.buying_power
       ? <>Orders that open contracts must fit within buying power, now {formatMoney(account.buying_power.available)}: cash, less working orders' reservations, less the margin your short options hold.

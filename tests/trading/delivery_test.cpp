@@ -121,6 +121,27 @@ TEST(TradingDelivery, ShortPutsAssignedBuySharesAndIndexOptionsStayCash) {
   EXPECT_EQ(s.snapshot()->stocks.size(), 1U);
 }
 
+TEST(TradingDelivery, ADefinedRiskPlanKeepsTheLongThatCoversAShort) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  const auto later = *md::parse_osi("SPY261120C00500000");
+  AccountRules rules;
+  rules.defined_risk = true;
+  Spy f;
+  f.spot = 520;
+  TradingSession s(roomy(rules), f.time);
+  f.define(s, call);
+  f.define(s, later);
+  f.quote(s, call, "21.00", "21.20");
+  f.quote(s, later, "23.00", "23.20");
+  ASSERT_TRUE(s.submit(f.market("long", later, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("short", call, 1, Side::Sell), f.time).decision.ok());
+  const auto refused = s.exercise(later.osi_symbol(), 1, f.time).decision;
+  EXPECT_EQ(refused.code, Reason::DEFINED_RISK);
+  EXPECT_NE(refused.message.find("Exercising"), std::string::npos) << refused.message;
+  ASSERT_TRUE(s.submit(f.market("close short", call, 1), f.time).decision.ok());
+  EXPECT_TRUE(s.exercise(later.osi_symbol(), 1, f.time).decision.ok());
+}
+
 TEST(TradingDelivery, EarlyExerciseGivesUpTimeValueAndKeepsTheRestOpen) {
   const auto call = *md::parse_osi("SPY261022C00500000");
   Spy f;

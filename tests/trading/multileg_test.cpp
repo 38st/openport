@@ -254,6 +254,54 @@ TEST(TradingDefinedRisk, ShortsNeedALongOfTheirTypeExpiringWithThemOrLater) {
   EXPECT_TRUE(any.submit(single("naked", P4900, Side::Sell), f.time).decision.ok());
 }
 
+TEST(TradingDefinedRisk, OpenOrdersCountAsIfTheirSellsFilled) {
+  Chain f;
+  AccountRules rules;
+  rules.defined_risk = true;
+  TradingSession s(config("100000", rules), f.time);
+  f.define(s, {P4900, P4890, LATER, LATER_4900});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}, {LATER, "4.50", "4.70", -0.27},
+              {LATER_4900, "5.50", "5.70", -0.29}});
+  ASSERT_TRUE(s.submit(single("long", LATER, Side::Buy), f.time).decision.ok());
+  // A working order to sell the long keeps a short from leaning on it.
+  const auto sell_long = s.submit(single("sell long", LATER, Side::Sell, "5.00"), f.time);
+  ASSERT_TRUE(sell_long.decision.ok());
+  const auto refused = s.submit(single("short", P4900, Side::Sell), f.time).decision;
+  EXPECT_EQ(refused.code, Reason::DEFINED_RISK);
+  EXPECT_NE(refused.message.find("open orders"), std::string::npos) << refused.message;
+  ASSERT_TRUE(s.cancel(*sell_long.order_id, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("short again", P4900, Side::Sell), f.time).decision.ok());
+  // A working short keeps the long it needs: with another short resting, only one
+  // long is spare.
+  ASSERT_TRUE(s.submit(single("long 2", LATER, Side::Buy), f.time).decision.ok());
+  const auto resting = s.submit(single("short 2", P4890, Side::Sell, "4.60"), f.time);
+  ASSERT_TRUE(resting.decision.ok());
+  EXPECT_EQ(s.submit(single("sell a long", LATER, Side::Sell), f.time).decision.code, Reason::DEFINED_RISK);
+  // A spread working as one order brings its own long.
+  ASSERT_TRUE(s.cancel(*resting.order_id, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(combo("spread", {leg(P4890, Side::Sell), leg(LATER_4900, Side::Buy)}, 1, "1.00"), f.time).decision.ok());
+  const auto sold = s.submit(single("sell a long now", LATER, Side::Sell), f.time);
+  EXPECT_TRUE(sold.decision.ok()) << sold.decision.message;
+}
+
+TEST(TradingDefinedRisk, ABracketsExitsSellTheLongOnce) {
+  Chain f;
+  AccountRules rules;
+  rules.defined_risk = true;
+  TradingSession s(config("100000", rules), f.time);
+  f.define(s, {P4900, LATER});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {LATER, "4.50", "4.70", -0.27}});
+  auto entry = single("bracketed", LATER, Side::Buy);
+  entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.00")}, {}},
+                          ExitSpec{{}, m("5.00")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 2U);  // the stop and the target
+  ASSERT_TRUE(s.submit(single("plain", LATER, Side::Buy), f.time).decision.ok());
+  // The exits sell one long between them, leaving the other to cover one short.
+  ASSERT_TRUE(s.submit(single("short", P4900, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.submit(single("short 2", P4900, Side::Sell), f.time).decision.code, Reason::DEFINED_RISK);
+}
+
 TEST(TradingDefinedRisk, CountsShortsNoLongCovers) {
   const auto contract = [](std::string_view s) { return *md::parse_osi(s); };
   const auto legs = [&](std::vector<std::pair<std::string_view, Quantity>> held) {
