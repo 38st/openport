@@ -388,6 +388,7 @@ its files when the draft exists; GitHub tags the commit when you publish the dra
 - [x] Partial, random early assignment, and dividend risk on short calls
 - [x] Market-wide circuit breakers, and Cboe's holiday schedule read daily
 - [x] Dividends from Massive's API
+- [x] PM settlement on the provider's official close, revisions included
 - [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
 

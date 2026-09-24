@@ -47,6 +47,7 @@ struct CboeChain {
   std::vector<CboeOption> options;
   md::Timestamp last_trade_time = 0;  ///< underlying print clock, independent of option sessions
   double prev_close = 0.0;            ///< the previous trading day's official close, when published
+  double close = 0.0;                 ///< after the close, the day's closing price; before, the last
 };
 
 /// Parses cdn.cboe.com/api/global/delayed_quotes/options/<symbol>.json, or the
@@ -160,8 +161,10 @@ class CboeDelayedProvider final : public PollingProvider {
   [[nodiscard]] md::Capabilities capabilities() const noexcept override;
 
   /// Turns one parsed chain into events, publishing only what changed since the
-  /// previous call. During the regular session, the previous day's official close
-  /// is published as an md::UnderlyingClose.
+  /// previous call. The official close is published as an md::UnderlyingClose, each
+  /// time it changes: after the close, the day's (Cboe's close field stops there while
+  /// the price goes on with after-hours trades, and may be revised within minutes);
+  /// during the regular session, the previous day's.
   void publish_chain(const CboeChain& chain, const md::Subscription& subscription,
                      md::EventSink& sink);
 
@@ -180,7 +183,7 @@ class CboeDelayedProvider final : public PollingProvider {
   std::map<std::string, md::Timestamp> page_until_;
   std::map<std::string, md::Timestamp> skip_page_until_;
   std::map<std::string, md::Timestamp> page_fetched_;
-  /// The last official close published per underlying.
+  /// The last official close published per underlying, by date.
   std::map<std::string, std::pair<md::Date, double>> closes_;
 };
 

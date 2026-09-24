@@ -430,6 +430,7 @@ CboeChain parse_cboe_chain(std::string_view json, md::Timestamp now) {
   chain.last_trade_time =
       md::parse_datetime(text_or_empty(data, "last_trade_time"), md::Zone::NewYork).value_or(0);
   chain.prev_close = number_or_zero(data, "prev_day_close");
+  chain.close = number_or_zero(data, "close");
   return chain;
 }
 
@@ -520,16 +521,23 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   // Stock/index prints have their own clock; they can be hours behind GTH options.
   sink.publish(
       md::UnderlyingQuote{underlying, chain.last_trade_time, chain.bid, chain.ask, chain.price});
-  // In the regular session the previous close is certainly the last business day's;
-  // in the evening Cboe may not have rolled it yet.
-  if (chain.prev_close > 0 && std::isfinite(chain.prev_close) && md::market_session(delayed).open) {
-    const auto date = md::previous_business_day(md::new_york_time(delayed).date);
+  // After the close Cboe's close field holds the day's closing price, which it may
+  // revise within minutes, while the price goes on with after-hours trades. In the
+  // regular session the previous close is certainly the last business day's; in the
+  // evening Cboe may not have rolled it over yet.
+  const auto today = md::new_york_time(delayed).date;
+  const auto official = [&](md::Date date, double price) {
+    if (!(price > 0) || !std::isfinite(price)) return;
     auto& last = closes_[underlying];
-    if (last != std::pair{date, chain.prev_close}) {
-      last = {date, chain.prev_close};
-      sink.publish(md::UnderlyingClose{underlying, delayed, date, chain.prev_close});
-    }
-  }
+    if (last == std::pair{date, price}) return;
+    last = {date, price};
+    sink.publish(md::UnderlyingClose{underlying, delayed, date, price});
+  };
+  if (md::market_session(delayed).open)
+    official(md::previous_business_day(today), chain.prev_close);
+  else if (md::trading_date(md::new_york_to_utc(today, 12, 0)) == today &&
+           delayed >= md::new_york_to_utc(today, md::regular_close_hour(today), 0))
+    official(today, chain.close);
   std::map<std::string, md::Timestamp> market_times;
 
   std::vector<std::pair<const CboeOption*, md::OptionContract>> contracts;

@@ -1733,8 +1733,11 @@ CommandResult TradingSession::record_close(const std::string& underlying, md::Da
   if (underlying.empty() || price <= Money{} || !md::valid_date(date))
     throw TradingError(Reason::INVALID_SETTLEMENT, "A closing print needs an underlying, a valid date and a positive price");
   return impl_->transact(time, "closing_print", [&](State& s, Events& events) {
-    if (s.closing_prints.try_emplace(close_key(underlying, date), ClosingPrint{price, print_time}).second)
+    auto& print = s.closing_prints[close_key(underlying, date)];
+    if (print.price != price) {
+      print = ClosingPrint{price, print_time};
       event(events, "closing_print", Json{{"underlying", underlying}, {"date", date}, {"price", price}, {"time", print_time}});
+    }
     return CommandResult{};
   });
 }

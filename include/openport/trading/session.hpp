@@ -160,7 +160,9 @@ class TradingSession {
   /// Explicit authoritative reference, including AM imports. Only after expiry.
   CommandResult settle(const std::string& symbol, Money settlement, Timestamp time);
   /// Keeps an underlying's closing print for a date in the journal, so PM
-  /// settlement uses it after a restart; the first one recorded stands.
+  /// settlement uses it after a restart. A different price for the date replaces
+  /// it, as an official close replaces a provisional print; positions already
+  /// settled keep what they settled on.
   CommandResult record_close(const std::string& underlying, md::Date date, Money price, Timestamp print_time, Timestamp time);
   [[nodiscard]] std::optional<ClosingPrint> closing_print(const std::string& underlying, md::Date date) const;
   /// Explicit baseline reset, once per later New York date; requires full marks.

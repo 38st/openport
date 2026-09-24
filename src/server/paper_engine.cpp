@@ -444,7 +444,7 @@ void Engine::check_circuit_breaker(const md::UnderlyingQuote& spot) {
   const auto previous = md::previous_business_day(date);
   double reference = 0;
   if (const auto close = official_closes_.find({spot.symbol, previous}); close != official_closes_.end())
-    reference = close->second;
+    reference = close->second.price;
   else if (const auto print = closing_prints_.find({spot.symbol, previous}); print != closing_prints_.end())
     reference = print->second.last;
   if (const auto halt = circuit_breaker(reference, spot.last, spot.ts, breaker_level_)) {
@@ -465,7 +465,7 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
   for (const auto& event : batch) {
     if (const auto* close = std::get_if<md::UnderlyingClose>(&event)) {
       if (!(close->price > 0) || !std::isfinite(close->price)) continue;
-      official_closes_[{close->symbol, close->date}] = close->price;
+      official_closes_[{close->symbol, close->date}] = *close;
       const auto oldest = md::date_from_days(md::days_since_epoch(close->date) - 7);
       std::erase_if(official_closes_, [&](const auto& entry) { return entry.first.second < oldest; });
       continue;
@@ -555,7 +555,18 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
       // before the close stands in, if it came in the close's last five minutes.
       for (const auto& p : session.snapshot()->positions) {
         const auto& contract = p.position.contract;
-        if (contract.settlement != md::Settlement::PM || session.closing_print(contract.underlying, contract.expiry)) continue;
+        if (contract.settlement != md::Settlement::PM) continue;
+        // The provider's official close wins over any print, revisions included,
+        // until the positions settle.
+        const auto recorded = session.closing_print(contract.underlying, contract.expiry);
+        if (const auto official = official_closes_.find({contract.underlying, contract.expiry});
+            official != official_closes_.end()) {
+          const auto price = Money::from_double(official->second.price);
+          if (!recorded || recorded->price != price)
+            session.record_close(contract.underlying, contract.expiry, price, official->second.ts, market_time_);
+          continue;
+        }
+        if (recorded) continue;
         const auto close = md::new_york_to_utc(contract.expiry, md::regular_close_hour(contract.expiry), 0);
         auto print = closing_prints_.find({contract.underlying, contract.expiry});
         if (print == closing_prints_.end() && market_time_ >= close + kLastPrintWait) {
@@ -575,7 +586,11 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         const auto print = session.closing_print(contract.underlying, contract.expiry);
         if (!print) continue;
         const bool before = print->time < md::new_york_to_utc(contract.expiry, md::regular_close_hour(contract.expiry), 0);
-        settlement_source_ = {{"kind", before ? "provider_last_print_before_close" : "provider_closing_print"},
+        const auto official = official_closes_.find({contract.underlying, contract.expiry});
+        const bool is_official = official != official_closes_.end() && Money::from_double(official->second.price) == print->price;
+        settlement_source_ = {{"kind", is_official ? "provider_official_close"
+                                       : before  ? "provider_last_print_before_close"
+                                                 : "provider_closing_print"},
                               {"provider", std::string(provider_.name())},
                               {"symbol", contract.underlying}, {"quote_time", md::format_timestamp(print->time)}};
         session.settle(contract.osi_symbol(), print->price, market_time_);

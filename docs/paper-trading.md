@@ -1007,11 +1007,17 @@ account. A runtime journal failure preserves the last committed account and
 requires operator recovery. The Docker image journals in `/var/lib/openport`,
 which is a declared volume; mount a persistent volume there.
 
-At expiry, PM positions settle from the underlying’s **first positive finite last
-print stamped at or after the regular close (16:00 ET, 13:00 early) on the expiry
-date**, in provider arrival order. ETF options that trade until 16:15 settle then, on
-that 16:00 print, as OCC exercises on the closing price. This is the **provider’s closing print**, an approximation of the
-official settlement value. Bid/ask midpoints and next-day prices are not substitutes.
+At expiry, PM positions settle on the underlying’s **official close** when the
+provider publishes one (`md::UnderlyingClose`): Cboe’s close field after the close,
+which stops at the closing price while the price goes on with after-hours trades, and
+which Cboe may revise within minutes (on 2026-09-24 SPY’s went from 767.27 to 767.18
+ten minutes after the close, while the first print after 16:00 was 767.26). A revision
+replaces the recorded close until the positions settle. Without one they settle on
+the **first positive finite last print stamped at or after the regular close (16:00
+ET, 13:00 early) on the expiry date**, in provider arrival order, the provider’s
+closing print. ETF options that trade until 16:15 settle then, on that close, as OCC
+exercises on the closing price. Bid/ask midpoints and next-day prices are not
+substitutes.
 Each account records the print in its journal (`record_close`, kept per underlying
 and date) as soon as it holds a PM position expiring that day, so a restart before
 ETF options expire at 16:15 still settles them on it. If none has arrived half an hour
@@ -1024,8 +1030,9 @@ explicit `/api/settlements` import (the terminal's Settle button on the position
 whose value must come from the authoritative settlement source; PM imports are
 accepted only while no closing print is recorded. The same journal transaction
 records the reference value, canonical definition and integration
-`settlement_source`: `provider_closing_print` or `provider_last_print_before_close`
-with provider and print time, `manual_am_import` or `manual_pm_import`. Preserve the official source used for an AM import
+`settlement_source`: `provider_official_close`, `provider_closing_print` or
+`provider_last_print_before_close` with provider and time, `manual_am_import` or
+`manual_pm_import`. Preserve the official source used for an AM import
 externally when an independent provenance audit is required. The first market
 batch on a later trading date rolls the daily baseline once marks are complete;
 the kill latch survives. All accounting uses effective market time, including

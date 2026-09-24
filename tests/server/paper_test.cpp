@@ -1104,6 +1104,50 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
   std::filesystem::remove(path);
 }
 
+TEST(PaperRecovery, EtfOptionsSettleOnTheOfficialCloseAsRevised) {
+  const auto path = std::filesystem::temp_directory_path() / ("openport-official-" + std::to_string(md::now()) + ".jsonl");
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPY260922C00500000");
+  const auto close = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  const auto revised = close + 10 * md::kNanosPerMinute + 49 * md::kNanosPerSecond;
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPY"}}, options); engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    provider.sink->publish(md::ContractDefinition{0, market.contract});
+    provider.sink->publish(md::UnderlyingQuote{"SPY", market.time, 500, 500, 500});
+    provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+    ASSERT_TRUE(wait_for([&] { return engine.metrics("SPY") && engine.metrics("SPY")->as_of == market.time; }));
+    ASSERT_EQ(write(engine, "POST", "/api/orders", order(market, "spy", "4.20")).status, 201);
+    // The first print after the close is an after-hours trade at 500.40. Cboe's close
+    // field says 500.20, then revises it to 499.95: out of the money at the pin.
+    provider.sink->publish(md::UnderlyingQuote{"SPY", close, 0, 0, 500.40});
+    provider.sink->publish(md::UnderlyingClose{"SPY", close + 49 * md::kNanosPerSecond, {2026, 9, 22}, 500.20});
+    provider.sink->publish(md::UnderlyingClose{"SPY", revised, {2026, 9, 22}, 499.95});
+    ASSERT_TRUE(wait_for([&] {
+      const auto& prints = engine.trading_view()->snapshot->closing_prints;
+      const auto it = prints.find("SPY 2026-09-22");
+      return it != prints.end() && it->second.price == Money::parse("499.95");
+    }));
+    // At 16:15 the call settles on the official close and is not exercised.
+    provider.sink->publish(md::UnderlyingQuote{"SPY", market.contract.expiry_time(), 0, 0, 500.30});
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->positions.empty(); }));
+    EXPECT_TRUE(engine.trading_view()->snapshot->stocks.empty());
+    engine.stop();
+  }
+  bool found = false;
+  for (const auto& record : trading::FileJournal::read(path.string()).records) {
+    if (record.type != "settlement") continue;
+    const auto source = json::parse(record.payload)["settlement_source"];
+    EXPECT_EQ(source["kind"], "provider_official_close");
+    EXPECT_EQ(source["quote_time"], md::format_timestamp(revised));
+    found = true;
+  }
+  EXPECT_TRUE(found);
+  std::filesystem::remove(path);
+}
+
 TEST(PaperRecovery, TheClosingPrintSurvivesARestartBeforeETFOptionsExpire) {
   const auto path = std::filesystem::temp_directory_path() / ("openport-close-" + std::to_string(md::now()) + ".jsonl");
   auto options = paper_options(); options.paper_journal = path;

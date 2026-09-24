@@ -377,10 +377,13 @@ Cboe option timestamps use `t = publication - 15 minutes`, capped to the most
 recent session end only when that option root is closed. Live overnight and
 curb quotes therefore advance while the stock/index print remains frozen.
 `UnderlyingQuote.ts` is the parsed New York `data.last_trade_time`; missing or
-invalid times remain unknown (zero), never fabricated from publication time. During the
-regular session the adapter also publishes `data.prev_day_close` as an
-`md::UnderlyingClose` for the previous business day, once per change; in the evening it
-waits, as Cboe may not have rolled it over yet. Recordings carry these events too.
+invalid times remain unknown (zero), never fabricated from publication time. The adapter
+also publishes official closes as `md::UnderlyingClose`, once per change. After the
+close, `data.close` stops at the day's closing price while `current_price` goes on with
+after-hours trades (and `last_trade_time` stays at 16:00:00), and Cboe may revise it
+within minutes. During the regular session, `data.prev_day_close` is the previous
+business day's; in the evening the adapter does not read it, as Cboe may not have
+rolled it over yet. Recordings carry these events too.
 Analytics ignores an underlying print more than 30 minutes behind option data
 (`AnalyticsOptions::max_spot_age_minutes`) and infers spot from parity, so frozen
 index closes do not contaminate GTH Greeks. The limit sits above the 15-minute gap

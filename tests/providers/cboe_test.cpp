@@ -142,6 +142,35 @@ TEST(Cboe, PublishesThePreviousDaysCloseOnceADayInTheSession) {
   EXPECT_EQ(morning.all<md::UnderlyingClose>()[0].date, (md::Date{2026, 9, 22}));
 }
 
+TEST(Cboe, PublishesTheDaysCloseAfterItAndItsRevisions) {
+  // As on 2026-09-24: after 16:00 the close field stops at the close (767.27, then
+  // revised to 767.18) while the price goes on with after-hours trades.
+  providers::CboeDelayedProvider provider;
+  providers::CboeChain chain = providers::parse_cboe_chain(kChain);
+  chain.symbol = "SPY";
+  const auto published = [&](md::Timestamp data_time, double price, double close) {
+    chain.as_of = data_time + 15 * md::kNanosPerMinute;
+    chain.price = price;
+    chain.close = close;
+    Collector sink;
+    provider.publish_chain(chain, {}, sink);
+    return sink.all<md::UnderlyingClose>();
+  };
+  const md::Date day{2026, 9, 24};
+  EXPECT_TRUE(published(md::new_york_to_utc(day, 15, 58), 767.42, 767.42).empty());  // still the price
+  auto closes = published(md::new_york_to_utc(day, 16, 0) + 49 * md::kNanosPerSecond, 767.26, 767.27);
+  ASSERT_EQ(closes.size(), 1u);
+  EXPECT_EQ(closes[0].symbol, "SPY");
+  EXPECT_EQ(closes[0].date, day);
+  EXPECT_DOUBLE_EQ(closes[0].price, 767.27);
+  EXPECT_TRUE(published(md::new_york_to_utc(day, 16, 5), 766.93, 767.27).empty());
+  closes = published(md::new_york_to_utc(day, 16, 10) + 49 * md::kNanosPerSecond, 766.75, 767.18);
+  ASSERT_EQ(closes.size(), 1u);
+  EXPECT_DOUBLE_EQ(closes[0].price, 767.18);
+  // After midnight it is the next day, not yet closed.
+  EXPECT_TRUE(published(md::new_york_to_utc({2026, 9, 25}, 0, 30), 765.0, 767.18).empty());
+}
+
 TEST(Cboe, AppliesExpiryAndStrikeFilters) {
   providers::CboeDelayedProvider provider;
   Collector sink;

@@ -121,6 +121,16 @@ TEST(TradingDelivery, ShortPutsAssignedBuySharesAndIndexOptionsStayCash) {
   EXPECT_EQ(s.snapshot()->stocks.size(), 1U);
 }
 
+TEST(TradingDelivery, AClosingPrintTakesRevisions) {
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  ASSERT_TRUE(s.record_close("SPY", {2026, 9, 22}, m("500.40"), f.time, f.time).decision.ok());
+  ASSERT_TRUE(s.record_close("SPY", {2026, 9, 22}, m("499.95"), f.time + 1, f.time).decision.ok());
+  EXPECT_EQ(s.closing_print("SPY", {2026, 9, 22})->price, m("499.95"));
+  EXPECT_EQ(s.closing_print("SPY", {2026, 9, 22})->time, f.time + 1);
+  EXPECT_FALSE(s.closing_print("SPY", {2026, 9, 23}));
+}
+
 TEST(TradingDelivery, ADefinedRiskPlanKeepsTheLongThatCoversAShort) {
   const auto call = *md::parse_osi("SPY261022C00500000");
   const auto later = *md::parse_osi("SPY261120C00500000");

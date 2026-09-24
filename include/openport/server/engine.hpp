@@ -203,7 +203,7 @@ class Engine final : public MetricsSource {
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> closing_prints_;
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> before_close_;
   /// Official closes by symbol and date (md::UnderlyingClose), for a week of dates.
-  std::map<std::pair<std::string, md::Date>, double> official_closes_;
+  std::map<std::pair<std::string, md::Date>, md::UnderlyingClose> official_closes_;
   /// Circuit-breaker halts of the last day, and the level tripped on breaker_day_.
   std::vector<MarketHalt> halts_;
   md::Date breaker_day_;
