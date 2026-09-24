@@ -145,11 +145,11 @@ and the simulation's limits.
 
 ## Quick start
 
-With Docker (Cboe delayed SPX, SPY and QQQ, no key needed):
+With Docker (Cboe delayed SPX, SPY and QQQ, no key needed), from the published image
+for amd64 and arm64:
 
 ```bash
-docker build -t openport .
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport openport
+docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport
 ```
 
 Then open http://localhost:8080. The `openport` volume keeps your accounts and chart
@@ -157,8 +157,12 @@ history between runs. When nothing is trading, the terminal offers the demo mark
 which needs no data at all. To use your own provider, pass its key and arguments:
 
 ```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e DATABENTO_API_KEY openport --provider databento --symbols SPX,QQQ
+docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e DATABENTO_API_KEY ghcr.io/38st/openport --provider databento --symbols SPX,QQQ
 ```
+
+`docker build -t openport .` builds the same image from a checkout. Each
+[release](https://github.com/38st/openport/releases) also has archives for Linux
+(amd64 and arm64) and macOS (Apple Silicon).
 
 From source (CMake 3.25+, a C++20 compiler, Boost 1.83+, OpenSSL 3, zlib, zstd and
 Node 22+; everything else is fetched and pinned by checksum):

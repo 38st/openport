@@ -125,11 +125,12 @@ previous="$(git describe --tags --abbrev=0 2>/dev/null || true)"
   echo
   echo "## Install"
   echo
-  echo "- Docker: \`docker build -t openport .\` from this tag, then \`docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport openport\`."
-  echo "- Linux archive: needs OpenSSL 3, zlib and zstd (\`apt install libssl3t64 zlib1g libzstd1\` on Ubuntu 24.04). Unpack it and run \`bin/openportd\`."
+  # Publishing the release pushes the image (image.yml) and attaches both Linux archives (release-assets.yml).
+  echo "- Docker (amd64 and arm64): \`docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport:$version\`, or \`docker build -t openport .\` from this tag."
+  echo "- Linux archives (amd64 and arm64): need OpenSSL 3, zlib and zstd (\`apt install libssl3t64 zlib1g libzstd1\` on Ubuntu 24.04). Unpack one and run \`bin/openportd\`."
   echo "- macOS archive: needs Homebrew's \`openssl@3\`, \`zstd\` and \`brotli\`. Unpack it and run \`bin/openportd\`."
   echo
-  echo "Then open http://127.0.0.1:8080. \`openportd --help\` lists every option."
+  echo "Then open http://127.0.0.1:8080. \`openportd --help\` lists every option. \`SHA256SUMS\` covers every archive."
   echo
   if [ -n "$previous" ]; then
     echo "## Changes since $previous"
