@@ -6,6 +6,7 @@ import type { View } from "../lib/route"
 import { formatMoney } from "../lib/trading"
 import { useDemoOffer } from "./DemoPrompt"
 import { Dialog } from "./Dialog"
+import { TradingError } from "./TradingControls"
 
 const key = "openport.welcome"
 /** Whether the welcome is showing: once per browser, and again from the footer. */
@@ -76,9 +77,11 @@ export function Welcome({ onNavigate }: { onNavigate: (view: View) => void }) {
     {offer.offered && <p className="text-sm">{offer.reason}. In the meantime the demo market plays a simulated day
       in {joinList(offer.symbols)} options, with generated prices and its own paper account.</p>}
     <p className="text-xs text-muted">Simulated fills, no order routing, not investment advice.</p>
+    <TradingError error={offer.controls.error} />
     <div className="flex flex-wrap gap-2">
-      {offer.offered && <button type="button" className="trade-button border-accent text-foreground"
-        onClick={() => { welcome.close(); offer.start(() => onNavigate("replay")) }}>Try the demo</button>}
+      {offer.offered && <button type="button" className="trade-button border-accent text-foreground" disabled={offer.controls.pending}
+        onClick={() => offer.start(() => go("replay"), undefined, () => welcome.close())}>
+        {offer.controls.pending ? "Starting…" : "Try the demo"}</button>}
       <button type="button" className={`trade-button ${offer.offered ? "" : "border-accent text-foreground"}`} onClick={() => go("chain")}>Start on the chain</button>
       {trading?.enabled && <button type="button" className="trade-button" onClick={() => go("dashboard")}>See the account</button>}
     </div>

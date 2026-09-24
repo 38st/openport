@@ -6,9 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import type { ReplayListing, Status } from "../api/types"
 import { status } from "../test/trading-fixtures"
+import { MAIN_ACCOUNT } from "../lib/active-account"
+import { DemoPrompt } from "./DemoPrompt"
 import { createWelcomeStore, Welcome, welcome } from "./Welcome"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
+
+/** Every market closed, so the demo is offered. */
+const closedStatus = () => ({ ...status, underlyings: status.underlyings.map((u) => ({ ...u,
+  paper: { accepting: false, reason: "SESSION_CLOSED", message: `${u.symbol} options are closed`, session: "closed" as const } })) }) as Status
+const reversal = { id: "reversal", title: "Slide and rebound", provider: "demo", symbols: ["SPX", "SPY", "QQQ"], started: "2026-09-16T13:30:00.000Z" }
+const demoListing: ReplayListing = { directory: "", recordings: [], replay: null, demo: reversal,
+  demos: [reversal, { ...reversal, id: "overnight", title: "Overnight session", symbols: ["SPX"] }] }
 
 let root: Root
 let host: HTMLDivElement
@@ -76,5 +85,42 @@ describe("the welcome", () => {
     const text = host.textContent ?? ""
     expect(text).toContain("Options markets are closed. In the meantime the demo market plays a simulated day")
     expect([...host.querySelectorAll("button")].map((b) => b.textContent)).toContain("Try the demo")
+  })
+
+  it("stays open to say why the demo did not start, and closes once it does", async () => {
+    const switchSource = vi.fn()
+    vi.mocked(useLive).mockReturnValue(liveState(closedStatus(), null, "open", 0, MAIN_ACCOUNT, () => {}, "live", null, switchSource))
+    client.setQueryData(["replay-listing"], demoListing)
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: { code: "INTERNAL", message: "Demo recording failed: disk full" } }), { status: 500 }))
+    vi.stubGlobal("fetch", fetcher)
+    welcome.show()
+    await act(async () => root.render(wrap(<Welcome onNavigate={() => {}} />)))
+    const tryIt = () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Try the demo")!
+    await act(async () => tryIt().click())
+    expect(welcome.get()).toBe(true)
+    expect(host.querySelector("[role=alert]")?.textContent).toBe("INTERNAL: Demo recording failed: disk full")
+    fetcher.mockImplementation(async () => new Response(JSON.stringify({ replay: null }), { status: 201 }))
+    await act(async () => tryIt().click())
+    expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ method: "POST", body: JSON.stringify({ demo: true, speed: 10 }) }))
+    expect(switchSource).toHaveBeenCalledWith("replay")
+    expect(welcome.get()).toBe(false)
+  })
+})
+
+describe("the demo prompt", () => {
+  it("plays the day picked", async () => {
+    vi.mocked(useLive).mockReturnValue(liveState(closedStatus(), null, "open"))
+    client.setQueryData(["replay-listing"], demoListing)
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ replay: null }), { status: 201 }))
+    vi.stubGlobal("fetch", fetcher)
+    await act(async () => root.render(wrap(<DemoPrompt onNavigate={() => {}} />)))
+    expect(host.textContent).toContain("plays a simulated day in SPX, SPY and QQQ options")
+    const day = host.querySelector<HTMLSelectElement>("select[aria-label='Demo day']")!
+    expect([...day.options].map((o) => o.textContent)).toEqual(["Slide and rebound", "Overnight session"])
+    await act(async () => { day.value = "overnight"; day.dispatchEvent(new Event("change", { bubbles: true })) })
+    expect(host.textContent).toContain("plays a simulated day in SPX options")
+    const tryIt = [...host.querySelectorAll("button")].find((b) => b.textContent === "Try the demo")!
+    await act(async () => tryIt.click())
+    expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ body: JSON.stringify({ demo: "overnight", speed: 10 }) }))
   })
 })
