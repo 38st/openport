@@ -256,6 +256,87 @@ constexpr std::string_view kDaily = R"({"timestamp": "2026-09-23 02:02:04", "sym
   {"date": "2026-02-30", "open": "1", "high": "1", "low": "1", "close": "1"}
 ]})";
 
+namespace {
+md::Timestamp utc(const char* text) { return *md::parse_datetime(text, md::Zone::Utc); }
+std::string restamped(std::string_view document, std::string_view timestamp) {
+  std::string out(document);
+  const auto at = out.find("2026-09-22 19:48:44");
+  out.replace(at, 19, timestamp);
+  return out;
+}
+std::string page(std::string_view document) {
+  return "<html><script>CTX.Cdn_Data_Time_Gap = 300000;\nCTX.contextOptionsData = " + std::string(document) +
+         ";\nCTX.symbolBook = [{\"name\":\"A\"}];</script></html>";
+}
+}  // namespace
+
+TEST(Cboe, QuotePagesEmbedTheChainDocument) {
+  const auto html = page(R"({"timestamp":"15:03:40","data":{"options":[{"option":"SPXW260925C07800000","bid":41.5,)"
+                         R"("bid_size":12.0,"ask":42.3,"ask_size":9.0,"note":"a } and a \"quote\" in a string"}],)"
+                         R"("symbol":"^SPX","current_price":7685.36,"bid":0,"ask":0,"last_trade_time":"2026-09-24T10:50:18"}})");
+  const auto json = providers::cboe_page_chain(html);
+  ASSERT_TRUE(json);
+  EXPECT_EQ(json->front(), '{');
+  EXPECT_EQ(json->substr(json->size() - 3), "\"}}");
+  const auto chain = providers::parse_cboe_chain(*json, utc("2026-09-24 15:04:13"));
+  EXPECT_EQ(chain.as_of, utc("2026-09-24 15:03:40"));
+  ASSERT_EQ(chain.options.size(), 1U);
+  EXPECT_EQ(chain.price, 7685.36);
+  EXPECT_EQ(chain.last_trade_time, md::new_york_to_utc({2026, 9, 24}, 10, 50, 18));
+  // Just after midnight UTC, a time of day later than now was stamped the day before.
+  EXPECT_EQ(providers::parse_cboe_chain(*json, utc("2026-09-25 00:01:00")).as_of, utc("2026-09-24 15:03:40"));
+  EXPECT_FALSE(providers::cboe_page_chain("<html>no chain here</html>"));
+  EXPECT_FALSE(providers::cboe_page_chain("CTX.contextOptionsData = {\"unterminated\": ["));
+  EXPECT_EQ(providers::cboe_page_url("SPX"), "https://www.cboe.com/delayed_quotes/spx/quote_table");
+}
+
+TEST(Cboe, ReadsTheQuotePageWhileTheCdnFileIsStale) {
+  md::Timestamp now = utc("2026-09-24 15:04:13");
+  providers::CboeDelayedProvider::Options options;
+  options.clock = [&] { return now; };
+  providers::CboeDelayedProvider provider(options);
+  std::string file = restamped(kChain, "2026-09-23 03:54:59");  // stopped the night before
+  std::string quote_page = page(restamped(kChain, "15:03:40"));
+  test::HttpStub http;
+  http.respond = [&](std::string_view url) {
+    return url.find("cdn.cboe.com") != std::string_view::npos ? net::HttpResponse{200, file} : net::HttpResponse{200, quote_page};
+  };
+  const md::Subscription subscription{{"SPX"}, 0, 0.0};
+  Collector sink;
+  const auto fetched = [&] {
+    std::vector<std::string> sources;
+    for (const auto& url : http.urls) sources.push_back(url.find("cdn.cboe.com") != std::string::npos ? "file" : "page");
+    http.urls.clear();
+    return sources;
+  };
+  provider.poll_once(http, "SPX", subscription, sink);
+  EXPECT_EQ(fetched(), (std::vector<std::string>{"file", "page"}));
+  const auto statuses = sink.all<md::ProviderStatus>();
+  ASSERT_FALSE(statuses.empty());
+  EXPECT_NE(statuses.back().message.find("(page)"), std::string::npos) << statuses.back().message;
+  EXPECT_FALSE(sink.all<md::OptionQuote>().empty());
+  // While it holds, the page is read directly, and no more than about once a minute.
+  now += 15 * md::kNanosPerSecond;
+  provider.poll_once(http, "SPX", subscription, sink);
+  EXPECT_TRUE(fetched().empty());
+  now += 45 * md::kNanosPerSecond;
+  provider.poll_once(http, "SPX", subscription, sink);
+  EXPECT_EQ(fetched(), (std::vector<std::string>{"page"}));
+  // Five minutes on the file is tried first, and once current it is all that is read.
+  now += 5 * 60 * md::kNanosPerSecond;
+  file = restamped(kChain, "2026-09-24 15:09:30");
+  provider.poll_once(http, "SPX", subscription, sink);
+  EXPECT_EQ(fetched(), (std::vector<std::string>{"file"}));
+  // Overnight both idle: a page no fresher than the file is left alone for a while.
+  now = utc("2026-09-25 03:00:00");
+  quote_page = page(restamped(kChain, "15:09:30"));
+  provider.poll_once(http, "SPX", subscription, sink);
+  EXPECT_EQ(fetched(), (std::vector<std::string>{"file", "page"}));
+  now += 15 * md::kNanosPerSecond;
+  provider.poll_once(http, "SPX", subscription, sink);
+  EXPECT_EQ(fetched(), (std::vector<std::string>{"file"}));
+}
+
 TEST(CboeCharts, UrlsFollowTheChainConvention) {
   EXPECT_EQ(providers::cboe_chart_url("SPX", providers::CboeChart::Intraday),
             "https://cdn.cboe.com/api/global/delayed_quotes/charts/intraday/_SPX.json");

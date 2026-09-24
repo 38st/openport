@@ -332,6 +332,21 @@ Outside 2025–2028 only weekdays are known. Trading sessions do not change opti
 settlement/expiry times. Sunday GTH resumes only when Monday is a trading day;
 a holiday evening may open GTH for the following business day.
 
+The Cboe adapter polls the CDN files (`cdn.cboe.com/api/global/delayed_quotes/options/`)
+every 15 seconds. When a file's own timestamp is more than five minutes behind the
+clock (they stopped updating on 2026-09-23 while Cboe's site carried on), it reads
+the same chain document embedded in Cboe's quote page
+(`www.cboe.com/delayed_quotes/spx/quote_table`, the `CTX.contextOptionsData` object)
+and keeps whichever is fresher. The page is about 1.5 times the file's size and
+Cboe refreshes it about once a minute, so the adapter fetches it no more often
+than every 45 seconds, holds to it for five minutes, then tries the file again;
+a page no fresher than the file (overnight, when neither moves) is left alone for
+five minutes. The status message names the source, `(file)` or `(page)`. The page
+stamps only a UTC time of day, dated by the clock. Because pages can trail the
+stated delay by a minute or two, the paper feed check lets a delayed feed fall up
+to three minutes behind its delay (or `max_quote_age`, if larger) before calling
+it stalled.
+
 Cboe option timestamps use `t = publication - 15 minutes`, capped to the most
 recent session end only when that option root is closed. Live overnight and
 curb quotes therefore advance while the stock/index print remains frozen.

@@ -221,13 +221,14 @@ TEST_F(PaperFeed, AnotherUnderlyingCannotHideAStalledFeed) {
 
 TEST_F(PaperFeed, StallThresholdUsesProviderDelayAndActiveQuoteAge) {
   seed();
-  wall_now = market.time + 16 * md::kNanosPerMinute;
-  EXPECT_EQ(paper_status()["accepting"], true);  // exactly delay + max_quote_age
+  // A delayed feed stalls past its delay plus the larger of max_quote_age and three minutes.
+  wall_now = market.time + 18 * md::kNanosPerMinute;
+  EXPECT_EQ(paper_status()["accepting"], true);
   EXPECT_EQ(write(*engine, "POST", "/api/orders", order(market, "boundary")).status, 201);
   wall_now.fetch_add(1);
   expect_gate("over-boundary", "FEED_STALLED");
   auto risk = read(*engine, "/api/risk");
-  risk["limits"]["max_quote_age_seconds"] = 120;
+  risk["limits"]["max_quote_age_seconds"] = 240;
   ASSERT_EQ(write(*engine, "PUT", "/api/risk/limits",
       {{"expected_revision", risk["limits_revision"]}, {"limits", risk["limits"]}}).status, 200);
   EXPECT_EQ(paper_status()["accepting"], true);
@@ -237,7 +238,7 @@ TEST_F(PaperFeed, StallThresholdUsesProviderDelayAndActiveQuoteAge) {
 TEST_F(PaperFeed, StalledRestingOrderWaitsForFreshQuotesWithoutCancellation) {
   seed();
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "resting")).status, 201);
-  wall_now = market.time + 17 * md::kNanosPerMinute;
+  wall_now = market.time + 19 * md::kNanosPerMinute;
   market.next();
   quote("3.80", "4.00");  // a newly received but stale crossing quote
   expect_gate("stalled", "FEED_STALLED");

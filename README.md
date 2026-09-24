@@ -182,7 +182,7 @@ recording all day.
 
 | Provider | `--provider` | Data | Key |
 | --- | --- | --- | --- |
-| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with open interest and Cboe's Greeks, polled every 15 s. **Known issue:** Cboe's files stopped updating on 2026-09-23 and the terminal shows the feed as stalled; a fix is in progress | none |
+| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with open interest and Cboe's Greeks, polled every 15 s from Cboe's data files, or about once a minute from its quote pages when the files fall behind | none |
 | Databento | `databento` | Real-time OPRA consolidated quotes (`cbbo-1s` or `cmbp-1`), trades and open interest, streamed | `DATABENTO_API_KEY` |
 | Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
@@ -367,7 +367,7 @@ its files when the draft exists; GitHub tags the commit when you publish the dra
       minutes before each contract's last trade
 - [x] Demo market: a simulated day to trade when nothing else does
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
-- [ ] Cboe's delayed feed again (its files stopped updating on 2026-09-23)
+- [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
 
 ## License

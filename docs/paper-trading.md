@@ -216,7 +216,9 @@ The engine also compares each underlying's market-data time with wall-clock time
 healthy feed shows the market as it was the provider's stated delay ago, stopping at
 the end of a session. When that moment is in one of the product's sessions, or data
 stopped inside a session that should since have ended, a lag **greater than
-`max_quote_age`** beyond it rejects new orders with `FEED_STALLED`, including the lag
+`max_quote_age`** beyond it (for a delayed feed, the larger of that and three
+minutes, since delayed snapshots can trail their stated delay by a minute or two)
+rejects new orders with `FEED_STALLED`, including the lag
 behind the wall clock in the message (for example, "SPX quotes are 10h 20m behind the
 market; the feed appears to have stalled"). A feed that rightly shows a closed market
 returns `SESSION_CLOSED`, naming why (between sessions, a weekend or a holiday): for
@@ -777,7 +779,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, acceptance-day session end |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, triggers or brackets |
-| `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age`; message includes the lag behind the wall clock |
+| `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age` (a delayed feed: at least three minutes); message includes the lag behind the wall clock |
 | `INVALID_SETTLEMENT`, `ALREADY_SETTLED` | Invalid/premature settlement or already settled OSI |
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |

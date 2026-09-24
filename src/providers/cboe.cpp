@@ -8,6 +8,7 @@
 // clang-format on
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -210,7 +211,39 @@ std::string cboe_chain_url(std::string_view underlying) {
   return url;
 }
 
-CboeChain parse_cboe_chain(std::string_view json) {
+std::string cboe_page_url(std::string_view underlying) {
+  std::string url = "https://www.cboe.com/delayed_quotes/";
+  for (const char c : underlying) url += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  url += "/quote_table";
+  return url;
+}
+
+std::optional<std::string_view> cboe_page_chain(std::string_view html) {
+  constexpr std::string_view kMarker = "CTX.contextOptionsData";
+  const auto marker = html.find(kMarker);
+  if (marker == std::string_view::npos) return std::nullopt;
+  const auto open = html.find('{', marker + kMarker.size());
+  if (open == std::string_view::npos) return std::nullopt;
+  // The object ends where its braces balance, braces inside strings aside.
+  int depth = 0;
+  bool in_string = false;
+  for (auto i = open; i < html.size(); ++i) {
+    const char c = html[i];
+    if (in_string) {
+      if (c == '\\') ++i;
+      else if (c == '"') in_string = false;
+    } else if (c == '"') {
+      in_string = true;
+    } else if (c == '{') {
+      ++depth;
+    } else if (c == '}' && --depth == 0) {
+      return html.substr(open, i - open + 1);
+    }
+  }
+  return std::nullopt;
+}
+
+CboeChain parse_cboe_chain(std::string_view json, md::Timestamp now) {
   simdjson::ondemand::parser parser;
   const simdjson::padded_string padded(json);
   simdjson::ondemand::document doc = parser.iterate(padded);
@@ -218,7 +251,15 @@ CboeChain parse_cboe_chain(std::string_view json) {
   CboeChain chain;
   std::string_view timestamp;
   if (doc["timestamp"].get_string().get(timestamp) == simdjson::SUCCESS) {
-    chain.as_of = md::parse_datetime(timestamp, md::Zone::Utc).value_or(0);
+    if (timestamp.size() == 8) {
+      // A quote page stamps only the UTC time of day.
+      const auto date = md::date_from_days(now / md::kNanosPerDay);
+      if (const auto at = md::parse_datetime(md::format_date(date) + " " + std::string(timestamp), md::Zone::Utc)) {
+        chain.as_of = *at > now + 3600 * md::kNanosPerSecond ? *at - md::kNanosPerDay : *at;
+      }
+    } else {
+      chain.as_of = md::parse_datetime(timestamp, md::Zone::Utc).value_or(0);
+    }
   }
 
   simdjson::ondemand::object data;
@@ -273,24 +314,63 @@ md::Capabilities CboeDelayedProvider::capabilities() const noexcept {
 
 std::string CboeDelayedProvider::poll(net::HttpClient& http, const std::string& underlying,
                                       const md::Subscription& subscription, md::EventSink& sink) {
-  const net::HttpResponse response =
-      http.get(cboe_chain_url(underlying), {}, options_.timeout, cancellation());
-  if (response.status != 200) throw std::runtime_error("HTTP " + std::to_string(response.status));
-
-  const auto parse_started = std::chrono::steady_clock::now();
-  const CboeChain chain = parse_cboe_chain(response.body);
-  const auto parse_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - parse_started)
-                            .count();
+  // The CDN file is lighter and usually current. When it falls behind (as on
+  // 2026-09-23, when it stopped updating), Cboe's own quote page embeds the same
+  // chain, fresher; read that for a while, then try the file again.
+  const auto now = options_.clock();
+  const auto stale = std::chrono::duration_cast<std::chrono::nanoseconds>(options_.stale_after).count();
+  net::HttpResponse response;
+  CboeChain chain;
+  bool have = false;
+  std::string source = "file";
+  double parse_ms = 0;
+  const auto parse = [&](std::string_view json) {
+    const auto started = std::chrono::steady_clock::now();
+    auto parsed = parse_cboe_chain(json, now);
+    parse_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    return parsed;
+  };
+  bool read_page = page_until_[underlying] > now;
+  if (read_page && now - page_fetched_[underlying] < std::chrono::duration_cast<std::chrono::nanoseconds>(options_.page_interval).count())
+    return "cboe " + underlying + " (page): waiting for Cboe's next page, about once a minute";
+  if (!read_page) {
+    response = http.get(cboe_chain_url(underlying), {}, options_.timeout, cancellation());
+    if (response.status == 200) {
+      chain = parse(response.body);
+      have = true;
+    }
+    read_page = (!have || chain.as_of == 0 || now - chain.as_of > stale) && skip_page_until_[underlying] <= now;
+  }
+  if (read_page) {
+    check_cancelled();
+    auto page = http.get(cboe_page_url(underlying), {}, options_.timeout, cancellation());
+    page_fetched_[underlying] = now;
+    const auto embedded = page.status == 200 ? cboe_page_chain(page.body) : std::nullopt;
+    if (embedded) {
+      auto from_page = parse(*embedded);
+      if (!have || from_page.as_of > chain.as_of) {
+        chain = std::move(from_page);
+        response = std::move(page);
+        have = true;
+        source = "page";
+        page_until_[underlying] = now + std::chrono::duration_cast<std::chrono::nanoseconds>(options_.page_hold).count();
+      }
+    }
+    // A page no fresher than the file (both idle overnight, say) is left alone for a while.
+    if (source != "page") {
+      page_until_.erase(underlying);
+      skip_page_until_[underlying] = now + std::chrono::duration_cast<std::chrono::nanoseconds>(options_.page_hold).count();
+    }
+  }
+  if (!have) throw std::runtime_error("HTTP " + std::to_string(response.status));
   check_cancelled();
   publish_chain(chain, subscription, sink);
 
-  char summary[192];
-  std::snprintf(summary, sizeof summary, "cboe %s: %zu options, %.2f MB in %.0f ms, parsed in %.1f ms",
-                underlying.c_str(), chain.options.size(),
+  char summary[208];
+  std::snprintf(summary, sizeof summary, "cboe %s (%s): %zu options, %.2f MB in %.0f ms, parsed in %.1f ms",
+                underlying.c_str(), source.c_str(), chain.options.size(),
                 static_cast<double>(response.wire_bytes) / 1e6,
-                static_cast<double>(response.elapsed.count()) / 1e3,
-                static_cast<double>(parse_us) / 1e3);
+                static_cast<double>(response.elapsed.count()) / 1e3, parse_ms);
   return summary;
 }
 

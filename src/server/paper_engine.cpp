@@ -130,7 +130,10 @@ trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp ma
   auto expected = market_time;
   if (md::trading_session(underlying, shown).open) expected = shown;
   else if (session.open && session.end <= shown) expected = session.end;
-  if (expected > market_time && expected - market_time > max_quote_age) {
+  // A delayed feed's snapshots can trail its stated delay by a minute or two (Cboe
+  // refreshes its quote pages about once a minute), so it stalls only past three.
+  const auto tolerance = delay_seconds > 0 ? std::max<md::Timestamp>(max_quote_age, 3 * md::kNanosPerMinute) : max_quote_age;
+  if (expected > market_time && expected - market_time > tolerance) {
     const auto lag = wall_time - market_time;
     const auto minutes = lag / md::kNanosPerMinute;
     const auto duration = minutes >= 60

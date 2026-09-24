@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -47,12 +48,23 @@ struct CboeChain {
   md::Timestamp last_trade_time = 0;  ///< underlying print clock, independent of option sessions
 };
 
-/// Parses cdn.cboe.com/api/global/delayed_quotes/options/<symbol>.json.
+/// Parses cdn.cboe.com/api/global/delayed_quotes/options/<symbol>.json, or the
+/// same document embedded in a quote page. The file stamps it "YYYY-MM-DD
+/// HH:MM:SS" in UTC; the page, only "HH:MM:SS", which takes the UTC date of `now`
+/// (the day before when that would put it more than an hour ahead of `now`).
 /// Throws std::runtime_error if the document does not have the expected shape.
-[[nodiscard]] CboeChain parse_cboe_chain(std::string_view json);
+[[nodiscard]] CboeChain parse_cboe_chain(std::string_view json, md::Timestamp now = md::now());
 
 /// Chain URL for an underlying. Index symbols take a leading underscore (_SPX).
 [[nodiscard]] std::string cboe_chain_url(std::string_view underlying);
+
+/// Cboe's delayed quote page for an underlying (www.cboe.com/delayed_quotes/spx/quote_table),
+/// which embeds the same chain document the CDN file carries.
+[[nodiscard]] std::string cboe_page_url(std::string_view underlying);
+
+/// The chain document a quote page embeds (`CTX.contextOptionsData = {...}`),
+/// or nothing when the page has none.
+[[nodiscard]] std::optional<std::string_view> cboe_page_chain(std::string_view html);
 
 /// Cboe's delayed chart files behind its quote pages: the latest regular session's
 /// one-minute bars, and daily bars since the index or fund began.
@@ -127,6 +139,13 @@ class CboeDelayedProvider final : public PollingProvider {
   struct Options {
     std::chrono::seconds poll_interval{15};
     std::chrono::seconds timeout{30};
+    /// A CDN file this far behind the clock is stale, and the quote page is read instead.
+    std::chrono::minutes stale_after{5};
+    /// After the page proves fresher, how long to read it before trying the CDN again.
+    std::chrono::minutes page_hold{5};
+    /// Cboe refreshes its quote pages about once a minute: fetch one no more often.
+    std::chrono::seconds page_interval{45};
+    std::function<md::Timestamp()> clock = md::now;
   };
 
   static constexpr std::chrono::minutes kDelay{15};
@@ -154,6 +173,11 @@ class CboeDelayedProvider final : public PollingProvider {
  private:
   Options options_;
   SnapshotPublisher publisher_;
+  /// Per underlying: read the quote page instead of the CDN file until then, and
+  /// after the page was no fresher, leave it alone until then.
+  std::map<std::string, md::Timestamp> page_until_;
+  std::map<std::string, md::Timestamp> skip_page_until_;
+  std::map<std::string, md::Timestamp> page_fetched_;
 };
 
 }  // namespace openport::providers
