@@ -34,8 +34,9 @@ terminal. Your API keys, your data and your trades stay on your machine.
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench` on
 2026-09-24, the SPX pass and the Cboe comparison on live data on 2026-09-22.
 
-No market open, or no data? The **demo market** plays a simulated trading day you can
-trade, with generated prices labelled as simulated on every page:
+No market open, or no data? The **demo market** plays simulated trading days you can
+trade (a reversal, a trend, a chop, a selloff and an overnight session in SPX, SPY and
+QQQ options), with generated prices labelled as simulated on every page:
 
 ![The demo market: a simulated SPX session trading at 60 times real time](docs/screenshots/demo-market.gif)
 
@@ -84,8 +85,9 @@ trade, with generated prices labelled as simulated on every page:
   feed, in its own practice account, at 1× to 300× or as fast as possible, with pause
   and skip.
 - **Demo market**: when markets are closed or the feed has stalled, the terminal offers
-  a simulated day in SPX and SPY options to trade instead, generated on your machine
-  and labelled as simulated prices everywhere it shows.
+  simulated days in SPX, SPY and QQQ options to trade instead (a reversal, a trend, a
+  chop, a selloff and an overnight session), generated on your machine and labelled as
+  simulated prices everywhere they show.
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
   the terminal and as browser notifications with an optional chime while it is open;
   assignments, exercises at expiry and dividends are always announced.
@@ -296,7 +298,7 @@ these routes, so anything it does can be scripted:
 | `PUT /api/risk/limits`, `POST /api/risk/kill` | Change the risk limits; trip or reset the kill switch |
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one; every route above takes `?account=ID` for one other than the main account |
-| `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings and the demo market; start one (`{file}` or `{demo: true}`), control or stop it. `/api/replay/X` is route `/api/X` on the replay |
+| `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings and the demo days; start one (`{file}`, or `{demo: true}` or a day's id), control or stop it. `/api/replay/X` is route `/api/X` on the replay |
 
 This calendar buys the later put and sells the nearer one at a net debit of at most
 6.60:

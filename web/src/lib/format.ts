@@ -72,3 +72,8 @@ export function signedPercent(x: Value, digits = 1): string {
   const text = Math.abs(x * 100).toFixed(digits)
   return Number(text) === 0 ? `${text}%` : `${x > 0 ? "+" : "−"}${text}%`
 }
+
+/** ["SPX", "SPY", "QQQ"] -> "SPX, SPY and QQQ" */
+export function joinList(items: readonly string[]): string {
+  return items.length < 3 ? items.join(" and ") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`
+}

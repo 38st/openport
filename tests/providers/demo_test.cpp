@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -38,12 +40,12 @@ Day summary(const std::filesystem::path& path) {
   return day;
 }
 
-TEST(DemoMarket, SimulatesADayOfSpxAndSpyChainsOnTheirOwnTicks) {
+TEST(DemoMarket, SimulatesADayOfSpxSpyAndQqqChainsOnTheirOwnTicks) {
   const auto path = temporary("day");
   providers::write_demo_recording(path);
   md::RecordingReader reader(path);
   EXPECT_EQ(reader.header().provider, "demo");
-  EXPECT_EQ(reader.header().subscription.underlyings, (std::vector<std::string>{"SPX", "SPY"}));
+  EXPECT_EQ(reader.header().subscription.underlyings, (std::vector<std::string>{"SPX", "SPY", "QQQ"}));
   const md::Date day{2026, 9, 16};
   const auto opening = md::new_york_to_utc(day, 9, 30);
   const auto closing = md::new_york_to_utc(day, 16, 0);
@@ -100,10 +102,12 @@ TEST(DemoMarket, SimulatesADayOfSpxAndSpyChainsOnTheirOwnTicks) {
   EXPECT_EQ(expiries["SPXW"], (std::set<std::string>{"2026-09-16", "2026-09-17", "2026-09-18", "2026-09-25"}));
   EXPECT_EQ(expiries["SPX"], (std::set<std::string>{"2026-10-16"}));
   EXPECT_EQ(expiries["SPY"], (std::set<std::string>{"2026-09-16", "2026-09-17", "2026-09-18", "2026-09-25", "2026-10-16"}));
+  EXPECT_EQ(expiries["QQQ"], expiries["SPY"]);
   EXPECT_EQ(open_interest, contracts.size());
   // The index prints until the close and SPY trades on to 16:15.
   EXPECT_EQ(last_print["SPX"], closing);
   EXPECT_EQ(last_print["SPY"], md::new_york_to_utc(day, 16, 15));
+  EXPECT_EQ(last_print["QQQ"], md::new_york_to_utc(day, 16, 15));
   EXPECT_GT(retired, 0);
   EXPECT_GT(zero_bids, 0);
   EXPECT_GT(quotes, 100'000);
@@ -126,10 +130,67 @@ TEST(DemoMarket, IsTheSameDayEveryTimeAndOnlyOnTradingDays) {
   EXPECT_ANY_THROW(providers::write_demo_recording(a));
   std::filesystem::remove(a);
   std::filesystem::remove(b);
-  EXPECT_THROW(providers::write_demo_recording(temporary("weekend"), {{2026, 9, 19}, 1}), std::invalid_argument);
-  EXPECT_THROW(providers::write_demo_recording(temporary("holiday"), {{2026, 11, 26}, 1}), std::invalid_argument);
+  EXPECT_THROW(providers::write_demo_recording(temporary("weekend"), {providers::DemoDay::Reversal, md::Date{2026, 9, 19}, 1}),
+               std::invalid_argument);
+  EXPECT_THROW(providers::write_demo_recording(temporary("holiday"), {providers::DemoDay::Trend, md::Date{2026, 11, 26}, 1}),
+               std::invalid_argument);
   EXPECT_TRUE(providers::simulated_provider("demo"));
   EXPECT_TRUE(providers::simulated_provider("replay (demo)"));
   EXPECT_FALSE(providers::simulated_provider("cboe"));
+}
+
+/// The SPX prints of one demo day: the first, lowest, highest and last.
+struct Path {
+  double first = 0, low = 1e9, high = 0, last = 0;
+  std::size_t spx = 0, etf = 0, quotes = 0;
+  md::Timestamp first_event = 0, last_event = 0;
+};
+Path walk(providers::DemoDay day) {
+  const auto path = temporary("walk");
+  providers::write_demo_recording(path, {day, std::nullopt, 0});
+  md::RecordingReader reader(path);
+  Path p;
+  for (auto event = reader.next(); event; event = reader.next()) {
+    if (p.first_event == 0) p.first_event = event->received;
+    p.last_event = event->received;
+    if (const auto* u = std::get_if<md::UnderlyingQuote>(&event->event)) {
+      if (u->symbol != "SPX") { ++p.etf; continue; }
+      if (p.spx++ == 0) p.first = u->last;
+      p.low = std::min(p.low, u->last);
+      p.high = std::max(p.high, u->last);
+      p.last = u->last;
+    } else if (std::holds_alternative<md::OptionQuote>(event->event)) {
+      ++p.quotes;
+    }
+  }
+  std::filesystem::remove(path);
+  return p;
+}
+
+TEST(DemoMarket, EachDayFollowsItsScript) {
+  ASSERT_EQ(providers::demo_days().size(), 5U);
+  EXPECT_EQ(providers::demo_days().front().id, "reversal");
+  ASSERT_NE(providers::find_demo_day("selloff"), nullptr);
+  EXPECT_EQ(providers::find_demo_day("nope"), nullptr);
+
+  const auto trend = walk(providers::DemoDay::Trend);
+  EXPECT_GT(trend.last, trend.first * 1.005);
+  const auto chop = walk(providers::DemoDay::Chop);
+  EXPECT_LT(std::abs(chop.last / chop.first - 1), 0.004);
+  EXPECT_LT(chop.high / chop.low - 1, 0.012);
+  const auto selloff = walk(providers::DemoDay::Selloff);
+  EXPECT_LT(selloff.low, selloff.first * 0.98);
+  EXPECT_LT(selloff.last, selloff.first * 0.985);
+
+  // Overnight only SPX options quote, from 20:15 the evening before to 09:25, and
+  // the index prints once: its last close.
+  const auto night = walk(providers::DemoDay::Overnight);
+  const auto& info = *providers::find_demo_day("overnight");
+  EXPECT_EQ(info.symbols, (std::vector<std::string>{"SPX"}));
+  EXPECT_EQ(night.first_event, md::new_york_to_utc({2026, 9, 15}, 20, 15));
+  EXPECT_EQ(night.last_event, md::new_york_to_utc({2026, 9, 16}, 9, 25));
+  EXPECT_EQ(night.spx, 1U);
+  EXPECT_EQ(night.etf, 0U);
+  EXPECT_GT(night.quotes, 10'000U);
 }
 }  // namespace

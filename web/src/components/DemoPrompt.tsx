@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { demoPrompt, idleReason, nothingTrades, useDemoPromptHidden } from "../lib/demo"
+import { joinList } from "../lib/format"
 import type { View } from "../lib/route"
 import { useReplayControls } from "../views/ReplayView"
 import { TradingError } from "./TradingControls"
@@ -33,7 +34,7 @@ export function DemoPrompt({ onNavigate }: { onNavigate: (view: View) => void })
   return (
     <div role="status" aria-label="Demo market" className="border-b border-border bg-raised/60 px-4 py-1.5 text-xs">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span>{offer.reason}. The demo market plays a simulated day in {offer.symbols.join(" and ")} options that you can trade.</span>
+        <span>{offer.reason}. The demo market plays a simulated day in {joinList(offer.symbols)} options that you can trade.</span>
         <span className="ml-auto flex flex-wrap gap-1">
           <button type="button" className="trade-button border-accent !py-0.5 text-foreground" disabled={offer.controls.pending}
             onClick={() => offer.start(() => onNavigate("replay"))}>{offer.controls.pending ? "Starting…" : "Try the demo"}</button>

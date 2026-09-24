@@ -229,7 +229,12 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   server::ReplayHost host({file.directory, base});
   const auto listing = json::parse(call(host, "GET", "/api/replay").body);
   EXPECT_EQ(listing["demo"]["provider"], "demo");
-  EXPECT_EQ(listing["demo"]["symbols"], json::array({"SPX", "SPY"}));
+  EXPECT_EQ(listing["demo"]["symbols"], json::array({"SPX", "SPY", "QQQ"}));
+  EXPECT_EQ(listing["demo"]["id"], "reversal");
+  ASSERT_EQ(listing["demos"].size(), 5);
+  EXPECT_EQ(listing["demos"][4]["id"], "overnight");
+  EXPECT_EQ(listing["demos"][4]["symbols"], json::array({"SPX"}));
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": "sideways"})").status, 400);
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": true, "file": "synthetic.oprec"})").status, 400);
   EXPECT_EQ(call(host, "POST", "/api/replay", "{}").status, 400);
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": 1})").status, 400);
@@ -239,7 +244,7 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   ASSERT_EQ(started.status, 201) << started.body;
   const auto replay = json::parse(started.body)["replay"];
   EXPECT_EQ(replay["demo"], true);
-  EXPECT_EQ(replay["file"], "Demo market");
+  EXPECT_EQ(replay["file"], "Demo market: Slide and rebound");
   EXPECT_EQ(replay["provider"], "demo");
   // The player holds the generated file open; nothing is left on disk.
   const auto prefix = "openport-demo-" + std::to_string(::getpid()) + "-";

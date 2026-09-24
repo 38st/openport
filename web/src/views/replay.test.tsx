@@ -101,9 +101,12 @@ describe("the replay page", () => {
   })
 })
 
-const demoListing: ReplayListing = { ...recordings, recordings: [],
-  demo: { provider: "demo", symbols: ["SPX", "SPY"], started: "2026-09-16T13:30:00.000Z" } }
-const demoReplay: ReplayState = { ...replay, file: "Demo market", provider: "demo", demo: true, delay_seconds: 0 }
+const reversal = { id: "reversal", title: "Slide and rebound", description: "SPX slides about 1% into late morning, then rallies into the close.",
+  provider: "demo", symbols: ["SPX", "SPY", "QQQ"], started: "2026-09-16T13:30:00.000Z" }
+const overnight = { ...reversal, id: "overnight", title: "Overnight session", description: "SPX options in Cboe's global trading hours.",
+  symbols: ["SPX"], started: "2026-09-16T00:15:00.000Z" }
+const demoListing: ReplayListing = { ...recordings, recordings: [], demo: reversal, demos: [reversal, overnight] }
+const demoReplay: ReplayState = { ...replay, file: "Demo market: Slide and rebound", provider: "demo", demo: true, delay_seconds: 0 }
 const idle = { ...status, underlyings: status.underlyings.map((u) => ({ ...u,
   paper: { accepting: false, reason: "FEED_STALLED", message: `${u.symbol} quotes are behind`, session: "global" as const } })) }
 
@@ -111,14 +114,17 @@ describe("the demo market", () => {
   it("is offered on the replay page and plays as a simulated day", () => {
     const html = render(<ReplayView />, demoListing)
     expect(html).toContain("Demo market")
-    expect(html).toContain("A simulated trading day in SPX and SPY options")
+    expect(html).toContain("Simulated trading days in SPX, SPY and QQQ options")
     expect(html).toContain("not market data")
-    expect(html).toContain(">Start the demo</button>")
+    expect(html).toContain("SPX slides about 1% into late morning")
+    expect(html).toContain('aria-label="Start Slide and rebound">Start</button>')
+    expect(html).toContain('aria-label="Start Overnight session">Start</button>')
     expect(html).toContain('aria-label="Starting speed"')
     vi.mocked(useLive).mockReturnValue(liveState(status, null, "open", 0, MAIN_ACCOUNT, () => {}, "live", demoReplay))
     const playing = render(<ReplayView />, { ...demoListing, replay: demoReplay })
-    expect(playing).toContain("Demo market · simulated prices, not market data")
-    expect(playing).toContain(">Restart the demo</button>")
+    expect(playing).toContain("Demo market: Slide and rebound · simulated prices, not market data")
+    expect(playing).toContain('aria-label="Restart Slide and rebound">Restart</button>')
+    expect(playing).toContain('aria-label="Start Overnight session">Start</button>')
   })
 
   it("is labelled simulated in the banner", () => {
@@ -134,6 +140,8 @@ describe("the demo market", () => {
     vi.stubGlobal("fetch", fetcher)
     await api.startReplay({ demo: true }, 10, "open")
     expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ method: "POST", body: JSON.stringify({ demo: true, speed: 10 }) }))
+    await api.startReplay({ demo: "selloff" }, 60, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ body: JSON.stringify({ demo: "selloff", speed: 60 }) }))
     await api.startReplay({ file: replay.file }, 1, "open")
     expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ body: JSON.stringify({ file: replay.file, speed: 1 }) }))
   })
@@ -144,7 +152,7 @@ describe("the demo market", () => {
     expect(render(<DemoPrompt onNavigate={() => {}} />, demoListing)).toBe("")
     vi.mocked(useLive).mockReturnValue(liveState(idle as Status, null, "open"))
     const html = render(<DemoPrompt onNavigate={() => {}} />, demoListing)
-    expect(html).toContain("The market data feed has stalled. The demo market plays a simulated day in SPX and SPY options")
+    expect(html).toContain("The market data feed has stalled. The demo market plays a simulated day in SPX, SPY and QQQ options")
     expect(html).toContain(">Try the demo</button>")
     expect(html).toContain(">Not now</button>")
     // Not while a replay runs, nor on a server without the demo.

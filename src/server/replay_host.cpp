@@ -61,21 +61,25 @@ json parse_body(const ApiRequest& request, std::initializer_list<std::string_vie
   return body;
 }
 
-json demo_json() {
-  const providers::DemoOptions demo;
-  return {{"provider", providers::kDemoProvider}, {"symbols", {"SPX", "SPY"}},
-          {"started", md::format_timestamp(md::new_york_to_utc(demo.date, 9, 30))}};
+json demo_json(const providers::DemoInfo& d) {
+  return {{"id", d.id}, {"title", d.title}, {"description", d.description}, {"provider", providers::kDemoProvider},
+          {"symbols", d.symbols}, {"started", md::format_timestamp(d.started)}};
+}
+json demos_json() {
+  json list = json::array();
+  for (const auto& d : providers::demo_days()) list.push_back(demo_json(d));
+  return list;
 }
 
 /// Generates the demo day where only this process looks, and returns a player for
 /// it. The player holds the file open, so it is unlinked at once and leaves nothing behind.
-std::unique_ptr<providers::ReplayProvider> demo_provider(int speed) {
+std::unique_ptr<providers::ReplayProvider> demo_provider(int speed, providers::DemoDay day) {
   static std::atomic<unsigned> count{0};
   const auto path = std::filesystem::temp_directory_path() /
                     ("openport-demo-" + std::to_string(::getpid()) + "-" + std::to_string(++count) + ".oprec");
   std::error_code ec;
   try {
-    providers::write_demo_recording(path);
+    providers::write_demo_recording(path, {day, std::nullopt, 0});
     auto provider = std::make_unique<providers::ReplayProvider>(providers::ReplayProvider::Options{path, speed, false, nullptr});
     std::filesystem::remove(path, ec);
     return provider;
@@ -161,18 +165,31 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
     if (request.method == "GET") {
       const auto session = current();
       complete(ok({{"directory", options_.recordings.string()}, {"recordings", recordings_json(options_.recordings)},
-                   {"demo", options_.demo ? demo_json() : json(nullptr)},
+                   {"demo", options_.demo ? demo_json(providers::demo_days().front()) : json(nullptr)},
+                   {"demos", options_.demo ? demos_json() : json::array()},
                    {"replay", session ? session->state() : json(nullptr)}}));
     } else if (request.method == "POST") {
       const auto body = parse_body(request, {"file", "demo", "speed", "plan"});
-      if (body.contains("demo") && !body.at("demo").is_boolean()) throw std::invalid_argument("demo must be true or false");
-      const bool demo = body.contains("demo") && body.at("demo").get<bool>();
+      // demo: true plays the default day; a day's id plays that one.
+      const providers::DemoInfo* day = nullptr;
+      if (body.contains("demo")) {
+        const auto& value = body.at("demo");
+        if (value.is_boolean()) {
+          if (value.get<bool>()) day = &providers::demo_days().front();
+        } else if (value.is_string()) {
+          day = providers::find_demo_day(value.get<std::string>());
+          if (!day) throw std::invalid_argument("demo must be true or a demo day: reversal, trend, chop, selloff or overnight");
+        } else {
+          throw std::invalid_argument("demo must be true or a demo day's id");
+        }
+      }
+      const bool demo = day != nullptr;
       if (demo == body.contains("file")) throw std::invalid_argument("Give either file, a recording's name, or demo: true");
       if (demo && !options_.demo) {
         complete(api_error(404, "NOT_FOUND", "The demo market is off on this server"));
         return;
       }
-      std::string name = "Demo market";
+      std::string name = demo ? "Demo market: " + day->title : std::string();
       std::filesystem::path path;
       if (!demo) {
         if (!body.at("file").is_string()) throw std::invalid_argument("file must be a recording's name");
@@ -190,7 +207,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       auto session = std::make_shared<Session>();
       session->file = name;
       session->demo = demo;
-      session->provider = demo ? demo_provider(speed)
+      session->provider = demo ? demo_provider(speed, day->day)
           : std::make_unique<providers::ReplayProvider>(providers::ReplayProvider::Options{path, speed, false, nullptr});
       auto engine = options_.engine;
       engine.paper_journal.clear();

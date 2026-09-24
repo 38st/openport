@@ -235,19 +235,31 @@ Without a replay, `/api/replay/...` returns 404 `NO_REPLAY`; a recording that ca
 be read fails to start with 422 `REPLAY_FAILED`.
 
 The **demo market** is a replay of a simulated day, for trying the terminal when
-nothing trades. `POST /api/replay {"demo": true}` generates it
-(`providers::write_demo_recording`, about a second) into a file that the player opens
+nothing trades. `POST /api/replay {"demo": ID}` (`true` for the default) generates it
+(`providers::write_demo_recording`, a second or two) into a file that the player opens
 and the server unlinks at once, then plays it like a recording under the provider name
 `demo`. Its prices are generated, not market data: status reports
 `provider.simulated`, the terminal labels them "simulated prices", and the replay
-banner reads "Demo". The day is fixed (Wednesday 2026-09-16, the same on every run of
-a build): SPX opens at 6,000, slides about 1% through the morning and rallies in the
-afternoon, SPY follows at a tenth, and implied volatility rises as the index falls,
-with a put skew and a term structure. Each chain has five expiries, 0DTE to next
-month's AM-settled SPX, at 15-second snapshots from 09:30 until SPY's 16:15 close, with
-open interest; quotes sit on each product's ticks. The terminal offers it under the
-header, and in the welcome, when no underlying on the live feed takes orders. The
-Replay page starts it at any speed. `ReplayHost::Options::demo` turns it off.
+banner reads "Demo". `GET /api/replay` lists the days (`demos`), each fixed and the
+same on every run of a build:
+
+| Day | `demo` | How it goes |
+| --- | --- | --- |
+| Slide and rebound (default) | `reversal` | SPX slides about 1% into late morning, then rallies into the close |
+| Trend | `trend` | A steady climb of about 1% while implied volatility eases |
+| Chop | `chop` | A tight range that goes nowhere, with quiet volatility |
+| Selloff | `selloff` | SPX falls almost 3% as volatility climbs, and a midday bounce fails |
+| Overnight session | `overnight` | SPX options in Cboe's global trading hours, 20:15 to 09:25 ET, limit orders only |
+
+On the regular days SPX opens at 6,000 and wanders around its script, SPY follows at
+a tenth and QQQ at 1.25 times its moves, and implied volatility rises as the index
+falls, with a put skew and a term structure. Each chain has five expiries, 0DTE to next
+month's AM-settled SPX, in 15-second snapshots from 09:30 until the 16:15 close of SPY
+and QQQ options, with open interest; quotes sit on each product's ticks. Overnight only
+SPX options quote, every minute, while the index stays at its close, so the analytics
+infer spot from put-call parity. The terminal offers the default day under the header,
+and in the welcome, when no underlying on the live feed takes orders; the Replay page
+starts any of them at any speed. `ReplayHost::Options::demo` turns it off.
 
 ## Price history
 

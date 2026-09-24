@@ -5,6 +5,7 @@ import { useLive } from "../api/live"
 import type { ReplayRecording, ReplayState } from "../api/types"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented } from "../components/ui"
+import { joinList } from "../lib/format"
 import { useWriteToken } from "../lib/write-token"
 
 export const replaySpeeds = [1, 2, 5, 10, 30, 60, 120, 300, 0] as const
@@ -59,7 +60,7 @@ function Controls({ replay }: { replay: ReplayState }) {
 
 /** What is playing: the demo's simulated day, or a recording from a provider. */
 export function replayTitle(replay: ReplayState) {
-  return replay.demo ? "Demo market · simulated prices, not market data" : `${replay.file} · ${replay.provider} · ${replay.symbols.join(", ")}`
+  return replay.demo ? `${replay.file} · simulated prices, not market data` : `${replay.file} · ${replay.provider} · ${replay.symbols.join(", ")}`
 }
 
 /**
@@ -74,11 +75,11 @@ export function ReplayView() {
   const [speed, setSpeed] = useState(10)
   const replay = live.replay ?? listing.data?.replay ?? null
   const recordings = listing.data?.recordings ?? []
-  const demo = listing.data?.demo
+  const demos = listing.data?.demos?.length ? listing.data.demos : listing.data?.demo ? [listing.data.demo] : []
   const started = () => { live.switchSource("replay"); void listing.refetch() }
   return <div className="min-w-0 space-y-4">
     <PageHeader title="Replay" subtitle="Trade a recorded day with its own paper account, at the pace you choose">
-      {(demo || recordings.length > 0) && <Segmented label="Starting speed" value={speed} onChange={setSpeed}
+      {(demos.length > 0 || recordings.length > 0) && <Segmented label="Starting speed" value={speed} onChange={setSpeed}
         options={[1, 10, 60, 0].map((value) => ({ value, label: speedLabel(value) }))} />}
       {live.status?.trading && <WriteAccess trading={live.status.trading} />}
     </PageHeader>
@@ -94,14 +95,23 @@ export function ReplayView() {
         <Controls replay={replay} />
       </Panel>
     ) : null}
-    {demo && <Panel title="Demo market">
-      <div className="flex flex-wrap items-center gap-3">
-        <p className="min-w-0 flex-1 text-sm">A simulated trading day in {demo.symbols.join(" and ")} options, from the open to the last
-          trade at 4:15 pm: prices are generated on this server, not market data. It plays like a recording, with its own paper
-          account, so every page works while markets are closed.</p>
-        <button type="button" className="trade-button border-accent text-foreground" disabled={controls.pending || controls.blocked}
-          onClick={() => void controls.start({ demo: true }, speed, started)}>
-          {controls.pending ? "Starting…" : replay?.demo ? "Restart the demo" : "Start the demo"}</button>
+    {demos.length > 0 && <Panel title="Demo market">
+      <p className="mb-3 text-sm">Simulated trading days in {joinList(demos[0]!.symbols)} options: prices are generated on this server, not
+        market data. Each plays like a recording, with its own paper account, so every page works while markets are closed.</p>
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {demos.map((d) => {
+          const playing = replay?.demo && replay.file === `Demo market: ${d.title}`
+          return <div key={d.id ?? "demo"} className="flex flex-col gap-2 rounded-md border border-border p-3">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="font-medium">{d.title ?? "Demo market"}</span>
+              <span className="text-[11px] text-muted">{d.symbols.join(", ")}</span>
+            </div>
+            {d.description && <p className="text-xs text-muted">{d.description}</p>}
+            <button type="button" className="trade-button mt-auto self-start border-accent text-foreground" disabled={controls.pending || controls.blocked}
+              aria-label={`${playing ? "Restart" : "Start"} ${d.title ?? "the demo"}`}
+              onClick={() => void controls.start({ demo: d.id ?? true }, speed, started)}>{playing ? "Restart" : "Start"}</button>
+          </div>
+        })}
       </div>
     </Panel>}
     <Panel title="Recordings">

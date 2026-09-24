@@ -288,9 +288,16 @@ export interface ReplayRecording {
   delay_seconds?: number
   error?: string
 }
-/** The demo market the server offers: a simulated day in these symbols. */
-export interface ReplayDemo { provider: string; symbols: string[]; started: string }
-export interface ReplayListing { directory: string; recordings: ReplayRecording[]; demo?: ReplayDemo | null; replay: ReplayState | null }
+/** A simulated day the demo market plays, in these symbols. */
+export interface ReplayDemo { id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string }
+export interface ReplayListing {
+  directory: string
+  recordings: ReplayRecording[]
+  /** The default demo day, and every one; absent from older servers. */
+  demo?: ReplayDemo | null
+  demos?: ReplayDemo[]
+  replay: ReplayState | null
+}
 
 export interface Tick {
   trading?: TradingStatus | null

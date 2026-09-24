@@ -5,7 +5,7 @@ import { dataSource } from "../lib/data-source"
 import { writeToken } from "../lib/write-token"
 
 /** What a replay plays: a recording in the recordings directory, or the demo market. */
-export type ReplaySource = { file: string } | { demo: true }
+export type ReplaySource = { file: string } | { demo: true | string }
 
 export class ApiError extends Error {
   constructor(
