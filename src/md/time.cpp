@@ -262,7 +262,7 @@ int regular_close_hour(Date date) noexcept {
 }
 
 void set_scheduled_days(std::vector<ScheduledDay> days) {
-  std::sort(days.begin(), days.end(), [](const ScheduledDay& a, const ScheduledDay& b) { return a.date < b.date; });
+  std::stable_sort(days.begin(), days.end(), [](const ScheduledDay& a, const ScheduledDay& b) { return a.date < b.date; });
   days.erase(std::unique(days.begin(), days.end(), [](const auto& a, const auto& b) { return a.date == b.date; }), days.end());
   const std::lock_guard lock(g_schedule_mutex);
   const auto* current = g_schedule.load(std::memory_order_relaxed);
