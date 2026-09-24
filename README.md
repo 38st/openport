@@ -109,7 +109,8 @@ options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight sessi
 and ETF options deliver shares when exercised early or held into expiry a cent in the
 money, and a short one that trades below its exercise value at the close is assigned
 overnight; the shares are marked, risked and closed at the underlying's price.
-Dividends are not paid.
+Dividends are paid on them from a file you give the server (`--dividends`); no data
+provider here publishes dividends.
 
 Buying power follows each order's real margin: a naked short holds the usual
 20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals
@@ -199,6 +200,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
+| `--dividends FILE` | Dividends to pay on held shares: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule |
 
 Every value is range-checked; `openportd --help` lists every flag, and the
 [runtime notes](docs/runtime.md) cover the details.
@@ -362,7 +364,7 @@ its files when the draft exists; GitHub tags the commit when you publish the dra
 - [x] Demo market: a simulated day to trade when nothing else does
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [ ] Cboe's delayed feed again (its files stopped updating on 2026-09-23)
-- [ ] Dividends from a file you supply
+- [x] Dividends from a file you supply
 
 ## License
 

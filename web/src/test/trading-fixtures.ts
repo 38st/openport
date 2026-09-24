@@ -98,7 +98,7 @@ export const shareTrades: ShareTrade[] = [
     opened_by: "assignment", option: "QQQ   260923P00480000", closed_by: null, closing_option: null, fills: ["3"] },
   { kind: "shares", id: "s1", attempt: 2, symbol: "SPY", direction: "long", status: "closed", opened: "2026-09-22T20:15:00Z",
     closed: "2026-09-23T14:00:00Z", duration_seconds: 63_900, shares: 0, max_shares: 100, opened_shares: 100, closed_shares: 100,
-    average_open: "501.00", average_close: "504.20", cost: "50100.00", gross: "320.00", fees: "0.00", net: "320.00", return: 320 / 50_100,
+    average_open: "501.00", average_close: "504.20", cost: "50100.00", gross: "270.00", dividends: "50.00", fees: "0.00", net: "320.00", return: 320 / 50_100,
     mark: null, unrealised: null, opened_by: "expiry_exercise", option: "SPY   260922C00500000", closed_by: "trade", closing_option: null, fills: ["1", "2"] },
 ]
 export const plans: Plan[] = [

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <locale>
 #include <memory>
@@ -57,6 +58,7 @@ struct Settings {
   bool compact_journals = false;
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
+  std::vector<trading::Dividend> dividends;
   const server::PlanPreset* plan = server::find_plan("practice");
   std::optional<trading::Money> paper_cash;
   std::string write_token;
@@ -74,6 +76,7 @@ int usage(const char* error = nullptr) {
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n"
+      "                 [--dividends FILE]\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
       "paper: durable paper trading on index, equity and ETF options; cash 100000, fee\n"
@@ -84,6 +87,8 @@ int usage(const char* error = nullptr) {
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
       "write token: --write-token overrides OPENPORT_WRITE_TOKEN; required for remote writes\n"
+      "dividends: SYMBOL,YYYY-MM-DD,AMOUNT lines (ex-date, dollars a share); on each ex-date\n"
+      "           held shares receive the dividend and short shares pay it\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
@@ -215,6 +220,14 @@ int run(int argc, char** argv) {
     } else if (arg == "--candle-dir") {
       if (value.empty()) return usage("--candle-dir requires a nonempty path");
       settings.candle_dir = value;
+    } else if (arg == "--dividends") {
+      std::ifstream file(value);
+      if (!file) return usage(("--dividends: cannot read " + value).c_str());
+      try {
+        settings.dividends = trading::parse_dividends(file);
+      } catch (const std::invalid_argument& error) {
+        return usage(error.what());
+      }
     } else if (arg == "--web-root") {
       settings.web_root = value;
     } else if (arg == "--expiries") {
@@ -283,6 +296,7 @@ int run(int argc, char** argv) {
   settings.paper.initial_cash = settings.paper_cash.value_or(settings.plan->initial_cash);
   if (settings.paper.initial_cash <= trading::Money{}) return usage("--paper-cash must be positive");
   engine_options.paper = settings.paper;
+  engine_options.dividends = settings.dividends;
   engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins});
   server::Engine engine(*provider, settings.subscription, engine_options);
   engine.start();

@@ -1006,6 +1006,7 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
   EXPECT_EQ(shares["direction"], "long");
   EXPECT_EQ(shares["shares"], 100);
   EXPECT_EQ(shares["average_open"], "501.00");
+  EXPECT_EQ(shares["dividends"], "0.00");
   EXPECT_EQ(shares["opened_by"], "expiry_exercise");
   EXPECT_EQ(shares["option"], market.symbol());
   EXPECT_EQ(shares["closed_by"], nullptr);

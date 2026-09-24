@@ -100,10 +100,21 @@ or a call before its dividend once the market prices the dividend in. The short 
 bought back at intrinsic value (`ClosureKind::Assignment`) and delivers 100 shares a
 contract at the underlying's price (`StockSource::Assignment`), together the strike;
 the new day takes the difference from the marks. Options expiring that day settle
-instead. **Dividends are not simulated**: no provider here publishes them, so shares
-held through an ex-date lose the dividend in price without the cash (or, short,
-without paying it). Evaluation plans close positions five minutes before their last
-trade, so expiry delivery only reaches accounts without an expiry cutoff. Greeks and
+instead.
+
+**Dividends** come from a file, since no provider here publishes them: `openportd
+--dividends FILE` reads `SYMBOL,YYYY-MM-DD,AMOUNT` lines (the ex-date and dollars a
+share; blank lines, `#` comments and a `symbol,...` header are skipped) with
+`parse_dividends`. `roll_day(time, dividends)` takes those going ex after the last
+trading date and on or before the new one (`dividends_due`, so a server that was down
+across an ex-date still pays it), after the night's assignments: shares held into the
+ex-date receive `per_share * shares` in cash and realised P&L, and short shares pay
+it, once per symbol and date. Each is a `DividendPayment` in
+`TradingSnapshot::dividends`, today's P&L by Greek counts it as other, and the share
+round trip holding the shares adds it to its net. Without a file, shares held through
+an ex-date lose the dividend in price without the cash. Evaluation plans close
+positions five minutes before their last trade, so expiry delivery only reaches
+accounts without an expiry cutoff. Greeks and
 scenarios use the analytics' European Black-76 values at the de-Americanised smile IV.
 
 Delivered shares (`TradingSnapshot::stocks`) are marked at the underlying's price,
@@ -999,5 +1010,5 @@ assignment and delivered shares. The CLI tests compact journals from earlier bui
 Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
 JSON errors, write protection, restart recovery, AM/PM settlement, named accounts and
 replays. Socket tests cover asynchronous POST/DELETE responses and shutdown of pending
-commands. External idempotency, dividends, trade-through matching and portfolio margin
-remain outside v1.
+commands. External idempotency, a dividend feed, trade-through matching and portfolio
+margin remain outside v1.

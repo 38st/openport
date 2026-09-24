@@ -92,6 +92,16 @@ struct Closure {
 /// delivered by a short option's early assignment.
 enum class StockSource { Delivery, Exercise, Trade, Rule, Reset, Assignment };
 
+/// A dividend paid on (or, by short shares, charged to) the shares held into its ex-date.
+struct DividendPayment {
+  std::string symbol;
+  md::Date ex_date;
+  Money per_share;
+  Quantity shares = 0;  ///< Signed shares held into the ex-date.
+  Money amount;         ///< per_share * shares: negative when short shares pay it.
+  Timestamp time = 0;
+};
+
 /// One change in the shares an account holds, so trade history can follow them.
 struct StockFill {
   std::uint64_t id = 0;  ///< 1, 2, ...: its place in the account's stock fills.

@@ -328,7 +328,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     if (id == 0 || id > s.stock_fills.size() || s.stock_fills[id - 1].option.empty()) return nullptr;
     return s.stock_fills[id - 1].option;
   };
-  const auto shares = share_lifecycles(s.stock_fills);
+  const auto shares = share_lifecycles(s.stock_fills, s.dividends);
   json share_trades = json::array();
   for (auto it = shares.rbegin(); it != shares.rend(); ++it) {
     const auto& t = *it;
@@ -357,8 +357,9 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"opened_shares", t.opened_shares}, {"closed_shares", t.closed_shares},
         {"average_open", average(t.open_notional, t.opened_shares)},
         {"average_close", average(t.close_notional, t.closed_shares)},
-        {"cost", t.open_notional.str()}, {"gross", t.gross.str()}, {"fees", Money{}.str()}, {"net", t.gross.str()},
-        {"return", open || t.open_notional == Money{} ? json(nullptr) : number(t.gross.dollars() / t.open_notional.dollars())},
+        {"cost", t.open_notional.str()}, {"gross", t.gross.str()}, {"dividends", t.dividends.str()},
+        {"fees", Money{}.str()}, {"net", (t.gross + t.dividends).str()},
+        {"return", open || t.open_notional == Money{} ? json(nullptr) : number((t.gross + t.dividends).dollars() / t.open_notional.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
         {"opened_by", source(first)}, {"option", option_of(first)},
         {"closed_by", source(last)}, {"closing_option", option_of(last)}, {"fills", fills}});

@@ -81,6 +81,14 @@ void Ledger::withdraw(Money amount) {
   if (amount <= Money{}) throw TradingError(Reason::INVALID_PAYOUT, "Withdrawal must be positive");
   account_.cash = account_.cash - amount;
 }
+void Ledger::receive_dividend(const std::string& symbol, Money amount) {
+  const auto it = stocks_.find(symbol);
+  if (it == stocks_.end() || amount == Money{})
+    throw TradingError(Reason::INVALID_ORDER, "A dividend needs held shares and a nonzero amount");
+  const Account next{account_.cash + amount, account_.realised + amount, account_.fees};
+  it->second.realised = it->second.realised + amount;
+  account_ = next;
+}
 Ledger Ledger::restore(Account account, std::map<std::string, Position> positions,
                        std::map<std::string, StockPosition> stocks) {
   for (const auto& [symbol, p] : positions) {

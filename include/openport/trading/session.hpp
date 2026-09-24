@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 
+#include "openport/trading/dividends.hpp"
 #include "openport/trading/evaluation.hpp"
 #include "openport/trading/journal.hpp"
 #include "openport/trading/risk.hpp"
@@ -51,6 +52,7 @@ struct TradingSnapshot {
   std::vector<Closure> closures;     ///< Settlements and resets, in sequence.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
   std::vector<StockFill> stock_fills;    ///< Every change in shares held, oldest first.
+  std::vector<DividendPayment> dividends;  ///< Dividends paid on held shares, oldest first.
   /// Notes and tags by trade, named by its opening fill's ID.
   std::map<std::string, Annotation> annotations;
   /// Today's P&L by Greek for the account, and for each contract held or traded
@@ -154,7 +156,9 @@ class TradingSession {
   CommandResult settle(const std::string& symbol, Money settlement, Timestamp time);
   /// Explicit baseline reset, once per later New York date; requires full marks.
   /// Kill latch persists across rollover.
-  CommandResult roll_day(Timestamp time);
+  /// `dividends` are those going ex on the new trading date (and any skipped while
+  /// the server was down): each pays the shares held into it, once.
+  CommandResult roll_day(Timestamp time, const std::vector<Dividend>& dividends = {});
   /// Start a new attempt: cancel working orders, close positions at their last
   /// mark as Reset closures (no fills, no fees), restore cash, clear the kill
   /// latch and apply the given rules. Order and fill history is kept.

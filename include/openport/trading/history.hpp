@@ -42,6 +42,7 @@ struct ShareLifecycle {
   Money open_notional;              ///< Sum of opening price * shares.
   Money close_notional;             ///< Sum of closing price * shares.
   Money gross;                      ///< Realised P&L so far; share trades carry no fees.
+  Money dividends;                  ///< Dividends received (negative: paid) while held.
   std::vector<std::uint64_t> fills;  ///< StockFill IDs, the first one opening it.
 };
 
@@ -54,7 +55,9 @@ struct ShareLifecycle {
     const std::vector<Closure>& closures, const std::map<std::string, md::OptionContract>& contracts);
 
 /// The same for shares, from the account's stock fills: a fill that reverses the
-/// holding closes one round trip and opens the next at its price.
-[[nodiscard]] std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills);
+/// holding closes one round trip and opens the next at its price. Each dividend
+/// belongs to the round trip holding its shares when it was paid.
+[[nodiscard]] std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills,
+                                                          const std::vector<DividendPayment>& dividends = {});
 
 }  // namespace openport::trading

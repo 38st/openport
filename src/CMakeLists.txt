@@ -24,6 +24,7 @@ endif()
 add_library(openport_trading
   trading/money.cpp
   trading/types.cpp
+  trading/dividends.cpp
   trading/ledger.cpp
   trading/risk.cpp
   trading/journal.cpp

@@ -21,6 +21,7 @@
 #include "openport/md/recording.hpp"
 #include "openport/server/candles.hpp"
 #include "openport/server/paper.hpp"
+#include "openport/trading/dividends.hpp"
 
 namespace openport::server {
 
@@ -101,6 +102,8 @@ class Engine final : public MetricsSource {
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;
     trading::SessionConfig paper;
+    /// Dividends every account pays on held shares at the rollover into each ex-date.
+    std::vector<trading::Dividend> dividends;
     std::shared_ptr<trading::Journal> paper_sink;  ///< Optional in-process test/simulation sink.
     std::size_t command_capacity = 256;
     std::string write_mode = "open";

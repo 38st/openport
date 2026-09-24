@@ -42,6 +42,9 @@ class Ledger {
   void settle(const std::string& symbol, Money intrinsic);
   /// Cash leaves the account (a payout); realised P&L is unchanged.
   void withdraw(Money amount);
+  /// A dividend on held shares: cash and realised P&L move by `amount`, which is
+  /// negative when short shares pay it.
+  void receive_dividend(const std::string& symbol, Money amount);
   /// Validated journal outcomes only; public for independent outcome consumers.
   static Ledger restore(Account account, std::map<std::string, Position> positions,
                         std::map<std::string, StockPosition> stocks = {});

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace openport::trading {
 
@@ -125,7 +126,8 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
   return out;
 }
 
-std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills) {
+std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills,
+                                             const std::vector<DividendPayment>& dividends) {
   std::vector<ShareLifecycle> out;
   std::map<std::string, Open> open;
   auto start = [&](const StockFill& fill, Quantity signed_shares) {
@@ -152,8 +154,19 @@ std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills
     life.max_shares = std::max(life.max_shares, magnitude(life.shares));
     life.gross = o.ledger.account().realised;
   };
+  // Dividends are paid after the fills up to their time (an overnight assignment
+  // before the ex-date's payment), to the round trip open in their symbol.
+  std::size_t next_dividend = 0;
+  auto pay_until = [&](Timestamp time, bool inclusive) {
+    while (next_dividend < dividends.size() &&
+           (inclusive ? dividends[next_dividend].time <= time : dividends[next_dividend].time < time)) {
+      const auto& d = dividends[next_dividend++];
+      if (const auto it = open.find(d.symbol); it != open.end()) out[it->second.index].dividends = out[it->second.index].dividends + d.amount;
+    }
+  };
   for (const auto& fill : fills) {
     if (fill.shares == 0) continue;
+    pay_until(fill.time, false);
     if (!open.contains(fill.symbol)) start(fill, fill.shares);
     auto* o = &open.at(fill.symbol);
     const auto held = out[o->index].shares;
@@ -171,6 +184,7 @@ std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills
       out[o->index].fills.push_back(fill.id);
     }
   }
+  pay_until(std::numeric_limits<Timestamp>::max(), true);
   return out;
 }
 

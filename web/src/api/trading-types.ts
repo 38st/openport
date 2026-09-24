@@ -216,6 +216,8 @@ export interface ShareTrade {
   average_close: Money | null
   cost: Money
   gross: Money
+  /** Dividends received (negative: paid while short) during the round trip; in net. Absent on older servers. */
+  dividends?: Money
   fees: Money
   net: Money
   return: Num

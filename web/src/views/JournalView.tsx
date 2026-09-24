@@ -317,7 +317,7 @@ function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus 
   )
 }
 
-const shareHeaders = ["Shares", "Side", "Opened", "From", "Closed", "By", "Held", "Avg open", "Avg close", "Net P&L", "Return"]
+const shareHeaders = ["Shares", "Side", "Opened", "From", "Closed", "By", "Held", "Avg open", "Avg close", "Dividends", "Net P&L", "Return"]
 
 /** Shares from exercise and assignment, round trip by round trip: how each came and went. */
 function Shares({ trades }: { trades: ShareTrade[] }) {
@@ -343,6 +343,7 @@ function Shares({ trades }: { trades: ShareTrade[] }) {
               <td className="px-2 py-2">{formatDuration(t.duration_seconds)}</td>
               <td className="px-2 py-2">{formatMoney(t.average_open)}</td>
               <td className="px-2 py-2">{formatMoney(t.average_close)}</td>
+              <td className={`px-2 py-2 ${toneText[toneOf(t.dividends)]}`}>{t.dividends && Number(t.dividends) !== 0 ? signedMoney(t.dividends) : "—"}</td>
               <td className={`px-2 py-2 ${toneText[toneOf(t.status === "open" ? t.unrealised : t.net)]}`}>
                 {t.status === "open" ? <span title="Unrealized">{signedMoney(t.unrealised)}</span> : signedMoney(t.net)}
               </td>
@@ -351,7 +352,7 @@ function Shares({ trades }: { trades: ShareTrade[] }) {
           </tbody>
         </table>
       </div>
-      <p className="mt-2 text-[11px] text-muted">Shares come only from exercise and assignment and trade without fees; they count in the totals, calendar and reports above.</p>
+      <p className="mt-2 text-[11px] text-muted">Shares come only from exercise and assignment and trade without fees. Net P&L includes dividends; they count in the totals, calendar and reports above.</p>
     </Panel>
   )
 }

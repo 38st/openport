@@ -433,6 +433,7 @@ TradingSnapshot snapshot_of(const State& s) {
   out.closures = s.closures;
   out.attempts = s.attempts;
   out.stock_fills = s.stock_fills;
+  out.dividends = s.dividends;
   out.annotations = s.annotations;
   // Today's P&L by Greek: the finished stretches, and the open ones to the marks now.
   out.attributions = s.explained;
@@ -1603,8 +1604,24 @@ void assign_early(State& s, Events& events) {
                                      {"underlying", contract.underlying}, {"shares", shares}, {"price", *price}});
   }
 }
+/// On an ex-date the shares held into it are paid the dividend, and short shares
+/// pay it: once per symbol and date, into the new day's P&L as other.
+void pay_dividends(State& s, const std::vector<Dividend>& dividends, Events& events) {
+  for (const auto& d : dividends) {
+    const auto shares = shares_held(s, d.symbol);
+    const bool paid = std::any_of(s.dividends.begin(), s.dividends.end(),
+        [&](const DividendPayment& p) { return p.symbol == d.symbol && p.ex_date == d.ex_date; });
+    if (shares == 0 || paid || d.per_share <= Money{}) continue;
+    const Money amount = d.per_share * shares;
+    s.ledger.receive_dividend(d.symbol, amount);
+    s.explained[d.symbol].other += amount.dollars();
+    s.dividends.push_back({d.symbol, d.ex_date, d.per_share, shares, amount, s.time});
+    event(events, "dividend", Json{{"symbol", d.symbol}, {"ex_date", d.ex_date}, {"per_share", d.per_share},
+                                   {"shares", shares}, {"amount", amount}});
+  }
+}
 }  // namespace
-CommandResult TradingSession::roll_day(Timestamp time) {
+CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividend>& dividends) {
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
     const auto day = md::trading_date(time);
     if (day <= s.day) return CommandResult{failure(Reason::INVALID_TIME, "Rollover requires a later trading date"), {}, 0};
@@ -1645,8 +1662,10 @@ CommandResult TradingSession::roll_day(Timestamp time) {
     for (const auto& [symbol, position] : s.ledger.positions()) start_stretch(s, symbol);
     for (const auto& [symbol, stock] : s.ledger.stocks()) start_stock_stretch(s, symbol);
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
-    // Assignments arrive overnight, so the new day takes them.
+    // Assignments arrive overnight, so the new day takes them, and then the
+    // ex-date's dividends pay the shares held into it.
     assign_early(s, events);
+    pay_dividends(s, dividends, events);
     return CommandResult{};
   });
 }
