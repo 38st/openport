@@ -1,12 +1,18 @@
 name: CI
 
-# Manual while the repository is private, where Actions minutes are billed.
-# Add push and pull_request triggers when it goes public.
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A newer push supersedes a run still going on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   cpp:
@@ -24,6 +30,24 @@ jobs:
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DOPENPORT_WERROR=ON -DOPENPORT_BUILD_BENCHMARKS=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ./build/tests/openport_tests
+
+  cpp-macos:
+    name: C++ (Apple Clang, macOS 15, warnings as errors)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install ninja boost openssl@3 zstd
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DOPENPORT_WERROR=ON -DOPENPORT_BUILD_BENCHMARKS=OFF
+          -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
       - name: Build
         run: cmake --build build
       - name: Test
