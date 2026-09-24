@@ -1,5 +1,5 @@
 import { useMemo, useState, type PointerEvent } from "react"
-import { extent, linear, niceTicks, pad } from "./scale"
+import { extent, labelRows, linear, niceTicks, pad } from "./scale"
 import { useSize } from "./useSize"
 
 export interface SeriesPoint {
@@ -70,8 +70,9 @@ export function LineChart({ series, markers = [], references = [], height = 320,
     const ticks = xTicks
       ? xTicks.filter((t) => t >= xDomain[0] && t <= xDomain[1])
       : niceTicks(...xDomain, Math.max(2, Math.floor(width / 110)))
-    return { x, y, xTicks: ticks, yTicks: niceTicks(...y.domain, 5) }
-  }, [series, references, width, height, xTicks, left])
+    const rows = labelRows(markers.map((m) => ({ x: x(m.x), label: m.label })))
+    return { x, y, rows, xTicks: ticks, yTicks: niceTicks(...y.domain, 5) }
+  }, [series, references, markers, width, height, xTicks, left])
 
   const area = (points: SeriesPoint[]) => {
     if (!layout) return ""
@@ -156,10 +157,10 @@ export function LineChart({ series, markers = [], references = [], height = 320,
               {xLabel}
             </text>
           )}
-          {markers.map((m) => (
+          {markers.map((m, i) => (
             <g key={m.label}>
               <line x1={layout.x(m.x)} x2={layout.x(m.x)} y1={margin.top} y2={height - margin.bottom} style={{ stroke: m.color }} strokeDasharray="4 3" strokeOpacity={0.8} />
-              <text x={layout.x(m.x) + 4} y={margin.top + 10} style={{ fill: m.color }} className="text-[10px]">
+              <text x={layout.x(m.x) + 4} y={margin.top + 10 + 12 * layout.rows[i]!} style={{ fill: m.color, stroke: "var(--panel)", strokeWidth: 3, paintOrder: "stroke" }} className="text-[10px]">
                 {m.label}
               </text>
             </g>

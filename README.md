@@ -12,7 +12,7 @@ chart of the underlying and replays of recorded days.
 One C++20 binary runs the feed, the analytics engine, the simulator and the web
 terminal. Your API keys, your data and your trades stay on your machine.
 
-![SPX option chain during Cboe's overnight session](docs/screenshots/chain-dark.png)
+![The Trade page: SPX five-minute candles and the option chain on Cboe's delayed data](docs/screenshots/trade-dark.png)
 
 | Volatility (light theme) | Exposure |
 | --- | --- |
@@ -23,22 +23,23 @@ terminal. Your API keys, your data and your trades stay on your machine.
 - **One C++20 process** runs the feed, the analytics engine, the simulator and the web
   server; the terminal is React and TypeScript. [Architecture](docs/architecture.md).
 - **Implied volatility** in about 0.4 µs and 5.4 Newton iterations per option, and a
-  full analytics pass over the SPX chain (29,942 options, 62 expiries) in about 55 ms.
+  full analytics pass over the SPX chain (30,182 options, 63 expiries) in about 40 ms.
 - **Within a few hundredths of a vol point** of Cboe's published IVs: median
-  differences of 0.009 (SPX), 0.025 (QQQ) and 0.037 (SPY) out of the money.
+  differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **440 C++ and 280 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **462 C++ and 286 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
-Timings are medians on an Apple M2 Max: the IV solve from `openport_bench` on
-2026-09-24, the SPX pass and the Cboe comparison on live data on 2026-09-22.
+Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
+pass (over 23 passes) and the Cboe comparison on live data during the session, all on
+2026-09-24.
 
 No market open, or no data? The **demo market** plays simulated trading days you can
 trade (a reversal, a trend, a chop, a selloff and an overnight session in SPX, SPY and
 QQQ options), with generated prices labelled as simulated on every page:
 
-![The demo market: a simulated SPX session trading at 60 times real time](docs/screenshots/demo-market.gif)
+![The demo market: its five simulated days, then SPX and QQQ trading one of them at 120 times real time](docs/screenshots/demo-market.gif)
 
 ## What you get
 
@@ -255,16 +256,17 @@ Every value is range-checked; `openportd --help` lists every flag, and the
   drown out everything else. The gamma flip is where total GEX changes sign, found by
   bisection over the same positions as the total.
 
-Checked against Cboe's own published IVs on 2026-09-22 after the close: across every
+Checked against Cboe's own published IVs on 2026-09-24 during the session: across every
 expiry, the median difference on out-of-the-money options within 10% of the forward is
-0.009 vol points for SPX, 0.025 for QQQ and 0.037 for SPY. Theta matches Cboe's within
-about 1.3%.
+0.012 vol points for SPX, 0.030 for QQQ and 0.028 for SPY. Theta matches Cboe's to a
+median 0.9% for SPX, and 2% to 3% for QQQ and SPY, whose Greeks here are European ones
+at the de-Americanised IV.
 
 ## Performance
 
-On an Apple M2 Max, a full analytics pass over the SPX chain (29,942 options across 62
-expiries) takes about 55 ms, and SPY with de-Americanisation (12,066 options across 31
-expiries) about 33 ms. The engine recomputes at most once a second, and only for
+On an Apple M2 Max, a full analytics pass over the SPX chain (30,182 options across 63
+expiries) takes about 40 ms, and SPY with de-Americanisation (13,028 options across 33
+expiries) about 29 ms. The engine recomputes at most once a second, and only for
 underlyings whose data or rate curve changed; each pass publishes an immutable snapshot,
 so HTTP readers never block the feed. While the engine is busy, the queue from the
 providers keeps only the latest quote per contract.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { extent, linear, niceTicks } from "../charts/scale"
+import { extent, labelRows, linear, niceTicks } from "../charts/scale"
 import { flashDirection } from "./flash"
 import { count, days, expiryLabel, fixed, price, vol } from "./format"
 import { formatRoute, parseRoute } from "./route"
@@ -68,6 +68,13 @@ describe("scale", () => {
   it("ignores missing values in extents", () => {
     expect(extent([3, null, 1, Number.NaN, 2])).toEqual([1, 3])
     expect(extent([null])).toBeNull()
+  })
+
+  it("stacks marker labels that would run into each other", () => {
+    // "spot 7667.43" at 500 runs to about 576, so "flip" at 520 drops a row; one far off does not.
+    expect(labelRows([{ x: 520, label: "flip" }, { x: 500, label: "spot 7667.43" }, { x: 700, label: "wall" }])).toEqual([1, 0, 0])
+    expect(labelRows([{ x: 100, label: "a" }, { x: 104, label: "b" }, { x: 108, label: "c" }])).toEqual([0, 1, 2])
+    expect(labelRows([{ x: 100, label: "a" }, { x: 106, label: "b" }, { x: 112, label: "c" }])).toEqual([0, 1, 0])
   })
 })
 

@@ -69,9 +69,10 @@ flowchart LR
 
 ## Tests
 
-440 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+462 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
-recovery and tampering, and the HTTP API; 280 Vitest cases cover the terminal. CI
+recovery and tampering, the calendar and the HTTP API; 286 Vitest cases cover the
+terminal. CI
 builds with GCC 13 on Ubuntu and Apple Clang on macOS, both with warnings as errors,
 and smoke-tests the Docker image.
 

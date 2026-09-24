@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
 import type { Marker } from "./LineChart"
-import { extent, linear, niceTicks, pad } from "./scale"
+import { extent, labelRows, linear, niceTicks, pad } from "./scale"
 import { useSize } from "./useSize"
 
 interface Props {
@@ -26,8 +26,9 @@ export function BarChart({ bars, markers = [], height = 280, formatX, formatY }:
     const x = linear([xDomain[0] - step / 2, xDomain[1] + step / 2], [margin.left, width - margin.right])
     const y = linear(pad(yDomain, 0.06), [height - margin.bottom, margin.top])
     const barWidth = Math.max(1, Math.abs(x(step) - x(0)) * 0.8)
-    return { x, y, barWidth, xTicks: niceTicks(...xDomain, Math.max(2, Math.floor(width / 110))), yTicks: niceTicks(...y.domain, 5) }
-  }, [bars, width, height])
+    const rows = labelRows(markers.map((m) => ({ x: x(m.x), label: m.label })))
+    return { x, y, barWidth, rows, xTicks: niceTicks(...xDomain, Math.max(2, Math.floor(width / 110))), yTicks: niceTicks(...y.domain, 5) }
+  }, [bars, markers, width, height])
 
   const hovered = hover == null ? null : bars[hover]
 
@@ -64,10 +65,10 @@ export function BarChart({ bars, markers = [], height = 280, formatX, formatY }:
               />
             )
           })}
-          {markers.map((m) => (
+          {markers.map((m, i) => (
             <g key={m.label}>
               <line x1={layout.x(m.x)} x2={layout.x(m.x)} y1={margin.top} y2={height - margin.bottom} style={{ stroke: m.color }} strokeDasharray="4 3" />
-              <text x={layout.x(m.x) + 4} y={margin.top + 8} style={{ fill: m.color }} className="text-[10px]">
+              <text x={layout.x(m.x) + 4} y={margin.top + 8 + 12 * layout.rows[i]!} style={{ fill: m.color, stroke: "var(--panel)", strokeWidth: 3, paintOrder: "stroke" }} className="text-[10px]">
                 {m.label}
               </text>
             </g>

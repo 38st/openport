@@ -44,3 +44,21 @@ export function pad([lo, hi]: [number, number], fraction = 0.05): [number, numbe
   const span = hi - lo || Math.abs(hi) || 1
   return [lo - span * fraction, hi + span * fraction]
 }
+
+/**
+ * A row for each marker's label, left to right, so a label that would run into
+ * the one before it drops to the next row: labels start 4px right of their
+ * marker and take about `charWidth` a character.
+ */
+export function labelRows(markers: { x: number; label: string }[], charWidth = 6): number[] {
+  const rows = markers.map(() => 0)
+  const ends: number[] = []  // where each row's last label ends
+  for (const i of markers.map((_, i) => i).sort((a, b) => markers[a]!.x - markers[b]!.x)) {
+    const start = markers[i]!.x + 4
+    let row = 0
+    while (row < ends.length && start < ends[row]! + 6) row++
+    ends[row] = start + markers[i]!.label.length * charWidth
+    rows[i] = row
+  }
+  return rows
+}
