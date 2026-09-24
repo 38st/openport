@@ -334,8 +334,9 @@ smoke test. Publishing a GitHub release builds the image for amd64 and arm64 and
 it to `ghcr.io/38st/openport`. `tools/release.sh` builds a release on your own machine: it checks and
 tests the web terminal and the engine, packages this machine's build and a Linux build
 from the Docker image with checksums and release notes into `dist/`, and smoke-tests
-the image. Nothing is published unless you pass `--publish`, which tags the version
-from `CMakeLists.txt` and creates a draft GitHub release.
+the image. Nothing is published unless you pass `--publish`, which creates a draft
+GitHub release for the version in `CMakeLists.txt` at the current commit, or refreshes
+its files when the draft exists; GitHub tags the commit when you publish the draft.
 
 ## Roadmap
 

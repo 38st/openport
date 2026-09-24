@@ -9,8 +9,10 @@
 #   openport-VERSION-linux-ARCH.tar.gz  the Linux build from the Docker image
 #   SHA256SUMS, RELEASE_NOTES.md
 # and tags the Docker image openport:VERSION after a smoke test. VERSION comes from
-# CMakeLists.txt. Nothing leaves the machine unless --publish is given: then it tags
-# vVERSION, pushes the tag and creates a draft GitHub release with gh.
+# CMakeLists.txt. Nothing leaves the machine unless --publish is given: then it creates
+# a draft GitHub release for vVERSION at this commit with gh, or refreshes the draft's
+# files, notes and commit when one exists. GitHub creates the tag when you publish the
+# draft, so a draft can wait for more commits without tagging the wrong one.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -143,11 +145,16 @@ previous="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 say "Done"
 ls -l "$dist"
 if [ "$publish" = 1 ]; then
-  git tag -a "v$version" -m "openport $version"
-  git push origin "v$version"
-  gh release create "v$version" --draft --title "openport $version" --notes-file "$dist/RELEASE_NOTES.md" \
-    "$dist"/*.tar.gz "$dist/SHA256SUMS"
-  echo "Created a draft release for v$version; publish it on GitHub when it looks right."
+  head="$(git rev-parse HEAD)"
+  if [ "$(gh release view "v$version" --json isDraft --jq .isDraft 2>/dev/null || true)" = true ]; then
+    gh release upload "v$version" --clobber "$dist"/*.tar.gz "$dist/SHA256SUMS"
+    gh release edit "v$version" --target "$head" --title "openport $version" --notes-file "$dist/RELEASE_NOTES.md"
+    echo "Refreshed the draft release for v$version at $commit; publish it on GitHub when it looks right."
+  else
+    gh release create "v$version" --draft --target "$head" --title "openport $version" --notes-file "$dist/RELEASE_NOTES.md" \
+      "$dist"/*.tar.gz "$dist/SHA256SUMS"
+    echo "Created a draft release for v$version at $commit; publish it on GitHub when it looks right."
+  fi
 else
-  echo "To publish: tools/release.sh --publish (tags v$version and creates a draft GitHub release)."
+  echo "To publish: tools/release.sh --publish (creates or refreshes a draft GitHub release for v$version)."
 fi
