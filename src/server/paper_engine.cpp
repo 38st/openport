@@ -586,7 +586,10 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
       if (!batch.empty() && day > session.trading_day() &&
           md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
           session.snapshot()->valuation_complete)
-        session.roll_day(market_time_, trading::dividends_due(options_.dividends, session.trading_day(), day));
+        session.roll_day(market_time_, [&] {
+          const std::lock_guard lock(dividends_mutex_);
+          return trading::dividends_due(dividends_, session.trading_day(), day);
+        }());
     } catch (const TradingError& error) {
       account.failure = std::string(to_string(error.code())) + ": " + error.what();
     } catch (const std::exception& error) {

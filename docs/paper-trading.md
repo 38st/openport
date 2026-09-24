@@ -106,10 +106,15 @@ contracts. Assigned contracts are bought back at intrinsic value
 price (`StockSource::Assignment`), together the strike; the new day takes the
 difference from the marks. Options expiring that day settle instead.
 
-**Dividends** come from a file, since no provider here publishes them: `openportd
---dividends FILE` reads `SYMBOL,YYYY-MM-DD,AMOUNT` lines (the ex-date and dollars a
-share; blank lines, `#` comments and a `symbol,...` header are skipped) with
-`parse_dividends`. `roll_day(time, dividends)` takes those going ex after the last
+**Dividends** come from a file or from Massive. `openportd --dividends FILE` reads
+`SYMBOL,YYYY-MM-DD,AMOUNT` lines (the ex-date and dollars a share; blank lines, `#`
+comments and a `symbol,...` header are skipped) with `parse_dividends`. `--dividends
+massive` reads the stock and ETF symbols' cash dividends in US dollars from Massive's
+dividends endpoint (`GET /stocks/v1/dividends`, in every stocks plan) with
+`MASSIVE_API_KEY`, whichever provider supplies the quotes: those going ex from a month
+back on, when the server starts and every six hours after, hourly while a symbol fails
+(`providers::MassiveDividends`), and two distributions going ex together are paid as
+one. New ones reach the live accounts, and replays started after them. `roll_day(time, dividends)` takes those going ex after the last
 trading date and on or before the new one (`dividends_due`, so a server that was down
 across an ex-date still pays it), after the night's assignments: shares held into the
 ex-date receive `per_share * shares` in cash and realised P&L, and short shares pay

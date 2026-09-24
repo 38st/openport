@@ -219,4 +219,70 @@ TEST(Massive, PublishedContractsSurviveFilterDriftAndRetireWhenMissing) {
   for (const auto& q : retired) EXPECT_EQ(q.bid + q.ask, 0.0);
 }
 
+TEST(MassiveDividends, ReadsTheDividendsEndpoint) {
+  EXPECT_EQ(providers::massive_dividends_url("https://api.massive.com", "SPY", {2026, 8, 24}),
+            "https://api.massive.com/stocks/v1/dividends?ticker=SPY&ex_dividend_date.gte=2026-08-24"
+            "&sort=ex_dividend_date.asc&limit=1000");
+  // The example from Massive's documentation, and a row without an amount.
+  const auto page = providers::parse_massive_dividends(R"({"request_id": 1, "results": [
+    {"cash_amount": 0.26, "currency": "USD", "declaration_date": "2025-07-31", "distribution_type": "recurring",
+     "ex_dividend_date": "2025-08-11", "frequency": 4, "historical_adjustment_factor": 0.997899,
+     "id": "Ed2c9da6", "pay_date": "2025-08-14", "record_date": "2025-08-11", "split_adjusted_cash_amount": 0.26,
+     "ticker": "AAPL"},
+    {"ticker": "AAPL", "ex_dividend_date": "2025-11-10", "cash_amount": null}],
+    "status": "OK", "next_url": "https://api.massive.com/stocks/v1/dividends?cursor=abc"})");
+  ASSERT_EQ(page.dividends.size(), 1u);
+  EXPECT_EQ(page.dividends[0].ticker, "AAPL");
+  EXPECT_EQ(page.dividends[0].ex_date, (md::Date{2025, 8, 11}));
+  EXPECT_DOUBLE_EQ(page.dividends[0].cash_amount, 0.26);
+  EXPECT_EQ(page.dividends[0].currency, "USD");
+  EXPECT_EQ(page.next_url, "https://api.massive.com/stocks/v1/dividends?cursor=abc");
+  EXPECT_THROW((void)providers::parse_massive_dividends(R"({"status": "NOT_AUTHORIZED", "message": "plan"})"), std::runtime_error);
+  EXPECT_THROW((void)providers::parse_massive_dividends(R"({"status": "OK"})"), std::runtime_error);
+}
+
+TEST(MassiveDividends, FetchesEachTickerAndKeepsWhatAFailureCannotRefresh) {
+  md::Timestamp clock = md::new_york_to_utc({2026, 9, 24}, 12, 0);
+  std::vector<std::vector<providers::MassiveDividend>> received;
+  providers::MassiveDividends::Options options;
+  options.api_key = "key";
+  options.clock = [&] { return clock; };
+  providers::MassiveDividends dividends({"SPY", "QQQ"}, [&](auto found) { received.push_back(std::move(found)); }, options);
+  test::HttpStub http;
+  bool qqq_fails = true;
+  http.respond = [&](std::string_view url) {
+    if (url.find("cursor=2") != std::string_view::npos)
+      return net::HttpResponse{200, R"({"status": "OK", "results": [
+        {"ticker": "SPY", "ex_dividend_date": "2026-12-18", "cash_amount": 1.9, "currency": "USD"}]})"};
+    if (url.find("SPY") != std::string_view::npos)
+      return net::HttpResponse{200, R"({"status": "OK", "next_url": "https://api.massive.com/stocks/v1/dividends?cursor=2",
+        "results": [{"ticker": "SPY", "ex_dividend_date": "2026-09-18", "cash_amount": 1.83, "currency": "USD"},
+                    {"ticker": "SPY", "ex_dividend_date": "2026-09-18", "cash_amount": 2.5, "currency": "CAD"},
+                    {"ticker": "SPYG", "ex_dividend_date": "2026-09-18", "cash_amount": 0.2, "currency": "USD"}]})"};
+    if (qqq_fails) return net::HttpResponse{429, "slow down"};
+    return net::HttpResponse{200, R"({"status": "OK", "results": [
+      {"ticker": "QQQ", "ex_dividend_date": "2026-09-21", "cash_amount": 0.71, "currency": "USD"}]})"};
+  };
+  // A month back from today, both pages of SPY; QQQ fails and is retried within the hour.
+  EXPECT_EQ(dividends.poll_once(http), clock + 3600 * md::kNanosPerSecond);
+  EXPECT_NE(http.urls.at(0).find("ex_dividend_date.gte=2026-08-24"), std::string::npos);
+  EXPECT_EQ(dividends.error(), "massive dividends QQQ: HTTP 429");
+  ASSERT_EQ(received.size(), 1u);
+  ASSERT_EQ(received[0].size(), 2u);  // US dollars and SPY's own only
+  EXPECT_EQ(received[0][1].ex_date, (md::Date{2026, 12, 18}));
+  clock += 3600 * md::kNanosPerSecond;
+  qqq_fails = false;
+  EXPECT_EQ(dividends.poll_once(http), clock + 6 * 3600 * md::kNanosPerSecond);
+  EXPECT_TRUE(dividends.error().empty());
+  ASSERT_EQ(received.size(), 2u);
+  EXPECT_EQ(received[1].size(), 3u);
+  // Later failures keep the dividends already known.
+  clock += 6 * 3600 * md::kNanosPerSecond;
+  http.respond = [](std::string_view) { return net::HttpResponse{500, ""}; };
+  dividends.poll_once(http);
+  ASSERT_EQ(received.size(), 3u);
+  EXPECT_EQ(received[2].size(), 3u);
+  EXPECT_THROW(providers::MassiveDividends({"SPY"}, [](auto) {}, {}), std::invalid_argument);
+}
+
 }  // namespace

@@ -15,6 +15,12 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
   status_.trading.initial_cash = options_.paper.initial_cash;
   for (const auto& symbol : subscription_.underlyings) status_.underlyings.try_emplace(symbol);
   health_ = status_.underlyings;
+  dividends_ = options_.dividends;
+}
+
+void Engine::set_dividends(std::vector<trading::Dividend> dividends) {
+  const std::lock_guard lock(dividends_mutex_);
+  dividends_ = std::move(dividends);
 }
 
 Engine::~Engine() { stop(); }

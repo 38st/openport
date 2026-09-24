@@ -119,8 +119,9 @@ money. A short one that trades below its exercise value at the close, or a call 
 less over it than a dividend going ex, can be assigned overnight, in part and at
 random as real assignments are; the shares are marked, risked and closed at the
 underlying's price.
-Dividends are paid on them from a file you give the server (`--dividends`); no data
-provider here publishes dividends.
+Dividends are paid on them from a file you give the server (`--dividends FILE`), or
+from Massive's API with a key from any of its stocks plans (`--dividends massive`),
+whichever provider supplies the quotes.
 
 Buying power follows each order's real margin: a naked short holds the usual
 20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals
@@ -214,7 +215,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
-| `--dividends FILE` | Dividends to pay on held shares: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule |
+| `--dividends FILE\|massive` | Dividends to pay on held shares: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
 | `--no-cboe-holidays` | Don't read Cboe's published holiday schedule, which lets a special closure it announces apply without a new build ([calendar](docs/runtime.md#product-sessions-and-cboe-clocks)) |
 
 Every value is range-checked; `openportd --help` lists every flag, and the
@@ -386,6 +387,7 @@ its files when the draft exists; GitHub tags the commit when you publish the dra
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [x] Partial, random early assignment, and dividend risk on short calls
 - [x] Market-wide circuit breakers, and Cboe's holiday schedule read daily
+- [x] Dividends from Massive's API
 - [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
 

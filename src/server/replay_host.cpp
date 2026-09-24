@@ -178,6 +178,11 @@ std::shared_ptr<ReplayHost::Session> ReplayHost::current() const {
   return session_;
 }
 
+void ReplayHost::set_dividends(std::vector<trading::Dividend> dividends) {
+  const std::lock_guard lock(mutex_);
+  options_.engine.dividends = std::move(dividends);
+}
+
 void ReplayHost::stop() {
   std::shared_ptr<Session> old;
   {
@@ -264,7 +269,10 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       session->demo = demo;
       session->provider = std::make_unique<providers::ReplayProvider>(
           providers::ReplayProvider::Options{demo ? demos_->get(day->day) : path, speed, false, nullptr});
-      auto engine = options_.engine;
+      auto engine = [&] {
+        const std::lock_guard lock(mutex_);
+        return options_.engine;
+      }();
       engine.paper_journal.clear();
       engine.paper_accounts.clear();
       engine.paper_sink.reset();

@@ -20,6 +20,7 @@
 #include <fstream>
 #include <optional>
 #include <locale>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -28,6 +29,7 @@
 
 #include "openport/providers/cboe.hpp"
 #include "openport/providers/factory.hpp"
+#include "openport/providers/massive.hpp"
 #include "openport/providers/options.hpp"
 #include "openport/server/api.hpp"
 #include "openport/server/engine.hpp"
@@ -60,6 +62,7 @@ struct Settings {
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
   std::vector<trading::Dividend> dividends;
+  bool massive_dividends = false;
   const server::PlanPreset* plan = server::find_plan("practice");
   std::optional<trading::Money> paper_cash;
   std::string write_token;
@@ -77,7 +80,7 @@ int usage(const char* error = nullptr) {
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n"
-      "                 [--dividends FILE] [--no-cboe-holidays]\n"
+      "                 [--dividends FILE|massive] [--no-cboe-holidays]\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
       "paper: durable paper trading on index, equity and ETF options; cash 100000, fee\n"
@@ -89,7 +92,9 @@ int usage(const char* error = nullptr) {
       "      --paper-cash then overrides its starting balance\n"
       "write token: --write-token overrides OPENPORT_WRITE_TOKEN; required for remote writes\n"
       "dividends: SYMBOL,YYYY-MM-DD,AMOUNT lines (ex-date, dollars a share); on each ex-date\n"
-      "           held shares receive the dividend and short shares pay it\n"
+      "           held shares receive the dividend and short shares pay it. \"massive\" reads\n"
+      "           them for the stock and ETF symbols from Massive's API instead, every six\n"
+      "           hours, with MASSIVE_API_KEY (any stocks plan), whatever the provider\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
@@ -224,6 +229,8 @@ int run(int argc, char** argv) {
     } else if (arg == "--candle-dir") {
       if (value.empty()) return usage("--candle-dir requires a nonempty path");
       settings.candle_dir = value;
+    } else if (arg == "--dividends" && value == "massive") {
+      settings.massive_dividends = true;
     } else if (arg == "--dividends") {
       std::ifstream file(value);
       if (!file) return usage(("--dividends: cannot read " + value).c_str());
@@ -264,6 +271,8 @@ int run(int argc, char** argv) {
   }
   if (settings.subscription.underlyings.empty()) return usage("no symbols");
   settings.provider.api_key = env_key_for(settings.provider.name);
+  if (settings.massive_dividends && env_key_for("massive").empty())
+    return usage("--dividends massive needs MASSIVE_API_KEY");
 
   if (settings.paper_enabled && settings.paper_journal.empty())
     return usage("HOME is unavailable; specify --paper-journal or --no-paper");
@@ -333,6 +342,35 @@ int run(int argc, char** argv) {
   else if (const auto* home = std::getenv("HOME"))
     replay_options.recordings = std::filesystem::path(home) / ".openport/recordings";
   server::ReplayHost replays(replay_options);
+  // Dividends from Massive reach the live engine and replays started after them.
+  std::unique_ptr<providers::MassiveDividends> dividends;
+  if (settings.massive_dividends) {
+    std::vector<std::string> tickers;
+    for (const auto& symbol : settings.subscription.underlyings)
+      if (!md::is_index_underlying(symbol)) tickers.push_back(symbol);
+    providers::MassiveDividends::Options options;
+    options.api_key = env_key_for("massive");
+    dividends = std::make_unique<providers::MassiveDividends>(
+        tickers,
+        [&engine, &replays](std::vector<providers::MassiveDividend> found) {
+          // Two distributions going ex together are paid as one.
+          std::map<std::pair<std::string, md::Date>, trading::Money> amounts;
+          for (const auto& d : found) {
+            try {
+              auto& amount = amounts[{d.ticker, d.ex_date}];
+              amount = amount + trading::Money::from_double(d.cash_amount);
+            } catch (const std::exception&) {
+            }
+          }
+          std::vector<trading::Dividend> list;
+          for (const auto& [key, amount] : amounts)
+            if (amount > trading::Money{}) list.push_back({key.first, key.second, amount});
+          engine.set_dividends(list);
+          replays.set_dividends(std::move(list));
+        },
+        options);
+    dividends->start();
+  }
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
       [&engine, &replays](const server::ApiRequest& request, server::ApiCompletion complete) {
@@ -355,6 +393,7 @@ int run(int argc, char** argv) {
   std::string recording_error;
   std::string history_error;
   std::string holidays_error;
+  std::string dividends_error;
   std::string candle_error;
   auto report = [](const std::string& error, std::string& reported) {
     if (!error.empty() && error != reported) std::fprintf(stderr, "openportd: %s\n", error.c_str());
@@ -367,6 +406,7 @@ int run(int argc, char** argv) {
     report(engine.recording_error(), recording_error);
     if (history) report(history->error(), history_error);
     if (holidays) report(holidays->error(), holidays_error);
+    if (dividends) report(dividends->error(), dividends_error);
     report(candles->error(), candle_error);
   }
   std::printf("\nshutting down\n");
@@ -374,6 +414,7 @@ int run(int argc, char** argv) {
   replays.stop();
   if (history) history->stop();
   if (holidays) holidays->stop();
+  if (dividends) dividends->stop();
   engine.stop();
   candles->flush();
   if (!settings.record_file.empty()) {

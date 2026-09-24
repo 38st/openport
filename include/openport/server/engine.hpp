@@ -131,6 +131,9 @@ class Engine final : public MetricsSource {
   /// Returns after paper journal initialization; failures are reported in status.
   void start();
   void stop();
+  /// Replaces the dividends day rollovers pay (Options::dividends at first), as a
+  /// fetcher learns of new ones. Thread-safe.
+  void set_dividends(std::vector<trading::Dividend> dividends);
 
   [[nodiscard]] std::vector<std::string> symbols() const override;
   [[nodiscard]] std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
@@ -205,6 +208,8 @@ class Engine final : public MetricsSource {
   std::vector<MarketHalt> halts_;
   md::Date breaker_day_;
   int breaker_level_ = 0;
+  mutable std::mutex dividends_mutex_;
+  std::vector<trading::Dividend> dividends_;
   void check_circuit_breaker(const md::UnderlyingQuote& spot);
   md::Timestamp market_time_ = 0;
   std::map<std::string, md::InstrumentId> instruments_;

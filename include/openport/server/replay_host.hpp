@@ -47,6 +47,8 @@ class ReplayHost {
   /// state, or empty while none runs.
   [[nodiscard]] std::string tick() const;
   void stop();
+  /// The dividends replays started from now on pay (Options::engine.dividends at first).
+  void set_dividends(std::vector<trading::Dividend> dividends);
 
  private:
   struct Session;
