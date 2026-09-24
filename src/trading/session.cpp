@@ -544,20 +544,14 @@ Decision defined_risk_check(const State& s, const std::vector<std::pair<std::str
 /// offers and bought nothing; a multi-leg order fills whole, and a bracket's two
 /// exits sell its position once.
 Quantity uncovered_if_sold(const State& s, OrderId except, std::vector<std::pair<std::string, Quantity>> extra) {
-  std::map<OrderId, std::pair<std::string, Quantity>> exits;
   for (const auto& o : s.orders) {
-    if (!o.open() || o.id == except) continue;
+    if (!o.open() || o.id == except || shadowed(s, o)) continue;
     if (multi_leg(o.request)) {
       for (const auto& leg : o.request.legs) extra.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
-    } else if (o.request.side == Side::Sell && o.role != OrderRole::Normal) {
-      auto& [symbol, quantity] = exits[o.parent];
-      symbol = o.request.symbol;
-      quantity = std::max(quantity, o.remaining());
     } else if (o.request.side == Side::Sell) {
       extra.emplace_back(o.request.symbol, -o.remaining());
     }
   }
-  for (const auto& [parent, exit] : exits) extra.emplace_back(exit.first, -exit.second);
   return uncovered(s, extra);
 }
 /// A new or changed order must not leave more shorts uncovered with the open
@@ -1652,7 +1646,24 @@ namespace {
 /// selling, as with a deep put or a call before its dividend. Each is assigned in
 /// full, bought back at intrinsic value, and delivers shares at the underlying's
 /// price, together the strike. Options that expire today settle instead.
-void assign_early(State& s, Events& events) {
+/// splitmix64, so a replay draws the same assignments on every platform.
+std::uint64_t mix(std::uint64_t x) {
+  x += 0x9e3779b97f4a7c15ULL;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31);
+}
+/// How many of `contracts` short contracts holders' exercises reach: each with even
+/// odds, as the OCC allocates exercises at random, drawn from the attempt, the
+/// contract and the date so a replay assigns the same ones.
+Quantity assigned_contracts(const State& s, const std::string& symbol, Quantity contracts) {
+  auto seed = mix(static_cast<std::uint64_t>(s.evaluation.started));
+  for (const unsigned char c : symbol + " " + md::format_date(s.day)) seed = mix(seed ^ c);
+  Quantity assigned = 0;
+  for (Quantity i = 0; i < contracts; ++i) assigned += static_cast<Quantity>((seed = mix(seed)) >> 63);
+  return assigned;
+}
+void assign_early(State& s, const std::vector<Dividend>& dividends, Events& events) {
   std::vector<std::string> shorts;
   for (const auto& [symbol, position] : s.ledger.positions()) {
     const auto& c = s.contracts.at(symbol);
@@ -1664,15 +1675,27 @@ void assign_early(State& s, Events& events) {
     const auto price = stock_price(s, contract.underlying);
     if (mark == s.marks.end() || !price) continue;
     const Money strike = Money::from_double(contract.strike);
-    const Money intrinsic = std::max(Money{}, contract.type == pricing::OptionType::Call ? *price - strike : strike - *price);
-    if (intrinsic < Money::from_micros(10'000) || mark->second.price >= intrinsic) continue;
-    const auto contracts = -held(s, symbol);
+    const bool call = contract.type == pricing::OptionType::Call;
+    const Money intrinsic = std::max(Money{}, call ? *price - strike : strike - *price);
+    if (intrinsic < Money::from_micros(10'000)) continue;
+    // Holders exercise an option trading below its exercise value, and a call
+    // whose time value is less than a dividend going ex on the new day.
+    Money dividend;
+    for (const auto& d : dividends)
+      if (call && d.symbol == contract.underlying) dividend = dividend + d.per_share;
+    const char* reason = mark->second.price < intrinsic ? "below_intrinsic"
+                       : mark->second.price - intrinsic < dividend ? "dividend" : nullptr;
+    if (!reason) continue;
+    const auto short_contracts = -held(s, symbol);
+    const auto contracts = assigned_contracts(s, symbol, short_contracts);
+    if (contracts == 0) continue;
     const auto shares = delivered(contract, -contracts);
     fill_position(s, symbol, contracts, intrinsic, Money{});
     s.closures.push_back({symbol, -contracts, intrinsic, s.time, ClosureKind::Assignment, s.fills.size()});
     trade_shares(s, contract.underlying, shares, *price, StockSource::Assignment, symbol);
     sync_exits(s, symbol, events);
-    event(events, "assignment", Json{{"symbol", symbol}, {"contracts", contracts}, {"intrinsic", intrinsic}, {"mark", mark->second.price},
+    event(events, "assignment", Json{{"symbol", symbol}, {"contracts", contracts}, {"of", short_contracts}, {"reason", reason},
+                                     {"intrinsic", intrinsic}, {"mark", mark->second.price},
                                      {"underlying", contract.underlying}, {"shares", shares}, {"price", *price}});
   }
 }
@@ -1754,7 +1777,7 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
     // Assignments arrive overnight, so the new day takes them, and then the
     // ex-date's dividends pay the shares held into it.
-    assign_early(s, events);
+    assign_early(s, dividends, events);
     pay_dividends(s, dividends, events);
     return CommandResult{};
   });

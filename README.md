@@ -111,8 +111,10 @@ fill. Every product trades in its regular session (09:30 to 16:15 ET for index
 options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
 (20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. American equity
 and ETF options deliver shares when exercised early or held into expiry a cent in the
-money, and a short one that trades below its exercise value at the close is assigned
-overnight; the shares are marked, risked and closed at the underlying's price.
+money. A short one that trades below its exercise value at the close, or a call worth
+less over it than a dividend going ex, can be assigned overnight, in part and at
+random as real assignments are; the shares are marked, risked and closed at the
+underlying's price.
 Dividends are paid on them from a file you give the server (`--dividends`); no data
 provider here publishes dividends.
 
@@ -367,6 +369,7 @@ its files when the draft exists; GitHub tags the commit when you publish the dra
       minutes before each contract's last trade
 - [x] Demo market: a simulated day to trade when nothing else does
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
+- [x] Partial, random early assignment, and dividend risk on short calls
 - [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
 

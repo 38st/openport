@@ -93,14 +93,18 @@ time value left is a cost; it takes the account's checks and, with the
 `buying_power` rule, must fit within it.
 
 **Early assignment** follows the market rather than a model: at each day rollover
-(`roll_day`, overnight), a short American equity or ETF option whose mark is below its
-intrinsic value at the underlying's fresh price is assigned in full, because a holder
-then does better exercising than selling. That is a deep put whose time value is gone,
-or a call before its dividend once the market prices the dividend in. The short is
-bought back at intrinsic value (`ClosureKind::Assignment`) and delivers 100 shares a
-contract at the underlying's price (`StockSource::Assignment`), together the strike;
-the new day takes the difference from the marks. Options expiring that day settle
-instead.
+(`roll_day`, overnight), holders exercise a short American equity or ETF option when
+they do better exercising than holding it. That is when its mark is below its
+intrinsic value at the underlying's fresh price (a deep put whose time value is gone),
+or, for a call, when its time value is less than a dividend going ex on the new day
+(from `--dividends`). The OCC allocates exercises to short positions at random, and
+openport cannot know how many holders exercise, so each such contract is assigned
+with even odds, drawn from the account's attempt, the contract and the date: a
+position can be assigned in part, or not that night, and a replay assigns the same
+contracts. Assigned contracts are bought back at intrinsic value
+(`ClosureKind::Assignment`) and deliver 100 shares a contract at the underlying's
+price (`StockSource::Assignment`), together the strike; the new day takes the
+difference from the marks. Options expiring that day settle instead.
 
 **Dividends** come from a file, since no provider here publishes them: `openportd
 --dividends FILE` reads `SYMBOL,YYYY-MM-DD,AMOUNT` lines (the ex-date and dollars a

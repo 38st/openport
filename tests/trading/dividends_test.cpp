@@ -90,12 +90,11 @@ TEST(TradingDividends, SharesHeldIntoTheExDateReceiveItAndItJoinsTheirRoundTrip)
 
 TEST(TradingDividends, ShortSharesPayIt) {
   Held f;
-  f.call = *md::parse_osi("SPY261218C00500000");
   TradingSession s(roomy(), f.time);
   ASSERT_TRUE(s.define(f.call, f.time).decision.ok());
   f.quote(s, 520);
-  ASSERT_TRUE(s.submit({"sold", f.call.osi_symbol(), Side::Sell, OrderType::Market, TimeInForce::Ioc, 1, {}, {}, {}, {}}, f.time).decision.ok());
-  // Assigned overnight as the market prices the call under its exercise value, then short into the ex-date.
+  ASSERT_TRUE(s.submit({"sold", f.call.osi_symbol(), Side::Sell, OrderType::Market, TimeInForce::Ioc, 10, {}, {}, {}, {}}, f.time).decision.ok());
+  // Partly assigned overnight as the market prices the call under its exercise value, then short into the ex-date.
   f.time = md::new_york_to_utc({2026, 12, 17}, 16, 14, 30);
   ++f.observation;
   s.on_quotes({{f.call.osi_symbol(), f.observation, f.time, m("19.80"), m("19.90"), 10, 10}},
@@ -106,11 +105,42 @@ TEST(TradingDividends, ShortSharesPayIt) {
   const auto cash = s.snapshot()->account.cash;
   ASSERT_TRUE(s.roll_day(night, {{"SPY", {2026, 12, 18}, m("1.90")}}).decision.ok());
   const auto snap = s.snapshot();
+  ASSERT_EQ(snap->closures.size(), 1U);
+  const Quantity assigned = -snap->closures[0].quantity;
+  ASSERT_GT(assigned, 0);
   ASSERT_EQ(snap->dividends.size(), 1U);
-  EXPECT_EQ(snap->dividends[0].shares, -100);
-  EXPECT_EQ(snap->dividends[0].amount, m("-190"));
+  EXPECT_EQ(snap->dividends[0].shares, -100 * assigned);
+  EXPECT_EQ(snap->dividends[0].amount, m("-190") * assigned);
   // The buy-back at intrinsic and the short sale at 520 net to the strike; then the dividend is paid.
-  EXPECT_EQ(snap->account.cash, cash - m("20") * 100 + m("520") * 100 - m("190"));
+  EXPECT_EQ(snap->account.cash, cash + (m("-20") * 100 + m("520") * 100 - m("190")) * assigned);
+}
+
+TEST(TradingDividends, CallsWithLessTimeValueThanTheDividendAreAssignedBeforeIt) {
+  const auto roll = [](std::vector<Dividend> due) {
+    Held f;
+    auto s = std::make_unique<TradingSession>(roomy(), f.time);
+    EXPECT_TRUE(s->define(f.call, f.time).decision.ok());
+    f.quote(*s, 520);
+    EXPECT_TRUE(s->submit({"sold", f.call.osi_symbol(), Side::Sell, OrderType::Market, TimeInForce::Ioc, 10, {}, {}, {}, {}}, f.time).decision.ok());
+    // At 20.10 against 20 of exercise value, the call keeps 0.10 of time value.
+    f.time = md::new_york_to_utc({2026, 12, 17}, 16, 14, 30);
+    f.quote(*s, 520);
+    const auto night = md::new_york_to_utc({2026, 12, 17}, 18, 0);
+    s->on_quotes({}, {}, night);
+    EXPECT_TRUE(s->roll_day(night, due).decision.ok());
+    return s;
+  };
+  // Without a dividend a holder keeps it.
+  EXPECT_TRUE(roll({})->snapshot()->closures.empty());
+  // Exercising takes the 1.90 dividend for 0.10 of time value, so holders do.
+  const auto s = roll({{"SPY", {2026, 12, 18}, m("1.90")}});
+  const auto snap = s->snapshot();
+  ASSERT_EQ(snap->closures.size(), 1U);
+  const Quantity assigned = -snap->closures[0].quantity;
+  EXPECT_GT(assigned, 0);
+  EXPECT_LT(assigned, 10);
+  ASSERT_EQ(snap->dividends.size(), 1U);
+  EXPECT_EQ(snap->dividends[0].shares, -100 * assigned);
 }
 
 }  // namespace

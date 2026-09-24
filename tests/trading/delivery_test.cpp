@@ -331,60 +331,79 @@ TEST(TradingDelivery, ShareRoundTripsReverseAndCloseAtAResetsMark) {
   EXPECT_EQ(reset[0].gross, m("200"));
 }
 
-TEST(TradingDelivery, ShortsTheMarketValuesBelowTheirExerciseAreAssignedOvernight) {
+/// Ten each of a deep put and a call the market values below their exercise, a put
+/// with time value left and a long, rolled into the next day.
+std::unique_ptr<TradingSession> assigned_overnight() {
   const auto deep = *md::parse_osi("SPY261022P00600000");  // 90 in the money at 510
   const auto near = *md::parse_osi("SPY261022P00515000");  // 5 in the money, with time value left
   const auto call = *md::parse_osi("SPY261022C00450000");  // 60 in the money
   const auto bought = *md::parse_osi("SPY261022P00590000");  // longs are never assigned
   Spy f;
-  TradingSession s(roomy(), f.time);
-  for (const auto& c : {deep, near, call, bought}) f.define(s, c);
-  f.quote(s, deep, "89.80", "90.20");
-  f.quote(s, near, "7.00", "7.20");
-  f.quote(s, call, "60.00", "60.40");
-  f.quote(s, bought, "79.80", "80.20");
-  ASSERT_TRUE(s.submit(f.market("deep", deep, 2, Side::Sell), f.time).decision.ok());
-  ASSERT_TRUE(s.submit(f.market("near", near, 1, Side::Sell), f.time).decision.ok());
-  ASSERT_TRUE(s.submit(f.market("call", call, 1, Side::Sell), f.time).decision.ok());
-  ASSERT_TRUE(s.submit(f.market("bought", bought, 1), f.time).decision.ok());
+  auto s = std::make_unique<TradingSession>(roomy(), f.time);
+  for (const auto& c : {deep, near, call, bought}) f.define(*s, c);
+  f.quote(*s, deep, "89.80", "90.20");
+  f.quote(*s, near, "7.00", "7.20");
+  f.quote(*s, call, "60.00", "60.40");
+  f.quote(*s, bought, "79.80", "80.20");
+  EXPECT_TRUE(s->submit(f.market("deep", deep, 10, Side::Sell), f.time).decision.ok());
+  EXPECT_TRUE(s->submit(f.market("near", near, 10, Side::Sell), f.time).decision.ok());
+  EXPECT_TRUE(s->submit(f.market("call", call, 10, Side::Sell), f.time).decision.ok());
+  EXPECT_TRUE(s->submit(f.market("bought", bought, 1), f.time).decision.ok());
   // Into the close the deep put and the call trade below their exercise value, and so does the long put.
   f.time = md::new_york_to_utc({2026, 9, 22}, 16, 14, 30);
-  f.quote(s, deep, "89.60", "89.90");
-  f.quote(s, near, "7.00", "7.20");
-  f.quote(s, call, "59.70", "59.90");
-  f.quote(s, bought, "79.60", "79.90");
-  EXPECT_EQ(s.snapshot()->positions.size(), 4U);
+  f.quote(*s, deep, "89.60", "89.90");
+  f.quote(*s, near, "7.00", "7.20");
+  f.quote(*s, call, "59.70", "59.90");
+  f.quote(*s, bought, "79.60", "79.90");
+  EXPECT_EQ(s->snapshot()->positions.size(), 4U);
   const auto night = md::new_york_to_utc({2026, 9, 22}, 17, 30);
-  s.on_quotes({}, {}, night);
-  ASSERT_TRUE(s.roll_day(night).decision.ok());
-  const auto snap = s.snapshot();
-  ASSERT_EQ(snap->positions.size(), 2U);
-  for (const auto& p : snap->positions) {
-    const auto symbol = p.position.contract.osi_symbol();
-    EXPECT_TRUE(symbol == near.osi_symbol() || symbol == bought.osi_symbol()) << symbol;
+  s->on_quotes({}, {}, night);
+  EXPECT_TRUE(s->roll_day(night).decision.ok());
+  return s;
+}
+
+TEST(TradingDelivery, ShortsTheMarketValuesBelowTheirExerciseArePartlyAssignedOvernight) {
+  const auto deep = md::parse_osi("SPY261022P00600000")->osi_symbol();
+  const auto call = md::parse_osi("SPY261022C00450000")->osi_symbol();
+  const auto s = assigned_overnight();
+  const auto snap = s->snapshot();
+  // Each contract a holder would exercise is assigned with even odds: some of each.
+  std::map<std::string, Quantity> assigned;
+  for (const auto& c : snap->closures) {
+    EXPECT_EQ(c.kind, ClosureKind::Assignment);
+    assigned[c.symbol] -= c.quantity;
   }
-  // The puts bought 200 shares at 510 and the call sold 100: each pair cost its strike.
-  EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
-  // In symbol order: the call, then the put.
-  ASSERT_EQ(snap->closures.size(), 2U);
-  EXPECT_EQ(snap->closures[0].kind, ClosureKind::Assignment);
-  EXPECT_EQ(snap->closures[0].price, m("60"));
-  EXPECT_EQ(snap->closures[1].kind, ClosureKind::Assignment);
-  EXPECT_EQ(snap->closures[1].quantity, -2);
-  EXPECT_EQ(snap->closures[1].price, m("90"));
-  ASSERT_EQ(snap->stock_fills.size(), 2U);
-  EXPECT_EQ(snap->stock_fills[0].shares, -100);
-  EXPECT_EQ(snap->stock_fills[1].source, StockSource::Assignment);
-  EXPECT_EQ(snap->stock_fills[1].shares, 200);
-  EXPECT_EQ(snap->stock_fills[1].price, m("510"));
-  EXPECT_EQ(snap->stock_fills[1].option, deep.osi_symbol());
-  // The new day takes the buy-backs above their marks: 0.25 on 200 and 0.20 on 100.
-  EXPECT_NEAR(day_pnl(s), -70, 1e-9);
-  EXPECT_NEAR(snap->attribution.total(), day_pnl(s), 1e-6);
-  const auto trades = lifecycles(snap->recent_fills, snap->closures, s.contracts());
-  std::size_t assigned = 0;
-  for (const auto& t : trades) assigned += t.closure == ClosureKind::Assignment;
-  EXPECT_EQ(assigned, 2U);
+  ASSERT_EQ(assigned.size(), 2U);
+  const auto puts = assigned[deep], calls = assigned[call];
+  EXPECT_GT(puts, 0);
+  EXPECT_LT(puts, 10);
+  EXPECT_GT(calls, 0);
+  EXPECT_LT(calls, 10);
+  // The rest stay open, beside the put with time value and the long.
+  std::map<std::string, Quantity> held;
+  for (const auto& p : snap->positions) held[p.position.contract.osi_symbol()] = p.position.quantity;
+  EXPECT_EQ(held[deep], puts - 10);
+  EXPECT_EQ(held[call], calls - 10);
+  EXPECT_EQ(held[md::parse_osi("SPY261022P00515000")->osi_symbol()], -10);
+  EXPECT_EQ(held[md::parse_osi("SPY261022P00590000")->osi_symbol()], 1);
+  // Assigned puts buy 100 shares each at 510 and calls sell 100: each pair costs its strike.
+  EXPECT_EQ(stock(*s, "SPY")->position.shares, 100 * (puts - calls));
+  for (const auto& fill : snap->stock_fills) {
+    EXPECT_EQ(fill.source, StockSource::Assignment);
+    EXPECT_EQ(fill.price, m("510"));
+    EXPECT_EQ(fill.shares, fill.option == deep ? 100 * puts : -100 * calls);
+  }
+  // The new day takes the buy-backs above their marks: 0.25 a share on the puts, 0.20 on the calls.
+  EXPECT_NEAR(day_pnl(*s), -25.0 * static_cast<double>(puts) - 20.0 * static_cast<double>(calls), 1e-9);
+  EXPECT_NEAR(snap->attribution.total(), day_pnl(*s), 1e-6);
+  const auto trades = lifecycles(snap->recent_fills, snap->closures, s->contracts());
+  std::size_t closed = 0;
+  for (const auto& t : trades) closed += t.closure == ClosureKind::Assignment;
+  EXPECT_EQ(closed, 2U);
+  // The draw is the account's, the contract's and the day's, so a replay assigns the same.
+  const auto again = assigned_overnight()->snapshot();
+  ASSERT_EQ(again->closures.size(), snap->closures.size());
+  for (std::size_t i = 0; i < snap->closures.size(); ++i) EXPECT_EQ(again->closures[i].quantity, snap->closures[i].quantity);
 }
 
 TEST(TradingDelivery, TheStocksCloseMarksSharesWhileTheOptionsTradeOnAndOvernight) {
