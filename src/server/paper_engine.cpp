@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <limits>
 #include <set>
@@ -120,8 +121,24 @@ std::string slug(std::string_view name) {
 }
 }  // namespace
 
+std::optional<MarketHalt> circuit_breaker(double reference, double price, md::Timestamp time, int tripped) {
+  if (!(reference > 0) || !(price > 0) || !std::isfinite(reference) || !std::isfinite(price)) return std::nullopt;
+  if (!md::market_session(time).open) return std::nullopt;  // the regular session only
+  const auto date = md::new_york_time(time).date;
+  const double fall = 1 - price / reference;
+  if (fall >= 0.20) {
+    if (tripped >= 3) return std::nullopt;
+    return MarketHalt{3, time, md::new_york_to_utc(date, 17, 0), reference, price};
+  }
+  const int level = fall >= 0.13 ? 2 : fall >= 0.07 ? 1 : 0;
+  const auto close = md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+  if (level <= tripped || time >= close - 35 * md::kNanosPerMinute) return std::nullopt;
+  return MarketHalt{level, time, time + 15 * md::kNanosPerMinute, reference, price};
+}
+
 trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp market_time,
-    md::Timestamp wall_time, std::chrono::seconds delay, md::Timestamp max_quote_age) {
+    md::Timestamp wall_time, std::chrono::seconds delay, md::Timestamp max_quote_age,
+    const std::vector<MarketHalt>& halts) {
   if (market_time <= 0)
     return {Reason::INVALID_QUOTE, std::string(underlying) + " is waiting for market data", {}, {}, {}};
   const auto delay_seconds = std::max<std::int64_t>(0, delay.count());
@@ -146,6 +163,22 @@ trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp ma
                       : std::to_string(lag / md::kNanosPerSecond) + "s";
     return {Reason::FEED_STALLED, std::string(underlying) + " quotes are " + duration +
         " behind the market; the feed appears to have stalled", {}, {}, {}};
+  }
+  for (const auto& halt : halts) {
+    if (market_time < halt.start || market_time >= halt.end) continue;
+    const auto resumes = md::new_york_time(halt.end).seconds / 60;
+    char text[240];
+    std::snprintf(text, sizeof text,
+                  "Trading is halted market-wide: the S&P 500 fell %.1f%% from its previous close of %.2f "
+                  "(a level %d circuit breaker)%s",
+                  100 * (1 - halt.price / halt.reference), halt.reference, halt.level,
+                  halt.level == 3 ? " for the rest of the day" : "");
+    std::string message = text;
+    if (halt.level < 3) {
+      std::snprintf(text, sizeof text, "; it resumes at %02d:%02d ET", resumes / 60, resumes % 60);
+      message += text;
+    }
+    return {Reason::MARKET_HALTED, std::move(message), {}, {}, {}};
   }
   if (!session.open) {
     // Say why the market is closed now (a weekend, say), not at the feed's last close.
@@ -346,6 +379,7 @@ void Engine::publish_trading() {
         auto& time = view->market_times[symbol];
         time = std::max(time, book.data_time);
       }
+      view->halts = halts_;
     }
     TradingStatus status;
     status.enabled = account.failure.empty() && view != nullptr;
@@ -397,6 +431,29 @@ void Engine::observe_trading(const md::Event& event) {
   }
 }
 
+void Engine::check_circuit_breaker(const md::UnderlyingQuote& spot) {
+  // The S&P 500's own index, or SPY standing in for it when SPX is not subscribed.
+  const auto& symbols = subscription_.underlyings;
+  const bool spx = std::find(symbols.begin(), symbols.end(), "SPX") != symbols.end();
+  if (spot.symbol != (spx ? "SPX" : "SPY")) return;
+  const auto date = new_york_date(spot.ts);
+  if (date != breaker_day_) {
+    breaker_day_ = date;
+    breaker_level_ = 0;
+  }
+  const auto previous = md::previous_business_day(date);
+  double reference = 0;
+  if (const auto close = official_closes_.find({spot.symbol, previous}); close != official_closes_.end())
+    reference = close->second;
+  else if (const auto print = closing_prints_.find({spot.symbol, previous}); print != closing_prints_.end())
+    reference = print->second.last;
+  if (const auto halt = circuit_breaker(reference, spot.last, spot.ts, breaker_level_)) {
+    breaker_level_ = halt->level;
+    std::erase_if(halts_, [&](const MarketHalt& h) { return h.end + md::kNanosPerDay < spot.ts; });
+    halts_.push_back(*halt);
+  }
+}
+
 void Engine::update_trading(const std::vector<md::Event>& batch,
                             std::deque<PendingCommand>& commands) {
   if (accounts_.empty()) return;
@@ -406,8 +463,16 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
   // after its regular close (16:00, 13:00 early) is our documented PM
   // closing-print approximation; the last one before it stands in when none comes.
   for (const auto& event : batch) {
+    if (const auto* close = std::get_if<md::UnderlyingClose>(&event)) {
+      if (!(close->price > 0) || !std::isfinite(close->price)) continue;
+      official_closes_[{close->symbol, close->date}] = close->price;
+      const auto oldest = md::date_from_days(md::days_since_epoch(close->date) - 7);
+      std::erase_if(official_closes_, [&](const auto& entry) { return entry.first.second < oldest; });
+      continue;
+    }
     const auto* spot = std::get_if<md::UnderlyingQuote>(&event);
     if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
+    check_circuit_breaker(*spot);
     const auto date = new_york_date(spot->ts);
     const bool closed = spot->ts >= md::new_york_to_utc(date, md::regular_close_hour(date), 0);
     auto& prints = closed ? closing_prints_ : before_close_;
@@ -455,9 +520,13 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         }
         // A stalled feed cannot replenish resting-order liquidity. Keep the orders
         // and reducer clock intact; ordinary market-time DAY/expiry rules still apply.
-        if (option && option->has_quote && option->quote_ts >= 0 &&
-            paper_acceptance(definition->second.underlying, option->quote_ts, now,
-                status_.capabilities.delay, session.config().limits.max_quote_age).code != Reason::FEED_STALLED) {
+        // Nor does anything trade while a circuit breaker halts the market.
+        const bool quoted = option && option->has_quote && option->quote_ts >= 0;
+        const auto gate = quoted ? paper_acceptance(definition->second.underlying, option->quote_ts, now,
+                                                    status_.capabilities.delay, session.config().limits.max_quote_age,
+                                                    halts_).code
+                                 : Reason::NONE;
+        if (quoted && gate != Reason::FEED_STALLED && gate != Reason::MARKET_HALTED) {
           quotes.push_back({symbol, observations_[symbol], option->quote_ts,
                             quote_price(option->bid), quote_price(option->ask),
                             whole_size(option->bid_size), whole_size(option->ask_size)});
@@ -548,7 +617,7 @@ void Engine::apply_command(PendingCommand& pending) {
       const auto view = trading_view(account->id);
       const auto time = view->market_times.find(underlying);
       return paper_acceptance(underlying, time == view->market_times.end() ? 0 : time->second,
-                              wall_time(), status_.capabilities.delay, session.config().limits.max_quote_age);
+                              wall_time(), status_.capabilities.delay, session.config().limits.max_quote_age, halts_);
     };
     try {
       CommandResult result;

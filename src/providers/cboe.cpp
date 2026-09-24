@@ -8,6 +8,7 @@
 // clang-format on
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -203,6 +204,138 @@ std::string CboeChartHistory::error() const {
   return out;
 }
 
+namespace {
+/// One CSV line's fields; a quoted field may hold commas and doubled quotes.
+std::vector<std::string> csv_fields(std::string_view line) {
+  std::vector<std::string> fields(1);
+  bool quoted = false;
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    const char c = line[i];
+    if (quoted && c == '"' && i + 1 < line.size() && line[i + 1] == '"') { fields.back() += '"'; ++i; }
+    else if (c == '"') quoted = !quoted;
+    else if (c == ',' && !quoted) fields.emplace_back();
+    else fields.back() += c;
+  }
+  for (auto& f : fields) {
+    const auto first = f.find_first_not_of(" \t");
+    f = first == std::string::npos ? std::string() : f.substr(first, f.find_last_not_of(" \t") - first + 1);
+  }
+  return fields;
+}
+/// "HH:MM:SS - HH:MM:SS": the end, in minutes after midnight.
+std::optional<int> session_end(std::string_view hours) {
+  int h1 = 0, m1 = 0, s1 = 0, h2 = 0, m2 = 0, s2 = 0;
+  if (std::sscanf(std::string(hours).c_str(), "%d:%d:%d - %d:%d:%d", &h1, &m1, &s1, &h2, &m2, &s2) != 6) return std::nullopt;
+  return h2 * 60 + m2;
+}
+/// When an overnight session "to 11:30 AM (Mon)" ends on `date` itself, in minutes after midnight.
+int overnight_into(std::string_view hours, md::Date date) {
+  static constexpr std::array<std::string_view, 7> names{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  const std::string day = "(" + std::string(names[static_cast<std::size_t>(md::weekday(date))]) + ")";
+  for (auto at = hours.find("to "); at != std::string_view::npos; at = hours.find("to ", at + 3)) {
+    int h = 0, m = 0;
+    char half[3] = {};
+    char weekday[8] = {};
+    if (std::sscanf(std::string(hours.substr(at + 3)).c_str(), "%d:%d %2s %7s", &h, &m, half, weekday) != 4) continue;
+    if (day != weekday) continue;
+    if (std::string_view(half) == "PM" && h != 12) h += 12;
+    if (std::string_view(half) == "AM" && h == 12) h = 0;
+    return h * 60 + m;
+  }
+  return 0;
+}
+}  // namespace
+
+std::vector<md::ScheduledDay> parse_cboe_holidays(std::string_view csv) {
+  std::vector<md::ScheduledDay> days;
+  bool header = false;
+  for (std::size_t start = 0; start < csv.size();) {
+    auto end = csv.find('\n', start);
+    if (end == std::string_view::npos) end = csv.size();
+    auto line = csv.substr(start, end - start);
+    start = end + 1;
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (line.empty() || line.front() == '#') continue;
+    const auto fields = csv_fields(line);
+    if (!header) {
+      header = fields.size() >= 4 && fields[0] == "Holiday Name" && fields[1] == "Date";
+      continue;
+    }
+    if (fields.size() < 4) continue;
+    const auto midnight = md::parse_datetime(fields[1] + " 00:00:00", md::Zone::Utc);
+    if (!midnight) continue;
+    md::ScheduledDay day;
+    day.date = md::date_from_days(*midnight / md::kNanosPerDay);
+    day.name = fields[0];
+    if (fields[2] == "None") {
+      day.overnight_until = overnight_into(fields[3], day.date);
+    } else if (const auto close = session_end(fields[2]); close && *close < 16 * 60) {
+      day.closed = false;
+      day.close_hour = *close / 60;
+    } else {
+      continue;  // a full day
+    }
+    days.push_back(std::move(day));
+  }
+  if (!header) throw std::runtime_error("Cboe holiday schedule: no Holiday Name,Date header");
+  return days;
+}
+
+CboeHolidaySchedule::CboeHolidaySchedule(Sink sink, Options options)
+    : sink_(std::move(sink)), options_(std::move(options)) {}
+
+void CboeHolidaySchedule::start() {
+  stop();
+  stopping_ = false;
+  thread_ = std::thread(&CboeHolidaySchedule::run, this);
+}
+
+void CboeHolidaySchedule::stop() {
+  {
+    const std::lock_guard lock(wake_mutex_);
+    stopping_ = true;
+  }
+  wake_.notify_all();
+  if (thread_.joinable()) thread_.join();
+}
+
+void CboeHolidaySchedule::run() {
+  net::HttpClient http;
+  while (!stopping_) {
+    const md::Timestamp next = poll_once(http);
+    const md::Timestamp wait = std::clamp<md::Timestamp>(next - options_.clock(), md::kNanosPerSecond, 3600 * md::kNanosPerSecond);
+    std::unique_lock lock(wake_mutex_);
+    if (wake_.wait_for(lock, std::chrono::nanoseconds(wait), [this] { return stopping_.load(); })) break;
+  }
+}
+
+md::Timestamp CboeHolidaySchedule::poll_once(net::HttpClient& http) {
+  const md::Timestamp now = options_.clock();
+  if (due_ > now || stopping_) return due_;
+  std::string failure;
+  try {
+    const auto response = http.get(kCboeHolidaysUrl, {}, options_.timeout, &stopping_);
+    if (response.status != 200) throw std::runtime_error("HTTP " + std::to_string(response.status));
+    for (auto& day : parse_cboe_holidays(response.body)) days_[day.date] = std::move(day);
+    std::vector<md::ScheduledDay> all;
+    for (const auto& [date, day] : days_) all.push_back(day);
+    sink_(std::move(all));
+    due_ = now + options_.interval.count() * md::kNanosPerSecond;
+  } catch (const std::exception& e) {
+    if (stopping_) return now;
+    failure = std::string("cboe holiday schedule: ") + e.what();
+    due_ = now + options_.retry.count() * md::kNanosPerSecond;
+  }
+  const std::lock_guard lock(error_mutex_);
+  error_ = std::move(failure);
+  return due_;
+}
+
+std::string CboeHolidaySchedule::error() const {
+  const std::lock_guard lock(error_mutex_);
+  return error_;
+}
+
 std::string cboe_chain_url(std::string_view underlying) {
   std::string url = "https://cdn.cboe.com/api/global/delayed_quotes/options/";
   if (md::is_index_underlying(underlying)) url += '_';
@@ -296,6 +429,7 @@ CboeChain parse_cboe_chain(std::string_view json, md::Timestamp now) {
   chain.ask = number_or_zero(data, "ask");
   chain.last_trade_time =
       md::parse_datetime(text_or_empty(data, "last_trade_time"), md::Zone::NewYork).value_or(0);
+  chain.prev_close = number_or_zero(data, "prev_day_close");
   return chain;
 }
 
@@ -386,6 +520,16 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   // Stock/index prints have their own clock; they can be hours behind GTH options.
   sink.publish(
       md::UnderlyingQuote{underlying, chain.last_trade_time, chain.bid, chain.ask, chain.price});
+  // In the regular session the previous close is certainly the last business day's;
+  // in the evening Cboe may not have rolled it yet.
+  if (chain.prev_close > 0 && std::isfinite(chain.prev_close) && md::market_session(delayed).open) {
+    const auto date = md::previous_business_day(md::new_york_time(delayed).date);
+    auto& last = closes_[underlying];
+    if (last != std::pair{date, chain.prev_close}) {
+      last = {date, chain.prev_close};
+      sink.publish(md::UnderlyingClose{underlying, delayed, date, chain.prev_close});
+    }
+  }
   std::map<std::string, md::Timestamp> market_times;
 
   std::vector<std::pair<const CboeOption*, md::OptionContract>> contracts;

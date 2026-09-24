@@ -54,6 +54,7 @@ struct Settings {
   std::filesystem::path record_dir;
   std::optional<std::filesystem::path> candle_dir;
   bool history = true;
+  bool cboe_holidays = true;
   bool paper_enabled = true;
   bool compact_journals = false;
   std::filesystem::path paper_journal;
@@ -76,7 +77,7 @@ int usage(const char* error = nullptr) {
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n"
-      "                 [--dividends FILE]\n"
+      "                 [--dividends FILE] [--no-cboe-holidays]\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
       "paper: durable paper trading on index, equity and ETF options; cash 100000, fee\n"
@@ -98,6 +99,8 @@ int usage(const char* error = nullptr) {
       "charts: one-minute bars persist in --candle-dir (default ~/.openport/candles; replay\n"
       "        keeps them in memory); Cboe's free delayed chart history backfills them\n"
       "        unless --no-history (always off for replay)\n"
+      "holidays: Cboe's published holiday schedule is read daily, so a closure it announces\n"
+      "          applies without a new build, unless --no-cboe-holidays (always off for replay)\n"
       "replay: --option file=PATH [--option speed=1|10|60|max] [--option loop=on|off]\n"
       "providers:");
   for (auto name : providers::provider_names()) {
@@ -182,6 +185,7 @@ int run(int argc, char** argv) {
     if (arg == "--version") { std::printf("openportd %s\n", OPENPORT_VERSION); return 0; }
     if (arg == "--no-paper") { settings.paper_enabled = false; continue; }
     if (arg == "--no-history") { settings.history = false; continue; }
+    if (arg == "--no-cboe-holidays") { settings.cboe_holidays = false; continue; }
     if (arg == "--compact-journals") { settings.compact_journals = true; continue; }
     if (!has_value) return usage(("missing value for " + arg).c_str());
     const std::string value = argv[++i];
@@ -312,6 +316,12 @@ int run(int argc, char** argv) {
         });
     history->start();
   }
+  // Closures the exchange announces reach the calendar without a new build.
+  std::unique_ptr<providers::CboeHolidaySchedule> holidays;
+  if (settings.cboe_holidays && !replay) {
+    holidays = std::make_unique<providers::CboeHolidaySchedule>(md::set_scheduled_days);
+    holidays->start();
+  }
   const auto trading_status = engine.status().trading;
   if (trading_status.reason.starts_with("JOURNAL_LOCKED:"))
     std::fprintf(stderr, "openportd: %s\n", trading_status.reason.c_str());
@@ -344,6 +354,7 @@ int run(int argc, char** argv) {
   std::signal(SIGTERM, on_signal);
   std::string recording_error;
   std::string history_error;
+  std::string holidays_error;
   std::string candle_error;
   auto report = [](const std::string& error, std::string& reported) {
     if (!error.empty() && error != reported) std::fprintf(stderr, "openportd: %s\n", error.c_str());
@@ -355,12 +366,14 @@ int run(int argc, char** argv) {
     if (auto tick = replays.tick(); !tick.empty()) web.broadcast(tick);
     report(engine.recording_error(), recording_error);
     if (history) report(history->error(), history_error);
+    if (holidays) report(holidays->error(), holidays_error);
     report(candles->error(), candle_error);
   }
   std::printf("\nshutting down\n");
   web.stop();
   replays.stop();
   if (history) history->stop();
+  if (holidays) holidays->stop();
   engine.stop();
   candles->flush();
   if (!settings.record_file.empty()) {

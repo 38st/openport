@@ -1,11 +1,16 @@
 #include "openport/md/time.hpp"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <vector>
 
 #include "openport/md/contract.hpp"
 
@@ -67,9 +72,28 @@ constexpr int kFirstCalendarYear = 2022;  // Juneteenth's first
 
 struct Holiday {
   std::string_view name;
-  /// Cboe's overnight session runs into it, from 20:15 the evening before to 11:30.
-  bool overnight = false;
+  /// Minutes after midnight ET that Cboe's overnight session, open from 20:15 the
+  /// evening before, runs into it until; zero when none does.
+  int overnight_until = 0;
 };
+constexpr int kHolidaySessionEnd = 11 * 60 + 30;
+
+/// The announced days, sorted by date. Every version published stays alive, so a
+/// reader holds no lock; there is one per change to Cboe's schedule.
+struct Schedule {
+  std::vector<ScheduledDay> days;
+};
+std::atomic<const Schedule*> g_schedule{nullptr};
+std::mutex g_schedule_mutex;
+std::vector<std::unique_ptr<const Schedule>> g_schedules;
+
+const ScheduledDay* scheduled(Date date) noexcept {
+  const auto* schedule = g_schedule.load(std::memory_order_acquire);
+  if (!schedule) return nullptr;
+  const auto it = std::lower_bound(schedule->days.begin(), schedule->days.end(), date,
+                                   [](const ScheduledDay& day, Date d) { return day.date < d; });
+  return it != schedule->days.end() && it->date == date ? &*it : nullptr;
+}
 
 Date add_days(Date date, std::int64_t days) noexcept { return date_from_days(days_since_epoch(date) + days); }
 /// The n-th (n >= 1) weekday `wd` (0 for Sunday) of a month.
@@ -96,18 +120,22 @@ Date observed(Date date) noexcept {
 }
 
 std::optional<Holiday> holiday_on(Date date) noexcept {
+  // What the exchange has announced for a date overrides the rules.
+  if (const auto* day = scheduled(date))
+    return day->closed ? std::optional(Holiday{day->name, day->overnight_until}) : std::nullopt;
   if (date.year < kFirstCalendarYear) return std::nullopt;
   if (date == Date{2025, 1, 9}) return Holiday{"National Day of Mourning"};
   const int y = date.year;
+  const int session = kHolidaySessionEnd;
   if (weekday({y, 1, 1}) != 6 && date == observed({y, 1, 1})) return Holiday{"New Year's Day"};
-  if (date == nth_weekday(y, 1, 1, 3)) return Holiday{"Martin Luther King Jr. Day", true};
-  if (date == nth_weekday(y, 2, 1, 3)) return Holiday{"Washington's Birthday", true};
+  if (date == nth_weekday(y, 1, 1, 3)) return Holiday{"Martin Luther King Jr. Day", session};
+  if (date == nth_weekday(y, 2, 1, 3)) return Holiday{"Washington's Birthday", session};
   if (date == add_days(easter(y), -2)) return Holiday{"Good Friday"};
-  if (date == last_weekday(y, 5, 1)) return Holiday{"Memorial Day", true};
-  if (date == observed({y, 6, 19})) return Holiday{"Juneteenth", true};
-  if (date == observed({y, 7, 4})) return Holiday{"Independence Day", true};
-  if (date == nth_weekday(y, 9, 1, 1)) return Holiday{"Labor Day", true};
-  if (date == nth_weekday(y, 11, 4, 4)) return Holiday{"Thanksgiving Day", true};
+  if (date == last_weekday(y, 5, 1)) return Holiday{"Memorial Day", session};
+  if (date == observed({y, 6, 19})) return Holiday{"Juneteenth", session};
+  if (date == observed({y, 7, 4})) return Holiday{"Independence Day", session};
+  if (date == nth_weekday(y, 9, 1, 1)) return Holiday{"Labor Day", session};
+  if (date == nth_weekday(y, 11, 4, 4)) return Holiday{"Thanksgiving Day", session};
   if (date == observed({y, 12, 25})) return Holiday{"Christmas Day"};
   return std::nullopt;
 }
@@ -120,6 +148,7 @@ std::string_view holiday(Date date) noexcept {
 /// 13:00 closes: the day before Independence Day and Christmas Eve when they fall
 /// Monday to Thursday, and the day after Thanksgiving.
 bool early_close(Date date) noexcept {
+  if (const auto* day = scheduled(date)) return !day->closed && day->close_hour < 16;
   if (date.year < kFirstCalendarYear || holiday_on(date)) return false;
   if ((date.month == 7 && date.day == 3) || (date.month == 12 && date.day == 24))
     return weekday(date) >= 1 && weekday(date) <= 4;
@@ -227,7 +256,26 @@ std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexce
   return timestamp(seconds, fraction);
 }
 
-int regular_close_hour(Date date) noexcept { return early_close(date) ? 13 : 16; }
+int regular_close_hour(Date date) noexcept {
+  if (const auto* day = scheduled(date)) return day->closed ? 16 : day->close_hour;
+  return early_close(date) ? 13 : 16;
+}
+
+void set_scheduled_days(std::vector<ScheduledDay> days) {
+  std::sort(days.begin(), days.end(), [](const ScheduledDay& a, const ScheduledDay& b) { return a.date < b.date; });
+  days.erase(std::unique(days.begin(), days.end(), [](const auto& a, const auto& b) { return a.date == b.date; }), days.end());
+  const std::lock_guard lock(g_schedule_mutex);
+  const auto* current = g_schedule.load(std::memory_order_relaxed);
+  if (current ? current->days == days : days.empty()) return;
+  auto next = std::make_unique<const Schedule>(Schedule{std::move(days)});
+  g_schedule.store(next.get(), std::memory_order_release);
+  g_schedules.push_back(std::move(next));
+}
+
+std::vector<ScheduledDay> scheduled_days() {
+  const auto* schedule = g_schedule.load(std::memory_order_acquire);
+  return schedule ? schedule->days : std::vector<ScheduledDay>{};
+}
 
 namespace {
 struct LocalTime {
@@ -321,8 +369,9 @@ TradingSession session_at(bool global, bool curb, bool quarter_hour, Timestamp t
   for (int offset = -14; offset <= 1; ++offset) {
     const auto trade_date = date_from_days(days + offset);
     // Into most holidays an overnight session runs until 11:30, for the next trade date.
-    if (const auto h = holiday_on(trade_date); global && h && h->overnight)
-      consider("global", new_york_to_utc(date_from_days(days + offset - 1), 20, 15), new_york_to_utc(trade_date, 11, 30));
+    if (const auto h = holiday_on(trade_date); global && h && h->overnight_until > 0)
+      consider("global", new_york_to_utc(date_from_days(days + offset - 1), 20, 15),
+               new_york_to_utc(trade_date, h->overnight_until / 60, h->overnight_until % 60));
     if (!business_day(trade_date)) continue;
     if (global) {
       const auto evening = date_from_days(days + offset - 1);

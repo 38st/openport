@@ -114,6 +114,34 @@ TEST(Cboe, RepublishesOnlyWhatChanged) {
   EXPECT_EQ(second.all<md::UnderlyingQuote>().size(), 1u);  // spot is always republished
 }
 
+TEST(Cboe, PublishesThePreviousDaysCloseOnceADayInTheSession) {
+  providers::CboeDelayedProvider provider;
+  providers::CboeChain chain = providers::parse_cboe_chain(kChain);  // 15:33 ET, Tuesday 2026-09-22
+  EXPECT_DOUBLE_EQ(chain.prev_close, 0.0);  // this document has none
+  chain.prev_close = 7706.03;
+  Collector first;
+  provider.publish_chain(chain, {}, first);
+  const auto closes = first.all<md::UnderlyingClose>();
+  ASSERT_EQ(closes.size(), 1u);
+  EXPECT_EQ(closes[0].symbol, "SPX");
+  EXPECT_EQ(closes[0].date, (md::Date{2026, 9, 21}));
+  EXPECT_DOUBLE_EQ(closes[0].price, 7706.03);
+  Collector again;
+  provider.publish_chain(chain, {}, again);
+  EXPECT_TRUE(again.all<md::UnderlyingClose>().empty());
+  // In the evening Cboe may not have rolled it over yet, so it waits for the session.
+  chain.as_of = md::new_york_to_utc({2026, 9, 22}, 21, 0);
+  chain.prev_close = 7766.40;
+  Collector evening;
+  provider.publish_chain(chain, {}, evening);
+  EXPECT_TRUE(evening.all<md::UnderlyingClose>().empty());
+  chain.as_of = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  Collector morning;
+  provider.publish_chain(chain, {}, morning);
+  ASSERT_EQ(morning.all<md::UnderlyingClose>().size(), 1u);
+  EXPECT_EQ(morning.all<md::UnderlyingClose>()[0].date, (md::Date{2026, 9, 22}));
+}
+
 TEST(Cboe, AppliesExpiryAndStrikeFilters) {
   providers::CboeDelayedProvider provider;
   Collector sink;
@@ -409,5 +437,88 @@ TEST(CboeCharts, HistoryFetchesWhatIsDueAndBacksOffFromMissingFiles) {
   next = history.poll_once(http);
   EXPECT_EQ(history.error().find("SPX"), std::string::npos) << history.error();
   EXPECT_EQ(next, clock + 15 * md::kNanosPerMinute);
+}
+}  // namespace
+
+namespace {
+using namespace openport;
+
+/// Cboe's schedule as published on 2026-09-24.
+constexpr std::string_view kHolidays2026 = R"(# Generated: 2026:09:24 00:15:58
+#
+# Start CSV parsing at the line after the "##".
+#
+##
+Holiday Name,Date,Regular Trading Hours,Global Trading Hours
+New Year's Day,2026-01-01,None,8:15 PM (Thu) to 9:25 AM (Fri)
+Martin Luther King Jr. Day,2026-01-19,None,8:15 PM (Sun) to 11:30 AM (Mon) and 8:15 PM (Mon) to 9:25 AM (Tue)
+Presidents' Day,2026-02-16,None,8:15 PM (Sun) to 11:30 AM (Mon) and 8:15 PM (Mon) to 9:25 AM (Tue)
+Good Friday,2026-04-03,None,None
+Memorial Day,2026-05-25,None,8:15 PM (Sun) to 11:30 AM (Mon) and 8:15 PM (Mon) to 9:25 AM (Tue)
+Juneteenth Holiday,2026-06-19,None,8:15 PM (Thu) to 11:30 AM (Fri)
+Independence Day Observed,2026-07-03,None,8:15 PM (Thu) to 11:30 AM (Fri)
+Labor Day,2026-09-07,None,8:15 PM (Sun) to 11:30 AM (Mon) and 8:15 PM (Mon) to 9:25 AM (Tue)
+Thanksgiving Day,2026-11-26,None,8:15 PM (Wed) to 11:30 AM (Thu) and 8:15 PM (Thu) to 9:25 AM (Fri)
+Thanksgiving Early Close,2026-11-27,09:30:00 - 13:00:00,8:15 PM (Wed) to 11:30 AM (Thu) and 8:15 PM (Thu) to 9:25 AM (Fri)
+Christmas Early Close,2026-12-24,09:30:00 - 13:00:00,8:15 PM (Wed) to 9:25 AM (Thu)
+Christmas Day,2026-12-25,None,None
+)";
+
+TEST(CboeHolidays, ReadsClosuresEarlyClosesAndOvernightSessionsIntoHolidays) {
+  const auto days = providers::parse_cboe_holidays(kHolidays2026);
+  ASSERT_EQ(days.size(), 12u);
+  EXPECT_EQ(days[0], (md::ScheduledDay{{2026, 1, 1}, "New Year's Day", true, 13, 0}));
+  EXPECT_EQ(days[1].overnight_until, 11 * 60 + 30);  // Sunday 20:15 to Monday 11:30
+  EXPECT_EQ(days[3].name, "Good Friday");
+  EXPECT_EQ(days[3].overnight_until, 0);
+  EXPECT_EQ(days[5].overnight_until, 11 * 60 + 30);  // a Friday holiday, from Thursday evening
+  EXPECT_EQ(days[9], (md::ScheduledDay{{2026, 11, 27}, "Thanksgiving Early Close", false, 13, 0}));
+  EXPECT_EQ(days[11].overnight_until, 0);
+  EXPECT_THROW((void)providers::parse_cboe_holidays("<html>moved</html>"), std::runtime_error);
+  EXPECT_TRUE(providers::parse_cboe_holidays("Holiday Name,Date,Regular Trading Hours,Global Trading Hours\n").empty());
+}
+
+TEST(CboeHolidays, NyseRulesAgreeWithCboesPublishedSchedule) {
+  // Every listed day, and every overnight session into a holiday, is what the rules give.
+  for (const auto& day : providers::parse_cboe_holidays(kHolidays2026)) {
+    const auto noon = md::new_york_to_utc(day.date, 12, 0);
+    EXPECT_EQ(md::market_session(noon).open, !day.closed) << day.name;
+    if (!day.closed) EXPECT_EQ(md::regular_close_hour(day.date), day.close_hour) << day.name;
+    const auto morning = md::trading_session("SPX", md::new_york_to_utc(day.date, 11, 0));
+    if (day.closed) EXPECT_EQ(morning.open, day.overnight_until > 0) << day.name;
+  }
+}
+
+TEST(CboeHolidays, TheScheduleIsFetchedDailyAndKeepsWhatItSaw) {
+  md::Timestamp clock = md::new_york_to_utc({2026, 9, 24}, 9, 0);
+  std::vector<std::vector<md::ScheduledDay>> received;
+  providers::CboeHolidaySchedule::Options options;
+  options.clock = [&] { return clock; };
+  providers::CboeHolidaySchedule schedule([&](std::vector<md::ScheduledDay> days) { received.push_back(std::move(days)); }, options);
+  test::HttpStub http;
+  http.respond = [](std::string_view) { return net::HttpResponse{200, std::string(kHolidays2026)}; };
+  EXPECT_EQ(schedule.poll_once(http), clock + 24 * 3600 * md::kNanosPerSecond);
+  ASSERT_EQ(received.size(), 1u);
+  EXPECT_EQ(received[0].size(), 12u);
+  EXPECT_EQ(http.urls.at(0), providers::kCboeHolidaysUrl);
+  EXPECT_EQ(schedule.poll_once(http), clock + 24 * 3600 * md::kNanosPerSecond);  // not due yet
+  EXPECT_EQ(http.urls.size(), 1u);
+  // A failure is reported and retried within the hour; what was seen stays.
+  clock += 24 * 3600 * md::kNanosPerSecond;
+  http.respond = [](std::string_view) { return net::HttpResponse{503, ""}; };
+  EXPECT_EQ(schedule.poll_once(http), clock + 3600 * md::kNanosPerSecond);
+  EXPECT_EQ(schedule.error(), "cboe holiday schedule: HTTP 503");
+  EXPECT_EQ(received.size(), 1u);
+  // A special closure appears; next year's schedule no longer lists this year's, which stay.
+  clock += 3600 * md::kNanosPerSecond;
+  http.respond = [](std::string_view) {
+    return net::HttpResponse{200, "##\nHoliday Name,Date,Regular Trading Hours,Global Trading Hours\n"
+                                  "National Day of Mourning,2026-10-07,None,None\n"};
+  };
+  schedule.poll_once(http);
+  EXPECT_TRUE(schedule.error().empty());
+  ASSERT_EQ(received.size(), 2u);
+  EXPECT_EQ(received[1].size(), 13u);
+  EXPECT_EQ(received[1][8], (md::ScheduledDay{{2026, 10, 7}, "National Day of Mourning", true, 13, 0}));
 }
 }  // namespace

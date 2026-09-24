@@ -41,6 +41,7 @@ TEST(Recording, EveryEventAndHeaderFieldRoundTripsBitExactly) {
       md::OpenInterest{id, hi, nan},
       md::VendorGreeks{id, lo, nan, huge, -tiny, -0.0, inf, -inf},
       md::UnderlyingQuote{std::string("SP\0X", 4), hi, nan, tiny, -0.0},
+      md::UnderlyingClose{"SPX", lo, {2026, 9, 23}, nan},
   };
   for (auto state : {md::FeedState::Connecting, md::FeedState::Live, md::FeedState::Delayed,
                      md::FeedState::Stale, md::FeedState::Error, md::FeedState::Stopped})

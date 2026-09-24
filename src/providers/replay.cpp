@@ -172,7 +172,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
               using T = std::decay_t<decltype(e)>;
               if constexpr (std::is_same_v<T, md::ContractDefinition>) {
                 return admitted[e.id] = symbols.contains(e.contract.underlying);
-              } else if constexpr (std::is_same_v<T, md::UnderlyingQuote>) {
+              } else if constexpr (std::is_same_v<T, md::UnderlyingQuote> || std::is_same_v<T, md::UnderlyingClose>) {
                 return symbols.contains(e.symbol);
               } else if constexpr (std::is_same_v<T, md::ProviderStatus>) {
                 return e.underlying.empty() || symbols.contains(e.underlying);

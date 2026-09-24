@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,13 +12,32 @@
 
 namespace openport::server {
 
+/// A market-wide trading halt from the S&P 500's circuit breakers (NYSE Rule 7.12,
+/// which the options exchanges follow).
+struct MarketHalt {
+  int level = 0;
+  md::Timestamp start = 0;
+  md::Timestamp end = 0;   ///< when trading resumes
+  double reference = 0.0;  ///< the previous close the fall is measured from
+  double price = 0.0;      ///< the print that tripped it
+};
+
+/// The halt a print of the S&P 500 trips, if any. In the regular session a fall of 7%
+/// (level 1) or 13% (level 2) from the previous close halts trading for 15 minutes,
+/// each once a day and only until 35 minutes before the close (15:25 ET); a fall of
+/// 20% (level 3) halts it for the rest of the day. `tripped` is the highest level
+/// already tripped that day.
+[[nodiscard]] std::optional<MarketHalt> circuit_breaker(double reference, double price, md::Timestamp time,
+                                                        int tripped);
+
 /// Shared session/feed gate for new orders and status/ticks: open while the
 /// underlying's options are in any session (regular, overnight or curb; the
-/// reducer decides which orders each takes). Contract, risk and write-access
-/// checks remain separate. Never advances the reducer's data clock.
+/// reducer decides which orders each takes) and no market-wide halt covers the
+/// market time. Contract, risk and write-access checks remain separate. Never
+/// advances the reducer's data clock.
 [[nodiscard]] trading::Decision paper_acceptance(std::string_view underlying,
     md::Timestamp market_time, md::Timestamp wall_time, std::chrono::seconds delay,
-    md::Timestamp max_quote_age);
+    md::Timestamp max_quote_age, const std::vector<MarketHalt>& halts = {});
 
 struct TradingStatus {
   bool enabled = false;
@@ -40,6 +60,8 @@ struct TradingView {
   std::map<std::string, trading::Valuation> valuations;
   /// Per-underlying data clocks, seeded from persisted quotes on recovery.
   std::map<std::string, md::Timestamp> market_times;
+  /// Circuit-breaker halts of the last day.
+  std::vector<MarketHalt> halts;
 };
 
 struct TradingCommand {

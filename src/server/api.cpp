@@ -247,8 +247,8 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
       const auto time = view->market_times.find(symbol);
       market_time = time == view->market_times.end() ? 0 : time->second;
     }
-    const auto paper = paper_acceptance(symbol, market_time, now,
-                                        status.capabilities.delay, max_quote_age);
+    const auto paper = paper_acceptance(symbol, market_time, now, status.capabilities.delay, max_quote_age,
+                                        view ? view->halts : std::vector<MarketHalt>{});
     // The session new orders enter: the market-data clock's, which a delayed
     // feed keeps behind the wall clock's `session`.
     item["paper"] = {{"accepting", paper.ok()},

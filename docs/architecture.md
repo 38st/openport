@@ -31,7 +31,7 @@ flowchart LR
 | Piece | Where | What it does |
 | --- | --- | --- |
 | Pricing | `src/pricing` | Black-76 and Black-Scholes-Merton with full Greeks, a safeguarded implied-volatility solver (Newton in log-price from a Corrado-Miller guess, bisection fallback), Cox-Ross-Rubinstein and Leisen-Reimer trees |
-| Market data | `src/md`, `src/providers` | One event vocabulary (`md::Event`: definitions, quotes, trades, open interest, underlying prints, status) behind every provider adapter; contracts parsed from OSI symbols with their settlement and exercise conventions; product sessions and the holiday calendar; recording and replay |
+| Market data | `src/md`, `src/providers` | One event vocabulary (`md::Event`: definitions, quotes, trades, open interest, underlying prints and official closes, status) behind every provider adapter; contracts parsed from OSI symbols with their settlement and exercise conventions; product sessions and the holiday calendar; recording and replay |
 | Queue | `md::EventQueue` | Keeps the latest value per contract while the engine is busy; definitions are ordering barriers and only trades may be dropped under overload |
 | Analytics | `src/analytics` | Per expiry: a weighted put-call parity fit for the forward and discount factor, IVs and Greeks on that forward, de-Americanised IVs for equity options, SVI and SSVI surfaces with arbitrage checks, and dealer gamma and vanna exposure |
 | Simulator | `src/trading` | `TradingSession`, a deterministic reducer per account: orders, fills against the displayed quotes, risk limits, buying power with spread-aware margin, evaluation rules, settlement, exercise and assignment, and P&L attribution by Greek |

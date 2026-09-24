@@ -232,6 +232,18 @@ market before it. The simulation clock stays at market time. Resting orders do n
 fill from stale data and are not cancelled merely because the feed stalls; they
 remain subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
 
+**Circuit breakers** halt the whole market as the exchanges' market-wide rule does
+(NYSE Rule 7.12, which the options exchanges follow), measured on the S&P 500 (SPX, or
+SPY when SPX is not subscribed) against its previous close: Cboe's published
+previous-day close (`md::UnderlyingClose`), or the closing print the engine saw. In the
+regular session a fall of 7% (level 1) or 13% (level 2) halts trading for 15 minutes,
+each once a day and only until 35 minutes before the close (15:25 ET, 12:25 on an
+early-close day); a fall of 20% (level 3) halts it for the rest of the day. While a halt
+covers an underlying's market time, new orders reject with `MARKET_HALTED`, whose
+message gives the fall and when trading resumes, status reports it, and no resting
+order, trigger or bracket exit fills. `server::circuit_breaker` holds the rule. Halts of
+a single stock or ETF are not modelled.
+
 ## Conditional and bracket orders
 
 Any order may carry a **trigger** `{source, direction, level}`. It is accepted with the
@@ -785,6 +797,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, triggers or brackets |
 | `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age` (a delayed feed: at least three minutes); message includes the lag behind the wall clock |
+| `MARKET_HALTED` | A market-wide circuit breaker has halted trading; the message gives the S&P 500's fall and when trading resumes |
 | `INVALID_SETTLEMENT`, `ALREADY_SETTLED` | Invalid/premature settlement or already settled OSI |
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |

@@ -166,8 +166,11 @@ describe("the demo market", () => {
     const closed = { accepting: false, reason: "SESSION_CLOSED", message: null, session: "closed" as const }
     const stalled = { accepting: false, reason: "FEED_STALLED", message: null, session: "global" as const }
     const open = { accepting: true, reason: null, message: null, session: "regular" as const }
-    const u = (symbol: string, paper: typeof closed | typeof stalled | typeof open) => ({ ...status.underlyings[0]!, symbol, paper })
+    const halted = { accepting: false, reason: "MARKET_HALTED", message: null, session: "regular" as const }
+    const u = (symbol: string, paper: typeof closed | typeof stalled | typeof open | typeof halted) =>
+      ({ ...status.underlyings[0]!, symbol, paper })
     expect(nothingTrades([])).toBe(false)
+    expect(nothingTrades([u("SPX", halted), u("SPY", halted)])).toBe(false)  // a halt lasts minutes
     expect(nothingTrades([u("SPX", closed), u("SPY", open)])).toBe(false)
     expect(nothingTrades([u("SPX", stalled), u("SPY", closed)])).toBe(true)
     expect(idleReason([u("SPX", closed), u("SPY", closed)])).toBe("Options markets are closed")

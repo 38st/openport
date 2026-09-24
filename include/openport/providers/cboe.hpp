@@ -46,6 +46,7 @@ struct CboeChain {
   double ask = 0.0;
   std::vector<CboeOption> options;
   md::Timestamp last_trade_time = 0;  ///< underlying print clock, independent of option sessions
+  double prev_close = 0.0;            ///< the previous trading day's official close, when published
 };
 
 /// Parses cdn.cboe.com/api/global/delayed_quotes/options/<symbol>.json, or the
@@ -159,7 +160,8 @@ class CboeDelayedProvider final : public PollingProvider {
   [[nodiscard]] md::Capabilities capabilities() const noexcept override;
 
   /// Turns one parsed chain into events, publishing only what changed since the
-  /// previous call.
+  /// previous call. During the regular session, the previous day's official close
+  /// is published as an md::UnderlyingClose.
   void publish_chain(const CboeChain& chain, const md::Subscription& subscription,
                      md::EventSink& sink);
 
@@ -178,6 +180,61 @@ class CboeDelayedProvider final : public PollingProvider {
   std::map<std::string, md::Timestamp> page_until_;
   std::map<std::string, md::Timestamp> skip_page_until_;
   std::map<std::string, md::Timestamp> page_fetched_;
+  /// The last official close published per underlying.
+  std::map<std::string, std::pair<md::Date, double>> closes_;
+};
+
+/// Cboe's published options holiday schedule.
+inline constexpr std::string_view kCboeHolidaysUrl = "https://www.cboe.com/us/options/holidays/csv/";
+
+/// Reads Cboe's holiday schedule CSV: after the "##" line, a "Holiday Name,Date,Regular
+/// Trading Hours,Global Trading Hours" header and a row per holiday or early close.
+/// Regular hours of "None" close the day, and an end before 16:00 closes it early; an
+/// overnight session ending on the holiday itself ("to 11:30 AM (Mon)") runs into it.
+/// Throws std::runtime_error for a document without that header.
+[[nodiscard]] std::vector<md::ScheduledDay> parse_cboe_holidays(std::string_view csv);
+
+/// Fetches Cboe's holiday schedule when started and daily after (hourly while it
+/// fails), and passes `sink` every day it has seen, the latest listing of a date
+/// winning: openportd hands them to md::set_scheduled_days, so a closure Cboe
+/// announces takes effect without a new build.
+class CboeHolidaySchedule {
+ public:
+  using Sink = std::function<void(std::vector<md::ScheduledDay>)>;
+  struct Options {
+    std::chrono::seconds interval{24 * 3600};
+    std::chrono::seconds retry{3600};
+    std::chrono::seconds timeout{30};
+    std::function<md::Timestamp()> clock = md::now;
+  };
+
+  explicit CboeHolidaySchedule(Sink sink) : CboeHolidaySchedule(std::move(sink), Options{}) {}
+  CboeHolidaySchedule(Sink sink, Options options);
+  ~CboeHolidaySchedule() { stop(); }
+  CboeHolidaySchedule(const CboeHolidaySchedule&) = delete;
+  CboeHolidaySchedule& operator=(const CboeHolidaySchedule&) = delete;
+
+  void start();
+  /// Interrupts a request in flight and joins.
+  void stop();
+  /// Fetches the schedule if it is due, on the caller's thread; returns when it next is.
+  md::Timestamp poll_once(net::HttpClient& http);
+  /// The latest failure, or empty.
+  [[nodiscard]] std::string error() const;
+
+ private:
+  void run();
+
+  Sink sink_;
+  Options options_;
+  md::Timestamp due_ = 0;
+  std::map<md::Date, md::ScheduledDay> days_;
+  std::thread thread_;
+  std::atomic<bool> stopping_{false};
+  std::mutex wake_mutex_;
+  std::condition_variable wake_;
+  mutable std::mutex error_mutex_;
+  std::string error_;
 };
 
 }  // namespace openport::providers

@@ -421,6 +421,61 @@ TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejection
   expect_error(server::handle_api({"GET", "/api/missing"}, *engine), 404, "NOT_FOUND");
 }
 
+TEST(CircuitBreakers, TripOnTheSandPsFallFromThePreviousClose) {
+  const auto at = [](int h, int m) { return md::new_york_to_utc({2026, 9, 22}, h, m); };
+  EXPECT_FALSE(server::circuit_breaker(5000, 4700, at(10, 0), 0));  // 6%
+  const auto first = server::circuit_breaker(5000, 4640, at(10, 0), 0);  // 7.2%
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->level, 1);
+  EXPECT_EQ(first->end, at(10, 15));
+  EXPECT_FALSE(server::circuit_breaker(5000, 4600, at(10, 30), 1));  // once a day
+  const auto second = server::circuit_breaker(5000, 4340, at(11, 0), 1);  // 13.2%
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->level, 2);
+  EXPECT_EQ(server::circuit_breaker(5000, 4340, at(10, 0), 0)->level, 2);  // a gap past level 1
+  EXPECT_FALSE(server::circuit_breaker(5000, 4600, at(15, 25), 0));  // no 15-minute halt from 15:25
+  const auto third = server::circuit_breaker(5000, 3990, at(15, 40), 2);  // 20.2%, at any time
+  ASSERT_TRUE(third);
+  EXPECT_EQ(third->level, 3);
+  EXPECT_EQ(third->end, at(17, 0));
+  EXPECT_FALSE(server::circuit_breaker(5000, 3900, at(15, 45), 3));
+  EXPECT_FALSE(server::circuit_breaker(5000, 4000, at(9, 0), 0));  // the regular session only
+  EXPECT_FALSE(server::circuit_breaker(0, 4000, at(10, 0), 0));    // no previous close
+  const auto early = [](int h, int m) { return md::new_york_to_utc({2026, 11, 27}, h, m); };
+  EXPECT_TRUE(server::circuit_breaker(5000, 4600, early(12, 24), 0));  // 12:25 on an early-close day
+  EXPECT_FALSE(server::circuit_breaker(5000, 4600, early(12, 25), 0));
+}
+
+TEST_F(PaperEngine, ACircuitBreakerHaltsOrdersAndFillsForFifteenMinutes) {
+  market.contract = *md::parse_osi("SPXW261022P05000000");  // out of the money until the fall
+  // Monday's close, as Cboe publishes it during Tuesday's session.
+  provider.sink->publish(md::UnderlyingClose{"SPX", market.time, {2026, 9, 21}, 5400});
+  const auto at = [&](md::Timestamp time, double spx, std::string ask) {
+    provider.sink->publish(md::UnderlyingQuote{"SPX", time, spx, spx, spx});
+    provider.sink->publish(md::OptionQuote{0, time, 3.80, Money::parse(ask).dollars(), 10, 10});
+    ASSERT_TRUE(wait_for([&] { return engine->metrics("SPX") && engine->metrics("SPX")->as_of == time; }));
+  };
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  at(market.time - md::kNanosPerMinute, 5390, "4.20");
+  const auto resting = write(*engine, "POST", "/api/orders", order(market, "resting", "4.00"));
+  ASSERT_EQ(resting.status, 201) << resting.body;
+  EXPECT_EQ(json::parse(resting.body)["order"]["status"], "working");
+  // SPX falls 7.4% below 5,400: the market halts until 10:15, and even a marketable ask does not fill.
+  at(market.time, 5000, "3.90");
+  const auto status = read(*engine, "/api/status")["underlyings"][0]["paper"];
+  EXPECT_EQ(status["accepting"], false);
+  EXPECT_EQ(status["reason"], "MARKET_HALTED");
+  EXPECT_EQ(status["message"], "Trading is halted market-wide: the S&P 500 fell 7.4% from its previous close of 5400.00 "
+                               "(a level 1 circuit breaker); it resumes at 10:15 ET");
+  expect_error(write(*engine, "POST", "/api/orders", order(market, "halted", "4.20")), 422, "MARKET_HALTED");
+  EXPECT_EQ(read(*engine, "/api/orders?status=open")["orders"].size(), 1);
+  // At 10:15 trading resumes; level 1 does not trip again that day.
+  at(market.time + 15 * md::kNanosPerMinute, 5010, "3.90");
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->positions.size() == 1; }));
+  EXPECT_EQ(read(*engine, "/api/status")["underlyings"][0]["paper"]["accepting"], true);
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", order(market, "after", "4.00")).status, 201);
+}
+
 TEST_F(PaperEngine, ARetriedOrderGetsItsFirstAnswer) {
   seed();
   const auto first = write(*engine, "POST", "/api/orders", order(market, "retry", "4.20"));

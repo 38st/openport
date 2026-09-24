@@ -199,6 +199,13 @@ class Engine final : public MetricsSource {
   /// last one before it, for the last week of dates.
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> closing_prints_;
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> before_close_;
+  /// Official closes by symbol and date (md::UnderlyingClose), for a week of dates.
+  std::map<std::pair<std::string, md::Date>, double> official_closes_;
+  /// Circuit-breaker halts of the last day, and the level tripped on breaker_day_.
+  std::vector<MarketHalt> halts_;
+  md::Date breaker_day_;
+  int breaker_level_ = 0;
+  void check_circuit_breaker(const md::UnderlyingQuote& spot);
   md::Timestamp market_time_ = 0;
   std::map<std::string, md::InstrumentId> instruments_;
   std::map<std::string, std::uint64_t> observations_;

@@ -110,7 +110,10 @@ pays a per-contract fee. Positions are marked at the mid, and risk limits on dol
 delta, vega, order size, price bands and daily loss are checked before and at every
 fill. Every product trades in its regular session (09:30 to 16:15 ET for index
 options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
-(20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. American equity
+(20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. The
+market-wide circuit breakers halt trading when the S&P 500 falls 7%, 13% or 20%, and
+Cboe's published holiday schedule is read daily, so a closure it announces applies at
+once. American equity
 and ETF options deliver shares when exercised early or held into expiry a cent in the
 money. A short one that trades below its exercise value at the close, or a call worth
 less over it than a dividend going ex, can be assigned overnight, in part and at
@@ -212,6 +215,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
 | `--dividends FILE` | Dividends to pay on held shares: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule |
+| `--no-cboe-holidays` | Don't read Cboe's published holiday schedule, which lets a special closure it announces apply without a new build ([calendar](docs/runtime.md#product-sessions-and-cboe-clocks)) |
 
 Every value is range-checked; `openportd --help` lists every flag, and the
 [runtime notes](docs/runtime.md) cover the details.
@@ -381,6 +385,7 @@ its files when the draft exists; GitHub tags the commit when you publish the dra
 - [x] Demo market: a simulated day to trade when nothing else does
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [x] Partial, random early assignment, and dividend risk on short calls
+- [x] Market-wide circuit breakers, and Cboe's holiday schedule read daily
 - [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
 

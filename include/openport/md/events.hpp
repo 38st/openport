@@ -96,7 +96,17 @@ struct ProviderStatus {
   std::string underlying;  ///< empty only for provider-wide failures
 };
 
+/// An underlying's official closing price for a trading date, as its provider
+/// publishes it (Cboe's previous-day close): what the market-wide circuit breakers
+/// measure the S&P 500's fall from.
+struct UnderlyingClose {
+  std::string symbol;
+  Timestamp ts = 0;  ///< market-data time it was published at
+  Date date;         ///< the trading date that closed
+  double price = 0.0;
+};
+
 using Event = std::variant<ContractDefinition, OptionQuote, OptionTrade, OpenInterest,
-                           VendorGreeks, UnderlyingQuote, ProviderStatus>;
+                           VendorGreeks, UnderlyingQuote, ProviderStatus, UnderlyingClose>;
 
 }  // namespace openport::md

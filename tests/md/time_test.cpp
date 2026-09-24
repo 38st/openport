@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <set>
+#include <vector>
 
 namespace {
 
@@ -353,5 +354,36 @@ TEST(Time, ProductEarlyClosesHaveNoCurbAndResumeOnTheNextTradeDate) {
   const auto christmas = trading_session("SPX", new_york_to_utc({2026, 12, 24}, 21, 0));
   EXPECT_FALSE(christmas.open);
   EXPECT_EQ(christmas.market_time, new_york_to_utc({2026, 12, 24}, 13, 15));
+}
+}  // namespace
+
+namespace {
+/// Announced days apply only inside a test.
+struct Announced {
+  explicit Announced(std::vector<openport::md::ScheduledDay> days) { openport::md::set_scheduled_days(std::move(days)); }
+  ~Announced() { openport::md::set_scheduled_days({}); }
+};
+
+TEST(Time, AnnouncedClosuresAndEarlyClosesOverrideTheRules) {
+  using namespace openport::md;
+  const Date mourning{2026, 10, 7}, short_day{2026, 10, 8}, labor{2026, 9, 7};
+  ASSERT_TRUE(market_session(new_york_to_utc(mourning, 12, 0)).open);
+  {
+    const Announced announced({{mourning, "National Day of Mourning", true, 13, 0},
+                               {short_day, "Early close", false, 13, 0},
+                               {labor, "Labor Day", true, 13, 0}});  // no overnight session into it this time
+    EXPECT_EQ(market_session(new_york_to_utc(mourning, 12, 0)).note, "closed (holiday: National Day of Mourning)");
+    EXPECT_EQ(trading_date(new_york_to_utc({2026, 10, 6}, 18, 0)), short_day);
+    EXPECT_EQ(previous_business_day(short_day), (Date{2026, 10, 6}));
+    EXPECT_FALSE(trading_session("SPX", new_york_to_utc(mourning, 10, 0)).open);
+    EXPECT_EQ(regular_close_hour(short_day), 13);
+    EXPECT_EQ(market_session(new_york_to_utc(short_day, 12, 0)).note, "open, early close 13:00 ET");
+    EXPECT_EQ(trading_session("SPXW", new_york_to_utc(short_day, 12, 0)).end, new_york_to_utc(short_day, 13, 15));
+    EXPECT_EQ(trading_session("SPX", new_york_to_utc({2026, 9, 6}, 21, 0)).name, "closed");
+    EXPECT_EQ(scheduled_days().size(), 3u);
+  }
+  EXPECT_TRUE(scheduled_days().empty());
+  EXPECT_TRUE(market_session(new_york_to_utc(mourning, 12, 0)).open);
+  EXPECT_EQ(trading_session("SPX", new_york_to_utc({2026, 9, 6}, 21, 0)).name, "global");
 }
 }  // namespace

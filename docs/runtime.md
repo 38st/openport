@@ -334,9 +334,18 @@ options markets observe, for every year from 2022 on: a holiday on a Saturday cl
 the Friday before (except New Year's Day, whose Friday would end the year), one on a
 Sunday the Monday after, and the day before Independence Day and Christmas Eve close
 at 13:00 when they fall Monday to Thursday, as does the day after Thanksgiving. The
-tests check the rules against NYSE's published 2025–2028 calendars. Special closures
-are listed as they are announced (the National Day of Mourning on 2025-01-09); one
-announced later is unknown until added. Before 2022 only weekdays are known.
+tests check the rules against NYSE's published 2025–2028 calendars and Cboe's 2026
+schedule. Before 2022 only weekdays are known.
+
+Special closures are announced one at a time, so `openportd` also reads Cboe's
+published holiday schedule ([CSV](https://www.cboe.com/us/options/holidays/csv/),
+`providers::CboeHolidaySchedule`) when it starts and daily after, hourly while that
+fails. Each date Cboe lists overrides the rules for that date through
+`md::set_scheduled_days`: a closure, an early close, and whether the overnight session
+runs into a holiday. A national day of mourning therefore takes effect once Cboe posts
+it, without a new build, and dates seen earlier stay when the schedule rolls to the next
+year. `--no-cboe-holidays` turns the fetch off; a replay never fetches it. The National
+Day of Mourning on 2025-01-09 is built in.
 
 Around holidays GTH follows Cboe's schedule. It does not run into a weekend, New
 Year's Day, Good Friday or Christmas; into the other seven holidays it runs from
@@ -344,8 +353,10 @@ Year's Day, Good Friday or Christmas; into the other seven holidays it runs from
 trading date, and the holiday evening opens the next business day's session as usual
 ([Cboe's holiday schedule](https://www.cboe.com/about/hours/us-options/)). On an
 early-close day index options trade until 13:15 with no curb afterwards, as Cboe's
-notices set out. Unscheduled halts are not modelled, and trading sessions do not
-change option settlement or expiry times.
+notices set out. The market-wide circuit breakers are modelled (see
+[paper trading](paper-trading.md#orders-and-quote-matching)); halts of one stock or ETF are not, since no
+provider here reports them. Trading sessions do not change option settlement or expiry
+times.
 
 The Cboe adapter polls the CDN files (`cdn.cboe.com/api/global/delayed_quotes/options/`)
 every 15 seconds. When a file's own timestamp is more than five minutes behind the
@@ -366,7 +377,10 @@ Cboe option timestamps use `t = publication - 15 minutes`, capped to the most
 recent session end only when that option root is closed. Live overnight and
 curb quotes therefore advance while the stock/index print remains frozen.
 `UnderlyingQuote.ts` is the parsed New York `data.last_trade_time`; missing or
-invalid times remain unknown (zero), never fabricated from publication time.
+invalid times remain unknown (zero), never fabricated from publication time. During the
+regular session the adapter also publishes `data.prev_day_close` as an
+`md::UnderlyingClose` for the previous business day, once per change; in the evening it
+waits, as Cboe may not have rolled it over yet. Recordings carry these events too.
 Analytics ignores an underlying print more than 30 minutes behind option data
 (`AnalyticsOptions::max_spot_age_minutes`) and infers spot from parity, so frozen
 index closes do not contaminate GTH Greeks. The limit sits above the 15-minute gap

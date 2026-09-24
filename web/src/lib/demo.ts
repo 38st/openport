@@ -1,8 +1,12 @@
 import { useSyncExternalStore } from "react"
 import type { UnderlyingSnapshot } from "../api/types"
 
-/** No underlying on the live feed takes paper orders now: each market is closed or its feed has stalled. */
+/**
+ * No underlying on the live feed takes paper orders now: each market is closed or its
+ * feed has stalled. A circuit-breaker halt lasts minutes, so it is not offered the demo.
+ */
 export function nothingTrades(underlyings: UnderlyingSnapshot[]): boolean {
+  if (underlyings.some((u) => u.paper?.reason === "MARKET_HALTED")) return false
   return underlyings.length > 0 && underlyings.every((u) => (u.paper ? !u.paper.accepting : u.session?.open === false))
 }
 

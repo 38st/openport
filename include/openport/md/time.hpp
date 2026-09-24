@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace openport::md {
 
@@ -86,6 +87,24 @@ struct MarketSession {
   std::optional<Timestamp> next_open;  ///< null while open, or beyond timestamp range
 };
 [[nodiscard]] MarketSession market_session(Timestamp ts);
+
+/// A date the exchange has announced a closure or an early close for. The calendar
+/// takes it over NYSE's rules for that date, so a special closure (a national day of
+/// mourning, say) needs no new build: openportd loads Cboe's published holiday
+/// schedule (providers::CboeHolidaySchedule).
+struct ScheduledDay {
+  Date date;
+  std::string name;
+  bool closed = true;
+  int close_hour = 13;       ///< the regular close, ET, of a day that is open
+  int overnight_until = 0;   ///< a closed day: minutes after midnight ET that Cboe's
+                             ///< overnight session runs into it until, or zero
+  friend bool operator==(const ScheduledDay&, const ScheduledDay&) = default;
+};
+/// Replaces the announced days, one per date (the first of any repeats). Thread-safe;
+/// every calendar function sees them at once.
+void set_scheduled_days(std::vector<ScheduledDay> days);
+[[nodiscard]] std::vector<ScheduledDay> scheduled_days();
 
 /// Per-root option sessions, independent of the underlying stock/index clock.
 /// GTH belongs to the following trading date. Before a weekend, New Year's Day,
