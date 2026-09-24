@@ -175,7 +175,12 @@ json portfolio_json(const TradingView& view) {
         {"mark", money(p.mark)}, {"mark_age_seconds", p.mark ? json(static_cast<double>(p.mark_age) / md::kNanosPerSecond) : json(nullptr)},
         {"market_value", money(p.market_value)}, {"unrealised", money(p.unrealised)},
         {"realised", position.realised.str()}, {"fees", position.fees.str()}, {"fresh", p.fresh},
-        {"awaiting_settlement", p.awaiting_settlement}, {"greeks", position_greeks(p, view)},
+        {"awaiting_settlement", p.awaiting_settlement},
+        // How an expired position settles: on the recorded closing print, or by a value entered by hand.
+        {"settle_by", !p.awaiting_settlement ? json(nullptr)
+            : c.settlement == md::Settlement::PM && s.closing_prints.contains(c.underlying + " " + md::format_date(c.expiry))
+                ? json("closing_print") : json("manual")},
+        {"greeks", position_greeks(p, view)},
         {"attribution", s.attributions.contains(c.osi_symbol()) ? attribution_json(s.attributions.at(c.osi_symbol())) : json(nullptr)}});
   }
   json stocks = json::array();

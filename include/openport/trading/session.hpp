@@ -55,6 +55,8 @@ struct TradingSnapshot {
   std::vector<DividendPayment> dividends;  ///< Dividends paid on held shares, oldest first.
   /// Notes and tags by trade, named by its opening fill's ID.
   std::map<std::string, Annotation> annotations;
+  /// Closing prints recorded for PM settlement, by "UNDERLYING YYYY-MM-DD".
+  std::map<std::string, ClosingPrint> closing_prints;
   /// Today's P&L by Greek for the account, and for each contract held or traded
   /// today. Positions held from before an upgrade join at the next fill or rollover.
   Attribution attribution;
@@ -154,6 +156,10 @@ class TradingSession {
   CommandResult reset_kill(std::string reason, Timestamp time);
   /// Explicit authoritative reference, including AM imports. Only after expiry.
   CommandResult settle(const std::string& symbol, Money settlement, Timestamp time);
+  /// Keeps an underlying's closing print for a date in the journal, so PM
+  /// settlement uses it after a restart; the first one recorded stands.
+  CommandResult record_close(const std::string& underlying, md::Date date, Money price, Timestamp print_time, Timestamp time);
+  [[nodiscard]] std::optional<ClosingPrint> closing_print(const std::string& underlying, md::Date date) const;
   /// Explicit baseline reset, once per later New York date; requires full marks.
   /// Kill latch persists across rollover.
   /// `dividends` are those going ex on the new trading date (and any skipped while

@@ -904,7 +904,7 @@ focus at the top of the ticket.
 | `GET /api/risk` | Version, limits revision, limits, complete flag, daily loss, kill state, aggregate/underlying buckets and scenario matrices |
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
-| `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position; returns version and `position_closed` |
+| `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised`, `qualifying` and `attribution`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
@@ -984,12 +984,16 @@ print stamped at or after the regular close (16:00 ET, 13:00 early) on the expir
 date**, in provider arrival order. ETF options that trade until 16:15 settle then, on
 that 16:00 print, as OCC exercises on the closing price. This is the **provider’s closing print**, an approximation of the
 official settlement value. Bid/ask midpoints and next-day prices are not substitutes.
-If no such print arrives, the position stays awaiting settlement. AM positions
-always wait for an explicit `/api/settlements` import, whose value must come from
-the operator’s authoritative settlement source; PM imports are rejected. The
-same journal transaction records the reference value, canonical definition and
-integration `settlement_source`: `provider_closing_print` with provider and print
-time, or `manual_am_import`. Preserve the official source used for an AM import
+Each account records the print in its journal (`record_close`, kept per underlying
+and date) as soon as it holds a PM position expiring that day, so a restart before
+ETF options expire at 16:15 still settles them on it. If no such print arrives, the
+position waits, and its `settle_by` reads `manual`. AM positions always wait for an
+explicit `/api/settlements` import (the terminal's Settle button on the position),
+whose value must come from the authoritative settlement source; PM imports are
+accepted only while no closing print is recorded. The same journal transaction
+records the reference value, canonical definition and integration
+`settlement_source`: `provider_closing_print` with provider and print time,
+`manual_am_import` or `manual_pm_import`. Preserve the official source used for an AM import
 externally when an independent provenance audit is required. The first market
 batch on a later trading date rolls the daily baseline once marks are complete;
 the kill latch survives. All accounting uses effective market time, including

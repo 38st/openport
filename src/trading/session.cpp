@@ -434,6 +434,7 @@ TradingSnapshot snapshot_of(const State& s) {
   out.attempts = s.attempts;
   out.stock_fills = s.stock_fills;
   out.dividends = s.dividends;
+  out.closing_prints = s.closing_prints;
   out.annotations = s.annotations;
   // Today's P&L by Greek: the finished stretches, and the open ones to the marks now.
   out.attributions = s.explained;
@@ -1621,6 +1622,24 @@ void pay_dividends(State& s, const std::vector<Dividend>& dividends, Events& eve
   }
 }
 }  // namespace
+namespace {
+std::string close_key(const std::string& underlying, md::Date date) { return underlying + " " + md::format_date(date); }
+}  // namespace
+CommandResult TradingSession::record_close(const std::string& underlying, md::Date date, Money price, Timestamp print_time,
+                                           Timestamp time) {
+  if (underlying.empty() || price <= Money{} || !md::valid_date(date))
+    throw TradingError(Reason::INVALID_SETTLEMENT, "A closing print needs an underlying, a valid date and a positive price");
+  return impl_->transact(time, "closing_print", [&](State& s, Events& events) {
+    if (s.closing_prints.try_emplace(close_key(underlying, date), ClosingPrint{price, print_time}).second)
+      event(events, "closing_print", Json{{"underlying", underlying}, {"date", date}, {"price", price}, {"time", print_time}});
+    return CommandResult{};
+  });
+}
+std::optional<ClosingPrint> TradingSession::closing_print(const std::string& underlying, md::Date date) const {
+  const auto& prints = impl_->state.closing_prints;
+  const auto it = prints.find(close_key(underlying, date));
+  return it == prints.end() ? std::nullopt : std::optional(it->second);
+}
 CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividend>& dividends) {
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
     const auto day = md::trading_date(time);

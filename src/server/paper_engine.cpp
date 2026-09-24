@@ -466,17 +466,25 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         if (const auto price = quote_price(book->second.spot)) stocks.push_back({symbol, book->second.spot_ts, *price});
       }
       session.on_quotes(quotes, valuations, market_time_, stocks);
+      // Each account keeps the closing print its PM positions will settle on, so
+      // a restart before they expire (16:15 for ETF options) still uses it.
+      for (const auto& p : session.snapshot()->positions) {
+        const auto& contract = p.position.contract;
+        if (contract.settlement != md::Settlement::PM || session.closing_print(contract.underlying, contract.expiry)) continue;
+        const auto print = closing_prints_.find({contract.underlying, contract.expiry});
+        if (print != closing_prints_.end())
+          session.record_close(contract.underlying, contract.expiry, Money::from_double(print->second.last), print->second.ts, market_time_);
+      }
       // A PM contract settles on its expiry date's closing print once it expires:
       // at the close, or a quarter hour later for ETF options that trade until 16:15.
       for (const auto& p : session.snapshot()->positions) {
         const auto& contract = p.position.contract;
         if (contract.settlement != md::Settlement::PM || market_time_ < contract.expiry_time()) continue;
-        const auto print = closing_prints_.find({contract.underlying, contract.expiry});
-        if (print == closing_prints_.end()) continue;
-        const auto& spot = print->second;
+        const auto print = session.closing_print(contract.underlying, contract.expiry);
+        if (!print) continue;
         settlement_source_ = {{"kind", "provider_closing_print"}, {"provider", std::string(provider_.name())},
-                              {"symbol", spot.symbol}, {"quote_time", md::format_timestamp(spot.ts)}};
-        session.settle(contract.osi_symbol(), Money::from_double(spot.last), market_time_);
+                              {"symbol", contract.underlying}, {"quote_time", md::format_timestamp(print->time)}};
+        session.settle(contract.osi_symbol(), print->price, market_time_);
       }
       // An overnight session belongs to the next trading date, so a day ends
       // when the last session of the one before (curb) does.
@@ -576,11 +584,13 @@ void Engine::apply_command(PendingCommand& pending) {
         case TradingCommand::Kind::Trip: result = session.trip_kill(c.reason, market_time_); break;
         case TradingCommand::Kind::Reset: result = session.reset_kill(c.reason, market_time_); break;
         case TradingCommand::Kind::Settle: {
+          // AM settlement is always imported; PM only when no closing print arrived.
           const auto it = session.contracts().find(c.symbol);
-          if (it != session.contracts().end() && it->second.settlement != md::Settlement::AM)
-            result.decision = {Reason::INVALID_SETTLEMENT, "PM settlement uses the provider closing print", {}, {}, {}};
+          const bool pm = it != session.contracts().end() && it->second.settlement != md::Settlement::AM;
+          if (pm && session.closing_print(it->second.underlying, it->second.expiry))
+            result.decision = {Reason::INVALID_SETTLEMENT, "PM settlement uses the recorded closing print", {}, {}, {}};
           else {
-            settlement_source_ = {{"kind", "manual_am_import"}, {"symbol", c.symbol}};
+            settlement_source_ = {{"kind", pm ? "manual_pm_import" : "manual_am_import"}, {"symbol", c.symbol}};
             result = session.settle(c.symbol, c.settlement, market_time_);
           }
           break;

@@ -348,6 +348,8 @@ export interface Position {
   fees: Money
   fresh: boolean
   awaiting_settlement: boolean
+  /** While awaiting settlement: on the recorded closing print, or by a value entered by hand (AM series, or no print arrived). */
+  settle_by?: "closing_print" | "manual" | null
   greeks: { delta: Num; gamma: Num; vega: Num; theta: Num; dollar_delta: Num; dollar_gamma_1pct: Num; vega_dollars: Num; theta_dollars: Num }
   /** Today's P&L by Greek for this contract; null until its first fill or rollover on this server. */
   attribution?: Attribution | null

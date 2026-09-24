@@ -92,6 +92,12 @@ struct Closure {
 /// delivered by a short option's early assignment.
 enum class StockSource { Delivery, Exercise, Trade, Rule, Reset, Assignment };
 
+/// An underlying's closing print for a date: what its PM-settled options settle on.
+struct ClosingPrint {
+  Money price;
+  Timestamp time = 0;  ///< When the print was stamped.
+};
+
 /// A dividend paid on (or, by short shares, charged to) the shares held into its ex-date.
 struct DividendPayment {
   std::string symbol;

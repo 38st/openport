@@ -9,7 +9,7 @@ import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
-import { CloseSharesDialog, ExerciseDialog, SharesTable } from "../components/StockActions"
+import { CloseSharesDialog, ExerciseDialog, SettleDialog, SharesTable } from "../components/StockActions"
 import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
 import { ScenarioGrid } from "../components/ScenarioGrid"
@@ -71,8 +71,9 @@ function protection(position: Position, orders: Order[]): string | null {
   return exits.map((o) => `${o.role === "stop_loss" ? "Stop" : "Target"} ${o.trigger ? describeTrigger(o.trigger, o.side ?? "sell", o.underlying)
     : formatMoney(o.limit_price)}`).join(" · ")
 }
-function Positions({ positions, onClose, onExercise, orders = [], selected, onSelect, groups = [] }: {
-  positions: Position[]; onClose?: (position: Position) => void; onExercise?: (position: Position) => void; orders?: Order[]
+function Positions({ positions, onClose, onExercise, onSettle, orders = [], selected, onSelect, groups = [] }: {
+  positions: Position[]; onClose?: (position: Position) => void; onExercise?: (position: Position) => void
+  onSettle?: (position: Position) => void; orders?: Order[]
   /** Held strategies, to note which positions belong to one. */
   groups?: readonly StrategyGroup[]
   /** Positions picked to close together, by symbol. */
@@ -109,6 +110,8 @@ function Positions({ positions, onClose, onExercise, orders = [], selected, onSe
           {onExercise && position.quantity > 0 && !position.awaiting_settlement && deliversShares(position.underlying) &&
             <button type="button" className="trade-button" aria-label={`Exercise ${position.symbol}`} onClick={() => onExercise(position)}>Exercise</button>}
           {onClose && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Close ${position.symbol}`} onClick={() => onClose(position)}>Close</button>}
+          {onSettle && position.awaiting_settlement && position.settle_by === "manual" &&
+            <button type="button" className="trade-button" aria-label={`Settle ${position.symbol}`} onClick={() => onSettle(position)}>Settle</button>}
         </div></td>
       </tr>
     })}
@@ -130,6 +133,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const [editing, setEditing] = useState<Risk | null>(null)
   const [closing, setClosing] = useState<Position | null>(null)
   const [exercising, setExercising] = useState<Position | null>(null)
+  const [settling, setSettling] = useState<Position | null>(null)
   const [closingShares, setClosingShares] = useState<StockHolding | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [together, setTogether] = useState(false)
@@ -176,6 +180,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
       </> : undefined}>
         <Positions positions={data.positions} orders={allOrders} groups={groups} onClose={trading.enabled ? setClosing : undefined}
           onExercise={trading.enabled ? setExercising : undefined}
+          onSettle={trading.enabled ? setSettling : undefined}
           selected={trading.enabled && data.positions.length > 1 ? picked : undefined}
           onSelect={(symbol, on) => setPicked((current) => { const next = new Set(current); if (on) next.add(symbol); else next.delete(symbol); return next })} />
       </Panel>
@@ -192,6 +197,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
     {editing && <LimitsEditor initial={editing} trading={trading} onClose={() => setEditing(null)} />}
     {closing && <CloseTicket position={closing} trading={trading} onClose={() => setClosing(null)} />}
     {exercising && <ExerciseDialog position={exercising} trading={trading} onClose={() => setExercising(null)} />}
+    {settling && <SettleDialog position={settling} trading={trading} onClose={() => setSettling(null)} />}
     {closingShares && <CloseSharesDialog stock={closingShares} trading={trading} onClose={() => setClosingShares(null)} />}
     {flatten && data && <FlattenDialog positions={data.positions} stocks={data.stocks ?? []} orders={allOrders ?? []} trading={trading}
       initial={flatten.underlying} onClose={() => setFlatten(null)} />}

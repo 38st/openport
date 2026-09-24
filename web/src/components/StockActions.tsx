@@ -5,13 +5,40 @@ import type { Position, StockHolding, TradingStatus } from "../api/trading-types
 import { describeAttribution } from "../lib/attribution"
 import { fixed, isNum } from "../lib/format"
 import { contractLabel } from "../lib/journal"
-import { formatMoney, signedMoney } from "../lib/trading"
+import { deliversShares, formatMoney, signedMoney } from "../lib/trading"
 import { Dialog } from "./Dialog"
 import { useWrite } from "./OrderActions"
 import { TradingError, WriteAccess } from "./TradingControls"
 import { Badge, toneOf, toneText } from "./ui"
 
 const dollars = (value: number) => formatMoney(value.toFixed(2))
+
+/** An expired position's settlement value entered by hand: an AM series' opening
+ * quotation, or a PM series' official close when no closing print arrived. */
+export function SettleDialog({ position, trading, onClose }: { position: Position; trading: TradingStatus; onClose: () => void }) {
+  const write = useWrite(trading)
+  const [value, setValue] = useState("")
+  const reference = Number(value)
+  const valid = /^\d+(\.\d{1,6})?$/.test(value.trim()) && reference > 0
+  const call = position.type === "call"
+  const intrinsic = valid ? Math.max(0, call ? reference - position.strike : position.strike - reference) : null
+  const am = position.settlement === "AM"
+  return <Dialog title={`Settle ${contractLabel(position)}`} onClose={onClose}>
+    <p className="text-sm">{am
+      ? `AM-settled series settle on ${position.underlying}'s special opening quotation on the expiry date, which no feed here provides.`
+      : `No closing print for ${position.underlying} arrived after this contract expired.`} Enter the official
+      {am ? " settlement value" : " closing value"} from the exchange; the position closes at intrinsic value.</p>
+    <label className="trade-label">{position.underlying} settlement value
+      <input className="trade-input" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} placeholder="Official value" /></label>
+    {intrinsic != null && <p className="text-sm text-muted">Intrinsic value {dollars(intrinsic)} a share, {signedMoney((intrinsic * 100 * position.quantity).toFixed(2))} for
+      {` ${Math.abs(position.quantity)} ${position.quantity < 0 ? "short " : ""}`}contract{Math.abs(position.quantity) === 1 ? "" : "s"}{deliversShares(position.underlying) && intrinsic >= 0.01 ? `, delivering ${Math.abs(position.quantity) * 100} ${position.underlying} shares` : ""}.</p>}
+    <WriteAccess trading={trading} />
+    <TradingError error={write.error} />
+    <button type="button" className="trade-button" disabled={!valid || write.pending || write.blocked}
+      onClick={() => void write.run(() => api.settle(position.symbol, value.trim(), trading.write), onClose)}>
+      {write.pending ? "Settling…" : "Settle"}</button>
+  </Dialog>
+}
 
 /** Shares that exercise and assignment delivered, each closable at the underlying's price. */
 export function SharesTable({ stocks, onClose }: { stocks: StockHolding[]; onClose?: (stock: StockHolding) => void }) {

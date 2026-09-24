@@ -1032,6 +1032,68 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
   std::filesystem::remove(path);
 }
 
+TEST(PaperRecovery, TheClosingPrintSurvivesARestartBeforeETFOptionsExpire) {
+  const auto path = std::filesystem::temp_directory_path() / ("openport-close-" + std::to_string(md::now()) + ".jsonl");
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPY260922C00500000");
+  const auto close = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPY"}}, options); engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    provider.sink->publish(md::ContractDefinition{0, market.contract});
+    provider.sink->publish(md::UnderlyingQuote{"SPY", market.time, 500, 500, 500});
+    provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+    ASSERT_TRUE(wait_for([&] { return engine.metrics("SPY") && engine.metrics("SPY")->as_of == market.time; }));
+    ASSERT_EQ(write(engine, "POST", "/api/orders", order(market, "spy", "4.20")).status, 201);
+    provider.sink->publish(md::UnderlyingQuote{"SPY", close, 0, 0, 501});
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->closing_prints.contains("SPY 2026-09-22"); }));
+    EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["settle_by"], nullptr);
+    engine.stop();
+  }
+  // After the restart the feed's next prints are after-hours ones; the recorded close still settles it.
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPY"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", close + 10 * md::kNanosPerMinute, 0, 0, 510});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", market.contract.expiry_time(), 0, 0, 499});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->positions.empty(); }));
+  ASSERT_EQ(engine.trading_view()->snapshot->stocks.size(), 1);
+  EXPECT_EQ(engine.trading_view()->snapshot->stock_fills.at(0).price, Money::parse("501"));
+  engine.stop();
+  std::filesystem::remove(path);
+}
+
+TEST(PaperRecovery, WithoutAClosingPrintPMPositionsSettleByHand) {
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPXW260922C05000000");
+  const auto later = *md::parse_osi("SPXW260923C05000000");
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, paper_options()); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::ContractDefinition{1, later});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+  provider.sink->publish(md::OptionQuote{1, market.time, 9, 9.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+  ASSERT_EQ(write(engine, "POST", "/api/orders", order(market, "pm", "4.20")).status, 201);
+  // Market time passes the close on option quotes alone: no SPX print at or after 16:00.
+  const auto after = market.contract.expiry_time() + 5 * md::kNanosPerMinute;
+  provider.sink->publish(md::OptionQuote{1, after, 8, 8.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] {
+    const auto view = engine.trading_view();
+    return !view->snapshot->positions.empty() && view->snapshot->positions[0].awaiting_settlement;
+  }));
+  EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["settle_by"], "manual");
+  const auto settled = write(engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5010.25"}});
+  ASSERT_EQ(settled.status, 200) << settled.body;
+  EXPECT_TRUE(engine.trading_view()->snapshot->positions.empty());
+  engine.stop();
+}
+
 TEST(PaperPlans, PresetsListExactRules) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());
