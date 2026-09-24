@@ -29,8 +29,10 @@ class ReplayHost {
     /// Analytics, paper and write settings for replay engines; journals, recording
     /// and chart persistence are always off for a replay.
     Engine::Options engine;
-    /// Offer the demo market, a simulated day generated on each start
-    /// (providers::write_demo_recording) and played like a recording.
+    /// Offer the demo market: simulated days (providers::write_demo_recording)
+    /// played like recordings, each generated once, into a directory only this
+    /// process uses, and removed with the host. Listing the replays prepares the
+    /// default day in the background.
     bool demo = true;
   };
 
@@ -48,10 +50,13 @@ class ReplayHost {
 
  private:
   struct Session;
+  class DemoRecordings;
   void control(const ApiRequest& request, const ApiCompletion& complete);
   [[nodiscard]] std::shared_ptr<Session> current() const;
 
   Options options_;
+  // Sessions play the demo's files, so they are declared after it and stop first.
+  std::unique_ptr<DemoRecordings> demos_;
   mutable std::mutex mutex_;
   std::shared_ptr<Session> session_;
 };

@@ -145,6 +145,7 @@ class Discard final : public md::EventSink {
 
 struct Listed {
   md::OptionContract contract;
+  md::Timestamp expiry = 0;  ///< contract.expiry_time(), computed once
   md::InstrumentId id = 0;
   Quote last;
   double bid_size = 0;
@@ -287,7 +288,8 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
       Listed listed;
       listed.id = publisher.define(contract.osi_symbol(), contract, sink);
       listed.contract = std::move(contract);
-      const double days = md::years_between(w.first, listed.contract.expiry_time()) * 365;
+      listed.expiry = listed.contract.expiry_time();
+      const double days = md::years_between(w.first, listed.expiry) * 365;
       publisher.open_interest(listed.id, w.first, open_interest(listed.contract, s.monthly, center, days, seed, listed.id), sink);
       chains[listed.contract.underlying].push_back(std::move(listed));
     }
@@ -350,8 +352,8 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
       std::set<md::InstrumentId> seen;
       for (auto& listed : chain) {
         const auto& c = listed.contract;
-        if (now >= c.expiry_time()) continue;
-        const double years = md::years_between(now, c.expiry_time());
+        if (now >= listed.expiry) continue;
+        const double years = md::years_between(now, listed.expiry);
         const double forward = price * std::exp((kRate - kDividend) * years);
         const double atm = atm_vol(years * 365, moved, script.spot_vol, noise) + script.iv_shift + extra;
         const double mid = pricing::black_price(c.type, forward, c.strike, years, smile(atm, forward, c.strike, years),

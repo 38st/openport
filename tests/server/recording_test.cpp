@@ -221,6 +221,31 @@ TEST(ReplayHost, ListsStartsTradesControlsAndStopsARecordedSession) {
   EXPECT_EQ(call(host, "PUT", "/api/replay", R"({"paused": false})").status, 404);
 }
 
+/// The generated demo days of this process's replay hosts, in the temporary directory.
+std::vector<std::filesystem::path> demo_directories() {
+  std::vector<std::filesystem::path> found;
+  const auto prefix = "openport-demo-" + std::to_string(::getpid()) + "-";
+  for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::temp_directory_path()))
+    if (entry.path().filename().string().starts_with(prefix)) found.push_back(entry.path());
+  return found;
+}
+
+TEST(ReplayHost, PreparesTheDemoWhenListedAndRemovesItsDaysWithTheHost) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  {
+    server::ReplayHost host({file.directory, {}});
+    EXPECT_TRUE(demo_directories().empty());  // nothing is generated until asked
+    ASSERT_EQ(call(host, "GET", "/api/replay").status, 200);
+    ASSERT_TRUE(test::recording_eventually([] {
+      const auto directories = demo_directories();
+      std::error_code ec;
+      return directories.size() == 1 && std::filesystem::exists(directories[0] / "1.oprec", ec);
+    }));
+  }
+  EXPECT_TRUE(demo_directories().empty());
+}
+
 TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   using nlohmann::json;
   test::RecordingFile file;
@@ -246,10 +271,6 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   EXPECT_EQ(replay["demo"], true);
   EXPECT_EQ(replay["file"], "Demo market: Slide and rebound");
   EXPECT_EQ(replay["provider"], "demo");
-  // The player holds the generated file open; nothing is left on disk.
-  const auto prefix = "openport-demo-" + std::to_string(::getpid()) + "-";
-  for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::temp_directory_path()))
-    EXPECT_FALSE(entry.path().filename().string().starts_with(prefix)) << entry.path();
 
   // Next month's SPY series are the last defined: wait until the one traded here is quoted.
   ASSERT_TRUE(test::recording_eventually([&] {
@@ -270,6 +291,11 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   ASSERT_EQ(bought.status, 201) << bought.body;
   EXPECT_EQ(json::parse(bought.body)["order"]["status"], "filled");
   EXPECT_EQ(json::parse(host.tick())["replay"]["demo"], true);
+  host.stop();
+  // Started again, the day is already generated.
+  const auto again = std::chrono::steady_clock::now();
+  ASSERT_EQ(call(host, "POST", "/api/replay", R"({"demo": true})", 60s).status, 201);
+  EXPECT_LT(std::chrono::steady_clock::now() - again, 500ms);
   host.stop();
 
   server::ReplayHost off({file.directory, base, false});

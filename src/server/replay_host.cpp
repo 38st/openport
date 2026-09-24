@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <future>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <system_error>
 #include <unistd.h>
@@ -71,24 +73,74 @@ json demos_json() {
   return list;
 }
 
-/// Generates the demo day where only this process looks, and returns a player for
-/// it. The player holds the file open, so it is unlinked at once and leaves nothing behind.
-std::unique_ptr<providers::ReplayProvider> demo_provider(int speed, providers::DemoDay day) {
-  static std::atomic<unsigned> count{0};
-  const auto path = std::filesystem::temp_directory_path() /
-                    ("openport-demo-" + std::to_string(::getpid()) + "-" + std::to_string(++count) + ".oprec");
-  std::error_code ec;
-  try {
-    providers::write_demo_recording(path, {day, std::nullopt, 0});
-    auto provider = std::make_unique<providers::ReplayProvider>(providers::ReplayProvider::Options{path, speed, false, nullptr});
-    std::filesystem::remove(path, ec);
-    return provider;
-  } catch (...) {
-    std::filesystem::remove(path, ec);
-    throw;
-  }
-}
+}  // namespace
 
+/// Each demo day, generated once where only this process looks and kept until the
+/// host goes, so starting one again, or one prepared ahead, plays at once.
+class ReplayHost::DemoRecordings {
+ public:
+  DemoRecordings() = default;
+  DemoRecordings(const DemoRecordings&) = delete;
+  DemoRecordings& operator=(const DemoRecordings&) = delete;
+  ~DemoRecordings() {
+    std::map<providers::DemoDay, Attempt> days;
+    {
+      const std::lock_guard lock(mutex_);
+      days.swap(days_);
+    }
+    for (auto& [day, attempt] : days) attempt.file.wait();
+    std::error_code ec;
+    if (!directory_.empty()) std::filesystem::remove_all(directory_, ec);
+  }
+  /// Starts generating the day in the background unless it is ready or under way.
+  void prepare(providers::DemoDay day) { (void)start(day); }
+  /// The day's recording: ready, awaited, or generated now. A failure is retried next time.
+  std::filesystem::path get(providers::DemoDay day) {
+    const auto attempt = start(day);
+    try {
+      return attempt.file.get();
+    } catch (...) {
+      const std::lock_guard lock(mutex_);
+      if (const auto it = days_.find(day); it != days_.end() && it->second.number == attempt.number) days_.erase(it);
+      throw;
+    }
+  }
+
+ private:
+  struct Attempt {
+    unsigned number = 0;
+    std::shared_future<std::filesystem::path> file;
+  };
+  Attempt start(providers::DemoDay day) {
+    const std::lock_guard lock(mutex_);
+    if (const auto it = days_.find(day); it != days_.end()) return it->second;
+    if (directory_.empty()) {
+      static std::atomic<unsigned> count{0};
+      auto directory = std::filesystem::temp_directory_path() /
+                       ("openport-demo-" + std::to_string(::getpid()) + "-" + std::to_string(++count));
+      std::filesystem::remove_all(directory);
+      std::filesystem::create_directory(directory);
+      std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+      directory_ = std::move(directory);
+    }
+    // Each attempt writes its own file, so a retry never meets a failed one's.
+    const unsigned number = ++attempts_;
+    const auto path = directory_ / (std::to_string(number) + ".oprec");
+    Attempt attempt{number, std::async(std::launch::async, [path, day] {
+                              providers::write_demo_recording(path, {day, std::nullopt, 0});
+                              return path;
+                            }).share()};
+    days_.emplace(day, attempt);
+    return attempt;
+  }
+
+  std::mutex mutex_;
+  std::filesystem::path directory_;
+  unsigned attempts_ = 0;
+  std::map<providers::DemoDay, Attempt> days_;
+};
+
+namespace {
 int speed_field(const json& body) {
   const auto& value = body.at("speed");
   if (!value.is_number_integer() || !providers::ReplayProvider::valid_speed(value.get<int>()))
@@ -117,7 +169,8 @@ struct ReplayHost::Session {
   }
 };
 
-ReplayHost::ReplayHost(Options options) : options_(std::move(options)) {}
+ReplayHost::ReplayHost(Options options)
+    : options_(std::move(options)), demos_(std::make_unique<DemoRecordings>()) {}
 ReplayHost::~ReplayHost() { stop(); }
 
 std::shared_ptr<ReplayHost::Session> ReplayHost::current() const {
@@ -163,6 +216,8 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
   }
   try {
     if (request.method == "GET") {
+      // Whoever lists the demo may start it next: have the default day ready.
+      if (options_.demo) demos_->prepare(providers::demo_days().front().day);
       const auto session = current();
       complete(ok({{"directory", options_.recordings.string()}, {"recordings", recordings_json(options_.recordings)},
                    {"demo", options_.demo ? demo_json(providers::demo_days().front()) : json(nullptr)},
@@ -207,8 +262,8 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       auto session = std::make_shared<Session>();
       session->file = name;
       session->demo = demo;
-      session->provider = demo ? demo_provider(speed, day->day)
-          : std::make_unique<providers::ReplayProvider>(providers::ReplayProvider::Options{path, speed, false, nullptr});
+      session->provider = std::make_unique<providers::ReplayProvider>(
+          providers::ReplayProvider::Options{demo ? demos_->get(day->day) : path, speed, false, nullptr});
       auto engine = options_.engine;
       engine.paper_journal.clear();
       engine.paper_accounts.clear();

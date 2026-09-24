@@ -235,10 +235,12 @@ Without a replay, `/api/replay/...` returns 404 `NO_REPLAY`; a recording that ca
 be read fails to start with 422 `REPLAY_FAILED`.
 
 The **demo market** is a replay of a simulated day, for trying the terminal when
-nothing trades. `POST /api/replay {"demo": ID}` (`true` for the default) generates it
-(`providers::write_demo_recording`, a second or two) into a file that the player opens
-and the server unlinks at once, then plays it like a recording under the provider name
-`demo`. Its prices are generated, not market data: status reports
+nothing trades. `POST /api/replay {"demo": ID}` (`true` for the default) plays it like a
+recording under the provider name `demo`. Each day is generated once
+(`providers::write_demo_recording`, a second or two) into a directory only the server
+process uses, removed when it exits, and starting it again plays that file at once;
+`GET /api/replay`, which the terminal asks before offering the demo, prepares the
+default day in the background. Its prices are generated, not market data: status reports
 `provider.simulated`, the terminal labels them "simulated prices", and the replay
 banner reads "Demo". `GET /api/replay` lists the days (`demos`), each fixed and the
 same on every run of a build:
