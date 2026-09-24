@@ -1011,6 +1011,12 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
   EXPECT_EQ(shares["option"], market.symbol());
   EXPECT_EQ(shares["closed_by"], nullptr);
   EXPECT_EQ(read(engine, "/api/trades?status=closed")["share_trades"].size(), 0);
+  // A note on the shares goes by their own ID.
+  const auto noted = write(engine, "PUT", "/api/trades/s1/note", {{"note", "delivered at expiry"}, {"tags", {"expiry"}}});
+  ASSERT_EQ(noted.status, 200) << noted.body;
+  EXPECT_EQ(json::parse(noted.body)["trade"], "s1");
+  EXPECT_EQ(read(engine, "/api/trades?status=all")["share_trades"][0]["tags"], json::array({"expiry"}));
+  EXPECT_EQ(write(engine, "PUT", "/api/trades/s9/note", {{"note", "x"}}).status, 404);
   engine.stop();
   bool found = false;
   for (const auto& record : trading::FileJournal::read(path.string()).records) {

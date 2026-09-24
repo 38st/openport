@@ -30,11 +30,12 @@ function Journal({ trading }: { trading: TradingStatus }) {
   const trades = useTrades(scope)
   const all = useMemo(() => trades.data?.trades ?? [], [trades.data])
   const shares = useMemo(() => trades.data?.share_trades ?? [], [trades.data])
-  const tags = useMemo(() => tradeTags(all), [all])
+  const tags = useMemo(() => tradeTags([...all, ...shares]), [all, shares])
   // Every panel reads the trades with the chosen tag; shares from exercise and
-  // assignment count beside the options, and carry no tags.
+  // assignment count beside the options.
   const list = useMemo(() => tag ? all.filter((t) => t.tags?.includes(tag)) : all, [all, tag])
-  const entries = useMemo<JournalTrade[]>(() => tag ? list : [...list, ...shares], [list, shares, tag])
+  const shareList = useMemo(() => tag ? shares.filter((t) => t.tags?.includes(tag)) : shares, [shares, tag])
+  const entries = useMemo<JournalTrade[]>(() => [...list, ...shareList], [list, shareList])
   const stats = useMemo(() => journalStats(entries), [entries])
   if (trades.error) return <TradingError error={trades.error} />
   if (!trades.data) return <Empty>{trading.enabled ? "Loading journal…" : trading.reason ?? "Paper trading is unavailable"}</Empty>
@@ -65,7 +66,7 @@ function Journal({ trading }: { trading: TradingStatus }) {
       <Calendar trades={entries} />
       <Reports trades={entries} />
       <History trades={list} trading={trading} />
-      {!tag && shares.length > 0 && <Shares trades={shares} />}
+      {shareList.length > 0 && <Shares trades={shareList} trading={trading} />}
     </div>
   )
 }
@@ -158,7 +159,7 @@ function Reports({ trades }: { trades: JournalTrade[] }) {
 const pageSize = 25
 const headers = ["Contract", "Side", "Qty", "Opened", "Closed", "Held", "Avg open", "Avg close", "Net P&L", "Return"]
 
-function Tags({ trade }: { trade: Trade | undefined }) {
+function Tags({ trade }: { trade: { note?: string; tags?: string[] } | undefined }) {
   return <>
     {trade?.tags?.map((tag) => <span key={tag} className="ml-1 rounded bg-raised px-1.5 py-0.5 text-[10px] font-normal text-muted">{tag}</span>)}
     {trade?.note && <span className="ml-1 text-[10px] text-accent" title={trade.note}>note</span>}
@@ -166,7 +167,7 @@ function Tags({ trade }: { trade: Trade | undefined }) {
 }
 
 /** A trade's note and tags; a strategy's apply to each of its legs. */
-function NoteEditor({ trades, trading }: { trades: Trade[]; trading: TradingStatus }) {
+function NoteEditor({ trades, trading }: { trades: { id: string; note?: string; tags?: string[] }[]; trading: TradingStatus }) {
   const first = trades[0]!
   const token = useWriteToken()
   const refresh = useRefreshTrading()
@@ -319,8 +320,9 @@ function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus 
 
 const shareHeaders = ["Shares", "Side", "Opened", "From", "Closed", "By", "Held", "Avg open", "Avg close", "Dividends", "Net P&L", "Return"]
 
-/** Shares from exercise and assignment, round trip by round trip: how each came and went. */
-function Shares({ trades }: { trades: ShareTrade[] }) {
+/** Shares from exercise and assignment, round trip by round trip: how each came and went, with a note and tags. */
+function Shares({ trades, trading }: { trades: ShareTrade[]; trading: TradingStatus }) {
+  const [expanded, setExpanded] = useState<string | null>(null)
   const net = trades.filter((t) => t.status === "closed").reduce((sum, t) => sum + tradeNet(t), 0)
   return (
     <Panel title="Shares" actions={<span className="text-xs text-muted">Net <span className={`tabular ${toneText[toneOf(net)]}`}>{usd(net)}</span></span>}>
@@ -330,10 +332,12 @@ function Shares({ trades }: { trades: ShareTrade[] }) {
             {shareHeaders.map((h, i) => <th key={h} scope="col" className={`px-2 py-2 font-normal ${i === 0 ? "text-left" : ""}`}>{h}</th>)}
           </tr></thead>
           <tbody>
-            {trades.map((t) => <tr key={t.id} className="border-t border-border/40">
+            {trades.map((t) => <Fragment key={t.id}><tr className="cursor-pointer border-t border-border/40 hover:bg-raised/50"
+              onClick={() => setExpanded(expanded === t.id ? null : t.id)} aria-expanded={expanded === t.id}>
               <td className="px-2 py-2 text-left">
                 <span className={`mr-2 inline-block h-3 w-0.5 align-middle ${t.status === "open" ? "bg-accent" : tradeNet(t) >= 0 ? "bg-bullish" : "bg-bearish"}`} />
                 <span className="font-medium">{t.symbol} {t.max_shares}</span>
+                <Tags trade={t} />
               </td>
               <td className={`px-2 py-2 ${t.direction === "long" ? "text-bullish" : "text-bearish"}`}>{t.direction}</td>
               <td className="px-2 py-2 text-muted">{short.format(Date.parse(t.opened))}</td>
@@ -348,7 +352,11 @@ function Shares({ trades }: { trades: ShareTrade[] }) {
                 {t.status === "open" ? <span title="Unrealized">{signedMoney(t.unrealised)}</span> : signedMoney(t.net)}
               </td>
               <td className={`px-2 py-2 ${toneText[toneOf(t.return)]}`}>{signedPercent(t.return)}</td>
-            </tr>)}
+            </tr>
+            {expanded === t.id && <tr className="bg-raised/30"><td colSpan={shareHeaders.length} className="px-4 py-3 text-left">
+              <NoteEditor key={t.id} trades={[t]} trading={trading} />
+            </td></tr>}
+            </Fragment>)}
           </tbody>
         </table>
       </div>

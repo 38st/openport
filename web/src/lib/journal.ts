@@ -99,7 +99,7 @@ export function monthWeeks(year: number, month: number): (string | null)[][] {
 
 /** Every tag on the trades, alphabetically. */
 export function tradeTags(trades: readonly JournalTrade[]): string[] {
-  return [...new Set(trades.flatMap((t) => (isShares(t) ? [] : t.tags ?? [])))].sort()
+  return [...new Set(trades.flatMap((t) => t.tags ?? []))].sort()
 }
 /** "breakout, 0DTE ,fomc" -> ["breakout", "0dte", "fomc"]: trimmed, lowercased, each once. */
 export function parseTags(text: string): string[] {
@@ -131,7 +131,7 @@ export function tradeBuckets(trades: readonly JournalTrade[], dimension: Dimensi
   for (const trade of trades) {
     if (trade.status !== "closed" || !trade.closed || (side !== "all" && (isShares(trade) || trade.type !== side))) continue
     if (dimension === "tag") {
-      const own = !isShares(trade) && trade.tags?.length ? trade.tags : ["untagged"]
+      const own = trade.tags?.length ? trade.tags : ["untagged"]
       for (const tag of own) count(out[labels.indexOf(tag)], tradeNet(trade))
       continue
     }

@@ -90,10 +90,12 @@ describe("simulator pages", () => {
     clients.push(client)
     const queries = tradingQueries(0, "17", true)
     client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [fill] })
-    client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 2, trades, share_trades: shareTrades })
+    client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 2, trades,
+      share_trades: shareTrades.map((t) => t.id === "s1" ? { ...t, tags: ["income"], note: "held for the dividend" } : t) })
     const html = renderToStaticMarkup(<QueryClientProvider client={client}><JournalView /></QueryClientProvider>)
     for (const text of ["3 closed trades · attempt 2", "+$487.20", "10 contracts · 100 shares", "SPY 100 shares", "Share trades",
-      "Exercised SPY Sep 22 500C at expiry", "Sold", "Assigned QQQ Sep 23 480P", "$504.20", "+$50.00", "+$320.00", "−$300.00"])
+      "Exercised SPY Sep 22 500C at expiry", "Sold", "Assigned QQQ Sep 23 480P", "$504.20", "+$50.00", "+$320.00", "−$300.00",
+      ">income</span>", 'title="held for the dividend"'])
       expect(html).toContain(text)
     // Older servers send no shares, and the panel stays away.
     expect(render(<JournalView />)).not.toContain("Share trades")

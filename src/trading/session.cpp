@@ -1748,20 +1748,35 @@ std::optional<QuoteObservation> TradingSession::quote(const std::string& symbol)
   return it == impl_->state.books.end() ? std::nullopt : std::optional(it->second.quote);
 }
 md::Date TradingSession::trading_day() const { return impl_->state.day; }
+namespace {
+/// Records (or, empty, clears) a trade's note and tags under `key`.
+void store_annotation(State& s, const std::string& key, Annotation annotation, Events& events) {
+  event(events, "trade_annotated", Json{{"trade", key}, {"note", annotation.note}, {"tags", annotation.tags}});
+  if (annotation.note.empty() && annotation.tags.empty()) {
+    s.annotations.erase(key);
+  } else {
+    annotation.time = s.time;
+    s.annotations[key] = std::move(annotation);
+  }
+}
+}  // namespace
 CommandResult TradingSession::annotate(std::uint64_t trade, std::string note, std::vector<std::string> tags, Timestamp time) {
   auto annotation = clean_annotation(std::move(note), tags);
   return impl_->transact(time, "annotate", [&](State& s, Events& events) {
     const auto trades = lifecycles(s.fills, s.closures, s.contracts);
     if (std::none_of(trades.begin(), trades.end(), [&](const Lifecycle& t) { return t.first_fill == trade; }))
       return CommandResult{failure(Reason::UNKNOWN_TRADE, "No trade opens with fill " + std::to_string(trade)), {}, 0};
-    const auto key = std::to_string(trade);
-    event(events, "trade_annotated", Json{{"trade", key}, {"note", annotation.note}, {"tags", annotation.tags}});
-    if (annotation.note.empty() && annotation.tags.empty()) {
-      s.annotations.erase(key);
-    } else {
-      annotation.time = s.time;
-      s.annotations[key] = std::move(annotation);
-    }
+    store_annotation(s, std::to_string(trade), std::move(annotation), events);
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::annotate_shares(std::uint64_t first_fill, std::string note, std::vector<std::string> tags, Timestamp time) {
+  auto annotation = clean_annotation(std::move(note), tags);
+  return impl_->transact(time, "annotate", [&](State& s, Events& events) {
+    const auto trips = share_lifecycles(s.stock_fills, s.dividends);
+    if (std::none_of(trips.begin(), trips.end(), [&](const ShareLifecycle& t) { return t.fills.front() == first_fill; }))
+      return CommandResult{failure(Reason::UNKNOWN_TRADE, "No share trade opens with stock fill " + std::to_string(first_fill)), {}, 0};
+    store_annotation(s, "s" + std::to_string(first_fill), std::move(annotation), events);
     return CommandResult{};
   });
 }

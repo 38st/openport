@@ -348,6 +348,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     for (const auto id : t.fills) fills.push_back(std::to_string(id));
     const auto first = t.fills.front();
     const auto last = open ? std::uint64_t{0} : t.fills.back();
+    const auto note = s.annotations.find("s" + std::to_string(first));
     share_trades.push_back({{"kind", "shares"}, {"id", "s" + std::to_string(first)}, {"attempt", attempt},
         {"symbol", t.symbol}, {"direction", t.direction > 0 ? "long" : "short"}, {"status", open ? "open" : "closed"},
         {"opened", md::format_timestamp(t.opened)},
@@ -362,7 +363,9 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"return", open || t.open_notional == Money{} ? json(nullptr) : number((t.gross + t.dividends).dollars() / t.open_notional.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
         {"opened_by", source(first)}, {"option", option_of(first)},
-        {"closed_by", source(last)}, {"closing_option", option_of(last)}, {"fills", fills}});
+        {"closed_by", source(last)}, {"closing_option", option_of(last)}, {"fills", fills},
+        {"note", note == s.annotations.end() ? std::string{} : note->second.note},
+        {"tags", note == s.annotations.end() ? json::array() : json(note->second.tags)}});
   }
   return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades},
           {"share_trades", share_trades}};
@@ -478,8 +481,9 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::Exercise:
     case TradingCommand::Kind::CloseStock: body = portfolio_json(view); break;
     case TradingCommand::Kind::Annotate: {
-      const auto a = s.annotations.find(std::to_string(command.trade));
-      body["trade"] = std::to_string(command.trade);
+      const auto key = (command.shares ? "s" : "") + std::to_string(command.trade);
+      const auto a = s.annotations.find(key);
+      body["trade"] = key;
       body["note"] = a == s.annotations.end() ? std::string{} : a->second.note;
       body["tags"] = a == s.annotations.end() ? json::array() : json(a->second.tags);
       break;
@@ -680,8 +684,11 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     // PUT /api/trades/{id}/note: the note and tags replace the trade's.
     fields(body, {}, {"note", "tags"});
     command.kind = TradingCommand::Kind::Annotate;
-    const auto id = path.substr(std::string_view("/api/trades/").size());
-    command.trade = identifier(id.substr(0, id.size() - std::string_view("/note").size()));
+    auto id = path.substr(std::string_view("/api/trades/").size());
+    id = id.substr(0, id.size() - std::string_view("/note").size());
+    // Share round trips are named "s" and their opening stock fill.
+    command.shares = id.starts_with("s");
+    command.trade = identifier(command.shares ? id.substr(1) : id);
     if (body.contains("note")) command.note = string_field(body, "note");
     if (body.contains("tags")) {
       const auto& tags = body.at("tags");

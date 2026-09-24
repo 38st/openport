@@ -41,6 +41,10 @@ describe("journal analytics", () => {
     expect(tradeBuckets(both, "month", "call").find((b) => b.label === "Sep")?.trades).toBe(2)
     expect(tradeBuckets(both, "tag").find((b) => b.label === "untagged")?.trades).toBe(3)
     expect(tradeTags(both)).toEqual([])
+    // Shares take tags like any trade.
+    const tagged = [...trades, { ...shareTrades[1]!, tags: ["income"] }]
+    expect(tradeTags(tagged)).toEqual(["income"])
+    expect(tradeBuckets(tagged, "tag").find((b) => b.label === "income")?.trades).toBe(1)
   })
   it("says how shares came and went", () => {
     expect(shareSourceLabel("expiry_exercise", "SPY   260922C00500000", "SPY", "opened", "long")).toBe("Exercised SPY Sep 22 500C at expiry")

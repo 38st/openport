@@ -64,6 +64,7 @@ struct TradingCommand {
   std::string account;           ///< The account it acts on; empty for the main account.
   std::string name;              ///< CreateAccount: the new account's display name.
   std::uint64_t trade = 0;        ///< Annotate: the trade, by its opening fill's ID.
+  bool shares = false;            ///< Annotate: a share round trip, by its opening stock fill ("s" + ID).
   std::string note;               ///< Annotate: the note; empty with no tags clears it.
   std::vector<std::string> tags;  ///< Annotate: the trade's tags.
   /// Exercise: contracts of `symbol`; CloseStock: shares of `symbol` to close, 0 for all.

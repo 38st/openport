@@ -387,6 +387,26 @@ TEST(TradingDelivery, TheStocksCloseMarksSharesWhileTheOptionsTradeOnAndOvernigh
   ASSERT_TRUE(s.roll_day(night).decision.ok());
 }
 
+TEST(TradingDelivery, ShareRoundTripsTakeNotesAndTags) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  Spy f;
+  f.spot = 520;
+  TradingSession s(roomy(), f.time);
+  f.define(s, call);
+  f.quote(s, call, "21.00", "21.20");
+  ASSERT_TRUE(s.submit(f.market("calls", call, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  ASSERT_TRUE(s.annotate_shares(1, " held for the dividend ", {"Income", "income"}, f.time).decision.ok());
+  const auto& note = s.snapshot()->annotations.at("s1");
+  EXPECT_EQ(note.note, "held for the dividend");
+  EXPECT_EQ(note.tags, (std::vector<std::string>{"income"}));
+  // Share trades and option trades are named apart: fill 1 opened the option trade too.
+  EXPECT_FALSE(s.snapshot()->annotations.contains("1"));
+  EXPECT_EQ(s.annotate_shares(2, "no such", {}, f.time).decision.code, Reason::UNKNOWN_TRADE);
+  ASSERT_TRUE(s.annotate_shares(1, "", {}, f.time).decision.ok());
+  EXPECT_FALSE(s.snapshot()->annotations.contains("s1"));
+}
+
 TEST(TradingDelivery, SharesTradeInTheRegularSessionAndKeepTheirClose) {
   const auto call = *md::parse_osi("SPY261022C00500000");
   Spy f;

@@ -173,6 +173,9 @@ class TradingSession {
   /// throws INVALID_NOTE; an unknown trade returns UNKNOWN_TRADE. An empty note
   /// without tags clears it. Allowed whatever the account's state or session.
   CommandResult annotate(std::uint64_t trade, std::string note, std::vector<std::string> tags, Timestamp time);
+  /// The same for a share round trip, named by the stock fill that opened it; its
+  /// note is kept under "s" and that fill's ID.
+  CommandResult annotate_shares(std::uint64_t first_fill, std::string note, std::vector<std::string> tags, Timestamp time);
   /// Exercise `contracts` of a long, in-the-money American equity or ETF option
   /// before expiry: they close at intrinsic value against the underlying's fresh
   /// price, and 100 shares each are bought (calls) or sold (puts) at that price,

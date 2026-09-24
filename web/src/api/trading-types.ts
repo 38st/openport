@@ -229,6 +229,9 @@ export interface ShareTrade {
   closed_by: ShareSource | null
   closing_option: string | null
   fills: string[]
+  /** The trader's note ("" for none) and tags, as on option trades; absent from older servers. */
+  note?: string
+  tags?: string[]
 }
 export interface TradesResponse { account_version: string; attempt: number; trades: Trade[]; share_trades?: ShareTrade[] }
 export interface Plan {
