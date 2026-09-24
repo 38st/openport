@@ -13,9 +13,14 @@ RUN npm run build
 
 FROM ubuntu:24.04 AS build
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential cmake ninja-build ca-certificates \
-      libboost-dev libssl-dev zlib1g-dev libzstd-dev \
+# Ubuntu's mirrors can list a package for a while after it stops serving it (a 404),
+# so each apt step retries from a fresh index.
+RUN for attempt in 1 2 3; do \
+      apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build ca-certificates \
+        libboost-dev libssl-dev zlib1g-dev libzstd-dev && break; \
+      [ "$attempt" -lt 3 ] || exit 1; sleep 30; \
+    done \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY CMakeLists.txt ./
@@ -31,8 +36,11 @@ RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
 
 FROM ubuntu:24.04
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates libssl3t64 zlib1g libzstd1 \
+RUN for attempt in 1 2 3; do \
+      apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates libssl3t64 zlib1g libzstd1 && break; \
+      [ "$attempt" -lt 3 ] || exit 1; sleep 30; \
+    done \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --home /var/lib/openport openport \
     && mkdir -p /var/lib/openport \
