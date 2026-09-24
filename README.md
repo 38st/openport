@@ -337,7 +337,7 @@ cd web && npx vitest run            # web unit tests
 CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
 Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, the web checks and a Docker
 smoke test. Publishing a GitHub release builds the image for amd64 and arm64 and pushes
-it to `ghcr.io/38st/openport`. `tools/release.sh` builds a release on your own machine: it checks and
+it to `ghcr.io/38st/openport`, and attaches a Linux archive for each architecture. `tools/release.sh` builds a release on your own machine: it checks and
 tests the web terminal and the engine, packages this machine's build and a Linux build
 from the Docker image with checksums and release notes into `dist/`, and smoke-tests
 the image. Nothing is published unless you pass `--publish`, which creates a draft

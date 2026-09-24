@@ -1,0 +1,68 @@
+name: Release archives
+
+# Attaches a Linux archive for each architecture to a published release, built from
+# the release's tag on native runners the way tools/release.sh builds its own, then
+# rewrites SHA256SUMS over every archive the release carries.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release's tag, such as v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - name: Build the image
+        run: docker build -t openport:release .
+      - name: Package the archive
+        run: |
+          name="openport-${TAG#v}-linux-${{ matrix.arch }}"
+          stage="$RUNNER_TEMP/stage/$name"
+          mkdir -p "$stage/bin" "$stage/share/openport" "$stage/docs"
+          container="$(docker create openport:release)"
+          docker cp "$container:/usr/local/bin/openportd" "$stage/bin/"
+          docker cp "$container:/usr/local/bin/openport-probe" "$stage/bin/"
+          docker cp "$container:/usr/share/openport/web" "$stage/share/openport/"
+          docker rm "$container"
+          cp README.md LICENSE "$stage/"
+          cp docs/*.md "$stage/docs/"
+          tar -C "$RUNNER_TEMP/stage" -czf "$RUNNER_TEMP/$name.tar.gz" "$name"
+          echo "ARCHIVE=$RUNNER_TEMP/$name.tar.gz" >> "$GITHUB_ENV"
+      - name: Attach it to the release
+        run: gh release upload "$TAG" "$ARCHIVE" --clobber --repo "$GITHUB_REPOSITORY"
+
+  checksums:
+    name: SHA256SUMS
+    needs: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Rewrite SHA256SUMS over every archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/assets" && cd "$RUNNER_TEMP/assets"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz'
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
