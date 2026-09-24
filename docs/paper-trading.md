@@ -995,14 +995,18 @@ that 16:00 print, as OCC exercises on the closing price. This is the **providerâ
 official settlement value. Bid/ask midpoints and next-day prices are not substitutes.
 Each account records the print in its journal (`record_close`, kept per underlying
 and date) as soon as it holds a PM position expiring that day, so a restart before
-ETF options expire at 16:15 still settles them on it. If no such print arrives, the
-position waits, and its `settle_by` reads `manual`. AM positions always wait for an
+ETF options expire at 16:15 still settles them on it. If none has arrived half an hour
+of market time after the close, the underlying's last print before the close stands in,
+provided it came within the close's last five minutes (a feed that stopped just before
+the close); the engine keeps both prints in memory for a week of dates, so after a
+restart only a print that arrives counts. Otherwise the position waits, and its
+`settle_by` reads `manual`. AM positions always wait for an
 explicit `/api/settlements` import (the terminal's Settle button on the position),
 whose value must come from the authoritative settlement source; PM imports are
 accepted only while no closing print is recorded. The same journal transaction
 records the reference value, canonical definition and integration
-`settlement_source`: `provider_closing_print` with provider and print time,
-`manual_am_import` or `manual_pm_import`. Preserve the official source used for an AM import
+`settlement_source`: `provider_closing_print` or `provider_last_print_before_close`
+with provider and print time, `manual_am_import` or `manual_pm_import`. Preserve the official source used for an AM import
 externally when an independent provenance audit is required. The first market
 batch on a later trading date rolls the daily baseline once marks are complete;
 the kill latch survives. All accounting uses effective market time, including

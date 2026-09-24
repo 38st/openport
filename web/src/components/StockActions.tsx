@@ -26,7 +26,7 @@ export function SettleDialog({ position, trading, onClose }: { position: Positio
   return <Dialog title={`Settle ${contractLabel(position)}`} onClose={onClose}>
     <p className="text-sm">{am
       ? `AM-settled series settle on ${position.underlying}'s special opening quotation on the expiry date, which no feed here provides.`
-      : `No closing print for ${position.underlying} arrived after this contract expired.`} Enter the official
+      : `No closing print for ${position.underlying} arrived after this contract expired. Half an hour after the close it settles on the last print before it, if that came in the close's last five minutes.`} Enter the official
       {am ? " settlement value" : " closing value"} from the exchange; the position closes at intrinsic value.</p>
     <label className="trade-label">{position.underlying} settlement value
       <input className="trade-input" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} placeholder="Official value" /></label>

@@ -1089,10 +1089,57 @@ TEST(PaperRecovery, WithoutAClosingPrintPMPositionsSettleByHand) {
     return !view->snapshot->positions.empty() && view->snapshot->positions[0].awaiting_settlement;
   }));
   EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["settle_by"], "manual");
+  // Its last print, at 10:00, is too old to stand in for the close, even long after it.
+  const auto evening = market.contract.expiry_time() + 45 * md::kNanosPerMinute;
+  provider.sink->publish(md::OptionQuote{1, evening, 8, 8.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == evening; }));
+  EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["settle_by"], "manual");
   const auto settled = write(engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5010.25"}});
   ASSERT_EQ(settled.status, 200) << settled.body;
   EXPECT_TRUE(engine.trading_view()->snapshot->positions.empty());
   engine.stop();
+}
+
+TEST(PaperRecovery, WithoutAClosingPrintTheLastPrintInTheCloseLastMinutesSettles) {
+  const auto path = std::filesystem::temp_directory_path() / ("openport-last-print-" + std::to_string(md::now()) + ".jsonl");
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPXW260922C05000000");
+  const auto later = *md::parse_osi("SPXW260923C05000000");
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::ContractDefinition{1, later});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 1, 1});
+  provider.sink->publish(md::OptionQuote{1, market.time, 9, 9.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+  ASSERT_EQ(write(engine, "POST", "/api/orders", order(market, "pm", "4.20")).status, 201);
+  // The index prints at 15:58, then the feed carries no more SPX prints that day.
+  const auto close = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  const auto last = close - 2 * md::kNanosPerMinute;
+  provider.sink->publish(md::UnderlyingQuote{"SPX", last, 0, 0, 5007.5});
+  provider.sink->publish(md::OptionQuote{1, close + 5 * md::kNanosPerMinute, 8, 8.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] {
+    const auto view = engine.trading_view();
+    return !view->snapshot->positions.empty() && view->snapshot->positions[0].awaiting_settlement;
+  }));
+  // Half an hour on, it stands in for the close.
+  provider.sink->publish(md::OptionQuote{1, close + 30 * md::kNanosPerMinute, 8, 8.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->positions.empty(); }));
+  EXPECT_EQ(engine.trading_view()->snapshot->closing_prints.at("SPX 2026-09-22").price, Money::parse("5007.5"));
+  engine.stop();
+  bool found = false;
+  for (const auto& record : trading::FileJournal::read(path.string()).records) {
+    if (record.type != "settlement") continue;
+    const auto source = json::parse(record.payload)["settlement_source"];
+    EXPECT_EQ(source["kind"], "provider_last_print_before_close");
+    EXPECT_EQ(source["quote_time"], md::format_timestamp(last));
+    found = true;
+  }
+  EXPECT_TRUE(found);
+  std::filesystem::remove(path);
 }
 
 TEST(PaperPlans, PresetsListExactRules) {

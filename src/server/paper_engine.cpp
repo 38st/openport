@@ -41,6 +41,10 @@ void sync_directory(const std::filesystem::path& path) {
   if (!synced) throw TradingError(Reason::JOURNAL_IO, "Cannot sync journal directory");
 }
 
+/// How long after the close a missing closing print is waited for, and how close
+/// to the close the last print before it must be to settle on instead.
+constexpr md::Timestamp kLastPrintWait = 30 * md::kNanosPerMinute;
+constexpr md::Timestamp kLastPrintAge = 5 * md::kNanosPerMinute;
 md::Date new_york_date(md::Timestamp time) {
   auto date = md::date_from_days(time / md::kNanosPerDay);
   // New York is behind UTC; compare its actual midnight, including DST dates.
@@ -400,13 +404,20 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
   const auto now = wall_time();
   // Underlying prints retain ingress order. The first valid last on a date at or
   // after its regular close (16:00, 13:00 early) is our documented PM
-  // closing-print approximation.
+  // closing-print approximation; the last one before it stands in when none comes.
   for (const auto& event : batch) {
     const auto* spot = std::get_if<md::UnderlyingQuote>(&event);
     if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
     const auto date = new_york_date(spot->ts);
-    if (spot->ts >= md::new_york_to_utc(date, md::regular_close_hour(date), 0))
-      closing_prints_.try_emplace({spot->symbol, date}, *spot);
+    const bool closed = spot->ts >= md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+    auto& prints = closed ? closing_prints_ : before_close_;
+    const auto [it, added] = prints.try_emplace({spot->symbol, date}, *spot);
+    if (!closed && spot->ts >= it->second.ts) it->second = *spot;
+    if (added) {
+      // A week of dates covers every expiry still waiting on its print.
+      const auto oldest = md::date_from_days(md::days_since_epoch(date) - 7);
+      std::erase_if(prints, [&](const auto& entry) { return entry.first.second < oldest; });
+    }
   }
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
@@ -470,13 +481,22 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
       }
       session.on_quotes(quotes, valuations, market_time_, stocks);
       // Each account keeps the closing print its PM positions will settle on, so
-      // a restart before they expire (16:15 for ETF options) still uses it.
+      // a restart before they expire (16:15 for ETF options) still uses it. When
+      // none has come half an hour into the market's evening, the last print
+      // before the close stands in, if it came in the close's last five minutes.
       for (const auto& p : session.snapshot()->positions) {
         const auto& contract = p.position.contract;
         if (contract.settlement != md::Settlement::PM || session.closing_print(contract.underlying, contract.expiry)) continue;
-        const auto print = closing_prints_.find({contract.underlying, contract.expiry});
-        if (print != closing_prints_.end())
-          session.record_close(contract.underlying, contract.expiry, Money::from_double(print->second.last), print->second.ts, market_time_);
+        const auto close = md::new_york_to_utc(contract.expiry, md::regular_close_hour(contract.expiry), 0);
+        auto print = closing_prints_.find({contract.underlying, contract.expiry});
+        if (print == closing_prints_.end() && market_time_ >= close + kLastPrintWait) {
+          print = before_close_.find({contract.underlying, contract.expiry});
+          if (print != before_close_.end() && close - print->second.ts > kLastPrintAge) print = before_close_.end();
+          if (print == before_close_.end()) continue;
+        } else if (print == closing_prints_.end()) {
+          continue;
+        }
+        session.record_close(contract.underlying, contract.expiry, Money::from_double(print->second.last), print->second.ts, market_time_);
       }
       // A PM contract settles on its expiry date's closing print once it expires:
       // at the close, or a quarter hour later for ETF options that trade until 16:15.
@@ -485,7 +505,9 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         if (contract.settlement != md::Settlement::PM || market_time_ < contract.expiry_time()) continue;
         const auto print = session.closing_print(contract.underlying, contract.expiry);
         if (!print) continue;
-        settlement_source_ = {{"kind", "provider_closing_print"}, {"provider", std::string(provider_.name())},
+        const bool before = print->time < md::new_york_to_utc(contract.expiry, md::regular_close_hour(contract.expiry), 0);
+        settlement_source_ = {{"kind", before ? "provider_last_print_before_close" : "provider_closing_print"},
+                              {"provider", std::string(provider_.name())},
                               {"symbol", contract.underlying}, {"quote_time", md::format_timestamp(print->time)}};
         session.settle(contract.osi_symbol(), print->price, market_time_);
       }
