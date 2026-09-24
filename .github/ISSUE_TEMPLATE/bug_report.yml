@@ -1,0 +1,38 @@
+name: Bug report
+description: Something openport does wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: The command line (without API keys), the page, and the steps.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `openportd --version`, or the commit you built.
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Market data
+      options: [Cboe (default), Databento, Massive, ThetaData, Replay or demo market]
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or API responses
+      description: Remove API keys and write tokens first.
+      render: text

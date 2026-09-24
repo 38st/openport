@@ -336,6 +336,9 @@ cd web && npm run dev               # Vite on :5173, proxying /api and /ws to :8
 cd web && npx vitest run            # web unit tests
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests, and [SECURITY.md](SECURITY.md)
+to report a vulnerability privately.
+
 CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
 Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, the web checks and a Docker
 smoke test. Publishing a GitHub release builds the image for amd64 and arm64 and pushes
