@@ -453,6 +453,7 @@ side, no buying-power check. All rule money is exact.
 | `max_drawdown` | Fail when equity touches peak − drawdown (zero disables) |
 | `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date |
 | `buy_only` | A sell must close contracts already held, counting working sells on the same contract; otherwise `BUY_ONLY` |
+| `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Off in every preset; custom rules take it |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
@@ -790,6 +791,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it |
 | `INVALID_NOTE`, `UNKNOWN_TRADE` | A trade note or tag past its limits, or a note on a fill that opens no trade |
+| `DEFINED_RISK` | A defined-risk plan's order would leave a short option uncovered |
 
 ## Engine integration and HTTP API
 
@@ -920,7 +922,8 @@ in its query for an account other than the main one (see [accounts](#accounts)).
 demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
-buying_power, expiry_cutoff_seconds}` with null money for a disabled target or
+defined_risk, buying_power, expiry_cutoff_seconds}` (`defined_risk` optional when
+creating an account, default false) with null money for a disabled target or
 drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `buying_power: {available, reserved, short_requirement}`; orders add `origin`
 (`user` or `system`), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`

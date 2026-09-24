@@ -150,5 +150,9 @@ struct MarginLeg {
 /// taking each expiry on its own (the lesser of its verticals and worst loss).
 /// Longs need nothing: their premium is paid in full.
 [[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs);
+/// Short contracts that no long covers: each short pairs with a long of the same
+/// type on the same underlying that expires with it or later, whatever the
+/// strikes, as a defined-risk rule counts it.
+[[nodiscard]] Quantity naked_shorts(const std::vector<MarginLeg>& legs);
 
 }  // namespace openport::trading

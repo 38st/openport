@@ -26,10 +26,10 @@ enum class Reason {
   INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED,
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
   OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED,
-  LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE
+  LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE, DEFINED_RISK
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::UNKNOWN_TRADE;
+inline constexpr Reason kLastReason = Reason::DEFINED_RISK;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -263,6 +263,9 @@ struct AccountRules {
   Money max_drawdown;         ///< Trailing distance below peak equity; zero disables.
   DrawdownMode drawdown_mode = DrawdownMode::Intraday;
   bool buy_only = false;      ///< Sells may only reduce existing long positions.
+  /// Every short option must be covered by a long of the same type on the same
+  /// underlying that expires with it or later: an order may not add a naked short.
+  bool defined_risk = false;
   bool buying_power = false;  ///< Enforce cash buying power, with naked-short requirements.
   Timestamp expiry_cutoff = 0;  ///< Auto-close this long before a contract's last trade; zero disables.
   Phase phase = Phase::Evaluation;

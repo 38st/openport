@@ -224,6 +224,53 @@ TEST(TradingBuyingPower, LeggingIntoASpreadReservesOnlyItsWidth) {
   EXPECT_EQ(snap->buying_power.available, m("9078.70"));
 }
 
+TEST(TradingDefinedRisk, ShortsNeedALongOfTheirTypeExpiringWithThemOrLater) {
+  Chain f;
+  AccountRules rules;
+  rules.defined_risk = true;
+  TradingSession s(config("100000", rules), f.time);
+  f.define(s, {P4900, P4890, LATER, C5100, C5110});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}, {LATER, "4.50", "4.70", -0.27},
+              {C5100, "3.00", "3.20", 0.30}, {C5110, "2.50", "2.70", 0.27}});
+  // A lone short is naked, and a call does not cover a put.
+  EXPECT_EQ(s.submit(single("naked", P4900, Side::Sell), f.time).decision.code, Reason::DEFINED_RISK);
+  ASSERT_TRUE(s.submit(single("call", C5110, Side::Buy), f.time).decision.ok());
+  EXPECT_EQ(s.submit(single("still naked", P4900, Side::Sell), f.time).decision.code, Reason::DEFINED_RISK);
+  // A long put, of any strike, expiring with the short or later covers it.
+  ASSERT_TRUE(s.submit(single("later", LATER, Side::Buy), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("covered", P4900, Side::Sell), f.time).decision.ok());
+  // Selling the long would uncover the short; closing the short first is always allowed.
+  EXPECT_EQ(s.submit(single("uncover", LATER, Side::Sell), f.time).decision.code, Reason::DEFINED_RISK);
+  ASSERT_TRUE(s.submit(single("close short", P4900, Side::Buy), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("close long", LATER, Side::Sell), f.time).decision.ok());
+  // A spread opens as one order; a calendar with the short expiring later does not.
+  ASSERT_TRUE(s.submit(combo("spread", {leg(P4900, Side::Sell), leg(P4890, Side::Buy)}, 1, {}), f.time).decision.ok());
+  EXPECT_EQ(s.submit(combo("backwards", {leg(LATER, Side::Sell), leg(P4890, Side::Buy)}, 1, {}), f.time).decision.code,
+            Reason::DEFINED_RISK);
+  // Without the rule the same lone short goes through.
+  TradingSession any(config("100000", {}), f.time);
+  f.define(any, {P4900});
+  f.quote(any, {{P4900, "5.00", "5.20", -0.30}});
+  EXPECT_TRUE(any.submit(single("naked", P4900, Side::Sell), f.time).decision.ok());
+}
+
+TEST(TradingDefinedRisk, CountsShortsNoLongCovers) {
+  const auto contract = [](std::string_view s) { return *md::parse_osi(s); };
+  const auto legs = [&](std::vector<std::pair<std::string_view, Quantity>> held) {
+    std::vector<MarginLeg> out;
+    for (const auto& [symbol, q] : held) out.push_back({contract(symbol), q, {}, std::nullopt});
+    return out;
+  };
+  EXPECT_EQ(naked_shorts(legs({{"SPXW261022P04900000", -2}, {"SPXW261022P04890000", 1}})), 1);
+  EXPECT_EQ(naked_shorts(legs({{"SPXW261022P04900000", -1}, {"SPXW261023P04890000", 1}})), 0);  // a later long
+  EXPECT_EQ(naked_shorts(legs({{"SPXW261023P04900000", -1}, {"SPXW261022P04890000", 1}})), 1);  // an earlier one
+  EXPECT_EQ(naked_shorts(legs({{"SPXW261022C05100000", -1}, {"SPXW261022P04890000", 1}})), 1);  // another type
+  EXPECT_EQ(naked_shorts(legs({{"SPY261022P00500000", -1}, {"SPXW261022P04890000", 1}})), 1);   // another underlying
+  // The latest shorts take the earliest long that covers them, covering the most.
+  EXPECT_EQ(naked_shorts(legs({{"SPXW261022P04900000", -1}, {"SPXW261023P04900000", -1},
+                               {"SPXW261022P04890000", 1}, {"SPXW261023P04890000", 1}})), 0);
+}
+
 TEST(TradingBuyingPower, UncoveringAShortNeedsBuyingPowerButClosingItNeverDoes) {
   Chain f;
   AccountRules rules;

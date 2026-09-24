@@ -1109,7 +1109,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(intraday["initial_cash"], "100000.00");
   EXPECT_EQ(intraday["rules"], json({{"plan", "Intraday 100K"}, {"phase", "evaluation"}, {"profit_target", "10000.00"},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", nullptr}, {"buy_only", true},
-      {"buying_power", true}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
+      {"defined_risk", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
   const auto funded = plans[9];
   EXPECT_EQ(funded["id"], "funded-intraday-100k");
   EXPECT_EQ(funded["name"], "Funded Intraday 100K");
@@ -1117,7 +1117,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(funded["initial_cash"], "100000.00");
   EXPECT_EQ(funded["rules"], json({{"plan", "Funded Intraday 100K"}, {"phase", "funded"}, {"profit_target", nullptr},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", "100000.00"}, {"buy_only", true},
-      {"buying_power", true}, {"expiry_cutoff_seconds", 300},
+      {"defined_risk", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 300},
       {"payouts", {{"qualifying_profit", "200.00"}, {"qualifying_days", 8}, {"withdrawal_percent", 50},
                    {"split_percent", 80}, {"minimum", "1000.00"},
                    {"caps", {"2000.00", "3000.00", "4000.00", "6000.00"}}}}}));

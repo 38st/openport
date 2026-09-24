@@ -36,7 +36,7 @@ json rules_json(const AccountRules& r) {
           {"profit_target", positive(r.profit_target)}, {"max_drawdown", positive(r.max_drawdown)},
           {"drawdown_mode", r.drawdown_mode == DrawdownMode::Intraday ? "intraday" : "end_of_day"},
           {"lock_balance", positive(r.lock_balance)},
-          {"buy_only", r.buy_only}, {"buying_power", r.buying_power},
+          {"buy_only", r.buy_only}, {"defined_risk", r.defined_risk}, {"buying_power", r.buying_power},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
 }
@@ -622,7 +622,7 @@ PayoutRules parse_payout_rules(const json& j) {
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
-         {"plan", "phase", "lock_balance", "payouts"});
+         {"plan", "phase", "lock_balance", "payouts", "defined_risk"});
   AccountRules rules;
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
@@ -642,6 +642,7 @@ AccountRules parse_rules(const json& j) {
   if (mode != "intraday" && mode != "end_of_day") throw std::invalid_argument("drawdown_mode must be intraday or end_of_day");
   rules.drawdown_mode = mode == "intraday" ? DrawdownMode::Intraday : DrawdownMode::EndOfDay;
   rules.buy_only = boolean_field(j, "buy_only");
+  if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   rules.buying_power = boolean_field(j, "buying_power");
   const auto cutoff = integer_field(j, "expiry_cutoff_seconds");
   if (cutoff < 0 || cutoff >= 86'400) throw std::invalid_argument("expiry_cutoff_seconds must be in [0, 86400)");

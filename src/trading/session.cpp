@@ -521,6 +521,23 @@ void advance(State& s, Timestamp time, Events& events) {
     else if (time >= o.day_end) cancel_order(o, failure(Reason::DAY_END, "The order's session ended"), events);
   }
 }
+/// Short contracts no long covers, after the account's positions take `extra`
+/// (a projected order's signed contracts).
+Quantity uncovered(const State& s, const std::vector<std::pair<std::string, Quantity>>& extra) {
+  std::map<std::string, Quantity> held;
+  for (const auto& [symbol, p] : s.ledger.positions()) held[symbol] = p.quantity;
+  for (const auto& [symbol, q] : extra) held[symbol] += q;
+  std::vector<MarginLeg> legs;
+  for (const auto& [symbol, q] : held)
+    if (q != 0) legs.push_back({s.contracts.at(symbol), q, {}, std::nullopt});
+  return naked_shorts(legs);
+}
+/// A defined-risk plan refuses an order that would leave more shorts uncovered.
+Decision defined_risk_check(const State& s, const std::vector<std::pair<std::string, Quantity>>& order) {
+  if (!s.config.rules.defined_risk || uncovered(s, order) <= uncovered(s, {})) return {};
+  return failure(Reason::DEFINED_RISK, "This plan allows defined risk only: cover each short option with a long of the same "
+                 "type that expires with it or later, or open the spread as one order");
+}
 Decision account_check(const State& s) {
   if (s.kill) return failure(Reason::KILL_SWITCH, s.kill_reason);
   if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
@@ -564,6 +581,14 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
   if (r.limit_price && r.limit_price->micros() % tick.micros() != 0)
     return failure(Reason::INVALID_TICK, "Net price is not a multiple of the legs' smallest tick");
   if (rules.buy_only) return failure(Reason::BUY_ONLY, "This plan is buy-only and single-leg; multi-leg orders need a plan that allows any strategy");
+  {
+    std::vector<std::pair<std::string, Quantity>> legs;
+    for (const auto& leg : r.legs) {
+      const auto q = r.quantity * leg.ratio;
+      legs.emplace_back(leg.symbol, leg.side == Side::Buy ? q : -q);
+    }
+    if (auto d = defined_risk_check(s, legs); !d.ok()) return d;
+  }
   for (const auto& leg : r.legs) {
     if (rules.expiry_cutoff > 0 && s.time >= s.contracts.at(leg.symbol).last_trade_time() - rules.expiry_cutoff)
       return failure(Reason::EXPIRY_CUTOFF, "A leg is inside the pre-expiry cutoff; close positions with single-leg orders");
@@ -631,6 +656,8 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
     return failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
   if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
     return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
+  if (auto d = defined_risk_check(s, {{request.symbol, request.side == Side::Buy ? request.quantity : -request.quantity}}); !d.ok())
+    return d;
   if (rules.expiry_cutoff > 0 && s.time >= c->second.last_trade_time() - rules.expiry_cutoff && !closing_only(s, o))
     return failure(Reason::EXPIRY_CUTOFF, "Contract is inside the pre-expiry cutoff; only closing orders are accepted");
   if (const auto d = quote_check(s, request.symbol); !d.ok()) return d;

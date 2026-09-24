@@ -18,7 +18,7 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
     r.max_drawdown
       ? `${formatMoney(r.max_drawdown, 0)} trailing drawdown (${r.drawdown_mode === "intraday" ? "intraday" : "end of day"})${r.lock_balance ? `, locks at ${formatMoney(r.lock_balance, 0)}` : ""}`
       : "No drawdown floor",
-    r.buy_only ? "Buy-only, single leg" : "Any strategy",
+    r.buy_only ? "Buy-only, single leg" : r.defined_risk ? "Defined risk only" : "Any strategy",
     ...(r.buying_power ? ["Buying power enforced"] : []),
     ...(r.expiry_cutoff_seconds > 0 ? [`Auto-close ${Math.round(r.expiry_cutoff_seconds / 60)} min before expiry`] : []),
     ...(p ? [`Payout every ${p.qualifying_days} days of ${formatMoney(p.qualifying_profit, 0)}+ net profit`,

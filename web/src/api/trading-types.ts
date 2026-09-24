@@ -39,6 +39,8 @@ export interface AccountRules {
   /** The trailing floor stops once it reaches this balance. */
   lock_balance: Money | null
   buy_only: boolean
+  /** Every short option needs a long of its type expiring with it or later; absent from older servers. */
+  defined_risk?: boolean
   buying_power: boolean
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null

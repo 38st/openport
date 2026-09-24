@@ -73,6 +73,31 @@ std::optional<Money> worst_loss(const std::vector<const MarginLeg*>& group) {
 }
 }  // namespace
 
+Quantity naked_shorts(const std::vector<MarginLeg>& legs) {
+  // Per underlying and type, the latest-expiring shorts take the earliest long
+  // that still covers them, which covers the most shorts overall.
+  std::map<std::pair<std::string, OptionType>, std::pair<std::map<Timestamp, Quantity>, std::map<Timestamp, Quantity>>> books;
+  for (const auto& leg : legs) {
+    if (leg.quantity == 0) continue;
+    auto& [shorts, longs] = books[{leg.contract.underlying, leg.contract.type}];
+    (leg.quantity < 0 ? shorts : longs)[leg.contract.expiry_time()] += leg.quantity < 0 ? -leg.quantity : leg.quantity;
+  }
+  Quantity naked = 0;
+  for (auto& [key, book] : books) {
+    auto& [shorts, longs] = book;
+    for (auto s = shorts.rbegin(); s != shorts.rend(); ++s) {
+      auto left = s->second;
+      for (auto l = longs.lower_bound(s->first); l != longs.end() && left > 0; ++l) {
+        const auto n = std::min(left, l->second);
+        left -= n;
+        l->second -= n;
+      }
+      naked += left;
+    }
+  }
+  return naked;
+}
+
 Money margin_requirement(const std::vector<MarginLeg>& legs) {
   std::map<std::string, std::vector<const MarginLeg*>> underlyings;
   for (const auto& leg : legs)

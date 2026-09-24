@@ -69,7 +69,8 @@ QQQ options), with generated prices labelled as simulated on every page:
   move. A held strategy is one row with its net P&L and Greeks, closed or rolled to a
   later expiry in one order.
 - **Evaluations**: a profit target and a trailing drawdown floor (intraday or end of day)
-  decide pass or fail, with buy-only and buying-power plans and auto-close before expiry.
+  decide pass or fail, with buy-only, defined-risk and buying-power rules and auto-close
+  before expiry.
   The Dashboard charts equity against the target and floor, and the Journal keeps a P&L
   calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
   per contract or per strategy, with shares from exercise and assignment as trades of
