@@ -512,9 +512,13 @@ TEST(CboeHolidays, NyseRulesAgreeWithCboesPublishedSchedule) {
   for (const auto& day : providers::parse_cboe_holidays(kHolidays2026)) {
     const auto noon = md::new_york_to_utc(day.date, 12, 0);
     EXPECT_EQ(md::market_session(noon).open, !day.closed) << day.name;
-    if (!day.closed) EXPECT_EQ(md::regular_close_hour(day.date), day.close_hour) << day.name;
+    if (!day.closed) {
+      EXPECT_EQ(md::regular_close_hour(day.date), day.close_hour) << day.name;
+    }
     const auto morning = md::trading_session("SPX", md::new_york_to_utc(day.date, 11, 0));
-    if (day.closed) EXPECT_EQ(morning.open, day.overnight_until > 0) << day.name;
+    if (day.closed) {
+      EXPECT_EQ(morning.open, day.overnight_until > 0) << day.name;
+    }
   }
 }
 
