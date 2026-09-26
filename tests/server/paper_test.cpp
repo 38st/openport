@@ -462,8 +462,8 @@ TEST_F(PaperEngine, ACircuitBreakerHaltsOrdersAndFillsForFifteenMinutes) {
     // Status reads the trading view, published after the batch reaches the accounts.
     ASSERT_TRUE(wait_for([&] {
       const auto view = engine->trading_view();
-      const auto spx = view->market_times.find("SPX");
-      return spx != view->market_times.end() && spx->second == time;
+      const auto seen = view->market_times.find("SPX");
+      return seen != view->market_times.end() && seen->second == time;
     }));
   };
   provider.sink->publish(md::ContractDefinition{0, market.contract});
