@@ -267,6 +267,11 @@ same on every run of a build:
 | Selloff | `selloff` | SPX falls almost 3% as volatility climbs, and a midday bounce fails |
 | Overnight session | `overnight` | SPX options in Cboe's global trading hours, 20:15 to 09:25 ET, limit orders only |
 
+`tools/demo_soak.py` plays the default day against a server you start for it, holding
+an SPX iron condor with far wings, and reports every order the account refused and
+every moment its marks were incomplete: a regression check for fills and freshness
+through a whole session.
+
 On the regular days SPX opens at 6,000 and wanders around its script, SPY follows at
 a tenth and QQQ at 1.25 times its moves, and implied volatility rises as the index
 falls, with a put skew and a term structure. Each chain has five expiries, 0DTE to next
