@@ -25,7 +25,8 @@ using tcp = asio::ip::tcp;
 using TlsStream = beast::ssl_stream<beast::tcp_stream>;
 
 constexpr std::size_t kMaxBody = 512u * 1024 * 1024;
-constexpr std::string_view kUserAgent = "OpenPort/0.1 (+https://github.com/38st/openport)";
+constexpr std::string_view kUserAgent =
+    "OpenPort/" OPENPORT_VERSION " (+https://github.com/38st/openport)";
 
 }  // namespace
 

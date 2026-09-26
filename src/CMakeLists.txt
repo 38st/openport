@@ -54,6 +54,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     net/http.cpp
   )
   add_library(openport::net ALIAS openport_net)
+  target_compile_definitions(openport_net PRIVATE OPENPORT_VERSION="${PROJECT_VERSION}")
   target_include_directories(openport_net PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
   target_link_libraries(openport_net
