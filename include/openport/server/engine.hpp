@@ -132,8 +132,8 @@ class Engine final : public MetricsSource {
   /// Returns after paper journal initialization; failures are reported in status.
   void start();
   void stop();
-  /// Replaces the dividends day rollovers pay (Options::dividends at first), as a
-  /// fetcher learns of new ones. Thread-safe.
+  /// Replaces dividends for day rollovers and American analytics (Options::dividends
+  /// at first), as a fetcher learns of new ones. Thread-safe.
   void set_dividends(std::vector<trading::Dividend> dividends);
 
   [[nodiscard]] std::vector<std::string> symbols() const override;
@@ -210,6 +210,7 @@ class Engine final : public MetricsSource {
   bool breaker_storage_ = false;  // only while the main journal's writer lock is held
   mutable std::mutex dividends_mutex_;
   std::vector<trading::Dividend> dividends_;
+  std::uint64_t dividends_version_ = 0;
   void check_circuit_breaker(const md::UnderlyingQuote& spot);
   void advance_circuit_breaker(md::Timestamp time);
   void publish_circuit_breaker();
@@ -225,6 +226,7 @@ class Engine final : public MetricsSource {
   bool health_dirty_ = false;
   bool health_changed_ = false;
   std::map<std::string, std::uint64_t> analysed_versions_;
+  std::uint64_t analysed_dividends_version_ = 0;
   std::map<std::string, std::shared_ptr<const analytics::DiscountCurve>> discount_curves_;
   std::shared_ptr<const analytics::DiscountCurve> discount_curve_;
   std::uint64_t events_ = 0;

@@ -61,6 +61,13 @@ struct Coverage {
   int open_interest = 0;
 };
 
+/// Known cash per share for the underlying being analysed. The ex-date starts
+/// at midnight New York time, so ex-date quotes no longer include the payment.
+struct Dividend {
+  md::Date ex_date;
+  double amount;
+};
+
 struct SliceMetrics {
   md::Date expiry;
   md::Timestamp expiry_time = 0;
@@ -72,6 +79,7 @@ struct SliceMetrics {
   std::string rate_source = "assumed";  ///< parity, term, curve, or assumed
   std::string rate_curve_symbol;
   bool deamericanized = false;
+  std::vector<Dividend> dividends;  ///< cash payments used in the EEP correction
   double atm_iv = kNaN;
   double gex = 0.0;
   double vex = 0.0;
@@ -130,6 +138,7 @@ struct AnalyticsOptions {
   double fallback_rate = 0.04;  ///< flat rate when no eligible market-implied rate exists
   std::shared_ptr<const DiscountCurve> discount_curve;
   bool deamericanize = true;
+  std::vector<Dividend> dividends;  ///< this underlying's known cash schedule
 
   /// Expiries shorter than this take their discount rate from the longer expiries
   /// (the median of their fitted rates): over a few days D is within a basis point
@@ -137,6 +146,8 @@ struct AnalyticsOptions {
   /// American tree dividend/borrow yield also takes the median implied q of longer
   /// expiries below this threshold, falling back to own q when none exists. Tree
   /// q is clamped to [-5%, 20%] to limit annualisation of spot/option clock noise.
+  /// With known cash before expiry, residual q instead preserves the own-tenor
+  /// parity forward on the escrowed spot, without borrowing or clamping.
   double min_days_for_rate = 30.0;
 
   /// Exposure (GEX, VEX, gamma flip) uses at least this much time to expiry. Local

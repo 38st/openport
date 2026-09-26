@@ -53,12 +53,21 @@ int main(int argc, char** argv) {
   }
   analytics::ChainBook book;
   const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  analytics::AnalyticsOptions options;
+  std::vector<pricing::CashDividend> cash;
+  if (argc > 1 && std::string_view(argv[1]) == "--cash-dividends") {
+    // Synthetic quarterly amounts for timing only, not a fund's dividend forecast.
+    for (int days = 60; days < 901; days += 90) {
+      const auto date = md::date_from_days(md::days_since_epoch({2026, 9, 22}) + days);
+      options.dividends.push_back({date, 1.5});
+      cash.push_back({md::years_between(as_of, md::new_york_to_utc(date, 0, 0)), 1.5});
+    }
+  }
   md::InstrumentId id = 0;
   for (int i = 0; i < 31; ++i) {
     const auto date = md::date_from_days(md::days_since_epoch({2026, 9, 22}) + 1 + i * i);
-    test::add_american_expiry(book, as_of, date, id, 600, 120, 5, 194, 101);
+    test::add_american_expiry(book, as_of, date, id, 600, 120, 5, 194, 101, "SPY", cash);
   }
-  analytics::AnalyticsOptions options;
   options.discount_curve = analytics::DiscountCurve::from_points("SPX", {{.25, .045}, {1, .045}});
   options.deamericanize = !(argc > 1 && std::string_view(argv[1]) == "--no-deamericanize");
   std::vector<double> timings;
@@ -69,7 +78,7 @@ int main(int argc, char** argv) {
     if (i >= 5) timings.push_back(m.compute_ms);
   }
   std::sort(timings.begin(), timings.end());
-  std::printf("options=%u expiries=31 priced=%d corrected=%d steps=%d median_ms=%.3f p90_ms=%.3f\n",
-              id, priced, options.deamericanize, analytics::kDeamericanizationSteps, timings[25],
+  std::printf("options=%u expiries=31 priced=%d corrected=%d cash=%zu steps=%d median_ms=%.3f p90_ms=%.3f\n",
+              id, priced, options.deamericanize, cash.size(), analytics::kDeamericanizationSteps, timings[25],
               timings[45]);
 }

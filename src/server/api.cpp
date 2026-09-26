@@ -76,6 +76,9 @@ json market_json(md::Timestamp ts) {
 
 json expiry_json(const SliceMetrics& slice) {
   const double rate = -std::log(slice.forward.discount) / slice.years;
+  json dividends = json::array();
+  for (const auto& d : slice.dividends)
+    dividends.push_back({{"ex_date", md::format_date(d.ex_date)}, {"amount", d.amount}});
   return {
       {"id", expiry_id(slice)},
       {"expiry", md::format_date(slice.expiry)},
@@ -92,6 +95,7 @@ json expiry_json(const SliceMetrics& slice) {
       {"rate_curve_symbol",
        slice.rate_curve_symbol.empty() ? json(nullptr) : json(slice.rate_curve_symbol)},
       {"deamericanized", slice.deamericanized},
+      {"dividends", std::move(dividends)},
       {"atm_iv", sig(slice.atm_iv)},
       {"gex", sig(slice.gex)},
       {"vex", sig(slice.vex)},

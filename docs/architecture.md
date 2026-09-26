@@ -45,8 +45,11 @@ flowchart LR
   ThetaData) turn successive snapshots into only the changes; Databento streams.
 - **One engine thread** owns all mutable state. It drains the queue into the chain
   book, recomputes analytics at most once a second for the underlyings whose data or
-  rate curve changed, and publishes each result as an immutable snapshot behind a
-  `shared_ptr`. HTTP handlers read snapshots and never block the feed.
+  rate curve or cash-dividend schedule changed, and publishes each result as an
+  immutable snapshot behind a `shared_ptr`. HTTP handlers read snapshots and never
+  block the feed. It hands each underlying's known dividends to its American
+  analytics as dates and dollar amounts, so the analytics and pricing layers do not
+  depend on trading.
 - **Market-wide halts** belong to the engine, shared by every account. The engine
   publishes the breaker reference, daily level and halt history under the status
   mutex for HTTP and WebSocket readers. With a paper journal, an atomic JSON file

@@ -34,23 +34,76 @@ double deterministic_american(const BsmInputs& in) {
   return best;
 }
 
+// Between cash payments the discounted cash reserve is constant. Check both
+// sides of each jump and the continuous part's stationary point in each interval.
+double deterministic_cash_american(const BsmInputs& in, std::span<const CashDividend> dividends) {
+  double reserve = 0;
+  for (const auto& d : dividends) reserve += d.amount * std::exp(-in.rate * d.time);
+  auto payoff = [&](double t) {
+    return std::max(omega(in.type) * (in.spot * std::exp(-in.dividend * t) + reserve -
+                                     in.strike * std::exp(-in.rate * t)), 0.0);
+  };
+  double stationary = -1;
+  if (in.rate * in.dividend > 0 && in.rate != in.dividend)
+    stationary = std::log(in.dividend * in.spot / (in.rate * in.strike)) /
+                 (in.dividend - in.rate);
+  double best = payoff(0);
+  double start = 0;
+  auto interval = [&](double end) {
+    if (stationary > start && stationary < end) best = std::max(best, payoff(stationary));
+    best = std::max(best, payoff(end));
+    start = end;
+  };
+  for (const auto& d : dividends) {
+    interval(d.time);
+    reserve -= d.amount * std::exp(-in.rate * d.time);
+    best = std::max(best, payoff(d.time));
+  }
+  interval(in.expiry);
+  return best;
+}
+
 }  // namespace
 
-static double tree_value(const BsmInputs& in, ExerciseStyle style, TreeMethod method, int steps,
-                         bool premium = false) {
+template <bool cash>
+static double tree_value(BsmInputs in, ExerciseStyle style, TreeMethod method, int steps,
+                         bool premium, std::span<const CashDividend> dividends) {
   if (!std::isfinite(in.spot) || !std::isfinite(in.strike) || !std::isfinite(in.expiry) ||
       !std::isfinite(in.rate) || !std::isfinite(in.dividend) || !std::isfinite(in.vol) ||
       in.spot <= 0 || in.strike <= 0 || in.vol < 0) {
     throw std::invalid_argument(
         "binomial inputs must be finite with positive spot/strike and nonnegative vol");
   }
-  if (premium && ((in.type == OptionType::Call && in.dividend <= 0 && in.rate >= 0) ||
+  std::vector<CashDividend> payments;
+  if constexpr (cash) {
+    double reserve = 0;
+    for (const auto& d : dividends) {
+      if (!std::isfinite(d.time) || !std::isfinite(d.amount) || d.amount < 0)
+        throw std::invalid_argument("cash dividends need finite times and nonnegative amounts");
+      if (d.time > 0 && d.time < in.expiry && d.amount > 0) {
+        payments.push_back(d);
+        reserve += d.amount * std::exp(-in.rate * d.time);
+      }
+    }
+    if (payments.empty()) return tree_value<false>(in, style, method, steps, premium, {});
+    in.spot -= reserve;
+    if (!(in.spot > 0) || !std::isfinite(in.spot))
+      throw std::invalid_argument("cash dividends must leave a positive finite escrowed spot");
+    std::sort(payments.begin(), payments.end(),
+              [](const auto& a, const auto& b) { return a.time < b.time; });
+  }
+  if (!cash && premium && ((in.type == OptionType::Call && in.dividend <= 0 && in.rate >= 0) ||
                   (in.type == OptionType::Put && in.rate <= 0 && in.dividend >= 0)))
     return 0;
   const double w = omega(in.type);
   auto fallback = [&] {
     double value = std::max(bsm_price(in), 0.0);
-    if (style == ExerciseStyle::American) value = std::max(value, deterministic_american(in));
+    if (style == ExerciseStyle::American) {
+      if constexpr (cash)
+        value = std::max(value, deterministic_cash_american(in, payments));
+      else
+        value = std::max(value, deterministic_american(in));
+    }
     if (!std::isfinite(value)) throw std::overflow_error("binomial fallback price is not finite");
     return premium ? std::max(0.0, value - bsm_price(in)) : value;
   };
@@ -87,6 +140,17 @@ static double tree_value(const BsmInputs& in, ExerciseStyle style, TreeMethod me
     return fallback();
   const double discounted_up = discount * p;
   const double discounted_down = discount * (1.0 - p);
+
+  // The reserve is shared by every node at a level; no exponentials or schedule
+  // scans belong in the quadratic rollback. The last level is after all payments.
+  std::vector<double> reserves;
+  if constexpr (cash) {
+    reserves.resize(steps);
+    for (int level = 0; level < steps; ++level)
+      for (const auto& d : payments)
+        if (level * dt <= d.time)
+          reserves[level] += d.amount * std::exp(-in.rate * (d.time - level * dt));
+  }
 
   // spot[j] is the price after j up-moves; walking back one level divides by `down`.
   std::vector<double> spot(static_cast<std::size_t>(steps) + 1);
@@ -127,7 +191,12 @@ static double tree_value(const BsmInputs& in, ExerciseStyle style, TreeMethod me
     for (int j = 0; j <= level; ++j) {
       double v = discounted_down * value[j] + discounted_up * value[j + 1];
       spot[j] /= down;
-      if (american) v = std::max(v, w * (spot[j] - in.strike));
+      if (american) {
+        if constexpr (cash)
+          v = std::max(v, w * (spot[j] + reserves[level] - in.strike));
+        else
+          v = std::max(v, w * (spot[j] - in.strike));
+      }
       value[j] = v;
     }
   }
@@ -136,12 +205,18 @@ static double tree_value(const BsmInputs& in, ExerciseStyle style, TreeMethod me
   return std::isfinite(result) && result >= 0.0 ? result : fallback();
 }
 
-double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod method, int steps) {
-  return tree_value(in, style, method, steps);
+double binomial_price(const BsmInputs& in, ExerciseStyle style, TreeMethod method, int steps,
+                      std::span<const CashDividend> dividends) {
+  return dividends.empty() ? tree_value<false>(in, style, method, steps, false, {})
+                           : tree_value<true>(in, style, method, steps, false, dividends);
 }
 
-double binomial_early_exercise_premium(const BsmInputs& in, int steps) {
-  return tree_value(in, ExerciseStyle::American, TreeMethod::LeisenReimer, steps, true);
+double binomial_early_exercise_premium(const BsmInputs& in, int steps,
+                                      std::span<const CashDividend> dividends) {
+  return dividends.empty()
+             ? tree_value<false>(in, ExerciseStyle::American, TreeMethod::LeisenReimer, steps, true, {})
+             : tree_value<true>(in, ExerciseStyle::American, TreeMethod::LeisenReimer, steps, true,
+                                dividends);
 }
 
 }  // namespace openport::pricing

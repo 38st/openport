@@ -3,12 +3,16 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
+#include <vector>
 
 namespace {
 
 using openport::pricing::binomial_price;
 using openport::pricing::bsm_price;
 using openport::pricing::BsmInputs;
+using openport::pricing::CashDividend;
+using openport::pricing::binomial_early_exercise_premium;
 using openport::pricing::ExerciseStyle;
 using openport::pricing::OptionType;
 using openport::pricing::TreeMethod;
@@ -108,6 +112,108 @@ TEST(Binomial, DeterministicAmericanCanExerciseBetweenTodayAndExpiry) {
   EXPECT_GT(exact, std::max(10.0, bsm_price(in)));
   for (auto method : {kCrr, kLr})
     EXPECT_NEAR(binomial_price(in, kAmerican, method, 101), exact, 1e-10);
+}
+
+TEST(Binomial, EmptyOrOutOfTermCashScheduleLeavesPricesExactlyUnchanged) {
+  const std::vector<CashDividend> ignored{{-.1, 5}, {0, 5}, {.75, 5}, {1, 5}, {.2, 0}};
+  for (auto type : {OptionType::Call, OptionType::Put}) {
+    const BsmInputs in{type, 100, 95, .75, .04, .01, .3};
+    for (auto style : {kAmerican, kEuropean}) {
+      for (auto method : {kCrr, kLr}) {
+        const double original = binomial_price(in, style, method, 101);
+        EXPECT_DOUBLE_EQ(binomial_price(in, style, method, 101, {}), original);
+        EXPECT_DOUBLE_EQ(binomial_price(in, style, method, 101, ignored), original);
+      }
+    }
+    EXPECT_DOUBLE_EQ(binomial_early_exercise_premium(in, 31, ignored),
+                     binomial_early_exercise_premium(in, 31));
+  }
+}
+
+TEST(Binomial, CashDividendEuropeanMatchesBlackScholesOnEscrowedSpot) {
+  const std::vector<CashDividend> cash{{.6, 1.5}, {.2, 2}};
+  for (auto type : {OptionType::Call, OptionType::Put}) {
+    for (double yield : {-.01, .02}) {
+      const BsmInputs in{type, 100, 95, .75, .04, yield, .3};
+      auto escrowed = in;
+      for (const auto& d : cash) escrowed.spot -= d.amount * std::exp(-in.rate * d.time);
+      EXPECT_NEAR(binomial_price(in, kEuropean, kLr, 1001, cash), bsm_price(escrowed), 2e-6);
+      EXPECT_NEAR(binomial_price(in, kEuropean, kCrr, 2001, cash), bsm_price(escrowed), .005);
+    }
+  }
+}
+
+TEST(Binomial, CashDividendAmericanConvergesAndPremiumUsesTheSameLattice) {
+  const std::vector<CashDividend> cash{{.19, 3}, {.43, 2}};
+  for (auto type : {OptionType::Call, OptionType::Put}) {
+    const BsmInputs in{type, 100, 95, .75, .04, .01, .25};
+    for (auto method : {kCrr, kLr}) {
+      const double reference = binomial_price(in, kAmerican, method, 2001, cash);
+      const double coarse = binomial_price(in, kAmerican, method, 31, cash);
+      const double fine = binomial_price(in, kAmerican, method, 501, cash);
+      EXPECT_LT(std::abs(fine - reference), std::abs(coarse - reference));
+      EXPECT_NEAR(fine, reference, .015);
+    }
+    EXPECT_NEAR(binomial_early_exercise_premium(in, 31, cash),
+                binomial_price(in, kAmerican, kLr, 31, cash) -
+                    binomial_price(in, kEuropean, kLr, 31, cash), 1e-12);
+  }
+}
+
+TEST(Binomial, DeepCallJustBeforeLargeCashDividendExercisesImmediately) {
+  const std::vector<CashDividend> cash{{1e-6, 10}};
+  const BsmInputs in{OptionType::Call, 100, 60, .5, .04, 0, .15};
+  for (auto method : {kCrr, kLr}) {
+    EXPECT_NEAR(binomial_price(in, kAmerican, method, 501, cash), 40, 1e-10);
+    EXPECT_LT(binomial_price(in, kEuropean, method, 501, cash), 32);
+  }
+  EXPECT_GT(binomial_early_exercise_premium(in, 31, cash), 8);
+}
+
+TEST(Binomial, DeterministicCashExerciseChecksBothSidesOfJumps) {
+  const std::vector<CashDividend> cash{{.4, 10}};
+  for (auto method : {kCrr, kLr}) {
+    const BsmInputs call{OptionType::Call, 100, 80, 1, .05, 0, 0};
+    const double before_ex = 100 - 80 * std::exp(-.05 * .4);
+    EXPECT_NEAR(binomial_price(call, kAmerican, method, 101, cash), before_ex, 1e-12);
+    const BsmInputs put{OptionType::Put, 100, 110, 1, .05, 0, 0};
+    const double after_ex = 120 * std::exp(-.05 * .4) - 100;
+    EXPECT_NEAR(binomial_price(put, kAmerican, method, 101, cash), after_ex, 1e-12);
+    auto escrowed = call;
+    escrowed.spot -= 10 * std::exp(-.05 * .4);
+    EXPECT_NEAR(binomial_price(call, kEuropean, method, 101, cash), bsm_price(escrowed), 1e-12);
+  }
+}
+
+TEST(Binomial, CashDividendOnLatticeDateAllowsExerciseBeforeTheJump) {
+  const std::vector<CashDividend> cash{{.4, 10}};
+  // Small positive volatility keeps CRR admissible at r=0 and the deep call's
+  // payoff linear; positive yield makes exercise before the jump preferable.
+  const BsmInputs in{OptionType::Call, 100, 60, 1, 0, .001, .02};
+  EXPECT_NEAR(binomial_price(in, kAmerican, kCrr, 100, cash), 40, 1e-10);
+  const BsmInputs growing{OptionType::Call, 100, 60, 1, .05, 0, .02};
+  EXPECT_NEAR(binomial_price(growing, kAmerican, kCrr, 100, cash),
+              100 - 60 * std::exp(-.05 * .4), 1e-9);
+}
+
+TEST(Binomial, CashDividendFallbackRetainsEarlyExercise) {
+  const std::vector<CashDividend> cash{{.4, 10}};
+  const BsmInputs in{OptionType::Call, 100, 60, 1, .05, 0, .00001};
+  for (auto method : {kCrr, kLr}) {
+    EXPECT_NEAR(binomial_price(in, kAmerican, method, 31, cash),
+                100 - 60 * std::exp(-.05 * .4), 1e-10);
+  }
+}
+
+TEST(Binomial, RejectsInvalidCashSchedulesAndNonpositiveEscrow) {
+  const BsmInputs in{OptionType::Call, 100, 95, 1, .04, 0, .2};
+  for (const auto& cash : {std::vector<CashDividend>{{.5, -1}},
+                          std::vector<CashDividend>{{.5, 110}},
+                          std::vector<CashDividend>{{.5, std::numeric_limits<double>::infinity()}},
+                          std::vector<CashDividend>{{std::numeric_limits<double>::quiet_NaN(), 1}}}) {
+    EXPECT_THROW(static_cast<void>(binomial_price(in, kAmerican, kLr, 31, cash)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(binomial_early_exercise_premium(in, 31, cash)), std::invalid_argument);
+  }
 }
 
 }  // namespace

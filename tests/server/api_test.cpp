@@ -132,8 +132,30 @@ TEST(Api, SummaryListsExpiriesWithSettlementInTheirIds) {
   EXPECT_EQ(expiry["id"], "2026-10-22PM");
   EXPECT_EQ(expiry["settlement"], "PM");
   EXPECT_EQ(expiry["strikes"], 41);
+  EXPECT_EQ(expiry["dividends"], json::array());
   EXPECT_NEAR(expiry["rate"].get<double>(), test::SyntheticChain::kRate, 1e-3);
   EXPECT_TRUE(summary["exposure"]["gamma_flip"].is_number());
+}
+
+TEST(Api, SummaryAndChainReportTheCashAmountsUsedWithoutRounding) {
+  analytics::ChainBook book;
+  md::InstrumentId id = 0;
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  test::add_american_expiry(book, as_of, {2027, 9, 22}, id, 100, 90, 2.5, 9, 101);
+  analytics::AnalyticsOptions options;
+  options.dividends = {{{2027, 2, 2}, .5}, {{2026, 11, 2}, 1.234567}};
+  const auto& underlying = book.underlyings().at("SPY");
+  StubSource source(analytics::analyze(underlying, book, as_of, options));
+  const auto summary = get(source, "/api/underlyings/SPY/summary");
+  const auto expiry = summary["expiries"][0];
+  const auto chain = get(source, "/api/underlyings/SPY/chain?expiry=" + expiry["id"].get<std::string>());
+  const json expected = json::array({{{"ex_date", "2026-11-02"}, {"amount", 1.234567}},
+                                      {{"ex_date", "2027-02-02"}, {"amount", .5}}});
+  EXPECT_EQ(expiry["dividends"], expected);
+  EXPECT_EQ(chain["expiry"]["dividends"], expected);
+  options.deamericanize = false;
+  StubSource raw(analytics::analyze(underlying, book, as_of, options));
+  EXPECT_EQ(get(raw, "/api/underlyings/SPY/summary")["expiries"][0]["dividends"], json::array());
 }
 
 TEST(Api, ChainReturnsBothSidesOfEveryStrike) {

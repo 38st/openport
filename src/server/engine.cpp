@@ -24,6 +24,7 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
 void Engine::set_dividends(std::vector<trading::Dividend> dividends) {
   const std::lock_guard lock(dividends_mutex_);
   dividends_ = std::move(dividends);
+  ++dividends_version_;
 }
 
 Engine::~Engine() { stop(); }
@@ -293,6 +294,14 @@ void Engine::run() {
 
 void Engine::refresh_analytics() {
   const auto started = std::chrono::steady_clock::now();
+  std::vector<trading::Dividend> dividends;
+  std::uint64_t dividends_version = 0;
+  {
+    const std::lock_guard lock(dividends_mutex_);
+    dividends = dividends_;
+    dividends_version = dividends_version_;
+  }
+  const bool dividends_changed = dividends_version != analysed_dividends_version_;
   bool recomputed = false;
   const auto previous_curve = discount_curve_;
   std::vector<std::string> european_updates;
@@ -304,6 +313,9 @@ void Engine::refresh_analytics() {
     // Delayed feeds retain their own market-data clock.
     const md::Timestamp as_of = book.data_time > 0 ? book.data_time : md::now();
     auto options = options_.analytics;
+    options.dividends.clear();
+    for (const auto& d : dividends)
+      if (d.symbol == symbol) options.dividends.push_back({d.ex_date, d.per_share.dollars()});
     if (discount_curve_) options.discount_curve = discount_curve_;
     auto result = std::make_shared<const analytics::UnderlyingMetrics>(
         analytics::analyze(book, book_, as_of, options));
@@ -340,14 +352,15 @@ void Engine::refresh_analytics() {
   else if (!discount_curve_ && !discount_curves_.empty())
     discount_curve_ = discount_curves_.begin()->second;
   const bool curve_changed = previous_curve != discount_curve_;
-  // A curve update invalidates American results even without new American quotes.
+  // Curve or cash-schedule updates invalidate American results even without quotes.
   for (const auto& [symbol, book] : book_.underlyings()) {
     if (book.expiries.empty() || !has_style(book, pricing::ExerciseStyle::American)) continue;
     const bool mixed_updated = std::find(european_updates.begin(), european_updates.end(),
                                          symbol) != european_updates.end();
-    if (book.version != analysed_versions_[symbol] || curve_changed || mixed_updated)
+    if (book.version != analysed_versions_[symbol] || curve_changed || mixed_updated || dividends_changed)
       analyze(symbol, book);
   }
+  analysed_dividends_version_ = dividends_version;
 
   const auto now = std::chrono::steady_clock::now();
   const double elapsed = std::chrono::duration<double>(now - last_rate_time_).count();

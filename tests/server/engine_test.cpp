@@ -352,6 +352,42 @@ TEST(Engine, EuropeanCurveReachesAmericanInSamePassAndRefreshesUnchangedChain) {
               .05, 1e-9);
 }
 
+TEST(Engine, DividendSeedsAndReplacementsReachOnlyTheirUnderlyingWithoutNewQuotes) {
+  CurveProvider provider;
+  server::Engine::Options options;
+  options.analytics_interval = std::chrono::milliseconds(1);
+  options.dividends = {{"QQQ", {2026, 10, 22}, trading::Money::parse("0.75")},
+                       {"SPY", {2026, 10, 23}, trading::Money::parse("2")},
+                       {"SPX", {2026, 10, 24}, trading::Money::parse("5")}};
+  server::Engine engine(provider, {{"QQQ", "SPX", "XSP"}}, options);
+  engine.start();
+  ASSERT_TRUE(eventually([&] {
+    const auto m = engine.metrics("QQQ");
+    return m && m->slices[0].rate_curve_symbol == "SPX" && m->slices[0].dividends.size() == 1;
+  }));
+  const auto first = engine.metrics("QQQ");
+  EXPECT_DOUBLE_EQ(first->slices[0].dividends[0].amount, .75);
+  EXPECT_EQ(first->slices[0].dividends[0].ex_date, (md::Date{2026, 10, 22}));
+  EXPECT_TRUE(engine.metrics("SPX")->slices[0].dividends.empty());
+  EXPECT_TRUE(engine.metrics("XSP")->slices[0].dividends.empty());
+  engine.set_dividends({{"QQQ", {2026, 11, 2}, trading::Money::parse("1.25")}});
+  ASSERT_TRUE(eventually([&] {
+    const auto m = engine.metrics("QQQ");
+    return m->slices[0].dividends.size() == 1 && m->slices[0].dividends[0].amount == 1.25;
+  }));
+  const auto replaced = engine.metrics("QQQ");
+  EXPECT_EQ(replaced->version, first->version);
+  EXPECT_EQ(replaced->as_of, first->as_of);
+  EXPECT_NE(replaced->slices[0].strikes[0].call.eep, first->slices[0].strikes[0].call.eep);
+  const auto summary = nlohmann::json::parse(
+      server::handle_api({"GET", "/api/underlyings/QQQ/summary"}, engine).body);
+  EXPECT_EQ(summary["expiries"][0]["dividends"],
+            (nlohmann::json::array({{{"ex_date", "2026-11-02"}, {"amount", 1.25}}})));
+  engine.set_dividends({});
+  ASSERT_TRUE(eventually([&] { return engine.metrics("QQQ")->slices[0].dividends.empty(); }));
+  EXPECT_EQ(engine.metrics("QQQ")->version, first->version);
+}
+
 TEST(Engine, SamplesEachAnalysedSpotAtThePriceTimeForCharts) {
   CurveProvider provider;
   server::Engine::Options options;

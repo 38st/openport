@@ -131,6 +131,7 @@ export interface Expiry {
   rate_source?: "parity" | "term" | "curve" | "assumed" | null
   rate_curve_symbol?: string | null
   deamericanized?: boolean | null
+  dividends?: { ex_date: string; amount: number }[]
   atm_iv: Num
   gex: Num
   vex: Num

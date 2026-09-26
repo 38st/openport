@@ -11,7 +11,8 @@ namespace openport::test {
 inline void add_american_expiry(analytics::ChainBook& book, md::Timestamp as_of, md::Date expiry,
                                 md::InstrumentId& id, double spot = 100, double low = 80,
                                 double spacing = 2.5, int strikes = 17, int steps = 1001,
-                                const std::string& symbol = "SPY") {
+                                const std::string& symbol = "SPY",
+                                std::span<const pricing::CashDividend> dividends = {}) {
   book.apply(md::UnderlyingQuote{symbol, as_of, spot, spot, spot});
   for (int i = 0; i < strikes; ++i) {
     for (auto type : {pricing::OptionType::Call, pricing::OptionType::Put}) {
@@ -24,7 +25,7 @@ inline void add_american_expiry(analytics::ChainBook& book, md::Timestamp as_of,
       const double t = md::years_between(as_of, c.expiry_time());
       const double price = pricing::binomial_price({type, spot, c.strike, t, .045, .01, .20},
                                                    pricing::ExerciseStyle::American,
-                                                   pricing::TreeMethod::LeisenReimer, steps);
+                                                   pricing::TreeMethod::LeisenReimer, steps, dividends);
       const double spread = std::min(.001 * spot, price * .01);
       book.apply(md::OptionQuote{id, as_of, price - spread, price + spread, 1, 1});
       book.apply(md::OpenInterest{id, as_of, type == pricing::OptionType::Call ? 100.0 : 120.0});

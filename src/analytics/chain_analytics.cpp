@@ -170,6 +170,7 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     std::map<md::InstrumentId, double> premiums;
     double dividend = kNaN;
     bool deamericanized = false;
+    std::vector<Dividend> dividends;
   };
   std::vector<Fitted> fitted;
   std::vector<double> long_rates;
@@ -216,7 +217,8 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
                       american ? (options.discount_curve ? "curve" : "assumed") : "parity",
                       {},
                       kNaN,
-                      false});
+                      false,
+                      {}});
   }
 
   // Short expiries borrow the rate term structure's level from the long ones.
@@ -266,10 +268,29 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     const double forward = f.forward.ok ? f.forward.forward : out.spot / discount;
     const double rate = -std::log(discount) / f.years;
     const double own_dividend = rate - std::log(forward / out.spot) / f.years;
-    const double dividend = std::clamp(
+    double dividend = std::clamp(
         f.years * 365 < options.min_days_for_rate && std::isfinite(term_dividend) ? term_dividend
                                                                                   : own_dividend,
         kMinTreeDividend, kMaxTreeDividend);
+    std::vector<Dividend> used_dividends;
+    std::vector<pricing::CashDividend> cash;
+    double reserve = 0;
+    for (const auto& d : options.dividends) {
+      if (!md::valid_date(d.ex_date) || !(d.amount > 0) || !std::isfinite(d.amount)) continue;
+      const auto ex_time = md::new_york_to_utc(d.ex_date, 0, 0);
+      if (ex_time <= as_of || ex_time >= f.slice->expiry_time) continue;
+      const double time = md::years_between(as_of, ex_time);
+      used_dividends.push_back(d);
+      cash.push_back({time, d.amount});
+      reserve += d.amount * std::exp(-rate * time);
+    }
+    if (!cash.empty()) {
+      // Residual carry acts only on the escrowed spot. Borrowing or clamping it
+      // would break F0 = (S - PV(cash)) * exp((r - q) * T).
+      const double escrow = out.spot - reserve;
+      if (!(escrow > 0) || !std::isfinite(escrow)) continue;
+      dividend = rate - std::log(forward / escrow) / f.years;
+    }
     if (!std::isfinite(dividend)) continue;
     for (const auto& [strike, pair] : f.slice->strikes) {
       const auto* call = chain.option(pair.call);
@@ -286,7 +307,7 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
         if (!(vol > 0) || !std::isfinite(vol)) return;
         const double premium = pricing::binomial_early_exercise_premium(
             {state->contract.type, out.spot, strike, f.years, rate, dividend, vol},
-            kDeamericanizationSteps);
+            kDeamericanizationSteps, cash);
         f.premiums[id] = premium;
       };
       correct(call, pair.call, cv, pv);
@@ -301,6 +322,11 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     }
     if (f.forward.ok) f.forward = implied_forward_given_discount(f.points, discount);
     f.deamericanized = true;
+    if (!f.premiums.empty()) {
+      std::sort(used_dividends.begin(), used_dividends.end(),
+                [](const auto& a, const auto& b) { return a.ex_date < b.ex_date; });
+      f.dividends = std::move(used_dividends);
+    }
   }
   int exposure_options = 0, exposure_oi = 0;
   std::map<double, double> gex_by_strike;
@@ -320,6 +346,7 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     sm.rate_source = f.rate_source;
     if (f.rate_source == "curve") sm.rate_curve_symbol = options.discount_curve->symbol();
     sm.deamericanized = f.deamericanized;
+    sm.dividends = std::move(f.dividends);
     if (!sm.forward.ok) {
       // Keep unanchored slices visible with missing analytics and receipt coverage.
       sm.forward.forward = out.spot / sm.forward.discount;

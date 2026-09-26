@@ -11,6 +11,9 @@ tenors are required. Zero rates interpolate linearly in time and extrapolate
 flat. The latest eligible curve supplies American discounts; SPX takes priority.
 All European books are processed before American books in each pass. Changing
 the selected curve also refreshes American analytics with unchanged quotes.
+Replacing the engine's cash-dividend schedule does the same, including when
+payments are revised or removed. The engine converts each symbol's trading
+dividends to plain dates and dollar amounts; analytics has no trading dependency.
 Mixed exercise-style books use only European slices to construct curves.
 
 An American expiry never fits a parity slope, including with de-Americanisation
@@ -25,8 +28,11 @@ rate (`openportd --rate R`, default `0.04`, permitted range `[-0.05, 0.25]`).
    `q = r - log(F0/S)/T`, using the common reference spot. Below
    `min_days_for_rate` (30 days), use the median implied q from this underlying's
    longer live expiries, falling back to own q if no longer tenor is available.
-   Clamp tree q to **[-5%, 20%]**: a modelling safeguard covering negative carry
-   and high dividend/borrow yields while limiting amplified timing noise.
+   With no known cash before expiry, clamp tree q to **[-5%, 20%]**: a modelling
+   safeguard covering negative carry and high dividend/borrow yields while
+   limiting amplified timing noise.
+   With known cash, use the escrowed spot and residual carry described below
+   instead of borrowing or clamping q.
 3. Evaluate American minus European prices on the **same 31-step Leisen-Reimer
    lattice**, at the same volatility and carry. American value uses rollback;
    European value uses the binomial terminal probabilities and the same terminal
@@ -44,7 +50,9 @@ The implementation corrects all two-sided options with a usable first-pass IV,
 including both parity legs, all OTM smile inputs, and ITM fallback smile inputs.
 If an ITM quote cannot imply its own first-pass IV, its partner's valid first-pass
 IV supplies the premium estimate. It skips a tree exactly when exercise cannot
-help: calls with q <= 0 and r >= 0, or puts with r <= 0 and q >= 0. Premiums are
+help when no cash payments are present: calls with q <= 0 and r >= 0, or puts with
+r <= 0 and q >= 0. A cash payment can make early call exercise valuable even at
+q = 0, so cash schedules do not take that shortcut. Premiums are
 reused for parity and all three quote prices within the pass; there is no cache
 across changing market inputs. A negative premium-adjusted bid has no bid IV,
 but does not prevent a positive adjusted mid from having an IV when the original
@@ -63,16 +71,77 @@ an upward spot mismatch, and from 0.035256 to 0.004235 for a downward mismatch.
 The test uses 1,001-step quotes at S=100, r=4.5%, q=1%, vol=20%, strikes 97..103
 in increments of 0.25 and a one-year companion expiry.
 
-One correction iteration suffices for the measured acceptance grid below. This
-is a continuous-yield approximation, not a discrete cash-dividend exercise
-model. The numerical tolerances below are measured on that grid, not guaranteed
+One correction iteration suffices for the measured acceptance grid below. The
+numerical tolerances below are measured on that grid, not guaranteed
 for every volatility, dividend or maturity. Greeks remain European Black-76
 Greeks at the final smile IV, accurate on the OTM side of American contracts.
+Their existing spot scaling, `dF/dS = F/S`, is retained; these are not sensitivities
+of the cash-dividend exercise model.
 
 Exposure counts every side with received usable OI at a finite-smile-IV strike,
 even when that side's own IV failed. `priced` still counts own-IV successes;
 `oi_coverage` is receipt coverage over the exposure set. The web coverage warning
 uses missing quotes or OI, not missing IVs.
+
+## Known cash dividends
+
+`openportd --dividends FILE` and `--dividends massive` supply the same known
+payments to American analytics as to paper trading. No amounts or future
+quarterly payments are forecast. For each expiry, include only positive finite
+payments on valid ex-dates strictly after the data's market time and strictly
+before settlement. A date takes effect at **00:00 New York time**, including
+daylight saving time, so quotes on the ex-date exclude that payment. A payment
+on the expiry date is included when valuation precedes that day's midnight.
+This is a date-only convention, not an observed intraday ex-event timestamp.
+
+Both CRR and Leisen-Reimer use the escrowed-dividend model. For cash amounts
+`A_i` at year fractions `t_i`, define
+
+```
+PV = sum(A_i * exp(-r * t_i))
+X0 = S - PV
+q_residual = r - log(F0 / X0) / T
+```
+
+The recombining tree runs on `X0` with growth `r - q_residual`. At time `t`,
+exercise uses `X_node + sum(A_i * exp(-r * (t_i - t)))` for payments still to
+come. At an ex-time exactly on the lattice, exercise includes the payment just
+before the jump; an off-grid ex-time is sampled at the last preceding node.
+The terminal payoff has no remaining cash, so a European tree converges to
+Black-Scholes on `X0` with the residual yield. American exercise can capture
+the cash by exercising a call before it goes ex. Cash reserves are computed
+once per level, outside the node rollback.
+
+Residual q explains carry that the supplied payments do not explain, including
+borrow and unknown distributions. It uses this expiry's first-pass parity
+forward even below 30 days, without the continuous-only path's term borrowing
+or clamp: `X0 * exp((r - q_residual) * T) = F0`. Applying the old full yield to
+`X0` would count the known cash twice. The final forward is still refitted after
+one EEP correction; the tree is not iterated to the final forward. Timing noise
+can therefore affect short-expiry residual carry, and a coarse tree can miss
+part of the value just before an off-grid dividend. More steps improve that
+boundary approximation; they do not remove the escrowed model's assumption
+that volatility acts on `X`, rather than the full spot.
+
+Zero-volatility and numerical-fallback American valuations check exercise on
+both sides of each payment and at interior stationary points. The positive-vol
+fallback remains an approximation. The pricing API rejects nonfinite times,
+negative or nonfinite amounts, and nonpositive escrowed spots. Analytics ignores
+malformed schedule entries; if the selected cash consumes the whole spot, it
+leaves that expiry uncorrected with no payments reported. With no eligible cash,
+the existing continuous-yield prices, safeguards and analytics are unchanged.
+
+Summary `expiries` and the chain response's `expiry` include `dividends`, sorted
+by ex-date, with `ex_date` (`YYYY-MM-DD`) and `amount` (dollars per share without
+display rounding). The array is empty when no cash was used, including European
+expiries and disabled or unavailable EEP corrections. These are model inputs,
+not a claim that all future dividends are known.
+
+Regression tests cover both trees' convergence, European escrowed Black-Scholes
+prices, immediate call exercise ahead of a large payment, deterministic exercise
+on either side of a jump, and exact preservation of the no-cash path. Synthetic
+American chains with cash payments and residual continuous carry also exercise
+the full forward/IV correction and reporting path.
 
 ## Accuracy measured on this Mac
 
@@ -141,3 +210,22 @@ The original baseline executable was built before editing the analytics and
 retained as `/tmp/openport-a3-before` for the paired timing run. The first baseline
 measurement was 20.013 ms; the final paired run above was 19.704 ms. Both used the
 same fixture and five-plus-fifty pass methodology.
+
+Cash-dividend change, 2026-09-25, Release build on this Mac: the same 12,028-option
+probe, with 31-step corrections and five warm-ups plus 50 measured passes. The
+before executable was retained before editing. These runs were sequential with
+the build and tests finished:
+
+| Version | Median | p90 | Own-IV successes |
+| --- | ---: | ---: | ---: |
+| Before cash support, no cash | 29.832 ms | 30.809 ms | 10,999 |
+| After cash support, no cash | 29.599 ms | 29.929 ms | 10,999 |
+| After cash support, synthetic cash | 34.036 ms | 35.982 ms | 11,130 |
+
+The cash fixture adds synthetic $1.50 payments at day 60 and every 90 days
+thereafter, through day 870, to both quote generation and analytics. They are
+timing inputs, not SPY's announced dividends. Residual yield in quote generation
+is still 1%. Different quotes change the number of successful IV solves. The
+no-cash path has no measured slowdown; this cash workload adds about 15% to it.
+Run `/tmp/openport-american-measure --cash-dividends` with the build command
+above to reproduce the cash case.

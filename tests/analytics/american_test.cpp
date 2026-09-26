@@ -226,4 +226,130 @@ TEST(AmericanAnalytics, NoLongCarryFallsBackToOwnYieldWithDocumentedClamp) {
     }
   }
 }
+
+TEST(AmericanAnalytics, CashDividendCorrectionRecoversEscrowedForwardAndVol) {
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  for (const auto expiry : {md::Date{2026, 12, 22}, md::Date{2027, 9, 22}}) {
+    analytics::ChainBook book;
+    md::InstrumentId id = 0;
+    analytics::AnalyticsOptions options;
+    options.fallback_rate = .045;
+    options.dividends = {{{2026, 11, 2}, 1.5}, {{2027, 2, 2}, 1.5}};
+    std::vector<pricing::CashDividend> cash;
+    for (const auto& d : options.dividends)
+      cash.push_back({md::years_between(as_of, md::new_york_to_utc(d.ex_date, 0, 0)), d.amount});
+    test::add_american_expiry(book, as_of, expiry, id, 100, 80, 2.5, 17, 2001, "SPY", cash);
+    const auto m = analytics::analyze(book.underlyings().at("SPY"), book, as_of, options);
+    const auto& slice = m.slices[0];
+    double escrow = 100;
+    for (const auto& d : cash)
+      if (d.time < slice.years) escrow -= d.amount * std::exp(-.045 * d.time);
+    const double forward = escrow * std::exp(.035 * slice.years);
+    EXPECT_TRUE(slice.deamericanized);
+    EXPECT_EQ(slice.dividends.size(), expiry.year == 2026 ? 1u : 2u);
+    EXPECT_NEAR(slice.forward.forward, forward, forward * .001);
+    for (const auto& row : slice.strikes) {
+      ASSERT_TRUE(std::isfinite(row.iv));
+      EXPECT_NEAR(row.iv, .2, .005) << md::format_date(expiry) << " / " << row.strike;
+      for (const auto* side : {&row.call, &row.put}) {
+        EXPECT_DOUBLE_EQ(side->mid, book.option(side->id)->mid());
+        if (std::isfinite(side->iv)) {
+          EXPECT_NEAR(pricing::black_price(side->contract.type, slice.forward.forward, row.strike,
+                                           slice.years, side->iv, slice.forward.discount),
+                      side->mid - side->eep, 1e-8);
+        }
+      }
+    }
+  }
+}
+
+TEST(AmericanAnalytics, CashResidualCarryPreservesOwnForwardWithoutClampOrTermBorrowing) {
+  analytics::ChainBook book;
+  md::InstrumentId id = 0;
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  const md::Date ex_date{2026, 9, 23};
+  const double time = md::years_between(as_of, md::new_york_to_utc(ex_date, 0, 0));
+  const std::vector<pricing::CashDividend> cash{{time, 1}};
+  test::add_american_expiry(book, as_of, {2026, 9, 24}, id, 100, 100, 1, 1, 1001, "SPY", cash);
+  test::add_american_expiry(book, as_of, {2027, 9, 22}, id);
+  analytics::AnalyticsOptions options;
+  options.fallback_rate = .045;
+  options.dividends = {{ex_date, 1}};
+  options.deamericanize = false;
+  const auto raw = analytics::analyze(book.underlyings().at("SPY"), book, as_of, options);
+  const auto& slice = raw.slices[0];
+  const double escrow = 100 - std::exp(-.045 * time);
+  const double q = .045 - std::log(slice.forward.forward / escrow) / slice.years;
+  ASSERT_TRUE(q < analytics::kMinTreeDividend || q > analytics::kMaxTreeDividend);
+  options.deamericanize = true;
+  const auto m = analytics::analyze(book.underlyings().at("SPY"), book, as_of, options);
+  for (const auto* side : {&m.slices[0].strikes[0].call, &m.slices[0].strikes[0].put}) {
+    const auto iv = pricing::implied_vol_black(side->mid, side->contract.type,
+                                               slice.forward.forward, 100, slice.years,
+                                               slice.forward.discount);
+    ASSERT_TRUE(iv.ok());
+    const double expected = pricing::binomial_early_exercise_premium(
+        {side->contract.type, 100, 100, slice.years, .045, q, iv.vol},
+        analytics::kDeamericanizationSteps, cash);
+    EXPECT_NEAR(side->eep, expected, 1e-10);
+  }
+}
+
+TEST(AmericanAnalytics, UsesOnlyFutureCashBeforeExpiryAndReportsItInDateOrder) {
+  analytics::ChainBook book;
+  md::InstrumentId id = 0;
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  for (const auto expiry : {md::Date{2026, 9, 23}, md::Date{2026, 9, 24}})
+    test::add_american_expiry(book, as_of, expiry, id, 100, 99, 1, 3, 101);
+  analytics::AnalyticsOptions options;
+  options.dividends = {{{2026, 9, 24}, .2}, {{2026, 9, 22}, .3}, {{2026, 9, 23}, .1},
+                       {{2026, 9, 25}, .4}, {{2026, 9, 21}, .5}};
+  const auto& underlying = book.underlyings().at("SPY");
+  const auto m = analytics::analyze(underlying, book, as_of, options);
+  ASSERT_EQ(m.slices[0].dividends.size(), 1u);
+  ASSERT_EQ(m.slices[1].dividends.size(), 2u);
+  EXPECT_EQ(m.slices[0].dividends[0].ex_date, (md::Date{2026, 9, 23}));
+  EXPECT_DOUBLE_EQ(m.slices[0].dividends[0].amount, .1);
+  EXPECT_EQ(m.slices[1].dividends[0].ex_date, (md::Date{2026, 9, 23}));
+  EXPECT_EQ(m.slices[1].dividends[1].ex_date, (md::Date{2026, 9, 24}));
+  const auto ex_time = md::new_york_to_utc({2026, 9, 23}, 0, 0);
+  EXPECT_EQ(analytics::analyze(underlying, book, ex_time - 1, options).slices[0].dividends.size(), 1u);
+  EXPECT_TRUE(analytics::analyze(underlying, book, ex_time, options).slices[0].dividends.empty());
+  options.deamericanize = false;
+  for (const auto& s : analytics::analyze(underlying, book, as_of, options).slices) {
+    EXPECT_TRUE(s.dividends.empty());
+    EXPECT_FALSE(s.deamericanized);
+  }
+}
+
+TEST(AmericanAnalytics, IrrelevantOrInvalidCashLeavesExistingNumbersExactlyUnchanged) {
+  analytics::ChainBook book;
+  md::InstrumentId id = 0;
+  const auto as_of = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  test::add_american_expiry(book, as_of, {2026, 12, 22}, id, 100, 90, 2.5, 9, 101);
+  const auto& underlying = book.underlyings().at("SPY");
+  const auto original = analytics::analyze(underlying, book, as_of);
+  analytics::AnalyticsOptions options;
+  options.dividends = {{{2026, 9, 22}, 1}, {{2026, 12, 23}, 1}, {{2026, 11, 1}, -1},
+                       {{2026, 11, 1}, analytics::kNaN}, {{2026, 13, 1}, 1}};
+  const auto m = analytics::analyze(underlying, book, as_of, options);
+  EXPECT_TRUE(m.slices[0].dividends.empty());
+  EXPECT_DOUBLE_EQ(m.slices[0].forward.forward, original.slices[0].forward.forward);
+  EXPECT_DOUBLE_EQ(m.exposure.gex, original.exposure.gex);
+  EXPECT_DOUBLE_EQ(m.exposure.vex, original.exposure.vex);
+  for (std::size_t i = 0; i < m.slices[0].strikes.size(); ++i) {
+    const auto& actual = m.slices[0].strikes[i];
+    const auto& expected = original.slices[0].strikes[i];
+    EXPECT_DOUBLE_EQ(actual.iv, expected.iv);
+    EXPECT_DOUBLE_EQ(actual.call.eep, expected.call.eep);
+    EXPECT_DOUBLE_EQ(actual.put.eep, expected.put.eep);
+    EXPECT_DOUBLE_EQ(actual.call.delta, expected.call.delta);
+  }
+  options.dividends = {{{2026, 11, 1}, 200}};
+  const auto invalid = analytics::analyze(underlying, book, as_of, options);
+  EXPECT_TRUE(invalid.american_approximation);
+  EXPECT_FALSE(invalid.slices[0].deamericanized);
+  EXPECT_TRUE(invalid.slices[0].dividends.empty());
+  EXPECT_TRUE(std::isnan(invalid.slices[0].strikes[0].call.eep));
+}
 }  // namespace

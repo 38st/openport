@@ -223,7 +223,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
-| `--dividends FILE\|massive` | Dividends to pay on held shares: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
+| `--dividends FILE\|massive` | Known cash dividends for held shares and American analytics: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
 | `--no-cboe-holidays` | Don't read Cboe's published holiday schedule, which lets a special closure it announces apply without a new build ([calendar](docs/runtime.md#product-sessions-and-cboe-clocks)) |
 
 Every value is range-checked; `openportd --help` lists every flag, and the
@@ -261,6 +261,12 @@ Every value is range-checked; `openportd --help` lists every flag, and the
   (SPX when subscribed) or the flat `--rate`. Each option's early-exercise premium,
   American minus European value on the same Leisen-Reimer tree, is removed before the
   forward and IVs are fitted; displayed quotes stay as quoted.
+  Known cash dividends from `--dividends` are escrowed: the tree starts at spot minus
+  their present value, and exercise adds back the value of payments still to come.
+  Ex-dates take effect at midnight New York time; only those after market time and
+  before settlement enter each expiry. Residual continuous carry preserves its
+  first-pass parity forward. Without eligible cash, the existing continuous-yield
+  method is unchanged. Summary expiries report the cash amounts used in `dividends`.
   [Accuracy and cost](docs/american-analytics.md).
 - **Greeks**: delta and gamma with respect to spot, vega per vol point, and theta per
   calendar day with the forward held fixed, which is how Cboe quotes it. For American
@@ -284,9 +290,9 @@ at the de-Americanised IV.
 On an Apple M2 Max, a full analytics pass over the SPX chain (30,182 options across 63
 expiries) takes about 40 ms, and SPY with de-Americanisation (13,028 options across 33
 expiries) about 29 ms. The engine recomputes at most once a second, and only for
-underlyings whose data or rate curve changed; each pass publishes an immutable snapshot,
-so HTTP readers never block the feed. While the engine is busy, the queue from the
-providers keeps only the latest quote per contract.
+underlyings whose data, rate curve or cash-dividend schedule changed; each pass
+publishes an immutable snapshot, so HTTP readers never block the feed. While the
+engine is busy, the queue from the providers keeps only the latest quote per contract.
 
 ```
 provider thread ──events──▶ queue ──▶ engine thread: chain book ──▶ analytics

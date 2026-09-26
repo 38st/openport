@@ -114,8 +114,12 @@ dividends endpoint (`GET /stocks/v1/dividends`, in every stocks plan) with
 `MASSIVE_API_KEY`, whichever provider supplies the quotes: those going ex from a month
 back on, when the server starts and every six hours after, hourly while a symbol fails
 (`providers::MassiveDividends`), and two distributions going ex together are paid as
-one. New ones reach the live accounts, and replays started after them. `roll_day(time, dividends)` takes those going ex after the last
-trading date and on or before the new one (`dividends_due`, so a server that was down
+one. New ones reach the live accounts, and replays started after them. The same
+schedule supplies known cash payments to American option analytics, with revised
+or removed payments refreshing analytics even without new quotes; see
+[American analytics](american-analytics.md#known-cash-dividends).
+`roll_day(time, dividends)` takes those going ex after the last trading date and
+on or before the new one (`dividends_due`, so a server that was down
 across an ex-date still pays it), after the night's assignments: shares held into the
 ex-date receive `per_share * shares` in cash and realised P&L, and short shares pay
 it, once per symbol and date. Each is a `DividendPayment` in
