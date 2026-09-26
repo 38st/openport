@@ -1,7 +1,7 @@
 // openportd: runs one market-data provider, the analytics engine and the web
 // terminal's HTTP/WebSocket server.
 //
-//   openportd                                   # Cboe delayed SPX and SPY, no key needed
+//   openportd                                   # Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed
 //   openportd --provider databento --symbols SPX,QQQ
 //   openportd --provider massive --symbols SPY --poll-seconds 5
 //
@@ -48,7 +48,7 @@ void on_signal(int) { g_stop = true; }
 
 struct Settings {
   md::ProviderConfig provider{"cboe", "", {}};
-  md::Subscription subscription{{"SPX", "SPY"}, 0, 0.0};
+  md::Subscription subscription{{"SPX", "SPY", "QQQ", "IWM", "DIA"}, 0, 0.0};
   std::string address = "127.0.0.1";
   unsigned short port = 8080;
   std::filesystem::path web_root;
@@ -75,7 +75,7 @@ int usage(const char* error = nullptr) {
   if (error) std::fprintf(stderr, "openportd: %s\n\n", error);
   std::fprintf(
       stderr,
-      "usage: openportd [--provider NAME] [--symbols SPX,SPY] [--address ADDR] [--port N]\n"
+      "usage: openportd [--provider NAME] [--symbols SPX,SPY,QQQ,IWM,DIA] [--address ADDR] [--port N]\n"
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"

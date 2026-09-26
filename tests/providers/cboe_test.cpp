@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -148,16 +149,26 @@ TEST(Cboe, PublishesTheDaysCloseAfterItAndItsRevisions) {
   providers::CboeDelayedProvider provider;
   providers::CboeChain chain = providers::parse_cboe_chain(kChain);
   chain.symbol = "SPY";
-  const auto published = [&](md::Timestamp data_time, double price, double close) {
+  chain.last_trade_time = md::new_york_to_utc({2026, 9, 24}, 16, 0);
+  const auto published = [&](md::Timestamp data_time, double price, double close, bool after_close = true) {
     chain.as_of = data_time + 15 * md::kNanosPerMinute;
     chain.price = price;
     chain.close = close;
     Collector sink;
     provider.publish_chain(chain, {}, sink);
+    const auto quotes = sink.all<md::UnderlyingQuote>();
+    EXPECT_EQ(quotes.size(), 1u);
+    if (!quotes.empty()) {
+      EXPECT_EQ(quotes[0].symbol, "SPY");
+      EXPECT_EQ(quotes[0].ts, chain.last_trade_time);
+      EXPECT_DOUBLE_EQ(quotes[0].last, after_close ? close : price);
+      EXPECT_DOUBLE_EQ(quotes[0].bid, after_close ? 0 : chain.bid);
+      EXPECT_DOUBLE_EQ(quotes[0].ask, after_close ? 0 : chain.ask);
+    }
     return sink.all<md::UnderlyingClose>();
   };
   const md::Date day{2026, 9, 24};
-  EXPECT_TRUE(published(md::new_york_to_utc(day, 15, 58), 767.42, 767.42).empty());  // still the price
+  EXPECT_TRUE(published(md::new_york_to_utc(day, 15, 58), 767.42, 767.42, false).empty());  // still the price
   auto closes = published(md::new_york_to_utc(day, 16, 0) + 49 * md::kNanosPerSecond, 767.26, 767.27);
   ASSERT_EQ(closes.size(), 1u);
   EXPECT_EQ(closes[0].symbol, "SPY");
@@ -168,7 +179,88 @@ TEST(Cboe, PublishesTheDaysCloseAfterItAndItsRevisions) {
   ASSERT_EQ(closes.size(), 1u);
   EXPECT_DOUBLE_EQ(closes[0].price, 767.18);
   // After midnight it is the next day, not yet closed.
-  EXPECT_TRUE(published(md::new_york_to_utc({2026, 9, 25}, 0, 30), 765.0, 767.18).empty());
+  EXPECT_TRUE(published(md::new_york_to_utc({2026, 9, 25}, 0, 30), 765.0, 767.18, false).empty());
+}
+
+TEST(Cboe, UnderlyingUsesTheCloseAtTheBusinessDaysRegularClose) {
+  for (const auto* symbol : {"SPY", "QQQ", "IWM", "DIA", "AAPL", "^SPX"}) {
+    for (const auto& [day, hour, business_day] :
+         {std::tuple{md::Date{2026, 9, 24}, 16, true}, std::tuple{md::Date{2026, 11, 27}, 13, true},
+          std::tuple{md::Date{2026, 9, 26}, 16, false}, std::tuple{md::Date{2026, 12, 25}, 16, false}}) {
+      const auto close_time = md::new_york_to_utc(day, hour, 0);
+      for (const auto offset : {-md::kNanosPerSecond, md::Timestamp{0}, md::kNanosPerMinute}) {
+        SCOPED_TRACE(std::string(symbol) + " " + md::format_timestamp(close_time + offset));
+        providers::CboeChain chain;
+        chain.symbol = symbol;
+        chain.as_of = close_time + offset + 15 * md::kNanosPerMinute;
+        chain.last_trade_time = close_time - md::kNanosPerSecond;
+        chain.close = 100;
+        chain.price = std::string_view(symbol) == "^SPX" ? chain.close : 101;
+        chain.bid = 100.5;
+        chain.ask = 101.5;
+        providers::CboeDelayedProvider provider;
+        Collector sink;
+        provider.publish_chain(chain, {}, sink);
+        const auto quotes = sink.all<md::UnderlyingQuote>();
+        ASSERT_EQ(quotes.size(), 1u);
+        EXPECT_EQ(quotes[0].ts, chain.last_trade_time);
+        const bool closed = business_day && offset >= 0;
+        EXPECT_DOUBLE_EQ(quotes[0].last, closed ? 100 : chain.price);
+        EXPECT_DOUBLE_EQ(quotes[0].bid, closed ? 0 : 100.5);
+        EXPECT_DOUBLE_EQ(quotes[0].ask, closed ? 0 : 101.5);
+      }
+    }
+  }
+}
+
+TEST(Cboe, UnderlyingKeepsThePreviousCloseUntilTheOpen) {
+  // As on 2026-09-25 before the open: QQQ's price was an after-hours trade (739.41)
+  // stamped 15:59:59 the day before, while Cboe had rolled its previous close to 741.10.
+  const auto quote_at = [](md::Timestamp data_time) {
+    providers::CboeChain chain;
+    chain.symbol = "QQQ";
+    chain.as_of = data_time + 15 * md::kNanosPerMinute;
+    chain.last_trade_time = md::new_york_to_utc({2026, 9, 24}, 15, 59) + 59 * md::kNanosPerSecond;
+    chain.price = 739.41;
+    chain.bid = 739.30;
+    chain.ask = 739.50;
+    chain.close = 741.10;
+    chain.prev_close = 741.10;
+    providers::CboeDelayedProvider provider;
+    Collector sink;
+    provider.publish_chain(chain, {}, sink);
+    return sink.all<md::UnderlyingQuote>().at(0);
+  };
+  for (const auto time : {md::new_york_to_utc({2026, 9, 25}, 8, 0), md::new_york_to_utc({2026, 9, 26}, 12, 0)}) {
+    const auto quote = quote_at(time);  // before Friday's open, and on Saturday
+    EXPECT_DOUBLE_EQ(quote.last, 741.10);
+    EXPECT_DOUBLE_EQ(quote.bid, 0);
+    EXPECT_DOUBLE_EQ(quote.ask, 0);
+  }
+  EXPECT_DOUBLE_EQ(quote_at(md::new_york_to_utc({2026, 9, 25}, 9, 30)).last, 739.41);  // the session's own price
+}
+
+TEST(Cboe, UnderlyingKeepsTheCurrentQuoteWithoutAValidClose) {
+  for (const auto close : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                          std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()}) {
+    SCOPED_TRACE(close);
+    auto chain = providers::parse_cboe_chain(kChain);  // no close field
+    EXPECT_DOUBLE_EQ(chain.close, 0);
+    chain.symbol = "SPY";
+    chain.close = close;
+    chain.as_of = md::new_york_to_utc({2026, 9, 24}, 17, 0);
+    chain.last_trade_time = md::new_york_to_utc({2026, 9, 24}, 16, 0);
+    providers::CboeDelayedProvider provider;
+    Collector sink;
+    provider.publish_chain(chain, {}, sink);
+    const auto quotes = sink.all<md::UnderlyingQuote>();
+    ASSERT_EQ(quotes.size(), 1u);
+    EXPECT_EQ(quotes[0].ts, chain.last_trade_time);
+    EXPECT_DOUBLE_EQ(quotes[0].last, chain.price);
+    EXPECT_DOUBLE_EQ(quotes[0].bid, chain.bid);
+    EXPECT_DOUBLE_EQ(quotes[0].ask, chain.ask);
+    EXPECT_TRUE(sink.all<md::UnderlyingClose>().empty());
+  }
 }
 
 TEST(Cboe, AppliesExpiryAndStrikeFilters) {
@@ -190,8 +282,12 @@ TEST(Cboe, AppliesExpiryAndStrikeFilters) {
 TEST(Cboe, IndexChainsUseAnUnderscore) {
   EXPECT_EQ(providers::cboe_chain_url("SPX"),
             "https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json");
-  EXPECT_EQ(providers::cboe_chain_url("SPY"),
-            "https://cdn.cboe.com/api/global/delayed_quotes/options/SPY.json");
+  for (const auto* symbol : {"SPY", "QQQ", "IWM", "DIA"}) {
+    EXPECT_EQ(providers::cboe_chain_url(symbol),
+              "https://cdn.cboe.com/api/global/delayed_quotes/options/" + std::string(symbol) + ".json");
+  }
+  EXPECT_EQ(providers::cboe_page_url("IWM"), "https://www.cboe.com/delayed_quotes/iwm/quote_table");
+  EXPECT_EQ(providers::cboe_page_url("DIA"), "https://www.cboe.com/delayed_quotes/dia/quote_table");
 }
 
 TEST(Cboe, UpdatesKnownContractsOutsideTheWindowAndRetiresOnlyTheirUnderlying) {
@@ -397,8 +493,12 @@ TEST(Cboe, ReadsTheQuotePageWhileTheCdnFileIsStale) {
 TEST(CboeCharts, UrlsFollowTheChainConvention) {
   EXPECT_EQ(providers::cboe_chart_url("SPX", providers::CboeChart::Intraday),
             "https://cdn.cboe.com/api/global/delayed_quotes/charts/intraday/_SPX.json");
-  EXPECT_EQ(providers::cboe_chart_url("SPY", providers::CboeChart::Daily),
-            "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/SPY.json");
+  for (const auto* symbol : {"SPY", "QQQ", "IWM", "DIA"}) {
+    EXPECT_EQ(providers::cboe_chart_url(symbol, providers::CboeChart::Intraday),
+              "https://cdn.cboe.com/api/global/delayed_quotes/charts/intraday/" + std::string(symbol) + ".json");
+    EXPECT_EQ(providers::cboe_chart_url(symbol, providers::CboeChart::Daily),
+              "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/" + std::string(symbol) + ".json");
+  }
 }
 
 TEST(CboeCharts, IntradayBarsStartAMinuteBeforeTheirLabel) {

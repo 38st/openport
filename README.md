@@ -149,8 +149,8 @@ and the simulation's limits.
 
 ## Quick start
 
-With Docker (Cboe delayed SPX, SPY and QQQ, no key needed), from the published image
-for amd64 and arm64:
+With Docker (Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed), from the
+published image for amd64 and arm64:
 
 ```bash
 docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport
@@ -175,7 +175,7 @@ Node 22+; everything else is fetched and pinned by checksum):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 (cd web && npm ci && npm run build)
-./build/apps/openportd --symbols SPX,SPY,QQQ --web-root web/dist
+./build/apps/openportd --symbols SPX,SPY,QQQ,IWM,DIA --web-root web/dist
 ```
 
 To install it, `cmake --install build --component openport --prefix ~/.local` puts
@@ -209,7 +209,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 | Flags | Controls |
 | --- | --- |
 | `--provider NAME`, `--poll-seconds N`, `--option KEY=VALUE` | The market-data provider and its settings, such as `quotes=cmbp-1` for Databento |
-| `--symbols SPX,SPY`, `--expiries N`, `--window F` | The underlyings, the nearest N expiries and strikes within ±F of spot |
+| `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--write-token` | The web server and who may write (see [Security](#security)) |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |

@@ -53,9 +53,11 @@ TEST(Contract, AdjustedRootsMapToTheirUnderlying) {
 
 TEST(Contract, KnowsIndexUnderlyingsAndTheirRoots) {
   EXPECT_TRUE(openport::md::is_index_underlying("SPX"));
-  EXPECT_FALSE(openport::md::is_index_underlying("SPY"));
   EXPECT_EQ(openport::md::option_roots("SPX"), (std::vector<std::string>{"SPX", "SPXW"}));
-  EXPECT_EQ(openport::md::option_roots("SPY"), (std::vector<std::string>{"SPY"}));
+  for (const auto* symbol : {"SPY", "QQQ", "IWM", "DIA"}) {
+    EXPECT_FALSE(openport::md::is_index_underlying(symbol)) << symbol;
+    EXPECT_EQ(openport::md::option_roots(symbol), (std::vector<std::string>{symbol}));
+  }
 }
 
 TEST(Contract, OexAndXeoShareAnUnderlyingButKeepTheirExerciseStyles) {
@@ -123,6 +125,20 @@ TEST(Contract, EtfOptionsTradeAndExpireAQuarterHourAfterTheClose) {
   EXPECT_EQ(format_timestamp(aapl->expiry_time()), "2026-10-22T20:00:00.000Z");
   EXPECT_EQ(format_timestamp(index->expiry_time()), "2026-10-22T20:00:00.000Z");
   EXPECT_EQ(format_timestamp(early->expiry_time()), "2026-11-27T18:15:00.000Z");
+  for (const auto* symbol : {"SPY", "QQQ", "IWM", "DIA"}) {
+    SCOPED_TRACE(symbol);
+    EXPECT_TRUE(is_late_close_underlying(symbol));
+    const auto regular = parse_osi(std::string(symbol) + "261022C00200000");
+    const auto short_day = parse_osi(std::string(symbol) + "261127C00200000");
+    ASSERT_TRUE(regular && short_day);
+    EXPECT_EQ(regular->style, ExerciseStyle::American);
+    EXPECT_EQ(regular->settlement, Settlement::PM);
+    EXPECT_TRUE(regular->standard);
+    EXPECT_EQ(regular->expiry_time(), spy->expiry_time());
+    EXPECT_EQ(regular->last_trade_time(), regular->expiry_time());
+    EXPECT_EQ(short_day->expiry_time(), early->expiry_time());
+    EXPECT_EQ(short_day->last_trade_time(), short_day->expiry_time());
+  }
   EXPECT_TRUE(is_late_close_underlying("XLF"));
   EXPECT_TRUE(is_late_close_underlying("NDX"));
   EXPECT_FALSE(is_late_close_underlying("AAPL"));

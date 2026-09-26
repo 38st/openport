@@ -52,4 +52,4 @@ ENV HOME=/var/lib/openport
 USER openport
 EXPOSE 8080
 ENTRYPOINT ["openportd", "--address", "0.0.0.0", "--paper-journal", "/var/lib/openport/paper-journal.jsonl", "--web-root", "/usr/share/openport/web"]
-CMD ["--provider", "cboe", "--symbols", "SPX,SPY,QQQ"]
+CMD ["--provider", "cboe", "--symbols", "SPX,SPY,QQQ,IWM,DIA"]

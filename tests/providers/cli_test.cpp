@@ -131,7 +131,7 @@ TEST(Cli, DaemonReportsJournalLockedByAnotherProcessBeforeWebStartupFails) {
   const auto journal = trading::FileJournal::create(journal_file.path.string());
   journal->append(0, "test", "{}");
   const auto head = journal->head();
-  const auto command = "--provider replay --option file='" + source.path.string() +
+  const auto command = "--provider replay --symbols SPX,SPY --option file='" + source.path.string() +
       "' --option speed=max --paper-journal '" + journal_file.path.string() +
       "' --address invalid-address";
   rejects("openportd", command, "JOURNAL_LOCKED: paper journal '" + journal_file.path.string() +
@@ -160,6 +160,33 @@ TEST(Cli, DaemonPrintsItsVersion) {
   const auto result = run_daemon("--version");
   EXPECT_EQ(result.status, 0) << result.output;
   EXPECT_TRUE(std::regex_match(result.output, std::regex(R"(openportd \d+\.\d+\.\d+\n)"))) << result.output;
+}
+
+TEST(Cli, DaemonDefaultsToTheIndexAndFourEtfsAndAllowsAnOverride) {
+  using namespace openport;
+  const std::vector<std::string> symbols{"SPX", "SPY", "QQQ", "IWM", "DIA"};
+  test::RecordingFile source;
+  auto header = test::recording_header();
+  header.subscription.underlyings = symbols;
+  test::record_events(source.path, {}, header);
+  for (const std::string flags : {"", " --symbols IWM,DIA"}) {
+    test::RecordingFile recorded;
+    // Record the subscription before an invalid address ends startup, without a listener or network feed.
+    const auto result = run_daemon("--provider replay --option file='" + source.path.string() +
+        "' --option speed=max --no-paper --record '" + recorded.path.string() +
+        "' --address invalid-address" + flags);
+    EXPECT_EQ(result.status, 2) << result.output;
+    EXPECT_NE(result.output.find("openportd:"), std::string::npos) << result.output;
+    EXPECT_EQ(result.output.find("replay: unknown symbol"), std::string::npos) << result.output;
+    md::RecordingReader reader(recorded.path);
+    EXPECT_EQ(reader.header().subscription.underlyings,
+              (flags.empty() ? symbols : std::vector<std::string>{"IWM", "DIA"}));
+    EXPECT_EQ(reader.header().subscription.max_expiries, 0);
+    EXPECT_DOUBLE_EQ(reader.header().subscription.strike_window, 0);
+  }
+  const auto help = run_daemon("--help");
+  EXPECT_EQ(help.status, 2);
+  EXPECT_NE(help.output.find("[--symbols SPX,SPY,QQQ,IWM,DIA]"), std::string::npos) << help.output;
 }
 
 TEST(Cli, DaemonCompactsJournalsFromEarlierBuildsAndKeepsTheOriginals) {

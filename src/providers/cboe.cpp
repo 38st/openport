@@ -518,14 +518,23 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   std::string underlying = chain.symbol;
   if (!underlying.empty() && underlying.front() == '^') underlying.erase(0, 1);
   const md::Timestamp ts = md::trading_session(underlying, delayed).market_time;
+  const auto today = md::new_york_time(delayed).date;
+  const bool after_close = md::trading_date(md::new_york_to_utc(today, 12, 0)) == today &&
+                           delayed >= md::new_york_to_utc(today, md::regular_close_hour(today), 0);
+  // Outside the regular session Cboe's price goes on with after- and pre-market trades,
+  // still stamped with the last regular trade, so the underlying keeps its last regular
+  // close instead: today's after the close, and before the open (or on a day without a
+  // session) the previous close, which Cboe rolls over in the evening.
+  const double regular_close = md::market_session(delayed).open ? 0.0 : after_close ? chain.close : chain.prev_close;
+  const bool use_close = regular_close > 0 && std::isfinite(regular_close);
   // Stock/index prints have their own clock; they can be hours behind GTH options.
-  sink.publish(
-      md::UnderlyingQuote{underlying, chain.last_trade_time, chain.bid, chain.ask, chain.price});
+  sink.publish(md::UnderlyingQuote{underlying, chain.last_trade_time,
+                                   use_close ? 0 : chain.bid, use_close ? 0 : chain.ask,
+                                   use_close ? regular_close : chain.price});
   // After the close Cboe's close field holds the day's closing price, which it may
   // revise within minutes, while the price goes on with after-hours trades. In the
   // regular session the previous close is certainly the last business day's; in the
   // evening Cboe may not have rolled it over yet.
-  const auto today = md::new_york_time(delayed).date;
   const auto official = [&](md::Date date, double price) {
     if (!(price > 0) || !std::isfinite(price)) return;
     auto& last = closes_[underlying];
@@ -535,8 +544,7 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
   };
   if (md::market_session(delayed).open)
     official(md::previous_business_day(today), chain.prev_close);
-  else if (md::trading_date(md::new_york_to_utc(today, 12, 0)) == today &&
-           delayed >= md::new_york_to_utc(today, md::regular_close_hour(today), 0))
+  else if (after_close)
     official(today, chain.close);
   std::map<std::string, md::Timestamp> market_times;
 

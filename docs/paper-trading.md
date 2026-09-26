@@ -76,7 +76,7 @@ an explicitly ephemeral simulation. Production integration should provide a sink
 
 Standard contracts with multiplier 100 are accepted in two families. European
 cash-settled index options: SPX/SPXW, XSP, NDX/NDXP, RUT/RUTW, XND, MRUT, DJX,
-VIX/VIXW. American equity, ETF and OEX options on any other root, e.g. SPY, QQQ, IWM,
+VIX/VIXW. American equity, ETF and OEX options on any other root, e.g. SPY, QQQ, IWM, DIA,
 AAPL. The underlying and exercise style must match the root's conventions: American
 exercise on a European index root is `AMERICAN_UNSUPPORTED`, a European contract on any
 other root is `ROOT_UNSUPPORTED`. Adjusted deliverables are rejected.
@@ -131,7 +131,12 @@ which `on_quotes` takes in `stocks` (the engine sends it for every underlying wh
 equity options or shares the account holds). The price is fresh within
 `max_quote_age` of the market time while the stock market is open, or of its last
 close (16:00 ET, 13:00 early; `md::stock_session`) while it is not, so the close
-stays current while the options trade on to 16:15 and overnight. They count in equity, daily loss and the rules, at their dollar
+stays current while the options trade on to 16:15 and overnight. After a business
+day's regular close, Cboe supplies its positive finite `data.close` as the underlying
+price, including revisions, so delivered shares use that close rather than
+after-hours trades; without a valid close it keeps the current quote
+([Cboe clocks](runtime.md#product-sessions-and-cboe-clocks)).
+They count in equity, daily loss and the rules, at their dollar
 delta in risk limits and scenarios, and in the P&L by Greek (all delta). Short shares
 hold 150% of their value in buying power. `trade_stock(symbol, shares, time)` only
 reduces them, at the underlying's fresh price in the regular session and without a

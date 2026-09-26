@@ -37,6 +37,10 @@ updates reuse the published health map and strings.
 
 ## Command-line validation
 
+`openportd` defaults to Cboe delayed data for SPX, SPY, QQQ, IWM and DIA, as does
+the Docker image. `--symbols` replaces that subscription. The demo market still
+uses SPX, SPY and QQQ.
+
 Ports must be integers from 1 through 65,535. Poll intervals and probe timeout
 seconds must be positive integers. Expiry counts must be nonnegative integers;
 strike windows must be finite numbers in [0, 1]. Numeric suffixes, unknown flags,
@@ -377,11 +381,20 @@ Cboe option timestamps use `t = publication - 15 minutes`, capped to the most
 recent session end only when that option root is closed. Live overnight and
 curb quotes therefore advance while the stock/index print remains frozen.
 `UnderlyingQuote.ts` is the parsed New York `data.last_trade_time`; missing or
-invalid times remain unknown (zero), never fabricated from publication time. The adapter
-also publishes official closes as `md::UnderlyingClose`, once per change. After the
-close, `data.close` stops at the day's closing price while `current_price` goes on with
-after-hours trades (and `last_trade_time` stays at 16:00:00), and Cboe may revise it
-within minutes. During the regular session, `data.prev_day_close` is the previous
+invalid times remain unknown (zero), never fabricated from publication time. Outside
+the regular session, measured by `t`, `current_price` goes on with after- and pre-market
+trades still stamped with the last regular trade, so the underlying quote keeps the last
+regular close instead, with bid and ask zero and the same `last_trade_time`: at or after
+a business day's close (16:00, or 13:00 early), `data.close`; before the open or on a day
+without a session, `data.prev_day_close`, which Cboe rolls over to the day's close at
+about 21:00 ET. Shares and candles therefore use the regular close, not after-hours
+prices stamped at it. In the regular session, or without a positive finite close, the
+adapter keeps `current_price`, bid and ask. The adapter also publishes official closes as
+`md::UnderlyingClose`, once per change. After the close, `data.close` holds the day's
+closing price while `current_price` goes on with after-hours trades and
+`last_trade_time` can stay at or just before 16:00. Cboe may revise the close within
+minutes; both underlying quotes and official closes reflect revisions.
+During the regular session, `data.prev_day_close` is the previous
 business day's; in the evening the adapter does not read it, as Cboe may not have
 rolled it over yet. Recordings carry these events too.
 Analytics ignores an underlying print more than 30 minutes behind option data
