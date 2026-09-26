@@ -99,4 +99,6 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8080/api/status > /dev/null
           test "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://127.0.0.1:8080//etc/passwd)" = 400
+          # Writes need the token the image keeps in its volume; with it, an order fills.
+          python3 tools/smoke_trade.py http://127.0.0.1:8080 "$(docker exec openport cat /var/lib/openport/write-token)"
           docker stop openport

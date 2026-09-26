@@ -1104,8 +1104,13 @@ with 403 `ORIGIN_REJECTED`. Non-browser clients may omit Origin.
 
 `--write-token TOKEN` overrides `OPENPORT_WRITE_TOKEN`. When configured, all writes
 require `Authorization: Bearer TOKEN`, checked with a constant-time digest comparison;
-missing/incorrect credentials return 403 `WRITE_TOKEN_REQUIRED`. Without a token,
-only loopback binds allow writes. Non-loopback binds return 403 `WRITE_DISABLED`.
+missing/incorrect credentials return 403 `WRITE_TOKEN_REQUIRED`. Without either,
+`--write-token-file PATH` uses the token kept in PATH, creating a random one with
+owner-only permissions when it is missing, and prints a link carrying it,
+`http://localhost:PORT/#token=TOKEN`, which the terminal saves in that browser tab and
+drops from the address bar; the Docker image keeps its token in its volume this way.
+Without a token, only loopback binds allow writes. Non-loopback binds return 403
+`WRITE_DISABLED`.
 Reads remain open. Use HTTPS at your reverse proxy for remote bearer credentials
 and configure its public Origin with `--allowed-origin` when it rewrites Host.
 

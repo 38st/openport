@@ -163,19 +163,18 @@ With Docker (Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed), from the
 published image for amd64 and arm64:
 
 ```bash
-export OPENPORT_WRITE_TOKEN="$(openssl rand -hex 16)"; echo "$OPENPORT_WRITE_TOKEN"
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e OPENPORT_WRITE_TOKEN ghcr.io/38st/openport
+docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport
 ```
 
-Then open http://localhost:8080. Inside the container the server listens on every
-interface, so it only takes orders with a write token: the terminal asks for the one
-printed above the first time you trade. The `openport` volume keeps your accounts and
-chart history between runs. When nothing is trading, the terminal offers the demo
-market, which needs no data at all. To use your own provider, pass its key and
-arguments:
+Then open the link it prints, `http://localhost:8080/#token=…`. Inside the container the
+server listens on every interface, so it takes orders only with a write token; it keeps
+one in the volume, and the link saves it in that browser tab. The `openport` volume also
+keeps your accounts and chart history between runs. When nothing is trading, the
+terminal offers the demo market, which needs no data at all. To use your own provider,
+pass its key and arguments:
 
 ```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e OPENPORT_WRITE_TOKEN -e DATABENTO_API_KEY ghcr.io/38st/openport --provider databento --symbols SPX,QQQ
+docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e DATABENTO_API_KEY ghcr.io/38st/openport --provider databento --symbols SPX,QQQ
 ```
 
 `docker build -t openport .` builds the same image from a checkout. Each
@@ -229,7 +228,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 | `--provider NAME`, `--poll-seconds N`, `--option KEY=VALUE` | The market-data provider and its settings, such as `quotes=cmbp-1` for Databento |
 | `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
 | `--rate R` | The rate assumed when no index curve is available |
-| `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token` | The web server and who may write (see [Security](#security)) |
+| `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |

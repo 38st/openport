@@ -9,6 +9,7 @@ import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
 import { LiveProvider } from "./api/live"
+import { adoptLinkedToken } from "./lib/write-token"
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -21,6 +22,8 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+adoptLinkedToken(window.location, window.history)
 
 const root = document.getElementById("root")
 if (!root) throw new Error("missing #root")

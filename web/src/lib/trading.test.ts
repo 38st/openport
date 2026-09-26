@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { quote } from "../test/trading-fixtures"
 import { formatMoney, limitPriceText, limitPriceTick, multiplyMoney, scenarioColour, scenarioScale, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "./trading"
-import { createTokenStore } from "./write-token"
+import { adoptLinkedToken, createTokenStore } from "./write-token"
 
 describe("decimal money", () => {
   it("formats null, zero, signed cents and large values exactly", () => {
@@ -91,6 +91,21 @@ describe("scenario colours", () => {
   })
 })
 describe("write-token storage", () => {
+  it("adopts a token from a #token= link and clears it from the address bar", () => {
+    const values = new Map<string, string>()
+    const store = createTokenStore(() => ({ getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } }))
+    const replaced: string[] = []
+    const history = { replaceState: (_: unknown, __: string, url?: string | URL | null) => { replaced.push(String(url)) } }
+    expect(adoptLinkedToken({ hash: "#token=0a1b2c", pathname: "/", search: "" }, history, store)).toBe(true)
+    expect(store.get()).toBe("0a1b2c")
+    expect(replaced).toEqual(["/"])
+    // Routes and malformed links save nothing; a malformed one is still cleared.
+    expect(adoptLinkedToken({ hash: "#/SPX/chain", pathname: "/", search: "" }, history, store)).toBe(false)
+    expect(adoptLinkedToken({ hash: "#token=%E0%A4%A", pathname: "/", search: "?x=1" }, history, store)).toBe(false)
+    expect(replaced).toEqual(["/", "/?x=1"])
+    expect(store.get()).toBe("0a1b2c")
+  })
+
   it("survives denied storage getters and operations in memory", () => {
     for (const storage of [() => { throw new Error("denied") }, () => ({ getItem: () => { throw new Error("denied") }, setItem: () => { throw new Error("denied") }, removeItem: () => { throw new Error("denied") } })]) {
       const store = createTokenStore(storage)

@@ -9,6 +9,9 @@
 // leave this machine except to authenticate with that provider.
 
 #include <algorithm>
+#include <cstring>
+#include <cerrno>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -26,6 +29,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <fcntl.h>
+#include <openssl/rand.h>
+#include <unistd.h>
 
 #include "openport/providers/cboe.hpp"
 #include "openport/providers/factory.hpp"
@@ -66,6 +73,7 @@ struct Settings {
   const server::PlanPreset* plan = server::find_plan("practice");
   std::optional<trading::Money> paper_cash;
   std::string write_token;
+  std::filesystem::path write_token_file;
   int threads = 2;
   double rate = 0.04;
   std::vector<std::string> allowed_origins;
@@ -81,7 +89,7 @@ int usage(const char* error = nullptr) {
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--allowed-host NAME]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
-      "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n"
+      "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--no-cboe-holidays]\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
@@ -93,6 +101,8 @@ int usage(const char* error = nullptr) {
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
       "write token: --write-token overrides OPENPORT_WRITE_TOKEN; required for remote writes\n"
+      "write token file: without either, the token kept in PATH, created at random if missing,\n"
+      "                  with a link that saves it in a browser tab printed at startup\n"
       "dividends: SYMBOL,YYYY-MM-DD,AMOUNT lines (ex-date, dollars a share); on each ex-date\n"
       "           held shares receive the dividend and short shares pay it. \"massive\" reads\n"
       "           them for the stock and ETF symbols from Massive's API instead, every six\n"
@@ -182,6 +192,39 @@ int compact_journals(const std::filesystem::path& journal, const std::filesystem
 
 }  // namespace
 
+/// The write token kept in `path`: read when present, else created at random with
+/// owner-only permissions, so a container keeps its token in its volume.
+std::string load_write_token(const std::filesystem::path& path) {
+  const auto read = [&] {
+    std::ifstream in(path);
+    std::string token;
+    std::getline(in, token);
+    while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back()))) token.pop_back();
+    return token;
+  };
+  if (auto token = read(); !token.empty()) return token;
+  std::array<unsigned char, 16> bytes{};
+  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1)
+    throw std::runtime_error("cannot generate a write token");
+  std::string token;
+  for (const unsigned char b : bytes) {
+    constexpr char kHex[] = "0123456789abcdef";
+    token += kHex[b >> 4];
+    token += kHex[b & 15];
+  }
+  if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
+  const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) {
+    if (errno == EEXIST) if (auto existing = read(); !existing.empty()) return existing;
+    throw std::runtime_error("cannot create " + path.string() + ": " + std::strerror(errno));
+  }
+  const std::string line = token + "\n";
+  const bool written = ::write(fd, line.data(), line.size()) == static_cast<ssize_t>(line.size()) && ::fsync(fd) == 0;
+  ::close(fd);
+  if (!written) throw std::runtime_error("cannot write " + path.string());
+  return token;
+}
+
 int run(int argc, char** argv) {
   Settings settings;
   settings.web_root = find_web_root(argv[0]);
@@ -227,6 +270,9 @@ int run(int argc, char** argv) {
     } else if (arg == "--write-token") {
       if (value.empty()) return usage("--write-token requires a nonempty token");
       settings.write_token = value;
+    } else if (arg == "--write-token-file") {
+      if (value.empty()) return usage("--write-token-file requires a nonempty path");
+      settings.write_token_file = value;
     } else if (arg == "--record") {
       if (value.empty()) return usage("--record requires a nonempty path");
       settings.record_file = value;
@@ -276,6 +322,8 @@ int run(int argc, char** argv) {
     if (settings.paper_journal.empty()) return usage("HOME is unavailable; specify --paper-journal");
     return compact_journals(settings.paper_journal, paper_accounts);
   }
+  const bool token_from_file = settings.write_token.empty() && !settings.write_token_file.empty();
+  if (token_from_file) settings.write_token = load_write_token(settings.write_token_file);
   if (settings.subscription.underlyings.empty()) return usage("no symbols");
   settings.provider.api_key = env_key_for(settings.provider.name);
   if (settings.massive_dividends && env_key_for("massive").empty())
@@ -393,6 +441,11 @@ int run(int argc, char** argv) {
   std::printf("OpenPort on http://%s:%u  (provider %s: %s)\n", settings.address.c_str(), web.port(),
               settings.provider.name.c_str(), symbols.c_str());
   std::printf("web terminal: %s\n", settings.web_root.string().c_str());
+  if (token_from_file) {
+    std::printf("write token: kept in %s; to trade, open this once in a browser tab:\n"
+                "  http://localhost:%u/#token=%s\n",
+                settings.write_token_file.string().c_str(), web.port(), settings.write_token.c_str());
+  }
   std::fflush(stdout);
 
   std::signal(SIGINT, on_signal);

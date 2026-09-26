@@ -51,5 +51,7 @@ VOLUME ["/var/lib/openport"]
 ENV HOME=/var/lib/openport
 USER openport
 EXPOSE 8080
-ENTRYPOINT ["openportd", "--address", "0.0.0.0", "--paper-journal", "/var/lib/openport/paper-journal.jsonl", "--web-root", "/usr/share/openport/web"]
+# Listening on every interface, the server takes orders only with a write token: it
+# keeps one in the volume and prints a link that saves it in a browser tab.
+ENTRYPOINT ["openportd", "--address", "0.0.0.0", "--paper-journal", "/var/lib/openport/paper-journal.jsonl", "--write-token-file", "/var/lib/openport/write-token", "--web-root", "/usr/share/openport/web"]
 CMD ["--provider", "cboe", "--symbols", "SPX,SPY,QQQ,IWM,DIA"]
