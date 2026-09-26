@@ -947,6 +947,38 @@ TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
   std::filesystem::remove_all(path.parent_path());
 }
 
+TEST(PaperRecovery, AnalyticsBeforeAnyPriceCannotDisableTradingAfterARestart) {
+  // After a restart an underlying's definitions can arrive a batch before any of its
+  // prices. Its analytics then carry the wall clock, ahead of the feed's market time,
+  // which the account must not take as a future-dated valuation.
+  const auto path = paper_path();
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket market;
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    provider.sink->publish(md::ContractDefinition{0, market.contract});
+    provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+    provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 10, 10});
+    ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+    ASSERT_EQ(write(engine, "POST", "/api/orders", order(market, "buy", "4.20")).status, 201);
+    engine.stop();
+  }
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") != nullptr; }));
+  EXPECT_GT(engine.metrics("SPX")->as_of, market.time);
+  // A command runs after the batch, so its answer shows how the batch went.
+  const auto again = write(engine, "POST", "/api/orders", order(market, "again", "4.20"));
+  EXPECT_EQ(again.status, 201) << again.body;
+  EXPECT_EQ(read(engine, "/api/status")["trading"]["reason"], nullptr);
+  engine.stop();
+  std::filesystem::remove_all(path.parent_path());
+}
+
 TEST(PaperAvailability, DisabledFailedJournalFullInboxAndStoppingFailClosed) {
   for (int mode = 0; mode < 4; ++mode) {
     PaperProvider provider;

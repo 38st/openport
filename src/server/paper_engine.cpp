@@ -649,7 +649,10 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         }
         auto valuation = valuation_for(symbol, definition->second, metrics(definition->second.underlying));
         // Missing live analytics after recovery must not overwrite a recorded frame.
-        if (valuation.time > 0) valuations.push_back(std::move(valuation));
+        // Nor do analytics that ran before any of the underlying's prices came (as its
+        // definitions can arrive first), which are stamped with the wall clock and can
+        // be ahead of the market time the account runs on.
+        if (valuation.time > 0 && valuation.time <= market_time_) valuations.push_back(std::move(valuation));
       }
       // Underlyings price the shares that equity options deliver, and exercise.
       std::set<std::string> deliverable;
