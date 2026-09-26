@@ -106,7 +106,7 @@ TEST(TradingRisk, AggregateAndUnderlyingVegaLimitsHaveIndependentChecks) {
   d = s.submit(b.limit("xsp3", 1, "4.10"), a.time).decision;
   EXPECT_EQ(d.code, Reason::DELTA_LIMIT); EXPECT_EQ(d.scope, "aggregate");
 }
-TEST(TradingRisk, FillRecheckCancelsRemainderWhenGreeksOrValuationsChange) {
+TEST(TradingRisk, FillRecheckCancelsRemainderWhenGreeksChangeAndWaitsOutMissingValuations) {
   for (const bool missing : {false, true}) {
     ScriptedMarket f;
     SessionConfig c;
@@ -119,8 +119,17 @@ TEST(TradingRisk, FillRecheckCancelsRemainderWhenGreeksOrValuationsChange) {
     if (missing) valuation.delta = std::numeric_limits<double>::quiet_NaN();
     s.on_quotes({f.quote("4", "4.10")}, {valuation}, f.time);
     EXPECT_TRUE(s.snapshot()->recent_fills.empty());
-    EXPECT_EQ(s.snapshot()->recent_orders[0].reason.code, Reason::RISK_CHANGED);
-    EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Cancelled);
+    if (!missing) {
+      EXPECT_EQ(s.snapshot()->recent_orders[0].reason.code, Reason::RISK_CHANGED);
+      EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Cancelled);
+      continue;
+    }
+    // Without a valuation the fill waits; the same quote, offered again with one, fills.
+    EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Working);
+    s.on_quotes({f.quote("4", "4.10")}, {f.valuation()}, f.time);
+    ASSERT_EQ(s.snapshot()->recent_fills.size(), 1U);
+    EXPECT_EQ(s.snapshot()->recent_fills[0].price, m("4.10"));
+    EXPECT_EQ(s.snapshot()->recent_fills[0].observation, f.observation);
   }
 }
 TEST(TradingRisk, LimitTighteningRechecksAndInvalidLimitsLeaveStateUntouched) {

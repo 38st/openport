@@ -773,6 +773,11 @@ bool marketable(const Order& o, const QuoteObservation& q) {
   return o.request.side == Side::Buy ? *q.ask <= *o.request.limit_price : *q.bid >= *o.request.limit_price;
 }
 void on_fill(State& s, OrderId id, Events& events);
+/// Stale marks, an invalid quote or a missing valuation hold a fill back until a
+/// later batch brings the data; they say nothing about the order itself.
+bool data_gap(Reason code) {
+  return code == Reason::STALE_QUOTE || code == Reason::INVALID_QUOTE || code == Reason::MISSING_VALUATION;
+}
 void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
   auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
   if (!o.open() || o.status == OrderStatus::Armed) return;
@@ -785,6 +790,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   // within it), so they skip the price band and loss projection when executing.
   const bool reducing = o.system || o.role != OrderRole::Normal;
   auto decision = reducing ? system_check(s, o) : order_check(s, o, true);
+  if (data_gap(decision.code)) return;
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
     decision.code = Reason::RISK_CHANGED;
@@ -844,6 +850,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   const auto net = executable_net(s, o.request);
   if (!net || (o.request.limit_price && *net > *o.request.limit_price)) return;
   auto decision = order_check(s, o, true);
+  if (data_gap(decision.code)) return;
   Quantity units = o.remaining();
   for (const auto& leg : o.request.legs) {
     const auto& book = s.books.at(leg.symbol);
@@ -1006,9 +1013,7 @@ void activate(State& s, OrderId id, Events& events) {
   {
     auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
     auto d = o.role != OrderRole::Normal ? system_check(s, o) : order_check(s, o);
-    if (d.code == Reason::STALE_QUOTE || d.code == Reason::INVALID_QUOTE || d.code == Reason::MISSING_VALUATION ||
-        d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY)
-      return;
+    if (data_gap(d.code) || d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY) return;
     if (!d.ok()) {
       d.message = std::string(to_string(d.code)) + ": " + d.message;
       d.code = Reason::RISK_CHANGED;
@@ -1568,11 +1573,16 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
   return impl_->transact(time, "market", [&](State& s, Events& events) {
     std::set<std::string> seen;
     std::set<std::string> changed;
+    std::set<std::string> offered_again;
     for (const auto& quote : quotes) {
       if (!s.contracts.contains(quote.symbol)) throw TradingError(Reason::UNKNOWN_CONTRACT, "Quote references unregistered OSI");
       if (quote.time < 0 || quote.time > time) throw TradingError(Reason::INVALID_TIME, "Quote is future-dated or negative");
       if (!seen.insert(quote.symbol).second) throw TradingError(Reason::INVALID_QUOTE, "One observation per contract per batch is required");
       auto& book = s.books[quote.symbol];
+      if (quote.observation == book.quote.observation && quote.time == book.quote.time) {
+        offered_again.insert(quote.symbol);
+        continue;
+      }
       if (quote.observation <= book.quote.observation || quote.time < book.quote.time) continue;
       book = {quote, valid_quote(quote) ? quote.bid_size : 0, valid_quote(quote) ? quote.ask_size : 0};
       changed.insert(quote.symbol);
@@ -1606,6 +1616,13 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     // permits the fill-time risk check (or a clock/kill command cancels them).
     for (auto it = changed.begin(); it != changed.end();) {
       if (!quote_check(s, *it).ok()) it = changed.erase(it); else ++it;
+    }
+    // Offered again, a quote's remaining displayed size can fill the orders that
+    // a data gap held back when it was new.
+    for (const auto& o : s.orders) {
+      if (!o.open() || o.status == OrderStatus::Armed) continue;
+      for (const auto& symbol : order_symbols(o.request))
+        if (offered_again.contains(symbol) && quote_check(s, symbol).ok()) changed.insert(symbol);
     }
     if (!s.kill) {
       match_symbols(s, changed, events);

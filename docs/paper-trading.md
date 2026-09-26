@@ -205,6 +205,9 @@ it once. Fractional provider sizes must be converted conservatively by the calle
 Resting buy limits cross when ask <= limit; resting sell limits cross when bid >=
 limit, on a new valid observation timestamped at/after acceptance. A newly
 submitted order may execute against the latest cached quote if it is still fresh.
+An observation offered again in a later batch refills nothing, but an order that a
+data gap held back when it was new (see below) can take what is left of its budget
+while it is still fresh.
 For each OSI and side, better limit price wins,
 then acceptance sequence (order ID). Buy and sell budgets are separate; buys are
 processed first for deterministic cross-side risk effects. OSIs are processed in
@@ -471,7 +474,11 @@ comparing a stale limit to the new mid.
 Checks rerun against current state before each proposed fill. Fill projection also
 includes spread and fees in daily loss. A failed fill check cancels the remaining
 order with `RISK_CHANGED`, preserving the underlying reason in its message and
-actual/limit/scope. Noncrossed resting orders wait; invalid quotes supply no fills.
+actual/limit/scope. A data gap is not a failure: when held positions' marks are stale
+(`STALE_QUOTE`) or valuations are missing or stale (`MISSING_VALUATION`), as when a
+batch brings an order's quote before the rest of the portfolio's after a stall, the
+order keeps working and a later batch fills it once the data is complete.
+Noncrossed resting orders wait; invalid quotes supply no fills.
 Limit changes apply immediately, increment a revision, and cancel affected orders
 in acceptance order when rechecks fail. Limits never force-liquidate positions; only
 account rules do (see Account rules).

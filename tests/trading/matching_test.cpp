@@ -151,6 +151,32 @@ TEST(TradingMatching, MarketableLimitUsesFarSideAndDayRemainderWaitsForNewObserv
   EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Filled);
   EXPECT_EQ(s.snapshot()->account.fees, m("1.95"));
 }
+TEST(TradingMatching, StaleMarksHoldARestingOrderUntilItsQuoteIsOfferedAgain) {
+  ScriptedMarket held;
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW261022C05100000");
+  TradingSession s(roomy(), f.time);
+  held.seed(s);
+  ASSERT_TRUE(s.submit(held.market("hold"), held.time).decision.ok());
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("rest", 1, "4.10"), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->recent_fills.size(), 1U);
+  // After a gap longer than the quote age limit, the resting order's quote comes
+  // back a batch before the held position's: with stale marks the fill waits.
+  const auto later = f.time + 10 * md::kNanosPerMinute;
+  f.next();
+  f.time = later;
+  s.on_quotes({f.quote("4", "4.10")}, {f.valuation()}, later);
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 1U);
+  EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Working);
+  held.next();
+  held.time = later;
+  s.on_quotes({f.quote("4", "4.10"), held.quote()}, {f.valuation(), held.valuation()}, later);
+  ASSERT_EQ(s.snapshot()->recent_fills.size(), 2U);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("4.10"));
+  EXPECT_EQ(s.snapshot()->recent_fills.back().observation, f.observation);
+  EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Filled);
+}
 TEST(TradingMatching, BuyPriceThenAcceptancePriority) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);
