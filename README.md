@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **462 C++ and 286 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **522 C++ and 294 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -141,6 +141,8 @@ Plans set an account's rules: `practice` (the default: buying power only),
 `intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new high) or
 `eod-25k|50k|100k` (any strategy, 12% target, 6% drawdown trailing each close). Touching
 the floor fails the attempt and closes every position; reaching the target passes it.
+On the default 15-minute delayed feed a pass is practice, not proof: any real-time chart
+shows where the market went next.
 `--plan` picks the main account's first plan; start a new attempt on any plan from the
 Dashboard or Rules page, and add accounts from the account switcher in the sidebar.
 
@@ -161,15 +163,19 @@ With Docker (Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed), from the
 published image for amd64 and arm64:
 
 ```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport
+export OPENPORT_WRITE_TOKEN="$(openssl rand -hex 16)"; echo "$OPENPORT_WRITE_TOKEN"
+docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e OPENPORT_WRITE_TOKEN ghcr.io/38st/openport
 ```
 
-Then open http://localhost:8080. The `openport` volume keeps your accounts and chart
-history between runs. When nothing is trading, the terminal offers the demo market,
-which needs no data at all. To use your own provider, pass its key and arguments:
+Then open http://localhost:8080. Inside the container the server listens on every
+interface, so it only takes orders with a write token: the terminal asks for the one
+printed above the first time you trade. The `openport` volume keeps your accounts and
+chart history between runs. When nothing is trading, the terminal offers the demo
+market, which needs no data at all. To use your own provider, pass its key and
+arguments:
 
 ```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e DATABENTO_API_KEY ghcr.io/38st/openport --provider databento --symbols SPX,QQQ
+docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e OPENPORT_WRITE_TOKEN -e DATABENTO_API_KEY ghcr.io/38st/openport --provider databento --symbols SPX,QQQ
 ```
 
 `docker build -t openport .` builds the same image from a checkout. Each
@@ -206,6 +212,10 @@ recording all day.
 | Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
 | Replay | `replay` | A recording played back as the whole feed, at 1×, 10×, 60× or full speed (`--option file=PATH --option speed=10`) | none |
+
+Databento, Massive and ThetaData follow their documented APIs and are tested against
+sample responses, but have not yet been run live with a key. If you have one, an
+[issue](https://github.com/38st/openport/issues) saying how it went is welcome.
 
 Providers deliver very different things: Databento sends raw exchange quotes with no
 Greeks and no underlying price, while others ship their own Greeks. OpenPort normalises
