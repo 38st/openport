@@ -401,11 +401,17 @@ its files when the draft exists; GitHub tags the commit when you publish the dra
 - [x] Demo market: a simulated day to trade when nothing else does
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [x] Partial, random early assignment, and dividend risk on short calls
-- [x] Market-wide circuit breakers, and Cboe's holiday schedule read daily
+- [x] Market-wide circuit breakers, with a banner and kept across restarts, and Cboe's
+      holiday schedule read daily
 - [x] Dividends from Massive's API
 - [x] PM settlement on the provider's official close, revisions included
 - [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
+- [x] Optional slippage, and portfolio margin as Cboe's and FINRA's rules set it
+- [x] Known cash dividends in the American exercise model
+- [x] IWM and DIA by default, with stocks and ETFs marked at their regular close
+      outside the session
+- [x] Cboe's delayed data from its new host, following redirects if it moves again
 
 ## License
 
