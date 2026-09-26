@@ -190,6 +190,33 @@ TEST(ThetaData, KnownContractsSurviveExpiryFilterDriftAndMissingQuotesAreRetired
   for (const auto& quote : sink.all<md::OptionQuote>()) EXPECT_EQ(quote.bid + quote.ask, 0);
 }
 
+TEST(ThetaData, ASnapshotIsStampedWithItsDataNotTheWallClock) {
+  // On a delayed plan the wall clock runs ahead of the data, and a snapshot stamped
+  // with it would move the market clock ahead.
+  providers::ThetaDataProvider provider;
+  providers::ThetaRow row;
+  row.root = "SPY";
+  row.expiry = {2099, 12, 18};
+  row.strike = 500;
+  row.bid = 5;
+  row.ask = 6;
+  row.ts = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  auto later = row;
+  later.strike = 510;
+  later.ts = row.ts + 30 * md::kNanosPerSecond;
+  Collector sink;
+  provider.publish_chain("SPY", {row, later}, {}, {}, {}, sink);
+  const auto marks = sink.all<md::SnapshotComplete>();
+  ASSERT_EQ(marks.size(), 1u);
+  EXPECT_EQ(marks[0].ts, later.ts);
+  // An empty snapshot retires the quotes at the last snapshot's time.
+  sink.events.clear();
+  provider.publish_chain("SPY", {}, {}, {}, {}, sink);
+  for (const auto& quote : sink.all<md::OptionQuote>()) EXPECT_EQ(quote.ts, later.ts);
+  ASSERT_EQ(sink.all<md::SnapshotComplete>().size(), 1u);
+  EXPECT_EQ(sink.all<md::SnapshotComplete>()[0].ts, later.ts);
+}
+
 TEST(ThetaData, AdjustedRootsAreMarkedNonstandard) {
   providers::ThetaDataProvider provider;
   auto row = providers::parse_theta_rows(kQuotes)[0];

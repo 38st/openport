@@ -215,6 +215,12 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
 
   std::map<Key, md::InstrumentId> ids;
   std::set<md::InstrumentId> seen;
+  // The snapshot's time is its data's, never the wall clock, which a delayed plan's
+  // data runs behind: stamped on it, the snapshot would move the market clock ahead.
+  md::Timestamp latest = spot_ts;
+  for (const ThetaRow& row : quotes) latest = std::max(latest, row.ts);
+  auto& snapshot_time = snapshot_times_[underlying];
+  snapshot_time = std::max(snapshot_time, latest);
   for (const ThetaRow& row : quotes) {
     md::OptionContract contract = contract_of(row);
     const std::string symbol = contract.osi_symbol();
@@ -239,7 +245,7 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
     const auto it = ids.find(key_of(row));
     if (it != ids.end()) publisher_.open_interest(it->second, row.ts, row.open_interest, sink);
   }
-  publisher_.finish(underlying, seen, md::now(), sink);
+  publisher_.finish(underlying, seen, snapshot_time > 0 ? snapshot_time : md::now(), sink);
 }
 
 }  // namespace openport::providers

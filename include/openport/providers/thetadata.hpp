@@ -75,6 +75,8 @@ class ThetaDataProvider final : public PollingProvider {
   Options options_;
   SnapshotPublisher publisher_;
   std::unordered_map<std::string, int> polls_;
+  /// Each underlying's last snapshot time, for an empty one that retires its quotes.
+  std::unordered_map<std::string, md::Timestamp> snapshot_times_;
 };
 
 }  // namespace openport::providers
