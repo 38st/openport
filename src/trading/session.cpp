@@ -205,15 +205,23 @@ bool touches(const OrderRequest& r, const std::string& symbol) {
   return r.symbol == symbol || std::any_of(r.legs.begin(), r.legs.end(), [&](const Leg& leg) { return leg.symbol == symbol; });
 }
 Quantity signed_contracts(const Leg& leg, Quantity units) { return leg.side == Side::Buy ? units * leg.ratio : -units * leg.ratio; }
-/// A multi-leg order's net debit per unit at the far sides: asks for bought
-/// legs, bids for sold legs. Nothing without a valid book on every leg.
+/// Slippage uses the displayed price's tick tier. Option proceeds cannot be negative.
+Money execution_price(const State& s, const std::string& symbol, Side side, std::optional<Money> limit = {}) {
+  const auto& quote = s.books.at(symbol).quote;
+  const bool buy = side == Side::Buy;
+  const auto displayed = buy ? *quote.ask : *quote.bid;
+  const auto slip = tick_size(s.contracts.at(symbol).root, displayed) * s.config.rules.slippage_ticks;
+  const auto price = buy ? displayed + slip : std::max(Money{}, displayed - slip);
+  return limit ? (buy ? std::min(*limit, price) : std::max(*limit, price)) : price;
+}
+/// A multi-leg order's net debit per unit with every leg slipped.
+/// Nothing without a valid book on every leg.
 std::optional<Money> executable_net(const State& s, const OrderRequest& r) {
   Money net;
   for (const auto& leg : r.legs) {
     const auto book = s.books.find(leg.symbol);
     if (book == s.books.end() || !valid_quote(book->second.quote)) return std::nullopt;
-    const auto& q = book->second.quote;
-    const auto price = (leg.side == Side::Buy ? *q.ask : *q.bid) * leg.ratio;
+    const auto price = execution_price(s, leg.symbol, leg.side) * leg.ratio;
     net = leg.side == Side::Buy ? net + price : net - price;
   }
   return net;
@@ -249,11 +257,6 @@ void trade(MarginBook& book, const std::string& symbol, Quantity change, Money p
   }
   book[symbol] = {next, next_value};
 }
-Money requirement(const State& s, const MarginBook& book) {
-  std::vector<MarginLeg> legs;
-  for (const auto& [symbol, entry] : book) legs.push_back({s.contracts.at(symbol), entry.first, entry.second, spot_for(s, symbol)});
-  return margin_requirement(legs);
-}
 /// Short shares hold 150% of their value, as a short sale does; long shares are paid for.
 Money stock_requirement(const State& s) {
   Money total;
@@ -265,8 +268,47 @@ Money stock_requirement(const State& s) {
   }
   return total;
 }
+struct Margin {
+  Money requirement;  ///< What the book requires, as reported.
+  Money held;         ///< What it holds out of cash: the requirement less the positions' value under portfolio margin.
+};
+/// The positions' signed value at their marks (shorts negative), shares included;
+/// a short without a mark counts at its buy-back value and a long without one at nothing.
+Money position_value(const State& s, const MarginBook& book) {
+  Money value;
+  for (const auto& [symbol, entry] : book) {
+    const auto mark = s.marks.find(symbol);
+    if (mark != s.marks.end()) value = value + (mark->second.price * 100) * entry.first;
+    else if (entry.first < 0) value = value - entry.second;
+  }
+  for (const auto& [symbol, stock] : s.ledger.stocks())
+    if (const auto price = stock_price(s, symbol)) value = value + *price * stock.shares;
+  return value;
+}
+Margin margin_of(const State& s, const MarginBook& book) {
+  std::vector<MarginLeg> legs;
+  for (const auto& [symbol, entry] : book) legs.push_back({s.contracts.at(symbol), entry.first, entry.second, spot_for(s, symbol)});
+  Money minimum;
+  if (s.config.rules.margin == MarginMode::Portfolio) {
+    std::map<std::string, double> prices;
+    for (const auto& [symbol, stock] : s.ledger.stocks())
+      if (const auto price = stock_price(s, symbol)) prices[symbol] = price->dollars();
+    // Portfolio margin is taken from equity: cash already holds shorts' credits and
+    // paid for longs, so the positions' value is what they are worth on top of it.
+    if (const auto scanned = portfolio_margin_requirement(legs, s.valuations, s.time,
+        s.config.limits.max_valuation_age, s.ledger.stocks(), prices))
+      return {*scanned, *scanned - position_value(s, book)};
+    // An incomplete scan falls back to strategy margin plus the option minimum.
+    // The snapshot flags missing data and user fills require fresh valuations.
+    for (const auto& leg : legs)
+      minimum = minimum + Money::from_double(0.375 * leg.contract.multiplier) * magnitude(leg.quantity);
+  }
+  const auto strategy = margin_requirement(legs) + stock_requirement(s) + minimum;
+  return {strategy, strategy};
+}
+Money requirement(const State& s, const MarginBook& book) { return margin_of(s, book).held; }
 /// Buying power that positions do not hold: cash less their margin requirement.
-Money free_power(const State& s) { return s.ledger.account().cash - requirement(s, held_book(s)) - stock_requirement(s); }
+Money free_power(const State& s) { return s.ledger.account().cash - requirement(s, held_book(s)); }
 struct Use {
   Money reservation;   ///< Fees plus any net cost, never less than the fees.
   bool uses = false;   ///< Filling would reduce free buying power.
@@ -316,7 +358,7 @@ struct PowerDetail {
 PowerDetail buying_power(const State& s, OrderId focus = 0) {
   PowerDetail out;
   const auto book = held_book(s);
-  const Money short_requirement = requirement(s, book) + stock_requirement(s);
+  const auto margin = margin_of(s, book);
   std::map<std::string, std::pair<Quantity, Quantity>> capacity;
   Money reserved;
   for (const auto& o : s.orders) {
@@ -337,7 +379,7 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
       Money price;
       if (o.request.limit_price) price = *o.request.limit_price;
       else if (const auto quote = s.books.find(symbol); quote != s.books.end() && valid_quote(quote->second.quote))
-        price = buy ? *quote->second.quote.ask : *quote->second.quote.bid;
+        price = execution_price(s, symbol, o.request.side);
       const Money fees = s.config.fee_per_contract * remaining;
       if (o.role != OrderRole::Normal) {
         // Bracket exits stay within the position, so they only ever close; they
@@ -361,8 +403,8 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
     if (o.id == focus) { out.focus_reservation = use.reservation; out.focus_opening = opening; out.focus_uses = use.uses; }
   }
   out.total.reserved = reserved;
-  out.total.short_requirement = short_requirement;
-  out.total.available = s.ledger.account().cash - short_requirement - reserved;
+  out.total.short_requirement = margin.requirement;
+  out.total.available = s.ledger.account().cash - margin.held - reserved;
   return out;
 }
 TradingSnapshot snapshot_of(const State& s) {
@@ -692,7 +734,8 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
     return failure(Reason::EXPIRY_CUTOFF, "Contract is inside the pre-expiry cutoff; only closing orders are accepted");
   if (const auto d = quote_check(s, request.symbol); !d.ok()) return d;
   const auto& quote = s.books.at(request.symbol).quote;
-  const auto price = !at_fill && request.limit_price ? *request.limit_price : (request.side == Side::Buy ? *quote.ask : *quote.bid);
+  const auto price = !at_fill && request.limit_price ? *request.limit_price
+      : execution_price(s, request.symbol, request.side, request.limit_price);
   if (const auto d = price_check(s, quote, price); !d.ok()) return d;
   const auto snapshot = snapshot_of(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
@@ -750,7 +793,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   }
   auto& book = s.books.at(o.request.symbol);
   if (!marketable(o, book.quote)) return;
-  const Money price = o.request.side == Side::Buy ? *book.quote.ask : *book.quote.bid;
+  const Money price = execution_price(s, o.request.symbol, o.request.side, o.request.limit_price);
   auto& budget = o.request.side == Side::Buy ? book.ask_left : book.bid_left;
   const Quantity quantity = std::min(o.remaining(), budget);
   if (quantity <= 0) return;
@@ -788,8 +831,8 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   event(events, "fill", fill);
   on_fill(s, id, events);
 }
-/// A multi-leg order fills all its legs together, in ratio, at each leg's far
-/// side when the net debit is at or below its limit; units are bounded by every
+/// A multi-leg order fills all its legs together, in ratio, at each leg's slipped
+/// far side when the net debit is at or below its limit; units are bounded by every
 /// leg's remaining displayed size. The whole projected fill is rechecked first.
 void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
   auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
@@ -810,9 +853,8 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   if (decision.ok()) {
     State projected = s;
     for (const auto& leg : o.request.legs) {
-      const auto& q = s.books.at(leg.symbol).quote;
       const auto contracts = signed_contracts(leg, units);
-      projected.ledger.fill(s.contracts.at(leg.symbol), contracts, leg.side == Side::Buy ? *q.ask : *q.bid,
+      projected.ledger.fill(s.contracts.at(leg.symbol), contracts, execution_price(s, leg.symbol, leg.side),
                             s.config.fee_per_contract * magnitude(contracts));
     }
     projected.orders.at(static_cast<std::size_t>(id - 1)).filled_quantity += units;
@@ -834,7 +876,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     auto& book = s.books.at(leg.symbol);
     const auto contracts = signed_contracts(leg, units);
     const auto size = magnitude(contracts);
-    const Money price = leg.side == Side::Buy ? *book.quote.ask : *book.quote.bid;
+    const Money price = execution_price(s, leg.symbol, leg.side);
     const Money fee = s.config.fee_per_contract * size;
     fill_position(s, leg.symbol, contracts, price, fee);
     (leg.side == Side::Buy ? book.ask_left : book.bid_left) -= size;

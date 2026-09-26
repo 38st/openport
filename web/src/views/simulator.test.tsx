@@ -9,7 +9,7 @@ import { account, fill, plans, portfolio, risk, shareTrades, status, trades } fr
 import { DashboardView, equitySeries } from "./DashboardView"
 import { JournalView } from "./JournalView"
 import { RulesView, ruleText } from "./RulesView"
-import { ResetDialog } from "../components/ResetDialog"
+import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { describeAttribution } from "../lib/attribution"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
@@ -117,6 +117,25 @@ describe("simulator pages", () => {
     const html = render(<RulesView />)
     for (const text of ["Rules", "Profit target", "Trailing drawdown", "Evaluation plans", "Intraday 100K", "Every new high", "Buy only", "5 min before", "Start"])
       expect(html).toContain(text)
+  })
+  it("shows slippage and portfolio margin and defaults older rules to strategy margin", () => {
+    const custom = { ...account, rules: { ...account.rules, slippage_ticks: 2, margin: "portfolio" as const } }
+    const html = render(<RulesView />, custom)
+    for (const text of ["Portfolio margin", "11 price shocks", "−8% to +6%", "−15% to +15%", "$37.50", "long or short", "count as collateral",
+      "Slippage is 2 ticks", "bracket exits and automatic closes", "slipped net exceeds the net limit"])
+      expect(html).toContain(text)
+    const facts = planFacts({ initial_cash: "100000", rules: custom.rules })
+    expect(facts).toContain("Portfolio margin")
+    expect(facts).toContain("2 ticks of slippage")
+    const legacy = { ...account, rules: { ...account.rules, margin: undefined, slippage_ticks: undefined } }
+    const defaults = render(<RulesView />, legacy)
+    expect(defaults).toContain("Strategy margin")
+    expect(defaults).toContain("Slippage is 0 ticks")
+    // A plan's facts list only what differs from the defaults.
+    expect(planFacts({ initial_cash: "100000", rules: legacy.rules }).join(" ")).not.toMatch(/margin|slippage/)
+    const disabled = render(<RulesView />, { ...custom, rules: { ...custom.rules, buying_power: false } })
+    expect(disabled).toContain("Buying power is not enforced")
+    expect(disabled).toContain("Portfolio margin")
   })
   it("hides funded plans, their unlock and payouts in the practice simulator", () => {
     const passed: Account = { ...account, evaluation: { ...account.evaluation, status: "passed", decided_at: "2026-09-23T15:00:00Z",

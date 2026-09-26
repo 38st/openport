@@ -33,6 +33,53 @@ void quote(TradingSession& s, ScriptedMarket& f, std::string_view bid, std::stri
   s.on_quotes({f.quote(bid, ask)}, {f.valuation()}, f.time);
 }
 
+TEST(TradingEvaluation, OptionalExecutionRulesValidateAtCreationAndReset) {
+  ScriptedMarket f;
+  TradingSession s({}, f.time);
+  for (const std::int64_t ticks : {-1, 11}) {
+    AccountRules rules;
+    rules.slippage_ticks = ticks;
+    EXPECT_THROW(TradingSession(rules_config("10000", rules), f.time), TradingError);
+    EXPECT_THROW(s.reset_account(m("10000"), rules, "invalid", f.time), TradingError);
+  }
+  AccountRules rules;
+  rules.slippage_ticks = 10;
+  rules.margin = MarginMode::Portfolio;
+  EXPECT_NO_THROW(validate_rules(rules));
+  rules.margin = static_cast<MarginMode>(2);
+  EXPECT_THROW(validate_rules(rules), TradingError);
+  EXPECT_THROW(s.reset_account(m("10000"), rules, "invalid", f.time), TradingError);
+  EXPECT_EQ(s.config().rules.slippage_ticks, 0);
+  EXPECT_EQ(s.config().rules.margin, MarginMode::Strategy);
+}
+
+TEST(TradingEvaluation, LiquidationAndExpiryClosingOrdersSlip) {
+  for (const bool expiry : {false, true}) {
+    for (const auto side : {Side::Buy, Side::Sell}) {
+      ScriptedMarket f;
+      f.time = md::new_york_to_utc({2026, 10, 22}, 15, 50);
+      AccountRules rules;
+      rules.slippage_ticks = 2;
+      if (expiry) rules.expiry_cutoff = 5 * md::kNanosPerMinute;
+      else rules.max_drawdown = m("20");
+      TradingSession s(rules_config("100000", rules), f.time);
+      f.seed(s);
+      ASSERT_TRUE(s.submit(f.market("open", 1, side), f.time).decision.ok());
+      if (expiry) {
+        f.time = md::new_york_to_utc({2026, 10, 22}, 15, 56);
+        ++f.observation;
+        s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+      }
+      const auto snap = s.snapshot();
+      ASSERT_EQ(snap->recent_fills.size(), 2U);
+      EXPECT_TRUE(snap->recent_orders.back().system);
+      EXPECT_EQ(snap->recent_fills.back().price, m(side == Side::Buy ? "3.80" : "4.40"));
+      EXPECT_TRUE(snap->positions.empty());
+      EXPECT_EQ(snap->account.fees, m("1.30"));
+    }
+  }
+}
+
 TEST(TradingEvaluation, IntradayFloorTrailsPeakAndTouchFailsThenLiquidates) {
   ScriptedMarket f;
   TradingSession s(rules_config("10000", drawdown("1000", "100")), f.time);

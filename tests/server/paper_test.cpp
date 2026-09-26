@@ -1518,7 +1518,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(intraday["initial_cash"], "100000.00");
   EXPECT_EQ(intraday["rules"], json({{"plan", "Intraday 100K"}, {"phase", "evaluation"}, {"profit_target", "10000.00"},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", nullptr}, {"buy_only", true},
-      {"defined_risk", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
   const auto funded = plans[9];
   EXPECT_EQ(funded["id"], "funded-intraday-100k");
   EXPECT_EQ(funded["name"], "Funded Intraday 100K");
@@ -1526,7 +1526,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(funded["initial_cash"], "100000.00");
   EXPECT_EQ(funded["rules"], json({{"plan", "Funded Intraday 100K"}, {"phase", "funded"}, {"profit_target", nullptr},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", "100000.00"}, {"buy_only", true},
-      {"defined_risk", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 300},
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300},
       {"payouts", {{"qualifying_profit", "200.00"}, {"qualifying_days", 8}, {"withdrawal_percent", 50},
                    {"split_percent", 80}, {"minimum", "1000.00"},
                    {"caps", {"2000.00", "3000.00", "4000.00", "6000.00"}}}}}));
@@ -1697,6 +1697,42 @@ TEST_F(PaperEngine, TradesTakeNotesAndTags) {
   ASSERT_EQ(cleared.status, 200) << cleared.body;
   EXPECT_EQ(json::parse(cleared.body)["note"], "");
   EXPECT_EQ(read(*engine, "/api/trades")["trades"][0]["tags"], json::array());
+  engine->stop();
+}
+
+TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
+  const auto presets = read(*engine, "/api/plans")["plans"];
+  for (const auto& preset : presets) {
+    EXPECT_EQ(preset["rules"]["slippage_ticks"], 0);
+    EXPECT_EQ(preset["rules"]["margin"], "strategy");
+  }
+  json rules{{"profit_target", nullptr}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
+             {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0}};
+  auto reset = [&](const json& r) {
+    return write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", r}, {"reason", "rules test"}});
+  };
+  ASSERT_EQ(reset(rules).status, 200);
+  EXPECT_EQ(read(*engine, "/api/account")["rules"]["margin"], "strategy");
+  EXPECT_EQ(read(*engine, "/api/account")["rules"]["slippage_ticks"], 0);
+  for (const auto& value : {json(-1), json(11)}) {
+    rules["slippage_ticks"] = value;
+    expect_error(reset(rules), 422, "INVALID_RULES");
+  }
+  for (const auto& value : {json(1.5), json("2"), json(true), json(nullptr)}) {
+    rules["slippage_ticks"] = value;
+    expect_error(reset(rules), 400, "INVALID_REQUEST");
+  }
+  rules["slippage_ticks"] = 10;
+  for (const auto& value : {json("other"), json(1), json(nullptr)}) {
+    rules["margin"] = value;
+    expect_error(reset(rules), 400, "INVALID_REQUEST");
+  }
+  rules["margin"] = "portfolio";
+  const auto response = reset(rules);
+  ASSERT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body)["rules"]["slippage_ticks"], 10);
+  EXPECT_EQ(json::parse(response.body)["rules"]["margin"], "portfolio");
+  EXPECT_EQ(read(*engine, "/api/account")["rules"]["margin"], "portfolio");
   engine->stop();
 }
 

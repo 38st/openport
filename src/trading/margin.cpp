@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 
 #include "openport/trading/evaluation.hpp"
+#include "openport/trading/risk.hpp"
 
 namespace openport::trading {
 namespace {
@@ -115,6 +117,46 @@ Money margin_requirement(const std::vector<MarginLeg>& legs) {
     }
     // Across expiries: a later long also covers an earlier short (calendars, diagonals).
     total = total + std::min(separate, verticals(all, OptionType::Put) + verticals(all, OptionType::Call));
+  }
+  return total;
+}
+
+std::optional<Money> portfolio_margin_requirement(const std::vector<MarginLeg>& legs,
+    const std::map<std::string, Valuation>& valuations, Timestamp now, Timestamp max_age,
+    const std::map<std::string, StockPosition>& stocks, const std::map<std::string, double>& stock_prices) {
+  struct Group {
+    std::map<std::string, Position> options;
+    std::map<std::string, StockPosition> stocks;
+    Money minimum;
+  };
+  std::map<std::string, Group> groups;
+  for (const auto& leg : legs) {
+    if (leg.quantity == 0) continue;
+    auto& group = groups[leg.contract.underlying];
+    group.options.emplace(leg.contract.osi_symbol(), Position{leg.contract, leg.quantity, {}, {}, {}});
+    group.minimum = group.minimum + Money::from_double(0.375 * leg.contract.multiplier) *
+        (leg.quantity < 0 ? -leg.quantity : leg.quantity);
+  }
+  for (const auto& [symbol, stock] : stocks) groups[symbol].stocks.emplace(symbol, stock);
+  Money total;
+  for (const auto& [underlying, group] : groups) {
+    ScenarioConfig scan;
+    scan.spot_percent.clear();
+    scan.vol_points = {0};
+    // The account's display grid cannot narrow the margin scan.
+    const bool index = md::is_index_underlying(underlying);
+    const double low = index ? -8.0 : -15.0;
+    const double high = index ? 6.0 : 15.0;
+    for (int i = 0; i <= 10; ++i) scan.spot_percent.push_back(low + (high - low) * i / 10);
+    // Keep the valuation's IV, even when it is below the display grid's floor.
+    scan.vol_floor = std::numeric_limits<double>::min();
+    const auto ledger = Ledger::restore({}, group.options, group.stocks);
+    const auto grid = scenario_grid(ledger, valuations, scan, now, max_age, stock_prices);
+    if (!grid.complete) return std::nullopt;
+    double loss = 0;
+    for (const auto& cell : grid.cells) loss = std::max(loss, -cell.pnl);
+    // The minimum is a floor under the scanned loss, not an addition to it.
+    total = total + std::max(Money::from_double(loss), group.minimum);
   }
   return total;
 }

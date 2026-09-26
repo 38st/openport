@@ -20,6 +20,8 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
       : "No drawdown floor",
     r.buy_only ? "Buy-only, single leg" : r.defined_risk ? "Defined risk only" : "Any strategy",
     ...(r.buying_power ? ["Buying power enforced"] : []),
+    ...(r.margin === "portfolio" ? ["Portfolio margin"] : []),
+    ...(r.slippage_ticks ? [`${r.slippage_ticks} ${r.slippage_ticks === 1 ? "tick" : "ticks"} of slippage`] : []),
     ...(r.expiry_cutoff_seconds > 0 ? [`Auto-close ${Math.round(r.expiry_cutoff_seconds / 60)} min before expiry`] : []),
     ...(p ? [`Payout every ${p.qualifying_days} days of ${formatMoney(p.qualifying_profit, 0)}+ net profit`,
       `Up to ${p.withdrawal_percent}% of profit per payout, ${p.split_percent}% to you`] : []),

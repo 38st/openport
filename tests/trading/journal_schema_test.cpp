@@ -156,6 +156,62 @@ TEST(StateDelta, DeltasThatDoNotFitAreRejected) {
   }
 }
 
+TEST(TradingJournalSchema, OptionalExecutionRulesRoundTripAndOlderRulesKeepTheirDefaults) {
+  TemporaryDirectory directory;
+  test::ScriptedMarket f;
+  const auto source = directory.file("rules.jsonl");
+  std::string expected;
+  {
+    SessionConfig config;
+    config.rules.slippage_ticks = 2;
+    config.rules.margin = MarginMode::Portfolio;
+    TradingSession s(config, f.time, FileJournal::create(source));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("buy"), f.time).decision.ok());
+    expected = s.snapshot_json();
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(source));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  EXPECT_EQ(recovered.config().rules.slippage_ticks, 2);
+  EXPECT_EQ(recovered.config().rules.margin, MarginMode::Portfolio);
+  EXPECT_EQ(recovered.snapshot()->recent_fills.front().price, Money::parse("4.40"));
+  f.next();
+  recovered.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  ASSERT_TRUE(recovered.submit(f.market("sell", 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(recovered.snapshot()->recent_fills.back().price, Money::parse("3.80"));
+
+  const auto defaults = directory.file("defaults.jsonl");
+  { TradingSession s({}, f.time, FileJournal::create(defaults)); }
+  const auto legacy = rewritten(directory, "legacy.jsonl", defaults, [](std::size_t, Json& payload) {
+    auto& rules = payload["state"]["config"]["rules"];
+    rules.erase("slippage_ticks");
+    rules.erase("margin");
+    for (auto& event : payload["events"]) {
+      auto& event_rules = event["payload"]["rules"];
+      event_rules.erase("slippage_ticks");
+      event_rules.erase("margin");
+    }
+  });
+  const auto older = TradingSession::recover(FileJournal::read(legacy));
+  EXPECT_EQ(older.config().rules.slippage_ticks, 0);
+  EXPECT_EQ(older.config().rules.margin, MarginMode::Strategy);
+  EXPECT_EQ(older.snapshot_json(), TradingSession::recover(FileJournal::read(defaults)).snapshot_json());
+  expect_corrupt([&] {
+    const auto bad = rewritten(directory, "bad-margin.jsonl", defaults, [](std::size_t, Json& payload) {
+      payload["state"]["config"]["rules"]["margin"] = "unknown";
+    });
+    (void)TradingSession::recover(FileJournal::read(bad));
+  });
+  for (const auto& value : {Json(-1), Json(11), Json(1.5), Json(true), Json(nullptr)}) {
+    expect_corrupt([&] {
+      const auto bad = rewritten(directory, "bad-slippage-" + value.dump() + ".jsonl", defaults, [&](std::size_t, Json& payload) {
+        payload["state"]["config"]["rules"]["slippage_ticks"] = value;
+      });
+      (void)TradingSession::recover(FileJournal::read(bad));
+    });
+  }
+}
+
 TEST(TradingJournalSchema, RecordsCarryTheChangeAndStaySmallAsHistoryGrows) {
   TemporaryDirectory directory;
   const auto path = directory.file("account.jsonl");

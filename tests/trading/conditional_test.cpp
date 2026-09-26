@@ -33,6 +33,24 @@ void quote(TradingSession& s, ScriptedMarket& f, std::string_view bid, std::stri
 }
 const Order& order(const TradingSession& s, OrderId id) { return s.snapshot()->recent_orders.at(static_cast<std::size_t>(id - 1)); }
 
+TEST(TradingConditional, BracketExitsSlipAndTakeProfitKeepsItsLimit) {
+  for (const bool stop : {false, true}) {
+    ScriptedMarket f;
+    AccountRules rules;
+    rules.slippage_ticks = 2;
+    TradingSession s(roomy(rules), f.time);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(with_bracket(f.market("entry"), stop_at("3.50"), target_at("5.00")), f.time).decision.ok());
+    quote(s, f, stop ? "3.50" : "5.10", stop ? "3.70" : "5.30");
+    const auto snap = s.snapshot();
+    ASSERT_EQ(snap->recent_fills.size(), 2U);
+    EXPECT_EQ(snap->recent_fills.front().price, m("4.40"));
+    EXPECT_EQ(snap->recent_fills.back().price, m(stop ? "3.30" : "5.00"));
+    EXPECT_TRUE(snap->positions.empty());
+    EXPECT_EQ(snap->account.fees, m("1.30"));
+  }
+}
+
 TEST(TradingConditional, ArmedEntryActivatesWhenTheUnderlyingCrossesAndReservesUntilThen) {
   ScriptedMarket f;
   AccountRules rules;

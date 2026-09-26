@@ -21,6 +21,8 @@ PlanPreset evaluation(std::string_view style, std::int64_t thousands) {
   rules.drawdown_mode = intraday ? DrawdownMode::Intraday : DrawdownMode::EndOfDay;
   rules.buy_only = intraday;
   rules.buying_power = true;
+  rules.slippage_ticks = 0;
+  rules.margin = trading::MarginMode::Strategy;
   rules.expiry_cutoff = 5 * md::kNanosPerMinute;
   return {std::string(style) + "-" + std::to_string(thousands) + "k", rules.plan,
           intraday ? "Buy-only single-leg options. 10% profit target; 5% trailing drawdown that rises with every new equity high."
@@ -50,6 +52,8 @@ std::vector<PlanPreset> build() {
   AccountRules practice;
   practice.plan = "Practice";
   practice.buying_power = true;
+  practice.slippage_ticks = 0;
+  practice.margin = trading::MarginMode::Strategy;
   std::vector<PlanPreset> plans{{"practice", "Practice", "No target or drawdown. Buying power applies.",
                                  Money::from_micros(100'000'000'000), practice, {}}};
   for (const auto* style : {"intraday", "eod"})

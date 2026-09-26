@@ -168,7 +168,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
   const name = strategyName(side, selection.optionType, held, Number.isSafeInteger(q) && q > 0 ? q : 1)
   const fill = marketability(side, type, limitPrice, quote)
   // Mirrors the server: margin on the held positions (spreads netted) plus premium and fees.
-  const power = orderPowerUse({ side, quantity: q, price: estimatedPrice == null ? null : Number(estimatedPrice), fee: Number(effectiveFee ?? 0) },
+  const power = rules?.margin === "portfolio" || rules?.slippage_ticks ? null
+    : orderPowerUse({ side, quantity: q, price: estimatedPrice == null ? null : Number(estimatedPrice), fee: Number(effectiveFee ?? 0) },
     { symbol: selection.symbol, underlying: selection.underlying, expiry: selection.expiry.id, type: selection.optionType, strike: selection.strike },
     heldPositions(portfolio?.positions ?? []), selection.spot)
   const effect = power?.effect ?? null
@@ -335,6 +336,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
         <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
         {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
       </dl>
+      {(rules?.margin === "portfolio" || !!rules?.slippage_ticks) && <p className="text-xs text-muted">Buying power is checked on submission for this plan.</p>}
+      {!!rules?.slippage_ticks && <p className="text-xs text-muted">Price previews exclude the account's {rules.slippage_ticks} ticks of slippage.</p>}
       {rules?.buying_power && after != null && after < 0 && power?.uses && <p role="status" className="text-xs text-danger">{opening > 0
         ? "Exceeds available buying power; the server will reject it."
         : "Selling this long uncovers a short it protects, which needs more buying power than you have. Buy the short back first, or close both together from Positions."}</p>}

@@ -34,6 +34,16 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("strategy ticket", () => {
+  it("leaves buying power to the server for portfolio margin or slippage", () => {
+    for (const optional of [{ margin: "portfolio" as const }, { slippage_ticks: 2 }]) {
+      const custom = { ...any, rules: { ...any.rules, ...optional }, buying_power: { ...any.buying_power, available: "0" } }
+      const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, custom)
+      expect(html).toContain("Buying power is checked on submission for this plan")
+      expect(html).not.toContain("−$901.30")
+      expect(html).not.toContain("the server will reject it")
+      if (optional.slippage_ticks) expect(html).toContain("2 ticks of slippage")
+    }
+  })
   it("prices the legs net, shows the expiry risk and places one order", () => {
     const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any)
     for (const text of ["Strategy ticket", "SPX <span", "Bull put spread", "2 of 4 legs", "SELL", "BUY", "6900 P", "6890 P",

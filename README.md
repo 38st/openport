@@ -105,7 +105,9 @@ QQQ options), with generated prices labelled as simulated on every page:
 The engine simulates orders on European cash-settled index options (SPX, XSP, NDX,
 RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single stocks)
 against displayed quotes: market and marketable orders take the far side up to the
-displayed size, resting limits fill when a later quote crosses them, and every fill
+displayed size, with optional per-plan slippage of 0–10 ticks. Single-leg limits cap
+the fill price; multi-leg orders wait if the slipped net exceeds their limit.
+Resting limits fill when a later quote crosses them, and every fill
 pays a per-contract fee. Positions are marked at the mid, and risk limits on dollar
 delta, vega, order size, price bands and daily loss are checked before and at every
 fill. Every product trades in its regular session (09:30 to 16:15 ET for index
@@ -128,6 +130,12 @@ Buying power follows each order's real margin: a naked short holds the usual
 hold only what they can lose. An order that would use buying power must fit within it;
 anything that frees buying power (closing, buying back a short, buying protection) is
 always allowed, even when the account is short of it.
+Custom plans can instead select portfolio margin, as Cboe's and FINRA's rules set it:
+each underlying holds its largest loss across a price scan (−8% to +6% for index
+products, ±15% for stocks and ETFs), at least $37.50 a contract, and buying power is
+equity less that, so long options and shares count as collateral. Presets use strategy
+margin and no slippage; the
+[paper-trading guide](docs/paper-trading.md#account-rules-and-evaluations) has the details.
 
 Plans set an account's rules: `practice` (the default: buying power only),
 `intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new high) or

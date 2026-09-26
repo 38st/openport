@@ -39,6 +39,18 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("paper trading fixtures", () => {
+  it("leaves buying power to the server for portfolio margin or slippage", () => {
+    for (const optional of [{ margin: "portfolio" as const }, { slippage_ticks: 2 }]) {
+      const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />, (client) => {
+        client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
+          { ...account, rules: { ...account.rules, ...optional }, buying_power: { ...account.buying_power, available: "0" } })
+      })
+      expect(html).toContain("Buying power is checked on submission for this plan")
+      expect(html).toMatch(/Buying power effect<\/dt><dd[^>]*>—<\/dd>/)
+      expect(html).not.toContain("the server will reject it")
+      if (optional.slippage_ticks) expect(html).toContain("2 ticks of slippage")
+    }
+  })
   it("renders a labelled buy ticket with quotes, sizes, exact premium and its own Greeks", () => {
     const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />)
     expect(html).toContain("<dialog")

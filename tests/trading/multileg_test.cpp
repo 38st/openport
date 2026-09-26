@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "openport/trading/session.hpp"
+#include "openport/pricing/black.hpp"
 
 namespace openport::trading {
 namespace {
@@ -90,6 +91,127 @@ TEST(TradingMargin, SpreadsNeedTheirWidthAndBoundedGroupsTheirWorstLoss) {
   EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(P4890, 1), margin(C5100, -1, "300"), margin(C5110, 1),
                                 margin(LATER_4900, 1)}), m("1000"));
   EXPECT_EQ(margin_requirement({margin(P4890, 3), margin(C5100, 2)}), Money{});
+}
+
+TEST(TradingMultiLeg, SlippageAppliesToEveryLegAndWaitsForTheNetLimit) {
+  for (const bool credit : {true, false}) {
+    Chain f;
+    auto c = config();
+    c.rules.slippage_ticks = 2;
+    TradingSession s(c, f.time);
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    const auto legs = credit ? std::vector<Leg>{leg(P4900, Side::Sell), leg(P4890, Side::Buy)}
+                             : std::vector<Leg>{leg(P4900, Side::Buy), leg(P4890, Side::Sell)};
+    ASSERT_TRUE(s.submit(combo("wait", legs, 1, credit ? "-0.80" : "1.20"), f.time).decision.ok());
+    EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+    s.cancel(1, f.time);
+    ASSERT_TRUE(s.submit(combo("fill", legs, 2, credit ? "-0.40" : "1.60"), f.time).decision.ok());
+    ASSERT_EQ(s.snapshot()->recent_fills.size(), 2U);
+    EXPECT_EQ(s.snapshot()->recent_fills[0].price, m(credit ? "4.80" : "5.40"));
+    EXPECT_EQ(s.snapshot()->recent_fills[1].price, m(credit ? "4.40" : "3.80"));
+    EXPECT_EQ(s.snapshot()->recent_orders.back().filled_notional, m(credit ? "-0.80" : "3.20"));
+    EXPECT_EQ(s.snapshot()->account.fees, m("2.60"));
+    ASSERT_TRUE(s.submit(combo("market", legs, 1, {}), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->recent_fills.size(), 4U);
+    EXPECT_EQ(s.snapshot()->recent_orders.back().filled_notional, m(credit ? "-0.40" : "1.60"));
+  }
+}
+
+TEST(TradingMargin, PortfolioScanUsesBothEndpointsAboveTheContractMinimum) {
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  for (const auto* symbol : {"SPXW261022C05000000", "XSP261022C00500000", "SPY261022C00500000", "AAPL261022C00500000"}) {
+    const auto c = *md::parse_osi(symbol);
+    const auto osi_symbol = c.osi_symbol();
+    Valuation v{osi_symbol, now, 0.5, 0.001, 2, -0.1, c.strike, c.strike * 1.01, 0.99, 0.1, 0.2, true};
+    const bool index = md::is_index_underlying(c.underlying);
+    for (const Quantity quantity : {-2, 2}) {
+      const double shock = quantity < 0 ? (index ? 0.06 : 0.15) : (index ? -0.08 : -0.15);
+      const double base = pricing::black_price(c.type, v.forward, c.strike, v.years, v.smile_iv, v.discount);
+      const double shocked = pricing::black_price(c.type, v.forward * (1 + shock), c.strike, v.years, v.smile_iv, v.discount);
+      const auto expected = std::max(Money::from_double(-static_cast<double>(quantity) * c.multiplier * (shocked - base)), m("75"));
+      const auto actual = portfolio_margin_requirement({{c, quantity, {}, v.spot}}, {{osi_symbol, v}}, now, md::kNanosPerMinute);
+      ASSERT_TRUE(actual);
+      EXPECT_EQ(*actual, expected) << symbol << " quantity " << quantity;
+    }
+  }
+}
+
+TEST(TradingMargin, PortfolioMinimumCoversFarOutOfTheMoneyLongsAndMissingScansAreIncomplete) {
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto c = *md::parse_osi("SPXW261022C09000000");
+  const auto symbol = c.osi_symbol();
+  const Valuation v{symbol, now, 0, 0, 0, 0, 5000, 5000, 1, 0.01, 0.01, true};
+  const std::vector<MarginLeg> legs{{c, 3, {}, 5000.0}};
+  EXPECT_EQ(portfolio_margin_requirement(legs, {{symbol, v}}, now, md::kNanosPerMinute), m("112.50"));
+  EXPECT_FALSE(portfolio_margin_requirement(legs, {}, now, md::kNanosPerMinute));
+  EXPECT_FALSE(portfolio_margin_requirement(legs, {{symbol, v}}, now + 2 * md::kNanosPerMinute, md::kNanosPerMinute));
+}
+
+TEST(TradingMargin, PortfolioScanFindsLossesBetweenItsEndpoints) {
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  std::vector<MarginLeg> legs;
+  std::map<std::string, Valuation> valuations;
+  for (const auto* symbol : {"SPY261022C00090000", "SPY261022C00100000", "SPY261022C00110000"}) {
+    const auto c = *md::parse_osi(symbol);
+    const auto key = c.osi_symbol();
+    legs.push_back({c, c.strike == 100 ? 2 : -1, {}, 95.0});
+    valuations.emplace(key, Valuation{key, now, 0, 0, 0, 0, 95, 95, 1, 0, 0.2, true});
+  }
+  // A short butterfly gains at both endpoints. At the scan point 100.70 it loses $430
+  // against its value at 95, more than the $150 minimum for four option contracts.
+  EXPECT_EQ(portfolio_margin_requirement(legs, valuations, now, md::kNanosPerMinute), m("430"));
+}
+
+TEST(TradingMargin, PortfolioSharesMoveLinearlyAndUnderlyingsCannotOffsetEachOther) {
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  for (const Quantity shares : {-100, 100}) {
+    const StockPosition stock{"SPY", shares, {}, {}, {}};
+    EXPECT_EQ(portfolio_margin_requirement({}, {}, now, md::kNanosPerMinute, {{"SPY", stock}}, {{"SPY", 100}}), m("1500"));
+    EXPECT_FALSE(portfolio_margin_requirement({}, {}, now, md::kNanosPerMinute, {{"SPY", stock}}));
+  }
+  const std::map<std::string, StockPosition> stocks{{"SPY", {"SPY", 100, {}, {}, {}}}, {"QQQ", {"QQQ", -100, {}, {}, {}}}};
+  EXPECT_EQ(portfolio_margin_requirement({}, {}, now, md::kNanosPerMinute, stocks, {{"SPY", 100}, {"QQQ", 100}}), m("3000"));
+  const auto c = *md::parse_osi("SPY261022C00100000");
+  const auto symbol = c.osi_symbol();
+  const Valuation v{symbol, now, 1, 0, 0, 0, 500, 500, 1, 0, 0.2, true};
+  // At expiry in the model, a deep call offsets the shares dollar for dollar.
+  EXPECT_EQ(portfolio_margin_requirement({{c, -1, {}, 500.0}}, {{symbol, v}}, now, md::kNanosPerMinute,
+      {{"SPY", {"SPY", 100, {}, {}, {}}}}, {{"SPY", 500}}), m("37.50"));
+}
+
+TEST(TradingMultiLeg, PortfolioMarginAllowsAStraddleThatStrategyMarginCannotFund) {
+  const auto put = osi("SPXW261022P05000000");
+  const auto call = osi("SPXW261022C05000000");
+  for (const auto mode : {MarginMode::Strategy, MarginMode::Portfolio}) {
+    Chain f;
+    auto c = config("50000");
+    EXPECT_EQ(c.rules.margin, MarginMode::Strategy);
+    c.rules.margin = mode;
+    c.rules.buying_power = true;
+    // Changing the risk display cannot weaken the portfolio margin scan.
+    c.scenarios.spot_percent = {0};
+    c.scenarios.vol_points = {0};
+    TradingSession s(c, f.time);
+    f.define(s, {put, call});
+    f.quote(s, {{put, "5", "5.20", -0.5}, {call, "5", "5.20", 0.5}});
+    const auto result = s.submit(combo("straddle", {leg(put, Side::Sell), leg(call, Side::Sell)}, 1, {}), f.time);
+    if (mode == MarginMode::Strategy) {
+      EXPECT_EQ(result.decision.code, Reason::BUYING_POWER);
+      EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+    } else {
+      ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+      ASSERT_EQ(s.snapshot()->recent_fills.size(), 2U);
+      const std::vector<MarginLeg> legs{margin(put, -1, "510"), margin(call, -1, "510")};
+      const auto expected = portfolio_margin_requirement(legs, s.valuations(), f.time, c.limits.max_valuation_age);
+      ASSERT_TRUE(expected);
+      EXPECT_EQ(s.snapshot()->buying_power.short_requirement, *expected);
+      EXPECT_LT(*expected, margin_requirement(legs));
+      // Buying power is equity, cash less the shorts' buy-back value, less the requirement.
+      EXPECT_EQ(s.snapshot()->buying_power.available, s.snapshot()->equity - *expected);
+      EXPECT_GT(s.snapshot()->buying_power.available, Money{});
+    }
+  }
 }
 
 TEST(TradingMultiLeg, CreditSpreadFillsBothLegsTogetherAtTheFarSides) {

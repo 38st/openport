@@ -97,9 +97,12 @@ void validate_rules(const AccountRules& r) {
       r.expiry_cutoff >= md::kNanosPerDay || r.plan.size() > 64 || r.lock_balance < Money{} || !payouts_ok ||
       (r.drawdown_mode != DrawdownMode::Intraday && r.drawdown_mode != DrawdownMode::EndOfDay) ||
       (r.phase != Phase::Evaluation && r.phase != Phase::Funded) ||
+      r.slippage_ticks < 0 || r.slippage_ticks > 10 ||
+      (r.margin != MarginMode::Strategy && r.margin != MarginMode::Portfolio) ||
       (r.phase == Phase::Funded && (r.profit_target > Money{} || p.qualifying_days < 1)))
     throw TradingError(Reason::INVALID_RULES,
         "Rule amounts must be nonnegative, percentages 0-100, caps positive, the expiry cutoff under one day and the plan name "
-        "at most 64 bytes; a funded phase has no profit target and at least one qualifying day");
+        "at most 64 bytes; slippage is 0-10 ticks and margin is strategy or portfolio; "
+        "a funded phase has no profit target and at least one qualifying day");
 }
 }  // namespace openport::trading

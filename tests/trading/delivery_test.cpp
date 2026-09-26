@@ -41,6 +41,30 @@ const MarkedStock* stock(const TradingSession& s, std::string_view symbol) {
 }
 double day_pnl(const TradingSession& s) { return (s.snapshot()->equity - s.snapshot()->start_of_day_equity).dollars(); }
 
+TEST(TradingDelivery, PortfolioMarginScansDeliveredSharesAndReleasesItOnClose) {
+  const auto call = *md::parse_osi("SPY260922C00500000");
+  for (const auto side : {Side::Buy, Side::Sell}) {
+    AccountRules rules;
+    rules.margin = MarginMode::Portfolio;
+    rules.buying_power = true;
+    Spy f;
+    TradingSession s(roomy(rules), f.time);
+    f.define(s, call);
+    f.quote(s, call, "10.00", "10.20");
+    ASSERT_TRUE(s.submit(f.market("open", call, 1, side), f.time).decision.ok());
+    f.time = call.expiry_time();
+    f.price(s);
+    ASSERT_TRUE(s.settle(call.osi_symbol(), m("510"), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("7650"));  // 15% of 100 shares at 510
+    // The shares' value counts: long shares are collateral, short ones are owed.
+    EXPECT_EQ(s.snapshot()->buying_power.available, s.snapshot()->equity - m("7650"));
+    f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+    f.price(s);
+    ASSERT_TRUE(s.trade_stock("SPY", side == Side::Buy ? -100 : 100, f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->buying_power.short_requirement, Money{});
+  }
+}
+
 TEST(TradingDelivery, ExpiryExercisesAndAssignsEquityOptionsACentInTheMoney) {
   const auto call = *md::parse_osi("SPY260922C00500000");  // expires today at 16:00
   const auto put = *md::parse_osi("SPY260922P00500000");

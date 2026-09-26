@@ -119,13 +119,14 @@ struct StockFill {
   std::string option;  ///< The OSI that delivered them, for Delivery and Exercise.
 };
 
-/// Cash buying power. Long premium is paid in full. Short options hold a
-/// requirement from margin_requirement; working orders reserve their
-/// worst-case cash use.
+/// Buying power. Under strategy margin it is cash: long premium is paid in full and
+/// shorts hold a requirement. Under portfolio margin it is equity (cash and the
+/// positions at their marks) less the requirement, so longs and shares are collateral.
+/// Working orders reserve their worst-case use.
 struct BuyingPower {
   Money available;          ///< cash - short_requirement - reserved; may be negative.
   Money reserved;
-  Money short_requirement;
+  Money short_requirement;  ///< The margin requirement: in portfolio mode, the portfolio's whole.
 };
 
 /// Per-contract naked short requirement excluding premium: 100 * max(20% of spot
@@ -150,6 +151,14 @@ struct MarginLeg {
 /// taking each expiry on its own (the lesser of its verticals and worst loss).
 /// Longs need nothing: their premium is paid in full.
 [[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs);
+/// Portfolio margin (Cboe Rule 12.4, FINRA Rule 4210(g)): per underlying, the
+/// largest Black-76 loss over 11 evenly spaced price shocks, -8% to +6% for index
+/// products and -15% to +15% otherwise, or $0.375 times the multiplier for every
+/// option contract if that is larger. Shares move linearly. No result if the scan
+/// lacks fresh valuations or share prices.
+[[nodiscard]] std::optional<Money> portfolio_margin_requirement(const std::vector<MarginLeg>& legs,
+    const std::map<std::string, Valuation>& valuations, Timestamp now, Timestamp max_age,
+    const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {});
 /// Short contracts that no long covers: each short pairs with a long of the same
 /// type on the same underlying that expires with it or later, whatever the
 /// strikes, as a defined-risk rule counts it.

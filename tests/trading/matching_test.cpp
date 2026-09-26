@@ -12,6 +12,105 @@ SessionConfig roomy() {
   c.limits.per_underlying = {1e9, 1e9};
   return c;
 }
+TEST(TradingMatching, SlippageUsesDisplayedTickTierAndLeavesFeesAndSizeUnchanged) {
+  struct Example { const char* symbol; const char* bid; const char* ask; const char* buy; const char* sell; };
+  for (const auto& e : {Example{"SPXW261022C05000000", "4", "4.20", "4.40", "3.80"},
+                        Example{"SPXW261022C05000000", "2.90", "2.95", "3.05", "2.80"},
+                        Example{"XSP261022C00500000", "2.99", "3", "3.10", "2.97"},
+                        Example{"SPY261022C00500000", "4", "4.20", "4.22", "3.98"}}) {
+    ScriptedMarket f;
+    f.contract = *md::parse_osi(e.symbol);
+    auto config = roomy();
+    config.rules.slippage_ticks = 2;
+    TradingSession s(config, f.time);
+    f.seed(s, e.bid, e.ask, 1);
+    ASSERT_TRUE(s.submit(f.market("buy", 2), f.time).decision.ok());
+    ASSERT_TRUE(s.submit(f.market("sell", 1, Side::Sell), f.time).decision.ok());
+    const auto snap = s.snapshot();
+    ASSERT_EQ(snap->recent_fills.size(), 2U);
+    EXPECT_EQ(snap->recent_fills[0].price, m(e.buy));
+    EXPECT_EQ(snap->recent_fills[1].price, m(e.sell));
+    EXPECT_EQ(snap->recent_fills[0].quantity, 1);
+    EXPECT_EQ(snap->recent_orders[0].reason.code, Reason::IOC_REMAINDER);
+    EXPECT_EQ(snap->account.fees, m("1.30"));
+  }
+}
+TEST(TradingMatching, SlippageRespectsLimitsAndNeverMakesNegativeProceeds) {
+  ScriptedMarket f;
+  auto config = roomy();
+  config.rules.slippage_ticks = 10;
+  config.limits.price_band_absolute = m("2");
+  TradingSession s(config, f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("buy", 1, "4.30"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("sell", 1, "3.90", Side::Sell), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->recent_fills.size(), 2U);
+  EXPECT_EQ(s.snapshot()->recent_fills[0].price, m("4.30"));
+  EXPECT_EQ(s.snapshot()->recent_fills[1].price, m("3.90"));
+  ASSERT_TRUE(s.submit(f.limit("rest", 1, "4.10"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 2U);
+  s.cancel(3, f.time);
+  f.next();
+  s.on_quotes({f.quote("0.05", "0.10")}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.market("low", 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, Money{});
+}
+TEST(TradingMatching, SlippageIsIncludedInMarketBuyingPowerAndFillChecks) {
+  ScriptedMarket f;
+  auto config = roomy();
+  config.initial_cash = m("430");
+  config.rules.buying_power = true;
+  config.rules.slippage_ticks = 2;
+  TradingSession s(config, f.time);
+  f.seed(s);
+  EXPECT_EQ(s.submit(f.market("too-much"), f.time).decision.code, Reason::BUYING_POWER);
+  ASSERT_TRUE(s.submit(f.limit("capped", 1, "4.20"), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->recent_fills.size(), 1U);
+  EXPECT_EQ(s.snapshot()->recent_fills[0].price, m("4.20"));
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("9.35"));
+}
+TEST(TradingMatching, PortfolioMarginReservesPendingOrdersAndRechecksAtFill) {
+  for (const bool changed : {false, true}) {
+    ScriptedMarket f;
+    f.contract = *md::parse_osi("SPXW261022C09000000");
+    auto config = roomy();
+    config.initial_cash = m("50");
+    config.rules.margin = MarginMode::Portfolio;
+    config.rules.buying_power = true;
+    TradingSession s(config, f.time);
+    s.define(f.contract, f.time);
+    auto v = f.valuation(0, 0);
+    v.forward = 5000;
+    v.years = 0.01;
+    v.smile_iv = 0.01;
+    s.on_quotes({f.quote("0.05", "0.10")}, {v}, f.time);
+    EXPECT_EQ(s.submit(f.market("two", 2), f.time).decision.code, Reason::BUYING_POWER);
+    ASSERT_TRUE(s.submit(f.limit("rest", 1, "0.05"), f.time).decision.ok());
+    // The $37.50 minimum, less the call's $7.50 value at its mark, plus $5.00 of
+    // premium and the $0.65 fee.
+    EXPECT_EQ(s.snapshot()->buying_power.reserved, m("35.65"));
+    EXPECT_EQ(s.snapshot()->buying_power.available, m("14.35"));
+    f.next();
+    v.time = f.time;
+    if (changed) { v.spot = 9000; v.forward = 9000; }
+    s.on_quotes({f.quote("0.04", "0.05")}, {v}, f.time);
+    if (changed) {
+      EXPECT_EQ(s.snapshot()->recent_orders.back().reason.code, Reason::RISK_CHANGED);
+      EXPECT_NE(s.snapshot()->recent_orders.back().reason.message.find("BUYING_POWER"), std::string::npos);
+      EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+    } else {
+      ASSERT_EQ(s.snapshot()->recent_fills.size(), 1U);
+      EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("37.50"));
+      // Equity: $44.35 of cash and the call at $4.50, less the requirement.
+      EXPECT_EQ(s.snapshot()->buying_power.available, m("11.35"));
+      f.next();
+      s.on_quotes({f.quote("0.04", "0.05")}, {}, f.time + 2 * md::kNanosPerMinute);
+      EXPECT_EQ(s.submit(f.market("missing"), f.time + 2 * md::kNanosPerMinute).decision.code, Reason::STALE_QUOTE);
+      EXPECT_FALSE(s.snapshot()->risk.complete);
+      EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("37.50"));
+    }
+  }
+}
 TEST(TradingMatching, MarketFarSidePartialIocAndSharedBudgets) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

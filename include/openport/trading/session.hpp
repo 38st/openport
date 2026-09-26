@@ -134,8 +134,8 @@ class TradingSession {
   CommandResult cancel_all(std::optional<std::string> underlying, Timestamp time);
   /// Flatten the account, or one underlying: cancel the open orders in scope,
   /// then close each unexpired position in scope with a market IOC at the
-  /// displayed quotes, short positions first so a spread never leaves a naked
-  /// short. Expired positions wait for their settlement.
+  /// displayed quotes with the account's slippage, short positions first so a
+  /// spread never leaves a naked short. Expired positions wait for their settlement.
   /// Every closing order takes the checks any order does; one that cannot
   /// trade is recorded as rejected (with an underlying's entry in `rejections`
   /// when the integration refuses it) and the others still go. The decision

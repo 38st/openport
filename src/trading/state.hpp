@@ -63,13 +63,22 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExposureLimits, dollar_delta, vega)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Limits, max_order_contracts, price_band_absolute, price_band_relative, aggregate, per_underlying, underlying_overrides, max_daily_loss, max_quote_age, max_valuation_age)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioConfig, spot_percent, vol_points, vol_floor)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PayoutRules, qualifying_profit, qualifying_days, withdrawal_percent, split_percent, minimum, caps)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(AccountRules, plan, profit_target, max_drawdown, drawdown_mode, buy_only, buying_power, expiry_cutoff, phase, lock_balance, payouts, defined_risk)
+inline void to_json(Json& j, MarginMode mode) { j = mode == MarginMode::Portfolio ? "portfolio" : "strategy"; }
+inline void from_json(const Json& j, MarginMode& mode) {
+  const auto value = j.get<std::string>();
+  if (value != "strategy" && value != "portfolio") throw TradingError(Reason::JOURNAL_CORRUPT, "Unknown recorded margin mode");
+  mode = value == "portfolio" ? MarginMode::Portfolio : MarginMode::Strategy;
+}
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(AccountRules, plan, profit_target, max_drawdown, drawdown_mode, buy_only, buying_power, expiry_cutoff, phase, lock_balance, payouts, defined_risk, slippage_ticks, margin)
 inline void from_json(const Json& j, AccountRules& r) {
   j.at("plan").get_to(r.plan); j.at("profit_target").get_to(r.profit_target); j.at("max_drawdown").get_to(r.max_drawdown);
   j.at("drawdown_mode").get_to(r.drawdown_mode); j.at("buy_only").get_to(r.buy_only); j.at("buying_power").get_to(r.buying_power);
   j.at("expiry_cutoff").get_to(r.expiry_cutoff);
   added_field(j, "phase", r.phase); added_field(j, "lock_balance", r.lock_balance); added_field(j, "payouts", r.payouts);
   added_field(j, "defined_risk", r.defined_risk);
+  if (const auto it = j.find("slippage_ticks"); it != j.end() && !it->is_number_integer())
+    throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded slippage must be an integer");
+  added_field(j, "slippage_ticks", r.slippage_ticks); added_field(j, "margin", r.margin);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules)
 inline void from_json(const Json& j, SessionConfig& c) {

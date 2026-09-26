@@ -41,6 +41,9 @@ export interface AccountRules {
   buy_only: boolean
   /** Every short option needs a long of its type expiring with it or later; absent from older servers. */
   defined_risk?: boolean
+  /** Older servers use zero slippage and strategy margin. */
+  slippage_ticks?: number
+  margin?: "strategy" | "portfolio"
   buying_power: boolean
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null

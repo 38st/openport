@@ -246,6 +246,7 @@ struct ScenarioConfig {
 enum class DrawdownMode { Intraday, EndOfDay };
 /// An evaluation passes on its target; a funded account pays out instead.
 enum class Phase { Evaluation, Funded };
+enum class MarginMode { Strategy, Portfolio };
 
 /// Funded-account withdrawals. A qualifying day ends with at least
 /// `qualifying_profit` of net realised profit; each payout needs
@@ -271,7 +272,9 @@ struct AccountRules {
   /// Every short option must be covered by a long of the same type on the same
   /// underlying that expires with it or later: an order may not add a naked short.
   bool defined_risk = false;
-  bool buying_power = false;  ///< Enforce cash buying power, with naked-short requirements.
+  std::int64_t slippage_ticks = 0;  ///< Adverse ticks per option fill, from 0 to 10.
+  MarginMode margin = MarginMode::Strategy;
+  bool buying_power = false;  ///< Enforce cash buying power under the selected margin mode.
   Timestamp expiry_cutoff = 0;  ///< Auto-close this long before a contract's last trade; zero disables.
   Phase phase = Phase::Evaluation;
   Money lock_balance;         ///< Once the floor reaches it, the floor stops trailing; zero disables.
@@ -295,7 +298,7 @@ struct SessionConfig {
 void validate_limits(const Limits& limits);
 /// Money amounts nonnegative, cutoff within [0, 1 day), plan name at most 64 bytes,
 /// payout percentages 0-100 with positive caps; a funded phase has no profit
-/// target and needs at least one qualifying day.
+/// target and needs at least one qualifying day; slippage is 0-10 ticks.
 void validate_rules(const AccountRules& rules);
 
 }  // namespace openport::trading

@@ -136,8 +136,10 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const today = profile && net != null && validUnits && spot != null && Number.isFinite(spot) ? valueToday(legs, q, net, spot, legTerms) : null
   const fee = Number(trading.fee_per_contract ?? 0)
   const contracts = validUnits ? q * legs.reduce((total, leg) => total + leg.ratio, 0) : 0
+  const rules = account?.rules
   // Mirrors the server: margin on the held positions after the fill, plus the net and fees.
-  const power = strategyPowerUse(legs, q, net, fee, spot, heldPositions(positions ?? []))
+  const power = rules?.margin === "portfolio" || rules?.slippage_ticks ? null
+    : strategyPowerUse(legs, q, net, fee, spot, heldPositions(positions ?? []))
   const effect = power?.effect ?? null
   const available = account ? Number(account.buying_power.available) : null
   const after = effect != null && available != null ? available + effect : null
@@ -145,7 +147,6 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const notice = paperNotice(underlying, status)
   const limitOnly = notice ? null : limitOnlyNotice(underlying, status)
   const untradable = legs.find((l) => l.quote?.tradable !== true)
-  const rules = account?.rules
   const closed = account?.evaluation.enabled && account.evaluation.status !== "active"
   const blocked = writeBlocked(trading, token) || trading.kill_latched || !!untradable || !!notice || !!closed || !!rules?.buy_only
   const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount)
@@ -297,6 +298,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
           {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
         </dl>
+        {(rules?.margin === "portfolio" || !!rules?.slippage_ticks) && <p className="text-xs text-muted">Buying power is checked on submission for this plan.</p>}
+        {!!rules?.slippage_ticks && <p className="text-xs text-muted">Price previews exclude the account's {rules.slippage_ticks} ticks of slippage.</p>}
         {rules?.buying_power && after != null && after < 0 && power?.uses && <p role="status" className="text-xs text-danger">Exceeds available buying power; the server will reject it.</p>}
         {chart && <figure aria-label="Profit and loss at expiry">
           <LineChart height={160} marginLeft={60} series={[{ id: "payoff", label: "P&L at expiry", color: "var(--chart-1)", points: chart, area: true },

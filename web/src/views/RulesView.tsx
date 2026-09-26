@@ -50,16 +50,26 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
       : r.defined_risk
         ? "Defined risk only: each short option needs a long of the same type on the same underlying that expires with it or later, so no position can lose without limit. Open spreads, condors and butterflies as one order from the Trade page's Strategy mode, or buy the long first; an order that would leave a short uncovered, now or once your open orders fill, is refused, and closing a short is always allowed."
         : "Any strategy: buy or sell calls and puts, or place spreads, straddles, condors and butterflies of up to four legs as one order from the Trade page's Strategy mode. All legs fill together at a net debit or credit." },
-    { title: "Buying power", body: r.buying_power
-      ? <>Orders that open contracts must fit within buying power, now {formatMoney(account.buying_power.available)}: cash, less working orders' reservations, less the margin your short options hold.
+    { title: "Buying power", body: <>{r.buying_power
+      ? <>Orders that use buying power must fit within it, now {formatMoney(account.buying_power.available)}: {r.margin === "portfolio"
+          ? "equity (cash and the positions at their marks)" : "cash"}, less working orders' reservations, less the positions' margin requirement. </>
+      : <>Buying power is not enforced; cash may go negative. </>}
+      {r.margin === "portfolio"
+        ? <>Portfolio margin: each underlying holds its largest loss across 11 price shocks, from −8% to +6% for index products and −15% to +15% for stocks and ETFs,
+          or $37.50 per standard option contract, long or short, if that is larger. Options are repriced at unchanged volatility and time to expiry; shares move with the underlying.
+          Long options and shares count as collateral, so you can borrow against them.</>
+        : <>Strategy margin: long premium is paid in full.
         A naked short holds its buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike). Spreads are netted: a vertical holds its width,
-        an iron condor one wing, and a position with a bounded worst case at expiry never more than that loss. Closing orders are always allowed.</>
-      : "Buying power is not enforced; cash may go negative." },
+        an iron condor one wing, and a position with a bounded worst case at expiry never more than that loss.</>} Orders that free buying power are always allowed.</> },
     { title: "Expiring positions", body: minutes > 0
-      ? `From ${minutes} minutes before a contract's last trade, working orders on it are cancelled, the position is closed at the bid or ask, and only closing orders are accepted. Expiring index options such as SPXW and XSP last trade at 4:00 pm ET, SPY, QQQ, IWM, DIA and other ETF options at 4:15 pm, and AM-settled series at the regular close the day before.`
+      ? `From ${minutes} minutes before a contract's last trade, working orders on it are cancelled, the position is closed at the bid or ask with the account's slippage, and only closing orders are accepted. Expiring index options such as SPXW and XSP last trade at 4:00 pm ET, SPY, QQQ, IWM, DIA and other ETF options at 4:15 pm, and AM-settled series at the regular close the day before.`
       : "Positions are held into expiry. Expiring index options trade until 4:00 pm ET and settle in cash; SPY, QQQ, IWM, DIA and other ETF options trade until 4:15 pm and deliver shares when a cent or more in the money at the 4:00 pm close." },
     { title: "Trading hours", body: "Every product trades in its regular session. SPX, XSP, VIX and RUT options also trade overnight, 8:15 pm to 9:25 am ET, and in the 4:15 to 5:00 pm curb session. Those sessions take plain limit orders only, a day order lasts until its session ends, and stops, triggered orders and the account's own closing orders wait for the regular session. A trading day ends at 5:00 pm ET, so an overnight trade counts toward the next day. A delayed or stalled feed refuses new orders rather than filling on stale quotes." },
-    { title: "Fills", body: <>Buys fill at the ask and sells at the bid, up to the displayed size. Limit orders fill at your limit or better; unfilled day orders rest until the session ends. Each contract costs {fee ? formatMoney(fee) : "the configured fee"}.</> },
+    { title: "Fills", body: <>{r.slippage_ticks
+      ? <>Slippage is {r.slippage_ticks} {r.slippage_ticks === 1 ? "tick" : "ticks"}: buys pay more than the ask and sells receive less than the bid, never below zero, using the displayed price's tick size. This applies to every leg, bracket exits and automatic closes. </>
+      : <>Slippage is 0 ticks: buys fill at the ask and sells at the bid. </>}
+      Fills use up to the displayed size. Single-leg fills stop at your limit; multi-leg orders wait if the slipped net exceeds the net limit.
+      Unfilled day orders rest until the session ends. Each contract costs {fee ? formatMoney(fee) : "the configured fee"}.</> },
     { title: "Daily loss limit", body: dailyLoss ? <>Losing more than {formatMoney(dailyLoss)} from the day's starting equity trips the kill switch and cancels working orders.</> : "Set in Positions → Edit limits." },
     { title: "Exercise and assignment", body: "Equity and ETF options a cent or more in the money at expiry are exercised or assigned into 100 shares a contract, and long ones can be exercised early. A short option that trades below its exercise value at the close, such as a deep put or a call before its dividend, is assigned overnight in full. Shares are marked at the underlying's price and can be sold or bought back in the regular session. Dividends are paid only when the server is given a dividend file: on each ex-date, shares held into it receive the dividend and short shares pay it." },
   ]
@@ -94,6 +104,8 @@ function Rules({ trading }: { trading: TradingStatus }) {
             ["Trailing drawdown", (p) => p.rules.max_drawdown ? formatMoney(p.rules.max_drawdown, 0) : "—", true],
             ["Floor moves", (p) => p.rules.max_drawdown ? (p.rules.drawdown_mode === "intraday" ? "Every new high" : "At each close") : "—"],
             ["Strategies", (p) => p.rules.buy_only ? "Buy only" : p.rules.defined_risk ? "Defined risk" : "Any"],
+            ["Margin", (p) => p.rules.margin === "portfolio" ? "Portfolio" : "Strategy"],
+            ["Slippage", (p) => `${p.rules.slippage_ticks ?? 0} ticks`],
             ["Expiry auto-close", (p) => p.rules.expiry_cutoff_seconds ? `${Math.round(p.rules.expiry_cutoff_seconds / 60)} min before` : "—"],
           ]} lock={() => null} enabled={trading.enabled} onStart={setStart} />
         </Panel>
@@ -103,6 +115,8 @@ function Rules({ trading }: { trading: TradingStatus }) {
               ? `${formatMoney(p.rules.max_drawdown, 0)} ${p.rules.drawdown_mode === "intraday" ? "intraday" : "at close"}` : "—"],
             ["Floor locks at", (p) => p.rules.lock_balance ? formatMoney(p.rules.lock_balance, 0) : "—", true],
             ["Strategies", (p) => p.rules.buy_only ? "Buy only" : p.rules.defined_risk ? "Defined risk" : "Any"],
+            ["Margin", (p) => p.rules.margin === "portfolio" ? "Portfolio" : "Strategy"],
+            ["Slippage", (p) => `${p.rules.slippage_ticks ?? 0} ticks`],
             ["Payout after", (p) => p.rules.payouts ? `${p.rules.payouts.qualifying_days} days of ${formatMoney(p.rules.payouts.qualifying_profit, 0)}+` : "—"],
             ["Your share", (p) => p.rules.payouts ? `${p.rules.payouts.split_percent}%` : "—"],
           ]} lock={(p) => lockReason(p, plans.data.plans, data)} enabled={trading.enabled} onStart={setStart} />

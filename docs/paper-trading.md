@@ -179,9 +179,14 @@ of market/IOC or limit/DAY/IOC. Market/DAY, market with a limit, and limit witho
 a positive price reject. Client IDs cannot be reused, even after a rejected order;
 HTTP retry/idempotency semantics belong to the integration layer.
 
-Buy execution uses ask; sell execution uses bid. A limit executes only if the far
-side is no worse than its limit, including equality, and receives the observed far
-side (possible price improvement). Market orders never sweep undisplayed depth.
+Buy execution uses ask; sell execution uses bid. With `slippage_ticks` (0 by default,
+an integer from 0 to 10), buys add that many ticks to the ask and sells subtract them
+from the bid, floored at zero. The tick is `tick_size(root, displayed_price)`, using
+the displayed far side's tier even if slippage crosses $3. A limit executes only if
+the displayed far side is no worse than its limit, including equality: buys fill at
+`min(limit, ask + slippage)` and sells at `max(limit, max(0, bid - slippage))`.
+Bracket exits, liquidation and expiry auto-close use the same slippage. Exercise,
+settlement and share trades keep their existing prices. Market orders never sweep undisplayed depth.
 Unfilled DAY limits rest; unfilled IOC quantity cancels with `IOC_REMAINDER`.
 `filled_quantity` remains separate from terminal state: cancelled orders may have
 fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
@@ -201,7 +206,7 @@ then acceptance sequence (order ID). Buy and sell budgets are separate; buys are
 processed first for deterministic cross-side risk effects. OSIs are processed in
 lexical order after atomic installation of the entire batch. Submissions also
 respect existing better orders when sharing the current budget. There is no queue
-position, trade-through, slippage or hidden-liquidity simulation in v1.
+position, trade-through or hidden-liquidity simulation in v1.
 
 Orders trade in the sessions `md::trading_session(root, time)` gives each product.
 Every product has its **regular** session: 09:30 to 16:15 ET for index roots and the
@@ -310,9 +315,11 @@ gross premium (`max(absolute, relative * sum of ratio * mid)`). Buy-only plans r
 multi-leg orders (`BUY_ONLY`), a leg inside the pre-expiry cutoff rejects the order
 (`EXPIRY_CUTOFF`), and daily loss, exposure and buying power apply to the whole order.
 
-A multi-leg order fills **all legs together**, in ratio, when the net at the far sides
-(asks for bought legs, bids for sold legs) is at or below its limit. Each leg fills at
-its own far side, so the net may improve on the limit, and units are bounded by every
+A multi-leg order fills **all legs together**, in ratio, when the net at the slipped
+far sides (asks plus slippage for bought legs, bids less slippage for sold legs) is
+at or below its limit. Every leg takes its full slippage; an order whose net would
+exceed the limit waits, rather than allocating a partial slip among its legs.
+The net may improve on the limit, and units are bounded by every
 leg's remaining displayed size. Multi-leg orders match after single-leg orders on the
 same books, in acceptance order, and only on quotes newer than their acceptance (except
 at submission). Each leg's fill is recorded under the order's ID; `filled_notional` and
@@ -454,8 +461,9 @@ switch. Price protection is inclusive:
 abs(price - midpoint) <= max(absolute_band, relative_band * midpoint)
 ```
 
-At acceptance, price is the limit or market far side. At fill time it is the actual
-far side, allowing favorable moves without comparing a stale limit to the new mid.
+At acceptance, price is the limit or slipped market far side. At fill time it is the
+actual slipped price, capped by a single-leg limit, allowing favorable moves without
+comparing a stale limit to the new mid.
 Checks rerun against current state before each proposed fill. Fill projection also
 includes spread and fees in daily loss. A failed fill check cancels the remaining
 order with `RISK_CHANGED`, preserving the underlying reason in its message and
@@ -480,7 +488,7 @@ marked equity before 17:00. Rollover first monitors the old daily baseline, then
 stores the new baseline. Repeated same-day rollover rejects. The kill latch survives rollover and recovery.
 There are no deposits/withdrawals, cash interest or reduce-only exceptions. Without
 the `buying_power` rule, negative cash and short positions are permitted subject to
-the stated limits. With it, the naked-option requirement below applies; neither is a
+the stated limits. With it, the selected margin requirement below applies; neither is a
 full brokerage margin model.
 
 ## Account rules and evaluations
@@ -497,6 +505,8 @@ side, no buying-power check. All rule money is exact.
 | `buy_only` | A sell must close contracts already held, counting working sells on the same contract; otherwise `BUY_ONLY` |
 | `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Open orders count as if every sell they offer filled and no buy did (a multi-leg order fills whole; a bracket's two exits sell its position once), so a working sell can never take the long a short needs. Bracket exits and exercise keep shorts covered too. Off in every preset; custom rules take it |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
+| `slippage_ticks` | Integer from 0 to 10 adverse ticks per option fill, including each combo leg and closing orders; default 0 |
+| `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Presets use strategy margin and zero slippage; custom rules can enable either option |
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
 | `lock_balance` | Once peak − drawdown reaches it, the floor stays there and stops trailing (zero disables) |
@@ -520,7 +530,9 @@ only reduce risk. Without executable liquidity nothing is recorded; the monitor 
 on later transactions until the account is flat, so system orders never accumulate.
 
 **Buying power** is cash less the positions' margin requirement less working-order
-reservations. Long premium is paid in full. A naked short option holds its buy-back
+reservations under strategy margin, the default, where long premium is paid in full;
+portfolio margin, below, takes it from equity instead.
+With the default `margin: "strategy"`, a naked short option holds its buy-back
 value (last mark, or its entry credit without one) plus the naked requirement
 `100 * max(20% of spot - OTM amount, 10% of spot for calls or of strike for puts)`,
 with the strike standing in for a missing spot. `margin_requirement` nets spreads. A
@@ -537,16 +549,44 @@ of the money, and a short strangle both naked requirements. A long that expires 
 its short does not cover it. (European puts can trade below intrinsic value before
 expiry; the pairing ignores that.)
 
+With `margin: "portfolio"`, `portfolio_margin_requirement` sums a separate scan for
+each underlying, so gains on one underlying cannot offset losses on another. The
+scan uses 11 evenly spaced points including both ends: −8% to +6% for index products
+(`md::is_index_underlying`, including SPX and XSP), −15% to +15% for stocks and ETFs.
+Each option is repriced with Black-76, scaling its valuation's forward with the price
+and keeping its implied volatility, time to expiry and discount unchanged. American
+options use the same approximation. P&L is the shocked model price less the unshocked
+model price, times the signed quantity and multiplier; shares move linearly with
+their underlying. Each underlying holds its largest loss, or $0.375 times the
+multiplier for every option contract held, long or short ($37.50 per standard
+contract), if that is larger, so even a far out-of-the-money long holds the minimum.
+
+Buying power under portfolio margin is taken from equity, as in a portfolio-margin
+account: cash plus the positions at their marks (shares at their price), less the
+requirement and the reservations. Long options and shares therefore count as
+collateral and the account can borrow against them, so cash may go negative, while a
+short's value is owed out of the credit it brought in. The price scan and the minimum
+follow Cboe Rule 12.4 and FINRA Rule 4210(g); implied volatility is not shocked, and
+there is no broker's house margin on top. The scan reuses the risk snapshot's scenario
+repricing but its grid is fixed, independent of `SessionConfig::scenarios`. If fresh valuations or share prices are missing, the
+snapshot flags incomplete data and uses strategy margin plus the option minimum
+until a complete scan is possible; normal order checks still require fresh data.
+The historical `short_requirement` field carries the whole requirement in portfolio
+mode, longs and shares included. Strategy mode keeps its existing
+share rule: long shares are paid for and short shares hold 150% of their value.
+
 Each working order reserves what filling it now would cost: its fees, plus the change
 in the positions' margin requirement, plus the premium it pays less the premium it
 receives, and never less than its fees (new shorts are valued at the order's price, or
-at their marks for a multi-leg order). So an opening buy reserves its premium, a naked
+at their marks for a multi-leg order). In strategy mode, an opening buy reserves its premium, a naked
 sell its naked requirement (its credit covers the buy-back value), a sell against a held
 long (legging into a spread) the width less its credit, a multi-leg credit spread its
 width less its credit, and a closing order only its fees. Single-leg orders see the
 positions less the contracts that earlier orders, in acceptance order, already claim to
 close, so two sells cannot both claim the same long; otherwise each order is measured
-against the held positions alone.
+against the held positions alone. Portfolio mode uses the same reservation and
+projected-fill checks with the scan in place of strategy margin. Market orders use
+slipped prices; limit orders reserve at their limits. Fees are unchanged.
 
 An order or a fill that would reduce free buying power (cash less the positions'
 requirement) must leave available buying power nonnegative, otherwise `BUYING_POWER`
@@ -945,8 +985,10 @@ still receive the server's `INVALID_TICK` reason. On wide screens the ticket doc
 beside the chain; elsewhere it is a dialog. It names the strategy from the held
 position (Long Call, Close Short Put...), sets the limit from Bid/Mid/Ask, says whether
 the order is marketable at the far side or will rest, and estimates the buying-power
-effect with the server's reservation rules. Buy-only plans and decided attempts block
-submission with the reason.
+effect with the server's strategy reservation rules. With portfolio margin or
+slippage, both order tickets leave the buying-power estimate blank and explain
+that it is checked on submission. Price previews are labelled as excluding slippage
+when enabled. Buy-only plans and decided attempts block submission with the reason.
 
 After HTTP 400/403/404/409/422, the ticket shows the rejection details and **New order**,
 which preserves form values and starts a fresh client ID. **Retry same order** keeps
@@ -985,8 +1027,10 @@ in its query for an account other than the main one (see [accounts](#accounts)).
 demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
-defined_risk, buying_power, expiry_cutoff_seconds}` (`defined_risk` optional when
-creating an account, default false) with null money for a disabled target or
+defined_risk, slippage_ticks, margin, buying_power, expiry_cutoff_seconds}`.
+`defined_risk`, `slippage_ticks` and `margin` are optional when creating or resetting
+an account, defaulting to false, 0 and `"strategy"`. Older journals missing these
+fields recover with the same defaults. Money is null for a disabled target or
 drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `buying_power: {available, reserved, short_requirement}`; orders add `origin`
 (`user` or `system`), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`

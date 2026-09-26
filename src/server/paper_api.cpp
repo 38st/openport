@@ -37,6 +37,7 @@ json rules_json(const AccountRules& r) {
           {"drawdown_mode", r.drawdown_mode == DrawdownMode::Intraday ? "intraday" : "end_of_day"},
           {"lock_balance", positive(r.lock_balance)},
           {"buy_only", r.buy_only}, {"defined_risk", r.defined_risk}, {"buying_power", r.buying_power},
+          {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin == MarginMode::Portfolio ? "portfolio" : "strategy"},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
 }
@@ -622,7 +623,7 @@ PayoutRules parse_payout_rules(const json& j) {
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
-         {"plan", "phase", "lock_balance", "payouts", "defined_risk"});
+         {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin"});
   AccountRules rules;
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
@@ -643,6 +644,12 @@ AccountRules parse_rules(const json& j) {
   rules.drawdown_mode = mode == "intraday" ? DrawdownMode::Intraday : DrawdownMode::EndOfDay;
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
+  if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");
+  if (j.contains("margin")) {
+    const auto margin = string_field(j, "margin");
+    if (margin != "strategy" && margin != "portfolio") throw std::invalid_argument("margin must be strategy or portfolio");
+    rules.margin = margin == "portfolio" ? MarginMode::Portfolio : MarginMode::Strategy;
+  }
   rules.buying_power = boolean_field(j, "buying_power");
   const auto cutoff = integer_field(j, "expiry_cutoff_seconds");
   if (cutoff < 0 || cutoff >= 86'400) throw std::invalid_argument("expiry_cutoff_seconds must be in [0, 86400)");
