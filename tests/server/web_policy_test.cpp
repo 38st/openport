@@ -91,6 +91,22 @@ TEST(WebPolicy, WebSocketOriginsMustMatchHost) {
   }
 }
 
+TEST(WebPolicy, HostsMustBeAddressesLocalhostOrNamesAllowedOnPurpose) {
+  for (const std::string host : {"127.0.0.1", "127.0.0.1:8080", "10.0.0.7:8080", "[::1]:8080", "[fe80::1]",
+                                 "localhost", "LOCALHOST:8080", "app.localhost:5173"}) {
+    EXPECT_TRUE(server::host_allowed(host)) << host;
+  }
+  // DNS rebinding arrives under the attacker's name, and malformed values fail closed.
+  for (const std::string host : {"evil.test", "evil.test:8080", "localhost.evil.test", "127.0.0.1.evil.test",
+                                 "", "localhost:8080@evil.test", "localhost:99999", "[::1", "local host"}) {
+    EXPECT_FALSE(server::host_allowed(host)) << host;
+  }
+  EXPECT_TRUE(server::host_allowed("Terminal.Example", {"https://terminal.example"}));
+  EXPECT_TRUE(server::host_allowed("internal:8080", {}, {"internal"}));
+  EXPECT_TRUE(server::host_allowed("internal", {}, {"INTERNAL:9000"}));
+  EXPECT_FALSE(server::host_allowed("terminal.example.evil", {"https://terminal.example"}, {"internal"}));
+}
+
 TEST(WebPolicy, SessionSlotsAreBoundedAndReleasedAfterFailedOrClosedSessions) {
   server::WebSocketSlots slots;
   std::vector<std::unique_ptr<server::WebSocketSlots::Lease>> sessions;
@@ -129,6 +145,43 @@ TEST(WebServer, RejectsForeignOriginsAndOmitsCorsHeaders) {
   beast::error_code ec;
   websocket::response_type upgrade;
   ws.handshake(upgrade, host, "/ws", ec);
+  EXPECT_TRUE(ec);
+  EXPECT_EQ(upgrade.result(), http::status::forbidden);
+  web.stop();
+}
+
+TEST(WebServer, RefusesRequestsAddressedByARebindingName) {
+  server::WebServer web("127.0.0.1", 0, {},
+                        [](const auto&) { return server::ApiResponse{200, "{}"}; });
+  web.start();
+  asio::io_context io;
+  const tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), web.port());
+  const auto port = std::to_string(web.port());
+  const auto get = [&](const std::string& host, const std::string& target) {
+    tcp::socket socket(io);
+    socket.connect(endpoint);
+    http::request<http::empty_body> request{http::verb::get, target, 11};
+    request.set(http::field::host, host);
+    http::write(socket, request);
+    beast::flat_buffer buffer;
+    http::response<http::string_body> response;
+    http::read(socket, buffer, response);
+    return response;
+  };
+  EXPECT_EQ(get("127.0.0.1:" + port, "/api/status").result(), http::status::ok);
+  EXPECT_EQ(get("localhost:" + port, "/api/status").result(), http::status::ok);
+  const auto api = get("evil.test:" + port, "/api/status");
+  EXPECT_EQ(api.result(), http::status::forbidden);
+  EXPECT_NE(api.body().find("HOST_REJECTED"), std::string::npos) << api.body();
+  EXPECT_EQ(get("evil.test:" + port, "/").result(), http::status::forbidden);
+  // A rebinding page is same-origin with its own name, so its Origin matches Host.
+  websocket::stream<tcp::socket> ws(io);
+  ws.next_layer().connect(endpoint);
+  ws.set_option(websocket::stream_base::decorator(
+      [&](websocket::request_type& req) { req.set(http::field::origin, "http://evil.test:" + port); }));
+  beast::error_code ec;
+  websocket::response_type upgrade;
+  ws.handshake(upgrade, "evil.test:" + port, "/ws", ec);
   EXPECT_TRUE(ec);
   EXPECT_EQ(upgrade.result(), http::status::forbidden);
   web.stop();
@@ -246,7 +299,7 @@ TEST(WebServer, StopClosesHttpAndWebSocketSessionsAndReleasesThePort) {
 
 TEST(WebServer, RejectsSecondStartWhileRunningAndAcceptsConfiguredProxyOrigin) {
   server::WebServer web("127.0.0.1", 0, {}, [](const auto&) { return server::ApiResponse{}; },
-                        {"https://terminal.example"});
+                        {"https://terminal.example"}, {}, {"internal"});
   web.start();
   EXPECT_THROW(web.start(), std::logic_error);
   asio::io_context io;

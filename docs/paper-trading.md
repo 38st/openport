@@ -1090,6 +1090,12 @@ client ID; GET orders shows their resulting rejection reason.
 
 ### Write protection
 
+Every request, read or write, HTTP or WebSocket, must name the server in Host by an IP
+address, `localhost` or a name under `.localhost`, the host of an `--allowed-origin`, or
+a name given with `--allowed-host`; others get 403 `HOST_REJECTED`. DNS rebinding points
+a name its attacker controls at the server, which makes that name's pages same-origin
+with it, and that name is what their requests carry in Host.
+
 Every POST/PUT/DELETE under `/api/` uses the same protection. POST and PUT require
 `Content-Type: application/json` (an optional media-type parameter is accepted);
 DELETE has no body. The body limit remains 64 KiB. A present Origin must match Host

@@ -45,6 +45,15 @@ struct StaticFile {
 /// Canonical scheme and authority, without paths, credentials, or wildcards.
 [[nodiscard]] std::optional<std::string> normalize_origin(std::string_view origin);
 
+/// DNS rebinding points a name an attacker controls at this server, making a page
+/// served under that name same-origin with it. The name arrives in Host, so a request
+/// must address the server by an IP address, localhost (or a name under .localhost),
+/// the host of an allowed origin, or an allowed host name such as a reverse proxy's
+/// upstream. Names compare case-insensitively; ports are ignored.
+[[nodiscard]] bool host_allowed(std::string_view host,
+                                const std::vector<std::string>& allowed_origins = {},
+                                const std::vector<std::string>& allowed_hosts = {});
+
 /// Ticks are complete snapshots: preserve the active write buffer and only the
 /// latest pending snapshot. All methods run on the session executor.
 class TickQueue {

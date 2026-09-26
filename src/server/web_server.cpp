@@ -9,6 +9,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
+#include <algorithm>
 #include <charconv>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -126,6 +127,35 @@ std::optional<std::string> normalize_origin(std::string_view origin) {
   const auto source = normalize(authority);
   if (!source) return std::nullopt;
   return std::string(protocol) + "://" + *source;
+}
+
+namespace {
+/// A Host value's name, lowercased, without its port; empty when malformed.
+std::string host_name(std::string_view host) {
+  const auto authority = normalize_origin("http://" + std::string(host));
+  if (!authority) return {};
+  const std::string_view hostport = std::string_view(*authority).substr(7);
+  return std::string(hostport.substr(0, hostport.rfind(':')));
+}
+}  // namespace
+
+bool host_allowed(std::string_view host, const std::vector<std::string>& allowed_origins,
+                  const std::vector<std::string>& allowed_hosts) {
+  const auto name = host_name(host);
+  if (name.empty()) return false;
+  // Rebinding needs a name: IP literals and localhost cannot be pointed elsewhere.
+  if (name.front() == '[') return true;  // an IPv6 literal normalize_origin validated
+  boost::system::error_code ec;
+  boost::asio::ip::make_address_v4(name, ec);
+  if (!ec || name == "localhost" || name.ends_with(".localhost")) return true;
+  for (const auto& origin : allowed_origins) {
+    const auto normalized = normalize_origin(origin);
+    if (!normalized) continue;
+    const auto authority = std::string_view(*normalized).substr(normalized->find("://") + 3);
+    if (host_name(authority) == name) return true;
+  }
+  return std::any_of(allowed_hosts.begin(), allowed_hosts.end(),
+                     [&](const std::string& allowed) { return host_name(allowed) == name; });
 }
 
 bool websocket_origin_allowed(std::optional<std::string_view> origin, std::string_view host,
@@ -381,6 +411,7 @@ struct Shared {
   WebSocketSlots slots;
   Sessions sessions;
   std::vector<std::string> allowed_origins;
+  std::vector<std::string> allowed_hosts;
 };
 
 class HttpSession : public Session, public std::enable_shared_from_this<HttpSession> {
@@ -427,6 +458,19 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     }
     if (ec) return;
     http::request<http::string_body> request = parser_->release();
+
+    // Before anything is served: a DNS-rebinding page addresses the server by a name
+    // its attacker controls. Clients without Host (HTTP/1.0) are not browsers.
+    if (request.count(http::field::host) > 1 ||
+        (request.count(http::field::host) == 1 &&
+         !host_allowed(request[http::field::host], shared_.allowed_origins, shared_.allowed_hosts))) {
+      const std::string reason =
+          "Host not allowed: address this server by IP address or localhost, or start it with "
+          "--allowed-host for this name";
+      if (request.target().starts_with("/api/"))
+        return send_api(api_error(403, "HOST_REJECTED", reason), request.version(), false);
+      return reject_upgrade(request, http::status::forbidden, reason);
+    }
 
     if (websocket::is_upgrade(request)) {
       if (request.target() == "/ws") {
@@ -645,13 +689,18 @@ struct WebServer::Impl {
 };
 
 WebServer::WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
-                     AsyncApiHandler api, std::vector<std::string> allowed_origins, std::string write_token)
+                     AsyncApiHandler api, std::vector<std::string> allowed_origins, std::string write_token,
+                     std::vector<std::string> allowed_hosts)
     : impl_(std::make_unique<Impl>()) {
   impl_->shared.web_root = std::move(web_root);
   impl_->shared.api = std::move(api);
   for (const auto& origin : allowed_origins) {
     if (!normalize_origin(origin)) throw std::invalid_argument("invalid allowed origin: " + origin);
   }
+  for (const auto& host : allowed_hosts) {
+    if (host_name(host).empty()) throw std::invalid_argument("invalid allowed host: " + host);
+  }
+  impl_->shared.allowed_hosts = std::move(allowed_hosts);
   impl_->shared.write_policy = {address, std::move(write_token), allowed_origins};
   impl_->shared.allowed_origins = std::move(allowed_origins);
   impl_->address = std::move(address);

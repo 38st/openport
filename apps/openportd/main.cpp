@@ -69,6 +69,7 @@ struct Settings {
   int threads = 2;
   double rate = 0.04;
   std::vector<std::string> allowed_origins;
+  std::vector<std::string> allowed_hosts;
 };
 
 int usage(const char* error = nullptr) {
@@ -78,6 +79,7 @@ int usage(const char* error = nullptr) {
       "usage: openportd [--provider NAME] [--symbols SPX,SPY,QQQ,IWM,DIA] [--address ADDR] [--port N]\n"
       "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
+      "                 [--allowed-host NAME]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--no-cboe-holidays]\n"
@@ -97,6 +99,8 @@ int usage(const char* error = nullptr) {
       "           hours, with MASSIVE_API_KEY (any stocks plan), whatever the provider\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
+      "allowed hosts: names the server answers to besides IP addresses, localhost and the\n"
+      "               allowed origins' hosts, such as a reverse proxy's upstream name\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
       "record: create a new compressed event file (existing files are never overwritten);\n"
       "        --record-dir names one per run by provider and start time there, and the\n"
@@ -205,6 +209,9 @@ int run(int argc, char** argv) {
           static_cast<unsigned short>(providers::parse_integer(value, "--port", 1, 65535));
     } else if (arg == "--allowed-origin") {
       settings.allowed_origins.push_back(value);
+    } else if (arg == "--allowed-host") {
+      if (!server::host_allowed(value, {}, {value})) return usage("--allowed-host takes a host name");
+      settings.allowed_hosts.push_back(value);
     } else if (arg == "--paper-journal") {
       if (value.empty()) return usage("--paper-journal requires a nonempty path");
       settings.paper_journal = value;
@@ -376,7 +383,7 @@ int run(int argc, char** argv) {
       [&engine, &replays](const server::ApiRequest& request, server::ApiCompletion complete) {
         if (replays.handle(request, complete)) return;
         server::handle_api_async(request, engine, std::move(complete));
-      }, settings.allowed_origins, settings.write_token);
+      }, settings.allowed_origins, settings.write_token, settings.allowed_hosts);
   web.start(settings.threads);
 
   std::string symbols;

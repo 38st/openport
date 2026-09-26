@@ -23,15 +23,19 @@ using ApiHandler = std::function<ApiResponse(const ApiRequest&)>;
 ///   fall back to index.html so the single-page app can route them.
 class WebServer {
  public:
+  /// `allowed_hosts` names the server may be addressed by besides IP addresses,
+  /// localhost and the allowed origins' hosts (see host_allowed).
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
-            AsyncApiHandler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {});
+            AsyncApiHandler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {},
+            std::vector<std::string> allowed_hosts = {});
   template <class Handler> requires std::is_invocable_r_v<ApiResponse, Handler, const ApiRequest&>
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
-            Handler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {})
+            Handler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {},
+            std::vector<std::string> allowed_hosts = {})
       : WebServer(std::move(address), port, std::move(web_root),
                   AsyncApiHandler([api = std::move(api)](const ApiRequest& request, ApiCompletion complete) {
                     complete(api(request));
-                  }), std::move(allowed_origins), std::move(write_token)) {}
+                  }), std::move(allowed_origins), std::move(write_token), std::move(allowed_hosts)) {}
 
   ~WebServer();
   WebServer(const WebServer&) = delete;

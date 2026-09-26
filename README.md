@@ -229,7 +229,7 @@ itself, so the numbers mean the same thing whichever provider you use.
 | `--provider NAME`, `--poll-seconds N`, `--option KEY=VALUE` | The market-data provider and its settings, such as `quotes=cmbp-1` for Databento |
 | `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
 | `--rate R` | The rate assumed when no index curve is available |
-| `--address`, `--port`, `--web-root`, `--allowed-origin`, `--write-token` | The web server and who may write (see [Security](#security)) |
+| `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token` | The web server and who may write (see [Security](#security)) |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
@@ -362,8 +362,10 @@ set `OPENPORT_WRITE_TOKEN` or `--write-token TOKEN` and send it as a Bearer toke
 HTTPS, behind a reverse proxy that authenticates if anyone else can reach it. Static
 files are confined to the web root, and WebSocket upgrades must come from the same
 origin; behind a proxy that rewrites the Host header, list your public origin with
-`--allowed-origin`. Check your data provider's terms before sharing an instance with
-anyone else.
+`--allowed-origin`. Every request must address the server by an IP address, `localhost`,
+the host of an allowed origin, or a name given with `--allowed-host` (such as a proxy's
+upstream name), so a web page cannot reach it through DNS rebinding. Check your data
+provider's terms before sharing an instance with anyone else.
 
 ## Development
 
