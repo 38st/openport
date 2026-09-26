@@ -179,6 +179,24 @@ TEST(TradingMatching, AQuoteConfirmedLaterStaysFreshWithoutRefillingItsSize) {
   s.on_quotes({confirmed}, {valuation}, later);
   EXPECT_EQ(s.quote(f.symbol())->time, later);
 }
+TEST(TradingMatching, AQuoteWithoutABidMarksAPositionButDoesNotTrade) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s, "0.05", "0.10", 10);
+  ASSERT_TRUE(s.submit(f.market("buy"), f.time).decision.ok());
+  // A far option nobody bids for: marked halfway to its ask, and still current.
+  f.next();
+  const QuoteObservation nobid{f.symbol(), f.observation, f.time, std::nullopt, m("0.05"), 0, 10};
+  s.on_quotes({nobid}, {f.valuation()}, f.time);
+  const auto snap = s.snapshot();
+  ASSERT_EQ(snap->positions.size(), 1U);
+  EXPECT_TRUE(snap->positions[0].fresh);
+  EXPECT_EQ(snap->positions[0].mark, m("0.025"));
+  EXPECT_TRUE(snap->valuation_complete);
+  // There is no bid to sell into, and a one-sided book offers no liquidity.
+  EXPECT_EQ(s.submit(f.market("sell", 1, Side::Sell), f.time).decision.code, Reason::INVALID_QUOTE);
+  EXPECT_EQ(s.submit(f.market("more"), f.time).decision.code, Reason::INVALID_QUOTE);
+}
 TEST(TradingMatching, StaleMarksHoldARestingOrderUntilItsQuoteIsOfferedAgain) {
   ScriptedMarket held;
   ScriptedMarket f;

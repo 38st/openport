@@ -395,8 +395,10 @@ equity = initial cash + realised P&L + unrealised P&L - fees
 ```
 
 Fresh valid two-sided books establish a midpoint mark, rounded to the nearest
-micro-dollar (a half micro-dollar rounds up). An invalid or stale observation never
-replaces the last valid mark with zero. Snapshots retain mark time/age, the last-mark
+micro-dollar (a half micro-dollar rounds up). A quote with an ask and no bid, as a far
+option nobody bids for shows (0.00 / 0.05), marks its position halfway to the ask and
+keeps it current, though only a two-sided quote trades. An invalid or stale observation
+never replaces the last valid mark with zero. Snapshots retain mark time/age, the last-mark
 equity estimate and `valuation_complete = false`. Execution fails closed if any
 held position lacks a fresh mark. Freshness (`max_quote_age`, and `max_valuation_age`
 for Greeks) is measured at the market time while the contract's market is open, and at
@@ -439,8 +441,10 @@ calendar day, as in the valuations.
 Valuations come from the caller's coherent strike-smile frame: spot delta/gamma,
 vega per vol point, theta per calendar day, spot S, forward F, discount D, years T
 and **the smile IV actually used for the Greeks**. All must be finite; S/F/D/IV must
-be positive and T nonnegative. Quote and valuation max age default to 60 market-time
-seconds, configured independently. Missing or stale portfolio/pending-order values
+be positive and T nonnegative. When a held option's strike has no smile IV, as a far
+wing without a bid can leave it, the engine values it at the option's own ask IV (or bid
+IV) on the expiry's forward instead. Quote and valuation max age default to 60
+market-time seconds, configured independently. Missing or stale portfolio/pending-order values
 block new trading. Expired positions do not pretend to have live Greeks.
 
 Per-underlying and aggregate exposure:

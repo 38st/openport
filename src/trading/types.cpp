@@ -68,6 +68,10 @@ bool valid_quote(const QuoteObservation& q) {
   return q.observation > 0 && q.bid && q.ask && *q.bid > Money{} && *q.ask >= *q.bid &&
          q.bid_size > 0 && q.ask_size > 0;
 }
+bool markable_quote(const QuoteObservation& q) {
+  return valid_quote(q) ||
+         (q.observation > 0 && !q.bid && q.bid_size == 0 && q.ask && *q.ask > Money{} && q.ask_size > 0);
+}
 bool valid_valuation(const Valuation& v) {
   return v.valid && std::isfinite(v.delta) && std::isfinite(v.gamma) &&
          std::isfinite(v.vega) && std::isfinite(v.theta) && std::isfinite(v.spot) &&

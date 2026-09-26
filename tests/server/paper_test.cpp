@@ -946,6 +946,43 @@ TEST(PaperFreshness, AHeldQuoteThatDoesNotChangeStaysCurrentWithoutRefillingItsS
   EXPECT_EQ(json::parse(again.body)["order"]["status"], "working");
 }
 
+TEST(PaperFreshness, AHeldWingNobodyBidsForStillLetsTheAccountTrade) {
+  // Far wings often lose their bid (0.00 / 0.05) as the market moves away, and then
+  // their strike has no smile IV. Held, such a wing is marked halfway to its ask and
+  // valued at its ask's IV, so the account can still trade; the wing itself cannot be
+  // sold into a bid that is not there.
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, paper_options()); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  test::ScriptedMarket atm;
+  test::ScriptedMarket wing;
+  wing.contract = *md::parse_osi("SPXW261022C05600000");
+  provider.sink->publish(md::ContractDefinition{0, atm.contract});
+  provider.sink->publish(md::ContractDefinition{1, wing.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", atm.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, atm.time, 4, 4.2, 10, 10});
+  provider.sink->publish(md::OptionQuote{1, atm.time, 0.05, 0.10, 10, 10});
+  provider.sink->publish(md::SnapshotComplete{"SPX", atm.time});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == atm.time; }));
+  const auto bought = write(engine, "POST", "/api/orders", order(wing, "wing", "0.10"));
+  ASSERT_EQ(bought.status, 201) << bought.body;
+  ASSERT_EQ(json::parse(bought.body)["order"]["status"], "filled");
+  const auto later = atm.time + 30 * md::kNanosPerSecond;
+  provider.sink->publish(md::UnderlyingQuote{"SPX", later, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{1, later, 0, 0.05, 0, 10});
+  provider.sink->publish(md::SnapshotComplete{"SPX", later});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == later; }));
+  const auto portfolio = read(engine, "/api/portfolio");
+  EXPECT_EQ(portfolio["valuation_complete"], true) << portfolio.dump();
+  EXPECT_EQ(portfolio["positions"][0]["fresh"], true);
+  const auto opened = write(engine, "POST", "/api/orders", order(atm, "atm", "4.20"));
+  ASSERT_EQ(opened.status, 201) << opened.body;
+  EXPECT_EQ(json::parse(opened.body)["order"]["status"], "filled");
+  const auto sold = write(engine, "POST", "/api/orders", sell(wing, "no-bid", "0.05"));
+  ASSERT_EQ(sold.status, 422) << sold.body;
+  EXPECT_EQ(json::parse(sold.body)["error"]["code"], "INVALID_QUOTE");
+}
+
 TEST(PaperFreshness, AfterAGapQuotesWaitForTheNextCompleteSnapshot) {
   // Overnight, the day's first index print can come a batch before its option
   // quotes. Until a snapshot of the new day completes, yesterday's quotes are not

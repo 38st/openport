@@ -295,6 +295,9 @@ struct SessionConfig {
 /// v1 policy, not an exchange routing rule; includes the >= $3 upper tier.
 [[nodiscard]] Money tick_size(std::string_view root, Money price);
 [[nodiscard]] bool valid_quote(const QuoteObservation& quote);
+/// A quote a position can be marked at: a valid one, or an ask with no bid (a far
+/// option nobody bids for), marked halfway to the ask. Only valid quotes trade.
+[[nodiscard]] bool markable_quote(const QuoteObservation& quote);
 [[nodiscard]] bool valid_valuation(const Valuation& valuation);
 void validate_limits(const Limits& limits);
 /// Money amounts nonnegative, cutoff within [0, 1 day), plan name at most 64 bytes,

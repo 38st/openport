@@ -45,6 +45,8 @@ Money mid(const QuoteObservation& q) {
   // Both sides are positive. Difference-first avoids overflowing their sum.
   return *q.bid + (*q.ask - *q.bid).prorate(1, 2);
 }
+/// A markable quote's mark: its mid, or halfway to the ask when nobody bids.
+Money mark_of(const QuoteObservation& q) { return q.bid ? mid(q) : q.ask->prorate(1, 2); }
 Decision quote_check(const State& s, const std::string& symbol) {
   const auto it = s.books.find(symbol);
   if (it == s.books.end() || !valid_quote(it->second.quote))
@@ -53,6 +55,14 @@ Decision quote_check(const State& s, const std::string& symbol) {
   if (time > s.time || observation_time(s.contracts.at(symbol), s.time) - time > s.config.limits.max_quote_age)
     return failure(Reason::STALE_QUOTE, "Quote is outside the configured market-time freshness window");
   return {};
+}
+/// Whether a position's quote marks it now: markable, and inside the freshness window.
+/// A far option nobody bids for is marked; only a valid quote trades.
+bool marked_now(const State& s, const std::string& symbol) {
+  const auto it = s.books.find(symbol);
+  if (it == s.books.end() || !markable_quote(it->second.quote)) return false;
+  const auto time = it->second.quote.time;
+  return time <= s.time && observation_time(s.contracts.at(symbol), s.time) - time <= s.config.limits.max_quote_age;
 }
 Decision price_check(const State& s, const QuoteObservation& q, Money price) {
   const auto middle = mid(q);
@@ -428,7 +438,7 @@ TradingSnapshot snapshot_of(const State& s) {
       p.mark_age = s.time - p.mark_time;
       p.market_value = (*p.mark * 100) * position.quantity;
       p.unrealised = *p.market_value - position.basis;
-      p.fresh = !p.awaiting_settlement && quote_check(s, symbol).ok();
+      p.fresh = !p.awaiting_settlement && marked_now(s, symbol);
       out.equity = out.equity + *p.market_value;
       out.unrealised = out.unrealised + *p.unrealised;
     }
@@ -1584,7 +1594,7 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
         // fresh, and it keeps what is left of its displayed size.
         if (quote.time > book.quote.time) {
           book.quote.time = quote.time;
-          if (valid_quote(book.quote)) s.marks[quote.symbol] = {mid(book.quote), quote.time};
+          if (markable_quote(book.quote)) s.marks[quote.symbol] = {mark_of(book.quote), quote.time};
         }
         offered_again.insert(quote.symbol);
         continue;
@@ -1592,8 +1602,8 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
       if (quote.observation <= book.quote.observation || quote.time < book.quote.time) continue;
       book = {quote, valid_quote(quote) ? quote.bid_size : 0, valid_quote(quote) ? quote.ask_size : 0};
       changed.insert(quote.symbol);
-      if (valid_quote(quote) && time - quote.time <= s.config.limits.max_quote_age)
-        s.marks[quote.symbol] = {mid(quote), quote.time};
+      if (markable_quote(quote) && time - quote.time <= s.config.limits.max_quote_age)
+        s.marks[quote.symbol] = {mark_of(quote), quote.time};
     }
     seen.clear();
     for (auto valuation : valuations) {

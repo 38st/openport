@@ -1,5 +1,7 @@
 #include "openport/server/engine.hpp"
 
+#include "openport/pricing/black.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -79,6 +81,18 @@ Valuation valuation_for(const std::string& symbol, const md::OptionContract& con
                 metrics->spot, slice.forward.forward, slice.forward.discount, slice.years,
                 strike.iv, true};
       result.valid = valid_valuation(result);
+      // A far wing without a bid can leave its strike with no smile IV. Its own ask's
+      // (or bid's) IV, at the expiry's forward, still measures holding it.
+      const double vol = std::isfinite(option.ask_iv) ? option.ask_iv : option.bid_iv;
+      const double spot = metrics->spot, forward = slice.forward.forward;
+      if (!result.valid && vol > 0 && std::isfinite(vol) && spot > 0 && forward > 0 && slice.years > 0) {
+        const double carry = forward / spot;
+        const auto g = pricing::black_greeks(contract.type, forward, contract.strike, slice.years, vol,
+                                             slice.forward.discount);
+        result = {symbol, metrics->as_of, g.delta * carry, g.gamma * carry * carry, g.vega / 100.0,
+                  g.theta / 365.0, spot, forward, slice.forward.discount, slice.years, vol, true};
+        result.valid = valid_valuation(result);
+      }
       return result;
     }
   }
