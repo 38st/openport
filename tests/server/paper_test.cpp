@@ -947,10 +947,10 @@ TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
   std::filesystem::remove_all(path.parent_path());
 }
 
-TEST(PaperRecovery, AnalyticsBeforeAnyPriceCannotDisableTradingAfterARestart) {
+TEST(PaperRecovery, AnUnderlyingWithoutAPriceIsNotAnalysedAndCannotDisableTrading) {
   // After a restart an underlying's definitions can arrive a batch before any of its
-  // prices. Its analytics then carry the wall clock, ahead of the feed's market time,
-  // which the account must not take as a future-dated valuation.
+  // prices. With no market time to value it at, it waits for one: analytics stamped
+  // with the wall clock would be ahead of the feed, and fail the account's valuations.
   const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
@@ -969,12 +969,15 @@ TEST(PaperRecovery, AnalyticsBeforeAnyPriceCannotDisableTradingAfterARestart) {
   server::Engine engine(provider, {{"SPX"}}, options); engine.start();
   ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
   provider.sink->publish(md::ContractDefinition{0, market.contract});
-  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") != nullptr; }));
-  EXPECT_GT(engine.metrics("SPX")->as_of, market.time);
-  // A command runs after the batch, so its answer shows how the batch went.
+  // A command runs after the events published before it, so its answer shows how they went.
   const auto again = write(engine, "POST", "/api/orders", order(market, "again", "4.20"));
   EXPECT_EQ(again.status, 201) << again.body;
   EXPECT_EQ(read(engine, "/api/status")["trading"]["reason"], nullptr);
+  EXPECT_EQ(engine.metrics("SPX"), nullptr);
+  market.next();
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 10, 10});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
   engine.stop();
   std::filesystem::remove_all(path.parent_path());
 }

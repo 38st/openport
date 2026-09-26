@@ -309,9 +309,11 @@ void Engine::refresh_analytics() {
     return std::any_of(book.expiries.begin(), book.expiries.end(),
                        [style](const auto& entry) { return entry.first.second == style; });
   };
+  // An underlying is analysed from its first price on, at its market-data clock, which
+  // delayed and replayed feeds keep: before any price there is no market time to value
+  // it at, and the wall clock would run ahead of such a feed.
   auto analyze = [&](const std::string& symbol, const analytics::UnderlyingBook& book) {
-    // Delayed feeds retain their own market-data clock.
-    const md::Timestamp as_of = book.data_time > 0 ? book.data_time : md::now();
+    const md::Timestamp as_of = book.data_time;
     auto options = options_.analytics;
     options.dividends.clear();
     for (const auto& d : dividends)
@@ -334,7 +336,7 @@ void Engine::refresh_analytics() {
   // Build all European curves first, irrespective of symbol/map ordering. Mixed
   // OEX/XEO books also enter this phase; only their European slices form a curve.
   for (const auto& [symbol, book] : book_.underlyings()) {
-    if (!has_style(book, pricing::ExerciseStyle::European) ||
+    if (book.data_time <= 0 || !has_style(book, pricing::ExerciseStyle::European) ||
         book.version == analysed_versions_[symbol])
       continue;
     auto curve = analytics::make_discount_curve(*analyze(symbol, book));
@@ -354,7 +356,8 @@ void Engine::refresh_analytics() {
   const bool curve_changed = previous_curve != discount_curve_;
   // Curve or cash-schedule updates invalidate American results even without quotes.
   for (const auto& [symbol, book] : book_.underlyings()) {
-    if (book.expiries.empty() || !has_style(book, pricing::ExerciseStyle::American)) continue;
+    if (book.data_time <= 0 || book.expiries.empty() || !has_style(book, pricing::ExerciseStyle::American))
+      continue;
     const bool mixed_updated = std::find(european_updates.begin(), european_updates.end(),
                                          symbol) != european_updates.end();
     if (book.version != analysed_versions_[symbol] || curve_changed || mixed_updated || dividends_changed)

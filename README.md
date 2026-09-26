@@ -236,7 +236,8 @@ Every value is range-checked; `openportd --help` lists every flag, and the
   early-close days, from a holiday and early-close calendar. Each product knows its
   sessions, including Cboe's overnight session for SPX, XSP, VIX and RUT options, so a
   delayed snapshot taken after the close keeps the closing time while one taken
-  overnight uses the overnight quotes' time.
+  overnight uses the overnight quotes' time. An underlying is analysed once its first
+  price arrives, so a delayed or replayed feed is never valued at the wall clock.
 - **Spot** is the provider's underlying price while it is current. When there is none
   (Databento) or it is more than 30 minutes behind the options (the SPX index is frozen
   overnight while its options trade), spot is inferred from put-call parity and shown
