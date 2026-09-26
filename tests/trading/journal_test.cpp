@@ -82,6 +82,26 @@ TEST(TradingJournal, EmptyBatchesAreRecordedWhileAPositionIsHeld) {
   EXPECT_FALSE(s.snapshot()->valuation_complete);
 }
 
+TEST(TradingJournal, BatchesThatChangeNothingAreNotRecorded) {
+  test::ScriptedMarket f;
+  auto journal = std::make_shared<FailingJournal>();
+  TradingSession s({}, f.time, journal);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 1), f.time).decision.ok());
+  const auto held = journal->count;
+  const auto version = s.snapshot()->account_version;
+  // The same market time and the same quote again, as batches of other news bring.
+  for (int i = 0; i < 20; ++i) {
+    EXPECT_EQ(s.on_quotes({}, {}, f.time).account_version, version);
+    EXPECT_EQ(s.on_quotes({f.quote()}, {f.valuation()}, f.time).account_version, version);
+  }
+  EXPECT_EQ(journal->count, held);
+  // A later market time is a change.
+  s.on_quotes({}, {}, f.time + md::kNanosPerSecond);
+  EXPECT_EQ(journal->count, held + 1);
+  EXPECT_EQ(s.snapshot()->account_version, version + 1);
+}
+
 TEST(TradingJournal, SkippedIdleBatchesRecoverToTheSameState) {
   TemporaryJournal file;
   test::ScriptedMarket f;

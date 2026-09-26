@@ -1285,6 +1285,8 @@ constexpr std::uint64_t kCheckpointEvery = 1000;
 /// any change more than half the size of the last checkpoint is recorded whole.
 class StateRecorder {
  public:
+  /// Whether `state` is the one last recorded: a transaction that changed nothing.
+  [[nodiscard]] bool recorded(const Json& state) const { return base_ && *base_ == state; }
   void add(Json& payload, Json state) {
     if (base_ && since_ + 1 < kCheckpointEvery) {
       auto delta = detail::state_delta(*base_, state);
@@ -1434,6 +1436,17 @@ struct TradingSession::Impl {
     auto result = action(next, events);
     monitor_loss(next, events);
     monitor_rules(next, events);
+    std::optional<Json> recorded;
+    if (journal) {
+      // A transaction that changed nothing, as a batch at the same market time can,
+      // leaves no record, version or publication; a rejection is still recorded.
+      Json candidate = next;
+      if (events.empty() && result.decision.ok() && recorder.recorded(candidate)) {
+        result.account_version = state.version;
+        return result;
+      }
+      recorded = std::move(candidate);
+    }
     if (next.version == std::numeric_limits<std::uint64_t>::max())
       throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Account version exhausted");
     ++next.version;
@@ -1443,7 +1456,8 @@ struct TradingSession::Impl {
       // checkpoints, and no snapshot: recovery derives it from the state.
       // Tick policy v2 extends index-v1 with equity and ETF classes.
       Json payload{{"schema", 3}, {"tick_policy", "v2"}, {"events", events}, {"decision", result.decision}};
-      recorder.add(payload, next);
+      (*recorded)["version"] = next.version;
+      recorder.add(payload, std::move(*recorded));
       try { journal->append(time, type, payload.dump()); }
       catch (...) {
         stopped = true;
