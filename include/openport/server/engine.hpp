@@ -219,6 +219,8 @@ class Engine final : public MetricsSource {
   md::Timestamp market_time_ = 0;
   std::map<std::string, md::InstrumentId> instruments_;
   std::map<std::string, std::uint64_t> observations_;
+  /// Each underlying's latest md::SnapshotComplete time, from snapshot providers.
+  std::map<std::string, md::Timestamp> snapshots_;
 
   // Engine thread only: quote receipt never locks the reader-facing status mutex.
   std::map<std::string, UnderlyingHealth> health_;

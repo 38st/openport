@@ -22,7 +22,7 @@ constexpr std::array<char, 8> kMagic{'O', 'P', 'R', 'E', 'C', '\r', '\n', '\0'};
 constexpr std::uint32_t kVersion = 1;
 constexpr std::size_t kMaxRecord = 1024 * 1024;
 using Bytes = std::vector<char>;
-static_assert(std::variant_size_v<Event> == 8, "update the recording codec for new event types");
+static_assert(std::variant_size_v<Event> == 9, "update the recording codec for new event types");
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
 
 template <typename To, typename From>
@@ -203,6 +203,9 @@ void encode_event(Bytes& bytes, Timestamp received, const Event& event) {
           e.number<std::int32_t>(v.date.month);
           e.number<std::int32_t>(v.date.day);
           e.number(v.price);
+        } else if constexpr (std::is_same_v<T, SnapshotComplete>) {
+          e.string(v.underlying);
+          e.number(v.ts);
         } else {
           e.number(v.id);
           e.number(v.ts);
@@ -236,7 +239,7 @@ RecordedEvent decode_event(std::span<const char> bytes) {
   Decoder d(bytes);
   RecordedEvent out;
   out.received = d.number<Timestamp>();
-  switch (d.byte(7)) {
+  switch (d.byte(8)) {
     case 0: {
       ContractDefinition v;
       v.id = d.number<InstrumentId>();
@@ -283,6 +286,13 @@ RecordedEvent decode_event(std::span<const char> bytes) {
       v.ts = d.number<Timestamp>();
       v.date = {d.number<std::int32_t>(), d.number<std::int32_t>(), d.number<std::int32_t>()};
       v.price = d.number<double>();
+      out.event = std::move(v);
+      break;
+    }
+    case 8: {
+      SnapshotComplete v;
+      v.underlying = d.string();
+      v.ts = d.number<Timestamp>();
       out.event = std::move(v);
       break;
     }

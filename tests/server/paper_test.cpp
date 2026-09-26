@@ -459,6 +459,12 @@ TEST_F(PaperEngine, ACircuitBreakerHaltsOrdersAndFillsForFifteenMinutes) {
     provider.sink->publish(md::UnderlyingQuote{"SPX", time, spx, spx, spx});
     provider.sink->publish(md::OptionQuote{0, time, 3.80, Money::parse(ask).dollars(), 10, 10});
     ASSERT_TRUE(wait_for([&] { return engine->metrics("SPX") && engine->metrics("SPX")->as_of == time; }));
+    // Status reads the trading view, published after the batch reaches the accounts.
+    ASSERT_TRUE(wait_for([&] {
+      const auto view = engine->trading_view();
+      const auto spx = view->market_times.find("SPX");
+      return spx != view->market_times.end() && spx->second == time;
+    }));
   };
   provider.sink->publish(md::ContractDefinition{0, market.contract});
   at(market.time - md::kNanosPerMinute, 5390, "4.20");
@@ -885,6 +891,132 @@ TEST(PaperAccounts, AServerWithoutAnAccountsDirectoryKeepsOneAccount) {
   const auto response = write(engine, "POST", "/api/accounts", {{"name", "Second"}, {"plan", "practice"}});
   EXPECT_EQ(response.status, 503) << response.body;
   EXPECT_EQ(read(engine, "/api/accounts")["accounts"].size(), 1);
+}
+
+json sell(const test::ScriptedMarket& market, std::string client, std::string price) {
+  auto request = order(market, std::move(client), std::move(price));
+  request["side"] = "sell";
+  return request;
+}
+
+TEST(PaperFreshness, AHeldQuoteThatDoesNotChangeStaysCurrentWithoutRefillingItsSize) {
+  // Snapshot feeds send only the quotes that changed, then mark the snapshot
+  // complete. A held contract whose quote sits unchanged through them is still the
+  // market: it must not go stale and block the account's orders, nor offer its size
+  // again.
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, paper_options()); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  test::ScriptedMarket held;
+  test::ScriptedMarket other;
+  other.contract = *md::parse_osi("SPXW261022C05100000");
+  provider.sink->publish(md::ContractDefinition{0, held.contract});
+  provider.sink->publish(md::ContractDefinition{1, other.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", held.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, held.time, 4, 4.2, 1, 1});
+  provider.sink->publish(md::OptionQuote{1, held.time, 2, 2.2, 5, 5});
+  provider.sink->publish(md::SnapshotComplete{"SPX", held.time});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == held.time; }));
+  const auto bought = write(engine, "POST", "/api/orders", order(held, "buy", "4.20"));
+  ASSERT_EQ(bought.status, 201) << bought.body;
+  ASSERT_EQ(json::parse(bought.body)["order"]["status"], "filled");
+  // Two minutes on, only the other contract and the index have changed.
+  auto later = held.time;
+  for (int step = 1; step <= 4; ++step) {
+    later += 30 * md::kNanosPerSecond;
+    provider.sink->publish(md::UnderlyingQuote{"SPX", later, 5000, 5000, 5000.0 + step});
+    provider.sink->publish(md::OptionQuote{1, later, 2, 2.2, 5.0 + step, 5.0 + step});
+    provider.sink->publish(md::SnapshotComplete{"SPX", later});
+  }
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == later; }));
+  const auto opened = write(engine, "POST", "/api/orders", order(other, "open", "2.20"));
+  ASSERT_EQ(opened.status, 201) << opened.body;
+  EXPECT_EQ(json::parse(opened.body)["order"]["status"], "filled");
+  const auto closed = write(engine, "POST", "/api/orders", sell(held, "close", "4.00"));
+  ASSERT_EQ(closed.status, 201) << closed.body;
+  EXPECT_EQ(json::parse(closed.body)["order"]["status"], "filled");
+  const auto fills = engine.trading_view()->snapshot->recent_fills;
+  ASSERT_EQ(fills.size(), 3U);
+  EXPECT_EQ(fills.back().observation, 1U);  // the held quote as first seen, confirmed since
+  EXPECT_EQ(fills.back().quote_time, later);
+  // The one contract its ask showed was bought at the start; confirming the quote
+  // does not show it again.
+  const auto again = write(engine, "POST", "/api/orders", order(held, "again", "4.20"));
+  ASSERT_EQ(again.status, 201) << again.body;
+  EXPECT_EQ(json::parse(again.body)["order"]["status"], "working");
+}
+
+TEST(PaperFreshness, AfterAGapQuotesWaitForTheNextCompleteSnapshot) {
+  // Overnight, the day's first index print can come a batch before its option
+  // quotes. Until a snapshot of the new day completes, yesterday's quotes are not
+  // current, however little they have changed; one it repeats unchanged then is.
+  PaperProvider provider;
+  provider.delay = std::chrono::minutes(15);
+  test::ScriptedMarket market;
+  std::atomic<md::Timestamp> wall{market.time + 15 * md::kNanosPerMinute};
+  auto options = paper_options();
+  options.clock = [&] { return wall.load(); };
+  server::Engine engine(provider, {{"SPX"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 10, 10});
+  provider.sink->publish(md::SnapshotComplete{"SPX", market.time});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+  ASSERT_EQ(write(engine, "POST", "/api/orders", order(market, "buy", "4.20")).status, 201);
+  const auto next = market.time + md::kNanosPerDay;
+  wall = next + 15 * md::kNanosPerMinute;
+  provider.sink->publish(md::UnderlyingQuote{"SPX", next, 5000, 5000, 5000});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->market_times.at("SPX") == next; }));
+  const auto waiting = write(engine, "POST", "/api/orders", order(market, "early", "4.20"));
+  ASSERT_EQ(waiting.status, 422) << waiting.body;
+  EXPECT_EQ(json::parse(waiting.body)["error"]["code"], "STALE_QUOTE");
+  provider.sink->publish(md::SnapshotComplete{"SPX", next});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->valuation_complete; }));
+  const auto current = write(engine, "POST", "/api/orders", order(market, "current", "4.20"));
+  ASSERT_EQ(current.status, 201) << current.body;
+  EXPECT_EQ(json::parse(current.body)["order"]["status"], "filled");
+}
+
+TEST(PaperFreshness, AnUnderlyingWhoseFeedRunsBehindAnothersTradesUntilItStalls) {
+  // Cboe's quote pages trail its data files by a minute or two, so one underlying's
+  // data can run behind another's. Its quotes are judged by its own feed, not the
+  // other's: it trades within a delayed feed's stall tolerance and stalls past it.
+  PaperProvider provider;
+  provider.delay = std::chrono::minutes(15);
+  test::ScriptedMarket market;
+  std::atomic<md::Timestamp> wall{market.time + 15 * md::kNanosPerMinute};
+  auto options = paper_options();
+  options.clock = [&] { return wall.load(); };
+  server::Engine engine(provider, {{"SPX", "SPY"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, market.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", market.time, 500, 500, 500});
+  provider.sink->publish(md::OptionQuote{0, market.time, 4, 4.2, 5, 5});
+  provider.sink->publish(md::SnapshotComplete{"SPX", market.time});
+  provider.sink->publish(md::SnapshotComplete{"SPY", market.time});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPX") && engine.metrics("SPX")->as_of == market.time; }));
+  ASSERT_EQ(write(engine, "POST", "/api/orders", order(market, "buy", "4.20")).status, 201);
+  // SPY's data runs 90 seconds ahead of SPX's, which has not changed.
+  const auto ahead = [&](md::Timestamp by) {
+    wall = market.time + 15 * md::kNanosPerMinute + by;
+    provider.sink->publish(md::UnderlyingQuote{"SPY", market.time + by, 500, 500, 500});
+    provider.sink->publish(md::SnapshotComplete{"SPY", market.time + by});
+    return wait_for([&] { return engine.trading_view()->market_times.at("SPY") == market.time + by; });
+  };
+  ASSERT_TRUE(ahead(90 * md::kNanosPerSecond));
+  const auto spx = [&] { return read(engine, "/api/status")["underlyings"][0]["paper"]; };
+  EXPECT_EQ(spx()["accepting"], true) << spx();
+  const auto closed = write(engine, "POST", "/api/orders", sell(market, "close", "4.00"));
+  ASSERT_EQ(closed.status, 201) << closed.body;
+  EXPECT_EQ(json::parse(closed.body)["order"]["status"], "filled");
+  // Four minutes behind, past the three-minute tolerance, SPX has stalled.
+  ASSERT_TRUE(ahead(4 * md::kNanosPerMinute));
+  EXPECT_EQ(spx()["reason"], "FEED_STALLED") << spx();
+  const auto stalled = write(engine, "POST", "/api/orders", order(market, "stalled", "4.20"));
+  ASSERT_EQ(stalled.status, 422) << stalled.body;
+  EXPECT_EQ(json::parse(stalled.body)["error"]["code"], "FEED_STALLED");
 }
 
 TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {

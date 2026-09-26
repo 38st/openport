@@ -32,7 +32,8 @@ class SnapshotPublisher {
   [[nodiscard]] bool known(const std::string& key) const { return ids_.contains(key); }
 
   /// Call only after a complete snapshot. Quotes absent from it must stop pricing;
-  /// a failed fetch or partial pagination must never retire the previous chain.
+  /// a failed fetch or partial pagination must never retire the previous chain. It
+  /// ends with md::SnapshotComplete, which vouches for the quotes not sent again.
   void finish(const std::string& underlying, const std::set<md::InstrumentId>& seen,
               md::Timestamp ts, md::EventSink& sink);
 

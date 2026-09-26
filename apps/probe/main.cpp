@@ -213,6 +213,7 @@ int run(int argc, char** argv) {
                      },
                      [&](md::UnderlyingQuote& e) { underlyings[e.symbol] = e; },
                      [&](md::UnderlyingClose&) { ++counts["official closes"]; },
+                     [&](md::SnapshotComplete&) { ++counts["complete snapshots"]; },
                      [&](md::ProviderStatus& e) {
                        std::printf("status    %.*s: %s\n",
                                    static_cast<int>(md::to_string(e.state).size()),

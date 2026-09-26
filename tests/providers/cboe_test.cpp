@@ -113,6 +113,12 @@ TEST(Cboe, RepublishesOnlyWhatChanged) {
   EXPECT_DOUBLE_EQ(quotes[0].bid, 63.2);
   EXPECT_TRUE(second.all<md::OpenInterest>().empty());
   EXPECT_EQ(second.all<md::UnderlyingQuote>().size(), 1u);  // spot is always republished
+  // The poll ends by vouching for the quotes it did not send again.
+  const auto marks = second.all<md::SnapshotComplete>();
+  ASSERT_EQ(marks.size(), 1u);
+  EXPECT_EQ(marks[0].underlying, "SPX");
+  EXPECT_EQ(marks[0].ts, quotes[0].ts);
+  EXPECT_TRUE(std::holds_alternative<md::SnapshotComplete>(second.events.back()));
 }
 
 TEST(Cboe, PublishesThePreviousDaysCloseOnceADayInTheSession) {

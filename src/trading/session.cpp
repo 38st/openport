@@ -1579,7 +1579,13 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
       if (quote.time < 0 || quote.time > time) throw TradingError(Reason::INVALID_TIME, "Quote is future-dated or negative");
       if (!seen.insert(quote.symbol).second) throw TradingError(Reason::INVALID_QUOTE, "One observation per contract per batch is required");
       auto& book = s.books[quote.symbol];
-      if (quote.observation == book.quote.observation && quote.time == book.quote.time) {
+      if (quote.observation == book.quote.observation && quote.time >= book.quote.time) {
+        // The same quote, confirmed current at a later time: it and its mark stay
+        // fresh, and it keeps what is left of its displayed size.
+        if (quote.time > book.quote.time) {
+          book.quote.time = quote.time;
+          if (valid_quote(book.quote)) s.marks[quote.symbol] = {mid(book.quote), quote.time};
+        }
         offered_again.insert(quote.symbol);
         continue;
       }

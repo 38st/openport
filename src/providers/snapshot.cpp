@@ -27,6 +27,7 @@ void SnapshotPublisher::finish(const std::string& underlying,
       quote(id, ts, 0.0, 0.0, 0.0, 0.0, sink);
     }
   }
+  sink.publish(md::SnapshotComplete{underlying, ts});
 }
 
 void SnapshotPublisher::quote(md::InstrumentId id, md::Timestamp ts, double bid, double ask,

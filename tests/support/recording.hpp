@@ -104,6 +104,8 @@ inline void exact_event(const md::Event& expected, const md::Event& actual) {
             EXPECT_EQ(e.symbol, a.symbol);
             EXPECT_EQ(e.date, a.date);
             exact_double(e.price, a.price);
+          } else if constexpr (std::is_same_v<T, md::SnapshotComplete>) {
+            EXPECT_EQ(e.underlying, a.underlying);
           } else {
             EXPECT_EQ(e.id, a.id);
             if constexpr (std::is_same_v<T, md::OptionQuote>) {

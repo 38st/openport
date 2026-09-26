@@ -151,6 +151,34 @@ TEST(TradingMatching, MarketableLimitUsesFarSideAndDayRemainderWaitsForNewObserv
   EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Filled);
   EXPECT_EQ(s.snapshot()->account.fees, m("1.95"));
 }
+TEST(TradingMatching, AQuoteConfirmedLaterStaysFreshWithoutRefillingItsSize) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s, "4", "4.20", 1);
+  ASSERT_TRUE(s.submit(f.market("take"), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->recent_fills.size(), 1U);
+  // Ten minutes on, the host offers the same observation again: it and the mark stay
+  // current, but the one contract its ask showed has been taken.
+  const auto later = f.time + 10 * md::kNanosPerMinute;
+  auto confirmed = f.quote("4", "4.20", 1);
+  confirmed.time = later;
+  auto valuation = f.valuation();
+  valuation.time = later;
+  s.on_quotes({confirmed}, {valuation}, later);
+  const auto snap = s.snapshot();
+  ASSERT_EQ(snap->positions.size(), 1U);
+  EXPECT_TRUE(snap->positions[0].fresh);
+  EXPECT_EQ(snap->positions[0].mark_time, later);
+  EXPECT_EQ(s.quote(f.symbol())->time, later);
+  EXPECT_EQ(s.quote(f.symbol())->observation, f.observation);
+  ASSERT_TRUE(s.submit(f.market("again"), later).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders.back().reason.code, Reason::IOC_REMAINDER);
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 1U);
+  // An earlier time for the same observation changes nothing.
+  confirmed.time = f.time;
+  s.on_quotes({confirmed}, {valuation}, later);
+  EXPECT_EQ(s.quote(f.symbol())->time, later);
+}
 TEST(TradingMatching, StaleMarksHoldARestingOrderUntilItsQuoteIsOfferedAgain) {
   ScriptedMarket held;
   ScriptedMarket f;

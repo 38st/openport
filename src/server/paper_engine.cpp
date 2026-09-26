@@ -373,15 +373,19 @@ void Engine::publish_trading() {
       view->config = session.config();
       view->contracts = session.contracts();
       view->valuations = session.valuations();
+      // Each underlying's own data time tells whether its feed has stalled. Until this
+      // run has seen any (just after a restart), the account's last quotes stand in.
       for (const auto& [symbol, contract] : view->contracts) {
         if (const auto quote = session.quote(symbol)) {
           auto& time = view->market_times[contract.underlying];
           time = std::max(time, quote->time);
         }
       }
-      for (const auto& [symbol, book] : book_.underlyings()) {
-        auto& time = view->market_times[symbol];
-        time = std::max(time, book.data_time);
+      for (const auto& [symbol, book] : book_.underlyings())
+        if (book.data_time > 0) view->market_times[symbol] = book.data_time;
+      for (const auto& [symbol, time] : snapshots_) {
+        auto& latest = view->market_times[symbol];
+        latest = std::max(latest, time);
       }
       view->halts = breaker_.halts;
     }
@@ -430,6 +434,11 @@ void Engine::observe_trading(const md::Event& event) {
     }
   } else if (const auto* spot = std::get_if<md::UnderlyingQuote>(&event)) {
     market_time_ = std::max(market_time_, spot->ts);
+  } else if (const auto* snapshot = std::get_if<md::SnapshotComplete>(&event)) {
+    // It vouches for quotes but does not move the market clock: a provider may stamp
+    // it with the wall clock (ThetaData), which can run ahead of its data.
+    auto& time = snapshots_[snapshot->underlying];
+    time = std::max(time, snapshot->ts);
   } else if (const auto* trade = std::get_if<md::OptionTrade>(&event)) {
     market_time_ = std::max(market_time_, trade->ts);
   }
@@ -615,6 +624,29 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
           for (const auto& symbol : order_symbols(command.order)) symbols.insert(symbol);
         if (command.kind == TradingCommand::Kind::Settle) symbols.insert(command.symbol);
       }
+      // A stalled feed cannot replenish resting-order liquidity, and nothing trades
+      // while a circuit breaker halts the market: then quotes are not offered, and age.
+      // The orders and reducer clock stay intact; ordinary market-time DAY/expiry rules
+      // still apply.
+      const auto open = [&](const std::string& underlying, md::Timestamp time) {
+        const auto gate = paper_acceptance(underlying, time, now, status_.capabilities.delay,
+                                           session.config().limits.max_quote_age, breaker_.halts).code;
+        return time > 0 && gate != Reason::FEED_STALLED && gate != Reason::MARKET_HALTED;
+      };
+      // Snapshot feeds send only the quotes that changed, and underlyings' snapshots run
+      // apart (Cboe's quote pages trail its data files by a minute or two). While an
+      // underlying's last complete snapshot is within the stall tolerance, its quotes,
+      // valuations and share price are current at the market time. Without snapshots (a
+      // streaming feed), each quote keeps the time it last changed.
+      std::map<std::string, bool> vouched;
+      const auto current = [&](const std::string& underlying) {
+        const auto [it, added] = vouched.try_emplace(underlying, false);
+        if (added) {
+          const auto snapshot = snapshots_.find(underlying);
+          it->second = snapshot != snapshots_.end() && open(underlying, snapshot->second);
+        }
+        return it->second;
+      };
       std::vector<QuoteObservation> quotes;
       std::vector<Valuation> valuations;
       for (const auto& symbol : symbols) {
@@ -634,20 +666,16 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
               a.settlement != b.settlement || a.multiplier != b.multiplier || a.standard != b.standard)
             throw TradingError(Reason::INVALID_CONTRACT, "INVALID_CONTRACT: listed terms conflict with registered definition");
         }
-        // A stalled feed cannot replenish resting-order liquidity. Keep the orders
-        // and reducer clock intact; ordinary market-time DAY/expiry rules still apply.
-        // Nor does anything trade while a circuit breaker halts the market.
+        const auto& underlying = definition->second.underlying;
         const bool quoted = option && option->has_quote && option->quote_ts >= 0;
-        const auto gate = quoted ? paper_acceptance(definition->second.underlying, option->quote_ts, now,
-                                                    status_.capabilities.delay, session.config().limits.max_quote_age,
-                                                    breaker_.halts).code
-                                 : Reason::NONE;
-        if (quoted && gate != Reason::FEED_STALLED && gate != Reason::MARKET_HALTED) {
-          quotes.push_back({symbol, observations_[symbol], option->quote_ts,
+        const bool fresh = current(underlying);
+        if (quoted && (fresh || open(underlying, option->quote_ts))) {
+          quotes.push_back({symbol, observations_[symbol], fresh ? market_time_ : option->quote_ts,
                             quote_price(option->bid), quote_price(option->ask),
                             whole_size(option->bid_size), whole_size(option->ask_size)});
         }
-        auto valuation = valuation_for(symbol, definition->second, metrics(definition->second.underlying));
+        auto valuation = valuation_for(symbol, definition->second, metrics(underlying));
+        if (fresh && valuation.time > 0) valuation.time = market_time_;
         // Missing live analytics after recovery must not overwrite a recorded frame, and
         // a valuation ahead of the market time the account runs on would fail it.
         if (valuation.time > 0 && valuation.time <= market_time_) valuations.push_back(std::move(valuation));
@@ -663,7 +691,8 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
       for (const auto& symbol : deliverable) {
         const auto book = book_.underlyings().find(symbol);
         if (book == book_.underlyings().end() || book->second.spot_ts <= 0 || book->second.spot_ts > market_time_) continue;
-        if (const auto price = quote_price(book->second.spot)) stocks.push_back({symbol, book->second.spot_ts, *price});
+        const auto time = current(symbol) ? market_time_ : book->second.spot_ts;
+        if (const auto price = quote_price(book->second.spot)) stocks.push_back({symbol, time, *price});
       }
       session.on_quotes(quotes, valuations, market_time_, stocks);
       // Each account keeps the closing print its PM positions will settle on, so

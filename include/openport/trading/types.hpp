@@ -158,7 +158,8 @@ struct Fill {
 };
 
 /// Observation numbers strictly increase per OSI. Repeated/older observations
-/// never refresh liquidity or marks. Sizes are whole contracts, not lots.
+/// never refresh liquidity. A repeated one with a later time confirms the quote is
+/// still current: its time and mark's advance. Sizes are whole contracts, not lots.
 struct QuoteObservation {
   std::string symbol;
   std::uint64_t observation = 0;

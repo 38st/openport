@@ -106,7 +106,16 @@ struct UnderlyingClose {
   double price = 0.0;
 };
 
+/// The end of a snapshot provider's poll of one underlying. Every contract it has
+/// defined for the underlying is now as that snapshot showed it at `ts`, including
+/// the quotes it did not send again because they had not changed.
+struct SnapshotComplete {
+  std::string underlying;
+  Timestamp ts = 0;  ///< the snapshot's market time
+};
+
 using Event = std::variant<ContractDefinition, OptionQuote, OptionTrade, OpenInterest,
-                           VendorGreeks, UnderlyingQuote, ProviderStatus, UnderlyingClose>;
+                           VendorGreeks, UnderlyingQuote, ProviderStatus, UnderlyingClose,
+                           SnapshotComplete>;
 
 }  // namespace openport::md

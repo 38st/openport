@@ -200,7 +200,9 @@ one-sided, missing and zero-size books supply **no liquidity**. Locked positive
 books are accepted. Displayed size is an independent bid/ask budget per
 (contract, observation), consumed across all paper orders. The same observation
 never refills that budget, including after recovery. Each new observation refreshes
-it once. Fractional provider sizes must be converted conservatively by the caller.
+it once. The same observation offered again with a later time confirms the quote is
+still current: its time and its mark's advance, and its budget does not.
+Fractional provider sizes must be converted conservatively by the caller.
 
 Resting buy limits cross when ask <= limit; resting sell limits cross when bid >=
 limit, on a new valid observation timestamped at/after acceptance. A newly
@@ -253,6 +255,16 @@ the first 15 minutes of a session, a healthy 15-minute delayed feed still shows 
 market before it. The simulation clock stays at market time. Resting orders do not
 fill from stale data and are not cancelled merely because the feed stalls; they
 remain subject to normal market-time DAY/expiry, risk and explicit cancellation rules.
+
+Snapshot providers (Cboe, Massive, ThetaData and the demo market) send only the
+quotes that changed, and end each poll of an underlying with `md::SnapshotComplete`.
+While an underlying's last complete snapshot passes that stall check, the engine
+offers every account its quotes, valuations and share price at the market time. So a
+quote that sits unchanged, such as a quiet far wing's, stays current, and so does an
+underlying whose source runs a minute or two behind the others', as Cboe's quote pages
+do. Past the tolerance they are no longer offered, age, and new orders reject; after
+a gap, such as overnight, the account waits for the next complete snapshot.
+Streaming feeds mark no snapshots, so their quotes keep the time they last changed.
 
 **Circuit breakers** halt the whole market as the exchanges' market-wide rule does
 (NYSE Rule 7.12, which the options exchanges follow), measured on the S&P 500 (SPX, or

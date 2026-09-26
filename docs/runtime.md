@@ -16,7 +16,9 @@ quotes, underlying quotes, vendor Greeks, and open interest replace an unconsume
 update of the same kind in place. A contract definition prevents option updates,
 including open interest, from coalescing across that definition. Latest-value
 state is never dropped: snapshot providers may deduplicate unchanged values and
-never resend them. Definitions and provider status are also always retained.
+never resend them, ending each poll with `md::SnapshotComplete` to vouch for them
+(see [paper trading](paper-trading.md)). Definitions, provider status and complete
+snapshots are also always retained.
 
 Capacity limits the trade backlog: at capacity, incoming trades are dropped and
 incoming state evicts queued trades first. With no trades to evict, state is
