@@ -818,7 +818,14 @@ Hash is lowercase hex SHA-256 (OpenSSL EVP) over the canonical entire record wit
 the original line to equal canonical serialization, detecting duplicate keys and
 whitespace alterations. Hashes, sequence and monotone time are verified.
 
-The complete line is written and `fsync` succeeds before a transition is published.
+The complete line is written and synced before a transition is published: with
+`F_FULLFSYNC` on macOS, whose `fsync` leaves data in the drive's cache for a power loss
+(such as a laptop's battery running out) to lose, and `fsync` elsewhere. A transaction
+that would leave less than 64 MiB free on the disk is refused instead of written, so a
+full disk stops trading without tearing the journal. If a write is torn anyway, resume
+refuses the journal until, with openportd stopped, `openportd --repair-journals` cuts
+the torn last line off it and each account journal beside it, keeping the original as
+`FILE.torn-YYYYMMDDTHHMMSSZ`; damage before the last line is reported and left alone.
 I/O failure throws `JOURNAL_IO`, leaves the prior account/orders visible, sets the
 snapshot's `journal_failed` flag, and refuses every subsequent command. The disk
 outcome can be indeterminate after a failed write/sync: **stop trading and recover**;

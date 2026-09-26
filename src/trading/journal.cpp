@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -9,6 +10,7 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include <openssl/evp.h>
 #include <nlohmann/json.hpp>
@@ -31,6 +33,24 @@ std::string digest(const std::string& input) {
     result.push_back(hex[bytes[i] & 15]);
   }
   return result;
+}
+/// A record must survive power loss, such as a laptop's battery running out. On macOS
+/// fsync leaves data in the drive's cache; F_FULLFSYNC asks the drive to write it.
+bool full_sync(int fd) {
+#ifdef F_FULLFSYNC
+  if (::fcntl(fd, F_FULLFSYNC) == 0) return true;
+#endif
+  return ::fsync(fd) == 0;
+}
+/// A write the disk runs out for would tear the journal, so appends stop short of it.
+constexpr unsigned long long kMinimumFreeBytes = 64ull * 1024 * 1024;
+std::string read_file(const std::string& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) io("Cannot read journal");
+  std::ostringstream contents;
+  contents << file.rdbuf();
+  if (file.bad()) io("Journal read failed");
+  return contents.str();
 }
 int open_locked(const std::string& path, bool create) {
   const int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC | (create ? O_CREAT | O_EXCL : 0), 0600);
@@ -103,20 +123,48 @@ std::shared_ptr<FileJournal> FileJournal::create(const std::string& path) {
 JournalRecovery FileJournal::read(const std::string& path, std::string_view expected_head) {
   struct stat info {};
   if (::stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) io("Journal must be a readable regular file");
-  std::ifstream file(path, std::ios::binary);
-  if (!file) io("Cannot read journal");
-  std::ostringstream contents;
-  contents << file.rdbuf();
-  if (file.bad()) io("Journal read failed");
-  return verify_journal(contents.str(), expected_head);
+  return verify_journal(read_file(path), expected_head);
 }
 std::shared_ptr<FileJournal> FileJournal::resume(const std::string& path) {
   const int fd = open_locked(path, false);
   try {
     const auto recovery = read(path);
-    if (recovery.truncated_final_line) io("Torn journal suffix: export verified prefix before resuming");
+    if (recovery.truncated_final_line)
+      io("Torn journal suffix, as a full disk leaves: with openportd stopped, "
+         "openportd --repair-journals cuts it off and keeps the original");
     return std::shared_ptr<FileJournal>(new FileJournal(fd, recovery.records.size(), recovery.head, recovery.records.empty() ? 0 : recovery.records.back().time));
   } catch (...) { ::close(fd); throw; }
+}
+JournalRepair FileJournal::repair(const std::string& path) {
+  const int fd = open_locked(path, false);
+  struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
+  const auto contents = read_file(path);
+  if (!verify_journal(contents).truncated_final_line) return {};
+  const auto end = contents.rfind('\n');
+  if (end == std::string::npos)
+    corrupt("The journal holds no complete record; move it aside to start the account afresh");
+  const std::size_t keep = end + 1;
+  char stamp[32];
+  const std::time_t now = std::time(nullptr);
+  std::tm utc{};
+  ::gmtime_r(&now, &utc);
+  std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", &utc);
+  JournalRepair result{contents.size() - keep, path + ".torn-" + stamp};
+  const int copy = ::open(result.backup.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (copy < 0) io("Cannot create " + result.backup + ": " + std::strerror(errno));
+  std::size_t done = 0;
+  while (done < contents.size()) {
+    const auto count = ::write(copy, contents.data() + done, contents.size() - done);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) { ::close(copy); io("Cannot write " + result.backup + ": " + std::strerror(errno)); }
+    done += static_cast<std::size_t>(count);
+  }
+  const bool copied = full_sync(copy);
+  ::close(copy);
+  if (!copied) io("Cannot sync " + result.backup);
+  if (::ftruncate(fd, static_cast<off_t>(keep)) != 0 || !full_sync(fd))
+    io("Cannot cut the torn line off " + path + ": " + std::strerror(errno));
+  return result;
 }
 void FileJournal::append(Timestamp time, std::string_view type, std::string_view payload) {
   if (failed_) io("Journal is latched failed; recover before trading");
@@ -128,6 +176,10 @@ void FileJournal::append(Timestamp time, std::string_view type, std::string_view
     const std::string hash = digest(j.dump());
     j["hash"] = hash;
     const std::string line = j.dump() + '\n';
+    struct statvfs space {};
+    if (::fstatvfs(fd_, &space) == 0 &&
+        static_cast<unsigned long long>(space.f_bavail) * space.f_frsize < kMinimumFreeBytes + line.size())
+      io("Disk nearly full: the journal stops before a write could tear it; free space and restart");
     std::size_t done = 0;
     while (done < line.size()) {
       const auto count = ::write(fd_, line.data() + done, line.size() - done);
@@ -135,7 +187,7 @@ void FileJournal::append(Timestamp time, std::string_view type, std::string_view
       if (count <= 0) io("Journal write failed: " + std::string(std::strerror(errno)));
       done += static_cast<std::size_t>(count);
     }
-    if (::fsync(fd_) != 0) io("Journal fsync failed: " + std::string(std::strerror(errno)));
+    if (!full_sync(fd_)) io("Journal sync failed: " + std::string(std::strerror(errno)));
     ++sequence_;
     head_ = hash;
     last_time_ = time;

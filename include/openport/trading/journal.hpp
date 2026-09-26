@@ -21,6 +21,11 @@ struct JournalRecovery {
   bool truncated_final_line = false;
   std::string head;
 };
+/// What FileJournal::repair did.
+struct JournalRepair {
+  std::size_t bytes_cut = 0;  ///< the torn final line's length; 0 when the journal was whole
+  std::string backup;         ///< where the original was copied, when a line was cut
+};
 
 /// Optional durable sink; all other trading components are filesystem-free.
 /// One reducer transaction per newline contains all typed outcomes plus the
@@ -42,6 +47,11 @@ class FileJournal final : public Journal {
   static std::shared_ptr<FileJournal> create(const std::string& path);
   static std::shared_ptr<FileJournal> resume(const std::string& path);
   static JournalRecovery read(const std::string& path, std::string_view expected_head = {});
+  /// Cuts a torn final line, as a write the disk ran out for leaves, off a journal so
+  /// that it resumes, after copying the original beside it as FILE.torn-YYYYMMDDTHHMMSSZ.
+  /// It takes the writer's lock, so openportd must be stopped. A journal that verifies
+  /// is left alone; damage before the last line throws JOURNAL_CORRUPT, changing nothing.
+  static JournalRepair repair(const std::string& path);
   ~FileJournal() override;
   FileJournal(const FileJournal&) = delete;
   FileJournal& operator=(const FileJournal&) = delete;

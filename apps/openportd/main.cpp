@@ -44,6 +44,7 @@
 #include "openport/server/replay_host.hpp"
 #include "openport/server/web_server.hpp"
 #include "openport/server/web_policy.hpp"
+#include "openport/trading/journal.hpp"
 
 namespace {
 
@@ -66,6 +67,7 @@ struct Settings {
   bool cboe_holidays = true;
   bool paper_enabled = true;
   bool compact_journals = false;
+  bool repair_journals = false;
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
   std::vector<trading::Dividend> dividends;
@@ -92,11 +94,14 @@ int usage(const char* error = nullptr) {
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--no-cboe-holidays]\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
+      "       openportd --repair-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
       "paper: durable paper trading on index, equity and ETF options; cash 100000, fee\n"
       "       0.65; more named accounts live in an accounts directory beside the journal\n"
       "compact: rewrite journals from builds before the compact format, keeping each\n"
       "         original as FILE.bak, then exit; stop openportd first\n"
+      "repair: cut a torn last line, as a full disk leaves, off each journal, keeping the\n"
+      "        original as FILE.torn-TIME, then exit; stop openportd first\n"
       "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
@@ -190,7 +195,36 @@ int compact_journals(const std::filesystem::path& journal, const std::filesystem
   return failed ? 1 : 0;
 }
 
-}  // namespace
+/// --repair-journals: cuts torn last lines off the main journal and the accounts' ones.
+int repair_journals(const std::filesystem::path& journal, const std::filesystem::path& accounts) {
+  std::vector<std::filesystem::path> files;
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(journal, ec)) files.push_back(journal);
+  std::vector<std::filesystem::path> named;
+  if (std::filesystem::is_directory(accounts, ec)) {
+    for (const auto& entry : std::filesystem::directory_iterator(accounts, ec))
+      if (entry.path().extension() == ".jsonl") named.push_back(entry.path());
+  }
+  std::sort(named.begin(), named.end());
+  files.insert(files.end(), named.begin(), named.end());
+  if (files.empty()) std::printf("no paper journals at %s\n", journal.c_str());
+  bool failed = false;
+  for (const auto& file : files) {
+    try {
+      const auto repaired = trading::FileJournal::repair(file.string());
+      if (repaired.bytes_cut == 0) {
+        std::printf("%s: whole\n", file.c_str());
+      } else {
+        std::printf("%s: cut a torn last line (%zu bytes); the original is %s\n", file.c_str(),
+                    repaired.bytes_cut, std::filesystem::path(repaired.backup).filename().c_str());
+      }
+    } catch (const std::exception& error) {
+      failed = true;
+      std::fprintf(stderr, "%s: left as it was: %s\n", file.c_str(), error.what());
+    }
+  }
+  return failed ? 1 : 0;
+}
 
 /// The write token kept in `path`: read when present, else created at random with
 /// owner-only permissions, so a container keeps its token in its volume.
@@ -225,6 +259,8 @@ std::string load_write_token(const std::filesystem::path& path) {
   return token;
 }
 
+}  // namespace
+
 int run(int argc, char** argv) {
   Settings settings;
   settings.web_root = find_web_root(argv[0]);
@@ -239,6 +275,7 @@ int run(int argc, char** argv) {
     if (arg == "--no-history") { settings.history = false; continue; }
     if (arg == "--no-cboe-holidays") { settings.cboe_holidays = false; continue; }
     if (arg == "--compact-journals") { settings.compact_journals = true; continue; }
+    if (arg == "--repair-journals") { settings.repair_journals = true; continue; }
     if (!has_value) return usage(("missing value for " + arg).c_str());
     const std::string value = argv[++i];
     if (arg == "--provider") {
@@ -321,6 +358,10 @@ int run(int argc, char** argv) {
   if (settings.compact_journals) {
     if (settings.paper_journal.empty()) return usage("HOME is unavailable; specify --paper-journal");
     return compact_journals(settings.paper_journal, paper_accounts);
+  }
+  if (settings.repair_journals) {
+    if (settings.paper_journal.empty()) return usage("HOME is unavailable; specify --paper-journal");
+    return repair_journals(settings.paper_journal, paper_accounts);
   }
   const bool token_from_file = settings.write_token.empty() && !settings.write_token_file.empty();
   if (token_from_file) settings.write_token = load_write_token(settings.write_token_file);

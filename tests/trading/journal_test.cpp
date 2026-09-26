@@ -243,6 +243,66 @@ TEST(TradingJournal, TruncatedFinalLineIsReportedIgnoredAndNeverSilentlyOverwrit
   EXPECT_TRUE(no_newline.truncated_final_line);
   EXPECT_EQ(no_newline.records.size() + 1, recovered.records.size());
 }
+TEST(TradingJournal, RepairCutsATornFinalLineAfterKeepingTheOriginal) {
+  TemporaryJournal file;
+  test::ScriptedMarket f;
+  std::string snapshot;
+  {
+    auto journal = FileJournal::create(file.path);
+    TradingSession s({}, f.time, journal);
+    f.seed(s);
+    snapshot = s.snapshot_json();
+  }
+  const auto good = file.read();
+  const std::string torn = "{\"seq\":4,\"ti";  // where the disk ran out
+  file.write(good + torn);
+  EXPECT_THROW(FileJournal::resume(file.path), TradingError);
+  const auto repaired = FileJournal::repair(file.path);
+  EXPECT_EQ(repaired.bytes_cut, torn.size());
+  ASSERT_FALSE(repaired.backup.empty());
+  std::ifstream backup(repaired.backup, std::ios::binary);
+  std::ostringstream kept;
+  kept << backup.rdbuf();
+  EXPECT_EQ(kept.str(), good + torn);
+  EXPECT_EQ(file.read(), good);
+  // It resumes and recovers as it stood, and a whole journal is left alone.
+  auto resumed = FileJournal::resume(file.path);
+  EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path), resumed).snapshot_json(), snapshot);
+  resumed.reset();
+  EXPECT_EQ(FileJournal::repair(file.path).bytes_cut, 0U);
+  EXPECT_EQ(file.read(), good);
+  std::filesystem::remove(repaired.backup);
+}
+TEST(TradingJournal, RepairLeavesDamageBeforeTheLastLineAndLiveJournalsAlone) {
+  TemporaryJournal file;
+  test::ScriptedMarket f;
+  {
+    auto journal = FileJournal::create(file.path);
+    TradingSession s({}, f.time, journal);
+    f.seed(s);
+  }
+  auto damaged = file.read();
+  damaged[damaged.find("\"time\":") + 8] ^= 1;  // a changed digit breaks the hash chain
+  file.write(damaged + "{\"seq\":4,");
+  try {
+    (void)FileJournal::repair(file.path);
+    ADD_FAILURE() << "a damaged journal must not be repaired";
+  } catch (const TradingError& error) {
+    EXPECT_EQ(error.code(), Reason::JOURNAL_CORRUPT);
+  }
+  EXPECT_EQ(file.read(), damaged + "{\"seq\":4,");
+  // A journal a server has open is locked against repair.
+  file.write("");
+  auto live = FileJournal::create(file.path + ".live");
+  try {
+    (void)FileJournal::repair(file.path + ".live");
+    ADD_FAILURE() << "a journal in use must not be repaired";
+  } catch (const TradingError& error) {
+    EXPECT_EQ(error.code(), Reason::JOURNAL_LOCKED);
+  }
+  live.reset();
+  std::filesystem::remove(file.path + ".live");
+}
 TEST(TradingJournal, WriteFailureStopsTradingWithoutPublishingUnjournalledEffects) {
   test::ScriptedMarket f;
   auto journal = std::make_shared<FailingJournal>();
