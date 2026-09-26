@@ -47,6 +47,11 @@ flowchart LR
   book, recomputes analytics at most once a second for the underlyings whose data or
   rate curve changed, and publishes each result as an immutable snapshot behind a
   `shared_ptr`. HTTP handlers read snapshots and never block the feed.
+- **Market-wide halts** belong to the engine, shared by every account. The engine
+  publishes the breaker reference, daily level and halt history under the status
+  mutex for HTTP and WebSocket readers. With a paper journal, an atomic JSON file
+  beside it preserves the state across restarts; the reducer's journal schema is
+  unchanged. The terminal's banner follows the snapshot's market-time active flags.
 - **Commands** from the terminal (orders, cancels, resets) are queued and applied on
   the engine thread, between market batches, so each account sees one ordered stream
   of market data and commands.

@@ -45,6 +45,7 @@ struct AccountStatus {
 
 /// A consistent picture of the feed and the engine for the status endpoint.
 struct EngineStatus {
+  CircuitBreakerStatus circuit_breaker;
   TradingStatus trading;  ///< The main account's.
   std::vector<AccountStatus> accounts;  ///< Every account, the main one first.
   std::string provider;
@@ -204,13 +205,16 @@ class Engine final : public MetricsSource {
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> before_close_;
   /// Official closes by symbol and date (md::UnderlyingClose), for a week of dates.
   std::map<std::pair<std::string, md::Date>, md::UnderlyingClose> official_closes_;
-  /// Circuit-breaker halts of the last day, and the level tripped on breaker_day_.
-  std::vector<MarketHalt> halts_;
-  md::Date breaker_day_;
-  int breaker_level_ = 0;
+  CircuitBreakerStatus breaker_;
+  bool breaker_dirty_ = false;
+  bool breaker_storage_ = false;  // only while the main journal's writer lock is held
   mutable std::mutex dividends_mutex_;
   std::vector<trading::Dividend> dividends_;
   void check_circuit_breaker(const md::UnderlyingQuote& spot);
+  void advance_circuit_breaker(md::Timestamp time);
+  void publish_circuit_breaker();
+  void load_circuit_breaker();
+  void save_circuit_breaker();
   md::Timestamp market_time_ = 0;
   std::map<std::string, md::InstrumentId> instruments_;
   std::map<std::string, std::uint64_t> observations_;

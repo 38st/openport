@@ -68,6 +68,11 @@ server::Engine::Options paper_options() {
   options.clock = [] { return md::new_york_to_utc({2026, 9, 22}, 10, 0); };
   return options;
 }
+std::filesystem::path paper_path() {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-paper-" + std::to_string(md::now()));
+  std::filesystem::create_directories(directory);
+  return directory / "paper.jsonl";
+}
 class PaperEngine : public testing::Test {
  protected:
   void SetUp() override {
@@ -476,6 +481,248 @@ TEST_F(PaperEngine, ACircuitBreakerHaltsOrdersAndFillsForFifteenMinutes) {
   EXPECT_EQ(write(*engine, "POST", "/api/orders", order(market, "after", "4.00")).status, 201);
 }
 
+TEST(CircuitBreakers, PublishesReferenceAndHaltsInStatusAndTicksWithoutPaperTrading) {
+  PaperProvider provider;
+  auto options = paper_options();
+  options.paper_enabled = false;
+  server::Engine engine(provider, {{"SPX", "SPY"}}, options);
+  engine.start();
+  const auto at = [](int hour, int minute) { return md::new_york_to_utc({2026, 9, 22}, hour, minute); };
+  const auto state = [&] {
+    const auto status = read(engine, "/api/status")["circuit_breaker"];
+    EXPECT_EQ(json::parse(server::tick_message(engine))["circuit_breaker"], status);
+    return status;
+  };
+  EXPECT_EQ(state(), (json{{"symbol", "SPX"}, {"day", nullptr}, {"previous_close", nullptr},
+                           {"level", 0}, {"halts", json::array()}, {"market_time", nullptr},
+                           {"active", false}, {"error", nullptr}}));
+  provider.sink->publish(md::UnderlyingClose{"SPX", at(9, 59), {2026, 9, 21}, 5400});
+  provider.sink->publish(md::UnderlyingClose{"SPY", at(9, 59), {2026, 9, 21}, 540});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", at(9, 59), 400, 400, 400});
+  ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.market_time == at(9, 59); }));
+  EXPECT_EQ(state()["previous_close"], (json{{"date", "2026-09-21"}, {"price", 5400}}));
+  EXPECT_EQ(state()["level"], 0);
+  provider.sink->publish(md::UnderlyingQuote{"SPX", at(10, 0), 5000, 5000, 5000});
+  ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.active; }));
+  EXPECT_EQ(state()["halts"], (json::array({{{"level", 1}, {"start", md::format_timestamp(at(10, 0))},
+      {"end", md::format_timestamp(at(10, 15))}, {"reference", 5400}, {"price", 5000}, {"active", true}}})));
+  EXPECT_EQ(state()["day"], "2026-09-22");
+  EXPECT_EQ(state()["level"], 1);
+  // The wall clock is still 10:00. An option event alone can end the active flag.
+  provider.sink->publish(md::OptionTrade{0, at(10, 15), 4, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.market_time == at(10, 15); }));
+  EXPECT_EQ(state()["active"], false);
+  EXPECT_EQ(state()["halts"][0]["active"], false);
+  EXPECT_EQ(state()["level"], 1);
+}
+
+TEST(CircuitBreakers, SpyUsesClosingPrintUntilAnOfficialCloseArrivesAndRollsTheDay) {
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPY"}}, paper_options());
+  engine.start();
+  const auto yesterday = md::new_york_to_utc({2026, 9, 21}, 16, 0);
+  const auto today = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  provider.sink->publish(md::UnderlyingQuote{"SPY", yesterday, 540, 540, 540});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", today, 539, 539, 539});
+  ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.market_time == today; }));
+  auto state = engine.status().circuit_breaker;
+  EXPECT_EQ(state.symbol, "SPY");
+  ASSERT_TRUE(state.previous_close);
+  EXPECT_EQ(state.previous_close->date, (md::Date{2026, 9, 21}));
+  EXPECT_EQ(state.previous_close->price, 540);
+  provider.sink->publish(md::UnderlyingClose{"SPY", today, {2026, 9, 21}, 541});
+  ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.previous_close->price == 541; }));
+  provider.sink->publish(md::UnderlyingQuote{"SPY", today + 1, 500, 500, 500});
+  ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.active; }));
+  const auto tomorrow = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  provider.sink->publish(md::UnderlyingQuote{"SPY", tomorrow, 490, 490, 490});
+  ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.market_time == tomorrow; }));
+  state = engine.status().circuit_breaker;
+  EXPECT_EQ(state.day, (md::Date{2026, 9, 23}));
+  EXPECT_EQ(state.level, 0);
+  EXPECT_FALSE(state.previous_close);
+  EXPECT_FALSE(state.active);
+  ASSERT_EQ(state.halts.size(), 1u);  // retain the last day with halts
+  EXPECT_EQ(state.halts[0].reference, 541);
+  // An out-of-order print cannot roll the breaker back and trip yesterday again.
+  provider.sink->publish(md::UnderlyingQuote{"SPY", today + 2, 430, 430, 430});
+  engine.stop();
+  EXPECT_EQ(engine.status().circuit_breaker.level, 0);
+  EXPECT_EQ(engine.status().circuit_breaker.halts.size(), 1u);
+}
+
+TEST(CircuitBreakers, RestartKeepsEachLevelsOriginalEndAndDoesNotTripItAgain) {
+  for (const auto& [level, price] : std::vector<std::pair<int, double>>{{1, 5000}, {2, 4600}, {3, 4200}}) {
+    SCOPED_TRACE(level);
+    auto options = paper_options();
+    options.paper_journal = paper_path();
+    test::ScriptedMarket market;
+    const auto start = market.time;
+    const auto end = level == 3 ? md::new_york_to_utc({2026, 9, 22}, 17, 0) : start + 15 * md::kNanosPerMinute;
+    std::atomic<md::Timestamp> now{start};
+    options.clock = [&] { return now.load(); };
+    {
+      PaperProvider provider;
+      server::Engine engine(provider, {{"SPX"}}, options);
+      engine.start();
+      EXPECT_TRUE(engine.status().circuit_breaker.error.empty());  // no file yet
+      provider.sink->publish(md::UnderlyingClose{"SPX", start, {2026, 9, 21}, 5400});
+      provider.sink->publish(md::UnderlyingQuote{"SPX", start, price, price, price});
+      ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.active; }));
+      EXPECT_TRUE(std::filesystem::exists(options.paper_journal.parent_path() / "market-halts.json"));
+    }
+    now = start + 5 * md::kNanosPerMinute;
+    {
+      PaperProvider provider;
+      server::Engine engine(provider, {{"SPX"}}, options);
+      engine.start();
+      auto state = engine.status().circuit_breaker;
+      ASSERT_EQ(state.halts.size(), 1u);
+      EXPECT_EQ(state.halts[0].end, end);
+      EXPECT_EQ(state.level, level);
+      EXPECT_TRUE(state.active);
+      ASSERT_TRUE(state.previous_close);
+      EXPECT_EQ(state.previous_close->price, 5400);
+      EXPECT_EQ(engine.trading_view()->halts[0].end, end);
+      // Recovery needs neither another official close nor a new 15-minute timer.
+      provider.sink->publish(md::ContractDefinition{0, market.contract});
+      provider.sink->publish(md::UnderlyingQuote{"SPX", now.load(), price, price, price});
+      provider.sink->publish(md::OptionQuote{0, now.load(), 4, 4.2, 10, 10});
+      ASSERT_TRUE(wait_for([&] { return engine.trading_view()->market_times.contains("SPX"); }));
+      const auto rejected = write(engine, "POST", "/api/orders", order(market, "during-recovery"));
+      EXPECT_EQ(rejected.status, 422) << rejected.body;
+      EXPECT_EQ(json::parse(rejected.body)["error"]["code"], "MARKET_HALTED");
+      state = engine.status().circuit_breaker;
+      ASSERT_EQ(state.halts.size(), 1u);
+      EXPECT_EQ(state.halts[0].start, start);
+      EXPECT_EQ(state.halts[0].end, end);
+      now = end;
+      provider.sink->publish(md::UnderlyingQuote{"SPX", end, price, price, price});
+      ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.market_time == end; }));
+      EXPECT_FALSE(engine.status().circuit_breaker.active);
+      EXPECT_EQ(engine.status().circuit_breaker.halts.size(), 1u);
+    }
+    std::filesystem::remove_all(options.paper_journal.parent_path());
+  }
+}
+
+TEST(CircuitBreakers, RecoveryCanEscalateAndANewDayReplacesTheHaltHistory) {
+  auto options = paper_options();
+  options.paper_journal = paper_path();
+  const auto start = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  for (int level = 1; level <= 3; ++level) {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    EXPECT_EQ(engine.status().circuit_breaker.level, level - 1);
+    if (level == 1) provider.sink->publish(md::UnderlyingClose{"SPX", start, {2026, 9, 21}, 5400});
+    const double price = 5400 - 400 * level;
+    provider.sink->publish(md::UnderlyingQuote{"SPX", start + level * md::kNanosPerMinute, price, price, price});
+    ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.level == level; }));
+    const auto state = engine.status().circuit_breaker;
+    EXPECT_TRUE(state.error.empty()) << state.error;
+    ASSERT_EQ(state.halts.size(), static_cast<std::size_t>(level));
+    EXPECT_EQ(state.halts[0].end, start + 16 * md::kNanosPerMinute);
+    EXPECT_TRUE(state.active);
+  }
+  const auto tomorrow = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    EXPECT_EQ(engine.status().circuit_breaker.level, 3);
+    provider.sink->publish(md::UnderlyingClose{"SPX", tomorrow, {2026, 9, 22}, 4200});
+    provider.sink->publish(md::UnderlyingQuote{"SPX", tomorrow, 3850, 3850, 3850});
+    ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.market_time == tomorrow; }));
+    const auto state = engine.status().circuit_breaker;
+    EXPECT_TRUE(state.error.empty()) << state.error;
+    EXPECT_EQ(state.level, 1);
+    ASSERT_EQ(state.halts.size(), 1u);
+    EXPECT_EQ(state.halts[0].reference, 4200);
+    EXPECT_EQ(state.halts[0].start, tomorrow);
+  }
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    const auto state = engine.status().circuit_breaker;
+    EXPECT_TRUE(state.error.empty()) << state.error;
+    EXPECT_EQ(state.day, (md::Date{2026, 9, 23}));
+    EXPECT_EQ(state.level, 1);
+    ASSERT_EQ(state.halts.size(), 1u);
+    EXPECT_EQ(state.halts[0].start, tomorrow);
+  }
+  std::filesystem::remove_all(options.paper_journal.parent_path());
+}
+
+TEST(CircuitBreakers, InvalidRecoveredStateIsRejectedAsAWhole) {
+  auto options = paper_options();
+  options.paper_journal = paper_path();
+  const auto file = options.paper_journal.parent_path() / "market-halts.json";
+  const auto start = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  json state;
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    provider.sink->publish(md::UnderlyingClose{"SPX", start, {2026, 9, 21}, 5400});
+    provider.sink->publish(md::UnderlyingQuote{"SPX", start, 5000, 5000, 5000});
+    ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.active; }));
+    std::ifstream in(file);
+    state = json::parse(in);
+  }
+  for (int problem = 0; problem < 3; ++problem) {
+    auto bad = state;
+    if (problem == 0) bad["halts"][0]["end"] = start;
+    if (problem == 1) bad["level"] = 0;
+    if (problem == 2) bad["previous_close"]["price"] = -5400;
+    { std::ofstream out(file); out << bad.dump(); }
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    const auto recovered = engine.status().circuit_breaker;
+    EXPECT_TRUE(engine.status().trading.enabled);
+    EXPECT_FALSE(recovered.error.empty());
+    EXPECT_EQ(recovered.level, 0);
+    EXPECT_TRUE(recovered.halts.empty());
+    EXPECT_FALSE(recovered.previous_close);
+  }
+  std::filesystem::remove_all(options.paper_journal.parent_path());
+}
+
+TEST(CircuitBreakers, BadRecoveryAndFailedWritesReportStorageErrorsWithoutStoppingTheEngine) {
+  for (const bool unreadable : {false, true}) {
+    auto options = paper_options();
+    options.paper_journal = paper_path();
+    const auto file = options.paper_journal.parent_path() / "market-halts.json";
+    if (unreadable) std::filesystem::create_directory(file);
+    else { std::ofstream out(file); out << "{broken"; }
+    {
+      PaperProvider provider;
+      server::Engine engine(provider, {{"SPX"}}, options);
+      engine.start();
+      EXPECT_TRUE(engine.status().trading.enabled);
+      EXPECT_NE(engine.status().circuit_breaker.error.find("cannot read"), std::string::npos);
+      std::filesystem::create_directory(file.string() + ".tmp");
+      const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+      provider.sink->publish(md::UnderlyingClose{"SPX", time, {2026, 9, 21}, 5400});
+      provider.sink->publish(md::UnderlyingQuote{"SPX", time, 5000, 5000, 5000});
+      ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.active; }));
+      EXPECT_TRUE(engine.status().trading.enabled);
+      const auto state = read(engine, "/api/status")["circuit_breaker"];
+      EXPECT_NE(state["error"].get<std::string>().find("cannot write"), std::string::npos);
+      EXPECT_EQ(json::parse(server::tick_message(engine))["circuit_breaker"], state);
+      if (!unreadable) {
+        std::ifstream in(file);
+        std::string original;
+        std::getline(in, original);
+        EXPECT_EQ(original, "{broken");
+      }
+    }
+    std::filesystem::remove_all(options.paper_journal.parent_path());
+  }
+}
+
 TEST_F(PaperEngine, ARetriedOrderGetsItsFirstAnswer) {
   seed();
   const auto first = write(*engine, "POST", "/api/orders", order(market, "retry", "4.20"));
@@ -641,7 +888,7 @@ TEST(PaperAccounts, AServerWithoutAnAccountsDirectoryKeepsOneAccount) {
 }
 
 TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
-  const auto path = std::filesystem::temp_directory_path() / ("openport-paper-" + std::to_string(md::now()) + ".jsonl");
+  const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
   std::atomic<md::Timestamp> wall_now{market.time};
@@ -697,7 +944,7 @@ TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
   }
   const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(path.string()));
   EXPECT_EQ(recovered.snapshot()->recent_orders.back().reason.code, trading::Reason::FEED_STALLED);
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperAvailability, DisabledFailedJournalFullInboxAndStoppingFailClosed) {
@@ -728,8 +975,7 @@ TEST(PaperAvailability, DisabledFailedJournalFullInboxAndStoppingFailClosed) {
 }
 
 TEST(PaperAvailability, LockedJournalDisablesEveryWriteButKeepsAnalyticsAndOwnerWorking) {
-  const auto path = std::filesystem::temp_directory_path() /
-      ("openport-locked-" + std::to_string(md::now()) + ".jsonl");
+  const auto path = paper_path();
   auto bytes = [&] {
     std::ifstream file(path, std::ios::binary);
     std::ostringstream contents;
@@ -800,7 +1046,7 @@ TEST(PaperAvailability, LockedJournalDisablesEveryWriteButKeepsAnalyticsAndOwner
   EXPECT_TRUE(recovered->risk.kill_latched);
   EXPECT_EQ(recovered->risk.kill_reason, "owner");
   EXPECT_EQ(recovered->account_version, first.trading_view()->snapshot->account_version);
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperWritePolicy, ProtectsEveryWriteAndLeavesReadsOpen) {
@@ -1005,7 +1251,7 @@ TEST_F(PaperEngine, ValidatesConditionalOrderFieldsAndReturnsNumericRiskEvidence
 
 namespace {
 TEST(PaperRecovery, SettlementProvenanceIsDurableAndStopReleasesJournalWriter) {
-  const auto path = std::filesystem::temp_directory_path() / ("openport-settlement-" + std::to_string(md::now()) + ".jsonl");
+  const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
   market.contract = *md::parse_osi("SPXW260922C05000000");
@@ -1037,11 +1283,11 @@ TEST(PaperRecovery, SettlementProvenanceIsDurableAndStopReleasesJournalWriter) {
   EXPECT_EQ(server::handle_api({"GET", "/api/portfolio"}, replacement).body,
             server::handle_api({"GET", "/api/portfolio"}, original).body);
   replacement.stop();
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
-  const auto path = std::filesystem::temp_directory_path() / ("openport-etf-settlement-" + std::to_string(md::now()) + ".jsonl");
+  const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
   market.contract = *md::parse_osi("SPY260922C00500000");
@@ -1101,11 +1347,11 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
     found = true;
   }
   EXPECT_TRUE(found);
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperRecovery, EtfOptionsSettleOnTheOfficialCloseAsRevised) {
-  const auto path = std::filesystem::temp_directory_path() / ("openport-official-" + std::to_string(md::now()) + ".jsonl");
+  const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
   market.contract = *md::parse_osi("SPY260922C00500000");
@@ -1145,11 +1391,11 @@ TEST(PaperRecovery, EtfOptionsSettleOnTheOfficialCloseAsRevised) {
     found = true;
   }
   EXPECT_TRUE(found);
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperRecovery, TheClosingPrintSurvivesARestartBeforeETFOptionsExpire) {
-  const auto path = std::filesystem::temp_directory_path() / ("openport-close-" + std::to_string(md::now()) + ".jsonl");
+  const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
   market.contract = *md::parse_osi("SPY260922C00500000");
@@ -1179,7 +1425,7 @@ TEST(PaperRecovery, TheClosingPrintSurvivesARestartBeforeETFOptionsExpire) {
   ASSERT_EQ(engine.trading_view()->snapshot->stocks.size(), 1);
   EXPECT_EQ(engine.trading_view()->snapshot->stock_fills.at(0).price, Money::parse("501"));
   engine.stop();
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperRecovery, WithoutAClosingPrintPMPositionsSettleByHand) {
@@ -1216,7 +1462,7 @@ TEST(PaperRecovery, WithoutAClosingPrintPMPositionsSettleByHand) {
 }
 
 TEST(PaperRecovery, WithoutAClosingPrintTheLastPrintInTheCloseLastMinutesSettles) {
-  const auto path = std::filesystem::temp_directory_path() / ("openport-last-print-" + std::to_string(md::now()) + ".jsonl");
+  const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;
   test::ScriptedMarket market;
   market.contract = *md::parse_osi("SPXW260922C05000000");
@@ -1254,7 +1500,7 @@ TEST(PaperRecovery, WithoutAClosingPrintTheLastPrintInTheCloseLastMinutesSettles
     found = true;
   }
   EXPECT_TRUE(found);
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperPlans, PresetsListExactRules) {

@@ -251,8 +251,21 @@ each once a day and only until 35 minutes before the close (15:25 ET, 12:25 on a
 early-close day); a fall of 20% (level 3) halts it for the rest of the day. While a halt
 covers an underlying's market time, new orders reject with `MARKET_HALTED`, whose
 message gives the fall and when trading resumes, status reports it, and no resting
-order, trigger or bracket exit fills. `server::circuit_breaker` holds the rule. Halts of
-a single stock or ETF are not modelled.
+order, trigger or bracket exit fills. The terminal shows the fall, the level and the
+resume time in a banner while the latest market time is inside a recorded halt;
+level 3 says trading is halted for the rest of the day. SPY is named when it stands
+in for the index. `server::circuit_breaker` holds the rule. Halts of a single stock or
+ETF are not modelled.
+
+With a paper journal, the engine keeps the day's breaker state (the level tripped,
+the previous close and the halts) in `market-halts.json` beside the main journal,
+replaced atomically on each change, so a restart during a halt keeps its original end
+and cannot trip the same level again that day. A new trading day resets the level and
+looks up its own previous close; the last day's halts stay listed until another day
+trips one, and prints from an earlier trading day cannot reset the breaker. Replays
+and engines without a journal keep the state in memory. A missing file starts empty;
+an unreadable or invalid file, or a failed write, is reported in status and the
+daemon log, and the engine carries on without it.
 
 ## Conditional and bracket orders
 
@@ -890,6 +903,26 @@ message; missing market data reports `INVALID_QUOTE`. Contract eligibility, risk
 kill-switch and write-access checks still apply separately. The existing `session`
 field continues to describe the wall-clock product session; just after 09:30 a
 15-minute delayed feed still trades the overnight session, which `paper.session` shows.
+
+Both `/api/status` and WebSocket ticks also include a top-level `circuit_breaker`
+object, shared by all accounts and available even with paper trading disabled:
+
+| Field | Meaning |
+| --- | --- |
+| `symbol` | The watched symbol: `SPX` if subscribed, otherwise `SPY`. No reference is invented when its data is unavailable. |
+| `day` | Current trading date as `YYYY-MM-DD` on the market-data clock; null before any data or recovery. As with the paper accounts, the next trading date starts after 17:00 ET. |
+| `previous_close` | `{date, price}` for the previous business day, or null when unavailable. The date is `YYYY-MM-DD`; the price is a number. An official close takes precedence over a recorded closing print. |
+| `level` | Highest level tripped on `day`, from 0 (none) through 3. |
+| `halts` | Halts of the most recent day that tripped one, in start order. Each has `level`, `start`, `end`, `reference`, `price` and `active`. The two prices record the previous close and the print that tripped that halt. |
+| `active` | Whether any halt covers the latest market time, including its start and excluding its end. Each halt's flag uses the same clock. |
+| `market_time` | Latest observed market time, or recovered time at startup; null before either is available. This and halt timestamps use the API's UTC ISO timestamp format. |
+| `error` | Last breaker storage failure for this engine instance, or null. A later successful write does not erase the warning. |
+
+The engine thread publishes this snapshot under the status mutex after each market
+batch. The active flag follows delayed or replayed market data, so elapsed wall time
+alone does not end the banner. A connected tick replaces the terminal's breaker
+state; REST supplies it before the first tick and while disconnected. Older servers
+without the object show no banner.
 
 The Journal page edits each trade's note and tags (a strategy's apply to each of its
 legs), filters every panel by tag and reports P&L by tag. Alerts belong to the web

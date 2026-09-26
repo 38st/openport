@@ -45,6 +45,20 @@ describe("live state", () => {
     expect(liveState(undefined, null, "connecting").underlyings).toEqual([])
   })
 
+  it("prefers connected breaker snapshots and uses REST after a disconnect or with older ticks", () => {
+    const breaker = { symbol: "SPX", day: "2026-09-22", previous_close: null, level: 1,
+      halts: [], market_time: "2026-09-22T14:05:00Z", active: true, error: null }
+    const rest = { ...status, circuit_breaker: breaker }
+    const resumed = { ...breaker, active: false }
+    const update = { ...tick, circuit_breaker: resumed }
+    expect(liveState(rest, update, "open").circuitBreaker).toBe(resumed)
+    expect(liveState(rest, update, "closed").circuitBreaker).toBe(breaker)
+    expect(liveState(rest, tick, "open").circuitBreaker).toBe(breaker)
+    expect(liveState(rest, null, "connecting").circuitBreaker).toBe(breaker)
+    expect(liveState(rest, { ...tick, circuit_breaker: null }, "open").circuitBreaker).toBeNull()
+    expect(liveState(status, tick, "open").circuitBreaker).toBeUndefined()
+  })
+
   it("prefers connected market updates, falls back for older ticks, and respects explicit null", () => {
     const market = { open: false, note: "Closed", next_open: null }
     const rest = { ...status, market }

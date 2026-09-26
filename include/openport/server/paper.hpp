@@ -22,6 +22,23 @@ struct MarketHalt {
   double price = 0.0;      ///< the print that tripped it
 };
 
+/// Published with engine status, independently of the selected paper account.
+struct CircuitBreakerStatus {
+  struct Close {
+    md::Date date;
+    double price = 0.0;
+    bool operator==(const Close&) const = default;
+  };
+  std::string symbol;
+  md::Date day;
+  std::optional<Close> previous_close;
+  int level = 0;
+  std::vector<MarketHalt> halts;
+  md::Timestamp market_time = 0;
+  bool active = false;
+  std::string error;
+};
+
 /// The halt a print of the S&P 500 trips, if any. In the regular session a fall of 7%
 /// (level 1) or 13% (level 2) from the previous close halts trading for 15 minutes,
 /// each once a day and only until 35 minutes before the close (15:25 ET); a fall of

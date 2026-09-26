@@ -24,6 +24,7 @@ interface Live {
   tick: Tick | null
   connection: Connection
   market: Status["market"]
+  circuitBreaker: Status["circuit_breaker"]
   underlyings: (UnderlyingSnapshot & Partial<Pick<UnderlyingStatus, "expiries" | "options">>)[]
   /** Version of an underlying's data: queries include it in their key and refetch when it moves. */
   version: (symbol: string) => number
@@ -53,6 +54,7 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
     tick: connectedTick,
     connection,
     market: connectedTick?.market === undefined ? status?.market : connectedTick.market,
+    circuitBreaker: connectedTick?.circuit_breaker === undefined ? status?.circuit_breaker : connectedTick.circuit_breaker,
     underlyings: connectedTick
       ? connectedTick.underlyings.map((u) => ({ ...status?.underlyings.find((previous) => previous.symbol === u.symbol), ...u }))
       : status?.underlyings ?? [],

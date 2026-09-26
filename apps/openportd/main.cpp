@@ -395,6 +395,7 @@ int run(int argc, char** argv) {
   std::string holidays_error;
   std::string dividends_error;
   std::string candle_error;
+  std::string breaker_error;
   auto report = [](const std::string& error, std::string& reported) {
     if (!error.empty() && error != reported) std::fprintf(stderr, "openportd: %s\n", error.c_str());
     reported = error;
@@ -404,6 +405,7 @@ int run(int argc, char** argv) {
     web.broadcast(server::tick_message(engine));
     if (auto tick = replays.tick(); !tick.empty()) web.broadcast(tick);
     report(engine.recording_error(), recording_error);
+    report(engine.status().circuit_breaker.error, breaker_error);
     if (history) report(history->error(), history_error);
     if (holidays) report(holidays->error(), holidays_error);
     if (dividends) report(dividends->error(), dividends_error);

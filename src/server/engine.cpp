@@ -14,6 +14,9 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
   status_.trading.fee_per_contract = options_.paper.fee_per_contract;
   status_.trading.initial_cash = options_.paper.initial_cash;
   for (const auto& symbol : subscription_.underlyings) status_.underlyings.try_emplace(symbol);
+  breaker_.symbol = std::find(subscription_.underlyings.begin(), subscription_.underlyings.end(), "SPX") !=
+      subscription_.underlyings.end() ? "SPX" : "SPY";
+  status_.circuit_breaker = breaker_;
   health_ = status_.underlyings;
   dividends_ = options_.dividends;
 }
@@ -229,7 +232,7 @@ void Engine::run() {
         const auto& book = book_.underlyings().at(quote->symbol);
         options_.candles->sample(quote->symbol, book.spot_ts, book.spot);
       }
-      if (options_.paper_enabled) observe_trading(event);
+      observe_trading(event);
       ++events_;
       update_health(event, received);
     }

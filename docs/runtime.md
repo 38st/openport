@@ -35,6 +35,14 @@ contains them. Otherwise it publishes receipt and error timestamps at most once
 every 100 ms, including pending updates when the feed becomes idle. Timestamp-only
 updates reuse the published health map and strings.
 
+The market-wide circuit breakers publish their own snapshot in status and ticks: the
+watched symbol, the previous close, the day's level and its halts (see
+[the paper API](paper-trading.md#engine-integration-and-http-api)). With paper trading,
+`market-halts.json` beside the main journal keeps them across restarts, read and
+written only once the main journal has opened; replays and `--no-paper` keep them in
+memory. A read or write failure appears in `circuit_breaker.error` and the daemon log,
+and everything else carries on.
+
 ## Command-line validation
 
 `openportd` defaults to Cboe delayed data for SPX, SPY, QQQ, IWM and DIA, as does

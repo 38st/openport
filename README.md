@@ -111,8 +111,8 @@ delta, vega, order size, price bands and daily loss are checked before and at ev
 fill. Every product trades in its regular session (09:30 to 16:15 ET for index
 options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
 (20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. The
-market-wide circuit breakers halt trading when the S&P 500 falls 7%, 13% or 20%, and
-Cboe's published holiday schedule is read daily, so a closure it announces applies at
+market-wide circuit breakers halt trading when the S&P 500 falls 7%, 13% or 20%, with
+a banner saying when trading resumes, and Cboe's published holiday schedule is read daily, so a closure it announces applies at
 once. American equity
 and ETF options deliver shares when exercised early or held into expiry a cent in the
 money. A short one that trades below its exercise value at the close, or a call worth

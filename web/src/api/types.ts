@@ -77,6 +77,26 @@ export interface MarketSession {
 /** One paper account, as status and ticks list them. */
 export interface AccountBrief { id: string; name: string; trading: TradingStatus }
 
+export interface MarketHalt {
+  level: number
+  start: string
+  end: string
+  reference: number
+  price: number
+  active: boolean
+}
+
+export interface CircuitBreaker {
+  symbol: string
+  day: string | null
+  previous_close: { date: string; price: number } | null
+  level: number
+  halts: MarketHalt[]
+  market_time: string | null
+  active: boolean
+  error: string | null
+}
+
 export interface Status {
   trading?: TradingStatus | null
   /** Every paper account, the main one first; absent on older servers. */
@@ -86,6 +106,7 @@ export interface Status {
   underlyings: UnderlyingStatus[]
   engine: EngineInfo
   market?: MarketSession | null
+  circuit_breaker?: CircuitBreaker | null
 }
 
 export type SpotSource = "quote" | "parity" | null
@@ -309,6 +330,7 @@ export interface Tick {
   underlyings: UnderlyingSnapshot[]
   engine: EngineMetrics
   market?: MarketSession | null
+  circuit_breaker?: CircuitBreaker | null
 }
 
 export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "1h" | "1d"

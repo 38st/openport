@@ -275,12 +275,27 @@ json underlyings_json(const MetricsSource& source, const EngineStatus& status, b
   return underlyings;
 }
 
+json circuit_breaker_json(const CircuitBreakerStatus& breaker) {
+  json halts = json::array();
+  for (const auto& halt : breaker.halts)
+    halts.push_back({{"level", halt.level}, {"start", md::format_timestamp(halt.start)},
+                     {"end", md::format_timestamp(halt.end)}, {"reference", halt.reference}, {"price", halt.price},
+                     {"active", halt.start <= breaker.market_time && breaker.market_time < halt.end}});
+  const auto& close = breaker.previous_close;
+  return {{"symbol", breaker.symbol}, {"day", breaker.market_time > 0 ? json(md::format_date(breaker.day)) : json(nullptr)},
+          {"previous_close", close ? json{{"date", md::format_date(close->date)}, {"price", close->price}} : json(nullptr)},
+          {"level", breaker.level}, {"halts", halts}, {"active", breaker.active},
+          {"market_time", breaker.market_time > 0 ? json(md::format_timestamp(breaker.market_time)) : json(nullptr)},
+          {"error", breaker.error.empty() ? json(nullptr) : json(breaker.error)}};
+}
+
 json status_json(const MetricsSource& source) {
   const EngineStatus s = source.status();
   const auto now = source.wall_time();
   return {
       {"trading", trading_status_json(s.trading)},
       {"accounts", account_ticks_json(s)},
+      {"circuit_breaker", circuit_breaker_json(s.circuit_breaker)},
       {"market", market_json(now)},
       {"provider",
        {{"name", s.provider},
@@ -577,6 +592,7 @@ std::string tick_message(const MetricsSource& source) {
   return json{{"type", "tick"},
               {"trading", trading_status_json(s.trading)},
               {"accounts", account_ticks_json(s)},
+              {"circuit_breaker", circuit_breaker_json(s.circuit_breaker)},
               {"market", market_json(now)},
               {"feed", {{"state", md::to_string(s.feed_state)}, {"message", s.feed_message}}},
               {"underlyings", underlyings_json(source, s, false, now)},

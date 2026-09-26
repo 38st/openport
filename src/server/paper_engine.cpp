@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <set>
+#include <stdexcept>
 #include <tuple>
 #include <nlohmann/json.hpp>
 #include <fcntl.h>
@@ -312,6 +313,9 @@ void Engine::start_trading() {
       if (const auto quote = account.session->quote(symbol))
         observations_[symbol] = std::max(observations_[symbol], quote->observation);
   }
+  breaker_storage_ = !options_.paper_journal.empty() && accounts_.front().session != nullptr;
+  load_circuit_breaker();
+  publish_circuit_breaker();
   publish_trading();
   const std::lock_guard lock(command_mutex_);
   accepting_commands_ = !stopping_;
@@ -379,7 +383,7 @@ void Engine::publish_trading() {
         auto& time = view->market_times[symbol];
         time = std::max(time, book.data_time);
       }
-      view->halts = halts_;
+      view->halts = breaker_.halts;
     }
     TradingStatus status;
     status.enabled = account.failure.empty() && view != nullptr;
@@ -431,32 +435,143 @@ void Engine::observe_trading(const md::Event& event) {
   }
 }
 
-void Engine::check_circuit_breaker(const md::UnderlyingQuote& spot) {
-  // The S&P 500's own index, or SPY standing in for it when SPX is not subscribed.
-  const auto& symbols = subscription_.underlyings;
-  const bool spx = std::find(symbols.begin(), symbols.end(), "SPX") != symbols.end();
-  if (spot.symbol != (spx ? "SPX" : "SPY")) return;
-  const auto date = new_york_date(spot.ts);
-  if (date != breaker_day_) {
-    breaker_day_ = date;
-    breaker_level_ = 0;
+void Engine::advance_circuit_breaker(md::Timestamp time) {
+  if (time <= 0) return;
+  const auto day = md::trading_date(time);
+  if (day < breaker_.day) return;
+  if (day != breaker_.day) {
+    breaker_.day = day;
+    breaker_.level = 0;
+    breaker_.previous_close.reset();
+    breaker_dirty_ = true;
   }
-  const auto previous = md::previous_business_day(date);
-  double reference = 0;
-  if (const auto close = official_closes_.find({spot.symbol, previous}); close != official_closes_.end())
-    reference = close->second.price;
-  else if (const auto print = closing_prints_.find({spot.symbol, previous}); print != closing_prints_.end())
-    reference = print->second.last;
-  if (const auto halt = circuit_breaker(reference, spot.last, spot.ts, breaker_level_)) {
-    breaker_level_ = halt->level;
-    std::erase_if(halts_, [&](const MarketHalt& h) { return h.end + md::kNanosPerDay < spot.ts; });
-    halts_.push_back(*halt);
+  const auto previous = md::previous_business_day(day);
+  auto reference = breaker_.previous_close;
+  if (const auto close = official_closes_.find({breaker_.symbol, previous}); close != official_closes_.end())
+    reference = CircuitBreakerStatus::Close{previous, close->second.price};
+  else if (const auto print = closing_prints_.find({breaker_.symbol, previous}); print != closing_prints_.end())
+    reference = CircuitBreakerStatus::Close{previous, print->second.last};
+  if (reference != breaker_.previous_close) {
+    breaker_.previous_close = reference;
+    breaker_dirty_ = true;
+  }
+}
+
+void Engine::publish_circuit_breaker() {
+  advance_circuit_breaker(market_time_);
+  breaker_.market_time = market_time_;
+  const bool active = std::any_of(breaker_.halts.begin(), breaker_.halts.end(), [&](const MarketHalt& halt) {
+    return halt.start <= market_time_ && market_time_ < halt.end;
+  });
+  if (active != breaker_.active) breaker_dirty_ = true;
+  breaker_.active = active;
+  if (breaker_dirty_) save_circuit_breaker();
+  breaker_dirty_ = false;
+  const std::lock_guard lock(mutex_);
+  status_.circuit_breaker = breaker_;
+}
+
+void Engine::load_circuit_breaker() {
+  if (!breaker_storage_) return;
+  const auto file = options_.paper_journal.parent_path() / "market-halts.json";
+  try {
+    if (!std::filesystem::exists(file)) return;
+    std::ifstream in(file);
+    if (!in) throw std::runtime_error("cannot read file");
+    const auto data = nlohmann::json::parse(in);
+    const auto date = [](const nlohmann::json& value) {
+      const auto text = value.get<std::string>();
+      const auto time = md::parse_datetime(text + "T00:00:00Z", md::Zone::Utc);
+      if (text.size() != 10 || !time) throw std::runtime_error("invalid date");
+      return md::date_from_days(*time / md::kNanosPerDay);
+    };
+    CircuitBreakerStatus recovered;
+    recovered.symbol = data.at("symbol").get<std::string>();
+    recovered.day = date(data.at("day"));
+    recovered.level = data.at("level").get<int>();
+    recovered.market_time = data.at("market_time").get<md::Timestamp>();
+    if (data.at("schema") != 1 || !data.at("level").is_number_integer() ||
+        !data.at("market_time").is_number_integer() || data.at("level") < 0 || data.at("level") > 3 ||
+        (recovered.symbol != "SPX" && recovered.symbol != "SPY") || recovered.market_time <= 0 ||
+        md::trading_date(recovered.market_time) != recovered.day || !data.at("halts").is_array() ||
+        data.at("halts").size() > 3)
+      throw std::runtime_error("invalid breaker state");
+    const auto& close = data.at("previous_close");
+    if (!close.is_null()) {
+      recovered.previous_close = CircuitBreakerStatus::Close{date(close.at("date")), close.at("price").get<double>()};
+      if (recovered.previous_close->date != md::previous_business_day(recovered.day) ||
+          !(recovered.previous_close->price > 0) || !std::isfinite(recovered.previous_close->price))
+        throw std::runtime_error("invalid previous close");
+    }
+    int level = 0;
+    for (const auto& value : data.at("halts")) {
+      MarketHalt halt{value.at("level").get<int>(), value.at("start").get<md::Timestamp>(),
+                      value.at("end").get<md::Timestamp>(), value.at("reference").get<double>(),
+                      value.at("price").get<double>()};
+      const auto expected = circuit_breaker(halt.reference, halt.price, halt.start, level);
+      if (!value.at("level").is_number_integer() || value.at("level") < 1 || value.at("level") > 3 ||
+          !value.at("start").is_number_integer() ||
+          !value.at("end").is_number_integer() || !expected || expected->level != halt.level ||
+          expected->end != halt.end || halt.start > recovered.market_time ||
+          (!recovered.halts.empty() && (halt.start < recovered.halts.back().start ||
+           new_york_date(halt.start) != new_york_date(recovered.halts.back().start))))
+        throw std::runtime_error("invalid halt");
+      level = halt.level;
+      recovered.halts.push_back(halt);
+    }
+    const int today = !recovered.halts.empty() && new_york_date(recovered.halts.back().start) == recovered.day ? level : 0;
+    if (recovered.level != today) throw std::runtime_error("invalid tripped level");
+    // A subscription change can change the proxy, but cannot undo a market-wide halt.
+    if (recovered.symbol != breaker_.symbol) recovered.previous_close.reset();
+    recovered.symbol = breaker_.symbol;
+    breaker_ = std::move(recovered);
+    market_time_ = std::max(market_time_, breaker_.market_time);
+  } catch (const std::exception& error) {
+    breaker_.error = "market halts: cannot read " + file.string() + ": " + error.what();
+  }
+}
+
+void Engine::save_circuit_breaker() {
+  if (!breaker_storage_) return;
+  const auto file = options_.paper_journal.parent_path() / "market-halts.json";
+  const auto temporary = std::filesystem::path(file.string() + ".tmp");
+  try {
+    using nlohmann::json;
+    json halts = json::array();
+    for (const auto& halt : breaker_.halts)
+      halts.push_back({{"level", halt.level}, {"start", halt.start}, {"end", halt.end},
+                       {"reference", halt.reference}, {"price", halt.price}});
+    const auto& close = breaker_.previous_close;
+    const json data{{"schema", 1}, {"symbol", breaker_.symbol}, {"day", md::format_date(breaker_.day)},
+                     {"level", breaker_.level}, {"market_time", breaker_.market_time}, {"halts", halts},
+                     {"previous_close", close ? json{{"date", md::format_date(close->date)}, {"price", close->price}} : json(nullptr)}};
+    {
+      std::ofstream out(temporary, std::ios::trunc | std::ios::binary);
+      out << data.dump() << '\n';
+      out.close();
+      if (!out) throw std::runtime_error("cannot write temporary file");
+    }
+    std::filesystem::rename(temporary, file);
+  } catch (const std::exception& error) {
+    breaker_.error = "market halts: cannot write " + file.string() + ": " + error.what();
+  }
+}
+
+void Engine::check_circuit_breaker(const md::UnderlyingQuote& spot) {
+  if (spot.symbol != breaker_.symbol || md::trading_date(spot.ts) < breaker_.day) return;
+  advance_circuit_breaker(spot.ts);
+  const double reference = breaker_.previous_close ? breaker_.previous_close->price : 0;
+  if (const auto halt = circuit_breaker(reference, spot.last, spot.ts, breaker_.level)) {
+    breaker_.level = halt->level;
+    if (!breaker_.halts.empty() && new_york_date(breaker_.halts.back().start) != breaker_.day)
+      breaker_.halts.clear();
+    breaker_.halts.push_back(*halt);
+    breaker_dirty_ = true;
   }
 }
 
 void Engine::update_trading(const std::vector<md::Event>& batch,
                             std::deque<PendingCommand>& commands) {
-  if (accounts_.empty()) return;
   if (batch.empty() && commands.empty()) return;
   const auto now = wall_time();
   // Underlying prints retain ingress order. The first valid last on a date at or
@@ -484,6 +599,7 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
       std::erase_if(prints, [&](const auto& entry) { return entry.first.second < oldest; });
     }
   }
+  publish_circuit_breaker();
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
     auto& session = *account.session;
@@ -524,7 +640,7 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         const bool quoted = option && option->has_quote && option->quote_ts >= 0;
         const auto gate = quoted ? paper_acceptance(definition->second.underlying, option->quote_ts, now,
                                                     status_.capabilities.delay, session.config().limits.max_quote_age,
-                                                    halts_).code
+                                                    breaker_.halts).code
                                  : Reason::NONE;
         if (quoted && gate != Reason::FEED_STALLED && gate != Reason::MARKET_HALTED) {
           quotes.push_back({symbol, observations_[symbol], option->quote_ts,
@@ -635,7 +751,7 @@ void Engine::apply_command(PendingCommand& pending) {
       const auto view = trading_view(account->id);
       const auto time = view->market_times.find(underlying);
       return paper_acceptance(underlying, time == view->market_times.end() ? 0 : time->second,
-                              wall_time(), status_.capabilities.delay, session.config().limits.max_quote_age, halts_);
+                              wall_time(), status_.capabilities.delay, session.config().limits.max_quote_age, breaker_.halts);
     };
     try {
       CommandResult result;
