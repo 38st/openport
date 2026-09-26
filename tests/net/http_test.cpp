@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -220,6 +221,92 @@ TEST(WebServer, HttpClientFollowsRedirectsButNotForever) {
   boost::system::error_code ignored;
   tcp::socket(io).connect(listener.local_endpoint(), ignored);  // wakes the accept
   server.join();
+}
+
+TEST(WebServer, HttpClientSendsAuthorizationOnlyToTheOriginItWasGivenFor) {
+  namespace asio = boost::asio;
+  using tcp = asio::ip::tcp;
+  asio::io_context io;
+  tcp::acceptor first(io, {asio::ip::make_address("127.0.0.1"), 0});
+  tcp::acceptor second(io, {asio::ip::make_address("127.0.0.1"), 0});
+  const auto elsewhere = "http://127.0.0.1:" + std::to_string(second.local_endpoint().port());
+  // Each server answers `count` requests, one per connection, and notes what they carried.
+  const auto serve = [&io](tcp::acceptor& listener, int count, std::string next, std::vector<std::string>& seen) {
+    return std::thread([&io, &listener, count, next, &seen] {
+      for (int i = 0; i < count; ++i) {
+        tcp::socket peer(io);
+        boost::system::error_code ec;
+        listener.accept(peer, ec);
+        if (ec) return;
+        std::string request(4096, '\0');
+        request.resize(peer.read_some(asio::buffer(request), ec));
+        const auto at = request.find("Authorization: ");
+        seen.push_back(at == std::string::npos ? "" : request.substr(at + 15, request.find("\r\n", at) - at - 15));
+        const auto path = request.substr(4, request.find(' ', 4) - 4);
+        std::string reply;
+        if (path == "/same") {
+          reply = "HTTP/1.1 307 Temporary Redirect\r\nLocation: /start\r\n";
+        } else if (path == "/start") {
+          reply = "HTTP/1.1 307 Temporary Redirect\r\nLocation: " + next + "/end\r\n";
+        } else {
+          reply = "HTTP/1.1 200 OK\r\n";
+        }
+        const std::string body = path == "/end" ? "done" : "";
+        reply += "Content-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
+        reply += body;
+        asio::write(peer, asio::buffer(reply), ec);
+      }
+    });
+  };
+  std::vector<std::string> at_first, at_second;
+  auto a = serve(first, 2, elsewhere, at_first);
+  auto b = serve(second, 1, "", at_second);
+  openport::net::HttpClient client;
+  const auto response = client.get("http://127.0.0.1:" + std::to_string(first.local_endpoint().port()) + "/same",
+                                   {{"Authorization", "Bearer secret"}});
+  a.join();
+  b.join();
+  EXPECT_EQ(response.body, "done");
+  EXPECT_EQ(at_first, (std::vector<std::string>{"Bearer secret", "Bearer secret"}));  // same origin
+  EXPECT_EQ(at_second, (std::vector<std::string>{""}));  // another port is another origin
+}
+
+TEST(WebServer, HttpClientDoesNotRetryARequestThatTimedOutOnAKeptAliveConnection) {
+  namespace asio = boost::asio;
+  using tcp = asio::ip::tcp;
+  asio::io_context io;
+  tcp::acceptor listener(io, {asio::ip::make_address("127.0.0.1"), 0});
+  const auto url = "http://127.0.0.1:" + std::to_string(listener.local_endpoint().port()) + "/";
+  // The first request is answered and the connection kept alive; the second never
+  // is. A retry would open a second connection and wait the timeout again.
+  std::atomic<int> accepted{0};
+  std::atomic<bool> stop{false};
+  std::thread server([&] {
+    tcp::socket peer(io);
+    boost::system::error_code ec;
+    listener.accept(peer, ec);
+    ++accepted;
+    std::string request(4096, '\0');
+    peer.read_some(asio::buffer(request), ec);
+    asio::write(peer, asio::buffer(std::string("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")), ec);
+    peer.read_some(asio::buffer(request), ec);  // the second request, left unanswered
+    listener.non_blocking(true);
+    while (!stop) {
+      tcp::socket retry(io);
+      listener.accept(retry, ec);
+      if (!ec) ++accepted;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  });
+  openport::net::HttpClient client;
+  EXPECT_EQ(client.get(url, {}, std::chrono::seconds(1)).body, "ok");
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_THROW((void)client.get(url, {}, std::chrono::seconds(1)), std::exception);
+  const auto waited = std::chrono::steady_clock::now() - started;
+  stop = true;
+  server.join();
+  EXPECT_EQ(accepted.load(), 1);
+  EXPECT_LT(waited, std::chrono::milliseconds(1900));
 }
 
 TEST(WebServer, PollingProviderStopInterruptsAnInFlightHttpRead) {

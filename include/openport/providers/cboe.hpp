@@ -140,7 +140,9 @@ class CboeDelayedProvider final : public PollingProvider {
  public:
   struct Options {
     std::chrono::seconds poll_interval{15};
-    std::chrono::seconds timeout{30};
+    /// Per step of a request. Symbols are polled in turn, so one slow response delays
+    /// them all; a quote page, the largest response, takes up to about ten seconds.
+    std::chrono::seconds timeout{15};
     /// A CDN file this far behind the clock is stale, and the quote page is read instead.
     std::chrono::minutes stale_after{5};
     /// After the page proves fresher, how long to read it before trying the CDN again.

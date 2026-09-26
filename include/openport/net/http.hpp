@@ -41,7 +41,8 @@ using Headers = std::vector<std::pair<std::string, std::string>>;
 /// the last host alive between requests, asks for gzip and decompresses it,
 /// verifies TLS certificates against the system trust store, and enforces a
 /// timeout on every step. It follows up to five redirects (301, 302, 303, 307 and
-/// 308, as GETs), never from https to http.
+/// 308, as GETs), never from https to http, dropping Authorization once one leaves the
+/// URL's scheme, host and port.
 ///
 /// Not thread-safe: give each thread its own client.
 class HttpClient {

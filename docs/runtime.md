@@ -380,7 +380,10 @@ times.
 The Cboe adapter polls the CDN files (`cdn-api.cboe.com/api/global/delayed_quotes/options/`)
 every 15 seconds. Cboe moved them there from `cdn.cboe.com` in September 2026: the old
 host served them stale from 2026-09-23, then redirected. The HTTP client follows
-redirects (up to five, never from https to http), so another move needs no new build.
+redirects (up to five, never from https to http, and without the Authorization header
+once one leaves the original origin), so another move needs no new build. The symbols
+are polled in turn, so each request step times out after 15 seconds and a request that
+timed out is not retried: one slow response delays the others by that at most.
 When a file's own timestamp is more than five minutes behind the clock, the adapter reads
 the same chain document embedded in Cboe's quote page
 (`www.cboe.com/delayed_quotes/spx/quote_table`, the `CTX.contextOptionsData` object)

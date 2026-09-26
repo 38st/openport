@@ -227,23 +227,28 @@ HttpClient::~HttpClient() { impl_->close(); }
 
 HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
                              std::chrono::seconds timeout) {
+  Headers sent = headers;
   const auto fetch = [&](const Url& target) {
     const bool reusing = impl_->connected_to(target);
     try {
       if (!reusing) impl_->connect(target, timeout);
-      return impl_->request(target, headers, timeout);
-    } catch (const std::exception&) {
+      return impl_->request(target, sent, timeout);
+    } catch (const std::exception& error) {
       impl_->close();
-      if (!reusing || (impl_->cancellation && impl_->cancellation->load())) throw;
+      // A timeout has already waited the whole timeout; a retry would wait it again.
+      const auto* system = dynamic_cast<const boost::system::system_error*>(&error);
+      const bool timed_out = system && system->code() == beast::error::timeout;
+      if (!reusing || timed_out || (impl_->cancellation && impl_->cancellation->load())) throw;
     }
     // A kept-alive connection can be closed by the server between requests; retry once fresh.
     impl_->connect(target, timeout);
-    return impl_->request(target, headers, timeout);
+    return impl_->request(target, sent, timeout);
   };
   // Follows data a host has moved, as Cboe moved its delayed quotes in September 2026.
   constexpr int kMaxRedirects = 5;
   std::optional<Url> target = parse_url(url);
   if (!target) throw std::runtime_error("not an http(s) URL: " + std::string(url));
+  const Url origin = *target;
   for (int redirects = 0;; ++redirects) {
     impl_->check_cancelled();
     auto response = fetch(*target);
@@ -257,6 +262,11 @@ HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
     if (!target) {
       throw std::runtime_error("refusing a redirect to " + response.location + " from " +
                                std::string(url));
+    }
+    // Credentials stay with the origin they were given for, as in browsers and curl.
+    if (target->tls != origin.tls || !beast::iequals(target->host, origin.host) ||
+        target->port != origin.port) {
+      std::erase_if(sent, [](const auto& header) { return beast::iequals(header.first, "authorization"); });
     }
   }
 }
