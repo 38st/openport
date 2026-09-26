@@ -60,6 +60,18 @@ std::optional<Url> parse_url(std::string_view url) {
   return out;
 }
 
+std::optional<Url> redirect_target(const Url& from, std::string_view location) {
+  std::string absolute(location);
+  if (location.starts_with("//")) {
+    absolute.insert(0, from.tls ? "https:" : "http:");
+  } else if (location.starts_with('/')) {
+    absolute.insert(0, (from.tls ? "https://" : "http://") + from.host + ':' + from.port);
+  }
+  auto target = parse_url(absolute);
+  if (target && from.tls && !target->tls) return std::nullopt;
+  return target;
+}
+
 struct HttpClient::Impl {
   asio::io_context io;
   const std::atomic<bool>* cancellation = nullptr;
@@ -193,6 +205,7 @@ struct HttpClient::Impl {
     auto response = parser.release();
     HttpResponse out;
     out.status = static_cast<int>(response.result_int());
+    out.location = std::string(response[http::field::location]);
     out.wire_bytes = response.body().size();
     const bool gzipped = beast::iequals(response[http::field::content_encoding], "gzip");
     out.body = gzipped ? gunzip(response.body()) : std::move(response.body());
@@ -213,21 +226,38 @@ HttpClient::~HttpClient() { impl_->close(); }
 
 HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
                              std::chrono::seconds timeout) {
-  impl_->check_cancelled();
-  const std::optional<Url> parsed = parse_url(url);
-  if (!parsed) throw std::runtime_error("not an http(s) URL: " + std::string(url));
-
-  const bool reusing = impl_->connected_to(*parsed);
-  try {
-    if (!reusing) impl_->connect(*parsed, timeout);
-    return impl_->request(*parsed, headers, timeout);
-  } catch (const std::exception&) {
-    impl_->close();
-    if (!reusing || (impl_->cancellation && impl_->cancellation->load())) throw;
+  const auto fetch = [&](const Url& target) {
+    const bool reusing = impl_->connected_to(target);
+    try {
+      if (!reusing) impl_->connect(target, timeout);
+      return impl_->request(target, headers, timeout);
+    } catch (const std::exception&) {
+      impl_->close();
+      if (!reusing || (impl_->cancellation && impl_->cancellation->load())) throw;
+    }
+    // A kept-alive connection can be closed by the server between requests; retry once fresh.
+    impl_->connect(target, timeout);
+    return impl_->request(target, headers, timeout);
+  };
+  // Follows data a host has moved, as Cboe moved its delayed quotes in September 2026.
+  constexpr int kMaxRedirects = 5;
+  std::optional<Url> target = parse_url(url);
+  if (!target) throw std::runtime_error("not an http(s) URL: " + std::string(url));
+  for (int redirects = 0;; ++redirects) {
+    impl_->check_cancelled();
+    auto response = fetch(*target);
+    const int s = response.status;
+    const bool moved = s == 301 || s == 302 || s == 303 || s == 307 || s == 308;
+    if (!moved || response.location.empty()) return response;
+    if (redirects == kMaxRedirects) {
+      throw std::runtime_error("more than 5 redirects from " + std::string(url));
+    }
+    target = redirect_target(*target, response.location);
+    if (!target) {
+      throw std::runtime_error("refusing a redirect to " + response.location + " from " +
+                               std::string(url));
+    }
   }
-  // A kept-alive connection can be closed by the server between requests; retry once fresh.
-  impl_->connect(*parsed, timeout);
-  return impl_->request(*parsed, headers, timeout);
 }
 
 HttpResponse HttpClient::get(std::string_view url, const Headers& headers,

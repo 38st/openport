@@ -22,11 +22,17 @@ struct Url {
 /// Parses "http[s]://host[:port][/path][?query]".
 [[nodiscard]] std::optional<Url> parse_url(std::string_view url);
 
+/// Resolves a redirect's Location header against the URL that sent it: an absolute
+/// http(s) URL, "//host/path" on the same scheme, or a path on the same host. Empty
+/// for anything else, and for a move from https down to http.
+[[nodiscard]] std::optional<Url> redirect_target(const Url& from, std::string_view location);
+
 struct HttpResponse {
   int status = 0;
   std::string body;            ///< decompressed if the server sent gzip
   std::size_t wire_bytes = 0;  ///< body bytes as received, before decompression
   std::chrono::microseconds elapsed{0};
+  std::string location{};      ///< a redirect's Location header, if any
 };
 
 using Headers = std::vector<std::pair<std::string, std::string>>;
@@ -34,7 +40,8 @@ using Headers = std::vector<std::pair<std::string, std::string>>;
 /// A blocking HTTP/1.1 client for http and https URLs. It keeps the connection to
 /// the last host alive between requests, asks for gzip and decompresses it,
 /// verifies TLS certificates against the system trust store, and enforces a
-/// timeout on every step.
+/// timeout on every step. It follows up to five redirects (301, 302, 303, 307 and
+/// 308, as GETs), never from https to http.
 ///
 /// Not thread-safe: give each thread its own client.
 class HttpClient {

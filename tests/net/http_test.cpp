@@ -5,6 +5,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -75,10 +76,42 @@ TEST(Http, ParsesUrls) {
   EXPECT_FALSE(parse_url("https://"));
 }
 
+TEST(Http, ResolvesRedirectTargets) {
+  using openport::net::redirect_target;
+  const auto from = *parse_url("https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json");
+  const auto moved = redirect_target(
+      from, "https://cdn-api.cboe.com/api/global/delayed_quotes/options/_SPX.json");
+  ASSERT_TRUE(moved);
+  EXPECT_EQ(moved->host, "cdn-api.cboe.com");
+  EXPECT_EQ(moved->target, "/api/global/delayed_quotes/options/_SPX.json");
+
+  const auto same_host = redirect_target(from, "/moved?x=1");
+  ASSERT_TRUE(same_host);
+  EXPECT_TRUE(same_host->tls);
+  EXPECT_EQ(same_host->host, "cdn.cboe.com");
+  EXPECT_EQ(same_host->port, "443");
+  EXPECT_EQ(same_host->target, "/moved?x=1");
+
+  const auto same_scheme = redirect_target(from, "//cdn-api.cboe.com/x.json");
+  ASSERT_TRUE(same_scheme);
+  EXPECT_TRUE(same_scheme->tls);
+  EXPECT_EQ(same_scheme->host, "cdn-api.cboe.com");
+
+  EXPECT_FALSE(redirect_target(from, "http://cdn.cboe.com/x.json"));  // never down to http
+  EXPECT_FALSE(redirect_target(from, "moved.json"));
+  EXPECT_FALSE(redirect_target(from, "ftp://cdn.cboe.com/x.json"));
+  const auto plain = *parse_url("http://127.0.0.1:8080/old");
+  const auto up = redirect_target(plain, "https://127.0.0.1:8443/new");
+  ASSERT_TRUE(up);
+  EXPECT_TRUE(up->tls);
+  EXPECT_EQ(redirect_target(plain, "/new")->port, "8080");
+}
+
 }  // namespace
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/write.hpp>
 #include <future>
 
 #include "openport/md/event_queue.hpp"
@@ -135,6 +168,58 @@ TEST(WebServer, HttpCancellationInterruptsReadAndTlsHandshake) {
     EXPECT_NE(request.get().find("cancelled"), std::string::npos);
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(1));
   }
+}
+
+TEST(WebServer, HttpClientFollowsRedirectsButNotForever) {
+  namespace asio = boost::asio;
+  using tcp = asio::ip::tcp;
+  asio::io_context io;
+  tcp::acceptor listener(io, {asio::ip::make_address("127.0.0.1"), 0});
+  const auto port = std::to_string(listener.local_endpoint().port());
+  // Answers each request on its own connection: /old moves to /moved on the same host,
+  // which moves to an absolute URL, which serves the data; /loop redirects forever.
+  std::atomic<bool> stop{false};
+  std::thread server([&] {
+    while (!stop) {
+      tcp::socket peer(io);
+      boost::system::error_code ec;
+      listener.accept(peer, ec);
+      if (ec || stop) break;
+      std::string request(4096, '\0');
+      request.resize(peer.read_some(asio::buffer(request), ec));
+      const auto path = request.substr(4, request.find(' ', 4) - 4);
+      std::string reply;
+      if (path == "/old") {
+        reply = "HTTP/1.1 307 Temporary Redirect\r\nLocation: /moved\r\n";
+      } else if (path == "/moved") {
+        reply = "HTTP/1.1 301 Moved Permanently\r\nLocation: http://127.0.0.1:" + port + "/new\r\n";
+      } else if (path == "/loop") {
+        reply = "HTTP/1.1 302 Found\r\nLocation: /loop\r\n";
+      } else {
+        reply = "HTTP/1.1 200 OK\r\n";
+      }
+      const std::string body = path == "/new" ? "fresh" : "";
+      reply += "Content-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
+      reply += body;
+      asio::write(peer, asio::buffer(reply), ec);
+    }
+  });
+  openport::net::HttpClient client;
+  const auto base = "http://127.0.0.1:" + port;
+  const auto response = client.get(base + "/old");
+  EXPECT_EQ(response.status, 200);
+  EXPECT_EQ(response.body, "fresh");
+  try {
+    (void)client.get(base + "/loop");
+    ADD_FAILURE() << "a redirect loop must fail";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string(error.what()).find("more than 5 redirects"), std::string::npos)
+        << error.what();
+  }
+  stop = true;
+  boost::system::error_code ignored;
+  tcp::socket(io).connect(listener.local_endpoint(), ignored);  // wakes the accept
+  server.join();
 }
 
 TEST(WebServer, PollingProviderStopInterruptsAnInFlightHttpRead) {

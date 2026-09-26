@@ -50,7 +50,7 @@ struct CboeChain {
   double close = 0.0;                 ///< after the close, the day's closing price; before, the last
 };
 
-/// Parses cdn.cboe.com/api/global/delayed_quotes/options/<symbol>.json, or the
+/// Parses cdn-api.cboe.com/api/global/delayed_quotes/options/<symbol>.json, or the
 /// same document embedded in a quote page. The file stamps it "YYYY-MM-DD
 /// HH:MM:SS" in UTC; the page, only "HH:MM:SS", which takes the UTC date of `now`
 /// (the day before when that would put it more than an hour ahead of `now`).

@@ -281,10 +281,10 @@ TEST(Cboe, AppliesExpiryAndStrikeFilters) {
 
 TEST(Cboe, IndexChainsUseAnUnderscore) {
   EXPECT_EQ(providers::cboe_chain_url("SPX"),
-            "https://cdn.cboe.com/api/global/delayed_quotes/options/_SPX.json");
+            "https://cdn-api.cboe.com/api/global/delayed_quotes/options/_SPX.json");
   for (const auto* symbol : {"SPY", "QQQ", "IWM", "DIA"}) {
     EXPECT_EQ(providers::cboe_chain_url(symbol),
-              "https://cdn.cboe.com/api/global/delayed_quotes/options/" + std::string(symbol) + ".json");
+              "https://cdn-api.cboe.com/api/global/delayed_quotes/options/" + std::string(symbol) + ".json");
   }
   EXPECT_EQ(providers::cboe_page_url("IWM"), "https://www.cboe.com/delayed_quotes/iwm/quote_table");
   EXPECT_EQ(providers::cboe_page_url("DIA"), "https://www.cboe.com/delayed_quotes/dia/quote_table");
@@ -452,13 +452,13 @@ TEST(Cboe, ReadsTheQuotePageWhileTheCdnFileIsStale) {
   std::string quote_page = page(restamped(kChain, "15:03:40"));
   test::HttpStub http;
   http.respond = [&](std::string_view url) {
-    return url.find("cdn.cboe.com") != std::string_view::npos ? net::HttpResponse{200, file} : net::HttpResponse{200, quote_page};
+    return url.find("cdn-api.cboe.com") != std::string_view::npos ? net::HttpResponse{200, file} : net::HttpResponse{200, quote_page};
   };
   const md::Subscription subscription{{"SPX"}, 0, 0.0};
   Collector sink;
   const auto fetched = [&] {
     std::vector<std::string> sources;
-    for (const auto& url : http.urls) sources.push_back(url.find("cdn.cboe.com") != std::string::npos ? "file" : "page");
+    for (const auto& url : http.urls) sources.push_back(url.find("cdn-api.cboe.com") != std::string::npos ? "file" : "page");
     http.urls.clear();
     return sources;
   };
@@ -492,12 +492,12 @@ TEST(Cboe, ReadsTheQuotePageWhileTheCdnFileIsStale) {
 
 TEST(CboeCharts, UrlsFollowTheChainConvention) {
   EXPECT_EQ(providers::cboe_chart_url("SPX", providers::CboeChart::Intraday),
-            "https://cdn.cboe.com/api/global/delayed_quotes/charts/intraday/_SPX.json");
+            "https://cdn-api.cboe.com/api/global/delayed_quotes/charts/intraday/_SPX.json");
   for (const auto* symbol : {"SPY", "QQQ", "IWM", "DIA"}) {
     EXPECT_EQ(providers::cboe_chart_url(symbol, providers::CboeChart::Intraday),
-              "https://cdn.cboe.com/api/global/delayed_quotes/charts/intraday/" + std::string(symbol) + ".json");
+              "https://cdn-api.cboe.com/api/global/delayed_quotes/charts/intraday/" + std::string(symbol) + ".json");
     EXPECT_EQ(providers::cboe_chart_url(symbol, providers::CboeChart::Daily),
-              "https://cdn.cboe.com/api/global/delayed_quotes/charts/historical/" + std::string(symbol) + ".json");
+              "https://cdn-api.cboe.com/api/global/delayed_quotes/charts/historical/" + std::string(symbol) + ".json");
   }
 }
 

@@ -75,7 +75,7 @@ simdjson::ondemand::array chart_rows(simdjson::ondemand::document& doc, const ch
 }  // namespace
 
 std::string cboe_chart_url(std::string_view underlying, CboeChart chart) {
-  std::string url = "https://cdn.cboe.com/api/global/delayed_quotes/charts/";
+  std::string url = "https://cdn-api.cboe.com/api/global/delayed_quotes/charts/";
   url += chart == CboeChart::Intraday ? "intraday/" : "historical/";
   if (md::is_index_underlying(underlying)) url += '_';
   url += underlying;
@@ -337,7 +337,7 @@ std::string CboeHolidaySchedule::error() const {
 }
 
 std::string cboe_chain_url(std::string_view underlying) {
-  std::string url = "https://cdn.cboe.com/api/global/delayed_quotes/options/";
+  std::string url = "https://cdn-api.cboe.com/api/global/delayed_quotes/options/";
   if (md::is_index_underlying(underlying)) url += '_';
   url += underlying;
   url += ".json";

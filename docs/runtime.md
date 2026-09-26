@@ -370,9 +370,11 @@ notices set out. The market-wide circuit breakers are modelled (see
 provider here reports them. Trading sessions do not change option settlement or expiry
 times.
 
-The Cboe adapter polls the CDN files (`cdn.cboe.com/api/global/delayed_quotes/options/`)
-every 15 seconds. When a file's own timestamp is more than five minutes behind the
-clock (they stopped updating on 2026-09-23 while Cboe's site carried on), it reads
+The Cboe adapter polls the CDN files (`cdn-api.cboe.com/api/global/delayed_quotes/options/`)
+every 15 seconds. Cboe moved them there from `cdn.cboe.com` in September 2026: the old
+host served them stale from 2026-09-23, then redirected. The HTTP client follows
+redirects (up to five, never from https to http), so another move needs no new build.
+When a file's own timestamp is more than five minutes behind the clock, the adapter reads
 the same chain document embedded in Cboe's quote page
 (`www.cboe.com/delayed_quotes/spx/quote_table`, the `CTX.contextOptionsData` object)
 and keeps whichever is fresher. The page is about 1.5 times the file's size and
