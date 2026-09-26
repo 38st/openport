@@ -15,6 +15,19 @@ if(APPLE AND NOT OPENSSL_ROOT_DIR)
   endforeach()
 endif()
 
+# macOS has no OpenSSL or zstd of its own, so the macOS release archive links them
+# statically and leaves out Brotli (optional to Databento's HTTP client) to run on a
+# Mac without Homebrew. Libraries a shared build left in the cache are found again.
+if(OPENPORT_STATIC_DEPS)
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
+  set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE INTERNAL "")
+  foreach(library OPENSSL_SSL_LIBRARY OPENSSL_CRYPTO_LIBRARY OPENPORT_ZSTD_LIBRARY)
+    if(${library} AND NOT ${library} MATCHES "\\.a$")
+      unset(${library} CACHE)
+    endif()
+  endforeach()
+endif()
+
 include(FetchContent)
 set(FETCHCONTENT_QUIET ON)
 # Some dependencies install their own headers and libraries; keep those out of
@@ -25,6 +38,9 @@ if(OPENPORT_BUILD_PROVIDERS AND OPENPORT_WITH_DATABENTO)
   # Databento's official client. It downloads a prebuilt libdbn_c for the platform and
   # brings nlohmann_json with it, so it has to come before our own copy below.
   find_package(zstd CONFIG QUIET)
+  if(OPENPORT_STATIC_DEPS AND TARGET zstd::libzstd_static AND TARGET zstd::libzstd)
+    set_target_properties(zstd::libzstd PROPERTIES INTERFACE_LINK_LIBRARIES zstd::libzstd_static)
+  endif()
   FetchContent_Declare(databento
     URL https://github.com/databento/databento-cpp/archive/refs/tags/v0.68.0.tar.gz
     URL_HASH SHA256=de8ff21cffce4003e55b7067146f7301ba6cc9677925cbf86449b2b87018ac51

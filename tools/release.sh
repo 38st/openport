@@ -66,8 +66,10 @@ say "Web terminal"
 
 say "Engine ($os/$arch)"
 build="$root/build-release"
+# macOS has no OpenSSL or zstd of its own: its archive links them statically.
+static="$([ "$os" = darwin ] && echo ON || echo OFF)"
 cmake -S . -B "$build" -DCMAKE_BUILD_TYPE=Release -DOPENPORT_BUILD_BENCHMARKS=OFF \
-  -DOPENPORT_BUILD_TESTS="$([ "$tests" = 1 ] && echo ON || echo OFF)" >/dev/null
+  -DOPENPORT_STATIC_DEPS="$static" -DOPENPORT_BUILD_TESTS="$([ "$tests" = 1 ] && echo ON || echo OFF)" >/dev/null
 cmake --build "$build" --parallel
 [ "$tests" = 1 ] && ctest --test-dir "$build" --output-on-failure --parallel 8
 
@@ -85,6 +87,15 @@ package() {  # package NAME SOURCE-PREFIX
 native="openport-$version-$os-$arch"
 cmake --install "$build" --component openport --prefix "$dist/stage/prefix-native" >/dev/null
 "$dist/stage/prefix-native/bin/openportd" --version
+if [ "$os" = darwin ]; then
+  # Anything but the system's own libraries would need Homebrew on the user's Mac.
+  for binary in "$dist/stage/prefix-native/bin/"*; do
+    if otool -L "$binary" | tail -n +2 | grep -v -E '^[[:space:]]+/(usr/lib|System/Library)/'; then
+      echo "release: $(basename "$binary") links the libraries above, which macOS does not have" >&2
+      exit 1
+    fi
+  done
+fi
 package "$native" "$dist/stage/prefix-native"
 
 if [ "$docker" = 1 ]; then
@@ -128,7 +139,7 @@ previous="$(git describe --tags --abbrev=0 2>/dev/null || true)"
   # Publishing the release pushes the image (image.yml) and attaches both Linux archives (release-assets.yml).
   echo "- Docker (amd64 and arm64): \`docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport:$version\`, or \`docker build -t openport .\` from this tag."
   echo "- Linux archives (amd64 and arm64): need OpenSSL 3, zlib and zstd (\`apt install libssl3t64 zlib1g libzstd1\` on Ubuntu 24.04). Unpack one and run \`bin/openportd\`."
-  echo "- macOS archive: needs Homebrew's \`openssl@3\`, \`zstd\` and \`brotli\`. Unpack it and run \`bin/openportd\`."
+  echo "- macOS archive (Apple silicon): needs nothing installed. Unpack it with \`tar -xzf\` and run \`bin/openportd\`. Unpacked in Finder, macOS may refuse to run it as from an unidentified developer; \`xattr -dr com.apple.quarantine\` on the folder allows it."
   echo
   echo "Then open http://127.0.0.1:8080. \`openportd --help\` lists every option. \`SHA256SUMS\` covers every archive."
   echo

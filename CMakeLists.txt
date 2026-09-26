@@ -22,6 +22,7 @@ option(OPENPORT_BUILD_PYTHON "Build the Python bindings" OFF)
 option(OPENPORT_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(OPENPORT_NATIVE "Tune code generation for the build machine's CPU" OFF)
 option(OPENPORT_WERROR "Treat compiler warnings as errors" OFF)
+option(OPENPORT_STATIC_DEPS "Link OpenSSL and zstd statically, so a release archive runs without them installed" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerOptions)

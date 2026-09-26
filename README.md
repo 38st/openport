@@ -187,10 +187,10 @@ cmake --build build -j
 ```
 
 To install it, `cmake --install build --component openport --prefix ~/.local` puts
-`openportd` in `bin/` and the terminal in `share/openport/web`, where it finds it on
-its own. A release archive has the same layout: unpack it and run `bin/openportd`
-(Linux needs OpenSSL 3, zlib and zstd; macOS, Homebrew's `openssl@3`, `zstd` and
-`brotli`). `openportd --version` prints the version. The terminal opens with a short
+`openportd` in `bin/` and the terminal in `share/openport/web`, where it finds it on its
+own. A release archive has the same layout: unpack it and run `bin/openportd` (Linux
+needs OpenSSL 3, zlib and zstd; the macOS archive, for Apple silicon, needs nothing
+installed). `openportd --version` prints the version. The terminal opens with a short
 welcome the first time; the footer's welcome link shows it again.
 
 Add `--record-dir ~/.openport/recordings` to record each session for the Replay page.
@@ -369,13 +369,16 @@ to report a vulnerability privately.
 
 CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
 Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, the web checks and a Docker
-smoke test. Publishing a GitHub release builds the image for amd64 and arm64 and pushes
-it to `ghcr.io/38st/openport`, and attaches a Linux archive for each architecture. `tools/release.sh` builds a release on your own machine: it checks and
-tests the web terminal and the engine, packages this machine's build and a Linux build
-from the Docker image with checksums and release notes into `dist/`, and smoke-tests
-the image. Nothing is published unless you pass `--publish`, which creates a draft
-GitHub release for the version in `CMakeLists.txt` at the current commit, or refreshes
-its files when the draft exists; GitHub tags the commit when you publish the draft.
+smoke test. The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON` links
+OpenSSL and zstd statically, and CI checks it needs only macOS's own libraries.
+Publishing a GitHub release builds the image for amd64 and arm64 and pushes it to
+`ghcr.io/38st/openport`, and attaches a Linux archive for each architecture.
+`tools/release.sh` builds a release on your own machine: it checks and tests the web
+terminal and the engine, packages this machine's build and a Linux build from the Docker
+image with checksums and release notes into `dist/`, and smoke-tests the image. Nothing
+is published unless you pass `--publish`, which creates a draft GitHub release for the
+version in `CMakeLists.txt` at the current commit, or refreshes its files when the draft
+exists; GitHub tags the commit when you publish the draft.
 
 ## Roadmap
 

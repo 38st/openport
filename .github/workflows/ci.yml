@@ -46,12 +46,22 @@ jobs:
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DOPENPORT_WERROR=ON -DOPENPORT_BUILD_BENCHMARKS=OFF
+          -DOPENPORT_WERROR=ON -DOPENPORT_BUILD_BENCHMARKS=OFF -DOPENPORT_STATIC_DEPS=ON
           -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
       - name: Build
         run: cmake --build build
       - name: Test
         run: ./build/tests/openport_tests
+      # The release archive is built this way; it must run on a Mac without Homebrew.
+      - name: Links only macOS's own libraries
+        run: |
+          for binary in build/apps/openportd build/apps/openport-probe; do
+            otool -L "$binary"
+            if otool -L "$binary" | tail -n +2 | grep -v -E '^[[:space:]]+/(usr/lib|System/Library)/'; then
+              echo "::error::$binary links libraries macOS does not have"
+              exit 1
+            fi
+          done
 
   web:
     name: Web (TypeScript, Vitest, Vite)
