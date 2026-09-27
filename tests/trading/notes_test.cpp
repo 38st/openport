@@ -71,5 +71,22 @@ TEST(TradingNotes, NotesAndTagsMustBeShortPlainText) {
   EXPECT_EQ(s.snapshot()->annotations.at("1").tags.size(), 8U);
 }
 
+
+TEST(TradingNotes, OrderMetadataUsesTradeValidationAndClosingFillsDoNotAnnotate) {
+  ScriptedMarket f;
+  TradingSession s({}, f.time);
+  f.seed(s);
+  auto r = f.market("invalid");
+  r.tags = {std::string(33, 'x')};
+  EXPECT_EQ(s.submit(r, f.time).decision.code, Reason::INVALID_NOTE);
+  r.client_order_id = "open"; r.tags = {" PLAN ", "plan"}; r.note = " first ";
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  r = f.market("close", 1, Side::Sell); r.tags = {"close"}; r.note = "ignored";
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->annotations.size(), 1U);
+  EXPECT_EQ(s.snapshot()->annotations.at("1").tags, (std::vector<std::string>{"plan"}));
+  EXPECT_EQ(s.snapshot()->annotations.at("1").note, "first");
+}
+
 }  // namespace
 }  // namespace openport::trading

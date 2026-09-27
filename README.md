@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **580 C++ and 363 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **597 C++ and 372 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -66,16 +66,20 @@ QQQ options), with generated prices labelled as simulated on every page:
 - **Trade**: the chain with an order ticket docked beside it, and a candle chart of the
   underlying (one-minute to daily, backfilled from Cboe's free history) showing your
   strikes, armed triggers and the selected expiry's expected move.
-- **Orders**: limit and market orders, orders that wait for the underlying to cross a
-  level, and brackets whose stop-loss and take-profit (on the option or the underlying)
-  cancel each other. Working orders change in place: size, limit or trigger level.
+- **Orders**: day and GTC limits, market orders, orders that wait for a price level,
+  and brackets whose stop-loss and take-profit cancel each other. GTC orders wait
+  outside the regular session and last until the contract’s last trade or auto-close.
+  Working orders change in place: size, limit or trigger level. Entry notes and tags
+  follow the trades into the Journal.
 - **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
   and diagonals) picked on the chain, or built from a template such as a 10-wide put
   spread at 15 delta or a condor one expected move out, with presets saved in the
   browser. Legs fill together at a net debit or credit. The ticket shows the P&L at
   expiry and today, the expected move, and the probability of profit from the smile's
   risk-neutral distribution, skew included. A held strategy is one row with its net
-  P&L and Greeks, closed or rolled to a later expiry in one order.
+  P&L and Greeks, closed or rolled to a later expiry in one order. Spreads take OCO
+  exits on entry or while held, with stops on the closing net or the underlying, and
+  a condor or iron butterfly can roll its put or call vertical as one four-leg order.
 - **Evaluations**: a profit target and a trailing drawdown floor (intraday or end of day)
   decide pass or fail, with buy-only, defined-risk and buying-power rules and auto-close
   before expiry.
@@ -349,7 +353,7 @@ these routes, so anything it does can be scripted:
 | Route | Does |
 | --- | --- |
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders, fills, risk, rules and progress, and its round trips |
-| `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), change it or cancel it |
+| `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
 | `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
 | `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |
 | `PUT /api/risk/limits`, `POST /api/risk/kill` | Change the risk limits; trip or reset the kill switch |
@@ -427,6 +431,8 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] Terminal: underlying chart, order changes in place, flatten, multiple named
       accounts and trading recorded days in replay
 - [x] Paper trading in Cboe's overnight and curb sessions
+- [x] GTC limit orders, order notes and tags, spread brackets and held-spread exits
+- [x] Roll the put or call side of a four-leg strategy
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
 - [x] P&L attribution by delta, gamma, vega and theta
 - [x] Stock positions from early exercise and from exercise and assignment at expiry

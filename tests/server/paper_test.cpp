@@ -2184,4 +2184,59 @@ TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
   EXPECT_EQ(json::parse(conditional.body)["order"]["triggered_at"], nullptr);
   engine->stop();
 }
+
+TEST_F(PaperEngine, GtcMetadataAndHeldComboExitsOverHttp) {
+  seed();
+  auto tagged = order(market, "tagged", "4.10");
+  tagged["time_in_force"] = "gtc";
+  tagged["tags"] = {" Template ", "0DTE"};
+  tagged["note"] = " Entry note ";
+  const auto response = write(*engine, "POST", "/api/orders", tagged);
+  ASSERT_EQ(response.status, 201) << response.body;
+  EXPECT_EQ(json::parse(response.body)["order"]["time_in_force"], "gtc");
+  ASSERT_EQ(write(*engine, "PUT", "/api/orders/1", {{"limit_price", "4.20"}}).status, 200);
+  const auto trades = read(*engine, "/api/trades")["trades"];
+  ASSERT_EQ(trades.size(), 1U);
+  EXPECT_EQ(trades[0]["tags"], json::array({"template", "0dte"}));
+  EXPECT_EQ(trades[0]["note"], "Entry note");
+  auto invalid = tagged;
+  invalid["client_order_id"] = "bad-tags";
+  invalid["tags"] = {std::string(33, 'x')};
+  expect_error(write(*engine, "POST", "/api/orders", invalid), 422, "INVALID_NOTE");
+  invalid["tags"] = {1};
+  expect_error(write(*engine, "POST", "/api/orders", invalid), 400, "INVALID_REQUEST");
+  const auto upper = *md::parse_osi("SPXW261022C05010000");
+  provider.sink->publish(md::ContractDefinition{1, upper});
+  provider.sink->publish(md::OptionQuote{1, market.time, 3.00, 3.20, 10, 10});
+  ASSERT_TRUE(wait_for([&] {
+    const auto metrics = engine->metrics("SPX");
+    if (!metrics || metrics->slices.empty()) return false;
+    const auto& strikes = metrics->slices[0].strikes;
+    return std::any_of(strikes.begin(), strikes.end(), [](const auto& strike) { return strike.strike == 5010 && strike.call.ask == 3.20; });
+  }));
+  const json legs = json::array({{{"symbol", market.symbol()}, {"side", "buy"}},
+                                 {{"symbol", upper.osi_symbol()}, {"side", "sell"}}});
+  json entry{{"client_order_id", "spread"}, {"legs", legs}, {"type", "limit"}, {"quantity", 1},
+             {"limit_price", "1.20"}, {"time_in_force", "gtc"}, {"tags", {"call-debit"}}, {"note", "Spread plan"}};
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", entry).status, 201);
+  entry["client_order_id"] = "held-exits";
+  entry["legs"][0]["side"] = "sell";
+  entry["legs"][1]["side"] = "buy";
+  entry["limit_price"] = "-1.80";
+  entry["exits_only"] = true;
+  entry["bracket"] = {{"take_profit", {{"limit_price", "-1.80"}}},
+                        {"stop_loss", {{"trigger", {{"source", "combo"}, {"direction", "at_or_above"}, {"level", "-0.40"}}}}}};
+  const auto exits = write(*engine, "POST", "/api/orders", entry);
+  ASSERT_EQ(exits.status, 201) << exits.body;
+  const auto primary = json::parse(exits.body)["order"];
+  EXPECT_EQ(primary["role"], "take_profit");
+  EXPECT_FALSE(primary["oco"].is_null());
+  EXPECT_EQ(primary["filled_quantity"], 0);
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", entry).status, 200);
+  const auto open = read(*engine, "/api/orders?status=open")["orders"];
+  ASSERT_EQ(open.size(), 2U);
+  EXPECT_EQ(open[0]["trigger"]["source"], "combo");
+  engine->stop();
+}
+
 }  // namespace

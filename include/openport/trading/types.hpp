@@ -52,7 +52,7 @@ struct Decision {
 
 enum class Side { Buy, Sell };
 enum class OrderType { Market, Limit };
-enum class TimeInForce { Day, Ioc };
+enum class TimeInForce { Day, Ioc, Gtc };
 /// Armed orders wait for their trigger; they are open (cancellable, reserving
 /// risk and buying power) but never match until activated.
 enum class OrderStatus { Working, PartiallyFilled, Filled, Cancelled, Rejected, Armed };
@@ -60,7 +60,7 @@ enum class OrderStatus { Working, PartiallyFilled, Filled, Cancelled, Rejected, 
 /// A price level that activates an order. Option triggers compare the order's
 /// executable side (ask for buys, bid for sells); underlying triggers compare
 /// the spot from the contract's fresh valuation. Levels are inclusive.
-enum class TriggerSource { Option, Underlying };
+enum class TriggerSource { Option, Underlying, Combo };
 enum class TriggerDirection { AtOrBelow, AtOrAbove };
 struct Trigger {
   TriggerSource source = TriggerSource::Option;
@@ -107,8 +107,12 @@ struct OrderRequest {
   /// Multi-leg order: two to four legs on one underlying, filled together. The
   /// symbol is empty and the side Buy; `quantity` counts units and
   /// `limit_price` is the net per unit: positive a debit to pay at most,
-  /// negative a credit to receive at least. No trigger or bracket.
+  /// negative a credit to receive at least.
   std::vector<Leg> legs;
+  std::vector<std::string> tags = {};
+  std::string note = {};
+  /// Attach the bracket to held closing legs instead of submitting an entry.
+  bool exits_only = false;
   bool operator==(const OrderRequest&) const = default;
 };
 [[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }

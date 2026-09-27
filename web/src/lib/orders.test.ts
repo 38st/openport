@@ -12,6 +12,7 @@ describe("order edits", () => {
   it("apply to resting orders the trader placed", () => {
     expect(editable(order)).toBe(true)  // a partially filled DAY limit
     expect(editable(stop)).toBe(true)
+    expect(editable({ ...order, time_in_force: "gtc" })).toBe(true)
     expect(editable({ ...order, status: "filled" })).toBe(false)
     expect(editable({ ...order, time_in_force: "ioc" })).toBe(false)
     expect(editable({ ...order, type: "market", limit_price: null })).toBe(false)

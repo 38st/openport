@@ -235,6 +235,9 @@ const targetTag = (target: TemplateTarget) => target.mode === "atm" ? "atm"
   : `${target.value}${{ delta: "d", points: "pt", moves: "em", strike: "k" }[target.mode]}`
 /** Describes requested parameters; actual snapped strikes and widths remain in the review. */
 export function templateTag(template: StrategyTemplate): string {
+  return setupTag(template).slice(0, 32)
+}
+function setupTag(template: StrategyTemplate): string {
   switch (template.kind) {
     case "vertical": return `${template.type}-${template.direction}-${targetTag(template.target)}-${template.width}w`
     case "condor": return `iron-condor-${targetTag(template.target)}-${template.width}w`
@@ -242,7 +245,8 @@ export function templateTag(template: StrategyTemplate): string {
     case "strangle": return `${template.side === "sell" ? "short" : "long"}-strangle-${template.delta}d`
     case "straddle": return `${template.side === "sell" ? "short" : "long"}-straddle-atm`
     case "butterfly": return `long-${template.type}-butterfly-${targetTag(template.target)}-${template.width}w`
-    case "calendar": case "diagonal": return `${template.type}-${template.kind}-${targetTag(template.target)}${template.kind === "diagonal" ? `-${template.offset}pt` : ""}-${template.farExpiry}`
+    // The setup, not the dates: a tag groups every trade of this shape in the Journal.
+    case "calendar": case "diagonal": return `${template.type}-${template.kind}-${targetTag(template.target)}${template.kind === "diagonal" ? `-${template.offset}pt` : ""}`
   }
 }
 

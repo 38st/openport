@@ -231,5 +231,115 @@ TEST(TradingSessions, AClosedMarketsCloseKeepsItsPositionsMarked) {
   EXPECT_EQ(s.submit(spx.limit("stale", 1, "4.20"), at(kTuesday, 21, 5)).decision.code, Reason::STALE_QUOTE);
 }
 
+
+TEST(TradingSessions, GtcSurvivesDailyRollAndWaitsForTheRegularSession) {
+  ScriptedMarket f;
+  auto c = roomy();
+  c.rules.buying_power = true;
+  TradingSession s(c, f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("gtc", 2, "4.10", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
+  const auto reserve = s.snapshot()->buying_power.reserved;
+  tick(s, f, at(kTuesday, 16, 30), "4.00", "4.10");
+  EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+  ASSERT_TRUE(s.roll_day(at(kTuesday, 21, 0)).decision.ok());
+  tick(s, f, at(kWednesday, 1, 0), "4.00", "4.10");
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Working);
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, reserve);
+  tick(s, f, at(kWednesday, 9, 30), "4.00", "4.10");
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Filled);
+}
+
+TEST(TradingSessions, GtcCanBePlacedOvernightModifiedAndCancelled) {
+  ScriptedMarket f;
+  f.time = at(kTuesday, 21, 0);
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("gtc", 1, "4.20", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
+  ASSERT_TRUE(s.modify(1, {{}, m("4.30"), {}}, f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+  ASSERT_TRUE(s.cancel(1, f.time).decision.ok());
+  EXPECT_EQ(order(s, 1).reason.code, Reason::USER_CANCEL);
+  auto bad = f.market("market-gtc");
+  bad.tif = TimeInForce::Gtc;
+  EXPECT_FALSE(s.submit(bad, f.time).decision.ok());
+}
+
+TEST(TradingSessions, GtcExpiresAtLastTradeOrAutoCloseEvenWithoutAHolding) {
+  for (const bool am : {false, true}) {
+    ScriptedMarket f;
+    if (am) f.contract = *md::parse_osi("SPX261022C05000000");
+    auto c = roomy();
+    c.rules.expiry_cutoff = 5 * 60 * md::kNanosPerSecond;
+    TradingSession s(c, f.time);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.limit("gtc", 1, "4.10", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
+    const auto end = f.contract.last_trade_time() - c.rules.expiry_cutoff;
+    EXPECT_EQ(order(s, 1).day_end, end);
+    s.on_quotes({}, {}, end);
+    EXPECT_EQ(order(s, 1).reason.code, Reason::EXPIRED);
+  }
+}
+
+TEST(TradingSessions, GtcRechecksRiskOnTheNextDayAndWaitsOutMissingData) {
+  ScriptedMarket f;
+  auto c = roomy();
+  c.limits.aggregate.dollar_delta = 600000;
+  TradingSession s(c, f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("gtc", 2, "4.10", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
+  ASSERT_TRUE(s.roll_day(at(kTuesday, 21, 0)).decision.ok());
+  f.time = at(kWednesday, 10, 0);
+  ++f.observation;
+  auto v = f.valuation();
+  v.valid = false;
+  s.on_quotes({f.quote("4.00", "4.10")}, {v}, f.time);
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Working);
+  ASSERT_TRUE(s.set_limits(c.limits, f.time).decision.ok());
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Working);
+  v = f.valuation(0.9);
+  s.on_quotes({f.quote("4.00", "4.10")}, {v}, f.time);
+  EXPECT_EQ(order(s, 1).reason.code, Reason::RISK_CHANGED);
+  EXPECT_NE(order(s, 1).reason.message.find("DELTA_LIMIT"), std::string::npos);
+}
+
+
+TEST(TradingSessions, GtcCancelsForBuyingPowerOnALaterDayAndForResetOrFailure) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW261022C09000000");
+  auto c = roomy();
+  c.initial_cash = m("50");
+  c.rules.margin = MarginMode::Portfolio;
+  c.rules.buying_power = true;
+  TradingSession s(c, f.time);
+  s.define(f.contract, f.time);
+  auto v = f.valuation(0, 0);
+  v.forward = 5000; v.years = 0.01; v.smile_iv = 0.01;
+  s.on_quotes({f.quote("0.05", "0.10")}, {v}, f.time);
+  ASSERT_TRUE(s.submit(f.limit("gtc", 1, "0.05", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
+  ASSERT_TRUE(s.roll_day(at(kTuesday, 21, 0)).decision.ok());
+  f.time = at(kWednesday, 10, 0); ++f.observation;
+  v.time = f.time; v.spot = 9000; v.forward = 9000;
+  s.on_quotes({f.quote("0.04", "0.05")}, {v}, f.time);
+  EXPECT_EQ(order(s, 1).reason.code, Reason::RISK_CHANGED);
+  EXPECT_NE(order(s, 1).reason.message.find("BUYING_POWER"), std::string::npos);
+
+  for (const bool reset : {true, false}) {
+    ScriptedMarket market;
+    auto config = roomy();
+    config.rules.max_drawdown = m("100");
+    TradingSession account(config, market.time);
+    market.seed(account);
+    ASSERT_TRUE(account.submit(market.limit("gtc", 1, "3.70", Side::Buy, TimeInForce::Gtc), market.time).decision.ok());
+    if (reset) {
+      ASSERT_TRUE(account.reset_account(config.initial_cash, config.rules, "new attempt", market.time).decision.ok());
+    } else {
+      ASSERT_TRUE(account.submit(market.market("held", 3), market.time).decision.ok());
+      tick(account, market, market.time + md::kNanosPerSecond, "3.50", "3.80");
+    }
+    EXPECT_EQ(order(account, 1).reason.code, reset ? Reason::ACCOUNT_RESET : Reason::EVALUATION_CLOSED);
+  }
+}
+
 }  // namespace
 }  // namespace openport::trading

@@ -75,7 +75,7 @@ std::string underlying(const TradingView& view, const std::string& symbol) {
 }
 json trigger_json(const std::optional<Trigger>& t) {
   if (!t) return nullptr;
-  return {{"source", t->source == TriggerSource::Option ? "option" : "underlying"},
+  return {{"source", t->source == TriggerSource::Option ? "option" : t->source == TriggerSource::Combo ? "combo" : "underlying"},
           {"direction", t->direction == TriggerDirection::AtOrBelow ? "at_or_below" : "at_or_above"},
           {"level", t->level.str()}};
 }
@@ -100,7 +100,8 @@ json order_json(const Order& o, const TradingView& view) {
           {"underlying", underlying(view, order_symbols(o.request).front())},
           {"side", multi ? json(nullptr) : json(side_name(o.request.side))}, {"legs", legs},
           {"type", o.request.type == OrderType::Limit ? "limit" : "market"},
-          {"time_in_force", o.request.tif == TimeInForce::Day ? "day" : "ioc"},
+          {"time_in_force", o.request.tif == TimeInForce::Day ? "day" : o.request.tif == TimeInForce::Gtc ? "gtc" : "ioc"},
+          {"tags", o.request.tags}, {"note", o.request.note}, {"exits_only", o.request.exits_only},
           {"quantity", o.request.quantity}, {"filled_quantity", o.filled_quantity},
           {"remaining_quantity", o.remaining()}, {"limit_price", money(o.request.limit_price)},
           {"average_fill_price", o.filled_quantity > 0
@@ -583,9 +584,9 @@ Limits parse_limits(const json& j) {
 Trigger parse_trigger(const json& j) {
   fields(j, {"source", "direction", "level"});
   const auto source = string_field(j, "source"), direction = string_field(j, "direction");
-  if ((source != "option" && source != "underlying") || (direction != "at_or_below" && direction != "at_or_above"))
-    throw std::invalid_argument("trigger source must be option or underlying, direction at_or_below or at_or_above");
-  return {source == "option" ? TriggerSource::Option : TriggerSource::Underlying,
+  if ((source != "option" && source != "underlying" && source != "combo") || (direction != "at_or_below" && direction != "at_or_above"))
+    throw std::invalid_argument("trigger source must be option, combo or underlying, direction at_or_below or at_or_above");
+  return {source == "option" ? TriggerSource::Option : source == "combo" ? TriggerSource::Combo : TriggerSource::Underlying,
           direction == "at_or_below" ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove, decimal_field(j, "level")};
 }
 ExitSpec parse_exit(const json& j) {
@@ -784,15 +785,15 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   if (path == "/api/orders") {
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
-    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price"});
-    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket"});
+    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only"});
+    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note"});
     auto& order = command.order;
     order.client_order_id = string_field(body, "client_order_id");
     const auto type = string_field(body, "type"), tif = string_field(body, "time_in_force");
-    if ((type != "limit" && type != "market") || (tif != "day" && tif != "ioc"))
+    if ((type != "limit" && type != "market") || (tif != "day" && tif != "ioc" && tif != "gtc"))
       throw std::invalid_argument("Invalid type or time_in_force");
     order.type = type == "limit" ? OrderType::Limit : OrderType::Market;
-    order.tif = tif == "day" ? TimeInForce::Day : TimeInForce::Ioc;
+    order.tif = tif == "day" ? TimeInForce::Day : tif == "gtc" ? TimeInForce::Gtc : TimeInForce::Ioc;
     order.quantity = integer_field(body, "quantity");
     if ((order.type == OrderType::Limit) != body.contains("limit_price"))
       throw std::invalid_argument("limit_price is required for limit orders and forbidden for market orders");
@@ -811,12 +812,22 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
         if (item.contains("ratio")) leg.ratio = integer_field(item, "ratio");
         order.legs.push_back(std::move(leg));
       }
-      return command;
+    } else {
+      order.symbol = symbol_field(body);
+      const auto side = string_field(body, "side");
+      if (side != "buy" && side != "sell") throw std::invalid_argument("Invalid side, type or time_in_force");
+      order.side = side == "buy" ? Side::Buy : Side::Sell;
     }
-    order.symbol = symbol_field(body);
-    const auto side = string_field(body, "side");
-    if (side != "buy" && side != "sell") throw std::invalid_argument("Invalid side, type or time_in_force");
-    order.side = side == "buy" ? Side::Buy : Side::Sell;
+    if (body.contains("exits_only")) order.exits_only = boolean_field(body, "exits_only");
+    if (body.contains("note")) order.note = string_field(body, "note");
+    if (body.contains("tags")) {
+      const auto& tags = body.at("tags");
+      if (!tags.is_array() || tags.size() > 16) throw std::invalid_argument("tags must be an array of at most 16 strings");
+      for (const auto& tag : tags) {
+        if (!tag.is_string()) throw std::invalid_argument("tags must be strings");
+        order.tags.push_back(tag.get<std::string>());
+      }
+    }
     if (body.contains("trigger")) order.trigger = parse_trigger(body.at("trigger"));
     if (body.contains("bracket")) {
       const auto& bracket = body.at("bracket");

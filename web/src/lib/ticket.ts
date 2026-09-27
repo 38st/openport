@@ -71,9 +71,9 @@ export function crossDirection(level: number, spot: number | null | undefined): 
   return spot != null && Number.isFinite(spot) && level < spot ? "at_or_below" : "at_or_above"
 }
 /** "bid ≤ $3.50" or "SPX ≥ 5,010.00". */
-export function describeTrigger(trigger: { source: "option" | "underlying"; direction: Direction; level: string }, side: Side, underlying: string): string {
+export function describeTrigger(trigger: { source: "option" | "underlying" | "combo"; direction: Direction; level: string }, side: Side, underlying: string): string {
   const sign = trigger.direction === "at_or_below" ? "≤" : "≥"
   const level = Number(trigger.level)
   const text = Number.isFinite(level) ? level.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : trigger.level
-  return trigger.source === "option" ? `${side === "buy" ? "ask" : "bid"} ${sign} $${text}` : `${underlying} ${sign} ${text}`
+  return trigger.source === "combo" ? `closing net ${sign} $${text}` : trigger.source === "option" ? `${side === "buy" ? "ask" : "bid"} ${sign} $${text}` : `${underlying} ${sign} ${text}`
 }

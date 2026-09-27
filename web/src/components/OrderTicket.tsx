@@ -60,14 +60,15 @@ export function OrderResult({ order, error, children }: { order?: Order; error?:
 const quickSizes = [1, 5, 10, 25, 50]
 
 /** A dialog by default; `panel` docks it beside the chain. */
-export function OrderTicket({ selection, quote, trading, onClose, variant = "dialog", smile, surface }: {
+export function OrderTicket({ selection, quote, trading, onClose, variant = "dialog", smile, surface, tags, note }: {
   selection: TicketSelection; quote: OptionQuote | null; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel"
   /** The expiry's smile, for the probability of profit; the option's own volatility otherwise. */
+  tags?: string[]; note?: string
   smile?: readonly { strike: number; iv: number | null }[]
   surface?: Surface
 }) {
   const title = "Paper order"
-  const body = <TicketBody selection={selection} quote={quote} trading={trading} onClose={onClose} variant={variant} smile={smile} surface={surface} />
+  const body = <TicketBody selection={selection} quote={quote} trading={trading} onClose={onClose} variant={variant} smile={smile} surface={surface} tags={tags} note={note} />
   if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
     <aside aria-label="Order ticket" className="flex max-h-[calc(100dvh-7rem)] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-chart">
@@ -80,8 +81,9 @@ export function OrderTicket({ selection, quote, trading, onClose, variant = "dia
   )
 }
 
-function TicketBody({ selection, quote, trading, onClose, variant, smile, surface }: {
+function TicketBody({ selection, quote, trading, onClose, variant, smile, surface, tags, note }: {
   selection: TicketSelection; quote: OptionQuote | null; trading: TradingStatus; onClose: () => void; variant: "dialog" | "panel"
+  tags?: string[]; note?: string
   smile?: readonly { strike: number; iv: number | null }[]
   surface?: Surface
 }) {
@@ -97,7 +99,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const extended = extendedSession(underlying)
   const [chosenType, setType] = useState<"limit" | "market">("limit")
   const type = extended ? "limit" : chosenType
-  const [tif, setTif] = useState<"day" | "ioc">("day")
+  const [tif, setTif] = useState<"day" | "gtc" | "ioc">("day")
   const [quantity, setQuantity] = useState(String(selection.quantity ?? 1))
   const [limitPrice, setLimitPrice] = useState(() => limitPriceText(selection.price))
   const [fee, setFee] = useState("")
@@ -170,7 +172,9 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const reason = quote?.untradable_reason ?? "Contract unavailable for paper trading"
   const root = selection.symbol.slice(0, 6).trim()
   const name = strategyName(side, selection.optionType, held, Number.isSafeInteger(q) && q > 0 ? q : 1)
-  const fill = marketability(side, type, limitPrice, quote)
+  const fill = type === "limit" && tif === "gtc" && extended
+    ? { marketable: false, message: "GTC waits for the regular session, even if the current quote crosses its limit." }
+    : marketability(side, type, limitPrice, quote)
   // Mirrors the server: margin on the held positions (spreads netted) plus premium and fees.
   const power = rules?.margin === "portfolio" || rules?.slippage_ticks ? null
     : orderPowerUse({ side, quantity: q, price: estimatedPrice == null ? null : Number(estimatedPrice), fee: Number(effectiveFee ?? 0) },
@@ -197,6 +201,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         client_order_id: crypto.randomUUID(), symbol: selection.symbol, side, quantity: q,
         ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitPrice }),
         ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
+        ...(tags ? { tags } : {}), ...(note ? { note } : {}),
       }
       setSubmitted(true)
       const response = await api.submitOrder(request.current, trading.write)
@@ -287,7 +292,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         </div>
         <div className="trade-label col-span-2">Time in force
           <Segmented label="Time in force" value={type === "market" ? "ioc" : tif} onChange={(next) => { if (type !== "market") setTif(next) }}
-            options={[{ value: "day", label: "Day" }, { value: "ioc", label: "IOC" }]} />
+            options={type === "market" ? [{ value: "ioc", label: "IOC" }] : [{ value: "day", label: "Day" }, { value: "gtc", label: "GTC" }, { value: "ioc", label: "IOC" }]} />
         </div>
         {type === "limit" && <div className="trade-label col-span-2">
           <label className="trade-label">Limit price ($)<input className="trade-input" inputMode="decimal" value={limitPrice} onChange={(e) => setLimitPrice(e.target.value)} onBlur={() => setLimitPrice(limitPriceText(limitPrice))} onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setLimitPrice(stepLimitPrice(root, limitPrice, e.key === "ArrowUp" ? 1 : -1)) } }} pattern="[0-9]+([.][0-9]+)?" required /></label>

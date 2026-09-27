@@ -140,10 +140,10 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
               {order.role && <Badge tone={order.role === "stop_loss" ? "negative" : "positive"}>{order.role === "stop_loss" ? "Stop" : "Target"}</Badge>}
               {order.bracket && <Badge tone="neutral">Bracket</Badge>}</div>
             <div className="text-[10px] text-faint">#{order.id}{order.origin === "system" ? " · system" : ""}{order.parent ? ` · for #${order.parent}` : ""}
-              {order.trigger && order.side ? ` · when ${describeTrigger(order.trigger, order.side, order.underlying)}` : ""}
+              {order.trigger ? ` · when ${describeTrigger(order.trigger, order.side ?? "buy", order.underlying)}` : ""}
               {order.triggered_at ? " · triggered" : ""}</div></td>
           <td className={order.side === "buy" ? "text-bullish" : order.side === "sell" ? "text-bearish" : "text-accent"}>{order.side ? order.side.toUpperCase() : "NET"}</td>
-          <td>{order.type} · {order.time_in_force}</td>
+          <td>{order.type} · {order.time_in_force.toUpperCase()}</td>
           <td>{order.filled_quantity} / {order.quantity}</td>
           <td>{order.limit_price ? order.legs ? netLabel(order.limit_price) : formatMoney(order.limit_price) : "MKT"}</td>
           <td>{order.legs && order.average_fill_price ? netLabel(order.average_fill_price) : formatMoney(order.average_fill_price)}</td>

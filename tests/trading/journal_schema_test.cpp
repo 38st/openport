@@ -390,5 +390,47 @@ TEST(TradingJournalSchema, DamagedDeltasAreCorrupt) {
   });
 }
 
+
+TEST(TradingJournalSchema, GtcAndOrderMetadataSurviveRecoveryAndOldRequestsGetDefaults) {
+  TemporaryDirectory directory;
+  test::ScriptedMarket f;
+  const auto path = directory.file("gtc.jsonl");
+  std::string expected;
+  {
+    TradingSession s({}, f.time, FileJournal::create(path));
+    f.seed(s);
+    auto r = f.limit("tagged", 1, "4.10", Side::Buy, TimeInForce::Gtc);
+    r.tags = {" Plan "}; r.note = " Journalled ";
+    ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+    expected = s.snapshot_json();
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  f.next();
+  recovered.on_quotes({f.quote("4.00", "4.10")}, {f.valuation()}, f.time);
+  EXPECT_EQ(recovered.snapshot()->recent_orders[0].status, OrderStatus::Filled);
+  EXPECT_EQ(recovered.snapshot()->annotations.at("1").tags, (std::vector<std::string>{"plan"}));
+  EXPECT_EQ(recovered.snapshot()->annotations.at("1").note, "Journalled");
+  // An older schema-3 writer recorded Day orders without these fields.
+  Json state;
+  const auto legacy = rewritten(directory, "legacy-orders.jsonl", path, [&](std::size_t, Json& payload) {
+    if (payload.contains("state")) state = payload["state"];
+    else detail::apply_state_delta(state, payload["delta"]);
+    auto checkpoint = state;
+    for (auto& order : checkpoint["orders"]) {
+      auto& request = order["request"];
+      request.erase("tags"); request.erase("note"); request.erase("exits_only"); request["tif"] = 0;
+    }
+    payload.erase("delta");
+    payload["state"] = checkpoint;
+  });
+  const auto old = TradingSession::recover(FileJournal::read(legacy));
+  const auto& request = old.snapshot()->recent_orders[0].request;
+  EXPECT_EQ(request.tif, TimeInForce::Day);
+  EXPECT_TRUE(request.tags.empty());
+  EXPECT_TRUE(request.note.empty());
+  EXPECT_FALSE(request.exits_only);
+}
+
 }  // namespace
 }  // namespace openport::trading

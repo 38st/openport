@@ -96,7 +96,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
     ["strangle", "Short strangle", "short-strangle-15d"],
     ["straddle", "Short straddle", "short-straddle-atm"],
     ["butterfly", "Long call butterfly", "long-call-butterfly-atm-5w"],
-    ["diagonal", "Diagonal spread", `call-diagonal-atm-5pt-${far.expiry.id}`],
+    ["diagonal", "Diagonal spread", "call-diagonal-atm-5pt"],
   ])("reviews a %s with its risk and tag", async (kind, label, tag) => {
     await openTemplates()
     await field("Template", kind!)
@@ -161,7 +161,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
     expect(host.textContent).toContain("Calendar spread")
     expect(host.textContent).toContain("Oct 16 / Nov 20")
     expect(host.textContent).toContain("Estimated P&L at the Oct 16 expiry")
-    expect(host.textContent).toContain(`call-calendar-atm-${far.expiry.id}`)
+    expect(host.textContent).toContain("call-calendar-atm")
     expect(api.submitOrder).not.toHaveBeenCalled()
   })
   it("requests the surface prefix containing a later selected expiry", async () => {

@@ -263,3 +263,27 @@ describe("order ticket interaction", () => {
     expect(api.submitOrder).not.toHaveBeenCalled()
   })
 })
+
+
+it("submits a GTC limit with supplied template tags and note", async () => {
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} tags={["put-credit-10d-5w"]} note="Plan" />
+  </QueryClientProvider>))
+  await choose("Time in force", "GTC")
+  await click("Submit order")
+  expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ time_in_force: "gtc", tags: ["put-credit-10d-5w"], note: "Plan" })
+})
+
+
+it("explains that a marketable GTC limit waits overnight and markets offer IOC only", async () => {
+  vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }] }, null, "open"))
+  await render()
+  await choose("Time in force", "GTC")
+  expect(host.textContent).toContain("GTC waits for the regular session")
+  vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+  await render()
+  await choose("Order type", "Market")
+  expect(host.querySelectorAll('[role="radiogroup"][aria-label="Time in force"] [role="radio"]')).toHaveLength(1)
+  await click("Submit order")
+  expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ type: "market", time_in_force: "ioc" })
+})

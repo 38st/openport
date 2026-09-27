@@ -2,15 +2,19 @@ import { useQueries, useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
-import type { TradingStatus } from "../api/trading-types"
+import { useOpenOrders } from "../api/trading"
+import type { NewOrder, Order, TradingStatus } from "../api/trading-types"
 import type { Chain } from "../api/types"
 import { days, expiryLabel, fixed } from "../lib/format"
-import { closingPlan, rollPlan, type StrategyGroup } from "../lib/positions"
+import { closingPlan, rollPlan, rollSides, type StrategyGroup } from "../lib/positions"
 import type { StrategyLeg } from "../lib/strategy"
 import { formatMoney, signedMoney } from "../lib/trading"
+import { comboTickCents } from "../lib/trading"
+import { EditOrderDialog, useWrite } from "./OrderActions"
+import { useSpreadExits } from "./SpreadExits"
 import { Dialog } from "./Dialog"
 import { StrategyTicket } from "./StrategyTicket"
-import { TradingError } from "./TradingControls"
+import { TradingError, WriteAccess } from "./TradingControls"
 import { Badge, toneOf, toneText } from "./ui"
 
 /** Every chain the legs trade in, all strikes, for their live quotes. */
@@ -46,12 +50,16 @@ export function RollDialog({ group, trading, onClose }: { group: StrategyGroup; 
     queryFn: ({ signal }) => api.summary(group.underlying, signal),
   })
   const later = (summary.data?.expiries ?? []).filter((e) => e.id > group.expiry)
+  const sides = rollSides(group)
+  const [side, setSide] = useState<"put" | "call" | undefined>(group.legs.length > 2 ? sides[0] : undefined)
+  const [strikes, setStrikes] = useState<number[] | undefined>()
+  const selected = side ? group.legs.filter(({ leg }) => leg.type === side) : group.legs
   const [choice, setChoice] = useState<string | null>(null)
   const target = choice ?? later[0]?.id ?? null
   const { chains, ready, error } = useChains(group.underlying, target ? [group.expiry, target] : [group.expiry])
   const [edited, setEdited] = useState<{ target: string; legs: StrategyLeg[] } | null>(null)
   const targetChain = chains.find((c) => c.expiry.id === target)
-  const plan = targetChain ? rollPlan(group, { id: targetChain.expiry.id, strikes: targetChain.strikes }) : null
+  const plan = targetChain ? rollPlan(group, { id: targetChain.expiry.id, strikes: targetChain.strikes }, side, strikes) : null
   const title = `Roll ${group.label.toLowerCase()}`
   return (
     <Dialog title={title} onClose={onClose}>
@@ -59,13 +67,26 @@ export function RollDialog({ group, trading, onClose }: { group: StrategyGroup; 
         <div className="font-medium">{group.title}</div>
         <div className="text-xs text-muted">{group.units} unit{group.units === 1 ? "" : "s"}, opened at {group.cost == null ? "—" : `${formatMoney(Math.abs(group.cost).toFixed(2))} ${group.cost < 0 ? "credit" : "debit"}`}</div>
       </div>
+      {group.legs.length > 2 && <label className="trade-label">Roll side
+        <select className="trade-input" value={side} onChange={(e) => { setSide(e.target.value as "put" | "call"); setStrikes(undefined); setEdited(null) }}>
+          {sides.map((value) => <option key={value} value={value}>{value === "put" ? "Put vertical" : "Call vertical"}</option>)}
+        </select>
+      </label>}
       <label className="flex items-center gap-2 text-sm">
         <span className="text-muted">Roll to</span>
         <select className="trade-input !w-auto !py-1" value={target ?? ""} disabled={!later.length}
-          onChange={(e) => { setChoice(e.target.value); setEdited(null) }}>
+          onChange={(e) => { setChoice(e.target.value); setStrikes(undefined); setEdited(null) }}>
           {later.map((e) => <option key={e.id} value={e.id}>{expiryLabel(e.id, true)} · {days(e.days)}</option>)}
         </select>
       </label>
+      {targetChain && selected.map(({ leg }, index) => <label className="trade-label" key={leg.symbol}>New {leg.type} strike ({leg.side})
+        <select className="trade-input" value={strikes?.[index] ?? leg.strike} onChange={(e) => {
+          const next = strikes ?? selected.map((member) => member.leg.strike)
+          setStrikes(next.map((value, i) => i === index ? Number(e.target.value) : value)); setEdited(null)
+        }}>
+          {targetChain.strikes.filter((row) => row[leg.type]?.tradable).map((row) => <option key={row.strike} value={row.strike}>{row.strike}</option>)}
+        </select>
+      </label>)}
       <TradingError error={summary.error ?? error} />
       {summary.data && !later.length && <p className="text-sm text-muted">No later expiry is listed.</p>}
       {plan && "reason" in plan && <p className="text-sm text-warn">{plan.reason}</p>}
@@ -83,6 +104,7 @@ export function Strategies({ groups, trading, now = Date.now() }: { groups: read
   /** The market's clock, for the time to expiry: a replay's while trading one. */
   now?: number }) {
   const [closing, setClosing] = useState<StrategyGroup | null>(null)
+  const [exiting, setExiting] = useState<StrategyGroup | null>(null)
   const [rolling, setRolling] = useState<StrategyGroup | null>(null)
   const net = (value: number | null) => value == null ? "—" : `${formatMoney(Math.abs(value).toFixed(2))} ${value < 0 ? "cr" : "db"}`
   return <>
@@ -109,8 +131,9 @@ export function Strategies({ groups, trading, now = Date.now() }: { groups: read
               <td>{left == null ? "—" : days(Math.max(0, left))}</td>
               <td><div className="flex justify-end gap-1">
                 <button type="button" className="trade-button" disabled={!trading.enabled} aria-label={`Close ${group.label} ${group.title}`} onClick={() => setClosing(group)}>Close</button>
-                <button type="button" className="trade-button" disabled={!trading.enabled || group.legs.length > 2} aria-label={`Roll ${group.label} ${group.title}`}
-                  title={group.legs.length > 2 ? "Rolls take up to two legs as one order" : "Close and reopen at a later expiry"} onClick={() => setRolling(group)}>Roll</button>
+                <button type="button" className="trade-button" disabled={!trading.enabled || (group.legs.length > 2 && !rollSides(group).length)} aria-label={`Roll ${group.label} ${group.title}`}
+                  title={group.legs.length > 2 ? "Roll the put or call vertical" : "Close and reopen at a later expiry"} onClick={() => setRolling(group)}>Roll</button>
+                <button type="button" className="trade-button" disabled={!trading.enabled} aria-label={`Exits for ${group.label} ${group.title}`} onClick={() => setExiting(group)}>Exits…</button>
               </div></td>
             </tr>
           })}
@@ -120,6 +143,50 @@ export function Strategies({ groups, trading, now = Date.now() }: { groups: read
     <p className="mt-2 text-[11px] text-muted">A strategy is the positions one multi-leg order opened, while they are still held together. P&L is before fees; max profit and loss are at expiry.</p>
     {closing && <CloseStrategyDialog plan={closingPlan(closing)} underlying={closing.underlying} title={`Close ${closing.label.toLowerCase()}`}
       trading={trading} onClose={() => setClosing(null)} />}
+    {exiting && <SpreadExitsDialog group={exiting} trading={trading} onClose={() => setExiting(null)} />}
     {rolling && <RollDialog group={rolling} trading={trading} onClose={() => setRolling(null)} />}
   </>
+}
+
+/** Attach a pair to held legs, or change/cancel each existing exit in place. */
+export function SpreadExitsDialog({ group, trading, onClose }: { group: StrategyGroup; trading: TradingStatus; onClose: () => void }) {
+  const write = useWrite(trading)
+  const orders = useOpenOrders()
+  const plan = closingPlan(group)
+  const active = (orders.data?.orders ?? group.exits ?? []).filter((order) => order.role &&
+    order.legs?.length === plan.legs.length && order.legs.every((leg) => plan.legs.some((held) =>
+      held.symbol === leg.symbol && held.side === leg.side && held.ratio === leg.ratio)))
+  const [editing, setEditing] = useState<Order | null>(null)
+  const [clientId] = useState(() => crypto.randomUUID())
+  const exits = useSpreadExits(group.cost, comboTickCents(plan.legs.map((leg) => leg.symbol.slice(0, 6).trim())), true)
+  if (editing) return <EditOrderDialog order={editing} trading={trading} onClose={() => setEditing(null)} onDone={() => setEditing(null)} />
+  async function submit() {
+    const bracket = exits.bracket
+    const primary = bracket?.take_profit ?? bracket?.stop_loss
+    if (!primary || !bracket) return
+    const request: NewOrder = {
+      client_order_id: clientId, legs: plan.legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })),
+      quantity: plan.units, exits_only: true, bracket,
+      ...(primary.trigger ? { type: "market", time_in_force: "ioc", trigger: primary.trigger }
+        : { type: "limit", time_in_force: "gtc", limit_price: primary.limit_price }),
+    }
+    await write.run(() => api.submitOrder(request, trading.write), onClose)
+  }
+  return <Dialog title={`Exits · ${group.label}`} onClose={onClose}>
+    <p className="text-sm">{group.title} · {group.units} units</p>
+    <WriteAccess trading={trading} />
+    <TradingError error={write.error ?? orders.error} />
+    {active.length ? <>
+      {active.map((order) => <div className="flex items-center justify-between gap-3 text-sm" key={order.id}>
+        <span>{order.role === "stop_loss" ? "Stop loss" : "Take profit"} · #{order.id} · {order.trigger?.level ?? order.limit_price}</span>
+        <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => setEditing(order)}>Change</button>
+      </div>)}
+      <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => void write.run(async () => {
+        for (const order of active) await api.cancelOrder(order.id, trading.write)
+      }, onClose)}>Cancel exits</button>
+    </> : <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); void submit() }}>
+      <fieldset disabled={write.pending}>{exits.fields}</fieldset>
+      <button className="trade-button" disabled={!exits.valid || !exits.bracket || write.pending || write.blocked || orders.isPending || !!orders.error}>Set exits</button>
+    </form>}
+  </Dialog>
 }

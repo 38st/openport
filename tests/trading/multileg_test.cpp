@@ -562,5 +562,261 @@ TEST(TradingMultiLeg, CombosSurviveRecoveryAndCancelAtTheSessionEnd) {
   std::filesystem::remove_all(directory);
 }
 
+
+Bracket spread_bracket(TriggerSource source = TriggerSource::Combo) {
+  return {ExitSpec{Trigger{source, TriggerDirection::AtOrAbove, m(source == TriggerSource::Combo ? "2.00" : "5010")}, {}},
+          ExitSpec{{}, m("0.40")}};
+}
+std::vector<Leg> credit_legs() { return {leg(P4900, Side::Sell), leg(P4890, Side::Buy)}; }
+std::vector<Leg> close_legs() { return {leg(P4900, Side::Buy), leg(P4890, Side::Sell)}; }
+
+TEST(TradingMultiLeg, BracketCreatesAndGrowsAtomicExitsAndTagsOpeningTrades) {
+  Chain f;
+  auto c = config();
+  c.rules.defined_risk = true;
+  c.rules.buying_power = true;
+  TradingSession s(c, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+  auto r = combo("entry", credit_legs(), 3, "-0.80");
+  r.bracket = spread_bracket();
+  r.tags = {" Put-credit-10d-5w ", "Test"};
+  r.note = " Entry plan ";
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  auto snap = s.snapshot();
+  ASSERT_EQ(snap->recent_orders.size(), 3U);
+  EXPECT_EQ(snap->recent_orders[1].status, OrderStatus::Armed);
+  EXPECT_EQ(snap->recent_orders[1].request.legs, close_legs());
+  EXPECT_EQ(snap->recent_orders[2].request.quantity, 1);
+  EXPECT_EQ(snap->recent_orders[1].oco, 3U);
+  ASSERT_EQ(snap->annotations.size(), 2U);
+  EXPECT_EQ(snap->annotations.at("1").tags, (std::vector<std::string>{"put-credit-10d-5w", "test"}));
+  EXPECT_EQ(snap->annotations.at("2").note, "Entry plan");
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 2);
+  snap = s.snapshot();
+  EXPECT_EQ(snap->recent_orders[0].status, OrderStatus::Filled);
+  EXPECT_EQ(snap->recent_orders[1].request.quantity, 3);
+  EXPECT_EQ(snap->recent_orders[2].request.quantity, 3);
+  EXPECT_EQ(snap->annotations.size(), 2U);  // additions remain the same round trips
+  EXPECT_EQ(snap->buying_power.reserved, m("3.90"));  // OCO pair reserves fees once
+  s.trip_kill("reduce only", f.time);
+  f.quote(s, {{P4900, "4.00", "4.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 3);
+  snap = s.snapshot();
+  EXPECT_TRUE(snap->positions.empty());
+  EXPECT_EQ(snap->recent_orders[1].reason.code, Reason::OCO_FILLED);
+  EXPECT_EQ(snap->recent_orders[2].filled_notional, m("0.60"));  // improved net 0.20, three units
+  EXPECT_EQ(snap->annotations.size(), 2U);
+}
+
+TEST(TradingMultiLeg, StopsReadDisplayedComboNetOrUnderlyingAndUseSlippageAndSize) {
+  for (const auto source : {TriggerSource::Combo, TriggerSource::Underlying}) {
+    Chain f;
+    auto c = config();
+    c.rules.slippage_ticks = 1;
+    c.rules.defined_risk = true;
+    TradingSession s(c, f.time);
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    auto r = combo("entry", credit_legs(), 2, {});
+    r.bracket = spread_bracket(source);
+    ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+    s.trip_kill("close only", f.time);
+    // Displayed net 1.90 is below the stop, although slipped net is 2.10.
+    f.quote(s, {{P4900, "5.70", "5.90", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Armed);
+    f.quote(s, {{P4900, "5.80", "6.00", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+    if (source == TriggerSource::Underlying) {
+      EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Armed);
+      s.on_quotes({}, {{P4900, f.time, -0.30, 0.001, 2, -0.1, 5010, 5010, 0.99, 0.1, 0.2, true}}, f.time);
+    }
+    const auto snap = s.snapshot();
+    EXPECT_EQ(snap->recent_orders[1].filled_quantity, 1);
+    EXPECT_EQ(snap->recent_orders[1].reason.code, Reason::IOC_REMAINDER);
+    EXPECT_EQ(snap->recent_orders[2].reason.code, Reason::OCO_FILLED);
+    ASSERT_EQ(snap->recent_fills.size(), 4U);
+    EXPECT_EQ(snap->recent_fills[2].price, m("6.10"));
+    EXPECT_EQ(snap->recent_fills[3].price, m("3.90"));
+    ASSERT_EQ(snap->positions.size(), 2U);
+    EXPECT_EQ(std::abs(snap->positions[0].position.quantity), 1);
+    EXPECT_EQ(std::abs(snap->positions[1].position.quantity), 1);
+  }
+}
+
+TEST(TradingMultiLeg, TargetWaitsUntilTheSlippedNetFitsAndDebitEntriesReceiveCredit) {
+  for (const bool credit : {true, false}) {
+    Chain f;
+    auto c = config();
+    c.rules.slippage_ticks = 1;
+    TradingSession s(c, f.time);
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    auto r = combo("entry", credit ? credit_legs() : close_legs(), 1, {});
+    r.bracket = Bracket{{}, ExitSpec{{}, m(credit ? "0.40" : "-1.60")}};
+    ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+    f.quote(s, {{P4900, credit ? "4.05" : "5.75", credit ? "4.25" : "5.95", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Working);
+    f.quote(s, {{P4900, credit ? "4.00" : "6.00", credit ? "4.20" : "6.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Filled);
+    EXPECT_EQ(s.snapshot()->recent_orders[1].filled_notional, m(credit ? "0.40" : "-1.60"));
+  }
+}
+
+TEST(TradingMultiLeg, HeldExitsValidateHoldingsAndCanModifyCancelAndCloseUnderKill) {
+  Chain f;
+  auto c = config();
+  c.rules.defined_risk = true;
+  TradingSession s(c, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  auto exits = combo("none", close_legs(), 1, "0.40", TimeInForce::Gtc);
+  exits.bracket = spread_bracket();
+  exits.exits_only = true;
+  EXPECT_EQ(s.submit(exits, f.time).decision.code, Reason::INVALID_ORDER);
+  ASSERT_TRUE(s.submit(combo("entry", credit_legs(), 2, {}), f.time).decision.ok());
+  exits.client_order_id = "oversize";
+  exits.quantity = 3;
+  EXPECT_EQ(s.submit(exits, f.time).decision.code, Reason::INVALID_ORDER);
+  exits.quantity = 2;
+  exits.client_order_id = "ratio";
+  exits.legs[0].ratio = 2;
+  EXPECT_EQ(s.submit(exits, f.time).decision.code, Reason::INVALID_ORDER);
+  exits.legs = close_legs();
+  exits.client_order_id = "valid";
+  s.trip_kill("reduce", f.time);
+  const auto placed = s.submit(exits, f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  EXPECT_TRUE(s.submit(exits, f.time).replayed);
+  auto snap = s.snapshot();
+  const auto target = *placed.order_id;
+  const auto stop = snap->recent_orders.at(static_cast<std::size_t>(target - 1)).oco;
+  ASSERT_NE(stop, 0U);
+  EXPECT_EQ(snap->recent_fills.size(), 2U);  // no synthetic entry
+  ASSERT_TRUE(s.modify(target, {{}, m("0.60"), {}}, f.time).decision.ok());
+  ASSERT_TRUE(s.modify(stop, {{}, {}, m("2.50")}, f.time).decision.ok());
+  f.quote(s, {{P4900, "4.40", "4.60", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders.at(static_cast<std::size_t>(stop - 1)).reason.code, Reason::OCO_FILLED);
+}
+
+TEST(TradingMultiLeg, PlainConditionalCombosMustReduceAndNeverMatchWhileArmed) {
+  Chain f;
+  TradingSession s(config(), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  auto r = combo("opening", close_legs(), 1, {});
+  r.trigger = Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("2.00")};
+  EXPECT_EQ(s.submit(r, f.time).decision.code, Reason::INVALID_ORDER);
+  ASSERT_TRUE(s.submit(combo("entry", credit_legs(), 1, {}), f.time).decision.ok());
+  r.client_order_id = "closing";
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 2U);
+  s.trip_kill("reduce", f.time);
+  f.quote(s, {{P4900, "5.80", "6.00", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingMultiLeg, GtcAndExitsWaitOvernightAndExpireAtTheNearestLeg) {
+  Chain f;
+  TradingSession s(config(), f.time);
+  f.define(s, {P4900, LATER});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {LATER, "4.00", "4.20", -0.28}});
+  auto r = combo("gtc", {leg(P4900, Side::Sell), leg(LATER, Side::Buy)}, 1, "-1.00", TimeInForce::Gtc);
+  r.bracket = spread_bracket();
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  f.time = md::new_york_to_utc({2026, 9, 22}, 21, 0);
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  f.quote(s, {{P4900, "5.20", "5.40", -0.30}, {LATER, "4.00", "4.20", -0.28}});
+  EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+  f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  f.quote(s, {{P4900, "5.20", "5.40", -0.30}, {LATER, "4.00", "4.20", -0.28}});
+  EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Filled);
+  f.time = md::new_york_to_utc({2026, 9, 23}, 21, 0);
+  f.quote(s, {{P4900, "4.00", "4.20", -0.30}, {LATER, "4.00", "4.20", -0.28}});
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 2U);
+  s.on_quotes({}, {}, md::parse_osi(P4900)->last_trade_time());
+  EXPECT_EQ(s.snapshot()->recent_orders[1].reason.code, Reason::EXPIRED);
+  EXPECT_EQ(s.snapshot()->recent_orders[2].reason.code, Reason::EXPIRED);
+}
+
+
+TEST(TradingMultiLeg, ExitFillCancelsPartialEntryAndManualClosesShrinkEveryLeg) {
+  Chain f;
+  TradingSession s(config(), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+  auto r = combo("partial", credit_legs(), 3, "-0.80");
+  r.bracket = spread_bracket();
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  f.quote(s, {{P4900, "4.00", "4.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders[0].reason.code, Reason::OCO_FILLED);
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 5);
+  r.client_order_id = "full";
+  const auto next = s.submit(r, f.time);
+  ASSERT_TRUE(next.decision.ok());
+  ASSERT_TRUE(s.submit(combo("manual", close_legs(), 1, {}), f.time).decision.ok());
+  auto snap = s.snapshot();
+  const auto parent = snap->recent_orders.at(static_cast<std::size_t>(*next.order_id - 1));
+  EXPECT_EQ(snap->recent_orders.at(static_cast<std::size_t>(parent.stop_loss - 1)).remaining(), 2);
+  EXPECT_EQ(snap->recent_orders.at(static_cast<std::size_t>(parent.take_profit - 1)).remaining(), 2);
+  ASSERT_TRUE(s.submit(combo("rest", close_legs(), 2, {}), f.time).decision.ok());
+  snap = s.snapshot();
+  EXPECT_EQ(snap->recent_orders.at(static_cast<std::size_t>(parent.stop_loss - 1)).reason.code, Reason::POSITION_CLOSED);
+}
+
+
+TEST(TradingMultiLeg, GtcBracketAndAttachedExitsRecoverWithOcoAndMetadata) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-combo-exits-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "combo.jsonl").string();
+  Chain f;
+  std::string expected;
+  {
+    TradingSession s(config(), f.time, FileJournal::create(path));
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+    auto r = combo("entry", credit_legs(), 2, "-0.80", TimeInForce::Gtc);
+    r.bracket = spread_bracket(); r.tags = {"spread"}; r.note = "plan";
+    ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+    expected = s.snapshot_json();
+  }
+  auto s = TradingSession::recover(FileJournal::read(path), FileJournal::resume(path));
+  EXPECT_EQ(s.snapshot_json(), expected);
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].request.quantity, 2);
+  ASSERT_TRUE(s.cancel(2, f.time).decision.ok());
+  ASSERT_TRUE(s.cancel(3, f.time).decision.ok());
+  auto exits = combo("attach", close_legs(), 2, "0.40", TimeInForce::Gtc);
+  exits.exits_only = true; exits.bracket = spread_bracket();
+  ASSERT_TRUE(s.submit(exits, f.time).decision.ok());
+  auto restored = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(restored.snapshot_json(), s.snapshot_json());
+  f.quote(restored, {{P4900, "4.00", "4.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_TRUE(restored.snapshot()->positions.empty());
+  EXPECT_EQ(restored.snapshot()->recent_orders.back().reason.code, Reason::OCO_FILLED);
+  EXPECT_EQ(restored.snapshot()->annotations.size(), 2U);
+  std::filesystem::remove_all(directory);
+}
+
+
+TEST(TradingMultiLeg, AClosingConditionalComboCanReduceABuyOnlyAccount) {
+  Chain f;
+  auto c = config();
+  c.rules.buy_only = true;
+  TradingSession s(c, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(single("long-one", P4900, Side::Buy), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("long-two", P4890, Side::Buy), f.time).decision.ok());
+  auto r = combo("conditional-close", {leg(P4900, Side::Sell), leg(P4890, Side::Sell)}, 1, {});
+  r.trigger = Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("-8.00")};
+  s.trip_kill("reduce", f.time);
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  f.quote(s, {{P4900, "4.00", "4.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 }  // namespace
 }  // namespace openport::trading

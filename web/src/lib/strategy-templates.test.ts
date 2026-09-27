@@ -95,6 +95,6 @@ describe("strategy templates on a synthetic chain", () => {
     expect(failure(calendar, chain, { ...far, expiry: { ...far.expiry, expiry_time: chain.expiry.expiry_time } })).toContain("settle after")
     expect(failure(calendar, chain, { ...far, strikes: far.strikes.filter((r) => r.strike !== 100) })).toContain("no listed 100 strike")
     expect(failure({ ...calendar, kind: "diagonal", offset: 1 })).toContain("snaps to the near strike")
-    expect(templateTag(calendar)).toBe(`call-calendar-atm-${far.expiry.id}`)
+    expect(templateTag(calendar)).toBe("call-calendar-atm")
   })
 })

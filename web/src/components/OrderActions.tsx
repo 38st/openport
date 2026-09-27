@@ -72,7 +72,7 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
       <div className="text-sm">
         <div className="font-medium">{orderLabel(order)}</div>
         <div className="mt-0.5 text-xs text-muted">
-          {order.side ? order.side.toUpperCase() : "NET"} · {order.type} · filled {order.filled_quantity} of {order.quantity}
+          {order.side ? order.side.toUpperCase() : "NET"} · {order.type} · {order.time_in_force.toUpperCase()} (time in force cannot change) · filled {order.filled_quantity} of {order.quantity}
           {order.role && <> · <Badge tone={order.role === "stop_loss" ? "negative" : "positive"}>{order.role === "stop_loss" ? "Stop" : "Target"}</Badge></>}
         </div>
       </div>

@@ -179,7 +179,7 @@ specification. Observed fill prices need not themselves be on the limit-order ti
 ## Orders and quote matching
 
 Orders have buy/sell side, a positive integer contract count, a client ID and one
-of market/IOC or limit/DAY/IOC. Market/DAY, market with a limit, and limit without
+of market/IOC or limit/DAY/GTC/IOC. Market/DAY or market/GTC, market with a limit, and limit without
 a positive price reject. Client IDs cannot be reused, even after a rejected order;
 HTTP retry/idempotency semantics belong to the integration layer.
 
@@ -191,7 +191,7 @@ the displayed far side is no worse than its limit, including equality: buys fill
 `min(limit, ask + slippage)` and sells at `max(limit, max(0, bid - slippage))`.
 Bracket exits, liquidation and expiry auto-close use the same slippage. Exercise,
 settlement and share trades keep their existing prices. Market orders never sweep undisplayed depth.
-Unfilled DAY limits rest; unfilled IOC quantity cancels with `IOC_REMAINDER`.
+Unfilled DAY and GTC limits rest; unfilled IOC quantity cancels with `IOC_REMAINDER`.
 `filled_quantity` remains separate from terminal state: cancelled orders may have
 fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
 
@@ -227,17 +227,28 @@ expiring ETF options trade on to 16:15. SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW opt
 date, and in the **curb** session, 16:15 to 17:00 ET after a full day (see
 [runtime notes](runtime.md#product-sessions-and-cboe-clocks)). As on Cboe, the overnight and curb
 sessions take limit orders only; openport also leaves triggers and brackets out of
-them, so they take plain limit orders, single or multi-leg, DAY or IOC. Anything else
-rejects with `LIMIT_ONLY`, and orders between sessions with `SESSION_CLOSED`. A DAY
+them, so they match plain limit orders, single or multi-leg, DAY or IOC. GTC orders
+wait for the regular session. Other nonpersistent orders
+reject with `LIMIT_ONLY`, and orders between sessions with `SESSION_CLOSED`. A DAY
 order lasts the session it was accepted in: an overnight order ends at 09:25 with
 `DAY_END` and does not carry into the regular session. Bracket exits, triggered
-orders and the account's own closing orders (liquidation, expiry close) act in the
+orders, GTC limits and the account's own closing orders (liquidation, expiry close) act in the
 regular session only, and flattening sends market orders, so it rejects outside it.
 AM-settled series stop trading at the regular close of the business day before their
 expiry, so no curb or overnight session trades them then (`SESSION_CLOSED`); PM
 series trade the overnight session of their expiry date. Contract expiry can be
 earlier than a session end and takes precedence (e.g. PM expiry 16:00). Boundaries
-process on the first command at/after them, before possible fills. Holidays and
+process on the first command at/after them, before possible fills.
+
+GTC limits survive session ends, daily rollover and journal recovery. They wait
+outside the regular session, even on products with overnight trading. They reserve
+risk and buying power on every day they rest, just like working DAY limits. Checks
+run again before a fill and on limit changes: a failed check cancels with
+`RISK_CHANGED`; missing or stale data waits. They cancel with `EXPIRED` at the
+earliest leg's last trade or the account's earlier auto-close deadline, even when
+no position is held. Evaluation decisions and account resets cancel them too.
+A plain GTC limit can be submitted outside a session if the data and other checks
+permit it; submission does not make it match there. Holidays and
 early closes follow NYSE's rules from 2022 on, and the overnight session runs into
 most holidays until 11:30 ET, as Cboe schedules it (see the runtime notes).
 
@@ -293,7 +304,7 @@ daemon log, and the engine carries on without it.
 
 ## Conditional and bracket orders
 
-Any order may carry a **trigger** `{source, direction, level}`. It is accepted with the
+A single-leg order, or a closing combo, may carry a **trigger** `{source, direction, level}`. It is accepted with the
 normal pre-trade checks, then rests as `Armed`: open, cancellable, reserving exposure and
 buying power, but never matched. Option triggers compare the order's executable side
 (ask for buys, bid for sells) from a fresh book; underlying triggers compare spot from
@@ -303,14 +314,15 @@ resting orders match, and at submission, only during the contract's regular sess
 A reached order is activated: entries rerun every pre-trade check, while bracket exits
 need only an executable book. Stale data or a closed session keeps it armed; any other
 failure cancels it with `RISK_CHANGED`. It then trades like any order (market orders
-IOC). Armed orders are good until the contract expires.
+IOC). Armed orders last until the nearest contract’s last trade or auto-close.
 
 A **bracket** `{stop_loss, take_profit}` on an entry creates exits as the entry fills.
 Each exit takes exactly one of a trigger (a stop: market IOC when reached) or a limit
 price (a resting take-profit). Exits take the opposite side and are sized to the entry's
 filled quantity; later entry fills grow them. Client IDs are the entry's with `:stop` or
 `:target`. The two exits are linked: the first fill of one cancels the other with
-`OCO_FILLED`. Exits never exceed the position they protect: they shrink when it shrinks
+`OCO_FILLED`. If the entry still has an unfilled remainder, the exit fill cancels
+it with the same reason so it cannot reopen after protection has fired. Exits never exceed the position they protect: they shrink when it shrinks
 and are cancelled with `POSITION_CLOSED` once it is flat, so they never open a
 position. Because they only reduce risk, they execute like system orders, without the
 price band or loss projection, and good-until-expiry exits wait for the next regular
@@ -321,8 +333,8 @@ exits never count against buy-only sells, so a manual close is always possible.
 
 An order with **legs** trades two to four contracts together: each leg names a
 registered contract, a side and a ratio from 1 to 10, all on one underlying (expiries may
-differ, so calendars and diagonals are allowed). The order has no symbol, side, trigger
-or bracket; its `quantity` counts units, and `limit_price` is the net per unit, positive
+differ, so calendars and diagonals are allowed). The order has no symbol or side;
+its `quantity` counts units, and `limit_price` is the net per unit, positive
 for a debit paid at most and negative for a credit received at least (zero is even).
 Market orders are IOC as usual. The net must be a multiple of the smallest lower-tier
 tick among the legs ($0.05 for SPX-class roots, $0.01 for XSP and equities).
@@ -331,8 +343,8 @@ Checks run per leg where they apply: registration, expiry, the session, a fresh
 executable book, and `units * ratio` within `max_order_contracts`. The net price must lie
 in the price band around the net mid, where the band is as wide as the one for the legs'
 gross premium (`max(absolute, relative * sum of ratio * mid)`). Buy-only plans reject
-multi-leg orders (`BUY_ONLY`), a leg inside the pre-expiry cutoff rejects the order
-(`EXPIRY_CUTOFF`), and daily loss, exposure and buying power apply to the whole order.
+opening multi-leg orders (`BUY_ONLY`); inside the pre-expiry cutoff only closing
+orders are accepted (`EXPIRY_CUTOFF`), and daily loss, exposure and buying power apply to the whole order.
 
 A multi-leg order fills **all legs together**, in ratio, when the net at the slipped
 far sides (asks plus slippage for bought legs, bids less slippage for sold legs) is
@@ -345,11 +357,68 @@ at submission). Each leg's fill is recorded under the order's ID; `filled_notion
 the average fill are the net per unit. The projected fill is checked for daily loss and,
 when any leg opens contracts, buying power, exactly like a single-leg fill. A working
 multi-leg order counts as one pending exposure (its legs summed), and it is cancelled at
-its earliest leg's expiry or its session end like any DAY order.
+its earliest leg's expiry or its session end like any DAY order. GTC limits instead
+use the earliest last trade or auto-close deadline.
+
+A multi-leg **entry bracket** reverses every entry leg, keeping its ratios. Entry
+brackets require opening legs; a roll or close cannot create a bracket on reversed
+legs it no longer holds. Exits are created on the first fill and grow with partial
+fills. Each exit fills all its legs together, and the pair counts once in risk and
+buying power. It remains reducing under the kill switch and must keep a defined-risk
+plan's shorts covered. Manual closes shrink or cancel the exits.
+
+Take-profit limits use the closing order's signed net: positive for the maximum
+buy-back debit after a credit entry, negative for the minimum credit after a debit
+entry. The ticket expresses this as a percentage of the entry net: 50% buys back
+half a credit, 150% receives one and a half times a debit. Prices snap to the combo
+tick. This fixes a price when submitted; it does not reprice with later entry fills.
+A target waits until the entire slipped closing net fits its limit.
+
+A stop has `source: "combo"` or `"underlying"`. Combo levels compare the sum of the
+closing legs' displayed asks for buys minus bids for sells, weighted by ratio,
+without slippage. Negative levels are allowed. Underlying levels must be positive
+and read the first leg's fresh valuation. On reaching the inclusive direction, the
+stop sends a closing market IOC combo with normal slippage and displayed-size
+limits. A partial stop fill cancels the sibling and its own IOC remainder; the
+remaining held units need new exits. Missing data never triggers. Plain triggered
+combos are accepted only when every leg reduces holdings, including other manual
+closing orders' claims. Opening combos cannot carry triggers.
+
+To attach exits to a held spread, submit its **closing** legs with `exits_only: true`
+and `bracket`. No entry fill is generated. The submitted order is the take-profit
+(or the stop if there is no target); its `type`, `limit_price` or `trigger` must match
+that exit. Use GTC for its limit or IOC for its triggered market order. Both exits
+last until the nearest leg's last trade or auto-close. Every leg must oppose a held
+position, and `quantity * ratio` must fit the holding. For example:
+
+```json
+{
+  "client_order_id": "held-put-exits",
+  "legs": [
+    {"symbol": "SPXW  261022P04900000", "side": "buy", "ratio": 1},
+    {"symbol": "SPXW  261022P04890000", "side": "sell", "ratio": 1}
+  ],
+  "quantity": 1, "type": "limit", "time_in_force": "gtc", "limit_price": "0.40",
+  "exits_only": true,
+  "bracket": {
+    "take_profit": {"limit_price": "0.40"},
+    "stop_loss": {"trigger": {"source": "combo", "direction": "at_or_above", "level": "2.00"}}
+  }
+}
+```
+
+The response's `oco`, `stop_loss_order` and `take_profit_order` identify the exits.
+Change their levels with `PUT /api/orders/{id}`; cancel both IDs to remove the pair.
+The held-strategy row's **Exits…** dialog sets, changes and cancels them. Its Roll
+dialog can select the put or call vertical of a condor or iron butterfly, a later
+expiry and new strikes. The resulting four-leg order closes that side and opens
+the new vertical together; the other side stays held. After a full side roll, the
+held view shows the two remaining verticals with their current position cost bases,
+not the roll’s combined closing and opening net.
 
 ## Changing, cancelling and flattening
 
-A resting order changes in place (`modify`): a DAY limit order, an armed order or a
+A resting order changes in place (`modify`): a DAY or GTC limit order, an armed order or a
 bracket exit. It keeps its ID, its fills and its place among equal prices. The new
 quantity counts filled contracts too and must exceed them; the limit price applies
 to limit orders (a multi-leg order's signed net); the trigger level to armed orders
@@ -357,8 +426,10 @@ with a trigger. The changed order takes every pre-trade check a new one would, w
 its own reservation released first, and a failure leaves it exactly as it was. A
 limit that becomes marketable trades at once against the cached fresh quote, and an
 armed order whose new level is reached activates in the regular session. Bracket
-exits change only their level or take-profit price (positive, on the tier tick);
-their size follows the position. The engine applies a new order's feed gate
+exits change only their level or take-profit price (a signed net on the combo tick
+for spreads, positive on the tier tick for a single contract);
+their size follows the position. Time in force cannot change in place; cancel and
+submit again to change DAY/GTC. The engine applies a new order's feed gate
 (`FEED_STALLED`) before a change, because a change can trade.
 
 `cancel_all` cancels every open order, armed ones and bracket exits included, or
@@ -711,6 +782,14 @@ opposite one at the same price.
 
 ## Trade notes and tags
 
+Order requests accept optional `tags` and `note` with the same validation below.
+When a fill opens a round trip, these annotate its opening fill ID in the same
+transaction. Each newly opened combo leg receives them, so its Journal strategy
+and tag reports use them too. Adds to an existing round trip keep its annotation;
+closing fills add nothing. Orders preserve the submitted metadata for inspection.
+Tickets accept optional tags and notes from their caller; this tree has no strategy
+template catalog yet. Older journal orders default to empty tags and notes.
+
 `annotate(trade, note, tags, time)` records the trader's note and tags on a trade,
 named by the fill that opened it (the trades view's `id`); `annotate_shares` does the
 same for a share round trip, named by its opening stock fill and kept under `s` and
@@ -906,7 +985,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, acceptance-day session end |
-| `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry boundary, or pending settlement quality flag |
+| `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry/last-trade/auto-close boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, triggers or brackets |
 | `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age` (a delayed feed: at least three minutes); message includes the lag behind the wall clock |
 | `MARKET_HALTED` | A market-wide circuit breaker has halted trading; the message gives the S&P 500's fall and when trading resumes |
@@ -919,10 +998,10 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules) |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
 | `INVALID_RULES` | Negative rule money, cutoff of a day or more, a plan name over 64 bytes, payout percentages outside 0-100 or nonpositive caps, or a funded phase with a profit target or no qualifying days |
-| `OCO_FILLED`, `POSITION_CLOSED` | Bracket exit cancelled by its sibling's fill, or because its position closed |
+| `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling or remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it |
-| `INVALID_NOTE`, `UNKNOWN_TRADE` | A trade note or tag past its limits, or a note on a fill that opens no trade |
+| `INVALID_NOTE`, `UNKNOWN_TRADE` | An order or trade note or tag past its limits, or a note on a fill that opens no trade |
 | `DEFINED_RISK` | A defined-risk plan's order, bracket exit or exercise would leave a short option uncovered, now or once the open orders fill |
 
 ## Engine integration and HTTP API
@@ -1056,7 +1135,8 @@ probability of profit before submission. Calendars and diagonals retain the tick
 estimated first-expiry risk, valuing later legs at today's IV. Named presets are
 stored per underlying in this browser; the selected near expiry remains the near
 expiry when a preset is reused. Each template exposes a parameter tag, displayed in
-the ticket and cleared on manual leg edits. Tags are not sent to the order or note API.
+the ticket and cleared on manual leg edits. It goes with the order as a tag, so the
+trade it opens carries it into the Journal's reports by tag.
 
 Single-leg and strategy tickets show risk-neutral probability of profit before fees,
 using the distribution of the underlying at the order's first expiry. They prefer
@@ -1087,7 +1167,7 @@ focus at the top of the ticket.
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`ioc`), optional `trigger` `{source: option\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), takes no trigger or bracket, counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, or the original rejection) and records nothing, while other terms under that ID reject with 409 `DUPLICATE_CLIENT_ID` |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, or the original rejection) and records nothing, while other terms under that ID reject with 409 `DUPLICATE_CLIENT_ID` |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
@@ -1118,7 +1198,7 @@ an account, defaulting to false, 0 and `"strategy"`. Older journals missing thes
 fields recover with the same defaults. Money is null for a disabled target or
 drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `buying_power: {available, reserved, short_requirement}`; orders add `origin`
-(`user` or `system`), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`
+(`user` or `system`), `tags`, `note`, `exits_only` (false when absent in older journals), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`
 (`stop_loss`/`take_profit`/null), `parent`, `oco`, `stop_loss_order` and
 `take_profit_order`; status and ticks add `trading.plan` and `trading.evaluation`
 (`active`/`passed`/`failed`, null without a target or drawdown rule). `--plan ID`

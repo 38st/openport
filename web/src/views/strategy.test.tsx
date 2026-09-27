@@ -42,6 +42,7 @@ describe("strategy ticket", () => {
     const close = render(ticket(1), any, [], held)
     expect(close).toContain("reduce-only: closing orders and exits still work")
     expect(close).not.toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+    expect(render(ticket(1), account, [], held)).not.toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
     expect(render(ticket(2), any, [], held)).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
     expect(render(ticket(1), any, [], [])).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
   })
@@ -71,7 +72,7 @@ describe("strategy ticket", () => {
     expect(render(<StrategyTicket legs={[spread[0]!]} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any))
       .toContain("Click another bid or ask on the chain to add a leg")
     const buyOnly = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, account)
-    expect(buyOnly).toContain("is buy-only and single-leg")
+    expect(buyOnly).toContain("is buy-only. Multi-leg orders may only close held positions.")
     expect(buyOnly).toMatch(/aria-label="Submit strategy order" disabled=""/)
   })
   it("formats nets and lists multi-leg orders with their legs", () => {

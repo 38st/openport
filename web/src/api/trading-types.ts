@@ -264,15 +264,15 @@ export interface PlansResponse { plans: Plan[] }
 export type ResetRequest = { reason: string } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export type Side = "buy" | "sell"
 /** Option triggers compare the order's executable side; underlying ones compare spot. */
-export interface Trigger { source: "option" | "underlying"; direction: "at_or_below" | "at_or_above"; level: Money }
+export interface Trigger { source: "option" | "underlying" | "combo"; direction: "at_or_below" | "at_or_above"; level: Money }
 /** A stop takes a trigger (then trades at market); a take-profit takes a limit or a trigger. */
 export type ExitSpec = { trigger: Trigger; limit_price?: never } | { limit_price: Money; trigger?: never }
 export interface Bracket { stop_loss?: ExitSpec; take_profit?: ExitSpec }
 /** One leg of a multi-leg order: `ratio` contracts per unit. */
 export interface OrderLeg { symbol: string; side: Side; ratio: number }
-type Pricing = { type: "limit"; limit_price: Money; time_in_force: "day" | "ioc" }
+type Pricing = { type: "limit"; limit_price: Money; time_in_force: "day" | "gtc" | "ioc" }
   | { type: "market"; time_in_force: "ioc"; limit_price?: never }
-export type NewOrder = ({
+export type NewOrder = { tags?: string[]; note?: string } & ({
   client_order_id: string
   symbol: string
   side: Side
@@ -284,12 +284,18 @@ export type NewOrder = ({
   client_order_id: string
   /** Two to four legs on one underlying, filled together. */
   legs: OrderLeg[]
+  trigger?: Trigger
+  bracket?: Bracket
+  exits_only?: boolean
   /** Units of the strategy. */
   quantity: number
   symbol?: never
   side?: never
 }) & Pricing
 export interface Order {
+  tags?: string[]
+  note?: string
+  exits_only?: boolean
   id: string
   client_order_id: string
   /** Null for a multi-leg order; see `legs`. */
@@ -299,7 +305,7 @@ export interface Order {
   /** A multi-leg order's legs; its prices are net per unit, negative for a credit. */
   legs?: OrderLeg[] | null
   type: "limit" | "market"
-  time_in_force: "day" | "ioc"
+  time_in_force: "day" | "gtc" | "ioc"
   quantity: number
   filled_quantity: number
   remaining_quantity: number

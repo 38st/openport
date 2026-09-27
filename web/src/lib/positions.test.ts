@@ -100,3 +100,39 @@ describe("strategies in the journal", () => {
     expect(groups[1]!.net).toBe(-40)
   })
 })
+
+it("associates working combo exits with their held strategy", () => {
+  const opening = combo("7", [[6900, "sell"], [6890, "buy"]], 2, "-1.20")
+  const target: Order = { ...opening, id: "8", status: "working", role: "take_profit", filled_quantity: 0,
+    legs: opening.legs!.map((leg) => ({ ...leg, side: leg.side === "buy" ? "sell" : "buy" })) }
+  const groups = strategyGroups([put(6900, -2, "3.00"), put(6890, 2, "2.50")], [opening, target], null)
+  expect(groups[0]!.exits).toEqual([target])
+})
+
+it("groups each annotated combo leg into the strategy's journal row", () => {
+  const opening = combo("7", [[6900, "sell"], [6890, "buy"]], 1, "-1.20")
+  const annotated = opening.legs!.map((leg, i) => ({ ...trades[0]!, id: String(i + 1), symbol: leg.symbol,
+    fills: [String(i + 1)], tags: ["put-credit-10d-5w"], note: "Plan", type: "put" as const }))
+  const fills = annotated.map((trade) => ({ id: trade.id, order_id: "7" } as Fill))
+  const groups = tradeGroups(annotated, fills, [opening])
+  expect(groups).toHaveLength(1)
+  expect(groups[0]!.trades.every((trade) => trade.tags?.includes("put-credit-10d-5w") && trade.note === "Plan")).toBe(true)
+})
+
+it("keeps both verticals visible after rolling one side of a four-leg strategy", () => {
+  const p1 = put(6900, -2, "3.00"), p2 = put(6890, 2, "2.50")
+  const call = (p: Position): Position => ({ ...p, symbol: p.symbol.replace("261016P", "261016C"), type: "call" })
+  const c1 = call(put(7100, -2, "3.00")), c2 = call(put(7110, 2, "2.50"))
+  const original = combo("7", [[6900, "sell"], [6890, "buy"]], 2, "-2.00")
+  original.legs!.push({ symbol: c1.symbol, side: "sell", ratio: 1 }, { symbol: c2.symbol, side: "buy", ratio: 1 })
+  const next = (p: Position): Position => ({ ...p, expiry: "2026-10-23", symbol: p.symbol.replace("261016", "261023"), average_price: p.quantity < 0 ? "4.00" : "2.00" })
+  const n1 = next(p1), n2 = next(p2)
+  const roll: Order = { ...original, id: "8", average_fill_price: "-0.30", accepted_at: "2026-09-23T16:00:00Z",
+    legs: [{ symbol: p1.symbol, side: "buy", ratio: 1 }, { symbol: p2.symbol, side: "sell", ratio: 1 },
+      { symbol: n1.symbol, side: "sell", ratio: 1 }, { symbol: n2.symbol, side: "buy", ratio: 1 }] }
+  const groups = strategyGroups([n1, n2, c1, c2], [original, roll], null)
+  expect(groups).toHaveLength(2)
+  expect(groups[0]!.legs.map((m) => m.leg.symbol)).toEqual([n1.symbol, n2.symbol])
+  expect(groups[0]!.cost).toBe(-2) // held basis, never the roll's combined close/open net
+  expect(groups[1]!.legs.map((m) => m.leg.symbol)).toEqual([c1.symbol, c2.symbol])
+})

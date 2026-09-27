@@ -34,6 +34,8 @@ export interface StrategyGroup {
   title: string
   underlying: string
   units: number
+  /** Working closing exits on these held legs, including attached pairs. */
+  exits?: Order[]
   legs: GroupLeg[]
   /** Net per unit when opened, debit positive. */
   cost: number | null
@@ -73,7 +75,15 @@ export function strategyGroups(positions: readonly Position[], orders: readonly 
     .sort((a, b) => Date.parse(b.accepted_at) - Date.parse(a.accepted_at) || Number(b.id) - Number(a.id))
   const groups: StrategyGroup[] = []
   for (const order of combos) {
-    const legs = order.legs!
+    let legs = order.legs!
+    // A four-leg roll leaves only its new vertical held; rolling one side of a
+    // condor leaves the other vertical from its original order.
+    const matching = legs.filter((leg) => Math.sign(remaining.get(leg.symbol) ?? 0) === sign(leg.side))
+    if (legs.length === 4 && matching.length === 2) {
+      const [a, b] = matching
+      if (held.get(a!.symbol)?.type === held.get(b!.symbol)?.type && a!.side !== b!.side && a!.ratio === b!.ratio)
+        legs = matching
+    }
     let units = order.filled_quantity
     for (const leg of legs) {
       const quantity = remaining.get(leg.symbol) ?? 0
@@ -88,7 +98,9 @@ export function strategyGroups(positions: readonly Position[], orders: readonly 
         type: position.type, strike: position.strike, expiry: expiryId(position), quote: null } }
     })
     const strategy = members.map((m) => m.leg)
-    const cost = number(order.average_fill_price)
+    const cost = legs.length === order.legs!.length ? number(order.average_fill_price)
+      : members.every(({ position }) => number(position.average_price) != null)
+        ? members.reduce((total, { leg, position }) => total + sign(leg.side) * leg.ratio * Number(position.average_price), 0) : null
     const marks = members.map((m) => number(m.position.mark))
     const value = marks.every((m) => m != null)
       ? members.reduce((total, m, i) => total + sign(m.leg.side) * m.leg.ratio * marks[i]!, 0) : null
@@ -99,6 +111,9 @@ export function strategyGroups(positions: readonly Position[], orders: readonly 
     }
     groups.push({
       order, units, legs: members, cost, value,
+      exits: orders.filter((exit) => exit.role && ["working", "partially_filled", "armed"].includes(exit.status) &&
+        exit.legs?.length === legs.length && exit.legs.every((leg) => legs.some((entry) =>
+          entry.symbol === leg.symbol && entry.side !== leg.side && entry.ratio === leg.ratio))),
       label: strategyLabel(strategy),
       title: title(members[0]!.position.underlying, strategy),
       underlying: members[0]!.position.underlying,
@@ -123,17 +138,29 @@ export function closingPlan(group: StrategyGroup): { legs: StrategyLeg[]; units:
  * and sides at a later expiry. At most two legs roll together, so the order stays
  * within four legs; the target expiry must list every strike.
  */
-export function rollPlan(group: StrategyGroup, target: { id: string; strikes: readonly ChainRow[] }):
+export function rollSides(group: StrategyGroup): ("put" | "call")[] {
+  return (["put", "call"] as const).filter((type) => {
+    const legs = group.legs.filter(({ leg }) => leg.type === type)
+    return legs.length === 2 && legs[0]!.leg.side !== legs[1]!.leg.side && legs[0]!.leg.ratio === legs[1]!.leg.ratio
+  })
+}
+
+export function rollPlan(group: StrategyGroup, target: { id: string; strikes: readonly ChainRow[] }, side?: "put" | "call", strikes?: readonly number[]):
   { legs: StrategyLeg[]; units: number } | { reason: string } {
-  if (group.legs.length > 2) return { reason: "Rolls take up to two legs as one order; close this strategy and open the new one." }
+  if (side) {
+    if (!rollSides(group).includes(side)) return { reason: "Choose a held put or call vertical to roll." }
+    group = { ...group, legs: group.legs.filter(({ leg }) => leg.type === side) }
+  }
+  if (group.legs.length > 2) return { reason: "Choose the put or call side to roll as one four-leg order." }
   if (new Set(group.legs.map(({ leg }) => leg.expiry)).size > 1) return { reason: "Calendars and diagonals roll leg by leg." }
   if (group.legs.some(({ leg }) => leg.expiry >= target.id)) return { reason: "Roll to a later expiry." }
   const opening: StrategyLeg[] = []
-  for (const { leg } of group.legs) {
-    const quote = target.strikes.find((row) => row.strike === leg.strike)?.[leg.type]
+  for (const [index, { leg }] of group.legs.entries()) {
+    const strike = strikes?.[index] ?? leg.strike
+    const quote = target.strikes.find((row) => row.strike === strike)?.[leg.type]
     if (!quote?.symbol) return { reason: `${expiryLabel(target.id)} lists no ${leg.strike} ${leg.type}.` }
     if (!quote.tradable) return { reason: quote.untradable_reason ?? `The ${leg.strike} ${leg.type} is not tradable.` }
-    opening.push({ ...leg, symbol: quote.symbol, expiry: target.id, quote })
+    opening.push({ ...leg, strike, symbol: quote.symbol, expiry: target.id, quote })
   }
   return { units: group.units, legs: [...closingPlan(group).legs, ...opening] }
 }

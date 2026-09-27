@@ -6,7 +6,7 @@ export const isOpen = (order: Order) => order.status === "working" || order.stat
 /** Resting orders the trader placed can change: DAY limit orders, armed orders and bracket exits. */
 export function editable(order: Order): boolean {
   return isOpen(order) && order.origin !== "system" &&
-    (order.status === "armed" || (order.type === "limit" && order.time_in_force === "day"))
+    (order.status === "armed" || (order.type === "limit" && order.time_in_force !== "ioc"))
 }
 
 /** The terms an order can change: a bracket exit's size follows its position; only armed orders move their trigger. */
@@ -42,7 +42,7 @@ export function orderChange(order: Order, draft: OrderDraft): { change: OrderCha
   }
   if (fields.trigger) {
     const text = draft.trigger_level.trim()
-    if (!decimalText.test(text) || Number(text) <= 0) return { error: "Enter a positive trigger level" }
+    if (!decimalText.test(text) || (order.trigger?.source !== "combo" && Number(text) <= 0)) return { error: order.trigger?.source === "combo" ? "Enter a signed combo net level" : "Enter a positive trigger level" }
     if (compareMoney(text, order.trigger?.level) !== 0) change.trigger_level = text
   }
   return Object.keys(change).length ? { change } : { unchanged: true }

@@ -17,6 +17,7 @@ import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { OrderResult } from "./OrderTicket"
 import { WriteAccess, writeBlocked } from "./TradingControls"
+import { useSpreadExits } from "./SpreadExits"
 import { Segmented } from "./ui"
 
 const quickSizes = [1, 2, 5, 10]
@@ -39,16 +40,17 @@ const shortDate = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateSt
  * nothing, so the ticket says what the order does instead. The `bare` variant is
  * the body alone, for a dialog that adds its own controls.
  */
-export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order", closing = false, roll = false, smiles, surface, template }: {
+export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order", closing = false, roll = false, smiles, surface, template, tags, note }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
   spot: number | null | undefined; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel" | "bare"; units?: number; title?: string
   closing?: boolean; roll?: boolean
   /** Each expiry's smile, by expiry id, for the probability of profit; flat at-the-money volatility otherwise. */
+  tags?: string[]; note?: string
   smiles?: ReadonlyMap<string, readonly { strike: number; iv: number | null }[]>
   surface?: Surface
   template?: Pick<TemplateSetup, "tag" | "widths">
 }) {
-  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} closing={closing} roll={roll} smiles={smiles} surface={surface} template={template} />
+  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} closing={closing} roll={roll} smiles={smiles} surface={surface} template={template} tags={tags} note={note} />
   if (variant === "bare") return body
   if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
@@ -62,9 +64,10 @@ export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, tradi
   )
 }
 
-function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits, closing, roll, smiles, surface, template }: {
+function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits, closing, roll, smiles, surface, template, tags, note }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
   spot: number | null | undefined; trading: TradingStatus; initialUnits?: number; closing: boolean; roll: boolean
+  tags?: string[]; note?: string
   smiles?: ReadonlyMap<string, readonly { strike: number; iv: number | null }[]>
   surface?: Surface
   template?: Pick<TemplateSetup, "tag" | "widths">
@@ -84,7 +87,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const extended = extendedSession(status)
   const [chosenType, setType] = useState<"limit" | "market">("limit")
   const type = extended ? "limit" : chosenType
-  const [tif, setTif] = useState<"day" | "ioc">("day")
+  const [tif, setTif] = useState<"day" | "gtc" | "ioc">("day")
   const [amount, setAmount] = useState(() => quote.mid != null ? Math.abs(roundNet(quote.mid, tick)).toFixed(2) : "")
   const [direction, setDirection] = useState<"debit" | "credit">(() => (quote.mid ?? 0) < 0 ? "credit" : "debit")
   const [pending, setPending] = useState(false)
@@ -119,6 +122,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const validAmount = /^\d+(\.\d+)?$/.test(amount) && Number.isFinite(typed) && Math.round(typed * 100) % tick === 0
   const net = type === "market" ? quote.ask : validAmount ? (direction === "debit" ? typed : -typed) : null
   const limitText = net == null ? "" : net.toFixed(2)
+  const exits = useSpreadExits(net, tick)
   const label = strategyLabel(legs)
   const legExpiries = [...new Set(legs.map((l) => l.expiry))]
   const multi = legExpiries.length > 1
@@ -157,8 +161,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     const held = positions?.find((p) => p.symbol === leg.symbol)?.quantity ?? 0
     return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
   })
-  const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || !!rules?.buy_only
-  const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount)
+  const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
+  const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount) && (closing || roll || extended || exits.valid)
 
   // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is
   // wider, and the expected move within a quarter of spot.
@@ -188,6 +192,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     setOrder(undefined)
     setError(undefined)
   }
+  // A template's setup tag goes on the trade, so the Journal reports each setup.
+  const orderTags = [...new Set([...(tags ?? []), ...(template && !closing && !roll ? [template.tag] : [])])].slice(0, 8)
   async function submit() {
     if (!valid || blocked || busy.current || order) return
     busy.current = true
@@ -197,6 +203,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       request.current ??= {
         client_order_id: crypto.randomUUID(), legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
         ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitText }),
+        ...(!closing && !roll && !extended && exits.bracket ? { bracket: exits.bracket } : {}),
+        ...(orderTags.length ? { tags: orderTags } : {}), ...(note ? { note } : {}),
       }
       const response = await api.submitOrder(request.current, trading.write)
       if (sameSession()) setOrder(response.order)
@@ -257,7 +265,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       {untradable && <p role="status" className="text-sm text-warn">{untradable.strike} {untradable.type}: {untradable.quote?.untradable_reason ?? "unavailable for paper trading"}</p>}
       {trading.kill_latched && <p role="status" className="text-sm text-warn">Kill switch latched · reduce-only: closing orders and exits still work.</p>}
       {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Start a new attempt from the Dashboard to trade again.</p>}
-      {rules?.buy_only && <p role="status" className="text-sm text-warn">{rules.plan ?? "This plan"} is buy-only and single-leg. Strategies need a plan that allows any strategy.</p>}
+      {rules?.buy_only && !reduces && <p role="status" className="text-sm text-warn">{rules.plan ?? "This plan"} is buy-only. Multi-leg orders may only close held positions.</p>}
       <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>
         <fieldset disabled={pending || order != null} className="grid min-w-0 grid-cols-2 gap-3 disabled:opacity-70">
           <legend className="sr-only">Strategy order</legend>
@@ -274,7 +282,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           </div>
           <div className="trade-label">Time in force
             <Segmented label="Time in force" value={type === "market" ? "ioc" : tif} onChange={(next) => { if (type !== "market") setTif(next) }}
-              options={[{ value: "day", label: "Day" }, { value: "ioc", label: "IOC" }]} />
+              options={type === "market" ? [{ value: "ioc", label: "IOC" }] : [{ value: "day", label: "Day" }, { value: "gtc", label: "GTC" }, { value: "ioc", label: "IOC" }]} />
           </div>
           {type === "limit" && <div className="trade-label col-span-2">
             <span className="flex flex-wrap items-end gap-2">
@@ -287,9 +295,11 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
               <span className={`text-xs ${amount && !validAmount ? "text-warn" : "text-muted"}`}>{amount && !validAmount ? `Use a multiple of $${(tick / 100).toFixed(2)}` : `$${(tick / 100).toFixed(2)} tick`} · {direction === "debit" ? "pay at most" : "receive at least"}</span>
             </span>
           </div>}
+          {!closing && !roll && !extended && <div className="col-span-2">{exits.fields}</div>}
         </fieldset>
         <p role="status" className={`rounded-md border px-3 py-2 text-xs ${marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>
-          {quote.ask == null ? "Every leg needs a two-sided quote before the strategy can fill."
+          {type === "limit" && tif === "gtc" && extended ? "GTC waits for the regular session, even if the current quote crosses its limit."
+            : quote.ask == null ? "Every leg needs a two-sided quote before the strategy can fill."
             : marketable ? `Marketable: fills now at ${netText(quote.ask)} per unit, all legs together, up to each leg's displayed size.`
             : `Rests: the legs trade now at ${netText(quote.ask)}; fills when that reaches ${netText(net)}.`}
         </p>
