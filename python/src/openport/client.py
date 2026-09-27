@@ -1,0 +1,239 @@
+# Copyright (c) 2026 OpenPort contributors. MIT License.
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode, urlsplit
+from urllib.request import Request, build_opener, HTTPRedirectHandler
+
+from .types import (JSON, Account, Chain, Fills, OrderResult, Orders, Portfolio,
+                    ReplayListing, ReplayResult, Status, Summary, Surface, Trades,
+                    Exposure, Volatility, Candles, Risk, OrderPreview, SubmitResult,
+                    Plans, Accounts, EquityHistory, CancelAllResult, FlattenResult)
+
+
+class ApiError(Exception):
+    """An HTTP failure, including the server's reason code and evidence."""
+
+    def __init__(self, status: int, body: JSON | str):
+        error = body.get("error", {}) if isinstance(body, dict) else {}
+        if not isinstance(error, dict):
+            error = {"message": str(error)}
+        self.status = status
+        self.code = error.get("code", "HTTP_ERROR")
+        self.reason_code = self.code
+        self.body = body
+        self.actual = error.get("actual")
+        self.limit = error.get("limit")
+        self.scope = error.get("scope")
+        super().__init__(f"{self.code}: {error.get('message', f'HTTP {status}')}")
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward credentials or repeat a paper command to another location.
+        return None
+
+
+class Client:
+    def __init__(self, base_url: str = "http://127.0.0.1:8080", token: str | None = None,
+                 account: str | None = None, timeout: float = 30, *, retries: int = 3,
+                 backoff: float = 0.1, replay: bool = False, history: str | None = None):
+        parts = urlsplit(base_url)
+        if parts.scheme not in {"http", "https"} or not parts.netloc or parts.query or parts.fragment or parts.username:
+            raise ValueError("base_url must be an HTTP(S) URL without credentials, query or fragment")
+        if timeout <= 0 or retries < 0 or backoff < 0:
+            raise ValueError("timeout must be positive; retries and backoff must be nonnegative")
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.account_id = account
+        self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+        self._prefix = "/api/replay/history/" + quote(history, safe="") if history else "/api/replay" if replay else "/api"
+        self._opener = build_opener(_NoRedirect())
+
+    def for_replay(self, account: str = "main") -> Client:
+        return Client(self.base_url, self.token, account, self.timeout, retries=self.retries,
+                      backoff=self.backoff, replay=True)
+
+    def for_history(self, run_id: str, account: str = "main") -> Client:
+        return Client(self.base_url, self.token, account, self.timeout, retries=self.retries,
+                      backoff=self.backoff, history=run_id)
+
+    def _request(self, method: str, path: str, body: JSON | None = None, *,
+                 params: JSON | None = None, scoped: bool = False, control: bool = False):
+        query = {key: value for key, value in (params or {}).items() if value is not None}
+        if scoped and self.account_id is not None:
+            query["account"] = self.account_id
+        url = self.base_url + ("/api" if control else self._prefix) + path
+        if query:
+            url += "?" + urlencode(query)
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = "Bearer " + self.token
+        data = None if body is None else json.dumps(body, allow_nan=False).encode()
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        request = Request(url, data=data, method=method, headers=headers)
+        for attempt in range(self.retries + 1):
+            try:
+                with self._opener.open(request, timeout=self.timeout) as response:
+                    raw = response.read().decode()
+                    return raw if response.headers.get_content_type() == "text/csv" else json.loads(raw)
+            except HTTPError as error:
+                with error:
+                    raw = error.read().decode(errors="replace")
+                    status = error.code
+                if status == 503 and attempt < self.retries:
+                    time.sleep(min(2.0, self.backoff * 2 ** attempt))
+                    continue
+                try:
+                    payload = json.loads(raw)
+                except ValueError:
+                    payload = raw
+                raise ApiError(status, payload) from None
+        raise AssertionError("unreachable")
+
+    def status(self) -> Status:
+        return self._request("GET", "/status")
+
+    def symbols(self) -> list[str]:
+        return [item["symbol"] for item in self.status()["underlyings"]]
+
+    def _market(self, symbol: str, view: str, **params):
+        return self._request("GET", "/underlyings/" + quote(symbol, safe="") + "/" + view, params=params)
+
+    def summary(self, symbol: str) -> Summary:
+        return self._market(symbol, "summary")
+
+    def series(self, symbol: str) -> list[JSON]:
+        """The expiry series in summary; openportd has no separate series route."""
+        return self.summary(symbol)["expiries"]
+
+    def chain(self, symbol: str, expiry: str | None = None, window: float = 0) -> Chain:
+        return self._market(symbol, "chain", expiry=expiry, window=window)
+
+    def exposure(self, symbol: str, expiries: int = 8, window: float = 0.08) -> Exposure:
+        return self._market(symbol, "exposure", expiries=expiries, window=window)
+
+    def surface(self, symbol: str, expiries: int = 12, window: float = 0.2) -> Surface:
+        return self._market(symbol, "surface", expiries=expiries, window=window)
+
+    def volatility(self, symbol: str) -> Volatility:
+        return self._market(symbol, "volatility")
+
+    def candles(self, symbol: str, interval: str = "5m", limit: int = 500) -> Candles:
+        return self._market(symbol, "candles", interval=interval, limit=limit)
+
+    def account(self) -> Account:
+        return self._request("GET", "/account", scoped=True)
+
+    def portfolio(self) -> Portfolio:
+        return self._request("GET", "/portfolio", scoped=True)
+
+    def orders(self, status: str = "all") -> Orders:
+        return self._request("GET", "/orders", scoped=True, params={"status": status})
+
+    def fills(self) -> Fills:
+        return self._request("GET", "/fills", scoped=True)
+
+    def trades(self, status: str = "all", attempt: str = "current") -> Trades:
+        return self._request("GET", "/trades", scoped=True, params={"status": status, "attempt": attempt})
+
+    def risk(self) -> Risk:
+        return self._request("GET", "/risk", scoped=True)
+
+    def equity(self, start: str | None = None, end: str | None = None) -> EquityHistory:
+        return self._request("GET", "/account/equity", scoped=True, params={"from": start, "to": end})
+
+    def plans(self) -> Plans:
+        return self._request("GET", "/plans")
+
+    def accounts(self) -> Accounts:
+        return self._request("GET", "/accounts")
+
+    @staticmethod
+    def _order(order: JSON | None, fields: JSON) -> JSON:
+        body = {**(order or {}), **fields}
+        if not body.get("client_order_id"):
+            body["client_order_id"] = str(uuid.uuid4())
+        return body
+
+    def place_order(self, order: JSON | None = None, **fields) -> SubmitResult:
+        return self._request("POST", "/orders", self._order(order, fields), scoped=True)
+
+    def preview_order(self, order: JSON | None = None, **fields) -> OrderPreview:
+        return self._request("POST", "/orders/preview", self._order(order, fields), scoped=True)
+
+    def modify_order(self, order_id: str, **change) -> SubmitResult:
+        return self._request("PUT", "/orders/" + quote(str(order_id), safe=""), change, scoped=True)
+
+    def cancel_order(self, order_id: str) -> OrderResult:
+        return self._request("DELETE", "/orders/" + quote(str(order_id), safe=""), scoped=True)
+
+    def cancel_all(self, underlying: str | None = None) -> CancelAllResult:
+        return self._request("POST", "/orders/cancel", {"underlying": underlying} if underlying else {}, scoped=True)
+
+    def flatten(self, underlying: str | None = None) -> FlattenResult:
+        return self._request("POST", "/positions/close", {"underlying": underlying} if underlying else {}, scoped=True)
+
+    def note(self, trade_id: str, note: str = "", tags: list[str] | None = None) -> JSON:
+        return self._request("PUT", "/trades/" + quote(str(trade_id), safe="") + "/note",
+                             {"note": note, "tags": tags or []}, scoped=True)
+
+    def day_note(self, day: str, plan: str = "", review: str = "") -> JSON:
+        return self._request("PUT", "/days/" + quote(day, safe="") + "/note",
+                             {"plan": plan, "review": review}, scoped=True)
+
+    def export_csv(self, kind: str, **params) -> str:
+        if kind not in {"fills", "trades"}:
+            raise ValueError("kind must be fills or trades")
+        return self._request("GET", "/" + kind + ".csv", params=params, scoped=True)
+
+    def create_account(self, name: str, **settings) -> JSON:
+        return self._request("POST", "/accounts", {"name": name, **settings})
+
+    def reset_account(self, reason: str, **settings) -> Account:
+        return self._request("POST", "/account/reset", {"reason": reason, **settings}, scoped=True)
+
+    def payout(self, amount: str) -> Account:
+        return self._request("POST", "/account/payout", {"amount": amount}, scoped=True)
+
+    def limits(self, expected_revision: str, limits: JSON) -> JSON:
+        return self._request("PUT", "/risk/limits", {"expected_revision": expected_revision, "limits": limits}, scoped=True)
+
+    def guardrails(self, expected_revision: str, guardrails: JSON) -> JSON:
+        return self._request("PUT", "/risk/guardrails", {"expected_revision": expected_revision, "guardrails": guardrails}, scoped=True)
+
+    def kill(self, action: str, reason: str) -> JSON:
+        return self._request("POST", "/risk/kill", {"action": action, "reason": reason}, scoped=True)
+
+    def settle(self, symbol: str, value: str) -> JSON:
+        return self._request("POST", "/settlements", {"symbol": symbol, "value": value}, scoped=True)
+
+    def exercise(self, symbol: str, quantity: int) -> Portfolio:
+        return self._request("POST", "/positions/exercise", {"symbol": symbol, "quantity": quantity}, scoped=True)
+
+    def close_stock(self, symbol: str, shares: int | None = None) -> Portfolio:
+        return self._request("POST", "/stocks/close", {"symbol": symbol, **({"shares": shares} if shares is not None else {})}, scoped=True)
+
+    def list_replays(self) -> ReplayListing:
+        return self._request("GET", "/replay", control=True)
+
+    def start_replay(self, **settings) -> ReplayResult:
+        return self._request("POST", "/replay", settings, control=True)
+
+    def control_replay(self, **settings) -> ReplayResult:
+        return self._request("PUT", "/replay", settings, control=True)
+
+    def step_replay(self, until: str) -> ReplayResult:
+        return self.control_replay(until=until)
+
+    def stop_replay(self) -> ReplayResult:
+        return self._request("DELETE", "/replay", control=True)
+
+    def delete_replay(self, run_id: str) -> JSON:
+        return self._request("DELETE", "/replay/history/" + quote(run_id, safe=""), control=True)

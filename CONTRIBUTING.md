@@ -19,6 +19,30 @@ cd web && npm ci && npx tsc -p tsconfig.json && npx vitest run && npm run build
 CI runs the same checks on every push and pull request, with GCC on Ubuntu, Apple
 Clang on macOS and a Docker smoke test, all with warnings as errors.
 
+## Python and API contract
+
+The Python package uses Python 3.10+. Its tests need pytest, jsonschema, pyyaml,
+pandas, websockets and MCP 2.x. With the prepared development environment:
+
+```sh
+.venv-py/bin/python -m pytest python/tests
+.venv-py/bin/python tools/contract_test.py http://127.0.0.1:8080 --token "$OPENPORT_WRITE_TOKEN" --spec docs/openapi.yaml
+```
+
+Python tests run a threaded synthetic HTTP server, with local socket pairs when
+TCP binding is denied. A built C++ test binary also supplies real handler responses
+for schema validation without a listener. The web suite compares core TypeScript
+wire types with `docs/openapi.yaml`; JSON syntax in that YAML file avoids another
+npm dependency.
+
+The contract command checks every API GET, CSV and replay mirror, previews and
+places a far-from-market limit, then cancels it in an isolated simulated replay.
+It refuses an existing replay and requires durable journals to check archived
+routes. It leaves the completed run in history. Use a local test instance and a
+token with `read,replay` or `admin`. Docker CI runs it after the smoke test, with
+`pip install jsonschema pyyaml`. Static assets and WebSocket transport have their
+own C++ and web tests.
+
 ## Pull requests
 
 - Keep each change to one purpose, with tests for the behaviour it adds or fixes.

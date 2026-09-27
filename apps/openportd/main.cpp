@@ -84,6 +84,8 @@ struct Settings {
   std::optional<trading::Money> paper_cash;
   std::string write_token;
   std::filesystem::path write_token_file;
+  std::vector<server::NamedToken> tokens;
+  bool require_token = false;
   int threads = 2;
   double rate = 0.04;
   std::vector<std::string> allowed_origins;
@@ -97,7 +99,7 @@ int usage(const char* error = nullptr) {
       "usage: openportd [--provider NAME] [--symbols SPX,SPY,QQQ,IWM,DIA] [--address ADDR] [--port N]\n"
       "                 [--scenario-dir DIR] [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
-      "                 [--allowed-host NAME]...\n"
+      "                 [--allowed-host NAME]... [--token-file FILE] [--require-token]\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
@@ -290,6 +292,7 @@ int run(int argc, char** argv) {
     const bool has_value = i + 1 < argc;
     if (arg == "--help" || arg == "-h") return usage();
     if (arg == "--version") { std::printf("openportd %s\n", OPENPORT_VERSION); return 0; }
+    if (arg == "--require-token") { settings.require_token = true; continue; }
     if (arg == "--no-paper") { settings.paper_enabled = false; continue; }
     if (arg == "--no-series") { settings.series = false; continue; }
     if (arg == "--force") { settings.force = true; continue; }
@@ -335,6 +338,10 @@ int run(int argc, char** argv) {
     } else if (arg == "--write-token") {
       if (value.empty()) return usage("--write-token requires a nonempty token");
       settings.write_token = value;
+    } else if (arg == "--token-file") {
+      std::ifstream input(value);
+      if (!input) return usage("Cannot read token file");
+      settings.tokens = server::parse_token_file(std::string(std::istreambuf_iterator<char>(input), {}));
     } else if (arg == "--write-token-file") {
       if (value.empty()) return usage("--write-token-file requires a nonempty path");
       settings.write_token_file = value;
@@ -426,8 +433,12 @@ int run(int argc, char** argv) {
     if (settings.paper_journal.empty()) return usage("HOME is unavailable; specify --paper-journal");
     return repair_journals(settings.paper_journal, paper_accounts);
   }
+  if (settings.require_token && settings.tokens.empty() && settings.write_token.empty() && settings.write_token_file.empty())
+    return usage("--require-token needs a configured token");
   const bool token_from_file = settings.write_token.empty() && !settings.write_token_file.empty();
   if (token_from_file) settings.write_token = load_write_token(settings.write_token_file);
+  for (const auto& token : settings.tokens)
+    if (token.secret == settings.write_token) return usage("Named and legacy tokens must have different secrets");
   if (settings.subscription.underlyings.empty()) return usage("no symbols");
   settings.provider.api_key = env_key_for(settings.provider.name);
   if (settings.massive_dividends && env_key_for("massive").empty())
@@ -472,7 +483,7 @@ int run(int argc, char** argv) {
   engine_options.paper = settings.paper;
   engine_options.dividends = settings.dividends;
   engine_options.events = settings.events;
-  engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins});
+  engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins, settings.tokens, settings.require_token});
   server::Engine engine(*provider, settings.subscription, engine_options);
   engine.start();
   std::unique_ptr<providers::CboeChartHistory> history;
@@ -559,7 +570,7 @@ int run(int argc, char** argv) {
       [&engine, &replays](const server::ApiRequest& request, server::ApiCompletion complete) {
         if (replays.handle(request, complete)) return;
         server::handle_api_async(request, engine, std::move(complete));
-      }, settings.allowed_origins, settings.write_token, settings.allowed_hosts);
+      }, settings.allowed_origins, settings.write_token, settings.allowed_hosts, settings.tokens, settings.require_token);
   web.start(settings.threads);
 
   std::string symbols;

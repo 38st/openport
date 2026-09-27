@@ -62,11 +62,24 @@ struct TemporaryInput {
     return directory / "input.oprec";
   }
 };
+void omit_actors(json& value) {
+  if (value.is_object()) {
+    value.erase("actor");
+    for (auto& child : value) omit_actors(child);
+  } else if (value.is_array()) {
+    for (auto& child : value) omit_actors(child);
+  }
+}
 class ComparisonJournal final : public trading::Journal {
  public:
   explicit ComparisonJournal(const trading::JournalRecovery& expected) : expected_(expected) {}
   void append(md::Timestamp time, std::string_view type, std::string_view payload) override {
-    json line{{"seq", sequence_ + 1}, {"time", time}, {"type", type}, {"payload", json::parse(payload)}, {"prev_hash", head_}};
+    auto recorded = json::parse(payload);
+    // Pre-actor runs used the same reducer and delta format. Reproduce their
+    // wire representation for hashing; attributed records stay byte-exact.
+    if (sequence_ < expected_.records.size() &&
+        !json::parse(expected_.records[sequence_].payload).contains("actor")) omit_actors(recorded);
+    json line{{"seq", sequence_ + 1}, {"time", time}, {"type", type}, {"payload", std::move(recorded)}, {"prev_hash", head_}};
     const auto hash = hash_text(line.dump());
     if (sequence_ >= expected_.records.size() || expected_.records[sequence_].hash != hash) {
       error = "First differing transaction " + std::to_string(sequence_ + 1) + " (" + std::string(type) + ")";
@@ -154,6 +167,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     options.replay = true;
     options.run_input = input.dump();
     options.paper_sink = comparison;
+    options.initial_actor = json::parse(expected.records.front().payload).value("actor", std::string("system"));
     options.paper = json::parse(expected.records.front().payload).at("state").at("config").get<trading::SessionConfig>();
     options.analytics = start.at("analytics").get<analytics::AnalyticsOptions>();
     options.dividends = start.at("dividends").get<std::vector<trading::Dividend>>();

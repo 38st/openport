@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api } from "./client"
 import { connectLive, type Connection } from "./connection"
 import { activeAccount, MAIN_ACCOUNT, useActiveAccount } from "../lib/active-account"
+import { useWriteToken } from "../lib/write-token"
 import { dataSource, useDataSource, type DataSource } from "../lib/data-source"
 import type { AccountBrief, ReplayState, Status, Tick, UnderlyingSnapshot, UnderlyingStatus } from "./types"
 
@@ -69,6 +70,7 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
 /// latest connected tick. REST status polls more often while the socket is down.
 export function LiveProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
+  const token = useWriteToken()
   const [tick, setTick] = useState<Tick | null>(null)
   const [replayTick, setReplayTick] = useState<Tick | null>(null)
   const replaySeen = useRef(0)
@@ -87,7 +89,9 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       if (next) replaySeen.current = Date.now()
       setReplayTick(next)
     })
-  }, [queryClient])
+  }, [queryClient, token])
+
+  useEffect(() => { void queryClient.invalidateQueries() }, [queryClient, token])
 
   const history = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), refetchInterval: 10_000 })
   const archived = source.startsWith("history:") ? history.data?.history?.find((run) => run.id === source.slice(8)) : undefined

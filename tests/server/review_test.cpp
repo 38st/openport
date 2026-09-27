@@ -127,7 +127,7 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
   EXPECT_EQ(csv_record(rows[0], rows[1])["prices"], "price provenance unrecorded; simulated trading");
   EXPECT_EQ(server::csv_quote("a\rb"), "\"a\rb\"");
   const std::vector<std::string> fill_columns = {"account", "account_version", "provider", "prices", "new_york_date",
-      "id", "order_id", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time", "context.spot",
+      "id", "order_id", "actor", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time", "context.spot",
       "context.spot_source", "context.iv", "context.delta", "context.years", "context.equity", "context.floor_room", "context.buying_power"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
   EXPECT_EQ(server::paper_csv_columns(false).size(), 86U);

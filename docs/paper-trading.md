@@ -1486,10 +1486,61 @@ missing/incorrect credentials return 403 `WRITE_TOKEN_REQUIRED`. Without either,
 owner-only permissions when it is missing, and prints a link carrying it,
 `http://localhost:PORT/#token=TOKEN`, which the terminal saves in that browser tab and
 drops from the address bar; the Docker image keeps its token in its volume this way.
+The terminal's "Enter write token" button saves a token by hand.
 Without a token, only loopback binds allow writes. Non-loopback binds return 403
 `WRITE_DISABLED`.
-Reads remain open. Use HTTPS at your reverse proxy for remote bearer credentials
+Named tokens come from `--token-file FILE`, one `NAME SCOPES SECRET` per line.
+Scopes are comma-separated. Blank lines are ignored and `#` starts a comment.
+Malformed lines, duplicate names, secrets or scopes, unknown scopes and reserved
+actor names fail startup. Diagnostics name the line, never its secret. The file is
+read only at startup; protect it and restart the server to rotate credentials.
+
+| Scope | Permission |
+| --- | --- |
+| `read` | Every API GET, CSV export and WebSocket ticks |
+| `trade:ACCOUNT` / `trade:*` | Orders and previews, cancels, flatten, exercise, stock closure and notes on the named account / all live accounts |
+| `replay` | Start, control and stop replays, and trade their isolated accounts |
+| `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation and replay history deletion |
+
+The legacy write token has `admin` scope and actor name `legacy`. Writes always
+check the token they carry: an unknown one gets 403 `WRITE_TOKEN_REQUIRED`, and a
+valid one without the required scope gets 403 `SCOPE_REQUIRED`. Unrecognized route
+families require `admin` for writes.
+
+Without `--require-token`, reads remain public: any caller reads, and a read ignores
+a token that matches nothing, such as a stale one saved in a browser tab. Loopback
+writes without a configured legacy token remain open, including when a named-token
+file is loaded. With `--require-token`, reads and writes require credentials even on
+loopback, and reads need the `read` or `admin` scope; named tokens do not imply
+`read`, so combine it with trade or replay scopes. Startup refuses the flag without
+a configured token. Static terminal files remain public so the
+browser can load the token entry screen. The terminal sends its saved token on
+reads and CSV downloads. Browser WebSockets use the `openport` subprotocol plus
+`openport.token.HEX`, where HEX encodes the token bytes; the server selects only
+`openport`. Non-browser sockets can send the normal Authorization header. Tokens
+never go in a URL query. Use HTTPS at your reverse proxy for remote credentials
 and configure its public Origin with `--allowed-origin` when it rewrites Host.
+
+### Actors
+
+Each new journal transaction includes `actor` in its hash-protected payload: a
+named token, `legacy`, `loopback`, or `system` for reducer actions such as market
+matching, expiry, rules and assignment. The transport supplies the actor on the
+queued `TradingCommand`; request JSON cannot choose it. Replay command provenance
+also retains it, so verification uses the original actor.
+
+Orders retain the actor that placed them. Fills and bracket children retain that
+originating actor even when a later market transaction executes them. A cancel,
+modification or note records its own caller on that transaction, without changing
+the order's originating actor. Rule liquidation orders have actor `system`.
+`GET /api/orders`, `GET /api/fills` and fills CSV expose actors; the Orders page and
+trade review show them in small text. Earlier journals and orders default to
+`unknown`; compaction preserves existing actor fields. Replay verification omits
+the new fields when reproducing hashes from a run recorded before actors existed.
+
+The [OpenAPI contract](openapi.yaml) describes response schemas, write bodies and
+account selection. The [Python and MCP clients](../python/README.md) use these
+same routes. All execution remains simulated.
 
 ### Durable startup and settlement sources
 

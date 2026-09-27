@@ -28,8 +28,8 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **746 C++ and 452 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
-  macOS, warnings as errors.
+- **759 C++, 463 web and 55 Python tests**, built in CI with GCC 13 on Ubuntu and
+  Apple Clang on macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
 pass (over 23 passes) and the Cboe comparison on live data during the session, all on
@@ -136,6 +136,8 @@ with generated prices labelled as simulated on every page:
 
 - **Status**: feed health per underlying, trading sessions, queue and analytics timing,
   and the local volatility history store.
+- **Scripting and agents**: a checked OpenAPI contract, a standard-library Python
+  client and an MCP server, with scoped tokens and journal actor attribution.
 - **Broker data**: Tradier snapshot polling and tastytrade DXLink streams, for
   traders whose brokerage account includes real-time option data; credentials stay
   in the environment and neither adapter can place orders.
@@ -206,7 +208,7 @@ With Docker (Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed), from the
 published image for amd64 and arm64:
 
 ```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport
+docker run --rm --name openport -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport
 ```
 
 Then open the link it prints, `http://localhost:8080/#token=…`. Inside the container the
@@ -286,6 +288,8 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
+| `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
+| `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Equity history is kept beside each journal as `.equity.csv` |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
 | `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
@@ -399,7 +403,7 @@ these routes, so anything it does can be scripted:
 
 | Route | Does |
 | --- | --- |
-| `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders, fills, risk and breach estimates, rules and progress, and its round trips |
+| `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders and fills with actors, risk and breach estimates, rules and progress, and its round trips |
 | `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to floor and projected breach risk |
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
@@ -429,12 +433,43 @@ Sending the same order again with the same `client_order_id` is safe: it returns
 first answer instead of placing a second order. [Paper trading](docs/paper-trading.md)
 documents every field, rule and reason code.
 
+## Scripting and agents
+
+The [OpenAPI 3.1 contract](docs/openapi.yaml) describes the terminal API, including
+replay mirrors, errors and nullable data. CI validates responses from a running
+container with `tools/contract_test.py`, including an order preview and a resting
+limit placed and cancelled in an isolated simulated replay.
+
+The [Python package](python/README.md) has no runtime dependencies. `Client` reads
+analytics and accounts, places paper orders and steps replays on market time.
+Orders get a client ID; bounded HTTP 503 retries reuse it. Optional extras provide
+pandas frames, WebSocket ticks and an MCP server using the official 2.x SDK.
+
+The MCP server gives agents the same paper API. Every tool reports market time,
+the provider and its delay, and whether prices are simulated. Writes require
+`OPENPORT_WRITE_TOKEN` and an account name. Orders carry an `agent:NAME` tag;
+authenticated token names are recorded as actors on journal transactions, orders
+and fills. Older journal entries show `unknown`.
+
+Use `--token-file FILE` to give each script its own token. For example, a line
+`research read,trade:practice,replay SECRET` permits reads, trading the practice
+account and replay controls. Add `--require-token` to protect reads and loopback
+writes as well. See [Python setup and examples](python/README.md).
+
 ## Security
 
-openportd binds to 127.0.0.1 by default. Reads need no credentials; writes (orders,
-accounts, replays) are open only on a loopback bind. To allow writes on a remote bind,
-set `OPENPORT_WRITE_TOKEN` or `--write-token TOKEN` and send it as a Bearer token over
-HTTPS, behind a reverse proxy that authenticates if anyone else can reach it. Static
+openportd binds to 127.0.0.1 by default. Reads are public unless `--require-token`
+is set; loopback writes without a configured legacy token remain open unless that
+flag is set. The existing `OPENPORT_WRITE_TOKEN`, `--write-token TOKEN` and
+`--write-token-file PATH` token grants `admin` and requires authentication for writes.
+Named tokens from `--token-file FILE` grant `read`, `trade:ACCOUNT`, `trade:*`,
+`replay` or `admin`. `admin` includes account creation, limits, guardrails, resets,
+the kill switch and history deletion. Writes always check the token they carry;
+without `--require-token`, reads ignore one that matches nothing. The server prints
+only the link for a token it keeps in a file, as the Docker image does, and never
+prints named tokens. The token file is read at startup; protect it with owner-only
+permissions and restart to rotate tokens. Send Bearer credentials over
+HTTPS behind a reverse proxy for remote access. Static
 files are confined to the web root, and WebSocket upgrades must come from the same
 origin; behind a proxy that rewrites the Host header, list your public origin with
 `--allowed-origin`. Every request must address the server by an IP address, `localhost`,
@@ -469,6 +504,8 @@ version in `CMakeLists.txt` at the current commit, or refreshes its files when t
 exists; GitHub tags the commit when you publish the draft.
 
 ## Roadmap
+
+- [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors
 
 - [x] Plan-locked limits, personal guardrails, order previews and size to floor, breach
       estimates, intraday equity history and rule alerts

@@ -144,3 +144,8 @@ describe("closing positions", () => {
     expect(html).toMatch(/disabled="">Close 1 position<\/button>/)
   })
 })
+
+it("shows the originating actor and marks older orders unknown", () => {
+  expect(render(<OrdersView />, [{ ...order, actor: "research-agent" }])).toContain("research-agent")
+  expect(render(<OrdersView />, [{ ...order, actor: undefined }])).toContain("unknown")
+})

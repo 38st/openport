@@ -137,8 +137,10 @@ struct OrderChange {
 /// Snapshots are immutable owned values, valid after subsequent commands.
 class TradingSession {
  public:
-  TradingSession(SessionConfig config, Timestamp time, std::shared_ptr<Journal> journal = {});
+  TradingSession(SessionConfig config, Timestamp time, std::shared_ptr<Journal> journal = {}, std::string actor = "system");
   ~TradingSession();
+  /// Owner-thread command context; reset to system after applying a command.
+  void set_actor(std::string actor);
   /// Journal a driver input without introducing a clock or an external dependency.
   void record_input(std::string_view input, Timestamp time);
   TradingSession(TradingSession&&) noexcept;

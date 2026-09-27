@@ -411,3 +411,107 @@ TEST(WebServer, StopSeversLateCommandCompletionBeforeDestroyingExecutor) {
   EXPECT_NO_THROW(complete({200, "{}"}));
 }
 }  // namespace
+
+namespace {
+TEST(WebPolicy, NamedTokenFilesAreStrictAndDiagnosticsHideSecrets) {
+  const auto tokens = server::parse_token_file("# agents\nreader read read-secret\nagent read,trade:practice,replay agent-secret # local\nowner admin admin-secret\n");
+  ASSERT_EQ(tokens.size(), 3U);
+  EXPECT_EQ(tokens[1].name, "agent");
+  EXPECT_EQ(tokens[1].scopes, (std::vector<std::string>{"read", "trade:practice", "replay"}));
+  for (const std::string line : {"", "# empty", "a read", "a read secret extra", "a trade: secret", "a read, secret",
+      "a unknown secret", "a read,read secret", "system admin secret", "loopback admin secret", "a read secret\na admin other",
+      "a read secret\nb admin secret", "a trade:../main secret", "a trade:MAIN secret", "a trade:bad_id secret", "a trade:-main secret",
+      "a trade:main--two secret", "a read secret\nb ,read other"}) {
+    try { (void)server::parse_token_file(line); FAIL() << "Accepted malformed token file"; }
+    catch (const std::invalid_argument& error) {
+      EXPECT_EQ(std::string(error.what()).find("secret"), std::string::npos);
+    }
+  }
+}
+
+TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
+  server::WritePolicy policy{"0.0.0.0", "legacy-secret", {},
+      server::parse_token_file("reader read reader-secret\nagent trade:practice agent-secret\nall trade:* all-secret\nreplayer replay replay-secret\nowner admin owner-secret"), true};
+  const auto check = [&](std::string method, std::string path, const std::string& secret) {
+    server::ApiRequest request{std::move(method), std::move(path)};
+    request.content_type = "application/json";
+    request.authorization = "Bearer " + secret;
+    return server::check_api_write(request, policy);
+  };
+  for (const auto* path : {"/api/status", "/api/accounts", "/api/portfolio?account=practice", "/api/replay", "/ws"}) {
+    EXPECT_FALSE(check("GET", path, "reader-secret"));
+    EXPECT_TRUE(check("GET", path, "agent-secret"));
+    EXPECT_FALSE(check("GET", path, "owner-secret"));
+  }
+  const std::vector<std::pair<std::string, std::string>> trades = {
+      {"POST", "/orders"}, {"POST", "/orders/preview"}, {"PUT", "/orders/1"}, {"DELETE", "/orders/1"},
+      {"POST", "/orders/cancel"}, {"POST", "/positions/close"}, {"POST", "/positions/exercise"},
+      {"POST", "/stocks/close"}, {"PUT", "/trades/1/note"}, {"PUT", "/days/2026-09-22/note"}};
+  for (const auto& [method, path] : trades) {
+    EXPECT_FALSE(check(method, "/api" + path + "?account=practice", "agent-secret")) << path;
+    EXPECT_TRUE(check(method, "/api" + path, "agent-secret")) << path;
+    EXPECT_TRUE(check(method, "/api" + path + "?account=other", "agent-secret")) << path;
+    EXPECT_FALSE(check(method, "/api" + path + "?account=other", "all-secret")) << path;
+    EXPECT_TRUE(check(method, "/api/replay" + path, "all-secret")) << path;
+    EXPECT_FALSE(check(method, "/api/replay" + path, "replay-secret")) << path;
+    EXPECT_TRUE(check(method, "/api" + path, "replay-secret")) << path;
+    EXPECT_TRUE(check(method, "/api" + path, "reader-secret")) << path;
+  }
+  for (const std::string method : {"POST", "PUT", "DELETE"}) {
+    EXPECT_FALSE(check(method, "/api/replay", "replay-secret"));
+    EXPECT_TRUE(check(method, "/api/replay", "agent-secret"));
+  }
+  for (const auto* path : {"/api/risk/limits", "/api/risk/guardrails", "/api/risk/kill", "/api/account/reset",
+       "/api/account/payout", "/api/accounts", "/api/settlements", "/api/replay/risk/limits", "/api/replay/history/run", "/api/future-write"}) {
+    EXPECT_TRUE(check("POST", path, "agent-secret")) << path;
+    EXPECT_TRUE(check("POST", path, "replay-secret")) << path;
+    EXPECT_FALSE(check("POST", path, "owner-secret")) << path;
+    EXPECT_FALSE(check("POST", path, "legacy-secret")) << path;
+  }
+}
+
+TEST(WebPolicy, RequireTokenProtectsLoopbackReadsAndWritesAndAttributesActors) {
+  server::WritePolicy policy{"127.0.0.1", "", {}, server::parse_token_file("alice read,trade:main secret"), false};
+  server::ApiRequest request{"POST", "/api/orders"};
+  request.content_type = "application/json";
+  std::string actor;
+  EXPECT_FALSE(server::check_api_write(request, policy, &actor));
+  EXPECT_EQ(actor, "loopback");
+  policy.require_token = true;
+  EXPECT_TRUE(server::check_api_write(request, policy));
+  request.authorization = "Bearer secret";
+  EXPECT_FALSE(server::check_api_write(request, policy, &actor));
+  EXPECT_EQ(actor, "alice");
+  request.method = "GET";
+  request.target = "/api/status";
+  EXPECT_FALSE(server::check_api_write(request, policy));
+  request.authorization.clear();
+  EXPECT_TRUE(server::check_api_write(request, policy));
+  request.authorization = "Bearer wrong";
+  EXPECT_TRUE(server::check_api_write(request, policy));
+  // Without --require-token reads stay public: a stale or narrow token still reads,
+  // and only its writes are refused.
+  policy.require_token = false;
+  EXPECT_FALSE(server::check_api_write(request, policy));
+  request.authorization.clear();
+  EXPECT_FALSE(server::check_api_write(request, policy));
+  request.method = "POST";
+  request.target = "/api/orders";
+  request.authorization = "Bearer wrong";
+  EXPECT_TRUE(server::check_api_write(request, policy));
+  policy.tokens = server::parse_token_file("agent trade:practice agent-secret");
+  request.method = "GET";
+  request.target = "/api/portfolio";
+  request.authorization = "Bearer agent-secret";
+  EXPECT_FALSE(server::check_api_write(request, policy));
+}
+
+TEST(WebPolicy, BrowserSocketTokensUseHeadersWithoutAmbiguousCredentials) {
+  EXPECT_EQ(server::websocket_authorization("", "openport, openport.token.616263"), "Bearer abc");
+  EXPECT_EQ(server::websocket_authorization("Bearer abc", ""), "Bearer abc");
+  EXPECT_FALSE(server::websocket_authorization("Bearer abc", "openport, openport.token.616263"));
+  for (const auto* value : {"openport, openport.token.", "openport, openport.token.0", "openport, openport.token.00", "openport, openport.token.gg", "other"}) {
+    EXPECT_FALSE(server::websocket_authorization("", value));
+  }
+}
+}  // namespace

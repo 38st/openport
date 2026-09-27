@@ -14,6 +14,8 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <array>
+#include <sstream>
+#include <set>
 #include <future>
 #include <mutex>
 #include <optional>
@@ -172,36 +174,142 @@ bool websocket_origin_allowed(std::optional<std::string_view> origin, std::strin
   return false;
 }
 
+std::vector<NamedToken> parse_token_file(std::string_view text) {
+  std::vector<NamedToken> tokens;
+  std::set<std::string> names, secrets;
+  std::istringstream input{std::string(text)};
+  std::string line;
+  std::size_t number = 0;
+  const auto identifier = [](std::string_view value) {
+    return !value.empty() && value.size() <= 64 && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+      return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+    });
+  };
+  const auto account_id = [](std::string_view value) {
+    return !value.empty() && value.size() <= 40 && value.front() != '-' && value.back() != '-' &&
+        value.find("--") == std::string_view::npos && std::all_of(value.begin(), value.end(), [](char c) {
+          return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+        });
+  };
+  while (std::getline(input, line)) {
+    ++number;
+    line = line.substr(0, line.find('#'));
+    std::istringstream fields(line);
+    NamedToken token;
+    std::string scopes, extra;
+    if (!(fields >> token.name)) continue;
+    const auto invalid = [&] { throw std::invalid_argument("Invalid token file at line " + std::to_string(number)); };
+    if (!(fields >> scopes >> token.secret) || fields >> extra || !identifier(token.name) ||
+        token.name == "system" || token.name == "loopback" || token.name == "unknown" || token.name == "legacy" ||
+        !names.insert(token.name).second || !secrets.insert(token.secret).second) invalid();
+    if (!std::all_of(token.secret.begin(), token.secret.end(), [](unsigned char c) { return c > 32 && c < 127; })) invalid();
+    std::set<std::string> seen;
+    std::size_t offset = 0;
+    do {
+      const auto comma = scopes.find(',', offset);
+      auto scope = scopes.substr(offset, comma == std::string::npos ? comma : comma - offset);
+      if ((scope != "read" && scope != "replay" && scope != "admin" && scope != "trade:*" &&
+           !(scope.starts_with("trade:") && account_id(std::string_view(scope).substr(6)))) ||
+          !seen.insert(scope).second) invalid();
+      token.scopes.push_back(std::move(scope));
+      if (comma == std::string::npos) break;
+      offset = comma + 1;
+    } while (true);
+    tokens.push_back(std::move(token));
+  }
+  if (tokens.empty()) throw std::invalid_argument("Token file contains no tokens");
+  return tokens;
+}
+
+std::optional<std::string> websocket_authorization(std::string_view bearer, std::string_view protocols) {
+  if (protocols.empty()) return std::string(bearer);
+  constexpr std::string_view prefix = "openport, openport.token.";
+  if (!bearer.empty() || !protocols.starts_with(prefix)) return {};
+  protocols.remove_prefix(prefix.size());
+  if (protocols.empty() || protocols.size() % 2 != 0) return {};
+  std::string secret;
+  for (std::size_t offset = 0; offset < protocols.size(); offset += 2) {
+    unsigned int byte = 0;
+    const auto* begin = protocols.data() + offset;
+    const auto [end, error] = std::from_chars(begin, begin + 2, byte, 16);
+    if (error != std::errc{} || end != begin + 2 || byte <= 32 || byte >= 127) return {};
+    secret += static_cast<char>(byte);
+  }
+  return "Bearer " + secret;
+}
+
 std::string write_mode(const WritePolicy& policy) {
-  if (!policy.token.empty()) return "token";
+  if (!policy.token.empty() || !policy.tokens.empty() || policy.require_token) return "token";
   boost::system::error_code error;
   const auto address = boost::asio::ip::make_address(policy.address, error);
   return !error && address.is_loopback() ? "open" : "disabled";
 }
 
-std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy) {
-  if (!request.target.starts_with("/api/") ||
-      (request.method != "POST" && request.method != "PUT" && request.method != "DELETE")) return {};
-  if (request.ambiguous_headers || !websocket_origin_allowed(
+std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy, std::string* actor) {
+  if (!request.target.starts_with("/api/") && request.target != "/ws") return {};
+  const bool read = request.method == "GET";
+  if (!read && request.method != "POST" && request.method != "PUT" && request.method != "DELETE") return {};
+  if (request.ambiguous_headers || (!read && !websocket_origin_allowed(
           request.origin ? std::optional<std::string_view>(*request.origin) : std::nullopt,
-          request.host, policy.allowed_origins))
+          request.host, policy.allowed_origins)))
     return api_error(403, "ORIGIN_REJECTED", "Origin or security headers are ambiguous or not allowed");
-  if (write_mode(policy) == "disabled")
-    return api_error(403, "WRITE_DISABLED", "A non-loopback bind requires a write token");
-  if (!policy.token.empty()) {
+  boost::system::error_code address_error;
+  const auto address = boost::asio::ip::make_address(policy.address, address_error);
+  const bool loopback = !address_error && address.is_loopback();
+  std::vector<std::string> scopes;
+  std::string name;
+  if (!request.authorization.empty()) {
     constexpr std::string_view prefix = "Bearer ";
-    if (!request.authorization.starts_with(prefix))
+    const auto matches = [&](const std::string& secret) {
+      if (secret.empty() || !request.authorization.starts_with(prefix)) return false;
+      const auto supplied = std::string_view(request.authorization).substr(prefix.size());
+      std::array<unsigned char, 32> expected{}, actual{};
+      unsigned int length = 0;
+      const bool hashed = EVP_Digest(secret.data(), secret.size(), expected.data(), &length, EVP_sha256(), nullptr) == 1 &&
+          EVP_Digest(supplied.data(), supplied.size(), actual.data(), &length, EVP_sha256(), nullptr) == 1;
+      return hashed && CRYPTO_memcmp(expected.data(), actual.data(), expected.size()) == 0;
+    };
+    if (matches(policy.token)) { name = "legacy"; scopes = {"admin"}; }
+    for (const auto& token : policy.tokens) {
+      if (matches(token.secret)) { name = token.name; scopes = token.scopes; }
+    }
+    // Reads are public unless --require-token, so a stale token saved in a browser tab
+    // cannot hide the market data; writes still reject it.
+    if (name.empty() && (!read || policy.require_token))
       return api_error(403, "WRITE_TOKEN_REQUIRED", "A valid bearer token is required");
-    const auto supplied = std::string_view(request.authorization).substr(prefix.size());
-    std::array<unsigned char, 32> expected{}, actual{};
-    unsigned int length = 0;
-    // Compare fixed-size digests: neither token contents nor matching prefix
-    // length influence the comparison's runtime.
-    const bool hashed = EVP_Digest(policy.token.data(), policy.token.size(), expected.data(), &length, EVP_sha256(), nullptr) == 1 &&
-        EVP_Digest(supplied.data(), supplied.size(), actual.data(), &length, EVP_sha256(), nullptr) == 1;
-    if (!hashed || CRYPTO_memcmp(expected.data(), actual.data(), expected.size()) != 0)
-      return api_error(403, "WRITE_TOKEN_REQUIRED", "A valid bearer token is required");
+  } else if (!policy.require_token && (read || (loopback && policy.token.empty()))) {
+    name = "loopback";
+    scopes = {"admin"};
+  } else {
+    if (!read && write_mode(policy) == "disabled")
+      return api_error(403, "WRITE_DISABLED", "A non-loopback bind requires a write token");
+    return api_error(403, "WRITE_TOKEN_REQUIRED", "A valid bearer token is required");
   }
+  const auto has = [&](std::string_view scope) { return std::find(scopes.begin(), scopes.end(), scope) != scopes.end(); };
+  std::string_view path(request.target);
+  const auto question = path.find('?');
+  auto query = question == std::string_view::npos ? std::string_view{} : path.substr(question + 1);
+  path = path.substr(0, question);
+  std::string account = "main";
+  while (!query.empty()) {
+    const auto amp = query.find('&');
+    const auto pair = query.substr(0, amp);
+    if (pair.starts_with("account=")) account = std::string(pair.substr(8));
+    if (amp == std::string_view::npos) break;
+    query.remove_prefix(amp + 1);
+  }
+  const bool replay = path.starts_with("/api/replay/");
+  if (replay) path.remove_prefix(11); // leaves /orders, /risk, ...
+  else if (path.starts_with("/api/")) path.remove_prefix(4);
+  const bool trade = path == "/orders" || path == "/orders/preview" || path == "/orders/cancel" ||
+      path.starts_with("/orders/") || path == "/positions/close" || path == "/positions/exercise" || path == "/stocks/close" ||
+      ((path.starts_with("/trades/") || path.starts_with("/days/")) && path.ends_with("/note"));
+  const bool permitted = has("admin") || (read ? has("read") || !policy.require_token :
+      (path == "/replay" ? has("replay") :
+       trade && (replay ? has("replay") : has("trade:*") || has("trade:" + account))));
+  if (!permitted) return api_error(403, "SCOPE_REQUIRED", "Token does not permit this operation");
+  if (actor) *actor = name;
+  if (read) return {};
   if (request.method == "DELETE") {
     if (!request.body.empty()) return api_error(400, "INVALID_REQUEST", "DELETE must have no body");
   } else {
@@ -318,6 +426,10 @@ class WsSession : public Session, public std::enable_shared_from_this<WsSession>
 
   void accept(http::request<http::string_body> request) {
     ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
+    if (request[http::field::sec_websocket_protocol].starts_with("openport, openport.token."))
+      ws_.set_option(websocket::stream_base::decorator([](websocket::response_type& response) {
+        response.set(http::field::sec_websocket_protocol, "openport");
+      }));
     ws_.async_accept(request, beast::bind_front_handler(&WsSession::on_accept, shared_from_this()));
   }
 
@@ -484,6 +596,13 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
           return reject_upgrade(request, http::status::forbidden,
                                 "WebSocket Origin does not match Host");
         }
+        ApiRequest auth{"GET", "/ws"};
+        const auto authorization = websocket_authorization(request[http::field::authorization], request[http::field::sec_websocket_protocol]);
+        auth.authorization = authorization.value_or("");
+        auth.ambiguous_headers = !authorization || request.count(http::field::authorization) > 1 ||
+                                 request.count(http::field::sec_websocket_protocol) > 1;
+        if (auto rejection = check_api_write(auth, shared_.write_policy))
+          return reject_upgrade(request, http::status::forbidden, rejection->body);
         auto slot = shared_.slots.acquire();
         if (!slot)
           return reject_upgrade(request, http::status::service_unavailable,
@@ -534,7 +653,7 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     if (request.count(http::field::origin)) api.origin = std::string(request[http::field::origin]);
     api.ambiguous_headers = request.count(http::field::origin) > 1 || request.count(http::field::host) != 1 ||
                             request.count(http::field::authorization) > 1 || request.count(http::field::content_type) > 1;
-    if (auto rejection = check_api_write(api, shared_.write_policy))
+    if (auto rejection = check_api_write(api, shared_.write_policy, &api.actor))
       return send_api(std::move(*rejection), request.version(), request.keep_alive());
     completion_gate_ = std::make_shared<CompletionGate>();
     awaiting_ = shared_from_this();
@@ -691,7 +810,7 @@ struct WebServer::Impl {
 
 WebServer::WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
                      AsyncApiHandler api, std::vector<std::string> allowed_origins, std::string write_token,
-                     std::vector<std::string> allowed_hosts)
+                     std::vector<std::string> allowed_hosts, std::vector<NamedToken> tokens, bool require_token)
     : impl_(std::make_unique<Impl>()) {
   impl_->shared.web_root = std::move(web_root);
   impl_->shared.api = std::move(api);
@@ -702,7 +821,7 @@ WebServer::WebServer(std::string address, unsigned short port, std::filesystem::
     if (host_name(host).empty()) throw std::invalid_argument("invalid allowed host: " + host);
   }
   impl_->shared.allowed_hosts = std::move(allowed_hosts);
-  impl_->shared.write_policy = {address, std::move(write_token), allowed_origins};
+  impl_->shared.write_policy = {address, std::move(write_token), allowed_origins, std::move(tokens), require_token};
   impl_->shared.allowed_origins = std::move(allowed_origins);
   impl_->address = std::move(address);
   impl_->requested_port = port;

@@ -109,3 +109,8 @@ describe("trade review", () => {
     expect(host.textContent).toContain("2,000 bytes")
   })
 })
+
+it("shows fill actors in the trade review", async () => {
+  await render(<TradeDetail trade={trade} fills={[{ ...fill, actor: "research-agent" }]} trading={trading} />)
+  expect(host.textContent).toContain("research-agent")
+})

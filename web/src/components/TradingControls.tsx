@@ -15,13 +15,13 @@ export function TradingError({ error }: { error: unknown }) {
   </div>
 }
 
-export function WriteAccess({ trading }: { trading: TradingStatus }) {
+export function WriteAccess({ trading }: { trading?: TradingStatus }) {
   const token = useWriteToken()
   const [open, setOpen] = useState(false)
   const [value, setValue] = useState("")
   const [storageWarning, setStorageWarning] = useState(false)
-  if (trading.write === "disabled") return <p className="text-xs text-warn">Read only · trading writes disabled by server</p>
-  if (trading.write !== "token") return null
+  if (trading?.write === "disabled") return <p className="text-xs text-warn">Read only · trading writes disabled by server</p>
+  if (trading && trading.write !== "token") return null
   return <>
     <button type="button" className="trade-button" onClick={() => { setValue(""); setOpen(true) }}>{token ? "Manage write token" : "Enter write token"}</button>
     {storageWarning && <p className="text-xs text-warn">Session storage unavailable; token kept in memory until this page closes.</p>}

@@ -139,7 +139,7 @@ json order_json(const Order& o, const TradingView& view) {
     for (const auto& leg : o.request.legs)
       legs.push_back({{"symbol", leg.symbol}, {"side", side_name(leg.side)}, {"ratio", leg.ratio}});
   }
-  return {{"id", std::to_string(o.id)}, {"client_order_id", o.request.client_order_id},
+  return {{"id", std::to_string(o.id)}, {"client_order_id", o.request.client_order_id}, {"actor", o.actor},
           {"symbol", multi ? json(nullptr) : json(o.request.symbol)},
           {"underlying", underlying(view, order_symbols(o.request).front())},
           {"side", multi ? json(nullptr) : json(side_name(o.request.side))}, {"legs", legs},
@@ -192,7 +192,7 @@ json day_notes_json(const TradingSnapshot& s) {
   return notes;
 }
 json fill_json(const Fill& f, const TradingView& view) {
-  return {{"id", std::to_string(f.id)}, {"order_id", std::to_string(f.order_id)},
+  return {{"id", std::to_string(f.id)}, {"order_id", std::to_string(f.order_id)}, {"actor", f.actor},
           {"symbol", f.symbol}, {"underlying", underlying(view, f.symbol)},
           {"side", f.side == Side::Buy ? "buy" : "sell"}, {"quantity", f.quantity},
           {"price", f.price.str()}, {"fee", f.fee.str()}, {"context", context_json(f.context)},
@@ -1212,6 +1212,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   try {
     auto command = parse_command(request, path);
     command.account = account;
+    command.actor = request.actor;
     if (!source.post_trading(command, [command, complete](TradingReply reply) {
           complete(command_response(command, reply));
         })) complete(api_error(503, "TRADING_UNAVAILABLE", "Command inbox full or trading unavailable"));

@@ -15,15 +15,28 @@ namespace openport::server {
 inline constexpr std::size_t kWebSocketMessageMax = 4 * 1024;
 inline constexpr std::size_t kWebSocketSessionMax = 256;
 
+struct NamedToken {
+  std::string name;
+  std::vector<std::string> scopes;
+  std::string secret;
+};
+/// Strict NAME SCOPES SECRET lines; diagnostics never include line contents.
+[[nodiscard]] std::vector<NamedToken> parse_token_file(std::string_view text);
+
 struct WritePolicy {
   std::string address = "127.0.0.1";
   std::string token;
   std::vector<std::string> allowed_origins;
+  std::vector<NamedToken> tokens = {};
+  bool require_token = false;
 };
 [[nodiscard]] std::string write_mode(const WritePolicy& policy);
-/// One policy for all API writes, including routes that do not yet exist.
+/// API reads and writes share authentication; optional actor is trusted transport context.
 [[nodiscard]] std::optional<ApiResponse> check_api_write(const ApiRequest& request,
-                                                        const WritePolicy& policy);
+                                                        const WritePolicy& policy, std::string* actor = nullptr);
+
+/// Browser sockets cannot set Authorization; use openport plus a hex token subprotocol.
+[[nodiscard]] std::optional<std::string> websocket_authorization(std::string_view bearer, std::string_view protocols);
 
 struct StaticFile {
   int status = 200;

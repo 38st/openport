@@ -66,6 +66,9 @@ flowchart LR
   mutex for HTTP and WebSocket readers. With a paper journal, an atomic JSON file
   beside it preserves the state across restarts; the reducer's journal schema is
   unchanged. The terminal's banner follows the snapshot's market-time active flags.
+- **API clients** use the checked OpenAPI contract. The Python client and MCP
+  server call the same routes as the terminal. HTTP scope checks run before
+  enqueueing; the authenticated actor travels with each command into the journal.
 - **Commands** from the terminal (orders, cancels, resets) are queued and applied on
   the engine thread, between market batches, so each account sees one ordered stream
   of market data and commands.
@@ -156,11 +159,12 @@ Small submit timings also include valuation/risk work and do not grow monotonica
 
 ## Tests
 
-746 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+759 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
-recovery and tampering, the calendar and the HTTP API; 295 Vitest cases cover the
-terminal. CI builds with GCC 13 on Ubuntu and Apple Clang on macOS, both with warnings
-as errors, and smoke-tests the Docker image.
+recovery and tampering, the calendar and the HTTP API; 463 Vitest cases cover the
+terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13
+on Ubuntu and Apple Clang on macOS, both with warnings as errors, smoke-tests the
+Docker image and validates its responses against the OpenAPI contract.
 
 ## Further reading
 

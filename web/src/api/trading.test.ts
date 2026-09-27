@@ -92,3 +92,20 @@ describe("account live updates", () => {
     expect(sameAccountPlaceholder(portfolio, ["summary", 1], 1)).toBeUndefined()
   })
 })
+
+it("sends the saved bearer token on reads when the server requires authentication", async () => {
+  const fetcher = vi.fn(async () => new Response("{}"))
+  vi.stubGlobal("fetch", fetcher)
+  writeToken.set("reader-token")
+  await api.status()
+  expect(fetcher).toHaveBeenLastCalledWith("/api/status", expect.objectContaining({ headers: { Accept: "application/json", Authorization: "Bearer reader-token" } }))
+})
+
+it("authenticates CSV downloads and preserves structured permission errors", async () => {
+  const { downloadCsv } = await import("./client")
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ error: { code: "SCOPE_REQUIRED", message: "Read scope required" } }), { status: 403 }))
+  vi.stubGlobal("fetch", fetcher)
+  writeToken.set("agent-token")
+  await expect(downloadCsv("/api/fills.csv?account=practice", "fills.csv")).rejects.toMatchObject({ code: "SCOPE_REQUIRED" })
+  expect(fetcher).toHaveBeenCalledWith("/api/fills.csv?account=practice", { headers: { Accept: "application/json", Authorization: "Bearer agent-token" } })
+})

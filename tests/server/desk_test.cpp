@@ -1,3 +1,4 @@
+#include "support/contract_capture.hpp"
 #include <fstream>
 #include <future>
 #include <sstream>
@@ -329,6 +330,7 @@ server::ApiResponse replay_call(server::ReplayHost& host, std::string method, st
   auto result = done.get_future();
   server::ApiRequest request{std::move(method), std::move(target), body.dump()};
   request.content_type = "application/json";
+  request.actor = "test-actor";
   if (!host.handle(request, [&](server::ApiResponse response) { done.set_value(std::move(response)); }))
     throw std::runtime_error("Replay request was not handled");
   if (result.wait_for(5s) != std::future_status::ready) throw std::runtime_error("Replay request timed out");
@@ -349,6 +351,7 @@ TEST(ReproducibleRun, LockstepSmallAndLargeStepsMatchContinuousCommandsAndVerify
       md::RecordingReader reader(file.path);
       server::Desk::Options options;
       options.replay = true;
+      options.initial_actor = "test-actor";
       options.run_input = server::recording_input(file.path);
       options.paper_journal = journal;
       // ReplayHost's default plan is practice.
@@ -361,6 +364,7 @@ TEST(ReproducibleRun, LockstepSmallAndLargeStepsMatchContinuousCommandsAndVerify
         desk.replay_batch(batch->events, batch->received, batch->time);
         if (desk.market_time() == market.time + 4 * md::kNanosPerSecond) {
           server::TradingCommand order;
+          order.actor = "test-actor";
           order.order = market.market("lockstep");
           EXPECT_TRUE(command(desk, order, desk.market_time(), batch->received).decision.ok());
         }
@@ -463,5 +467,93 @@ TEST(ReproducibleRun, MissingRecordingAndOldJournalsHaveClearDiagnostics) {
   { trading::TradingSession session({}, 0, trading::FileJournal::create(old.string())); }
   EXPECT_NO_THROW((void)trading::TradingSession::recover(trading::FileJournal::read(old.string())));
   EXPECT_NE(server::verify_run(old).message.find("older journals still load"), std::string::npos);
+}
+}  // namespace
+
+namespace {
+TEST(ReplayRun, ContractFixture) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.write_mode = "open";
+  server::ReplayHost host({file.directory, options, false});
+  const auto capture = [&](std::string method, std::string path, json body = json::object()) {
+    const auto response = replay_call(host, method, path, body);
+    EXPECT_GE(response.status, 200);
+    EXPECT_LT(response.status, 300) << response.body;
+    test::capture_contract("replay", method, path, response);
+    return json::parse(response.body);
+  };
+  capture("GET", "/api/replay");
+  const auto started = capture("POST", "/api/replay", {{"file", "session.oprec"}, {"paused", true}});
+  const auto id = started.at("replay").at("id").get<std::string>();
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+  capture("PUT", "/api/replay", {{"until", "10:00:01"}});
+  capture("GET", "/api/replay/status");
+  capture("GET", "/api/replay/account");
+  capture("DELETE", "/api/replay");
+  capture("GET", "/api/replay");
+  capture("GET", "/api/replay/history/" + id);
+  capture("GET", "/api/replay/history/" + id + "/trades");
+}
+}  // namespace
+
+namespace {
+TEST(ReplayRun, CommandActorDefaultsForOlderInputs) {
+  server::TradingCommand command;
+  command.actor = "agent";
+  auto recorded = json(command);
+  EXPECT_EQ(recorded.get<server::TradingCommand>().actor, "agent");
+  recorded.erase("actor");
+  EXPECT_EQ(recorded.get<server::TradingCommand>().actor, "unknown");
+}
+
+TEST(ReplayRun, JournalsWithoutActorsStillVerifyTheirOriginalHashes) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  const auto journal = file.directory / "run.jsonl";
+  const test::ScriptedMarket market;
+  {
+    md::RecordingReader reader(file.path);
+    server::Desk::Options options;
+    options.run_input = server::recording_input(file.path);
+    options.replay = true;
+    options.paper_journal = journal;
+    server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
+    desk.start_trading();
+    providers::ReplayBatches batches(reader, reader.header().subscription);
+    while (const auto batch = batches.next()) {
+      desk.replay_batch(batch->events, batch->received, batch->time);
+      if (desk.market_time() == market.time + 4 * md::kNanosPerSecond) {
+        server::TradingCommand order;
+        order.actor = "agent";
+        order.order = market.market("older-order");
+        ASSERT_TRUE(command(desk, order, desk.market_time(), batch->received).decision.ok());
+      }
+    }
+  }
+  const auto older = file.directory / "older.jsonl";
+  const std::function<void(json&)> strip = [&](json& value) {
+    if (value.is_object()) value.erase("actor");
+    if (value.is_structured()) {
+      for (auto& child : value) strip(child);
+    }
+  };
+  {
+    auto output = trading::FileJournal::create(older.string());
+    for (const auto& record : trading::FileJournal::read(journal.string()).records) {
+      auto payload = json::parse(record.payload);
+      strip(payload);
+      output->append(record.time, record.type, payload.dump());
+    }
+  }
+  const auto recovery = trading::FileJournal::read(older.string());
+  const auto restored = trading::TradingSession::recover(recovery);
+  ASSERT_FALSE(restored.snapshot()->recent_fills.empty());
+  EXPECT_EQ(restored.snapshot()->recent_fills.front().actor, "unknown");
+  const auto verified = server::verify_run(older);
+  EXPECT_TRUE(verified.matched) << verified.message;
+  EXPECT_EQ(verified.head, recovery.head);
 }
 }  // namespace

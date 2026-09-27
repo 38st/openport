@@ -1,5 +1,6 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { writeToken } from "../lib/write-token"
 import { connectLive } from "./connection"
 import { liveState } from "./live"
 import type { Status, Tick } from "./types"
@@ -75,7 +76,7 @@ class Socket {
   onopen: (() => void) | null = null
   onclose: (() => void) | null = null
   onmessage: ((event: { data: string }) => void) | null = null
-  constructor(readonly url: string) { Socket.instances.push(this) }
+  constructor(readonly url: string, readonly protocols?: string[]) { Socket.instances.push(this) }
   open() { this.onopen?.() }
   close() { this.onclose?.() }
   message(value: Tick) { this.onmessage?.({ data: JSON.stringify(value) }) }
@@ -85,6 +86,7 @@ const cleanups: (() => void)[] = []
 afterEach(() => {
   for (const cleanup of cleanups.splice(0).reverse()) cleanup()
   Socket.instances = []
+  writeToken.set("")
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -158,4 +160,15 @@ describe("socket recovery", () => {
     expect(onTick).not.toHaveBeenCalled()
     expect(onConnection).not.toHaveBeenCalled()
   })
+})
+
+
+it("authenticates browser sockets through subprotocols without putting tokens in the URL", () => {
+  vi.stubGlobal("WebSocket", Socket)
+  writeToken.set("abc")
+  const client = new QueryClient()
+  cleanups.push(() => client.clear())
+  cleanups.push(connectLive("ws://localhost/ws", client, () => {}, () => {}))
+  expect(Socket.instances[0]?.url).toBe("ws://localhost/ws")
+  expect(Socket.instances[0]?.protocols).toEqual(["openport", "openport.token.616263"])
 })

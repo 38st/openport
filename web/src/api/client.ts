@@ -53,7 +53,22 @@ function routed(path: string): string {
   if (source.startsWith("history:")) return path.replace(/^\/api\//, `/api/replay/history/${encodeURIComponent(source.slice(8))}/`)
   return source === "replay" ? path.replace(/^\/api\//, "/api/replay/") : path
 }
-const get = <T,>(path: string, signal?: AbortSignal) => request<T>(routed(path), { signal, headers: { Accept: "application/json" } })
+export function readHeaders(): Record<string, string> {
+  const token = writeToken.get()
+  return { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+}
+const get = <T,>(path: string, signal?: AbortSignal) => request<T>(routed(path), { signal, headers: readHeaders() })
+
+export async function downloadCsv(path: string, filename: string) {
+  const response = await fetch(path, { headers: readHeaders() })
+  if (!response.ok) throw mapApiError(response.status, await response.json().catch(() => null), response.statusText)
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 function write<T>(path: string, method: "POST" | "PUT" | "DELETE", mode: WriteMode, body?: unknown) {
   const headers: Record<string, string> = { Accept: "application/json", "Content-Type": "application/json" }
   if (mode === "disabled") return Promise.reject(new ApiError(403, "Trading writes are disabled by the server.", "WRITE_DISABLED"))

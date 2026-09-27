@@ -631,6 +631,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       engine.paper.initial_cash = plan->initial_cash;
       engine.paper_journal = history_->create(*session, engine.paper);
       engine.replay = true;
+      engine.initial_actor = request.actor;
       engine.run_input = demo ? scenario_input(*day, date, seed) : recording_input(path);
       engine.paper_accounts.clear();
       engine.paper_sink.reset();

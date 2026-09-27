@@ -106,6 +106,7 @@ struct TradingCommand {
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
                     Exercise, CloseStock, DayNote, Preview, Guardrails };
   Kind kind = Kind::Submit;
+  std::string actor = "unknown";
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
   trading::Limits limits;

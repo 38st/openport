@@ -106,7 +106,7 @@ JournalRecovery verify_journal(std::string_view jsonl, std::string_view expected
           j.at("prev_hash") != result.head || hash != digest(j.dump()))
         corrupt("Broken journal sequence, time or SHA-256 chain at record " + std::to_string(seq));
       result.records.push_back({seq, time, j.at("type").get<std::string>(),
-          j.at("payload").dump(), result.head, hash});
+          j.at("payload").dump(), result.head, hash, j.at("payload").value("actor", std::string("unknown"))});
       result.head = hash;
       start = end + 1;
     }

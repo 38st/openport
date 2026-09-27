@@ -20,6 +20,7 @@ namespace openport::server {
 class Desk {
  public:
   struct Options {
+    std::string initial_actor = "system";
     std::string run_input;  ///< Canonical provenance JSON; empty for legacy/live desks.
     bool paper_enabled = true;
     bool replay = false;  ///< Publish the replay market clock and keep halt state isolated.
@@ -80,7 +81,7 @@ class Desk {
   void create_account(const TradingCommand& command, TradingReply& reply);
   void observe_trading(const md::Event& event);
   void publish_trading();
-  void record_input(const std::string& input);
+  void record_input(const std::string& input, const std::string& actor = "system");
   void sample_equity(PaperAccount& account);
   /// Stops one account after a journal or integration failure; the others carry on.
   void fail_trading(PaperAccount& account, std::string reason);

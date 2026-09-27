@@ -15,6 +15,7 @@ struct JournalRecord {
   std::string payload;  ///< Canonical JSON object, sorted keys, compact UTF-8.
   std::string prev_hash;
   std::string hash;
+  std::string actor = "unknown"; ///< Payload actor, or unknown for older records.
 };
 struct JournalRecovery {
   std::vector<JournalRecord> records;

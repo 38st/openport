@@ -139,7 +139,7 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
               {order.legs && <Badge tone="accent">{order.legs.length} legs</Badge>}
               {order.role && <Badge tone={order.role === "stop_loss" ? "negative" : "positive"}>{order.role === "stop_loss" ? "Stop" : "Target"}</Badge>}
               {order.bracket && <Badge tone="neutral">Bracket</Badge>}</div>
-            <div className="text-[10px] text-faint">#{order.id}{order.origin === "system" ? " · system" : ""}{order.parent ? ` · for #${order.parent}` : ""}
+            <div className="text-[10px] text-faint">#{order.id} · {order.actor ?? "unknown"}{order.origin === "system" ? " · system" : ""}{order.parent ? ` · for #${order.parent}` : ""}
               {order.trigger ? ` · when ${describeTrigger(order.trigger, order.side ?? "buy", order.underlying)}` : ""}
               {order.triggered_at ? " · triggered" : ""}</div></td>
           <td className={order.side === "buy" ? "text-bullish" : order.side === "sell" ? "text-bearish" : "text-accent"}>{order.side ? order.side.toUpperCase() : "NET"}</td>
@@ -174,7 +174,7 @@ function FillsTable({ fills }: { fills: Fill[] }) {
         <td className="text-muted">{Number.isFinite(Date.parse(fill.time)) ? timeFormat.format(Date.parse(fill.time)) : "—"}</td>
         <td className="!text-left font-medium">{osiLabel(fill.symbol, fill.underlying)}</td>
         <td className={fill.side === "buy" ? "text-bullish" : "text-bearish"}>{fill.side.toUpperCase()}</td>
-        <td>{fill.quantity}</td><td>{formatMoney(fill.price)}</td><td>{formatMoney(fill.fee)}</td><td>#{fill.order_id}</td>
+        <td>{fill.quantity}</td><td>{formatMoney(fill.price)}</td><td>{formatMoney(fill.fee)}</td><td>#{fill.order_id}<div className="text-[10px] text-faint">{fill.actor ?? "unknown"}</div></td>
       </tr>),
     ])}
   </Table>

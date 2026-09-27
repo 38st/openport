@@ -336,9 +336,10 @@ void Desk::start_trading() {
       if (recovery && !options_.run_input.empty())
         throw TradingError(Reason::JOURNAL_CORRUPT, "A reproducible run needs a new journal; select an unused --paper-journal path");
       if (recovery) account.session = std::make_unique<TradingSession>(TradingSession::recover(*recovery, journal));
-      else if (seed) account.session = std::make_unique<TradingSession>(options_.paper, 0, journal);
+      else if (seed) account.session = std::make_unique<TradingSession>(options_.paper, 0, journal, options_.initial_actor);
       else throw TradingError(Reason::JOURNAL_CORRUPT, "The account journal is empty");
       if (!file.empty()) account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
+      account.session->set_actor("system");
       account.sampled_snapshot = account.session->snapshot();
     } catch (const TradingError& error) {
       account.failure = std::string(to_string(error.code())) + ": " + error.what();
@@ -374,7 +375,7 @@ void Desk::start_trading() {
   publish_circuit_breaker();
   if (!options_.run_input.empty()) {
     record_input(nlohmann::json{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
-        {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}}.dump());
+        {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}}.dump(), options_.initial_actor);
   }
   publish_trading();
 }
@@ -405,7 +406,8 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
       if (!out) throw TradingError(Reason::JOURNAL_IO, "Cannot write " + named.string());
     }
     account.session = std::make_unique<TradingSession>(config, market_time_,
-        std::make_shared<SettlementJournal>(journal, settlement_source_));
+        std::make_shared<SettlementJournal>(journal, settlement_source_), c.actor);
+    account.session->set_actor("system");
     account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
   } catch (const TradingError& error) {
     reply.decision = {error.code(), error.what(), {}, {}, {}};
@@ -881,6 +883,11 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
     reply.decision.message = account->failure.empty() ? "Trading is disabled or engine is stopping" : account->failure;
   } else {
     auto& session = *account->session;
+    session.set_actor(c.actor);
+    struct ActorReset {
+      TradingSession& target;
+      ~ActorReset() { target.set_actor("system"); }
+    } actor_reset{session};
     const auto before = session.snapshot();
     // New orders need the underlying's feed to be current, as the ticket shows.
     const auto acceptance = [&](const std::string& underlying) {
@@ -1046,7 +1053,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
     reply.view = trading_view(account->id);
   }
   if (!options_.run_input.empty() && c.kind != TradingCommand::Kind::Preview) {
-    record_input(nlohmann::json{{"kind", "command"}, {"command", c}, {"time", market_time_}, {"driver_time", driver_time}}.dump());
+    record_input(nlohmann::json{{"kind", "command"}, {"command", c}, {"time", market_time_}, {"driver_time", driver_time}}.dump(), c.actor);
     publish_trading();
     if (account) {
       reply.view = trading_view(account->id);
@@ -1114,12 +1121,14 @@ void Desk::apply_analytics(std::shared_ptr<const analytics::UnderlyingMetrics> r
   const auto symbol = result->symbol;
   metrics_[symbol] = std::move(result);
 }
-void Desk::record_input(const std::string& input) {
+void Desk::record_input(const std::string& input, const std::string& actor) {
   if (options_.run_input.empty()) return;
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
+    account.session->set_actor(actor);
     try { account.session->record_input(input, market_time_); }
     catch (const std::exception& error) { account.failure = error.what(); }
+    account.session->set_actor("system");
   }
 }
 void Desk::command(TradingCommand command, TradingCompletion completion, md::Timestamp time, md::Timestamp driver_time) {

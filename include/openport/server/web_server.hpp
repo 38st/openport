@@ -8,6 +8,7 @@
 #include <type_traits>
 
 #include "openport/server/api.hpp"
+#include "openport/server/web_policy.hpp"
 
 namespace openport::server {
 
@@ -27,15 +28,15 @@ class WebServer {
   /// localhost and the allowed origins' hosts (see host_allowed).
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
             AsyncApiHandler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {},
-            std::vector<std::string> allowed_hosts = {});
+            std::vector<std::string> allowed_hosts = {}, std::vector<NamedToken> tokens = {}, bool require_token = false);
   template <class Handler> requires std::is_invocable_r_v<ApiResponse, Handler, const ApiRequest&>
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
             Handler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {},
-            std::vector<std::string> allowed_hosts = {})
+            std::vector<std::string> allowed_hosts = {}, std::vector<NamedToken> tokens = {}, bool require_token = false)
       : WebServer(std::move(address), port, std::move(web_root),
                   AsyncApiHandler([api = std::move(api)](const ApiRequest& request, ApiCompletion complete) {
                     complete(api(request));
-                  }), std::move(allowed_origins), std::move(write_token), std::move(allowed_hosts)) {}
+                  }), std::move(allowed_origins), std::move(write_token), std::move(allowed_hosts), std::move(tokens), require_token) {}
 
   ~WebServer();
   WebServer(const WebServer&) = delete;

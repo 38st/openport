@@ -1025,7 +1025,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   o.filled_notional = o.filled_notional + price * quantity;
   o.status = o.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
   Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, o.request.symbol, o.request.side,
-            quantity, price, fee, book.quote.observation, book.quote.time, s.time, context};
+            quantity, price, fee, book.quote.observation, book.quote.time, s.time, context, o.actor};
   s.fills.push_back(fill);
   event(events, "fill", fill);
   on_fill(s, id, events);
@@ -1093,7 +1093,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     fill_position(s, leg.symbol, contracts, price, fee);
     (leg.side == Side::Buy ? book.ask_left : book.bid_left) -= size;
     Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, leg.symbol, leg.side,
-              size, price, fee, book.quote.observation, book.quote.time, s.time, context};
+              size, price, fee, book.quote.observation, book.quote.time, s.time, context, o.actor};
     s.fills.push_back(fill);
     event(events, "fill", fill);
   }
@@ -1159,6 +1159,7 @@ void attach_exits(State& s, OrderId entry_id, Events& events) {
   const auto expiry = multi_leg(entry.request) ? order_expiry(s, entry.request) : s.contracts.at(entry.request.symbol).expiry_time();
   auto make = [&](const ExitSpec& spec, OrderRole role) {
     Order exit;
+    exit.actor = entry.actor;
     exit.id = static_cast<OrderId>(s.orders.size() + 1);
     exit.request = {entry.request.client_order_id + (role == OrderRole::StopLoss ? ":stop" : ":target"),
                     entry.request.symbol, entry.request.side == Side::Buy ? Side::Sell : Side::Buy,
@@ -1290,6 +1291,7 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   order.accepted_at = s.time;
   order.day_end = s.time;  // IOC: never rests past this transaction.
   order.system = true;
+  order.actor = "system";
   s.orders.push_back(order);
   event(events, "order_accepted", order);
   match_symbols(s, {symbol}, events, order.id);
@@ -1521,6 +1523,7 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = std::move(request);
+  order.actor = s.actor;
   order.accepted_at = time;
   s.orders.push_back(order);
   auto& stored = s.orders.back();
@@ -1813,6 +1816,7 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
 
 struct TradingSession::Impl {
   State state;
+  std::string actor = "system";
   std::shared_ptr<Journal> journal;
   std::shared_ptr<const TradingSnapshot> snapshot;
   bool stopped = false;
@@ -1836,7 +1840,9 @@ struct TradingSession::Impl {
     State next = state;
     Events events;
     advance(next, time, events);
+    next.actor = actor;
     auto result = action(next, events);
+    next.actor = "system";
     monitor_loss(next, events);
     monitor_rules(next, events);
     detail::update_reviews(next);
@@ -1859,7 +1865,7 @@ struct TradingSession::Impl {
       // Schema 3 records the state as a change from the record before, with
       // checkpoints, and no snapshot: recovery derives it from the state.
       // Tick policy v2 extends index-v1 with equity and ETF classes.
-      Json payload{{"schema", 3}, {"tick_policy", "v2"}, {"events", events}, {"decision", result.decision}};
+      Json payload{{"schema", 3}, {"tick_policy", "v2"}, {"actor", actor}, {"events", events}, {"decision", result.decision}};
       (*recorded)["version"] = next.version;
       recorder.add(payload, std::move(*recorded));
       try { journal->append(time, type, payload.dump()); }
@@ -1878,7 +1884,7 @@ struct TradingSession::Impl {
     return result;
   }
 };
-TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared_ptr<Journal> journal)
+TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared_ptr<Journal> journal, std::string actor)
     : impl_(std::make_unique<Impl>()) {
   validate_limits(config.limits);
   validate_scenarios(config.scenarios);
@@ -1887,6 +1893,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
   if (time < 0) throw TradingError(Reason::INVALID_TIME, "Negative session time");
   if (config.fee_per_contract < Money{}) throw TradingError(Reason::INVALID_MONEY, "Fee cannot be negative");
   if (journal && journal->sequence() != 0) throw TradingError(Reason::JOURNAL_CORRUPT, "Use recover for a nonempty journal");
+  impl_->actor = std::move(actor);
   impl_->state.config = std::move(config);
   impl_->state.time = time;
   impl_->state.day = md::trading_date(time);
@@ -1902,6 +1909,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
 }
 TradingSession::TradingSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 TradingSession::~TradingSession() = default;
+void TradingSession::set_actor(std::string actor) { impl_->actor = std::move(actor); }
 void TradingSession::record_input(std::string_view input, Timestamp time) {
   const auto data = Json::parse(input);
   if (!data.is_object()) throw std::invalid_argument("Run input must be an object");

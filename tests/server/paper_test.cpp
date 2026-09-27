@@ -1,3 +1,4 @@
+#include "support/contract_capture.hpp"
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -1366,6 +1367,7 @@ TEST(PaperWritePolicy, ProtectsEveryWriteAndLeavesReadsOpen) {
       request.authorization = "Bearer secret";
       EXPECT_FALSE(server::check_api_write(request, {address, "secret", {}}));
     }
+    request.authorization.clear();  // Unauthenticated loopback compatibility, with no configured token.
     request.origin = "https://evil.test";
     error = server::check_api_write(request, {});
     ASSERT_TRUE(error); EXPECT_EQ(json::parse(error->body)["error"]["code"], "ORIGIN_REJECTED");
@@ -2394,3 +2396,57 @@ TEST(PaperBreach, ImpliedVarianceToTheCloseSharesTheFrontExpiryInTradingTime) {
   metrics.slices.clear();
   EXPECT_FALSE(implied_variance_to_close(metrics));
 }
+
+namespace {
+TEST_F(PaperEngine, AuthenticatedActorPassesThroughQueueToOrdersFillsAndCsv) {
+  seed();
+  auto forged = order(market);
+  forged["actor"] = "admin";
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", forged).status, 400);
+  server::ApiRequest request{"POST", "/api/orders", order(market).dump()};
+  request.actor = "research-agent";
+  auto promise = std::make_shared<std::promise<server::ApiResponse>>();
+  auto future = promise->get_future();
+  server::handle_api_async(request, *engine, [promise](auto response) { promise->set_value(std::move(response)); });
+  ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  const auto response = future.get();
+  ASSERT_EQ(response.status, 201) << response.body;
+  EXPECT_EQ(json::parse(response.body)["order"]["actor"], "research-agent");
+  market.next();
+  quote("3.80", "4.00");
+  ASSERT_TRUE(wait_for([&] { return !engine->trading_view()->snapshot->recent_fills.empty(); }));
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["actor"], "research-agent");
+  EXPECT_EQ(read(*engine, "/api/fills")["fills"][0]["actor"], "research-agent");
+  const auto csv = server::handle_api({"GET", "/api/fills.csv"}, *engine);
+  EXPECT_NE(csv.body.find("order_id,actor,symbol"), std::string::npos);
+  EXPECT_NE(csv.body.find("research-agent"), std::string::npos);
+}
+}  // namespace
+
+namespace {
+TEST_F(PaperEngine, ContractFixture) {
+  seed();
+  const auto capture = [&](std::string method, std::string path, json body = nullptr) {
+    auto response = method == "GET" ? server::handle_api({method, path}, *engine) : write(*engine, method, path, body);
+    EXPECT_GE(response.status, 200);
+    EXPECT_LT(response.status, 300) << path << ": " << response.body;
+    test::capture_contract("paper", method, path, response);
+    return json::parse(response.body);
+  };
+  capture("POST", "/api/orders/preview", order(market));
+  const auto placed = capture("POST", "/api/orders", order(market));
+  const auto id = placed.at("order").at("id").get<std::string>();
+  capture("PUT", "/api/orders/" + id, {{"limit_price", "4.20"}});
+  market.next();
+  quote();
+  for (const auto* path : {"/api/account", "/api/portfolio", "/api/orders", "/api/fills", "/api/trades", "/api/risk",
+                           "/api/plans", "/api/accounts", "/api/account/equity"}) capture("GET", path);
+  for (const auto* path : {"/api/fills.csv", "/api/trades.csv"})
+    test::capture_contract("paper", "GET", path, server::handle_api({"GET", path}, *engine));
+  capture("PUT", "/api/trades/1/note", {{"note", "synthetic trade"}, {"tags", {"test"}}});
+  capture("PUT", "/api/days/2026-09-22/note", {{"plan", "test"}, {"review", "test"}});
+  capture("POST", "/api/positions/close", json::object());
+  capture("POST", "/api/orders/cancel", json::object());
+  capture("POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});
+}
+}  // namespace

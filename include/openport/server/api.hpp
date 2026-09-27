@@ -17,6 +17,7 @@ struct ApiRequest {
   std::optional<std::string> origin;
   std::string host;
   std::string authorization;
+  std::string actor = "unknown";  ///< Set by transport authentication, never request JSON.
   bool ambiguous_headers = false;
 };
 

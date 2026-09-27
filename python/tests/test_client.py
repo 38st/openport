@@ -1,0 +1,196 @@
+# Copyright (c) 2026 OpenPort contributors. MIT License.
+import asyncio
+import json
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+from openport import ApiError, Client, chain_frame, smile_frame, ticks, trades_frame
+from conftest import TIME
+
+
+def test_urls_auth_accounts_and_unknown_fields(stub):
+    client = Client(stub.url, "secret", "practice")
+    stub.chain["future_field"] = {"new": True}
+    assert client.chain("SPX", "2026-10-22PM")["future_field"] == {"new": True}
+    client.orders("open")
+    method, path, headers, _ = stub.requests[-1]
+    assert method == "GET"
+    assert parse_qs(urlsplit(path).query) == {"status": ["open"], "account": ["practice"]}
+    assert headers["Authorization"] == "Bearer secret"
+    client.chain("A/B &", "expiry &+")
+    assert "/A%2FB%20%26/chain?" in stub.requests[-1][1]
+    assert parse_qs(urlsplit(stub.requests[-1][1]).query)["expiry"] == ["expiry &+"]
+    client.accounts()
+    assert "account=" not in stub.requests[-1][1]
+    assert client.symbols() == ["SPX"]
+    assert client.series("SPX")[0]["id"] == "2026-10-22PM"
+
+
+def test_errors_carry_reason_and_do_not_retry_422(stub):
+    stub.failures = [(422, "BUYING_POWER")]
+    with pytest.raises(ApiError) as caught:
+        Client(stub.url).place_order(quantity=1)
+    assert caught.value.status == 422
+    assert caught.value.reason_code == "BUYING_POWER"
+    assert len(stub.requests) == 1
+
+
+def test_bounded_retry_reuses_id_and_body(stub, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("openport.client.time.sleep", sleeps.append)
+    stub.failures = [(503, "TRADING_UNAVAILABLE"), (503, "TRADING_UNAVAILABLE")]
+    client = Client(stub.url, "secret", "main", retries=2)
+    request = {"quantity": 1, "type": "limit", "limit_price": "0.05"}
+    result = client.place_order(request)
+    assert sleeps == [0.1, 0.2]
+    bodies = [call[3] for call in stub.requests]
+    assert bodies[0] == bodies[1] == bodies[2]
+    assert bodies[0]["client_order_id"]
+    assert "client_order_id" not in request
+    assert client.place_order(bodies[0])["order"]["id"] == result["order"]["id"]
+    assert len(stub.order_bodies) == 1
+    stub.failures = [(503, "TRADING_UNAVAILABLE")] * 4
+    with pytest.raises(ApiError):
+        client.status()
+    assert len(stub.failures) == 1
+
+
+def test_preview_cancel_and_replay_routing(stub):
+    client = Client(stub.url, "secret", "practice")
+    client.preview_order(quantity=1)
+    assert stub.requests[-1][3]["client_order_id"]
+    client.cancel_order("1")
+    assert stub.requests[-1][3] is None
+    client.for_replay().orders()
+    assert stub.requests[-1][1].startswith("/api/replay/orders?")
+    assert "account=main" in stub.requests[-1][1]
+    client.for_history("run-1").trades()
+    assert stub.requests[-1][1].startswith("/api/replay/history/run-1/trades?")
+    client.start_replay(scenario="fixture")
+    assert client.step_replay("15:00")["settled_through"] == TIME
+    assert stub.requests[-1][1] == "/api/replay"
+    assert stub.requests[-1][3] == {"until": "15:00"}
+    assert client.stop_replay()["replay"] is None
+
+
+def test_frames_preserve_missing_data_and_money(stub):
+    stub.chain["strikes"][0]["put"]["iv"] = None
+    frame = chain_frame(stub.chain)
+    assert len(frame) == 1
+    assert frame.iloc[0]["side"] == "put"
+    assert frame.iloc[0]["iv"] is None
+    smile = smile_frame({"as_of": TIME, "expiries": [{"id": "expiry", "points": [{"iv": None, "strike": 5000}]}]})
+    assert smile.iloc[0]["expiry"] == "expiry"
+    assert trades_frame({"trades": [{"net": "0.000001", "id": "1"}]}).iloc[0]["net"] == "0.000001"
+    assert chain_frame({"strikes": [], "expiry": {"id": "e"}}).empty
+    assert smile_frame({"expiries": []}).empty
+    assert trades_frame({"trades": []}).empty
+
+
+def test_missing_optional_dependencies_are_explicit(monkeypatch):
+    import builtins
+    original = builtins.__import__
+    def blocked(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("websockets"):
+            raise ImportError("not installed")
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    with pytest.raises(ImportError, match=r"openport\[pandas\]"):
+        trades_frame({"trades": []})
+    async def read():
+        with pytest.raises(ImportError, match=r"openport\[ws\]"):
+            await anext(ticks())
+    asyncio.run(read())
+
+
+def test_ticks_preserve_messages_and_use_bearer(monkeypatch):
+    captured = {}
+    class Socket:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): pass
+        def __aiter__(self): return self
+        async def __anext__(self):
+            if captured.get("sent"):
+                raise StopAsyncIteration
+            captured["sent"] = True
+            return json.dumps({"type": "tick", "future": 1})
+    def connect(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return Socket()
+    monkeypatch.setattr("websockets.asyncio.client.connect", connect)
+    async def read(): return [item async for item in ticks("ws://localhost/ws", token="secret")]
+    assert asyncio.run(read()) == [{"type": "tick", "future": 1}]
+    assert captured["additional_headers"] == {"Authorization": "Bearer secret"}
+
+
+@pytest.mark.parametrize("url", ["ftp://localhost", "http://user:pass@localhost", "http://localhost?token=a", "http://localhost#x"])
+def test_base_url_rejects_ambiguous_credentials(url):
+    with pytest.raises(ValueError): Client(url)
+
+
+@pytest.mark.parametrize("method,arguments,verb,path,schema", [
+    ("summary", ("SPX",), "GET", "/api/underlyings/SPX/summary", "Summary"),
+    ("exposure", ("SPX",), "GET", "/api/underlyings/SPX/exposure", "ExposureMatrix"),
+    ("surface", ("SPX",), "GET", "/api/underlyings/SPX/surface", "Surface"),
+    ("volatility", ("SPX",), "GET", "/api/underlyings/SPX/volatility", "Volatility"),
+    ("candles", ("SPX",), "GET", "/api/underlyings/SPX/candles", "Candles"),
+    ("account", (), "GET", "/api/account", "Account"),
+    ("portfolio", (), "GET", "/api/portfolio", "Portfolio"),
+    ("fills", (), "GET", "/api/fills", "FillsResponse"),
+    ("trades", (), "GET", "/api/trades", "TradesResponse"),
+    ("risk", (), "GET", "/api/risk", "Risk"),
+    ("plans", (), "GET", "/api/plans", "PlansResponse"),
+    ("equity", (), "GET", "/api/account/equity", "EquityHistory"),
+    ("cancel_all", ("SPX",), "POST", "/api/orders/cancel", "CancelAllResponse"),
+    ("flatten", ("SPX",), "POST", "/api/positions/close", "ClosePositionsResponse"),
+    ("note", ("1", "review", ["test"]), "PUT", "/api/trades/1/note", "TradeNoteResponse"),
+    ("day_note", ("2026-09-22", "plan", "review"), "PUT", "/api/days/2026-09-22/note", "DayNoteResponse"),
+    ("create_account", ("Practice",), "POST", "/api/accounts", "CreateAccountResponse"),
+    ("reset_account", ("new attempt",), "POST", "/api/account/reset", "Account"),
+    ("payout", ("100.00",), "POST", "/api/account/payout", "Account"),
+    ("limits", ("1", {}), "PUT", "/api/risk/limits", "Risk"),
+    ("guardrails", ("1", {}), "PUT", "/api/risk/guardrails", "Risk"),
+    ("kill", ("trip", "review"), "POST", "/api/risk/kill", "KillResponse"),
+    ("settle", ("SPXW  261022P05000000", "5000.00"), "POST", "/api/settlements", "SettlementResponse"),
+    ("exercise", ("SPY   261022C00500000", 1), "POST", "/api/positions/exercise", "Portfolio"),
+    ("close_stock", ("SPY", 100), "POST", "/api/stocks/close", "Portfolio"),
+    ("delete_replay", ("run-1",), "DELETE", "/api/replay/history/run-1", "DeletedReplay"),
+])
+def test_each_route_uses_the_terminal_method_and_path(stub, method, arguments, verb, path, schema):
+    from conftest import shaped
+    original = stub.respond
+    def respond(request_method, target, headers, body):
+        original(request_method, target, headers, body)
+        return 200, shaped(schema)
+    stub.respond = respond
+    getattr(Client(stub.url, "secret", "practice"), method)(*arguments)
+    request_method, target, headers, _body = stub.requests[-1]
+    assert request_method == verb
+    assert urlsplit(target).path == path
+    assert headers["Authorization"] == "Bearer secret"
+    scoped = not path.startswith("/api/underlyings/") and path not in {"/api/plans", "/api/accounts"} and not path.startswith("/api/replay")
+    assert ("account" in parse_qs(urlsplit(target).query)) == scoped
+
+
+def test_last_hour_example_waits_for_replay_preparation(stub, monkeypatch):
+    import runpy
+    from conftest import ROOT
+    monkeypatch.syspath_prepend(str(ROOT / "python/examples"))
+    wait = runpy.run_path(str(ROOT / "python/examples/last_hour.py"))["wait_until_ready"]
+    client = Client(stub.url, "secret")
+    client.start_replay(scenario="fixture", paused=True)
+    original = stub.respond
+    polls = 0
+    def respond(method, target, headers, body):
+        nonlocal polls
+        status, value = original(method, target, headers, body)
+        if method == "GET" and target == "/api/replay":
+            polls += 1
+            value["replay"]["fast_forwarding"] = polls == 1
+        return status, value
+    stub.respond = respond
+    wait(client)
+    assert polls == 2
+    polls = 0
+    with pytest.raises(TimeoutError, match="preparing"):
+        wait(client, timeout=0)

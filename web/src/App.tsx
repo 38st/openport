@@ -4,6 +4,7 @@ import { marketTime, useLive } from "./api/live"
 import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
 import { AlertWatcher, Toasts } from "./components/Alerts"
+import { WriteAccess } from "./components/TradingControls"
 import { Header } from "./components/Header"
 import { DemoPrompt } from "./components/DemoPrompt"
 import { CircuitBreakerBanner } from "./components/CircuitBreakerBanner"
@@ -85,6 +86,7 @@ export function App() {
       <Empty>
         <div className="text-center">
           <div>Waiting for the first snapshot…</div>
+          {!live.status && <div className="mt-3"><WriteAccess /></div>}
           <div className="mt-1 text-xs text-faint">{waiting}</div>
         </div>
       </Empty>

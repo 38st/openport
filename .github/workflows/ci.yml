@@ -105,6 +105,18 @@ jobs:
       - run: npx vitest run
       - run: npx vite build
 
+  python:
+    name: Python client and MCP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: pip install './python[pandas,ws,mcp]' pytest jsonschema pyyaml
+      - run: python -m pytest python/tests
+
   docker:
     name: Docker image
     runs-on: ubuntu-24.04
@@ -124,4 +136,13 @@ jobs:
           test "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://127.0.0.1:8080//etc/passwd)" = 400
           # Writes need the token the image keeps in its volume; with it, an order fills.
           python3 tools/smoke_trade.py http://127.0.0.1:8080 "$(docker exec openport cat /var/lib/openport/write-token)"
-          docker stop openport
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: API contract
+        run: |
+          pip install jsonschema pyyaml
+          python tools/contract_test.py http://127.0.0.1:8080 --token "$(docker exec openport cat /var/lib/openport/write-token)" --spec docs/openapi.yaml
+      - name: Stop smoke server
+        if: always()
+        run: docker stop openport

@@ -29,7 +29,7 @@ inline std::string csv_quote(std::string_view text) {
 inline std::vector<std::string> paper_csv_columns(bool fills) {
   std::vector<std::string> columns = {"account", "account_version", "provider", "prices", "new_york_date"};
   const std::vector<std::string> base = fills
-      ? std::vector<std::string>{"id", "order_id", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time"}
+      ? std::vector<std::string>{"id", "order_id", "actor", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time"}
       : std::vector<std::string>{"kind", "id", "attempt", "symbol", "underlying", "expiry", "settlement", "strike", "type", "direction",
           "status", "opened", "closed", "duration_seconds", "quantity", "max_quantity", "opened_contracts", "closed_contracts",
           "average_open", "average_close", "cost", "gross", "fees", "net", "return", "mark", "unrealised", "closure", "fills", "note", "tags",

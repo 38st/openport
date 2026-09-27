@@ -1,3 +1,4 @@
+#include "support/contract_capture.hpp"
 #include "openport/server/api.hpp"
 
 #include <gtest/gtest.h>
@@ -577,4 +578,18 @@ TEST(Api, ChainVolumeDistinguishesUnknownZeroAndReportedContracts) {
   EXPECT_EQ(get(source, "/api/underlyings/SPX/summary")["coverage"]["volume"], 2);
 }
 
+}  // namespace
+
+namespace {
+TEST(Api, ContractFixture) {
+  const StubSource source;
+  for (const auto* path : {"/api/status", "/api/underlyings/SPX", "/api/underlyings/SPX/summary", "/api/underlyings/SPX/chain",
+      "/api/underlyings/SPX/exposure", "/api/underlyings/SPX/surface", "/api/underlyings/SPX/volatility", "/api/underlyings/SPX/candles"}) {
+    const auto response = server::handle_api({"GET", path}, source);
+    EXPECT_EQ(response.status, 200) << response.body;
+    test::capture_contract("analytics", "GET", path, response);
+  }
+  test::capture_contract("analytics", "GET", "/api/underlyings/UNKNOWN/summary",
+                         server::handle_api({"GET", "/api/underlyings/UNKNOWN/summary"}, source));
+}
 }  // namespace

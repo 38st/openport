@@ -434,3 +434,90 @@ TEST(TradingJournalSchema, GtcAndOrderMetadataSurviveRecoveryAndOldRequestsGetDe
 
 }  // namespace
 }  // namespace openport::trading
+
+namespace openport::trading {
+namespace {
+TEST(TradingJournalSchema, ActorsSurviveRecoveryAndOlderRecordsRemainUnknown) {
+  TemporaryDirectory directory;
+  const auto file = directory.file("actors.jsonl");
+  test::ScriptedMarket market;
+  {
+    auto journal = FileJournal::create(file);
+    TradingSession session({}, market.time, journal);
+    market.seed(session);
+    session.set_actor("alice");
+    ASSERT_TRUE(session.submit(market.market("actor-order"), market.time).decision.ok());
+    session.set_actor("system");
+    market.next();
+    session.on_quotes({market.quote()}, {market.valuation()}, market.time);
+  }
+  const auto recovery = FileJournal::read(file);
+  bool found = false;
+  for (const auto& record : recovery.records) {
+    EXPECT_EQ(record.actor, record.type == "submit" ? "alice" : "system");
+    if (record.type == "submit") { found = true; }
+  }
+  EXPECT_TRUE(found);
+  auto recovered = TradingSession::recover(recovery, FileJournal::resume(file));
+  EXPECT_EQ(recovered.snapshot()->recent_orders.front().actor, "alice");
+  EXPECT_EQ(recovered.snapshot()->recent_fills.front().actor, "alice");
+  recovered.set_actor("bob");
+  ASSERT_TRUE(recovered.submit(market.market("close", 1, Side::Sell), market.time).decision.ok());
+  EXPECT_EQ(recovered.snapshot()->recent_fills.back().actor, "bob");
+  // Expand first so every record has a whole state, like older schema-2 writers.
+  const auto expanded = directory.file("expanded.jsonl");
+  { auto out = FileJournal::create(expanded); TradingSession::expand(recovery, *out); }
+  const auto old = rewritten(directory, "old.jsonl", expanded, [](std::size_t, Json& payload) {
+    std::function<void(Json&)> remove_actor = [&](Json& value) {
+      if (value.is_object()) value.erase("actor");
+      if (value.is_object() || value.is_array()) { for (auto& child : value) remove_actor(child); }
+    };
+    remove_actor(payload);
+  });
+  const auto older = FileJournal::read(old);
+  for (const auto& record : older.records) { EXPECT_EQ(record.actor, "unknown"); }
+  const auto old_session = TradingSession::recover(older);
+  EXPECT_EQ(old_session.snapshot()->recent_orders.front().actor, "unknown");
+  EXPECT_EQ(old_session.snapshot()->recent_fills.front().actor, "unknown");
+}
+
+TEST(TradingJournalSchema, DeferredFillsAndBracketsRetainTheOrderActor) {
+  test::ScriptedMarket market;
+  TradingSession session({}, market.time);
+  market.seed(session);
+  auto entry = market.limit("rest", 1, "4.00");
+  entry.bracket = Bracket{};
+  entry.bracket->take_profit = ExitSpec{{}, Money::parse("5.00")};
+  session.set_actor("agent");
+  ASSERT_TRUE(session.submit(entry, market.time).decision.ok());
+  session.set_actor("system");
+  market.next();
+  session.on_quotes({market.quote("3.80", "4.00")}, {market.valuation()}, market.time);
+  ASSERT_EQ(session.snapshot()->recent_fills.size(), 1U);
+  EXPECT_EQ(session.snapshot()->recent_fills.front().actor, "agent");
+  ASSERT_EQ(session.snapshot()->recent_orders.size(), 2U);
+  EXPECT_EQ(session.snapshot()->recent_orders.back().actor, "agent");
+}
+}  // namespace
+}  // namespace openport::trading
+
+namespace openport::trading {
+namespace {
+TEST(TradingJournalSchema, RuleLiquidationIsAttributedToSystem) {
+  test::ScriptedMarket market;
+  SessionConfig config;
+  config.rules.profit_target = Money::parse("1.00");
+  TradingSession session(config, market.time);
+  market.seed(session);
+  session.set_actor("alice");
+  ASSERT_TRUE(session.submit(market.market("entry"), market.time).decision.ok());
+  session.set_actor("system");
+  market.next();
+  session.on_quotes({market.quote("5.00", "5.20")}, {market.valuation()}, market.time);
+  ASSERT_GE(session.snapshot()->recent_orders.size(), 2U);
+  EXPECT_TRUE(session.snapshot()->recent_orders.back().system);
+  EXPECT_EQ(session.snapshot()->recent_orders.back().actor, "system");
+  EXPECT_EQ(session.snapshot()->recent_fills.back().actor, "system");
+}
+}  // namespace
+}  // namespace openport::trading

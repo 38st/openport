@@ -334,6 +334,7 @@ export type NewOrder = { tags?: string[]; note?: string } & ({
   side?: never
 }) & Pricing
 export interface Order {
+  actor?: string
   tags?: string[]
   note?: string
   exits_only?: boolean
@@ -368,6 +369,7 @@ export interface Order {
   take_profit_order?: string | null
 }
 export interface Fill {
+  actor?: string
   context?: FillContext | null
   id: string
   order_id: string

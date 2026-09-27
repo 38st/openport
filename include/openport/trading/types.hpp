@@ -136,6 +136,7 @@ struct Order {
   OrderId oco = 0;            ///< Bracket exits: the other exit, cancelled when this one fills.
   OrderId stop_loss = 0;      ///< Bracket entries: their stop-loss exit, once created.
   OrderId take_profit = 0;    ///< Bracket entries: their take-profit exit, once created.
+  std::string actor = "unknown"; ///< Originating actor; absent in older journals.
   Timestamp triggered_at = 0; ///< When an armed order activated.
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   [[nodiscard]] bool open() const {
@@ -187,6 +188,7 @@ struct Fill {
   Timestamp quote_time = 0;
   Timestamp time = 0;
   std::optional<FillContext> context = std::nullopt;
+  std::string actor = "unknown";
 };
 
 /// Observation numbers strictly increase per OSI. Repeated/older observations

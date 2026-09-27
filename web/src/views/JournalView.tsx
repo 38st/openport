@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react"
-import { api } from "../api/client"
+import { api, downloadCsv } from "../api/client"
 import { marketNow, useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTrades, useTradingSession } from "../api/trading"
 import type { DayNote, Fill, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
@@ -403,7 +403,7 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
       <table className="w-full text-right text-xs tabular whitespace-nowrap" aria-label="Trade fills">
         <thead className="text-muted"><tr>{["Fill", "Time", "Side", "Qty", "Price", "Fee"].map((h, i) => <th key={h} className={`px-2 py-1 font-normal ${i === 0 ? "text-left" : ""}`}>{h}</th>)}</tr></thead>
         <tbody>{fills.map((f) => <tr key={f.id} className="border-t border-border/40">
-          <td className="px-2 py-1 text-left">#{f.id}</td><td className="px-2 py-1 text-muted">{timestampET(f.time)}</td>
+          <td className="px-2 py-1 text-left">#{f.id}<div className="text-[10px] text-faint">{f.actor ?? "unknown"}</div></td><td className="px-2 py-1 text-muted">{timestampET(f.time)}</td>
           <td className={`px-2 py-1 ${f.side === "buy" ? "text-bullish" : "text-bearish"}`}>{f.side}</td>
           <td className="px-2 py-1">{f.quantity}</td><td className="px-2 py-1">{formatMoney(f.price)}</td><td className="px-2 py-1">{formatMoney(f.fee)}</td>
         </tr>)}
@@ -422,12 +422,15 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
 export function CsvDownloads({ scope }: { scope: "current" | "all" }) {
   const [from, setFrom] = useState("")
   const [to, setTo] = useState("")
+  const [downloadError, setDownloadError] = useState<unknown>()
   const invalid = Boolean(from && to && from > to)
   return <div className="flex flex-wrap items-end gap-3 text-xs">
     <label className="trade-label">Export from<input type="date" className="trade-input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
     <label className="trade-label">Export to<input type="date" className="trade-input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
     {(["trades", "fills"] as const).map((kind) => <a key={kind} className="trade-button" aria-disabled={invalid} download={`${kind}.csv`}
+      onClick={(event) => { event.preventDefault(); if (!invalid) void downloadCsv(api.journalCsvUrl(kind, from, to, scope), `${kind}.csv`).catch(setDownloadError) }}
       href={invalid ? undefined : api.journalCsvUrl(kind, from, to, scope)}>{kind === "trades" ? "Download trades CSV" : "Download fills CSV"}</a>)}
+    <TradingError error={downloadError} />
     <span className="text-[11px] text-muted">{invalid ? "From must be before to." : "New York dates. Trades follow the attempt selection; fills include all attempts."}</span>
   </div>
 }

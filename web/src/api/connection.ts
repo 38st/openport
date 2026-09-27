@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query"
 import type { Tick } from "./types"
+import { writeToken } from "../lib/write-token"
 
 export type Connection = "connecting" | "open" | "closed"
 
@@ -17,7 +18,9 @@ export function connectLive(
   let disposed = false
 
   const connect = () => {
-    const current = new WebSocket(url)
+    const token = writeToken.get()
+    const protocols = token ? ["openport", `openport.token.${Array.from(new TextEncoder().encode(token), (byte) => byte.toString(16).padStart(2, "0")).join("")}`] : undefined
+    const current = protocols ? new WebSocket(url, protocols) : new WebSocket(url)
     socket = current
     current.onopen = () => {
       if (disposed || socket !== current) return
