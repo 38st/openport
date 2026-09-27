@@ -1,8 +1,8 @@
 import { useQueries, useQuery } from "@tanstack/react-query"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
-import { useLive } from "../api/live"
-import type { ChainRow, Expiry, OptionQuote } from "../api/types"
+import { marketTime, useLive } from "../api/live"
+import type { ChainRow, OptionQuote } from "../api/types"
 import { ExpiryPicker } from "../components/ExpiryPicker"
 import { Flash } from "../components/Flash"
 import { CoverageBadge, Empty, Panel, Segmented, Stat } from "../components/ui"
@@ -18,6 +18,7 @@ import { Dialog } from "../components/Dialog"
 import { usePortfolio } from "../api/trading"
 import { useMediaQuery } from "../lib/media"
 import { sideFromCell } from "../lib/trading"
+import { autoCloseCountdown, defaultExpiry } from "../lib/expiry"
 
 const windows = [
   { value: 0.02, label: "±2%" },
@@ -25,11 +26,6 @@ const windows = [
   { value: 0.1, label: "±10%" },
   { value: 0, label: "All" },
 ]
-
-export function defaultExpiry(expiries: Expiry[]): string | null {
-  // Skip anything expiring within the hour; it is all noise.
-  return (expiries.find((e) => (e.days ?? 0) > 1 / 24) ?? expiries[0])?.id ?? null
-}
 
 /// Median distance, in vol points, between our IVs and the provider's on the
 /// out-of-the-money side (the one both sides of the smile come from).
@@ -69,7 +65,8 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   })
   const summaryData = matchingPayload(summary.data, symbol)
   const expiries = summaryData?.expiries ?? []
-  const selected = expiry && expiries.some((e) => e.id === expiry) ? expiry : defaultExpiry(expiries)
+  const now = marketTime(live, symbol, summaryData?.as_of)
+  const selected = expiry && expiries.some((e) => e.id === expiry) ? expiry : defaultExpiry(expiries, now)
   useEffect(() => { setTicket(null); setUntradable(null) }, [symbol, selected, live.accountScope])
   // A strategy keeps its legs across expiries, for calendars and diagonals.
   useEffect(() => { setLegs([]); setReviewing(false) }, [symbol, live.accountScope])
@@ -113,12 +110,14 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
 
   const e = data?.expiry
   const summaryExpiry = expiries.find((item) => item.id === selected)
+  const countdown = autoCloseCountdown(summaryExpiry, now)
   const coverage = expiryCoverage(e?.coverage === undefined ? summaryExpiry?.coverage : e.coverage)
   const deamericanized = e?.deamericanized ?? summaryExpiry?.deamericanized
   const approximation = americanApproximation(symbol, summaryData.american_approximation, e?.style ?? summaryExpiry?.style, deamericanized)
   return (
     <div className="flex flex-col gap-3">
       <ExpiryPicker expiries={expiries} value={selected} onChange={onExpiry} />
+      {countdown && <p role="status" className="text-xs tabular text-warn">{countdown}</p>}
 
       {e && (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">

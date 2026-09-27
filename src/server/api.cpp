@@ -76,6 +76,12 @@ json market_json(md::Timestamp ts) {
 
 json expiry_json(const SliceMetrics& slice) {
   const double rate = -std::log(slice.forward.discount) / slice.years;
+  md::OptionContract contract;
+  contract.root = slice.root;
+  contract.underlying = md::conventions_for_root(slice.root).underlying;
+  contract.expiry = slice.expiry;
+  contract.settlement = settlement_of(slice) == "AM" ? md::Settlement::AM : md::Settlement::PM;
+  const auto last_trade = contract.last_trade_time();
   json dividends = json::array();
   for (const auto& d : slice.dividends)
     dividends.push_back({{"ex_date", md::format_date(d.ex_date)}, {"amount", d.amount}});
@@ -86,6 +92,8 @@ json expiry_json(const SliceMetrics& slice) {
       {"style", slice.style == pricing::ExerciseStyle::American ? "american" : "european"},
       {"coverage", coverage_json(slice.coverage)},
       {"expiry_time", md::format_timestamp(slice.expiry_time)},
+      {"last_trade", md::format_timestamp(last_trade)},
+      {"auto_close", md::format_timestamp(last_trade - 5 * md::kNanosPerMinute)},
       {"days", sig(slice.years * 365.0, 5)},
       {"forward", price(slice.forward.forward)},
       {"discount", sig(slice.forward.discount, 9)},

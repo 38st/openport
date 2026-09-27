@@ -41,6 +41,34 @@ const MarkedStock* stock(const TradingSession& s, std::string_view symbol) {
 }
 double day_pnl(const TradingSession& s) { return (s.snapshot()->equity - s.snapshot()->start_of_day_equity).dollars(); }
 
+TEST(TradingDelivery, KillAllowsShareClosesAndFlattenButRejectsExercise) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  for (const bool daily : {false, true}) {
+    Spy f;
+    auto c = roomy();
+    c.limits.max_daily_loss = m("100");
+    TradingSession s(c, f.time);
+    f.define(s, call);
+    f.quote(s, call, "10.00", "10.20");
+    ASSERT_TRUE(s.submit(f.market("open", call, 2), f.time).decision.ok());
+    ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+    if (daily) {
+      f.spot = 500;
+      f.quote(s, call, "1", "1.20");
+    } else {
+      s.trip_kill("manual", f.time);
+    }
+    ASSERT_TRUE(s.snapshot()->risk.kill_latched);
+    EXPECT_EQ(s.exercise(call.osi_symbol(), 1, f.time).decision.code, Reason::KILL_SWITCH);
+    ASSERT_TRUE(s.trade_stock("SPY", -50, f.time).decision.ok());
+    ASSERT_NE(stock(s, "SPY"), nullptr);
+    EXPECT_EQ(stock(s, "SPY")->position.shares, 50);
+    ASSERT_TRUE(s.close_positions({}, f.time).decision.ok());
+    EXPECT_TRUE(s.snapshot()->stocks.empty());
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+  }
+}
+
 TEST(TradingDelivery, PortfolioMarginScansDeliveredSharesAndReleasesItOnClose) {
   const auto call = *md::parse_osi("SPY260922C00500000");
   for (const auto side : {Side::Buy, Side::Sell}) {

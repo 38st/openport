@@ -348,6 +348,16 @@ orders. AM-settled series stop trading at the regular close before expiry
 16:00 and expiring ETF options at 16:15, which is their `expiry_time`; both settle on
 the 16:00 closing print.
 
+Summary and chain expiry objects expose `last_trade` and `auto_close` as UTC ISO
+timestamps. `auto_close` is five minutes before `last_trade`, the evaluation plans'
+cutoff; custom accounts can use another cutoff or none. The terminal defaults to
+the nearest expiry whose auto-close has not arrived: SPXW until 15:55 ET and SPY,
+QQQ, IWM and DIA until 16:10 on regular days. Early closes follow the same calendar.
+On that day's chain, a countdown uses the underlying's effective market time from
+status or connected ticks, including delayed feeds and paused replays. It does not
+advance with the browser clock. Older servers without the times select the nearest
+expiry with positive time remaining and show no countdown.
+
 The calendar computes holidays and early closes from NYSE's rules, which Cboe's
 options markets observe, for every year from 2022 on: a holiday on a Saturday closes
 the Friday before (except New Year's Day, whose Friday would end the year), one on a

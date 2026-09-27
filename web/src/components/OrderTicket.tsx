@@ -162,7 +162,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
   const closed = account?.evaluation.enabled && account.evaluation.status !== "active"
   const opening = split(side, Number.isSafeInteger(q) ? q : 0, held).opening
   const buyOnlyBlock = rules?.buy_only && side === "sell" && opening > 0
-  const blocked = writeBlocked(trading, token) || trading.kill_latched || untradable || !!notice || !!closed || !!buyOnlyBlock
+  const blocked = writeBlocked(trading, token) || (trading.kill_latched && opening > 0) || untradable || !!notice || !!closed || !!buyOnlyBlock
   const reason = quote?.untradable_reason ?? "Contract unavailable for paper trading"
   const root = selection.symbol.slice(0, 6).trim()
   const name = strategyName(side, selection.optionType, held, Number.isSafeInteger(q) && q > 0 ? q : 1)
@@ -260,7 +260,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
     <WriteAccess trading={trading} />
     {notice && <p role="status" className="text-sm text-warn">{notice}</p>}
     {limitOnly && <p role="status" className="text-xs text-muted">{limitOnly}</p>}
-    {(!trading.enabled || trading.kill_latched || untradable) && <p role="status" className="text-sm text-warn">{!trading.enabled ? trading.reason ?? "Trading unavailable" : trading.kill_latched ? "Kill switch latched. Reset it in Positions before placing orders." : reason}</p>}
+    {(!trading.enabled || trading.kill_latched || untradable) && <p role="status" className="text-sm text-warn">{!trading.enabled ? trading.reason ?? "Trading unavailable" : trading.kill_latched ? "Kill switch latched · reduce-only: closing orders and exits still work." : reason}</p>}
     {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Start a new attempt from the Dashboard to trade again.</p>}
     {buyOnlyBlock && <p role="status" className="text-sm text-warn">{rules?.plan ?? "This plan"} is buy-only: sells may only close contracts you hold{held > 0 ? ` (${held} long)` : ""}.</p>}
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>

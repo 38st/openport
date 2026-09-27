@@ -129,6 +129,12 @@ export function marketNow(live: Pick<Live, "source" | "replay">): number {
   return Number.isFinite(replay) ? replay : Date.now()
 }
 
+/** Latest effective market time for a chain, including delayed feeds and paused replays. */
+export function marketTime(live: Pick<Live, "underlyings">, symbol: string, asOf?: string | null): number {
+  const time = live.underlyings.find((u) => u.symbol === symbol)?.as_of ?? asOf
+  return time ? Date.parse(time) : Number.NaN
+}
+
 export function useLive(): Live {
   const live = useContext(LiveContext)
   if (!live) throw new Error("useLive outside LiveProvider")

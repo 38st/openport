@@ -8,6 +8,7 @@ import { tradingQueries } from "../api/trading"
 import { Header } from "../components/Header"
 import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
+import { FlattenDialog } from "../components/OrderActions"
 import { OrderResult, OrderTicket } from "../components/OrderTicket"
 import { ScenarioGrid } from "../components/ScenarioGrid"
 import { Sidebar } from "../components/Sidebar"
@@ -74,6 +75,27 @@ describe("paper trading fixtures", () => {
     expect(html).toContain("Not provided by server")
     expect(html).toContain('aria-label="Submit order"')
     expect(html).toContain("Buy 1 Long Call @ $4.60")
+  })
+  it("allows closing tickets and Flatten while latched and blocks opening tickets", () => {
+    const latched = { ...trading, kill_latched: true }
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, trading: latched }, null, "open"))
+    const close = render(<OrderTicket selection={{ ...selection, cell: "bid", price: "4.50" }} quote={quote} trading={latched} onClose={() => {}} />)
+    expect(close).toContain("reduce-only: closing orders and exits still work")
+    expect(close).not.toMatch(/aria-label="Submit order"[^>]*disabled=""/)
+    const open = render(<OrderTicket selection={selection} quote={quote} trading={latched} onClose={() => {}} />)
+    expect(open).toMatch(/aria-label="Submit order"[^>]*disabled=""/)
+    const flatten = render(<FlattenDialog positions={[portfolio.positions[0]!]} orders={[]} trading={latched} onClose={() => {}} />)
+    expect(flatten).toContain("Close 1 position</button>")
+    expect(flatten).not.toMatch(/disabled=""[^>]*>Close 1 position/)
+    const positions = render(<PositionsView />)
+    expect(positions).not.toMatch(/disabled=""[^>]*>Close all/)
+  })
+  it("shows the selected expiry's auto-close countdown on the chain", () => {
+    const auto_close = "2026-09-23T15:42:34Z"
+    const html = render(<ChainView symbol="SPX" expiry={null} onExpiry={() => {}} />, (client) => {
+      client.setQueryData(["summary", "SPX", 1], { ...summary, expiries: [{ ...selection.expiry, auto_close }] })
+    })
+    expect(html).toContain("auto-close in 12:34")
   })
   it("renders sells, null quotes and token/kill write gates", () => {
     const html = render(<OrderTicket selection={{ ...selection, cell: "bid", price: "4.50" }} quote={{ ...quote, bid: null, ask: null, mid: null, bid_size: null, ask_size: null, delta: null }} trading={{ ...trading, write: "token", kill_latched: true }} onClose={() => {}} />)
@@ -215,7 +237,7 @@ describe("paper trading fixtures", () => {
     expect(html).toContain('value="5000.00"')
     expect(html).toContain("Relative price band (ratio)")
     const killHtml = render(<KillSwitch kill={{ latched: true, reason: "Daily loss reached" }} trading={trading} />)
-    expect(killHtml).toContain("LATCHED · new orders blocked")
+    expect(killHtml).toContain("LATCHED · reduce-only: closing orders and exits still work")
     expect(killHtml).toContain("Daily loss reached")
     expect(killHtml).toContain("Reset kill switch…")
   })

@@ -70,7 +70,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
       : <>Slippage is 0 ticks: buys fill at the ask and sells at the bid. </>}
       Fills use up to the displayed size. Single-leg fills stop at your limit; multi-leg orders wait if the slipped net exceeds the net limit.
       Unfilled day orders rest until the session ends. Each contract costs {fee ? formatMoney(fee) : "the configured fee"}.</> },
-    { title: "Daily loss limit", body: dailyLoss ? <>Losing more than {formatMoney(dailyLoss)} from the day's starting equity trips the kill switch and cancels working orders.</> : "Set in Positions → Edit limits." },
+    { title: "Daily loss limit", body: dailyLoss ? <>Losing more than {formatMoney(dailyLoss)} from the day's starting equity trips the kill switch into reduce-only mode. Opening orders are cancelled; closing orders and exits still work.</> : "Set in Positions → Edit limits." },
     { title: "Exercise and assignment", body: "Equity and ETF options a cent or more in the money at expiry are exercised or assigned into 100 shares a contract, and long ones can be exercised early. A short option that trades below its exercise value at the close, such as a deep put, or a call whose time value is less than a dividend going ex the next day, can be assigned overnight, in part and at random, as real assignments are. Shares are marked at the underlying's price and can be sold or bought back in the regular session. Dividends are paid when the server knows them, from a dividend file or from Massive: on each ex-date, shares held into it receive the dividend and short shares pay it." },
   ]
 }

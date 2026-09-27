@@ -477,8 +477,8 @@ Overflowing analytical exposures mark risk incomplete and block trading.
 
 Pre-trade checks require a supported registered unexpired contract, an open session that takes the order,
 valid order/tick, max order quantity, valid fresh quote, price band, complete marks
-and valuations, daily-loss allowance, exposure reservations and an unlatched kill
-switch. Price protection is inclusive:
+and valuations, daily-loss allowance and exposure reservations. The kill latch and
+daily-loss checks allow reducing orders as described below. Price protection is inclusive:
 
 ```text
 abs(price - midpoint) <= max(absolute_band, relative_band * midpoint)
@@ -488,9 +488,9 @@ At acceptance, price is the limit or slipped market far side. At fill time it is
 actual slipped price, capped by a single-leg limit, allowing favorable moves without
 comparing a stale limit to the new mid.
 Checks rerun against current state before each proposed fill. Fill projection also
-includes spread and fees in daily loss. A failed fill check cancels the remaining
-order with `RISK_CHANGED`, preserving the underlying reason in its message and
-actual/limit/scope. A data gap is not a failure: when held positions' marks are stale
+includes spread and fees in daily loss for orders that can open or increase
+exposure. A failed fill check cancels the remaining order with `RISK_CHANGED`,
+preserving the underlying reason in its message and actual/limit/scope. A data gap is not a failure: when held positions' marks are stale
 (`STALE_QUOTE`) or valuations are missing or stale (`MISSING_VALUATION`), as when a
 batch brings an order's quote before the rest of the portfolio's after a stall, the
 order keeps working and a later batch fills it once the data is complete.
@@ -500,11 +500,26 @@ in acceptance order when rechecks fail. Limits never force-liquidate positions; 
 account rules do (see Account rules).
 
 Daily loss is `max(0, start_of_day_equity - equity)` including marks and fees. A loss
-**strictly greater than** the configured allowance trips the latch and cancels all
-open orders **before matching** on that market batch. Manual `trip_kill` does the
-same. New orders reject with `KILL_SWITCH`. `reset_kill` requires a nonblank reason,
-records the reset, and immediately re-trips if the loss still breaches. A reset
-cannot make stale data tradable. Settlement is still permitted while killed.
+**strictly greater than** the configured allowance trips the latch **before matching**
+on that market batch. Manual `trip_kill` does the same. The account becomes
+**reduce-only**: orders that can open or increase a position are cancelled and new
+ones reject with `KILL_SWITCH`. Closing orders, Flatten, bracket exits, the system's
+own closes and share closes keep working. Early exercise rejects with `KILL_SWITCH`
+because it delivers shares. Settlement remains permitted.
+
+An order reduces only when every leg opposes its current position and its remaining
+contracts, plus the other working user orders on that side of the same contract,
+fit within that position. Multi-leg ratios count in contracts. Bracket exits do not
+reserve this capacity: they shrink after each fill and cancel when the position is
+closed. Every fill rechecks the holding, so working closes cannot flip it.
+Reducing user orders skip the daily-loss allowance and fill projection; quote,
+session, price, coverage and other risk checks still apply. Passed or failed
+attempts retain their existing restrictions.
+
+`reset_kill` requires a nonblank reason, records the reset, and immediately re-trips
+if the loss still breaches. The account remains reduce-only while latched. A new
+trading day's baseline permits a reset; rollover alone does not clear the latch.
+A reset cannot make stale data tradable.
 
 `roll_day` is an explicit command on a later trading date, requiring complete marked
 equity. A trading date (`md::trading_date`) is a business day's New York date until
@@ -513,7 +528,7 @@ holidays, it is the next business day, whose overnight session opens that evenin
 an overnight trade counts toward the day it trades for, and a day's close is the last
 marked equity before 17:00. Rollover first monitors the old daily baseline, then
 stores the new baseline. Repeated same-day rollover rejects. The kill latch survives rollover and recovery.
-There are no deposits/withdrawals, cash interest or reduce-only exceptions. Without
+There are no deposits/withdrawals or cash interest. Without
 the `buying_power` rule, negative cash and short positions are permitted subject to
 the stated limits. With it, the selected margin requirement below applies; neither is a
 full brokerage margin model.
@@ -888,7 +903,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |
 | `DELTA_LIMIT`, `VEGA_LIMIT` | Worst reachable exposure exceeds underlying/aggregate limit |
-| `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or kill latch active |
+| `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, acceptance-day session end |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry boundary, or pending settlement quality flag |

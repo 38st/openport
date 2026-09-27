@@ -12,12 +12,12 @@ import { OrdersView, netLabel } from "./OrdersView"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 const clients: QueryClient[] = []
-function render(node: ReactNode, value: Account = account, orders: Order[] = []) {
+function render(node: ReactNode, value: Account = account, orders: Order[] = [], positions = portfolio.positions) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
   clients.push(client)
   const queries = tradingQueries(0, "17", true)
   client.setQueryData(queries.account.queryKey, value)
-  client.setQueryData(queries.portfolio.queryKey, portfolio)
+  client.setQueryData(queries.portfolio.queryKey, { ...portfolio, positions })
   client.setQueryData(queries.risk.queryKey, risk)
   client.setQueryData(queries.allOrders.queryKey, { account_version: "17", orders })
   client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [] })
@@ -34,6 +34,17 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("strategy ticket", () => {
+  it("allows reducing every leg while latched and blocks new or oversized spreads", () => {
+    const latched = { ...trading, kill_latched: true }
+    const held = spread.map((leg) => ({ ...portfolio.positions[0]!, symbol: leg.symbol, quantity: leg.side === "buy" ? -1 : 1 }))
+    const ticket = (units: number) => <StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000}
+      trading={latched} onClose={() => {}} units={units} />
+    const close = render(ticket(1), any, [], held)
+    expect(close).toContain("reduce-only: closing orders and exits still work")
+    expect(close).not.toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+    expect(render(ticket(2), any, [], held)).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+    expect(render(ticket(1), any, [], [])).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+  })
   it("leaves buying power to the server for portfolio margin or slippage", () => {
     for (const optional of [{ margin: "portfolio" as const }, { slippage_ticks: 2 }]) {
       const custom = { ...any, rules: { ...any.rules, ...optional }, buying_power: { ...any.buying_power, available: "0" } }

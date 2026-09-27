@@ -158,6 +158,35 @@ TEST(Api, SummaryAndChainReportTheCashAmountsUsedWithoutRounding) {
   EXPECT_EQ(get(raw, "/api/underlyings/SPY/summary")["expiries"][0]["dividends"], json::array());
 }
 
+TEST(Api, ExpiriesReportContractLastTradeAndFiveMinuteAutoClose) {
+  for (const auto date : {md::Date{2026, 9, 22}, md::Date{2026, 11, 27}}) {
+    for (const auto root : {"SPXW", "SPX", "SPY", "QQQ", "IWM", "DIA"}) {
+      SCOPED_TRACE(root);
+      auto contract = *md::parse_osi(std::string(root) + "260922C05000000");
+      contract.expiry = date;
+      analytics::UnderlyingMetrics metrics;
+      metrics.symbol = contract.underlying;
+      analytics::SliceMetrics slice;
+      slice.root = root;
+      slice.expiry = date;
+      slice.expiry_time = contract.expiry_time();
+      slice.style = contract.style;
+      metrics.slices.push_back(slice);
+      StubSource source(metrics);
+      const auto summary = get(source, "/api/underlyings/" + metrics.symbol + "/summary");
+      const auto& expiry = summary["expiries"][0];
+      const auto last_date = contract.settlement == md::Settlement::AM ? md::previous_business_day(date) : date;
+      const auto minute = std::string_view(root) == "SPXW" ? 0 : 15;
+      const auto last = md::new_york_to_utc(last_date, md::regular_close_hour(last_date), minute);
+      EXPECT_EQ(expiry["last_trade"], md::format_timestamp(last));
+      EXPECT_EQ(expiry["auto_close"], md::format_timestamp(last - 5 * md::kNanosPerMinute));
+      const auto chain = get(source, "/api/underlyings/" + metrics.symbol + "/chain?expiry=" + expiry["id"].get<std::string>());
+      EXPECT_EQ(chain["expiry"]["last_trade"], expiry["last_trade"]);
+      EXPECT_EQ(chain["expiry"]["auto_close"], expiry["auto_close"]);
+    }
+  }
+}
+
 TEST(Api, ChainReturnsBothSidesOfEveryStrike) {
   StubSource source;
   const json chain = get(source, "/api/underlyings/SPX/chain?expiry=2026-10-22PM");

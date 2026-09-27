@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **532 C++ and 295 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **544 C++ and 309 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -49,7 +49,8 @@ QQQ options), with generated prices labelled as simulated on every page:
   open interest per strike, centred on the money, with the provider's own IV alongside
   where it publishes one. SPX (AM-settled) and SPXW (PM-settled) expiring on the same
   day stay separate. Missing quotes and open interest show as missing, never as zero,
-  with coverage counts per expiry.
+  with coverage counts per expiry. The chain opens on the nearest expiry before its
+  auto-close and counts down to it on the market-data clock.
 - **Smile and term structure**: out-of-the-money smile per expiry with its SVI fit and
   arbitrage checks, and the ATM term structure on a square-root-of-time axis, with each
   expiry's forward and rate and where it came from.
@@ -79,7 +80,8 @@ QQQ options), with generated prices labelled as simulated on every page:
   attempt keeps the history.
 - **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
   (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
-  a daily loss limit and a kill switch. Positions close together as one
+  a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
+  keep working while opening orders are cancelled. Positions close together as one
   order, or flatten an underlying or the whole account in one step.
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market.
@@ -316,7 +318,7 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 | Route | Returns |
 | --- | --- |
 | `GET /api/status` | Provider, market and per-underlying sessions, feed health, engine counters |
-| `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX and coverage |
+| `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX, coverage and `last_trade` / `auto_close` UTC ISO times |
 | `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks and early-exercise premium |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
 | `GET /api/underlyings/{symbol}/surface?expiries=12` | Smile points per expiry |
@@ -380,9 +382,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests, and [SECURITY.md](SECU
 to report a vulnerability privately.
 
 CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
-Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, the web checks and a Docker
-smoke test. The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON` links
-OpenSSL and zstd statically, and CI checks it needs only macOS's own libraries.
+Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, again under AddressSanitizer
+and UndefinedBehaviorSanitizer with GCC 13, the web checks and a Docker smoke test.
+The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON` links OpenSSL
+and zstd statically, and CI checks it needs only macOS's own libraries.
 Publishing a GitHub release builds the image for amd64 and arm64 and pushes it to
 `ghcr.io/38st/openport`, and attaches a Linux archive for each architecture.
 `tools/release.sh` builds a release on your own machine: it checks and tests the web
@@ -412,7 +415,7 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] P&L attribution by delta, gamma, vega and theta
 - [x] Stock positions from early exercise and from exercise and assignment at expiry
 - [x] Expiry hours as the exchanges run them: ETF options to 16:15, auto-close five
-      minutes before each contract's last trade
+      minutes before each contract's last trade, with the chain staying on 0DTE until then
 - [x] Demo market: a simulated day to trade when nothing else does
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [x] Partial, random early assignment, and dividend risk on short calls

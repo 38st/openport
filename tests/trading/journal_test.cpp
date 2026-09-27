@@ -1,7 +1,10 @@
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include "support/scripted_market.hpp"
 
@@ -37,6 +40,48 @@ class FailingJournal final : public Journal {
   std::uint64_t sequence() const override { return count; }
   std::string head() const override { return std::string(64, '0'); }
 };
+// The first field of `expected` that `actual` lacks or holds another value in, or ""
+// when it has them all. Later builds add state fields, so an older snapshot is a subset.
+std::string mismatch(const nlohmann::json& actual, const nlohmann::json& expected, const std::string& path = "") {
+  if (expected.is_object()) {
+    if (!actual.is_object()) return path + " (not an object)";
+    for (const auto& [key, value] : expected.items()) {
+      if (!actual.contains(key)) return path + "/" + key + " (missing)";
+      if (auto where = mismatch(actual.at(key), value, path + "/" + key); !where.empty()) return where;
+    }
+    return "";
+  }
+  if (expected.is_array()) {
+    if (!actual.is_array() || actual.size() != expected.size()) return path + " (array size)";
+    for (std::size_t i = 0; i < expected.size(); ++i)
+      if (auto where = mismatch(actual[i], expected[i], path + "/" + std::to_string(i)); !where.empty()) return where;
+    return "";
+  }
+  // Derived analytics (scenario P&L, Greeks) go through libm, whose last bits differ
+  // between platforms; recorded money is integer and compares exactly.
+  if (expected.is_number_float() && actual.is_number()) {
+    const double a = actual.get<double>(), e = expected.get<double>();
+    if (std::abs(a - e) <= 1e-9 * std::max({1.0, std::abs(a), std::abs(e)})) return "";
+  }
+  return actual == expected ? "" : path + ": " + actual.dump() + " != " + expected.dump();
+}
+// Captured with the original f31e910 binary: daily loss cancelled both bracket
+// exits and a manual close, then rejected another close. Recovery preserves it.
+TEST(TradingJournal, PreReduceOnlyKillJournalRecoversItsOriginalState) {
+  const auto directory = std::filesystem::path(OPENPORT_TEST_DATA_DIR);
+  const auto recovery = FileJournal::read((directory / "kill-before-reduce-only.jsonl").string());
+  auto restored = TradingSession::recover(recovery);
+  std::ifstream expected(directory / "kill-before-reduce-only.snapshot.json");
+  std::string snapshot;
+  std::getline(expected, snapshot);
+  ASSERT_FALSE(snapshot.empty());
+  EXPECT_EQ(mismatch(nlohmann::json::parse(restored.snapshot_json()), nlohmann::json::parse(snapshot)), "");
+  EXPECT_TRUE(restored.snapshot()->risk.kill_latched);
+  EXPECT_TRUE(restored.snapshot()->open_orders.empty());
+  ASSERT_EQ(restored.snapshot()->positions.size(), 1U);
+  EXPECT_EQ(restored.snapshot()->recent_orders.back().reason.code, Reason::KILL_SWITCH);
+}
+
 TEST(TradingJournal, IdleEmptyBatchesAreNotRecordedButTimeRulesStillRun) {
   test::ScriptedMarket f;
   auto journal = std::make_shared<FailingJournal>();

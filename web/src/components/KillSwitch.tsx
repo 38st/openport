@@ -23,7 +23,7 @@ export function KillSwitch({ kill, trading }: { kill: KillState; trading: Tradin
     try {
       const response = await api.setKill(action, reason.trim(), trading.write)
       if (sameSession()) {
-        setResult(`${response.kill.latched ? "Kill switch latched" : "Kill switch reset"}. ${response.cancelled_orders.length} orders cancelled.`)
+        setResult(`${response.kill.latched ? "Kill switch latched · reduce-only" : "Kill switch reset"}. ${response.cancelled_orders.length} orders cancelled.`)
         setAction(null); setReason("")
       }
     } catch (failure) { if (sameSession()) setError(failure) }
@@ -31,14 +31,14 @@ export function KillSwitch({ kill, trading }: { kill: KillState; trading: Tradin
   }
   return <div className="space-y-3">
     <div className={`rounded-md border p-3 text-sm ${kill.latched ? "border-danger text-danger" : "border-border text-muted"}`}>
-      <strong>{kill.latched ? "LATCHED · new orders blocked" : "Armed · trading permitted"}</strong>
-      <p className="mt-1 break-words">{kill.reason ?? (kill.latched ? "No reason provided" : "Trip to cancel open orders and block new orders.")}</p>
+      <strong>{kill.latched ? "LATCHED · reduce-only: closing orders and exits still work" : "Armed · trading permitted"}</strong>
+      <p className="mt-1 break-words">{kill.reason ?? (kill.latched ? "No reason provided" : "Trip to cancel opening orders and allow only closing orders and exits.")}</p>
     </div>
     <label className="trade-label">Reason<input className="trade-input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={kill.latched ? "Why is it safe to resume?" : "Why are you stopping trading?"} /></label>
     <button className="trade-button" type="button" disabled={blocked || !reason.trim()} onClick={() => { setError(undefined); setAction(kill.latched ? "reset" : "trip") }}>{kill.latched ? "Reset kill switch…" : "Trip kill switch…"}</button>
     {result && <p role="status" className="text-xs text-muted">{result}</p>}
     {action && <Dialog title={action === "trip" ? "Confirm kill switch" : "Confirm trading reset"} onClose={() => { if (!pending) setAction(null) }}>
-      <p className="text-sm">{action === "trip" ? "Cancel all open orders and latch the kill switch? Existing positions will remain open." : "Clear the latched kill switch and allow new orders? Risk limits will still apply."}</p>
+      <p className="text-sm">{action === "trip" ? "Latch the kill switch in reduce-only mode? Orders that open or increase positions are cancelled. Closing orders, Flatten and bracket exits still work." : "Clear the latched kill switch and allow new orders? Risk limits will still apply."}</p>
       <p className="break-words text-sm text-muted">Reason: {reason}</p>
       <TradingError error={error} />
       <div className="flex gap-2"><button className="trade-button" disabled={pending || blocked} onClick={() => void confirm()}>{pending ? "Applying…" : action === "trip" ? "Confirm trip" : "Confirm reset"}</button><button className="trade-button" disabled={pending} onClick={() => setAction(null)}>Back</button></div>

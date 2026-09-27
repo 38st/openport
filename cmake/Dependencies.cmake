@@ -105,14 +105,3 @@ if(OPENPORT_BUILD_PROVIDERS)
   find_package(ZLIB REQUIRED)
   find_package(Threads REQUIRED)
 endif()
-
-
-if(OPENPORT_BUILD_PYTHON)
-  find_package(Python 3.10 COMPONENTS Interpreter Development.Module REQUIRED)
-  FetchContent_Declare(pybind11
-    URL https://github.com/pybind11/pybind11/archive/refs/tags/v3.1.0.tar.gz
-    URL_HASH SHA256=d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    SYSTEM)
-  FetchContent_MakeAvailable(pybind11)
-endif()

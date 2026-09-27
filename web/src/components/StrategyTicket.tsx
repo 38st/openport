@@ -148,7 +148,11 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const limitOnly = notice ? null : limitOnlyNotice(underlying, status)
   const untradable = legs.find((l) => l.quote?.tradable !== true)
   const closed = account?.evaluation.enabled && account.evaluation.status !== "active"
-  const blocked = writeBlocked(trading, token) || trading.kill_latched || !!untradable || !!notice || !!closed || !!rules?.buy_only
+  const reduces = legs.every((leg) => {
+    const held = positions?.find((p) => p.symbol === leg.symbol)?.quantity ?? 0
+    return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
+  })
+  const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || !!rules?.buy_only
   const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount)
 
   // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is
@@ -244,7 +248,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       {notice && <p role="status" className="text-sm text-warn">{notice}</p>}
       {limitOnly && <p role="status" className="text-xs text-muted">{limitOnly}</p>}
       {untradable && <p role="status" className="text-sm text-warn">{untradable.strike} {untradable.type}: {untradable.quote?.untradable_reason ?? "unavailable for paper trading"}</p>}
-      {trading.kill_latched && <p role="status" className="text-sm text-warn">Kill switch latched. Reset it in Positions before placing orders.</p>}
+      {trading.kill_latched && <p role="status" className="text-sm text-warn">Kill switch latched · reduce-only: closing orders and exits still work.</p>}
       {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Start a new attempt from the Dashboard to trade again.</p>}
       {rules?.buy_only && <p role="status" className="text-sm text-warn">{rules.plan ?? "This plan"} is buy-only and single-leg. Strategies need a plan that allows any strategy.</p>}
       <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>

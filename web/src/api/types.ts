@@ -123,6 +123,8 @@ export interface Expiry {
   expiry: string
   settlement: "AM" | "PM"
   expiry_time: string
+  last_trade?: string
+  auto_close?: string
   days: Num
   forward: Num
   discount: Num

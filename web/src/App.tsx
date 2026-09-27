@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useState } from "react"
-import { useLive } from "./api/live"
+import { marketTime, useLive } from "./api/live"
 import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
 import { AlertWatcher, Toasts } from "./components/Alerts"
@@ -14,7 +14,7 @@ import { Empty } from "./components/ui"
 import { payoutsVisible } from "./lib/payouts"
 import { accountViews, navigableViews, useRoute } from "./lib/route"
 import { matchingPayload } from "./lib/payload"
-import { defaultExpiry } from "./views/ChainView"
+import { defaultExpiry } from "./lib/expiry"
 import { DashboardView } from "./views/DashboardView"
 import { EngineView } from "./views/EngineView"
 import { JournalView } from "./views/JournalView"
@@ -59,7 +59,7 @@ export function App() {
         const summary = matchingPayload(queryClient.getQueryData<Summary>(["summary", symbol, version]), symbol)
         const ids = summary?.expiries.map((e) => e.id) ?? []
         if (ids.length === 0) return
-        const current = route.expiry ?? defaultExpiry(summary?.expiries ?? [])
+        const current = route.expiry ?? defaultExpiry(summary?.expiries ?? [], marketTime(live, symbol, summary?.as_of))
         const at = Math.max(0, ids.indexOf(current ?? ""))
         const step = ids[Math.min(ids.length - 1, Math.max(0, at + (event.key === "ArrowRight" ? 1 : -1)))]
         if (step) navigate({ expiry: step })
@@ -68,7 +68,7 @@ export function App() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [navigate, queryClient, route.expiry, view, symbol, version, pages])
+  }, [navigate, queryClient, route.expiry, view, symbol, version, pages, live])
 
   const waiting = live.status?.feed.message || "Connecting to openportd…"
   const content = view === "dashboard" ? <DashboardView />

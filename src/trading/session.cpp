@@ -187,25 +187,39 @@ Quantity delivered(const md::OptionContract& c, Quantity contracts) {
 bool shadowed(const State& s, const Order& o) {
   return o.oco != 0 && o.oco < o.id && s.orders.at(static_cast<std::size_t>(o.oco - 1)).open();
 }
-/// Open ordinary user orders on one side of a contract, excluding `self`. Bracket
-/// exits are left out: they shrink with the position, so they never oversell and
-/// never block a manual close.
-Quantity pending(const State& s, const std::string& symbol, Side side, const Order& self) {
-  Quantity total = 0;
-  for (const auto& o : s.orders)
-    if (o.open() && !o.system && o.role == OrderRole::Normal && o.id != self.id &&
-        o.request.symbol == symbol && o.request.side == side)
-      total += o.remaining();
-  return total;
-}
-/// True when this order, together with the other working orders on its side,
-/// can only reduce the current position toward flat.
-bool closing_only(const State& s, const Order& o) {
-  const auto q = held(s, o.request.symbol);
-  const auto side = o.request.side;
-  const auto others = pending(s, o.request.symbol, side, o);
-  return side == Side::Sell ? q > 0 && o.remaining() + others <= q
-                            : q < 0 && o.remaining() + others <= -q;
+/// Every leg must oppose its holding and fit within it after the other working
+/// user orders on that side. Bracket exits shrink after each fill and system
+/// closes are immediate IOC, so neither reserves a manual close's capacity.
+bool closing_only(const State& s, const Order& o, bool include_working = true) {
+  const auto closes = [&](const std::string& symbol, Side side, Quantity ratio) {
+    const auto q = held(s, symbol);
+    if (q == 0 || (side != Side::Buy && side != Side::Sell) ||
+        (q > 0) == (side == Side::Buy) || o.remaining() <= 0 || ratio < 1 || ratio > kMaxRatio)
+      return false;
+    auto capacity = magnitude(q);
+    const auto reserve = [&](Quantity units, Quantity weight) {
+      if (units > capacity / weight) return false;
+      capacity -= units * weight;
+      return true;
+    };
+    if (!reserve(o.remaining(), ratio)) return false;
+    if (!include_working) return true;
+    for (const auto& other : s.orders) {
+      if (!other.open() || other.system || other.role != OrderRole::Normal || other.id == o.id) continue;
+      if (multi_leg(other.request)) {
+        for (const auto& leg : other.request.legs)
+          if (leg.symbol == symbol && leg.side == side && !reserve(other.remaining(), leg.ratio)) return false;
+      } else if (other.request.symbol == symbol && other.request.side == side && !reserve(other.remaining(), 1)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (multi_leg(o.request))
+    return std::all_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& leg) {
+      return closes(leg.symbol, leg.side, leg.ratio);
+    });
+  return closes(o.request.symbol, o.request.side, 1);
 }
 bool opens(Quantity held_quantity, Quantity signed_fill) {
   return held_quantity == 0 || (held_quantity > 0) == (signed_fill > 0) || magnitude(signed_fill) > magnitude(held_quantity);
@@ -550,7 +564,14 @@ void trip(State& s, const std::string& reason, Events& events) {
     s.kill_reason = reason;
     event(events, "kill_trip", Json{{"reason", reason}});
   }
-  for (auto& o : s.orders) cancel_order(o, failure(Reason::KILL_SWITCH, s.kill_reason), events);
+  // Remove opening orders first, so they cannot take a close's capacity; then any
+  // closes that together exceed the position, newest first, so older ones keep priority.
+  const auto cancel_unless_closing = [&](Order& o, bool include_working) {
+    if (o.open() && !o.system && o.role == OrderRole::Normal && !closing_only(s, o, include_working))
+      cancel_order(o, failure(Reason::KILL_SWITCH, s.kill_reason), events);
+  };
+  for (auto& o : s.orders) cancel_unless_closing(o, false);
+  for (auto it = s.orders.rbegin(); it != s.orders.rend(); ++it) cancel_unless_closing(*it, true);
 }
 Decision loss_check(const State& s, const TradingSnapshot& snapshot) {
   if (snapshot.risk.daily_loss > s.config.limits.max_daily_loss)
@@ -620,8 +641,8 @@ Decision open_orders_risk_check(const State& s, const Order& o) {
   return failure(Reason::DEFINED_RISK, "With your open orders filled, this would leave a short option uncovered: cancel "
                  "the order that sells its long, or that opens the short, first, or trade the spread as one order");
 }
-Decision account_check(const State& s) {
-  if (s.kill) return failure(Reason::KILL_SWITCH, s.kill_reason);
+Decision account_check(const State& s, bool reducing = false) {
+  if (s.kill && !reducing) return failure(Reason::KILL_SWITCH, s.kill_reason);
   if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
     return failure(Reason::EVALUATION_CLOSED, std::string("The evaluation has ") +
         (s.evaluation.status == EvaluationStatus::Passed ? "passed" : "failed") +
@@ -666,7 +687,7 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
   {
     std::vector<std::pair<std::string, Quantity>> legs;
     for (const auto& leg : r.legs) {
-      const auto q = r.quantity * leg.ratio;
+      const auto q = o.remaining() * leg.ratio;
       legs.emplace_back(leg.symbol, leg.side == Side::Buy ? q : -q);
     }
     if (auto d = defined_risk_check(s, legs); !d.ok()) return d;
@@ -692,7 +713,8 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
             static_cast<double>(difference / 1'000'000), static_cast<double>(band / 1'000'000), first->underlying};
   const auto snapshot = snapshot_of(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
-  if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
+  if (!closing_only(s, o))
+    if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = check_exposure(snapshot.risk); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
     const auto power = buying_power(s, o.id);
@@ -704,7 +726,7 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
   return {};
 }
 Decision order_check(const State& s, const Order& o, bool at_fill = false) {
-  if (const auto d = account_check(s); !d.ok()) return d;
+  if (const auto d = account_check(s, closing_only(s, o)); !d.ok()) return d;
   if (multi_leg(o.request)) return combo_check(s, o, at_fill);
   const auto& rules = s.config.rules;
   const auto& request = o.request;
@@ -738,7 +760,7 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
     return failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
   if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
     return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
-  if (auto d = defined_risk_check(s, {{request.symbol, request.side == Side::Buy ? request.quantity : -request.quantity}}); !d.ok())
+  if (auto d = defined_risk_check(s, {{request.symbol, request.side == Side::Buy ? o.remaining() : -o.remaining()}}); !d.ok())
     return d;
   if (rules.expiry_cutoff > 0 && s.time >= c->second.last_trade_time() - rules.expiry_cutoff && !closing_only(s, o))
     return failure(Reason::EXPIRY_CUTOFF, "Contract is inside the pre-expiry cutoff; only closing orders are accepted");
@@ -749,7 +771,8 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
   if (const auto d = price_check(s, quote, price); !d.ok()) return d;
   const auto snapshot = snapshot_of(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
-  if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
+  if (!closing_only(s, o))
+    if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = check_exposure(snapshot.risk); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
     // Orders that free buying power are always allowed; fills recheck against
@@ -811,7 +834,9 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   if (!marketable(o, book.quote)) return;
   const Money price = execution_price(s, o.request.symbol, o.request.side, o.request.limit_price);
   auto& budget = o.request.side == Side::Buy ? book.ask_left : book.bid_left;
-  const Quantity quantity = std::min(o.remaining(), budget);
+  const auto position = held(s, o.request.symbol);
+  const auto capacity = o.request.side == Side::Sell ? std::max<Quantity>(position, 0) : std::max<Quantity>(-position, 0);
+  const Quantity quantity = reducing ? std::min({o.remaining(), budget, capacity}) : std::min(o.remaining(), budget);
   if (quantity <= 0) return;
   decision = reducing ? Decision{} : price_check(s, book.quote, price);
   const Money fee = s.config.fee_per_contract * quantity;
@@ -821,7 +846,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
     State projected = s;
     projected.ledger.fill(s.contracts.at(o.request.symbol), signed_quantity, price, fee);
     projected.orders.at(static_cast<std::size_t>(id - 1)).filled_quantity += quantity;
-    decision = loss_check(projected, snapshot_of(projected));
+    if (!closing_only(s, o)) decision = loss_check(projected, snapshot_of(projected));
     // A fill that reduces free buying power must leave it nonnegative.
     if (decision.ok() && s.config.rules.buying_power && free_power(projected) < free_power(s)) {
       const auto power = buying_power(projected).total;
@@ -875,7 +900,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
                             s.config.fee_per_contract * magnitude(contracts));
     }
     projected.orders.at(static_cast<std::size_t>(id - 1)).filled_quantity += units;
-    decision = loss_check(projected, snapshot_of(projected));
+    if (!closing_only(s, o)) decision = loss_check(projected, snapshot_of(projected));
     if (decision.ok() && s.config.rules.buying_power && free_power(projected) < free_power(s)) {
       const auto power = buying_power(projected).total;
       if (power.available < Money{})
@@ -1582,7 +1607,7 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
     }
     // Shares close at the underlying's fresh price in the regular session.
     std::vector<std::pair<std::string, Quantity>> stocks;
-    if (account_check(s).ok())
+    if (account_check(s, true).ok())
       for (const auto& [symbol, stock] : s.ledger.stocks())
         if (in_scope(symbol) && !rejections.contains(symbol)) stocks.emplace_back(symbol, stock.shares);
     for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Trade, events);
@@ -1654,11 +1679,9 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
       for (const auto& symbol : order_symbols(o.request))
         if (offered_again.contains(symbol) && quote_check(s, symbol).ok()) changed.insert(symbol);
     }
-    if (!s.kill) {
-      match_symbols(s, changed, events);
-      // Triggers read the batch's books and valuations after resting orders match.
-      check_triggers(s, events);
-    }
+    match_symbols(s, changed, events);
+    // Triggers read the batch's books and valuations after resting orders match.
+    check_triggers(s, events);
     return CommandResult{};
   });
 }
@@ -1672,7 +1695,7 @@ CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
     monitor_loss(s, events);
     for (auto& order : s.orders) {
       if (!order.open()) continue;
-      auto d = order_check(s, order);
+      auto d = order.system || order.role != OrderRole::Normal ? system_check(s, order) : order_check(s, order);
       if (!d.ok()) {
         d.message = std::string(to_string(d.code)) + ": " + d.message;
         d.code = Reason::RISK_CHANGED;
@@ -2045,7 +2068,7 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
                          (shares > 0 ? -signed_shares <= shares : signed_shares <= -shares);
     if (!reduces)
       return CommandResult{failure(Reason::INVALID_ORDER, "Stock trades only reduce the shares exercise and assignment delivered"), {}, 0};
-    if (const auto d = account_check(s); !d.ok()) return CommandResult{d, {}, 0};
+    if (const auto d = account_check(s, true); !d.ok()) return CommandResult{d, {}, 0};
     if (!md::market_session(s.time).open) return CommandResult{failure(Reason::SESSION_CLOSED, "Stock trades in the regular session"), {}, 0};
     const auto price = stock_price(s, symbol);
     if (!price) return CommandResult{failure(Reason::STALE_QUOTE, "Needs a fresh price for " + symbol), {}, 0};
