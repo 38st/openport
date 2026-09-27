@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 #include "openport/md/contract.hpp"
@@ -79,7 +80,8 @@ struct Holiday {
 constexpr int kHolidaySessionEnd = 11 * 60 + 30;
 
 /// The announced days, sorted by date. Every version published stays alive, so a
-/// reader holds no lock; there is one per change to Cboe's schedule.
+/// reader holds no lock and a version's address names it; there is one per change
+/// to Cboe's schedule.
 struct Schedule {
   std::vector<ScheduledDay> days;
 };
@@ -87,8 +89,7 @@ std::atomic<const Schedule*> g_schedule{nullptr};
 std::mutex g_schedule_mutex;
 std::vector<std::unique_ptr<const Schedule>> g_schedules;
 
-const ScheduledDay* scheduled(Date date) noexcept {
-  const auto* schedule = g_schedule.load(std::memory_order_acquire);
+const ScheduledDay* scheduled(const Schedule* schedule, Date date) noexcept {
   if (!schedule) return nullptr;
   const auto it = std::lower_bound(schedule->days.begin(), schedule->days.end(), date,
                                    [](const ScheduledDay& day, Date d) { return day.date < d; });
@@ -119,9 +120,9 @@ Date observed(Date date) noexcept {
   return wd == 6 ? add_days(date, -1) : wd == 0 ? add_days(date, 1) : date;
 }
 
-std::optional<Holiday> holiday_on(Date date) noexcept {
+std::optional<Holiday> holiday_on(const Schedule* schedule, Date date) noexcept {
   // What the exchange has announced for a date overrides the rules.
-  if (const auto* day = scheduled(date))
+  if (const auto* day = scheduled(schedule, date))
     return day->closed ? std::optional(Holiday{day->name, day->overnight_until}) : std::nullopt;
   if (date.year < kFirstCalendarYear) return std::nullopt;
   if (date == Date{2025, 1, 9}) return Holiday{"National Day of Mourning"};
@@ -140,25 +141,133 @@ std::optional<Holiday> holiday_on(Date date) noexcept {
   return std::nullopt;
 }
 
-std::string_view holiday(Date date) noexcept {
-  const auto h = holiday_on(date);
-  return h ? h->name : std::string_view{};
-}
-
 /// 13:00 closes: the day before Independence Day and Christmas Eve when they fall
 /// Monday to Thursday, and the day after Thanksgiving.
-bool early_close(Date date) noexcept {
-  if (const auto* day = scheduled(date)) return !day->closed && day->close_hour < 16;
-  if (date.year < kFirstCalendarYear || holiday_on(date)) return false;
+bool early_close(const Schedule* schedule, Date date) noexcept {
+  if (const auto* day = scheduled(schedule, date)) return !day->closed && day->close_hour < 16;
+  if (date.year < kFirstCalendarYear || holiday_on(schedule, date)) return false;
   if ((date.month == 7 && date.day == 3) || (date.month == 12 && date.day == 24))
     return weekday(date) >= 1 && weekday(date) <= 4;
   return date == add_days(nth_weekday(date.year, 11, 4, 4), 1);
 }
 
-bool business_day(Date date) noexcept {
+/// What the rules and one schedule say about a date.
+struct Day {
+  std::optional<Holiday> holiday;
+  bool business = false;  ///< a weekday that no named holiday closes
+  int close_hour = 0;     ///< regular_close_hour
+  [[nodiscard]] std::string_view name() const noexcept { return holiday ? holiday->name : std::string_view{}; }
+};
+Day day_under(const Schedule* schedule, Date date) noexcept {
+  Day day;
+  day.holiday = holiday_on(schedule, date);
   const int wd = weekday(date);
-  return wd != 0 && wd != 6 && holiday(date).empty();
+  day.business = wd != 0 && wd != 6 && day.name().empty();
+  if (const auto* announced = scheduled(schedule, date)) day.close_hour = announced->closed ? 16 : announced->close_hour;
+  else day.close_hour = early_close(schedule, date) ? 13 : 16;
+  return day;
 }
+
+/// A session around a trade date: its end is representable, its start may not be.
+struct Span {
+  enum class Kind : std::uint8_t { Global, Regular, Curb } kind{};
+  Timestamp start = 0;
+  Timestamp end = 0;
+};
+/// Everything session_at weighs for the instants of one New York date and one
+/// kind of root: why the date is closed, and the sessions of the trade dates from
+/// two weeks before to the next, in the order it weighs them. A trade date adds
+/// at most four: a holiday overnight, the overnight before it, regular and curb.
+struct Window {
+  bool filled = false;
+  std::int64_t days = 0;
+  bool weekend = false;
+  std::string_view holiday;  ///< the date's, if named
+  std::size_t count = 0;
+  std::array<Span, 4 * 16> spans{};
+};
+
+/// Calendar answers this thread has worked out under one schedule. Each thread
+/// keeps its own, so reading takes no lock; a schedule published since
+/// (set_scheduled_days) empties it before it answers again. It holds no strings
+/// (names point into the schedule or the rules' literals, which stay alive), so
+/// it needs no destructor and can answer at any time.
+class Memo {
+ public:
+  /// This thread's memo, for the schedule in force now.
+  static Memo& current() noexcept {
+    thread_local Memo memo;
+    const auto* schedule = g_schedule.load(std::memory_order_acquire);
+    if (!memo.ready_ || memo.schedule_ != schedule) {
+      memo.ready_ = true;
+      memo.schedule_ = schedule;
+      for (auto& slot : memo.days_) slot.filled = false;
+      for (auto& window : memo.windows_) window.filled = false;
+    }
+    return memo;
+  }
+  Day day(Date date) noexcept {
+    // Keyed by the fields, so a date out of range is still its own entry.
+    const auto hash = static_cast<std::uint32_t>(date.year) * 372u + static_cast<std::uint32_t>(date.month) * 31u +
+                      static_cast<std::uint32_t>(date.day);
+    auto& slot = days_[hash % days_.size()];
+    if (!slot.filled || slot.date != date) {
+      slot.day = day_under(schedule_, date);
+      slot.date = date;
+      slot.filled = true;
+    }
+    return slot.day;
+  }
+  const Window& window(bool global, bool curb, bool quarter_hour, std::int64_t days) noexcept {
+    // A slot per kind of root for each of two consecutive dates.
+    const auto kind = (global ? 1u : 0u) | (curb ? 2u : 0u) | (quarter_hour ? 4u : 0u);
+    auto& w = windows_[(static_cast<std::uint64_t>(days) % 2) * 8 + kind];
+    if (w.filled && w.days == days) return w;
+    const auto date = date_from_days(days);
+    w.weekend = weekday(date) == 0 || weekday(date) == 6;
+    w.holiday = day(date).name();
+    w.count = 0;
+    const auto add = [&](Span::Kind span, Timestamp start, Timestamp end) {
+      // A session that cannot end in the timestamp range never counts.
+      if (end != kInvalidTimestamp) w.spans[w.count++] = Span{span, start, end};
+    };
+    // Enumerate trade dates, including tomorrow for tonight's GTH. Two weeks
+    // covers every closure in the supported calendar without subtracting nanos.
+    for (int offset = -14; offset <= 1; ++offset) {
+      const auto trade_date = date_from_days(days + offset);
+      const auto trade_day = day(trade_date);
+      // Into most holidays an overnight session runs until 11:30, for the next trade date.
+      if (const auto& h = trade_day.holiday; global && h && h->overnight_until > 0)
+        add(Span::Kind::Global, new_york_to_utc(date_from_days(days + offset - 1), 20, 15),
+            new_york_to_utc(trade_date, h->overnight_until / 60, h->overnight_until % 60));
+      if (!trade_day.business) continue;
+      if (global) {
+        const auto evening = date_from_days(days + offset - 1);
+        add(Span::Kind::Global, new_york_to_utc(evening, 20, 15), new_york_to_utc(trade_date, 9, 25));
+      }
+      add(Span::Kind::Regular, new_york_to_utc(trade_date, 9, 30),
+          new_york_to_utc(trade_date, trade_day.close_hour, quarter_hour ? 15 : 0));
+      if (curb && trade_day.close_hour == 16)
+        add(Span::Kind::Curb, new_york_to_utc(trade_date, 16, 15), new_york_to_utc(trade_date, 17, 0));
+    }
+    w.days = days;
+    w.filled = true;
+    return w;
+  }
+
+ private:
+  // Only filled entries are read; zeros elsewhere keep a new thread's copy free.
+  struct DaySlot {
+    bool filled = false;
+    Date date{0, 0, 0};
+    Day day;
+  };
+  bool ready_ = false;
+  const Schedule* schedule_ = nullptr;
+  std::array<DaySlot, 256> days_{};
+  std::array<Window, 16> windows_{};
+};
+static_assert(std::is_trivially_destructible_v<Memo>, "a thread's memo must stay usable until the thread ends");
 
 }  // namespace
 
@@ -256,10 +365,7 @@ std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexce
   return timestamp(seconds, fraction);
 }
 
-int regular_close_hour(Date date) noexcept {
-  if (const auto* day = scheduled(date)) return day->closed ? 16 : day->close_hour;
-  return early_close(date) ? 13 : 16;
-}
+int regular_close_hour(Date date) noexcept { return Memo::current().day(date).close_hour; }
 
 void set_scheduled_days(std::vector<ScheduledDay> days) {
   std::stable_sort(days.begin(), days.end(), [](const ScheduledDay& a, const ScheduledDay& b) { return a.date < b.date; });
@@ -312,25 +418,27 @@ NewYorkTime new_york_time(Timestamp ts) noexcept {
 }
 
 MarketSession market_session(Timestamp ts) {
+  auto& memo = Memo::current();
   const auto [date, days, rem] = local_time(ts);
+  const auto today = memo.day(date);
   MarketSession result;
   const int wd = weekday(date);
   if (wd == 0 || wd == 6)
     result.note = "closed (weekend)";
-  else if (const auto h = holiday(date); !h.empty())
+  else if (const auto h = today.name(); !h.empty())
     result.note = "closed (holiday: " + std::string(h) + ")";
   else if (rem < 9 * 3600 + 30 * 60)
     result.note = "closed (pre-market)";
-  else if (rem >= regular_close_hour(date) * 3600)
+  else if (rem >= today.close_hour * 3600)
     result.note = "closed (after hours)";
   else {
     result.open = true;
-    result.note = regular_close_hour(date) == 13 ? "open, early close 13:00 ET" : "open";
+    result.note = today.close_hour == 13 ? "open, early close 13:00 ET" : "open";
     return result;
   }
   for (int ahead = 0; ahead < 14; ++ahead) {
     const auto candidate = date_from_days(days + ahead);
-    if (!business_day(candidate)) continue;
+    if (!memo.day(candidate).business) continue;
     const auto next = new_york_to_utc(candidate, 9, 30);
     if (next != kInvalidTimestamp && next > ts) {
       result.next_open = next;
@@ -342,46 +450,42 @@ MarketSession market_session(Timestamp ts) {
 
 namespace {
 TradingSession session_at(bool global, bool curb, bool quarter_hour, Timestamp ts) {
-  const auto local = local_time(ts);
-  const auto date = local.date;
-  const auto days = local.days;
+  const auto& window = Memo::current().window(global, curb, quarter_hour, local_time(ts).days);
+  // The last session holding ts is in force; otherwise the market time is the
+  // latest end at or before ts.
+  const Span* in_force = nullptr;
+  Timestamp latest_end = kInvalidTimestamp;
+  for (std::size_t i = 0; i < window.count; ++i) {
+    const auto& span = window.spans[i];
+    if (span.start != kInvalidTimestamp && span.start <= ts && ts < span.end)
+      in_force = &span;
+    else if (span.end <= ts && span.end > latest_end)
+      latest_end = span.end;
+  }
   TradingSession result;
-  result.note = "closed (between sessions)";
-  if (weekday(date) == 0 || weekday(date) == 6) result.note = "closed (weekend)";
-  if (const auto h = holiday(date); !h.empty())
-    result.note = "closed (holiday: " + std::string(h) + ")";
-  auto consider = [&](std::string_view name, Timestamp start, Timestamp end) {
-    if (end == kInvalidTimestamp) return;
-    if (start != kInvalidTimestamp && start <= ts && ts < end) {
-      result.name = name;
-      result.open = true;
-      result.end = end;
-      result.note = name == "global" ? "overnight session"
-                    : name == "curb" ? "curb session"
-                                     : "regular session";
-      result.market_time = ts;
-    } else if (!result.open && end <= ts && end > result.market_time) {
-      result.market_time = end;
-    }
-  };
-  // Enumerate trade dates, including tomorrow for tonight's GTH. Two weeks
-  // covers every closure in the supported calendar without subtracting nanos.
-  for (int offset = -14; offset <= 1; ++offset) {
-    const auto trade_date = date_from_days(days + offset);
-    // Into most holidays an overnight session runs until 11:30, for the next trade date.
-    if (const auto h = holiday_on(trade_date); global && h && h->overnight_until > 0)
-      consider("global", new_york_to_utc(date_from_days(days + offset - 1), 20, 15),
-               new_york_to_utc(trade_date, h->overnight_until / 60, h->overnight_until % 60));
-    if (!business_day(trade_date)) continue;
-    if (global) {
-      const auto evening = date_from_days(days + offset - 1);
-      consider("global", new_york_to_utc(evening, 20, 15), new_york_to_utc(trade_date, 9, 25));
-    }
-    const int close_hour = regular_close_hour(trade_date);
-    consider("regular", new_york_to_utc(trade_date, 9, 30),
-             new_york_to_utc(trade_date, close_hour, quarter_hour ? 15 : 0));
-    if (curb && close_hour == 16)
-      consider("curb", new_york_to_utc(trade_date, 16, 15), new_york_to_utc(trade_date, 17, 0));
+  if (!in_force) {
+    result.market_time = latest_end;
+    result.note = !window.holiday.empty() ? "closed (holiday: " + std::string(window.holiday) + ")"
+                  : window.weekend        ? "closed (weekend)"
+                                          : "closed (between sessions)";
+    return result;
+  }
+  result.open = true;
+  result.market_time = ts;
+  result.end = in_force->end;
+  switch (in_force->kind) {
+    case Span::Kind::Global:
+      result.name = "global";
+      result.note = "overnight session";
+      break;
+    case Span::Kind::Curb:
+      result.name = "curb";
+      result.note = "curb session";
+      break;
+    case Span::Kind::Regular:
+      result.name = "regular";
+      result.note = "regular session";
+      break;
   }
   return result;
 }
@@ -397,18 +501,20 @@ TradingSession trading_session(std::string_view root, Timestamp ts) {
 TradingSession stock_session(Timestamp ts) { return session_at(false, false, false, ts); }
 
 Date trading_date(Timestamp ts) noexcept {
+  auto& memo = Memo::current();
   const auto local = local_time(ts);
-  if (business_day(local.date) && local.seconds < 17 * 3600) return local.date;
+  if (memo.day(local.date).business && local.seconds < 17 * 3600) return local.date;
   // Two weeks covers every closure in the supported calendar.
   for (int ahead = 1; ahead <= 14; ++ahead)
-    if (const auto date = date_from_days(local.days + ahead); business_day(date)) return date;
+    if (const auto date = date_from_days(local.days + ahead); memo.day(date).business) return date;
   return date_from_days(local.days + 1);
 }
 
 Date previous_business_day(Date date) noexcept {
+  auto& memo = Memo::current();
   const auto days = days_since_epoch(date);
   for (int back = 1; back <= 14; ++back)
-    if (const auto earlier = date_from_days(days - back); business_day(earlier)) return earlier;
+    if (const auto earlier = date_from_days(days - back); memo.day(earlier).business) return earlier;
   return date_from_days(days - 1);
 }
 

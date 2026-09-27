@@ -167,6 +167,13 @@ runs. None of that reads the account's history:
   comparing both states. The records are byte for byte what comparing whole states
   gives; a checkpoint still writes the whole state every thousand records.
 
+The rules also ask the calendar many times a batch: the scenario grid asks for each
+position's session and expiry in every cell. A date's holiday, business day and close,
+and for each kind of root the sessions around a New York date, are worked out once per
+thread and remembered, so a session lookup takes about 135 ns instead of 10 µs. Each
+thread keeps its own memo, so reading takes no lock; a thread that finds a newly
+published holiday schedule empties its memo before it answers.
+
 `OPENPORT_VERIFY_REVIEWS=1` and `OPENPORT_VERIFY_JOURNAL=1` make the reducer check each
 review update and each record's change against a rebuild from every fill and a
 comparison of both states, and throw on any difference; CI runs the whole suite with
@@ -181,7 +188,8 @@ the timed loop and no journal I/O is timed; submit is the median of three.
 
 Measured on 2026-09-27, Release/Apple Clang, Apple M2 Max MacBook Pro (12 cores,
 32 GB), as CPU time: other work kept the machine busy, so wall time is not reported.
-"Before" is the same benchmark built against the previous reducer, run alongside.
+Each change was measured against the build before it, run alongside. The shared
+history:
 
 | Historical fills | Quote batch, before | After | Holding, before | After | `submit`, before | After |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -189,15 +197,25 @@ Measured on 2026-09-27, Release/Apple Clang, Apple M2 Max MacBook Pro (12 cores,
 | 1,000 | 1,109 µs | 79 µs | 5,049 µs | 528 µs | 5,494 µs | 573 µs |
 | 10,000 | 10,103 µs | 79 µs | 26,629 µs | 530 µs | 32,971 µs | 577 µs |
 
+The calendar memo, as the fastest of five interleaved runs, since noise only adds time:
+
+| Historical fills | Quote batch, before | After | Holding, before | After | `submit`, before | After |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 64 µs | 8 µs | 453 µs | 23 µs | 447 µs | 30 µs |
+| 1,000 | 64 µs | 8 µs | 441 µs | 24 µs | 461 µs | 34 µs |
+| 10,000 | 65 µs | 8 µs | 438 µs | 24 µs | 474 µs | 43 µs |
+
 With a journal, a record now costs its disk sync plus about 1% for finding the
 change; before, writing out and comparing the whole state took most of the time and
-grew with the history. What remains of a held position's batch is mostly calendar
-arithmetic (sessions and holidays), recomputed on each lookup.
+grew with the history. A `submit` still grows a little with the history: appending an
+order, a fill and a client order ID each copies its container's list of chunks, one
+pointer per 32 entries. Calendar answers are still about a third of a held position's
+batch, from the number of lookups rather than their cost.
 
 The scenario benchmark reads a generated SPX day, runs analytics and a flat paper
 account, and reports market-hours simulated per wall-second: 6.75 market hours in 1.88
-wall seconds (3.59 per second) when measured earlier the same day, before this change;
-it has no orders or journal writes.
+wall seconds (3.59 per second) when measured earlier the same day, before both
+changes; it has no orders or journal writes.
 
 ```sh
 ./build/bench/openport_bench_trading --benchmark_min_time=0.1s
@@ -205,7 +223,7 @@ it has no orders or journal writes.
 
 ## Tests
 
-785 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+786 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
 terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13

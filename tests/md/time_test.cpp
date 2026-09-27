@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <set>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -385,5 +387,35 @@ TEST(Time, AnnouncedClosuresAndEarlyClosesOverrideTheRules) {
   EXPECT_TRUE(scheduled_days().empty());
   EXPECT_TRUE(market_session(new_york_to_utc(mourning, 12, 0)).open);
   EXPECT_EQ(trading_session("SPX", new_york_to_utc({2026, 9, 6}, 21, 0)).name, "global");
+}
+
+// Each thread remembers the calendar answers it has worked out; an announcement
+// published on one thread must reach another's next answer, however warm.
+TEST(Time, AnnouncementsReachEveryThreadsNextAnswer) {
+  using namespace openport::md;
+  const Date day{2026, 10, 7};
+  const auto noon = new_york_to_utc(day, 12, 0);
+  const std::vector<ScheduledDay> closure{{day, "Test closure", true, 13, 0}};
+  std::atomic<int> published{0}, checked{0}, wrong{0};
+  std::thread reader([&] {
+    for (int step = 1; step <= 6; ++step) {
+      // Keep this thread's answers warm under the schedule before the step.
+      while (published.load(std::memory_order_acquire) < step) (void)trading_session("SPX", noon);
+      const bool closed = step % 2 == 1;
+      if (market_session(noon).open == closed) ++wrong;
+      if (trading_session("SPX", noon).open == closed) ++wrong;
+      if (stock_session(noon).open == closed) ++wrong;
+      if ((trading_date(noon) == day) == closed) ++wrong;
+      checked.store(step, std::memory_order_release);
+    }
+  });
+  for (int step = 1; step <= 6; ++step) {
+    set_scheduled_days(step % 2 == 1 ? closure : std::vector<ScheduledDay>{});
+    published.store(step, std::memory_order_release);
+    while (checked.load(std::memory_order_acquire) < step) std::this_thread::yield();
+  }
+  reader.join();
+  EXPECT_EQ(wrong.load(), 0);
+  EXPECT_TRUE(scheduled_days().empty());
 }
 }  // namespace
