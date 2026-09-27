@@ -120,14 +120,15 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     std::filesystem::path file;
     if (input.at("kind") == "recording") {
       file = input.at("file").get<std::string>();
-      if (hash_file(file) != input.at("sha256") || std::filesystem::file_size(file) != input.at("size"))
+      if (hash_file(file) != input.at("sha256").get<std::string>() ||
+          std::filesystem::file_size(file) != input.at("size").get<std::uintmax_t>())
         throw std::runtime_error("Recording input changed: " + file.string());
     } else if (input.at("kind") == "scenario") {
       providers::Scenario scenario;
       if (input.at("builtin").get<bool>()) {
         bool found = false;
         for (const auto& candidate : providers::builtin_scenarios()) {
-          if (candidate.id != input.at("id")) continue;
+          if (candidate.id != input.at("id").get<std::string>()) continue;
           scenario = candidate;
           found = true;
           break;
@@ -138,9 +139,9 @@ RunVerification verify_run(const std::filesystem::path& journal) {
         if (!std::filesystem::is_regular_file(file)) throw std::runtime_error("Missing scenario input: " + file.string());
         scenario = providers::read_scenario(file);
       }
-      if (hash_text(scenario.source) != input.at("sha256"))
+      if (hash_text(scenario.source) != input.at("sha256").get<std::string>())
         throw std::runtime_error("Scenario input changed: " + scenario.id);
-      if (scenario.generator != input.at("generator")) throw std::runtime_error("Scenario generator version changed");
+      if (scenario.generator != input.at("generator").get<decltype(scenario.generator)>()) throw std::runtime_error("Scenario generator version changed");
       file = generated.file();
       providers::write_scenario_recording(file, scenario, input.at("date").get<md::Date>(), input.at("seed").get<std::uint64_t>());
     } else throw std::runtime_error("Unknown run input kind");
@@ -162,7 +163,8 @@ RunVerification verify_run(const std::filesystem::path& journal) {
       const auto& operation = inputs[index];
       if (operation.at("kind") == "boundary") {
         auto batch = batches.next();
-        if (!batch || batch->events.size() != operation.at("events") || batch->received != operation.at("driver_time"))
+        if (!batch || batch->events.size() != operation.at("events").get<std::size_t>() ||
+            batch->received != operation.at("driver_time").get<md::Timestamp>())
           throw std::runtime_error("Input boundary differs at operation " + std::to_string(index));
         desk.replay_batch(batch->events, batch->received, batch->time);
       } else if (operation.at("kind") == "command") {
