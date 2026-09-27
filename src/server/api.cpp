@@ -60,7 +60,8 @@ json coverage_json(const analytics::Coverage& c) {
   return {{"options", c.options},
           {"quoted", c.quoted},
           {"priced", c.priced},
-          {"open_interest", c.open_interest}};
+          {"open_interest", c.open_interest},
+          {"volume", c.volume}};
 }
 
 json spot_source_json(const UnderlyingMetrics& m) {
@@ -147,6 +148,7 @@ json option_json(const analytics::OptionMetrics& o) {
       {"vanna", sig(o.vanna)},
       {"oi", o.has_open_interest && std::isfinite(o.open_interest) ? json(o.open_interest)
                                                                    : json(nullptr)},
+      {"volume", std::isfinite(o.volume) && o.volume >= 0 ? json(o.volume) : json(nullptr)},
       {"vendor_iv", sig(o.vendor_iv)},
   };
 }

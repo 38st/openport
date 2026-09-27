@@ -1,7 +1,7 @@
 # Scenarios
 
 Scenarios are generated practice sessions, not market data or reconstructions of
-historical days. Every generated price is labelled simulated. The session date
+historical days. Generated prices and volume are labelled simulated. The session date
 sets the calendar and expiries; it does not identify an event being reproduced.
 
 The fourteen built-ins are compiled into the binary from `scenarios/*.json`.
@@ -61,9 +61,14 @@ before `date` to 09:25 on `date`. Their cash index stays at the preceding busine
 day's close; options follow the simulated latent level and analytics infers spot
 from parity. Prices begin around SPX 6000, SPY 6000/10.02 and QQQ 480.
 
-The five original scenarios keep their original prices, sizes and event order for
-the same date and seed. Their old segment moves have been converted to cumulative
-waypoints. Tests pin fingerprints of the old recordings.
+The five original scenarios keep their original prices, sizes and relative order
+of existing events for the same date and seed. Their old segment moves have been
+converted to cumulative waypoints. Tests pin fingerprints of the old events.
+
+Session volume starts at zero and accumulates deterministic simulated activity,
+higher near the money and in the front expiry, with more activity near the open
+and close. Its separate seeded draws leave prices and quoted sizes unchanged.
+Volume events are recorded alongside quotes for built-in and custom scenarios.
 
 ## Events
 

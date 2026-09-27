@@ -414,7 +414,9 @@ CboeChain parse_cboe_chain(std::string_view json, md::Timestamp now) {
     option.ask_size = number_or_zero(row, "ask_size");
     option.iv = number_or_zero(row, "iv");
     option.open_interest = number_or_zero(row, "open_interest");
-    option.volume = number_or_zero(row, "volume");
+    double volume = 0.0;
+    if (row["volume"].get_double().get(volume) == simdjson::SUCCESS &&
+        std::isfinite(volume) && volume >= 0.0) option.volume = volume;
     option.delta = number_or_zero(row, "delta");
     option.gamma = number_or_zero(row, "gamma");
     option.vega = number_or_zero(row, "vega");
@@ -572,6 +574,7 @@ void CboeDelayedProvider::publish_chain(const CboeChain& chain,
     publisher_.quote(id, option_time, option->bid, option->ask, option->bid_size, option->ask_size,
                      sink);
     publisher_.open_interest(id, option_time, option->open_interest, sink);
+    publisher_.volume(id, option_time, option->volume, sink);
     publisher_.greeks(md::VendorGreeks{id, option_time, option->iv, option->delta, option->gamma,
                                        option->vega, option->theta, option->rho},
                       sink);

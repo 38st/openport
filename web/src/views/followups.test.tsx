@@ -83,8 +83,8 @@ describe("web follow-up rendering", () => {
     }
     const html = render(<ChainView symbol="SPY" expiry={expiry.id} onExpiry={() => {}} />, { chain })
     const cells = [...html.matchAll(/<td\b[^>]*>(.*?)<\/td>/g)].map((match) => match[1]!.replace(/<[^>]+>/g, ""))
-    expect(cells.slice(0, 5)).toEqual(["—", "—", "—", "—", "—"])
-    expect(cells.slice(-5)).toEqual(["0.00", "0.00", "—", "—", "0"])
+    expect(cells.slice(0, 8)).toEqual(["—", "—", "none", "—", "—", "—", "—", "—"])
+    expect(cells.slice(-8)).toEqual(["0.00", "0.00", "—", "—", "0", "none", "—", "—"])
     expect(html).toContain("priced 1/2 · OI 0/2 · low coverage")
     expect(html).not.toContain("IVs and Greeks use a European model")
   })

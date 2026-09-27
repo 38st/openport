@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { useMemo, useRef, useState } from "react"
+import { LiquidityWarning } from "./LiquidityWarning"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useSmileSurface } from "../api/smiles"
@@ -72,7 +73,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   surface?: Surface
   template?: Pick<TemplateSetup, "tag" | "widths">
 }) {
-  const { accountScope, underlyings, source, replay } = useLive()
+  const { accountScope, underlyings, source, replay, status: feedStatus } = useLive()
   const token = useWriteToken()
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
@@ -223,7 +224,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     <div>
       <div className="text-base font-semibold">{underlying} <span className="font-normal text-muted">{closing ? "Close" : roll ? "Roll" : label}</span></div>
       <div className="mt-1 text-sm">{known.length === 1 ? `${known[0]!.expiry} ${known[0]!.settlement}` : known.map((e) => shortDate(e.expiry)).join(" / ")} · {legs.length} of {MAX_LEGS} legs</div>
-      {source === "replay" && replay?.demo && <p className="mt-1 text-xs text-warn">Demo market · simulated prices</p>}
+      {(feedStatus?.provider.simulated || (source === "replay" && replay?.demo)) && <p className="mt-1 text-xs text-warn">Demo market · simulated prices and volume</p>}
       {template && <p className="mt-1 text-xs text-muted">Template tag: <span className="tabular">{template.tag}</span> · Width: {template.widths.join(" / ")} points</p>}
       {legs.length < 2 && <p className="mt-1 text-xs text-muted">Click another bid or ask on the chain to add a leg: an ask buys, a bid sells.</p>}
     </div>
@@ -296,6 +297,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           </div>}
           {!closing && !roll && !extended && <div className="col-span-2">{exits.fields}</div>}
         </fieldset>
+        <LiquidityWarning market={type === "market"} legs={legs.map((leg) => ({ label: `${leg.expiry} ${leg.strike} ${leg.type}`, quote: leg.quote, side: leg.side, quantity: q * leg.ratio }))} />
         <p role="status" className={`rounded-md border px-3 py-2 text-xs ${marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>
           {type === "limit" && tif === "gtc" && extended ? "GTC waits for the regular session, even if the current quote crosses its limit."
             : quote.ask == null ? "Every leg needs a two-sided quote before the strategy can fill."

@@ -21,6 +21,13 @@ void ChainBook::apply(const md::Event& event) {
             s->quote_ts = e.ts;
             touch(*s, e.ts);
           }
+        } else if constexpr (std::is_same_v<T, md::OptionVolume>) {
+          if (OptionState* s = defined(e.id); s && e.ts >= s->volume_ts &&
+              std::isfinite(e.contracts) && e.contracts >= 0.0) {
+            s->volume = e.contracts;
+            s->volume_ts = e.ts;
+            touch(*s, e.ts);
+          }
         } else if constexpr (std::is_same_v<T, md::OpenInterest>) {
           if (OptionState* s = defined(e.id)) {
             s->has_open_interest = true;

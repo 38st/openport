@@ -40,6 +40,7 @@ class SnapshotPublisher {
   void quote(md::InstrumentId id, md::Timestamp ts, double bid, double ask, double bid_size,
              double ask_size, md::EventSink& sink);
   void open_interest(md::InstrumentId id, md::Timestamp ts, double contracts, md::EventSink& sink);
+  void volume(md::InstrumentId id, md::Timestamp ts, double contracts, md::EventSink& sink);
   void greeks(const md::VendorGreeks& greeks, md::EventSink& sink);
 
   [[nodiscard]] std::size_t size() const noexcept { return last_.size(); }
@@ -52,6 +53,8 @@ class SnapshotPublisher {
     double bid_size = -1.0;
     double ask_size = -1.0;
     double open_interest = -1.0;
+    double volume = -1.0;
+    md::Timestamp volume_ts = 0;
     std::optional<md::VendorGreeks> greeks;
   };
 

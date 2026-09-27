@@ -331,7 +331,7 @@ TEST(Api, PublishesMarketAndAnalyticsProvenance) {
   }
   auto summary = get(source, "/api/underlyings/SPX/summary");
   EXPECT_EQ(summary["american_approximation"], false);
-  const json coverage{{"options", 82}, {"quoted", 82}, {"priced", 82}, {"open_interest", 82}};
+  const json coverage{{"options", 82}, {"quoted", 82}, {"priced", 82}, {"open_interest", 82}, {"volume", 0}};
   EXPECT_EQ(summary["coverage"], coverage);
   EXPECT_EQ(summary["expiries"][0]["coverage"], coverage);
   EXPECT_EQ(summary["expiries"][0]["style"], "european");
@@ -382,7 +382,7 @@ TEST(Api, AmericanApproximationAndPartialExposureCoverageAreExplicit) {
   EXPECT_EQ(summary["spot_source"], "parity");
   EXPECT_EQ(summary["american_approximation"], true);
   EXPECT_EQ(summary["coverage"],
-            (json{{"options", 82}, {"quoted", 82}, {"priced", 82}, {"open_interest", 41}}));
+            (json{{"options", 82}, {"quoted", 82}, {"priced", 82}, {"open_interest", 41}, {"volume", 0}}));
   EXPECT_EQ(summary["expiries"][0]["style"], "american");
   EXPECT_EQ(summary["exposure"]["oi_coverage"], .5);
   auto exposure = get(source, "/api/underlyings/SPY/exposure?window=0.001");
@@ -404,7 +404,7 @@ TEST(Api, UnanchoredUnquotedChainStillReportsMissingDataAndCoverage) {
   EXPECT_TRUE(summary["spot_source"].is_null());
   EXPECT_EQ(summary["american_approximation"], false);
   EXPECT_EQ(summary["coverage"],
-            (json{{"options", 1}, {"quoted", 0}, {"priced", 0}, {"open_interest", 0}}));
+            (json{{"options", 1}, {"quoted", 0}, {"priced", 0}, {"open_interest", 0}, {"volume", 0}}));
   EXPECT_TRUE(summary["exposure"]["oi_coverage"].is_null());
   for (const auto view : {"chain", "exposure", "surface"}) {
     auto j = get(source, std::string("/api/underlyings/SPY/") + view);
@@ -563,4 +563,18 @@ TEST(Api, ConcurrentVolatilityRequestsShareOneColdComputationAndSurfaceFits) {
   EXPECT_EQ(source.event_reads, 1);
   EXPECT_EQ(surface, get(source, "/api/underlyings/SPX/surface"));
 }
+
+TEST(Api, ChainVolumeDistinguishesUnknownZeroAndReportedContracts) {
+  test::SyntheticChain chain;
+  chain.book.apply(md::OptionVolume{0, chain.as_of, 123});
+  chain.book.apply(md::OptionVolume{1, chain.as_of, 0});
+  StubSource source(analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of));
+  const auto body = get(source, "/api/underlyings/SPX/chain?expiry=2026-10-22PM");
+  EXPECT_EQ(body["strikes"][0]["call"]["volume"], 123);
+  EXPECT_EQ(body["strikes"][0]["put"]["volume"], 0);
+  EXPECT_TRUE(body["strikes"][1]["call"]["volume"].is_null());
+  EXPECT_EQ(body["expiry"]["coverage"]["volume"], 2);
+  EXPECT_EQ(get(source, "/api/underlyings/SPX/summary")["coverage"]["volume"], 2);
+}
+
 }  // namespace

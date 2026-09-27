@@ -38,6 +38,7 @@ struct OptionMetrics {
   double vega = kNaN;   ///< per vol point
   double theta = kNaN;  ///< per calendar day
   double vanna = kNaN;  ///< change in delta per vol point
+  double volume = kNaN;  ///< cumulative contracts for the current trading date
   double open_interest = kNaN;
   bool has_open_interest = false;
   double vendor_iv = kNaN;
@@ -59,6 +60,7 @@ struct Coverage {
   int quoted = 0;
   int priced = 0;
   int open_interest = 0;
+  int volume = 0;
 };
 
 /// Known cash per share for the underlying being analysed. The ex-date starts

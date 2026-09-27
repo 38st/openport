@@ -368,7 +368,10 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
         if (!state) return OptionMetrics{};
         const auto it = f.premiums.find(id);
         const double premium = it == f.premiums.end() ? kNaN : it->second;
-        return quote_metrics(*state, id, forward, discount, years, premium);
+        auto metrics = quote_metrics(*state, id, forward, discount, years, premium);
+        if (state->volume_ts > 0 && md::trading_date(state->volume_ts) == md::trading_date(as_of))
+          metrics.volume = state->volume;
+        return metrics;
       };
       row.call = quotes(call, pair.call);
       row.put = quotes(put, pair.put);
@@ -384,6 +387,7 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
         ++sm.coverage.options;
         sm.coverage.quoted += state->has_quote;
         sm.coverage.open_interest += state->has_open_interest;
+        sm.coverage.volume += std::isfinite(m.volume);
         sm.coverage.priced += std::isfinite(m.iv);
         if (!std::isfinite(row.iv)) return;
         ++exposure_options;
@@ -414,6 +418,7 @@ UnderlyingMetrics analyze(const UnderlyingBook& book, const ChainBook& chain, md
     out.coverage.quoted += sm.coverage.quoted;
     out.coverage.priced += sm.coverage.priced;
     out.coverage.open_interest += sm.coverage.open_interest;
+    out.coverage.volume += sm.coverage.volume;
     if (sm.coverage.priced > 0 && sm.style == pricing::ExerciseStyle::American &&
         !sm.deamericanized)
       out.american_approximation = true;

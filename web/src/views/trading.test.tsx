@@ -295,3 +295,24 @@ describe("paper trading fixtures", () => {
     expect(html).toMatch(/<button type="button" class="trade-button" disabled="">Close together<\/button>/)
   })
 })
+
+it("shows liquidity columns on each side, volume/OI on hover and volume coverage", () => {
+  const html = render(<ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} />, (client) => {
+    client.setQueryData(["chain", "SPX", selection.expiry.id, .05, 1], { ...chain,
+      expiry: { ...chain.expiry, coverage: { options: 2, quoted: 2, priced: 2, open_interest: 2, volume: 1 } },
+      strikes: [{ ...chain.strikes[0], call: { ...quote, volume: 125, oi: 500 }, put: { ...quote, bid: 1, ask: 3, volume: null } }],
+    })
+  })
+  expect(html.match(/>Vol<\/th>/g)).toHaveLength(2)
+  expect(html.match(/>Spr %<\/th>/g)).toHaveLength(2)
+  expect(html.match(/>Liq<\/th>/g)).toHaveLength(2)
+  expect(html).toContain('title="Volume / OI: 0.25"')
+  expect(html).toContain("Vol 1/2")
+  expect(html).toContain("Volume unknown")
+  expect(html).toContain("Liquidity columns")
+})
+
+it("labels generated volume as simulated on the chain", () => {
+  vi.mocked(useLive).mockReturnValue(liveState({ ...status, provider: { ...status.provider, simulated: true } }, null, "open"))
+  expect(render(<ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} />)).toContain("simulated prices and volume")
+})

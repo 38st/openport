@@ -285,4 +285,26 @@ TEST(MassiveDividends, FetchesEachTickerAndKeepsWhatAFailureCannotRefresh) {
   EXPECT_THROW(providers::MassiveDividends({"SPY"}, [](auto) {}, {}), std::invalid_argument);
 }
 
+
+TEST(Massive, DayVolumeUsesItsOwnClockAndMissingValuesStayUnknown) {
+  for (const std::string value : {"0", "873", "null", "-1"}) {
+    const auto page = providers::parse_massive_chain_page(
+        "{\"status\":\"OK\",\"results\":[{\"details\":{\"ticker\":\"O:SPXW261005P07405000\"},"
+        "\"day\":{\"volume\":" + value + ",\"last_updated\":1790103279000000000}}]}");
+    providers::MassiveProvider provider({"test-key"});
+    Collector sink;
+    provider.publish_chain("SPX", page.contracts, 7777, 1790103379000000000, {}, sink);
+    const auto volumes = sink.all<md::OptionVolume>();
+    if (value == "null" || value == "-1") {
+      EXPECT_TRUE(volumes.empty());
+    } else {
+      ASSERT_EQ(volumes.size(), 1u);
+      EXPECT_EQ(volumes[0].contracts, std::stod(value));
+      EXPECT_EQ(volumes[0].ts, 1790103279000000000);
+    }
+  }
+  const auto page = providers::parse_massive_chain_page(kPage);
+  EXPECT_FALSE(page.contracts[0].volume);
+}
+
 }  // namespace

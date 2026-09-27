@@ -39,6 +39,7 @@ TEST(Recording, EveryEventAndHeaderFieldRoundTripsBitExactly) {
       md::OptionQuote{id, hi, nan, -0.0, tiny, inf},
       md::OptionTrade{id, lo, -inf, -huge},
       md::OpenInterest{id, hi, nan},
+      md::OptionVolume{id, lo, tiny},
       md::VendorGreeks{id, lo, nan, huge, -tiny, -0.0, inf, -inf},
       md::UnderlyingQuote{std::string("SP\0X", 4), hi, nan, tiny, -0.0},
       md::UnderlyingClose{"SPX", lo, {2026, 9, 23}, nan},
@@ -120,8 +121,8 @@ TEST(Recording, RejectsBadMagicVersionAndMalformedOrTruncatedHeader) {
   bytes[0] = '!';
   rejects(bytes, "magic");
   bytes = original;
-  bytes[8] = 2;
-  rejects(bytes, "version 2");
+  bytes[8] = 3;
+  rejects(bytes, "version 3");
   rejects(original.substr(0, 8), "truncated header");
   rejects(original.substr(0, 20), "truncated header");
   bytes = original;
@@ -352,6 +353,42 @@ TEST(Recording, BackpressureAllowsOnlyOneUncommittedFrame) {
   ASSERT_TRUE(reader.next());
   EXPECT_FALSE(reader.next());
   EXPECT_TRUE(reader.diagnostic().empty());
+}
+
+
+TEST(Recording, VersionOneKeepsItsOriginalRecordLayout) {
+  test::RecordingFile file;
+  const std::vector<md::Event> events{
+      md::ContractDefinition{0, *md::parse_osi("SPXW261022C05000000")},
+      md::OptionQuote{0, 123, 2, 3, 4, 5}, md::OptionTrade{0, 124, 2.5, 6},
+      md::OpenInterest{0, 125, 7}, md::VendorGreeks{0, 126, .2, .5, .01, 1, -1, .1},
+      md::UnderlyingQuote{"SPX", 127, 4999, 5001, 5000},
+      md::ProviderStatus{128, md::FeedState::Live, "synthetic", "SPX"},
+      md::UnderlyingClose{"SPX", 129, {2026, 9, 22}, 5000}, md::SnapshotComplete{"SPX", 130}};
+  test::record_events(file.path, events);
+  auto bytes = contents(file.path);
+  ASSERT_EQ(bytes[8], 2);
+  // V1 has the identical header and tags 0–8. Only the version word differs.
+  bytes[8] = 1;
+  replace(file.path, bytes);
+  md::RecordingReader reader(file.path);
+  for (const auto& event : events) {
+    const auto record = reader.next();
+    ASSERT_TRUE(record);
+    test::exact_event(event, record->event);
+  }
+  EXPECT_FALSE(reader.next());
+  EXPECT_TRUE(reader.diagnostic().empty());
+}
+
+TEST(Recording, VersionOneRejectsTheNewVolumeTag) {
+  test::RecordingFile file;
+  test::record_events(file.path, {md::OptionVolume{0, 123, 0}});
+  auto bytes = contents(file.path);
+  bytes[8] = 1;
+  replace(file.path, bytes);
+  md::RecordingReader reader(file.path);
+  EXPECT_THROW((void)reader.next(), std::runtime_error);
 }
 
 }  // namespace

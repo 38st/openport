@@ -132,3 +132,21 @@ it("rolls the call side of a condor with new strikes as one four-leg order", asy
     { symbol: "SPXW  261023C07120000", side: "sell", ratio: 1 }, { symbol: "SPXW  261023C07130000", side: "buy", ratio: 1 },
   ])
 })
+
+it("warns for the thin leg and shows per-leg market quantities and displayed sides", async () => {
+  const legs = spread.legs.map(({ leg }, index) => ({ ...leg, side: index === 0 ? "sell" as const : "buy" as const,
+    ratio: index === 0 ? 1 : 2, quote: { ...quote, bid: 5, ask: index === 0 ? 5.2 : 8, mid: index === 0 ? 5.1 : 6.5,
+      volume: index === 0 ? 1000 : 12, oi: index === 0 ? 1000 : 34, bid_size: 3, ask_size: 7 } }))
+  await render(<StrategyTicket legs={legs} onLegs={() => {}} expiries={[selection.expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />)
+  expect(host.textContent).toContain(`${legs[1]!.strike} put: Thin liquidity`)
+  expect(host.textContent).toContain("Volume 12 · OI 34")
+  const submit = host.querySelector<HTMLButtonElement>('[aria-label="Submit strategy order"]')!
+  expect(submit.disabled).toBe(false)
+  await setField("Quantity (units)", "3")
+  await click("Market")
+  expect(host.textContent).toContain("3 contracts against displayed bid size 3")
+  expect(host.textContent).toContain("6 contracts against displayed ask size 7")
+  expect(host.textContent).toContain("Fills are simulated against the displayed quote and size only.")
+  await click("Submit strategy order")
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ type: "market", quantity: 3 }), trading.write)
+})

@@ -1,5 +1,6 @@
 #include "openport/providers/databento.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <databento/constants.hpp>
@@ -153,6 +154,15 @@ void DatabentoMapper::on_trade(const db::TradeMsg& msg) {
   if (!lookup(msg.hd.instrument_id, id)) return;
   sink_.publish(md::OptionTrade{id, nanos(msg.hd.ts_event), price(msg.price),
                                 static_cast<double>(msg.size)});
+  const auto ts = nanos(msg.hd.ts_event);
+  if (ts <= 0) return;
+  const auto date = md::trading_date(ts);
+  auto& volume = volumes_[id];
+  if (date < volume.date) return;
+  if (date != volume.date) volume = {date, 0, ts};
+  volume.contracts += static_cast<double>(msg.size);
+  volume.ts = std::max(volume.ts, ts);
+  sink_.publish(md::OptionVolume{id, volume.ts, volume.contracts});
 }
 
 void DatabentoMapper::on_statistic(const db::StatMsg& msg) {

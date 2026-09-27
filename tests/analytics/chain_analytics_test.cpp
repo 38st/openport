@@ -391,4 +391,35 @@ TEST(ChainAnalytics, IgnoresSpotMoreThanThirtyMinutesBehindOptionData) {
   EXPECT_DOUBLE_EQ(stale.slices[0].forward.forward, absent.slices[0].forward.forward);
   EXPECT_DOUBLE_EQ(stale.slices[0].strikes[20].call.gamma, absent.slices[0].strikes[20].call.gamma);
 }
+
+TEST(ChainAnalytics, VolumeIsLatestCumulativeValueAndOnlyForItsTradingDate) {
+  SyntheticChain chain;
+  const auto analyze = [&](md::Timestamp time) {
+    return analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, time);
+  };
+  EXPECT_TRUE(std::isnan(chain.book.option(0)->volume));
+  chain.book.apply(md::OptionVolume{9999, chain.as_of, 99});
+  chain.book.apply(md::OptionVolume{0, chain.as_of, 100});
+  chain.book.apply(md::OptionVolume{0, chain.as_of + 1, 90});  // provider correction
+  chain.book.apply(md::OptionVolume{0, chain.as_of, 200});    // older observation
+  chain.book.apply(md::OptionVolume{1, chain.as_of, 0});
+  chain.book.apply(md::OptionVolume{2, chain.as_of, -1});
+  chain.book.apply(md::OptionVolume{2, chain.as_of, analytics::kNaN});
+  EXPECT_EQ(chain.book.option(0)->volume, 90);
+  EXPECT_EQ(chain.book.option(0)->volume_ts, chain.as_of + 1);
+  auto metrics = analyze(chain.as_of + 1);
+  EXPECT_EQ(metrics.coverage.volume, 2);
+  EXPECT_EQ(metrics.slices[0].coverage.volume, 2);
+  EXPECT_EQ(metrics.slices[0].strikes[0].call.volume, 90);
+  EXPECT_EQ(metrics.slices[0].strikes[0].put.volume, 0);
+  EXPECT_TRUE(std::isnan(metrics.slices[0].strikes[1].call.volume));
+  const auto overnight = md::new_york_to_utc({2026, 9, 22}, 20, 15);
+  metrics = analyze(overnight);
+  EXPECT_EQ(metrics.coverage.volume, 0);
+  EXPECT_TRUE(std::isnan(metrics.slices[0].strikes[0].call.volume));
+  chain.book.apply(md::OptionVolume{0, overnight, 0});
+  EXPECT_EQ(analyze(overnight).slices[0].strikes[0].call.volume, 0);
+  EXPECT_EQ(analyze(overnight).coverage.volume, 1);
+}
+
 }  // namespace

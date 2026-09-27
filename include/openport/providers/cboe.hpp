@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -34,7 +35,7 @@ struct CboeOption {
   double rho = 0.0;
   double theo = 0.0;
   double open_interest = 0.0;
-  double volume = 0.0;
+  double volume = std::numeric_limits<double>::quiet_NaN();
 };
 
 /// A whole chain as Cboe serves it.

@@ -94,6 +94,10 @@ std::vector<ThetaRow> parse_theta_rows(std::string_view ndjson) {
         row.bid_size = as_double(v);
       } else if (key == "ask_size") {
         row.ask_size = as_double(v);
+      } else if (key == "volume") {
+        double volume = 0.0;
+        if (v.get_double().get(volume) == simdjson::SUCCESS &&
+            std::isfinite(volume) && volume >= 0.0) row.volume = volume;
       } else if (key == "open_interest") {
         row.open_interest = as_double(v);
       } else if (key == "implied_vol") {
@@ -230,6 +234,12 @@ void ThetaDataProvider::publish_chain(const std::string& underlying,
     seen.insert(id);
     ids.emplace(key_of(row), id);
     publisher_.quote(id, row.ts, row.bid, row.ask, row.bid_size, row.ask_size, sink);
+  }
+  for (const auto* rows : {&quotes, &implied_vols, &open_interest}) {
+    for (const auto& row : *rows) {
+      const auto it = ids.find(key_of(row));
+      if (it != ids.end() && row.volume) publisher_.volume(it->second, row.ts, *row.volume, sink);
+    }
   }
   constexpr double kUnpublished = std::numeric_limits<double>::quiet_NaN();
   for (const ThetaRow& row : implied_vols) {

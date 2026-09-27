@@ -183,6 +183,13 @@ of market/IOC or limit/DAY/GTC/IOC. Market/DAY or market/GTC, market with a limi
 a positive price reject. Client IDs cannot be reused, even after a rejected order;
 HTTP retry/idempotency semantics belong to the integration layer.
 
+Tickets show liquidity warnings for thin or absent two-sided quotes, including
+spread percentage, session volume and OI, without blocking submission. Strategy
+tickets check each leg. Market tickets show each executable side's displayed size
+and requested contracts; fills are simulated against that quote and size only.
+The [liquidity rules](runtime.md#chain-volume-and-liquidity) are browser cues, not
+new reducer checks or journal fields.
+
 Buy execution uses ask; sell execution uses bid. With `slippage_ticks` (0 by default,
 an integer from 0 to 10), buys add that many ticks to the ask and sells subtract them
 from the bid, floored at zero. The tick is `tick_size(root, displayed_price)`, using

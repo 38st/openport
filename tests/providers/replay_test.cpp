@@ -433,4 +433,28 @@ TEST(Replay, SkipCutsAnOvernightGapShortAndTheEndIsReported) {
   EXPECT_THROW(replay.set_speed(3), std::invalid_argument);
   replay.stop();
 }
+
+TEST(Replay, PlaysVersionOneAndVersionTwoWithVolume) {
+  for (const int version : {1, 2}) {
+    test::RecordingFile file;
+    auto events = session();
+    if (version == 2) events.push_back(md::OptionVolume{0, 55, 12});
+    test::record_events(file.path, events);
+    if (version == 1) {
+      std::fstream bytes(file.path, std::ios::binary | std::ios::in | std::ios::out);
+      bytes.seekp(8);
+      bytes.put(1);
+    }
+    auto clock = std::make_shared<TestClock>();
+    providers::ReplayProvider replay({file.path, 0, false, clock});
+    test::EventCollector sink;
+    replay.start({{"SPX"}}, sink);
+    ASSERT_TRUE(test::recording_eventually([&] { return ended(sink); }));
+    replay.stop();
+    const auto actual = sink.snapshot();
+    ASSERT_EQ(actual.size(), events.size() + 1);
+    for (std::size_t i = 0; i < events.size(); ++i) test::exact_event(events[i], actual[i]);
+  }
+}
+
 }  // namespace

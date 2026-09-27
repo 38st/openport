@@ -243,4 +243,27 @@ TEST(ThetaData, AFailedQuoteRootDoesNotRetireTheLastCompleteSnapshot) {
   EXPECT_EQ(sink.all<md::ProviderStatus>()[0].state, md::FeedState::Error);
 }
 
+
+TEST(ThetaData, DoesNotInventVolumeAndMapsItOnlyWhenSupplied) {
+  providers::ThetaDataProvider provider;
+  Collector sink;
+  provider.publish_chain("SPX", providers::parse_theta_rows(kQuotes), {}, {}, {}, sink);
+  EXPECT_TRUE(sink.all<md::OptionVolume>().empty());
+  for (const std::string value : {"0", "321", "null", "-1"}) {
+    const auto rows = providers::parse_theta_rows(
+        "{\"timestamp\":\"2026-09-22T15:33:42.125\",\"symbol\":\"SPXW\","
+        "\"expiration\":\"2026-10-05\",\"strike\":7405,\"right\":\"put\",\"volume\":" + value + "}");
+    sink.events.clear();
+    provider.publish_chain("SPX", rows, {}, {}, {}, sink);
+    const auto volumes = sink.all<md::OptionVolume>();
+    if (value == "null" || value == "-1") {
+      EXPECT_TRUE(volumes.empty());
+    } else {
+      ASSERT_EQ(volumes.size(), 1u);
+      EXPECT_EQ(volumes[0].contracts, std::stod(value));
+      EXPECT_EQ(volumes[0].ts, rows[0].ts);
+    }
+  }
+}
+
 }  // namespace

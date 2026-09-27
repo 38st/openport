@@ -38,6 +38,13 @@ struct OptionTrade {
   double size = 0.0;
 };
 
+/// Cumulative contracts traded in the trading date of ts; not an increment.
+struct OptionVolume {
+  InstrumentId id = 0;
+  Timestamp ts = 0;
+  double contracts = 0.0;
+};
+
 struct OpenInterest {
   InstrumentId id = 0;
   Timestamp ts = 0;
@@ -116,6 +123,6 @@ struct SnapshotComplete {
 
 using Event = std::variant<ContractDefinition, OptionQuote, OptionTrade, OpenInterest,
                            VendorGreeks, UnderlyingQuote, ProviderStatus, UnderlyingClose,
-                           SnapshotComplete>;
+                           SnapshotComplete, OptionVolume>;
 
 }  // namespace openport::md

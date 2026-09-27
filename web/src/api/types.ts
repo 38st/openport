@@ -116,6 +116,8 @@ export interface Coverage {
   quoted: Num
   priced: Num
   open_interest: Num
+  /** Contracts with current-session volume; absent on older servers. */
+  volume?: Num
 }
 
 export interface Expiry {
@@ -184,6 +186,8 @@ export interface OptionQuote {
   theta: Num
   vanna: Num
   oi: Num
+  /** Cumulative traded contracts for this trading date; null if unknown, absent on older servers. */
+  volume?: Num
   vendor_iv: Num
 }
 

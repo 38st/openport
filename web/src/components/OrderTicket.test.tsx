@@ -287,3 +287,28 @@ it("explains that a marketable GTC limit waits overnight and markets offer IOC o
   await click("Submit order")
   expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ type: "market", time_in_force: "ioc" })
 })
+
+it("warns on thin liquidity without blocking and shows the executable market size on each side", async () => {
+  const thin = { ...quote, bid: 10, ask: 20, mid: 15, volume: 12, oi: 34, bid_size: 3, ask_size: 7 }
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <OrderTicket selection={selection} quote={thin} trading={trading} onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(host.textContent).toContain("Thin liquidity")
+  expect(host.textContent).toContain("Spread 66.7% · Volume 12 · OI 34")
+  expect(button("Submit order").disabled).toBe(false)
+  await choose("Order type", "Market")
+  expect(host.textContent).toContain("against displayed ask size 7")
+  expect(host.textContent).toContain("Fills are simulated against the displayed quote and size only.")
+  await choose("Side", "Sell")
+  expect(host.textContent).toContain("against displayed bid size 3")
+  await click("Submit order")
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ side: "sell", type: "market" }), trading.write)
+})
+
+it("warns about a missing bid while keeping unknown volume distinct from zero", async () => {
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <OrderTicket selection={selection} quote={{ ...quote, bid: 0, volume: null }} trading={trading} onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(host.textContent).toContain("No two-sided liquidity")
+  expect(host.textContent).toContain("Volume unknown")
+})

@@ -76,6 +76,12 @@ class DatabentoMapper {
   std::unordered_map<std::uint32_t, md::InstrumentId> ids_;  // Databento id -> ours
   std::vector<std::string> underlyings_;
   std::set<std::string> live_underlyings_;
+  struct Volume {
+    md::Date date;
+    double contracts = 0;
+    md::Timestamp ts = 0;
+  };
+  std::unordered_map<md::InstrumentId, Volume> volumes_;
   std::size_t undefined_records_ = 0;
 };
 

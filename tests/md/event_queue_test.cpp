@@ -152,4 +152,25 @@ TEST(EventQueue, SparseUpdatesAcrossManyDrainsNeverReuseStaleInstrumentOrSpotSlo
   EXPECT_EQ(queue.status().coalesced, 4000u);
   EXPECT_EQ(queue.status().dropped, 0u);
 }
+
+TEST(EventQueue, VolumeCoalescesAndSurvivesOverloadAndDefinitionBarriers) {
+  EventQueue queue(1);
+  queue.publish(ContractDefinition{0, {}});
+  queue.publish(OptionVolume{0, 1, 100});
+  queue.publish(OptionVolume{0, 2, 120});
+  queue.publish(OptionTrade{0, 2, 1, 20});
+  queue.publish(ContractDefinition{0, {}});
+  queue.publish(OptionVolume{0, 3, 0});
+  queue.publish(OptionVolume{0, 4, 2});
+  auto events = drain(queue);
+  ASSERT_EQ(events.size(), 4u);
+  EXPECT_EQ(std::get<OptionVolume>(events[1]).contracts, 120);
+  EXPECT_EQ(std::get<OptionVolume>(events[3]).contracts, 2);
+  EXPECT_EQ(std::get<OptionVolume>(events[3]).ts, 4);
+  EXPECT_EQ(queue.status().dropped, 1u);
+  EXPECT_EQ(queue.status().coalesced, 2u);
+  queue.publish(OptionVolume{0, 5, 3});
+  EXPECT_EQ(std::get<OptionVolume>(drain(queue)[0]).contracts, 3);
+}
+
 }  // namespace

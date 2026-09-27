@@ -12,9 +12,9 @@ System DNS resolution uses synchronous `getaddrinfo`; shutdown cannot interrupt
 it until the operating system returns.
 
 The event queue has a default capacity of 65,536 retained events. Repeated option
-quotes, underlying quotes, vendor Greeks, and open interest replace an unconsumed
+quotes, underlying quotes, vendor Greeks, volume and open interest replace an unconsumed
 update of the same kind in place. A contract definition prevents option updates,
-including open interest, from coalescing across that definition. Latest-value
+including volume and open interest, from coalescing across that definition. Latest-value
 state is never dropped: snapshot providers may deduplicate unchanged values and
 never resend them, ending each poll with `md::SnapshotComplete` to vouch for them
 (see [paper trading](paper-trading.md)). Definitions, provider status and complete
@@ -128,8 +128,8 @@ displayed size. No sizes are invented for missing fields.
 IV, vega, theta and rho scaling are unconfirmed and remain NaN; delta and gamma are
 mapped as price derivatives. The unzoned Greek update time stays unknown. Quote
 clocks are milliseconds; conflicting seconds-shaped examples are rejected when
-they would give a priced side an unknown clock. No volume event exists, so cumulative
-volume is not represented as trades.
+they would give a priced side an unknown clock. This adapter does not yet emit session volume; cumulative volume is not
+represented as trades.
 
 tastytrade requires a funded production account and OAuth credentials created in
 the broker's own application. `sandbox=true` is rejected because the sandbox has
@@ -169,6 +169,38 @@ has no corresponding normalised event. Streaming emits no `SnapshotComplete`.
 Both adapters are tested with generated fixtures shaped like broker documentation,
 not live accounts. Empty response shapes, index symbols, entitlement and the noted
 units still need account validation. No new journal or recording fields are added.
+
+## Chain volume and liquidity
+
+`md::OptionVolume` carries cumulative traded contracts for the trading date of its
+market timestamp. It is latest-value state in the queue, so dropped trades do not
+lose an already computed total. `ChainBook` retains the value and timestamp;
+analytics omits totals from another trading date. Chain sides expose `volume` as
+a number or null, including a reported zero. Expiry and underlying coverage count
+contracts with current-date volume. Unknown values do not become zero.
+
+Cboe publishes its row volume. Massive uses `day.volume` with `day.last_updated`;
+without that clock the count stays unknown. ThetaData maps volume only if a row
+supplies it; the current saved quote, IV and OI samples have none. Databento sums
+received trade sizes per contract, resetting at the trading-date roll (including
+the evening session). Its total covers trades received since connection; it does
+not backfill earlier trades, repair reconnect gaps or apply trade corrections.
+With `trades=off`, volume is unknown. Tradier and tastytrade do not yet emit volume.
+
+The chain shows volume, `(ask - bid) / ((ask + bid) / 2)` and a liquidity cue per
+side. Hover volume for volume/OI; zero or unknown OI leaves the ratio unknown.
+The Liquidity columns button hides these three columns, alongside the existing
+Quotes/Greeks switch. Smile and Exposure keep their existing displays.
+
+The thresholds live in `web/src/lib/liquidity.ts`. No valid two-sided quote
+(missing, crossed or no positive bid) is **none**. A spread above 20% of mid, or
+both volume below 100 and OI below 500, is **thin**. Otherwise the cue is **good**.
+The activity check requires both numbers; unknown activity is labelled unknown
+in the detail and is not evidence of low activity. Good describes these checks,
+not a guarantee of available size or a fill. Locked positive quotes have zero spread.
+Tickets warn on thin or absent liquidity for each leg without blocking submission.
+Market tickets show the requested contracts and displayed executable-side size
+per leg, and state that fills are simulated against displayed quotes and sizes only.
 
 ## Recording and replay
 
@@ -223,14 +255,18 @@ loops; malformed data produces `Error`. Neither the daemon nor its web terminal
 exits automatically at replay EOF. The probe retains its readiness/timeout rules
 and stops waiting at EOF if it has not become ready.
 
-**Format v1.** All integers are fixed-width little-endian; signed integers use
+**Format v2.** Writers use version 2; readers accept versions 1 and 2. Version 2
+adds tag 9 for option volume. The header and tags 0–8 are unchanged, so v1 files
+play as before, with volume unknown.
+
+All integers are fixed-width little-endian; signed integers use
 two's complement. Strings are a `u32` byte length followed by those bytes (no
 terminator or encoding conversion). Doubles are IEEE-754 binary64 bits, preserving
 NaN payloads, infinities, subnormals and signed zero. There is no native struct
 padding, locale-dependent text, or lossy numeric conversion.
 
 The uncompressed prefix is eight magic bytes `OPREC\r\n\0`, a `u32` version
-(currently 1), and a `u32` header-payload length. The payload, in order, is:
+(currently 2), and a `u32` header-payload length. The payload, in order, is:
 
 | Field | Encoding |
 | --- | --- |
@@ -256,6 +292,9 @@ prices/sizes/Greeks are binary64, and strings use the encoding above.
 | 4 | Vendor Greeks | id, ts, iv, delta, gamma, vega, theta, rho |
 | 5 | Underlying quote | symbol, ts, bid, ask, last |
 | 6 | Provider status | ts; state (`u8`: Connecting=0, Live=1, Delayed=2, Stale=3, Error=4, Stopped=5); message; underlying |
+| 7 | Underlying official close | symbol; ts; trading year, month, day (three `i32`); price |
+| 8 | Snapshot complete | underlying; ts |
+| 9 | Option volume (v2 only) | id, ts, cumulative contracts |
 
 A zero record length is the clean-end marker, written only after all publishers
 stop and all accepted events drain. It must finish the final frame; bytes after

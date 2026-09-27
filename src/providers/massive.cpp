@@ -46,7 +46,7 @@ MassiveContract parse_contract(object result, MassivePage& page) {
     const std::string_view key = field.unescaped_key();
     value v = field.value();
     object nested;
-    if ((key == "details" || key == "greeks" || key == "last_quote" || key == "underlying_asset") &&
+    if ((key == "details" || key == "greeks" || key == "last_quote" || key == "underlying_asset" || key == "day") &&
         v.get_object().get(nested) != simdjson::SUCCESS) {
       continue;  // Missing objects describe unavailable data, not a failed snapshot.
     }
@@ -83,6 +83,17 @@ MassiveContract parse_contract(object result, MassivePage& page) {
         if (name == "ask_size") c.ask_size = as_double(quote.value());
         if (name == "last_updated") c.quote_ts = as_nanos(quote.value());
         if (name == "timeframe") c.realtime = as_string(quote.value()) == "REAL-TIME";
+      }
+    } else if (key == "day") {
+      for (auto day : nested) {
+        const std::string_view name = day.unescaped_key();
+        if (name == "volume") {
+          double volume = 0.0;
+          if (day.value().get_double().get(volume) == simdjson::SUCCESS &&
+              std::isfinite(volume) && volume >= 0.0) c.volume = volume;
+        } else if (name == "last_updated") {
+          c.volume_ts = as_nanos(day.value());
+        }
       }
     } else if (key == "open_interest") {
       c.has_open_interest = true;
@@ -239,6 +250,7 @@ void MassiveProvider::publish_chain(const std::string& underlying,
     if (c->has_quote) publisher_.quote(id, c->quote_ts, c->bid, c->ask, c->bid_size, c->ask_size, sink);
     else
       publisher_.quote(id, underlying_ts, 0.0, 0.0, 0.0, 0.0, sink);
+    if (c->volume) publisher_.volume(id, c->volume_ts, *c->volume, sink);
     if (c->has_open_interest) publisher_.open_interest(id, c->quote_ts, c->open_interest, sink);
     publisher_.greeks(md::VendorGreeks{id, c->quote_ts, c->iv, c->delta, c->gamma, c->vega, c->theta,
                                        kUnpublished},

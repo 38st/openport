@@ -51,6 +51,17 @@ void SnapshotPublisher::open_interest(md::InstrumentId id, md::Timestamp ts, dou
   last.open_interest = contracts;
 }
 
+void SnapshotPublisher::volume(md::InstrumentId id, md::Timestamp ts, double contracts,
+                                md::EventSink& sink) {
+  if (!std::isfinite(contracts) || contracts < 0.0 || ts <= 0) return;
+  Last& last = last_[id];
+  if (ts < last.volume_ts) return;
+  if (last.volume == contracts && md::trading_date(last.volume_ts) == md::trading_date(ts)) return;
+  sink.publish(md::OptionVolume{id, ts, contracts});
+  last.volume = contracts;
+  last.volume_ts = ts;
+}
+
 void SnapshotPublisher::greeks(const md::VendorGreeks& greeks, md::EventSink& sink) {
   if (!(greeks.iv > 0.0) && !std::isnan(greeks.iv)) return;
   Last& last = last_[greeks.id];

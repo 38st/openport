@@ -307,6 +307,7 @@ int run(int argc, char** argv) {
                        quotes[e.id] = e;
                      },
                      [&](md::OptionTrade&) { ++counts["trades"]; },
+                     [&](md::OptionVolume&) { ++counts["volume"]; },
                      [&](md::OpenInterest&) { ++counts["open interest"]; },
                      [&](md::VendorGreeks& e) {
                        ++counts["vendor greeks"];

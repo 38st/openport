@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { LiquidityWarning } from "./LiquidityWarning"
 import { api, ApiError } from "../api/client"
 import { useLive } from "../api/live"
 import { useSmileSurface } from "../api/smiles"
@@ -87,7 +88,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   smile?: readonly { strike: number; iv: number | null }[]
   surface?: Surface
 }) {
-  const { accountScope, underlyings, source, replay } = useLive()
+  const { accountScope, underlyings, source, replay, status: feedStatus } = useLive()
   const token = useWriteToken()
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
@@ -330,6 +331,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           </>}
         </div>}
       </fieldset>
+      <LiquidityWarning market={type === "market"} legs={[{ label: `${selection.strike} ${selection.optionType}`, quote, side, quantity: q }]} />
       <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{fill.message}</p>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
         <dt className="text-muted">Estimated premium · {side === "buy" ? "debit" : "credit"}</dt><dd className="text-right tabular">{formatMoney(estimate.premium)}</dd>
@@ -347,7 +349,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         <p className="mb-2 mt-2 text-muted">Quantity × 100 × per-unit Greek, signed by side</p>
         <dl className="grid grid-cols-2 gap-2 tabular sm:grid-cols-4">{(["delta", "gamma", "vega", "theta"] as const).map((key) => <div key={key}><dt className="capitalize text-muted">{key}</dt><dd>{fixed(estimate[key], key === "gamma" ? 4 : 2)}</dd></div>)}</dl>
       </details>
-      {source === "replay" && replay?.demo && <p className="text-xs text-warn">Demo market · simulated prices</p>}
+      {(feedStatus?.provider.simulated || (source === "replay" && replay?.demo)) && <p className="text-xs text-warn">Demo market · simulated prices and volume</p>}
       <p className="text-[11px] text-muted">Estimates use the {type === "limit" ? "limit price" : "current executable quote"}. Fills and fees are determined by the server.{type === "market" ? " Market orders always use IOC." : ""}</p>
       {(!submitted || pending) && <button className={`w-full rounded-md px-3 py-2.5 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50 ${side === "buy" ? "bg-bullish" : "bg-bearish"}`}
         type="submit" aria-label="Submit order" disabled={!valid || blocked || pending}>

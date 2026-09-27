@@ -19,10 +19,10 @@
 namespace openport::md {
 namespace {
 constexpr std::array<char, 8> kMagic{'O', 'P', 'R', 'E', 'C', '\r', '\n', '\0'};
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;
 constexpr std::size_t kMaxRecord = 1024 * 1024;
 using Bytes = std::vector<char>;
-static_assert(std::variant_size_v<Event> == 9, "update the recording codec for new event types");
+static_assert(std::variant_size_v<Event> == 10, "update the recording codec for new event types");
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
 
 template <typename To, typename From>
@@ -217,7 +217,7 @@ void encode_event(Bytes& bytes, Timestamp received, const Event& event) {
           } else if constexpr (std::is_same_v<T, OptionTrade>) {
             e.number(v.price);
             e.number(v.size);
-          } else if constexpr (std::is_same_v<T, OpenInterest>) {
+          } else if constexpr (std::is_same_v<T, OpenInterest> || std::is_same_v<T, OptionVolume>) {
             e.number(v.contracts);
           } else if constexpr (std::is_same_v<T, VendorGreeks>) {
             e.number(v.iv);
@@ -235,11 +235,11 @@ void encode_event(Bytes& bytes, Timestamp received, const Event& event) {
   for (int i = 0; i < 4; ++i) bytes[start + i] = static_cast<char>((length >> (8 * i)) & 0xff);
 }
 
-RecordedEvent decode_event(std::span<const char> bytes) {
+RecordedEvent decode_event(std::span<const char> bytes, std::uint32_t version) {
   Decoder d(bytes);
   RecordedEvent out;
   out.received = d.number<Timestamp>();
-  switch (d.byte(8)) {
+  switch (d.byte(version == 1 ? 8 : 9)) {
     case 0: {
       ContractDefinition v;
       v.id = d.number<InstrumentId>();
@@ -296,6 +296,9 @@ RecordedEvent decode_event(std::span<const char> bytes) {
       out.event = std::move(v);
       break;
     }
+    case 9:
+      out.event = OptionVolume{d.number<InstrumentId>(), d.number<Timestamp>(), d.number<double>()};
+      break;
   }
   d.finish();
   return out;
@@ -473,8 +476,8 @@ struct RecordingReader::Impl {
     if (file.gcount() != static_cast<std::streamsize>(prefix.size())) invalid("truncated header");
     if (!std::equal(kMagic.begin(), kMagic.end(), prefix.begin())) invalid("invalid magic");
     Decoder d(std::span<const char>(prefix).subspan(8));
-    const auto version = d.number<std::uint32_t>();
-    if (version != kVersion) invalid("unsupported format version " + std::to_string(version));
+    version = d.number<std::uint32_t>();
+    if (version != 1 && version != kVersion) invalid("unsupported format version " + std::to_string(version));
     const auto length = d.number<std::uint32_t>();
     if (length > kMaxRecord) invalid("header exceeds 1 MiB limit");
     Bytes data(length);
@@ -528,6 +531,7 @@ struct RecordingReader::Impl {
   std::ifstream file;
   std::streampos body;
   RecordingHeader header;
+  std::uint32_t version = 0;
   std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> context{ZSTD_createDCtx(), ZSTD_freeDCtx};
   std::array<char, 64 * 1024> compressed{};
   std::array<char, 128 * 1024> decoded{};
@@ -568,7 +572,7 @@ std::optional<RecordedEvent> RecordingReader::next() {
   }
   if (length > kMaxRecord) invalid("record exceeds 1 MiB limit");
   if (!p.read(p.record, length)) return truncated();
-  return decode_event(p.record);
+  return decode_event(p.record, p.version);
 }
 void RecordingReader::rewind() {
   auto& p = *impl_;

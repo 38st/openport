@@ -248,4 +248,39 @@ TEST(Databento, QuotesReportLiveOnlyForTheirUnderlyingAfterReconnect) {
   EXPECT_EQ(statuses[0].underlying, "SPY");
 }
 
+
+TEST(Databento, TradeVolumeSumsPerContractAndResetsAtTheTradingDateRoll) {
+  Collector sink;
+  providers::DatabentoMapper mapper(sink);
+  mapper.on_definition(definition(42, "SPXW  261005P07405000", db::InstrumentClass::Put));
+  mapper.on_definition(definition(43, "SPXW  261005C07800000", db::InstrumentClass::Call));
+  const auto trade = [&](std::uint32_t id, md::Date day, int hour, std::uint32_t size) {
+    db::TradeMsg msg{};
+    stamp(msg, db::RType::Mbp0, id, static_cast<std::uint64_t>(md::new_york_to_utc(day, hour, 0)));
+    msg.price = kScale;
+    msg.size = size;
+    mapper.on_trade(msg);
+  };
+  trade(42, {2026, 9, 22}, 15, 3);
+  trade(42, {2026, 9, 22}, 16, 4);
+  trade(43, {2026, 9, 22}, 16, 9);
+  mapper.reset_health();  // reconnect does not erase session totals
+  trade(42, {2026, 9, 22}, 16, 2);
+  trade(42, {2026, 9, 22}, 21, 1);  // following trading date, before midnight
+  trade(42, {2026, 9, 23}, 1, 5);   // midnight does not reset it
+  trade(42, {2026, 9, 23}, 0, 2);   // late same-day print still adds to the total
+  trade(43, {2026, 9, 23}, 2, 1);   // each contract resets independently
+  trade(42, {2026, 9, 22}, 16, 100);  // late prior-day print must not roll back
+  trade(999, {2026, 9, 23}, 2, 100);  // unknown contract
+  const auto volumes = sink.all<md::OptionVolume>();
+  ASSERT_EQ(volumes.size(), 8u);
+  for (std::size_t i = 0; i < volumes.size(); ++i) {
+    EXPECT_EQ(volumes[i].contracts, (std::vector<double>{3, 7, 9, 9, 1, 6, 8, 1})[i]);
+  }
+  EXPECT_EQ(volumes[2].id, 1u);
+  EXPECT_EQ(volumes[6].id, 0u);
+  EXPECT_EQ(volumes[6].ts, md::new_york_to_utc({2026, 9, 23}, 1, 0));
+  EXPECT_EQ(volumes.back().id, 1u);
+}
+
 }  // namespace

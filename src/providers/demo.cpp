@@ -151,6 +151,7 @@ struct Listed {
   Quote last;
   double bid_size = 0;
   double ask_size = 0;
+  double volume = 0;
 };
 
 const Scenario& script_for(DemoDay day) {
@@ -368,6 +369,15 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
           listed.bid_size = q.bid > 0 ? std::floor((index ? 5 : 20) + scale * draw(seed, listed.id, 2 * step)) : 0;
           listed.ask_size = std::floor((index ? 5 : 20) + scale * draw(seed, listed.id, 2 * step + 1));
         }
+        // Separate draws preserve every existing price, quote and size for this seed.
+        if (step > 0) {
+          const double distance = std::log(c.strike / price) / 0.01;
+          const double activity = 20.0 * std::exp(-0.5 * distance * distance) / (1 + years * 365);
+          const double pace = 0.8 + std::exp(-progress / 0.06) + std::exp(-(1 - progress) / 0.08);
+          listed.volume += activity * pace * static_cast<double>(w.step) / kStep *
+              (0.5 + draw(seed ^ 0x564F4C554D45ull, listed.id, static_cast<std::uint64_t>(step)));
+        }
+        publisher.volume(listed.id, now, std::floor(listed.volume), sink);
         publisher.quote(listed.id, now, q.bid, q.ask, listed.bid_size, listed.ask_size, sink);
         seen.insert(listed.id);
       }

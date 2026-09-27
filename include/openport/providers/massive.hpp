@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -31,6 +32,8 @@ struct MassiveContract {
 
   bool has_open_interest = false;
   double open_interest = 0.0;
+  std::optional<double> volume;
+  md::Timestamp volume_ts = 0;
 
   double iv = 0.0;  ///< decimal; 0 when Massive returns none (e.g. deep in the money)
   double delta = 0.0;

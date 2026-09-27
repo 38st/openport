@@ -28,6 +28,8 @@ struct OptionState {
   double ask_size = 0.0;
   md::Timestamp quote_ts = 0;
 
+  double volume = std::numeric_limits<double>::quiet_NaN();
+  md::Timestamp volume_ts = 0;
   double open_interest = 0.0;
   md::VendorGreeks vendor;  ///< vendor.iv == 0 when the provider sent none
 

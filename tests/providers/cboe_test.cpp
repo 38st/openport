@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <limits>
 #include <string>
 #include <tuple>
@@ -662,6 +663,42 @@ TEST(CboeHolidays, TheScheduleIsFetchedDailyAndKeepsWhatItSaw) {
   EXPECT_EQ(received[1].size(), 13u);
   EXPECT_EQ(received[1][8], (md::ScheduledDay{{2026, 10, 7}, "National Day of Mourning", true, 13, 0}));
 }
+
+TEST(Cboe, PublishesReportedVolumeIncludingZeroAndDeduplicatesWithinTheDate) {
+  providers::CboeDelayedProvider provider;
+  Collector sink;
+  auto chain = providers::parse_cboe_chain(kChain);
+  provider.publish_chain(chain, {}, sink);
+  auto volumes = sink.all<md::OptionVolume>();
+  ASSERT_EQ(volumes.size(), 3u);
+  EXPECT_EQ(volumes[0].contracts, 873);
+  EXPECT_EQ(volumes[1].contracts, 1204);
+  EXPECT_EQ(volumes[2].contracts, 0);
+  const auto first_time = volumes[0].ts;
+  sink.events.clear();
+  provider.publish_chain(chain, {}, sink);
+  EXPECT_TRUE(sink.all<md::OptionVolume>().empty());
+  chain.as_of += md::kNanosPerDay;
+  provider.publish_chain(chain, {}, sink);
+  volumes = sink.all<md::OptionVolume>();
+  ASSERT_EQ(volumes.size(), 3u);
+  EXPECT_GT(volumes[0].ts, first_time);
+}
+
+TEST(Cboe, AbsentNullAndNegativeVolumesStayUnknown) {
+  for (const std::string field : {"", ",\"volume\":null", ",\"volume\":-1"}) {
+    const auto chain = providers::parse_cboe_chain(
+        "{\"timestamp\":\"2026-09-22 19:33:00\",\"symbol\":\"SPX\",\"data\":{\"options\":["
+        "{\"option\":\"SPXW261005C07800000\"" + field + "}]}}");
+    ASSERT_EQ(chain.options.size(), 1u);
+    EXPECT_TRUE(std::isnan(chain.options[0].volume));
+    providers::CboeDelayedProvider provider;
+    Collector sink;
+    provider.publish_chain(chain, {}, sink);
+    EXPECT_TRUE(sink.all<md::OptionVolume>().empty());
+  }
+}
+
 }  // namespace
 
 TEST(CboeCharts, PublishedIndexShapesSkipZeroMinutesAndKeepDailyCloseOnlyRows) {

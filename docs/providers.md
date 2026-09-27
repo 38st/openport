@@ -62,6 +62,7 @@ style, multiplier and the nonstandard-contract flag.
 | `ContractDefinition` | Assign a stable, dense, per-feed `InstrumentId`. Publish its definition before any event referring to that ID. Definitions are ordering barriers in the queue. |
 | `OptionQuote` | Best bid and offer, with sizes in contracts. A zero price means no quote on that side, not an executable free option. Preserve missing sides and sizes; never manufacture liquidity. |
 | `OptionTrade` | A reported execution price and size, not an inferred mid-price trade. Trades may be dropped under queue overload; quote state is retained. |
+| `OptionVolume` | Cumulative contracts traded in the trading date of `ts`, not an increment. Publish only finite nonnegative counts with a known market timestamp. Snapshot deduplication retains equal totals across trading-date changes. |
 | `OpenInterest` | The vendor's reported contract count. Missing OI is not zero OI: publish only what is known. |
 | `VendorGreeks` | Comparison values, not OpenPort's pricing inputs. IV is decimal, gamma per dollar of underlying, vega per vol point, theta per calendar day and rho per 1% of rate, all per unit of underlying. Use NaN for an unpublished field or undocumented unit. |
 | `UnderlyingQuote` | The underlying's bid, ask and/or last, on its own market clock. An index's old closing print must not acquire the options' newer overnight timestamp. If no underlying price is supplied, leave it absent; analytics can infer spot from parity. |
@@ -112,7 +113,8 @@ underlying. The loop continues with other underlyings after a failure.
 
 Fetch and validate every required page or root before publishing the completed
 chain. `SnapshotPublisher::define()` emits each definition once; `quote()`,
-`open_interest()` and `greeks()` suppress unchanged values. Track the IDs present
+`open_interest()`, `volume()` and `greeks()` suppress unchanged values. Volume is
+republished on a trading-date change even when the count is the same. Track the IDs present
 and call `finish(underlying, seen, market_time, sink)` only after a successful,
 complete snapshot. It clears quotes absent from that snapshot for that underlying
 and sends `SnapshotComplete`. A failed page must not retire the previous complete

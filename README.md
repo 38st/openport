@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **697 C++ and 393 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **709 C++ and 412 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -47,9 +47,10 @@ with generated prices labelled as simulated on every page:
 ### Market analytics
 
 - **Chain**: bid, ask and mid with bid/mid/ask IV, delta, gamma, vega, theta, vanna and
-  open interest per strike, centred on the money, with the provider's own IV alongside
-  where it publishes one. SPX (AM-settled) and SPXW (PM-settled) expiring on the same
-  day stay separate. Missing quotes and open interest show as missing, never as zero,
+  open interest and the session's volume per strike, with each side's spread and a
+  liquidity cue, centred on the money, with the provider's own IV alongside where it
+  publishes one. SPX (AM-settled) and SPXW (PM-settled) expiring on the same day stay
+  separate. Missing quotes, volume and open interest show as missing, never as zero,
   with coverage counts per expiry. The chain opens on the nearest expiry before its
   auto-close and counts down to it on the market-data clock.
 - **Smile and term structure**: out-of-the-money smile per expiry with its SVI fit and
@@ -71,7 +72,8 @@ with generated prices labelled as simulated on every page:
   and brackets whose stop-loss and take-profit cancel each other. GTC orders wait
   outside the regular session and last until the contract's last trade or auto-close.
   Working orders change in place: size, limit or trigger level. Entry notes and tags
-  follow the trades into the Journal.
+  follow the trades into the Journal. Tickets warn on thin liquidity without blocking;
+  market orders show the displayed size they take against.
 - **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
   and diagonals) picked on the chain, or built from a template such as a 10-wide put
   spread at 15 delta or a condor one expected move out, with presets saved in the
@@ -236,7 +238,7 @@ recording all day.
 
 | Provider | `--provider` | Data | Key |
 | --- | --- | --- | --- |
-| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with open interest and Cboe's Greeks, polled every 15 s from Cboe's data files, or about once a minute from its quote pages when the files fall behind | none |
+| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with session volume, open interest and Cboe's Greeks, polled every 15 s from Cboe's data files, or about once a minute from its quote pages when the files fall behind | none |
 | Databento | `databento` | Real-time OPRA consolidated quotes (`cbbo-1s` or `cmbp-1`), trades and open interest, streamed | `DATABENTO_API_KEY` |
 | Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
@@ -259,8 +261,8 @@ using either feed for paper trading.
 
 Providers deliver very different things: Databento sends raw exchange quotes with no
 Greeks and no underlying price, while others ship their own Greeks. OpenPort normalises
-all of them into the same contracts, quotes and open interest, then computes everything
-itself, so the numbers mean the same thing whichever provider you use.
+all of them into the same contracts, quotes, volume and open interest, then computes
+everything itself, so the numbers mean the same thing whichever provider you use.
 
 To add a feed, see [writing a provider adapter](docs/providers.md).
 
@@ -367,7 +369,7 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 | --- | --- |
 | `GET /api/status` | Provider, market and per-underlying sessions, feed health, engine counters |
 | `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX, coverage and `last_trade` / `auto_close` UTC ISO times |
-| `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks and early-exercise premium |
+| `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks, early-exercise premium and `volume` (session contracts or null); coverage includes `volume` |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
 | `GET /api/underlyings/{symbol}/surface?expiries=12` | Smile points per expiry |
 | `GET /api/underlyings/{symbol}/volatility` | Current model-free IV, ATM and skew, term ratios, realized volatility and cones, VRP and implied session moves, with sources and missing-value reasons |
@@ -457,6 +459,7 @@ exists; GitHub tags the commit when you publish the draft.
       solver, Cox-Ross-Rubinstein and Leisen-Reimer trees
 - [x] Providers: Cboe, Databento, Massive, ThetaData, Tradier and tastytrade, with
       record and replay of any feed; broker adapters await live-account validation
+- [x] Chain liquidity: session volume, spread percentages and ticket warnings
 - [x] Chain analytics: parity forwards, IV and Greeks, SVI surfaces, GEX and VEX, and
       de-Americanised IV for equity options
 - [x] Paper trading against live quotes: risk limits, scenarios, index and American

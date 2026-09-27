@@ -8,6 +8,7 @@ import { Flash } from "../components/Flash"
 import { CoverageBadge, Empty, Panel, Segmented, Stat } from "../components/ui"
 import { expiryCoverage } from "../lib/coverage"
 import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format"
+import { liquidity, liquidityDetail, spreadShare, volumeOiRatio } from "../lib/liquidity"
 import { matchingPayload } from "../lib/payload"
 import { americanApproximation, rateSourceHint } from "../lib/model"
 import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
@@ -47,6 +48,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const version = live.version(symbol)
   const [window, setWindow] = useState(0.05)
   const [showGreeks, setShowGreeks] = useState(false)
+  const [showLiquidity, setShowLiquidity] = useState(true)
   const [ticket, setTicket] = useState<TicketSelection | null>(null)
   // Strategy mode collects up to four legs from the chain for one multi-leg order.
   const [mode, setMode] = useState<"single" | "strategy">("single")
@@ -115,7 +117,10 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const e = data?.expiry
   const summaryExpiry = expiries.find((item) => item.id === selected)
   const countdown = autoCloseCountdown(summaryExpiry, now)
-  const coverage = expiryCoverage(e?.coverage === undefined ? summaryExpiry?.coverage : e.coverage)
+  const counts = e?.coverage === undefined ? summaryExpiry?.coverage : e.coverage
+  const baseCoverage = expiryCoverage(counts)
+  const coverage = baseCoverage && counts?.volume != null ? { ...baseCoverage,
+    label: `${baseCoverage.label} · Vol ${count(counts.volume)}/${count(counts.options)}` } : baseCoverage
   const deamericanized = e?.deamericanized ?? summaryExpiry?.deamericanized
   const approximation = americanApproximation(symbol, summaryData.american_approximation, e?.style ?? summaryExpiry?.style, deamericanized)
   return (
@@ -146,7 +151,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
 
       <div className={docked && (ticket || strategyOpen) ? "grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_24rem]" : ""}>
       <Panel
-        title={e ? `${symbol} ${e.expiry} ${e.settlement}` : symbol}
+        title={<>{e ? `${symbol} ${e.expiry} ${e.settlement}` : symbol}{(live.status?.provider.simulated || (live.source === "replay" && live.replay?.demo)) && <span className="text-warn"> · simulated prices and volume</span>}</>}
         actions={
           <>
             <CoverageBadge coverage={coverage} />
@@ -154,6 +159,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
               options={[{ value: "single", label: "Single" }, { value: "strategy", label: "Strategy" }]} />}
             {live.trading && mode === "strategy" && <button type="button" className="trade-button" disabled={!data} onClick={() => setTemplatesOpen(true)}>Templates</button>}
             <Segmented label="Strike window" value={window} options={windows} onChange={setWindow} />
+            <button type="button" className="trade-button" aria-pressed={showLiquidity} onClick={() => setShowLiquidity((value) => !value)}>Liquidity columns</button>
             <Segmented
               label="Columns"
               value={showGreeks ? "greeks" : "quotes"}
@@ -167,7 +173,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         }
       >
         {data ? (
-          <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} provider={provider}
+          <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} showLiquidity={showLiquidity} provider={provider}
             selected={highlighted} held={held}
             onQuote={live.trading ? (quote, row, optionType, cell) => {
               if (!quote.tradable || !quote.symbol) { setUntradable(quote.untradable_reason ?? "Contract unavailable for paper trading"); return }
@@ -232,10 +238,14 @@ interface Column {
   title: string
   render: (o: OptionQuote) => React.ReactNode
   greek?: boolean
+  liquidity?: boolean
 }
 
 function columns(provider: string): Column[] {
   return [
+    { key: "volume", label: "Vol", title: "Session volume (contracts); hover for volume / OI", liquidity: true, render: (o) => <span title={`Volume / OI: ${fixed(volumeOiRatio(o), 2)}`}>{count(o.volume)}</span> },
+    { key: "spread", label: "Spr %", title: "Bid-ask spread / quote mid", liquidity: true, render: (o) => pct(spreadShare(o), 1) },
+    { key: "liquidity", label: "Liq", title: "Quote liquidity: good, thin or none", liquidity: true, render: (o) => <span className={liquidity(o).cue === "good" ? "text-bullish" : "text-warn"} title={liquidityDetail(o)}>{liquidity(o).cue}</span> },
     { key: "oi", label: "OI", title: "Open interest (contracts)", render: (o) => count(o.oi) },
     { key: "delta", label: "Δ", title: "Delta per unit of underlying", render: (o) => fixed(o.delta, 3) },
     { key: "gamma", label: "Γ", title: "Gamma per $1 of spot", render: (o) => fixed(o.gamma, 5), greek: true },
@@ -260,6 +270,7 @@ function ChainTable({
   forward,
   atmStrike,
   showGreeks,
+  showLiquidity,
   provider,
   onQuote,
   selected = null,
@@ -269,6 +280,7 @@ function ChainTable({
   forward: number | null
   atmStrike: number | null
   showGreeks: boolean
+  showLiquidity: boolean
   provider: string
   onQuote?: (quote: OptionQuote, row: ChainRow, type: "call" | "put", cell: "bid" | "ask") => void
   /** Cells in the ticket, by canonical OSI: the side each contract trades on. */
@@ -276,7 +288,7 @@ function ChainTable({
   /** Held quantity by canonical OSI, marked beside the strike. */
   held?: Map<string, number>
 }) {
-  const all = columns(provider).filter((c) => showGreeks || !c.greek)
+  const all = columns(provider).filter((c) => (showGreeks || !c.greek) && (showLiquidity || !c.liquidity))
   const callColumns = all
   const putColumns = [...all].reverse()
   const cell = "px-2 py-1 text-right tabular whitespace-nowrap"

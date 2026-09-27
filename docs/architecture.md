@@ -31,7 +31,7 @@ flowchart LR
 | Piece | Where | What it does |
 | --- | --- | --- |
 | Pricing | `src/pricing` | Black-76 and Black-Scholes-Merton with full Greeks, a safeguarded implied-volatility solver (Newton in log-price from a Corrado-Miller guess, bisection fallback), Cox-Ross-Rubinstein and Leisen-Reimer trees |
-| Market data | `src/md`, `src/providers` | One event vocabulary (`md::Event`: definitions, quotes, trades, open interest, underlying prints and official closes, complete snapshots, status) behind every provider adapter; contracts parsed from OSI symbols with their settlement and exercise conventions; product sessions and the holiday calendar; recording and replay |
+| Market data | `src/md`, `src/providers` | One event vocabulary (`md::Event`: definitions, quotes, trades, session volume, open interest, underlying prints and official closes, complete snapshots, status) behind every provider adapter; contracts parsed from OSI symbols with their settlement and exercise conventions; product sessions and the holiday calendar; recording and replay |
 | Queue | `md::EventQueue` | Keeps the latest value per contract while the engine is busy; definitions are ordering barriers and only trades may be dropped under overload |
 | Analytics | `src/analytics` | Per expiry: a weighted put-call parity fit for the forward and discount factor, IVs and Greeks on that forward, de-Americanised IVs for equity options, SVI and SSVI surfaces with arbitrage checks, dealer gamma and vanna exposure, and lazy current volatility metrics |
 | Simulator | `src/trading` | `TradingSession`, a deterministic reducer per account: orders, fills against displayed quotes with optional slippage, risk limits, buying power with strategy or portfolio margin, evaluation rules, settlement, exercise and assignment, and P&L attribution by Greek |
@@ -73,8 +73,8 @@ flowchart LR
 - **Market time, not wall time.** Freshness, sessions, expiry and the trading date
   all run on the market data's clock, which is why the same code serves delayed
   feeds, live feeds, replays and the demo market.
-- **Missing is not zero.** Quotes, open interest and Greeks that are absent stay
-  absent, with coverage counts, rather than defaulting to zero.
+- **Missing is not zero.** Absent quotes, session volume, open interest and Greeks
+  stay absent, with coverage counts, rather than defaulting to zero.
 - **Exact money.** Cash, fills and P&L are signed 64-bit micro-dollars; floating point
   is for analytics only.
 - **Fail closed.** A stalled feed, a stale quote or a damaged journal refuses new
@@ -82,7 +82,7 @@ flowchart LR
 
 ## Tests
 
-697 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+709 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 295 Vitest cases cover the
 terminal. CI builds with GCC 13 on Ubuntu and Apple Clang on macOS, both with warnings

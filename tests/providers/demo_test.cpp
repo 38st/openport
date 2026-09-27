@@ -30,12 +30,15 @@ bool on_tick(const std::string& root, double price) {
 struct Day {
   std::size_t events = 0;
   double checksum = 0;
+  double volume_checksum = 0;
 };
 Day summary(const std::filesystem::path& path) {
   md::RecordingReader reader(path);
   Day day;
   for (auto event = reader.next(); event; event = reader.next()) {
     ++day.events;
+    if (const auto* volume = std::get_if<md::OptionVolume>(&event->event))
+      day.volume_checksum += volume->contracts * (volume->id + 1);
     if (const auto* q = std::get_if<md::OptionQuote>(&event->event)) day.checksum += q->bid + 2 * q->ask + q->bid_size;
     if (const auto* u = std::get_if<md::UnderlyingQuote>(&event->event)) day.checksum += u->last;
   }
@@ -128,6 +131,8 @@ TEST(DemoMarket, IsTheSameDayEveryTimeAndOnlyOnTradingDays) {
   const auto second = summary(b);
   EXPECT_EQ(first.events, second.events);
   EXPECT_EQ(first.checksum, second.checksum);
+  EXPECT_GT(first.volume_checksum, 0);
+  EXPECT_EQ(first.volume_checksum, second.volume_checksum);
   // It never overwrites a file.
   EXPECT_ANY_THROW(providers::write_demo_recording(a));
   std::filesystem::remove(a);
@@ -204,6 +209,7 @@ std::uint64_t recording_hash(const std::filesystem::path& path) {
   const auto bits = [](double v) { std::uint64_t n = 0; std::memcpy(&n, &v, sizeof n); return n; };
   md::RecordingReader reader(path);
   while (const auto e = reader.next()) {
+    if (std::holds_alternative<md::OptionVolume>(e->event)) continue;
     mix(static_cast<std::uint64_t>(e->received));
     mix(e->event.index());
     if (const auto* q = std::get_if<md::OptionQuote>(&e->event)) {
@@ -233,4 +239,37 @@ TEST(DemoMarket, LegacyRecordingsAreUnchanged) {
     std::filesystem::remove(path);
   }
 }
+
+TEST(DemoMarket, SimulatedVolumeRisesAndFavoursNearMoneyAndFrontExpiry) {
+  const auto path = temporary("volume");
+  providers::write_demo_recording(path);
+  md::RecordingReader reader(path);
+  std::map<md::InstrumentId, md::OptionContract> definitions;
+  std::map<md::InstrumentId, double> latest;
+  while (const auto event = reader.next()) {
+    if (const auto* definition = std::get_if<md::ContractDefinition>(&event->event)) {
+      definitions[definition->id] = definition->contract;
+    } else if (const auto* volume = std::get_if<md::OptionVolume>(&event->event)) {
+      ASSERT_GE(volume->contracts, latest[volume->id]);
+      EXPECT_EQ(volume->contracts, std::floor(volume->contracts));
+      latest[volume->id] = volume->contracts;
+    }
+  }
+  double near = 0, far = 0, back = 0;
+  for (const auto& [id, contract] : definitions) {
+    if (contract.underlying != "SPX" || contract.type != pricing::OptionType::Call) continue;
+    if (contract.expiry == md::Date{2026, 9, 16}) {
+      if (contract.strike == 6000) near = latest[id];
+      if (contract.strike == 6180) far = latest[id];
+    } else if (contract.expiry == md::Date{2026, 9, 25} && contract.strike == 6000) {
+      back = latest[id];
+    }
+  }
+  EXPECT_GT(near, far);
+  EXPECT_GT(near, back);
+  EXPECT_GT(back, 0);
+  EXPECT_EQ(latest.size(), definitions.size());
+  std::filesystem::remove(path);
+}
+
 }  // namespace

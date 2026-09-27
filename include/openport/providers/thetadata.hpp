@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -11,7 +12,7 @@
 namespace openport::providers {
 
 /// One row from any ThetaData v3 option snapshot endpoint. Each endpoint fills in
-/// its own fields; the rest stay zero.
+/// its own fields; volume remains absent unless supplied.
 struct ThetaRow {
   std::string root;  ///< ThetaData's "symbol" for an option: the OCC root, e.g. "SPXW"
   md::Date expiry;
@@ -23,6 +24,7 @@ struct ThetaRow {
   double ask = 0.0;
   double bid_size = 0.0;
   double ask_size = 0.0;
+  std::optional<double> volume;  ///< only when the response supplies day volume
   double open_interest = 0.0;     // open_interest
   double implied_vol = 0.0;       // greeks_implied_volatility
   double underlying_price = 0.0;  // greeks_implied_volatility

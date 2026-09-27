@@ -107,7 +107,7 @@ class EventQueue final : public EventSink {
 
   struct Latest {
     std::uint64_t generation = 0;
-    std::array<std::size_t, 3> positions{kNone, kNone, kNone};
+    std::array<std::size_t, 4> positions{kNone, kNone, kNone, kNone};
   };
 
   struct Spot {
@@ -128,6 +128,9 @@ class EventQueue final : public EventSink {
     } else if (const auto* interest = std::get_if<OpenInterest>(&event)) {
       id = interest->id;
       kind = 2;
+    } else if (const auto* volume = std::get_if<OptionVolume>(&event)) {
+      id = volume->id;
+      kind = 3;
     } else if (const auto* spot = std::get_if<UnderlyingQuote>(&event)) {
       // Settlement consumers need the first closing print, not the last in a drain.
       if (preserve_spot_prints_) return nullptr;
