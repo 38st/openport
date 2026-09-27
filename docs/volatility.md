@@ -345,3 +345,37 @@ means overlapping forward 21-session windows, one starting each session, not
 independent calendar-month observations. SPY uses both SPX implied history and
 SPX daily closes; it does not claim an ETF-specific realized premium. No series
 is extrapolated to create a ten-year result.
+
+
+## Terminal brief
+
+Brief combines the selected underlying's summary, volatility, daily series and candles.
+The header's symbol buttons select the underlying. Only that symbol is requested;
+summary and volatility follow snapshot versions, while candle and close history update
+at most once per market minute and poll for backfills. No aggregate route is needed.
+
+The clock is the underlying's market timestamp. The engine's trading date identifies
+the coming session overnight. Prior OHLC uses the previous-close date from the engine
+when available; otherwise the latest available earlier daily bar is dated explicitly.
+Daily bars may have incomplete observed coverage. The overnight range uses observed
+minute bars from 20:15 ET on the preceding calendar evening through 09:30 ET, clipped
+to market time. No candles means no range. Parity-inferred spot keeps its ≈ label.
+
+Today's move uses the same-day expiry estimate. With no same-day expiry it uses that
+session's share of the front interval. The remaining week's move includes today and
+combines the supplied session percentage variances through Friday, then converts to
+points at current spot. Holidays have no session row. An unusable session leaves the
+week missing. Bands centre those point moves on current spot; they are model estimates.
+Shared, proxy and truncated estimates stay marked. Events are only the supplied labels
+on remaining sessions; the API does not retain today's label after its close.
+
+IV and risk-reversal changes require the exact prior session's daily series row. No
+older row or index proxy fills a gap. Sample time is shown because a daily row can be
+the last observed minute rather than a closing quote. Replays and demo runs have no
+local series store, so these changes normally remain unavailable there. Ratios above
+one mark backwardation. Exposure keeps the README's open-interest convention caveat.
+
+The browser can remember a toggle to draw Brief levels on Trade's candle chart. It
+uses the same level lines and edge markers as strikes and triggers. Coincident Brief
+levels share one label; unavailable levels are omitted. The overlay fetches only while
+the chart is visible and enabled, and does not fetch IV history.

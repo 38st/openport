@@ -10,11 +10,12 @@ import { AccountSwitcher } from "./AccountSwitcher"
 import { Badge, Meter, toneOf, toneText } from "./ui"
 
 export const viewLabels: Record<View, string> = {
-  dashboard: "Dashboard", chain: "Trade", positions: "Positions", orders: "Orders", journal: "Journal",
+  brief: "Brief", dashboard: "Dashboard", chain: "Trade", positions: "Positions", orders: "Orders", journal: "Journal",
   rules: "Rules", payouts: "Payouts", smile: "Volatility", exposure: "Exposure", replay: "Replay", engine: "Status",
 }
 
 const icons: Partial<Record<View, ReactNode>> = {
+  brief: <path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5" />,
   dashboard: <path d="M4 13h6V4H4zm10 7h6v-9h-6zM4 20h6v-4H4zm10-11h6V4h-6z" />,
   chain: <path d="M4 18V6m0 12h16M8 14l3-3 3 2 5-6" />,
   positions: <path d="M12 3 3 8l9 5 9-5-9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5" />,

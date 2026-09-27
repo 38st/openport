@@ -1,9 +1,9 @@
 import { useCallback, useSyncExternalStore } from "react"
 
-export const views = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts", "smile", "exposure", "replay", "engine"] as const
+export const views = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts", "smile", "exposure", "replay", "engine", "brief"] as const
 export type View = (typeof views)[number]
-/** Sidebar order; keys 1-7 switch between them. */
-export const primaryViews = ["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts"] as const satisfies readonly View[]
+/** Sidebar order; number keys switch between them. */
+export const primaryViews = ["dashboard", "chain", "positions", "orders", "journal", "rules", "brief", "payouts"] as const satisfies readonly View[]
 /** Market analytics sit beside the chain as the Trade page's tabs. */
 export const tradeViews = ["chain", "smile", "exposure"] as const satisfies readonly View[]
 /** Pages that exist only with a paper-trading server. */

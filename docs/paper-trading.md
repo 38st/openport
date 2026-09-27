@@ -1306,6 +1306,22 @@ alone does not end the banner. A connected tick replaces the terminal's breaker
 state; REST supplies it before the first tick and while disconnected. Older servers
 without the object show no banner.
 
+The Brief page shows the selected account's plan, attempt, floor and effective soft
+floor, closest recorded floor approach, guardrails, pending changes and open holdings
+and orders. Its loss allowance is the smallest of daily-loss limit minus current daily
+loss, equity minus the soft floor, and equity minus the plan floor. Disabled limits
+are excluded, exhausted allowance is zero, and incomplete or mixed-version valuations
+leave it unavailable. These are exact decimal-string calculations for display; the
+server still enforces all trading rules. Position deadlines use the contract's last
+trade and the selected plan's cutoff, including AM settlement on the following day.
+
+Brief edits the trading day's plan through the regular session and prompts for review
+after the close. Session rows identify early closes; without those rows the prompt
+uses 16:00 ET. The next engine trading date starts a new plan. Both fields use the
+existing day-note route, preserving the other field. Drafts stay local until saved and
+are cleared on account, source or date changes. Missing note reads cannot be overwritten
+with an empty note. Read-only runs keep the note visible with saving disabled.
+
 The Journal page edits each trade's note and tags (a strategy's apply to each of its
 legs), filters every panel by tag and reports P&L by tag. Alerts belong to the web
 terminal alone: price alerts on an underlying and alerts on each new fill are kept in

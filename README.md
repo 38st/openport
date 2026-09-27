@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **746 C++ and 417 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **746 C++ and 452 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -67,6 +67,11 @@ with generated prices labelled as simulated on every page:
 
 ### Trading terminal
 
+- **Brief**: prior-session and observed overnight levels, implied moves and bands,
+  volatility changes, positioning and supplied events for the selected underlying,
+  beside the account's floor room, loss allowance, guardrails and open positions.
+  Plan before the open and review after the close on market time, including replay.
+  Key levels can be drawn on Trade's chart, with the choice saved in the browser.
 - **Trade**: the chain with an order ticket docked beside it, and a candle chart of the
   underlying (one-minute to daily, backfilled from Cboe's free history) showing your
   strikes, armed triggers and the selected expiry's expected move.
@@ -134,8 +139,8 @@ with generated prices labelled as simulated on every page:
 - **Broker data**: Tradier snapshot polling and tastytrade DXLink streams, for
   traders whose brokerage account includes real-time option data; credentials stay
   in the environment and neither adapter can place orders.
-- Light and dark themes, keyboard shortcuts (number keys switch pages, arrows step
-  expiries).
+- Light and dark themes, keyboard shortcuts (number keys follow the sidebar: Brief
+  is 7 with a paper account, 2 on analytics-only servers; arrows step expiries on Trade).
 
 ## Paper trading
 
@@ -510,6 +515,7 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] Cboe's delayed data from its new host, following redirects if it moves again
 - [x] Current model-free IV, ATM/skew, realized volatility, cones and implied session moves
 - [x] Local volatility history, IV rank and percentile, labelled index proxies and ex-post VRP
+- [x] Morning brief with market levels, account allowance, day notes and chart overlays
 
 ## License
 

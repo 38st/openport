@@ -15,6 +15,7 @@ import { payoutsVisible } from "./lib/payouts"
 import { accountViews, navigableViews, useRoute } from "./lib/route"
 import { matchingPayload } from "./lib/payload"
 import { defaultExpiry } from "./lib/expiry"
+import { BriefView } from "./views/BriefView"
 import { DashboardView } from "./views/DashboardView"
 import { EngineView } from "./views/EngineView"
 import { JournalView } from "./views/JournalView"
@@ -72,6 +73,7 @@ export function App() {
 
   const waiting = live.status?.feed.message || "Connecting to openportd…"
   const content = view === "dashboard" ? <DashboardView />
+    : view === "brief" ? <BriefView symbol={symbol} />
     : view === "positions" ? <PositionsView />
     : view === "orders" ? <OrdersView />
     : view === "journal" ? <JournalView />

@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useMemo, useState } from "react"
+import { useBriefMarket } from "../api/brief"
+import { saveBriefLevels, useBriefLevels } from "../lib/brief-preferences"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useOpenOrders, usePortfolio } from "../api/trading"
@@ -45,6 +47,8 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
     refetchInterval: 60_000,
     enabled: !prefs.hidden,
   })
+  const showBrief = useBriefLevels()
+  const brief = useBriefMarket(symbol, showBrief && !prefs.hidden, false)
   const positions = usePortfolio().data?.positions
   const orders = useOpenOrders().data?.orders
   const alerts = useAlertSettings().prices
@@ -52,6 +56,7 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
   const levels = useMemo(() => [...chartLevels(symbol, positions ?? [], orders ?? []),
     ...alerts.filter((a) => a.symbol === symbol).map((a): ChartLevel => ({ price: a.level, label: `Alert: ${describeAlert(a)}`, kind: "alert" }))],
   [symbol, positions, orders, alerts])
+  const displayedLevels = showBrief ? [...levels, ...brief.levels] : levels
   const move = expectedMove(spot, expiry?.atm_iv, expiry?.days)
   const band = move != null && isNum(spot) && expiry
     ? { lo: spot - move, hi: spot + move, label: `±1σ by ${expiryLabel(expiry.id)}: ±${price(move)}` }
@@ -68,6 +73,7 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
         </h2>
         <div className="flex flex-wrap items-center gap-2">
           <button type="button" onClick={() => setAlerting(true)} className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">Alert</button>
+          {!prefs.hidden && <label className="flex items-center gap-1 text-xs text-muted"><input type="checkbox" checked={showBrief} onChange={(event) => saveBriefLevels(event.target.checked)} />Brief levels</label>}
           {!prefs.hidden && <Segmented label="Chart interval" value={prefs.interval} options={candleIntervals} onChange={(interval) => update({ interval })} />}
           <button type="button" aria-expanded={!prefs.hidden} onClick={() => update({ hidden: !prefs.hidden })}
             className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">
@@ -78,7 +84,7 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
       {!prefs.hidden && (
         <div className="p-3">
           {bars.length ? (
-            <CandleChart key={`${symbol}/${prefs.interval}`} bars={bars} interval={prefs.interval} levels={levels} band={band}
+            <CandleChart key={`${symbol}/${prefs.interval}`} bars={bars} interval={prefs.interval} levels={displayedLevels} band={band}
               height={height} formatPrice={priceText} label={`${symbol} ${name}`} />
           ) : (
             <div className="flex items-center justify-center px-4 text-center text-sm text-muted" style={{ height }}>
@@ -92,6 +98,7 @@ export function PriceChart({ symbol, spot, expiry }: { symbol: string; spot: num
             {kinds.has("short") && <Key color={levelColors.short} title="Strikes you hold, net short">Short strike</Key>}
             {kinds.has("trigger") && <Key color={levelColors.trigger} title="Armed orders that wait for the underlying to cross a level">Trigger</Key>}
             {kinds.has("alert") && <Key color={levelColors.alert} title="Price alerts set in this browser">Alert</Key>}
+            {showBrief && <Key color={levelColors.brief}>Brief levels</Key>}
             {band && <Key color={bandColor} title={`One standard deviation by ${expiry?.expiry}: spot × ATM IV × √(days / 365)`}>Expected move</Key>}
             <span className="ml-auto text-faint">ET, market-data time · drag to pan, pinch or ⌘/Ctrl-scroll to zoom, double-click to reset</span>
           </div>

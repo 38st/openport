@@ -272,18 +272,18 @@ describe("paper trading fixtures", () => {
     expect(html).not.toContain("at bid")
   })
   it("routes the simulator pages, keeps old Portfolio links and numbers the sidebar", () => {
-    expect(primaryViews).toEqual(["dashboard", "chain", "positions", "orders", "journal", "rules", "payouts"])
+    expect(primaryViews).toEqual(["dashboard", "chain", "positions", "orders", "journal", "rules", "brief", "payouts"])
     expect(parseRoute("#/SPX/portfolio").view).toBe("positions")
     expect(formatRoute({ view: "positions", symbol: "SPX", expiry: null })).toBe("#/SPX/positions")
-    expect(navigableViews(true, false)).toEqual(["dashboard", "chain", "positions", "orders", "journal", "rules"])
-    expect(navigableViews(false, true)).toEqual(["chain"])
+    expect(navigableViews(true, false)).toEqual(["dashboard", "chain", "positions", "orders", "journal", "rules", "brief"])
+    expect(navigableViews(false, true)).toEqual(["chain", "brief"])
     const sidebar = render(<Sidebar view="positions" onView={() => {}} open={false} onClose={() => {}} />)
     expect(sidebar).toContain('title="Positions (3)"')
     // The simulator funds no one: Payouts appears only for an account that is already funded.
     expect(sidebar).not.toContain("Payouts")
     const funded = render(<Sidebar view="positions" onView={() => {}} open={false} onClose={() => {}} />, (client) =>
       client.setQueryData(tradingQueries(0, "17", true).account.queryKey, { ...account, rules: { ...account.rules, phase: "funded" } }))
-    expect(funded).toContain('title="Payouts (7)"')
+    expect(funded).toContain('title="Payouts (8)"')
     expect(sidebar).toContain('aria-current="page"')
     for (const text of ["Intraday 100K", ">active<", "$100,267.50", "+$267.50", "(+0.27%)", "$99,078.70", "Progress to profit target"]) expect(sidebar).toContain(text)
   })

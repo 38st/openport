@@ -22,7 +22,7 @@ export const candleLimit = 600
 export interface ChartLevel {
   price: number
   label: string
-  kind: "long" | "short" | "trigger" | "alert"
+  kind: "long" | "short" | "trigger" | "alert" | "brief"
 }
 
 const shortDay = (expiry: string) =>
