@@ -389,6 +389,29 @@ TEST(Replay, ASpeedChangeRescalesTheWaitInProgressAndThePausedTimeDoesNotCount) 
   replay.stop();
 }
 
+// A drill that starts paused at 1x and is played at 300x must not first sit out the
+// gap it measured at 1x: a speed chosen while paused rescales the wait on resume.
+TEST(Replay, ASpeedChosenWhilePausedAppliesWhenPlayResumes) {
+  const auto file = paced_recording();
+  auto clock = std::make_shared<ManualClock>();
+  providers::ReplayProvider replay({file.path, 1, false, clock});
+  test::EventCollector sink;
+  replay.start({{"SPX"}}, sink);
+  const auto start = clock->now();
+  ASSERT_EQ(clock->waiting_for(start + 60s), start + 60s);
+  replay.set_paused(true);
+  std::this_thread::sleep_for(50ms);  // let the replay notice the pause before the clock moves
+  clock->advance(5min);
+  replay.set_speed(60);
+  replay.set_paused(false);
+  // The minute still owed at 1x is a second at 60x, counted from the resume.
+  const auto resumed = clock->now();
+  ASSERT_EQ(clock->waiting_for(resumed + 1s), resumed + 1s);
+  clock->advance(1s);
+  ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == 1; }));
+  replay.stop();
+}
+
 TEST(Replay, SkipCutsAnOvernightGapShortAndTheEndIsReported) {
   const auto file = paced_recording();
   auto clock = std::make_shared<ManualClock>();

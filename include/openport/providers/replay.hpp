@@ -65,7 +65,9 @@ class ReplayProvider final : public md::Provider {
  private:
   void run(md::Subscription subscription, md::EventSink& sink);
   /// Waits until `deadline`, honouring the controls; false once stopping.
-  bool pace(ReplayClock::TimePoint& deadline);
+  /// `basis` is the speed `deadline` was measured at; a different speed rescales
+  /// what is left of the wait, including one chosen while paused.
+  bool pace(ReplayClock::TimePoint& deadline, int basis);
   bool synchronize();
   void wake();
   Options options_;

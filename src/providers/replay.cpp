@@ -93,7 +93,7 @@ void ReplayProvider::skip() {
   wake();
 }
 
-bool ReplayProvider::pace(ReplayClock::TimePoint& deadline) {
+bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
   while (!stopping_.load()) {
     if (paused_.load()) {
       std::unique_lock lock(control_mutex_);
@@ -111,16 +111,18 @@ bool ReplayProvider::pace(ReplayClock::TimePoint& deadline) {
       deadline = options_.clock->now();
       return true;
     }
+    // A speed changed since the gap was measured (during a wait, or while paused, as
+    // when a drill starts paused at 1x and plays at 300x) stretches or shrinks what is
+    // left of the wait.
+    const auto now = options_.clock->now();
+    if (speed != basis && basis != 0 && deadline != ReplayClock::TimePoint::max() && deadline > now)
+      deadline = now + (deadline - now) / speed * basis;
+    basis = speed;
     interrupted_ = false;
     if (stopping_.load() || paused_.load()) continue;
     if (options_.clock->wait_until(deadline, interrupted_)) return true;
     if (stopping_.load()) return false;
-    // A control changed during the wait: the loop applies a pause or skip, and a
-    // new speed stretches or shrinks what is left of the wait.
-    const int next = speed_.load();
-    const auto now = options_.clock->now();
-    if (next != speed && next != 0 && deadline != ReplayClock::TimePoint::max() && deadline > now)
-      deadline = now + (deadline - now) / next * speed;
+    // A control changed during the wait: the loop applies it.
   }
   return false;
 }
@@ -190,8 +192,9 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
           }
           deadline = options_.clock->now();
         }
+        const int measured = speed_.load();
         if (previous && !seeking_.load())
-          deadline = advance(deadline, *previous, record->received, speed_.load(), remainder);
+          deadline = advance(deadline, *previous, record->received, measured, remainder);
         previous = record->received;
         const bool include = std::visit(
             [&](const auto& e) {
@@ -214,7 +217,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
             },
             record->event);
         if (!include) continue;
-        if (!seeking_.load() && !pace(deadline)) break;
+        if (!seeking_.load() && !pace(deadline, measured)) break;
         if (stopping_.load()) break;
         time_ = record->received;
         sink.publish(std::move(record->event));
@@ -232,7 +235,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
         return;  // A damaged input must never loop as though it were complete.
       }
       if (!options_.loop || !any) break;
-      if (!pace(deadline)) break;
+      if (!pace(deadline, speed_.load())) break;
       reader_.rewind();
     } while (!stopping_.load());
     sink.publish(md::ProviderStatus{md::now(), md::FeedState::Stopped,
