@@ -33,7 +33,7 @@ flowchart LR
 | Pricing | `src/pricing` | Black-76 and Black-Scholes-Merton with full Greeks, a safeguarded implied-volatility solver (Newton in log-price from a Corrado-Miller guess, bisection fallback), Cox-Ross-Rubinstein and Leisen-Reimer trees |
 | Market data | `src/md`, `src/providers` | One event vocabulary (`md::Event`: definitions, quotes, trades, open interest, underlying prints and official closes, complete snapshots, status) behind every provider adapter; contracts parsed from OSI symbols with their settlement and exercise conventions; product sessions and the holiday calendar; recording and replay |
 | Queue | `md::EventQueue` | Keeps the latest value per contract while the engine is busy; definitions are ordering barriers and only trades may be dropped under overload |
-| Analytics | `src/analytics` | Per expiry: a weighted put-call parity fit for the forward and discount factor, IVs and Greeks on that forward, de-Americanised IVs for equity options, SVI and SSVI surfaces with arbitrage checks, and dealer gamma and vanna exposure |
+| Analytics | `src/analytics` | Per expiry: a weighted put-call parity fit for the forward and discount factor, IVs and Greeks on that forward, de-Americanised IVs for equity options, SVI and SSVI surfaces with arbitrage checks, dealer gamma and vanna exposure, and lazy current volatility metrics |
 | Simulator | `src/trading` | `TradingSession`, a deterministic reducer per account: orders, fills against displayed quotes with optional slippage, risk limits, buying power with strategy or portfolio margin, evaluation rules, settlement, exercise and assignment, and P&L attribution by Greek |
 | Journal | `trading/journal` | Every transaction as one SHA-256 hash-chained JSON line recording what changed; recovery replays and verifies the chain |
 | Server | `src/server` | The engine thread, the JSON API and WebSocket ticks, paper accounts, one-minute candles, and the replay host that runs recorded days beside the live feed |
@@ -50,6 +50,10 @@ flowchart LR
   block the feed. It hands each underlying's known dividends to its American
   analytics as dates and dollar amounts, so the analytics and pricing layers do not
   depend on trading.
+- **Volatility metrics** run lazily on the API worker and share the per-snapshot SVI
+  cache. Pure analytics functions compute model-free IV, delta skew, realized
+  volatility, cones and business-session moves. They do not run in the engine pass
+  or change the trading reducer or journal. [Definitions](volatility.md).
 - **Market-wide halts** belong to the engine, shared by every account. The engine
   publishes the breaker reference, daily level and halt history under the status
   mutex for HTTP and WebSocket readers. With a paper journal, an atomic JSON file
@@ -77,7 +81,7 @@ flowchart LR
 
 ## Tests
 
-544 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+580 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 295 Vitest cases cover the
 terminal. CI builds with GCC 13 on Ubuntu and Apple Clang on macOS, both with warnings
@@ -88,4 +92,4 @@ as errors, and smoke-tests the Docker image.
 - [How the numbers are made](../README.md#how-the-numbers-are-made)
 - [Paper trading](paper-trading.md): orders, fills, rules, the journal and the API
 - [Runtime](runtime.md): providers, sessions, recording and replay, the demo market
-- [SVI](svi.md) and [American analytics](american-analytics.md)
+- [SVI](svi.md), [American analytics](american-analytics.md) and [Volatility metrics](volatility.md)

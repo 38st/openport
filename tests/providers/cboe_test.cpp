@@ -518,13 +518,15 @@ TEST(CboeCharts, IntradayBarsStartAMinuteBeforeTheirLabel) {
   EXPECT_THROW((void)providers::parse_cboe_intraday(R"({"data": {}})"), std::runtime_error);
 }
 
-TEST(CboeCharts, DailyBarsStartAtTheOpenAndSkipRowsWithoutOne) {
+TEST(CboeCharts, DailyBarsRetainCloseOnlyHistoryForRealizedFallback) {
   const auto bars = providers::parse_cboe_daily(kDaily);
-  ASSERT_EQ(bars.size(), 2u);
-  EXPECT_EQ(bars[0], (md::Bar{md::new_york_to_utc({2026, 9, 21}, 9, 30), 7692.83, 7779.22, 7691.19,
+  ASSERT_EQ(bars.size(), 3u);
+  EXPECT_EQ(bars[0].open, 0);
+  EXPECT_EQ(bars[0].close, 70.23);
+  EXPECT_EQ(bars[1], (md::Bar{md::new_york_to_utc({2026, 9, 21}, 9, 30), 7692.83, 7779.22, 7691.19,
                               7764.70}));
-  EXPECT_EQ(bars[1].start, md::new_york_to_utc({2026, 9, 22}, 9, 30));
-  EXPECT_EQ(bars[1].close, 7764.64);
+  EXPECT_EQ(bars[2].start, md::new_york_to_utc({2026, 9, 22}, 9, 30));
+  EXPECT_EQ(bars[2].close, 7764.64);
   EXPECT_THROW((void)providers::parse_cboe_daily("{}"), std::runtime_error);
 }
 
@@ -549,7 +551,7 @@ TEST(CboeCharts, HistoryFetchesWhatIsDueAndBacksOffFromMissingFiles) {
   EXPECT_EQ(http.urls.size(), 4u);
   ASSERT_EQ(received.size(), 2u);
   EXPECT_EQ(received[0], std::make_tuple(std::string("SPX"), providers::CboeChart::Intraday, std::size_t{3}));
-  EXPECT_EQ(received[1], std::make_tuple(std::string("SPX"), providers::CboeChart::Daily, std::size_t{2}));
+  EXPECT_EQ(received[1], std::make_tuple(std::string("SPX"), providers::CboeChart::Daily, std::size_t{3}));
   EXPECT_EQ(next, clock + md::kNanosPerMinute);
   EXPECT_NE(history.error().find("cboe XYZ minute bars: Cboe publishes no chart (HTTP 403)"), std::string::npos);
 
@@ -661,3 +663,24 @@ TEST(CboeHolidays, TheScheduleIsFetchedDailyAndKeepsWhatItSaw) {
   EXPECT_EQ(received[1][8], (md::ScheduledDay{{2026, 10, 7}, "National Day of Mourning", true, 13, 0}));
 }
 }  // namespace
+
+TEST(CboeCharts, PublishedIndexShapesSkipZeroMinutesAndKeepDailyCloseOnlyRows) {
+  using namespace openport;
+  const auto bars = providers::parse_cboe_intraday(R"({"timestamp":"2026-09-25 20:15:21","symbol":"_VIX","data":[
+    {"datetime":"2026-09-25T09:31:00","sequence_number":197374702,"price":{"open":0.0,"high":0.0,"low":0.0,"close":0.0},"volume":{}},
+    {"datetime":"2026-09-25T16:00:00","price":{"open":14.82,"high":14.84,"low":14.82,"close":14.84},"volume":{}}
+  ]})");
+  ASSERT_EQ(bars.size(), 1u);
+  EXPECT_EQ(bars[0].start, md::new_york_to_utc({2026, 9, 25}, 15, 59));
+  EXPECT_DOUBLE_EQ(bars[0].close, 14.84);
+  const auto daily = providers::parse_cboe_daily(R"({"timestamp":"2026-09-25 20:15:21","symbol":"_VIX","data":[
+    {"date":"1990-01-02","volume":"0.0","open":"17.240000","high":"17.240000","low":"17.240000","close":"17.240000"},
+    {"date":"1990-01-03","volume":"0.0","open":"0.000000","high":"18.000000","low":"17.000000","close":"17.500000"}
+  ]})");
+  ASSERT_EQ(daily.size(), 2u);
+  EXPECT_DOUBLE_EQ(daily[0].close, 17.24);
+  EXPECT_FALSE(md::valid_bar(daily[1]));
+  for (const auto* symbol : {"_VIX", "_VIX9D", "_VIX3M", "_VIX6M", "_VIX1Y"})
+    EXPECT_EQ(providers::cboe_chart_url(symbol, providers::CboeChart::Intraday),
+              "https://cdn-api.cboe.com/api/global/delayed_quotes/charts/intraday/" + std::string(symbol) + ".json");
+}

@@ -175,7 +175,7 @@ Skipped expiry theta/RMSE/IV are null with an expiry reason; if the entire
 surface fails, all estimates are null and the top-level reason explains why.
 Theta and shared parameters retain full precision for client curve sampling.
 
-Fitting runs only in the surface API. A per-snapshot mutex coalesces concurrent
+Fitting runs only in the surface and volatility APIs. A per-snapshot mutex coalesces concurrent
 requests; the engine never takes it. Cache successes and failures for each
 immutable (symbol, metrics version) snapshot, using weak snapshot ownership to
 isolate different sources and remove expired entries on subsequent requests.

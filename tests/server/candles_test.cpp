@@ -205,3 +205,20 @@ TEST(Candles, AnUnwritableDirectoryIsReportedNotThrown) {
 }
 
 }  // namespace
+
+TEST(Candles, CloseOnlyDailyHistoryDoesNotHideValidMinuteBuiltChartCandles) {
+  using namespace openport;
+  server::CandleStore store;
+  const auto time = md::new_york_to_utc({2026, 9, 25}, 9, 30);
+  store.merge_days("SPX", {{time, 0, 102, 99, 101}});
+  EXPECT_TRUE(store.bars("SPX", server::BarInterval::Day, 10).empty());
+  store.merge_minutes("SPX", {{time, 100, 101, 100, 101}});
+  const auto chart = store.bars("SPX", server::BarInterval::Day, 10);
+  ASSERT_EQ(chart.size(), 1u);
+  EXPECT_DOUBLE_EQ(chart[0].open, 100);
+  EXPECT_TRUE(md::valid_bar(chart[0]));
+  const auto history = store.daily_history("SPX");
+  ASSERT_EQ(history.size(), 1u);
+  EXPECT_DOUBLE_EQ(history[0].open, 0);
+  EXPECT_DOUBLE_EQ(history[0].close, 101);
+}

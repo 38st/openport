@@ -60,6 +60,9 @@ class CandleStore {
   [[nodiscard]] std::vector<md::Bar> bars(const std::string& symbol, BarInterval interval,
                                           std::size_t limit) const;
 
+  /// Daily history for estimators, including close-only rows with invalid OHLC.
+  [[nodiscard]] std::vector<md::Bar> daily_history(const std::string& symbol) const;
+
   /// Writes every minute that is not on disk yet, including one still forming.
   void flush();
   /// The latest storage failure; storage never throws after construction.

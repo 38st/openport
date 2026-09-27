@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **544 C++ and 357 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **580 C++ and 363 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -54,6 +54,10 @@ QQQ options), with generated prices labelled as simulated on every page:
 - **Smile and term structure**: out-of-the-money smile per expiry with its SVI fit and
   arbitrage checks, and the ATM term structure on a square-root-of-time axis, with each
   expiry's forward and rate and where it came from.
+- **Volatility metrics**: model-free IV and ATM term structures, delta risk reversals
+  and butterflies, realized volatility and cones, the variance risk premium, and
+  implied session moves with optional event labels. Values use current market time;
+  missing, truncated and proxy estimates are marked. [Definitions](docs/volatility.md).
 - **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
   call and put walls.
 
@@ -240,6 +244,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
 | `--dividends FILE\|massive` | Known cash dividends for held shares and American analytics: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
+| `--events FILE` | Supplied `YYYY-MM-DD,Label` lines for the implied-session-move table; no event dates are bundled ([volatility](docs/volatility.md)) |
 | `--no-cboe-holidays` | Don't read Cboe's published holiday schedule, which lets a special closure it announces apply without a new build ([calendar](docs/runtime.md#product-sessions-and-cboe-clocks)) |
 
 Every value is range-checked; `openportd --help` lists every flag, and the
@@ -272,6 +277,12 @@ Every value is range-checked; `openportd --help` lists every flag, and the
   quasi-explicit calibration and capped bid/ask IV weights. Fits run lazily in the
   API, cached per analytics snapshot; butterfly and calendar grid violations remain
   visible alongside market points. [Model, checks and timings](docs/svi.md).
+- **Model-free IV and realized volatility** are computed lazily from the same snapshot
+  and stored candles. Model-free IV uses OTM quote mids and our parity forward and
+  discount, with known American exercise premiums removed. It is not Cboe's VIX.
+  `openport-probe --compare-mfiv` compares SPX against published index minute bars;
+  measured differences will be added here after a live session.
+  [Metric definitions and comparison procedure](docs/volatility.md).
 - **American-style** equity and ETF options cannot fit a rate from their own parity:
   early exercise makes puts worth more at higher strikes, which reads as rates between
   -3% and +2% for SPY and QQQ. They take the zero-rate curve fitted on a European index
@@ -326,6 +337,7 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 | `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks and early-exercise premium |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
 | `GET /api/underlyings/{symbol}/surface?expiries=12` | Smile points per expiry |
+| `GET /api/underlyings/{symbol}/volatility` | Current model-free IV, ATM and skew, term ratios, realized volatility and cones, VRP and implied session moves, with sources and missing-value reasons |
 | `GET /api/underlyings/{symbol}/candles?interval=5m` | OHLC bars at 1m, 5m, 15m, 30m, 1h or 1d, oldest first |
 | `WS /ws` | A small tick each second with versions, so clients refetch only what changed |
 
@@ -434,6 +446,8 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] IWM and DIA by default, with stocks and ETFs marked at their regular close
       outside the session
 - [x] Cboe's delayed data from its new host, following redirects if it moves again
+- [x] Current model-free IV, ATM/skew, realized volatility, cones and implied session moves
+- [ ] Volatility metric history and IV rank
 
 ## License
 

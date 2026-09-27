@@ -452,3 +452,15 @@ normalised default ports (`https` 443, `http` 80). Paths, credentials, wildcards
 and opaque origins are rejected. Same-origin requests remain accepted, and
 non-browser clients may omit Origin. This setting permits WebSocket upgrades; it
 does not add CORS response headers.
+
+## Volatility event labels
+
+`--events FILE` loads `YYYY-MM-DD,Label` lines for the volatility API's session-move
+table. It accepts blank lines, comments beginning with `#` and a `date,label`
+header. Dates must be valid and representable; labels are 1–160 bytes without
+control characters. Duplicate dates are rejected with a line number. Labels apply
+to every underlying, are read at startup, and do not affect pricing or trading.
+No event dates are bundled. See [volatility metrics](volatility.md).
+
+Daily Cboe history with a positive close and invalid OHLC is kept for realized
+volatility's close-to-close fallback. Candle charts continue to omit invalid OHLC.

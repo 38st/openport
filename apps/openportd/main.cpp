@@ -72,6 +72,7 @@ struct Settings {
   trading::SessionConfig paper;
   std::vector<trading::Dividend> dividends;
   bool massive_dividends = false;
+  std::vector<analytics::EventLabel> events;
   const server::PlanPreset* plan = server::find_plan("practice");
   std::optional<trading::Money> paper_cash;
   std::string write_token;
@@ -92,7 +93,7 @@ int usage(const char* error = nullptr) {
       "                 [--allowed-host NAME]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
-      "                 [--dividends FILE|massive] [--no-cboe-holidays]\n"
+      "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --repair-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
@@ -112,6 +113,7 @@ int usage(const char* error = nullptr) {
       "           held shares receive the dividend and short shares pay it. \"massive\" reads\n"
       "           them for the stock and ETF symbols from Massive's API instead, every six\n"
       "           hours, with MASSIVE_API_KEY (any stocks plan), whatever the provider\n"
+      "events: YYYY-MM-DD,Label lines for volatility session moves; labels are 1-160 bytes\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
       "allowed hosts: names the server answers to besides IP addresses, localhost and the\n"
@@ -319,6 +321,11 @@ int run(int argc, char** argv) {
     } else if (arg == "--candle-dir") {
       if (value.empty()) return usage("--candle-dir requires a nonempty path");
       settings.candle_dir = value;
+    } else if (arg == "--events") {
+      std::ifstream file(value);
+      if (!file) return usage(("--events: cannot read " + value).c_str());
+      try { settings.events = analytics::parse_events(file); }
+      catch (const std::exception& e) { return usage(e.what()); }
     } else if (arg == "--dividends" && value == "massive") {
       settings.massive_dividends = true;
     } else if (arg == "--dividends") {
@@ -406,6 +413,7 @@ int run(int argc, char** argv) {
   if (settings.paper.initial_cash <= trading::Money{}) return usage("--paper-cash must be positive");
   engine_options.paper = settings.paper;
   engine_options.dividends = settings.dividends;
+  engine_options.events = settings.events;
   engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins});
   server::Engine engine(*provider, settings.subscription, engine_options);
   engine.start();

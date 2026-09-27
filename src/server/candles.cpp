@@ -184,7 +184,7 @@ void CandleStore::merge_days(const std::string& symbol, const std::vector<md::Ba
   const std::lock_guard lock(mutex_);
   Series& series = series_[symbol];
   for (const md::Bar& bar : bars)
-    if (md::valid_bar(bar)) series.days[bar.start] = bar;
+    if (std::isfinite(bar.close) && bar.close > 0) series.days[bar.start] = bar;
   while (series.days.size() > options_.max_days) series.days.erase(series.days.begin());
 }
 
@@ -261,7 +261,7 @@ std::vector<md::Bar> CandleStore::sessions(const Series& series, std::size_t lim
         local.seconds >= md::regular_close_hour(local.date) * 3600)
       continue;
     const md::Timestamp open = md::new_york_to_utc(local.date, 9, 30);
-    if (series.days.contains(open)) continue;
+    if (const auto day = series.days.find(open); day != series.days.end() && md::valid_bar(day->second)) continue;
     auto [it, inserted] = built.try_emplace(open, minute.bar);
     if (inserted)
       it->second.start = open;
@@ -274,6 +274,8 @@ std::vector<md::Bar> CandleStore::sessions(const Series& series, std::size_t lim
   auto vendor = series.days.begin();
   auto own = built.begin();
   while (vendor != series.days.end() || own != built.end()) {
+    while (vendor != series.days.end() && !md::valid_bar(vendor->second)) ++vendor;
+    if (vendor == series.days.end() && own == built.end()) break;
     if (own == built.end() || (vendor != series.days.end() && vendor->first < own->first))
       out.push_back((vendor++)->second);
     else
@@ -289,7 +291,12 @@ std::vector<md::Bar> CandleStore::bars(const std::string& symbol, BarInterval in
   const auto found = series_.find(symbol);
   if (found == series_.end() || limit == 0) return {};
   const Series& series = found->second;
-  if (interval == BarInterval::Day) return sessions(series, limit);
+  if (interval == BarInterval::Day) {
+    auto daily = sessions(series, options_.max_days);
+    std::erase_if(daily, [](const md::Bar& bar) { return !md::valid_bar(bar); });
+    if (daily.size() > limit) daily.erase(daily.begin(), daily.end() - static_cast<std::ptrdiff_t>(limit));
+    return daily;
+  }
   const md::Timestamp span = span_of(interval);
   const md::Timestamp offset = interval == BarInterval::Hour ? 30 * kMinute : 0;
   std::vector<md::Bar> out;
@@ -303,6 +310,22 @@ std::vector<md::Bar> CandleStore::bars(const std::string& symbol, BarInterval in
     }
   }
   if (out.size() > limit) out.erase(out.begin(), out.end() - static_cast<std::ptrdiff_t>(limit));
+  return out;
+}
+
+std::vector<md::Bar> CandleStore::daily_history(const std::string& symbol) const {
+  const std::lock_guard lock(mutex_);
+  const auto found = series_.find(symbol);
+  if (found == series_.end()) return {};
+  // Charts can build a missing valid candle from minutes. Estimators retain the
+  // official close-only row, so an absent vendor open is never filled in silently.
+  std::map<md::Timestamp, md::Bar> daily;
+  for (const auto& bar : sessions(found->second, options_.max_days)) daily[bar.start] = bar;
+  for (const auto& [start, bar] : found->second.days) daily[start] = bar;
+  while (daily.size() > options_.max_days) daily.erase(daily.begin());
+  std::vector<md::Bar> out;
+  out.reserve(daily.size());
+  for (const auto& [start, bar] : daily) out.push_back(bar);
   return out;
 }
 

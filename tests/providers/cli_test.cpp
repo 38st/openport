@@ -2,8 +2,10 @@
 #include <sys/wait.h>
 
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -11,6 +13,7 @@
 #include "support/recording.hpp"
 #include "support/scripted_market.hpp"
 #include "openport/trading/journal.hpp"
+#include "openport/pricing/black.hpp"
 
 namespace {
 /// A private HOME for launched binaries, so a daemon that gets far enough to start never
@@ -250,4 +253,68 @@ TEST(Cli, DaemonCompactsJournalsFromEarlierBuildsAndKeepsTheOriginals) {
   std::filesystem::remove_all(directory);
 }
 
+}  // namespace
+
+namespace {
+TEST(Cli, EventsFileIsParsedBeforeProviderStartupAndRangeChecked) {
+  openport::test::RecordingFile file;
+  const auto args = "--events '" + file.path.string() + "' --provider missing";
+  rejects("openportd", args, "--events: cannot read");
+  for (const auto* row : {"2026-02-30,Impossible", "2026-09-30,", "9999-01-01,Far", "2026-09-30,A\n2026-09-30,B"}) {
+    { std::ofstream out(file.path); out << row; }
+    rejects("openportd", args, "events line");
+  }
+  { std::ofstream out(file.path); out << "date,label\n2026-09-30,User supplied label\n"; }
+  rejects("openportd", args, "unknown provider");
+  rejects("openport-probe", "cboe SPY --compare-mfiv", "requires SPX");
+  rejects("openport-probe", "cboe SPX --comparison-dir .", "requires --compare-mfiv");
+}
+}  // namespace
+
+namespace {
+TEST(Cli, MfivProbeComparesSyntheticReplayWithSavedIndexMinutesOffline) {
+  using namespace openport;
+  test::RecordingFile recording;
+  const auto time = md::new_york_to_utc({2026, 9, 25}, 15, 59);
+  const auto snapshot_time = time + md::kNanosPerMinute;
+  std::vector<md::Event> events{md::UnderlyingQuote{"SPX", time, 100, 100, 100}};
+  md::InstrumentId id = 0;
+  for (const auto* expiry : {"261016", "261120"}) {
+    for (int strike = 70; strike <= 130; ++strike) {
+      for (const char type : {'C', 'P'}) {
+        char symbol[32];
+        std::snprintf(symbol, sizeof symbol, "SPXW%s%c%08d", expiry, type, strike * 1000);
+        const auto contract = *md::parse_osi(symbol);
+        const double years = md::years_between(snapshot_time, contract.expiry_time());
+        const double fair = pricing::black_price(contract.type, 100, strike, years, .2, std::exp(-.04*years));
+        events.push_back(md::ContractDefinition{id, contract});
+        events.push_back(md::OptionQuote{id, time, fair * .999, fair * 1.001, 10, 10});
+        events.push_back(md::VendorGreeks{id, time, .2});
+        ++id;
+      }
+    }
+  }
+  events.push_back(md::SnapshotComplete{"SPX", snapshot_time});
+  events.push_back(md::ProviderStatus{snapshot_time, md::FeedState::Delayed, "synthetic complete", "SPX"});
+  test::record_events(recording.path, events);
+  for (const auto* index : {"_VIX", "_VIX9D", "_VIX3M", "_VIX6M", "_VIX1Y"}) {
+    std::ofstream file(recording.directory / (std::string(index) + ".json"));
+    file << R"({"timestamp":"2026-09-25 20:15:21","symbol":")" << index << R"(","data":[
+      {"datetime":"2026-09-25T16:00:00","price":{"open":20,"high":20,"low":20,"close":20}}]})";
+  }
+  const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/openport-probe\" replay SPX --compare-mfiv --option file='" +
+      recording.path.string() + "' --option speed=max --option loop=off --comparison-dir '" + recording.directory.string() + "' 2>&1";
+  FILE* pipe = popen(command.c_str(), "r");
+  ASSERT_NE(pipe, nullptr);
+  std::string output;
+  char buffer[512];
+  while (fgets(buffer, sizeof buffer, pipe)) output += buffer;
+  const auto status = pclose(pipe);
+  ASSERT_TRUE(WIFEXITED(status)) << output;
+  EXPECT_EQ(WEXITSTATUS(status), 0) << output;
+  EXPECT_NE(output.find("_VIX      samples=1"), std::string::npos) << output;
+  EXPECT_NE(output.find("_VIX9D    samples=0"), std::string::npos) << output;
+  EXPECT_NE(output.find("RR25      samples=1"), std::string::npos) << output;
+  EXPECT_NE(output.find("BF25      samples=1"), std::string::npos) << output;
+}
 }  // namespace

@@ -14,6 +14,7 @@
 #include <type_traits>
 
 #include "openport/analytics/svi.hpp"
+#include "openport/analytics/realized.hpp"
 #include "openport/analytics/ssvi.hpp"
 #include "openport/providers/demo.hpp"
 #include "paper_json.hpp"
@@ -431,6 +432,9 @@ struct SurfaceFits {
   std::mutex mutex;
   std::vector<analytics::SviFit> fits;
   std::optional<analytics::SsviFit> ssvi;
+  std::optional<analytics::VolatilityMetrics> volatility;
+  std::map<const CandleStore*, analytics::RealizedMetrics> realized;
+  std::map<const MetricsSource*, json> volatility_responses;
 };
 
 std::shared_ptr<SurfaceFits> surface_cache(const std::shared_ptr<const UnderlyingMetrics>& m) {
@@ -521,6 +525,135 @@ json surface_json(const std::shared_ptr<const UnderlyingMetrics>& metrics,
                     {"monotone_adjusted", ssvi.monotone_adjusted}, {"fit_ms", ssvi.fit_ms}}}};
 }
 
+json reason_json(const std::string& reason) {
+  return reason.empty() ? json(nullptr) : json(reason);
+}
+
+json delta_json(const analytics::DeltaSkew& skew) {
+  auto point = [](const analytics::DeltaPoint& p) {
+    return json{{"strike", price(p.strike)}, {"vol", sig(p.vol)}, {"reason", reason_json(p.reason)}};
+  };
+  return {{"call", point(skew.call)}, {"put", point(skew.put)}, {"rr", sig(skew.rr)}, {"bf", sig(skew.bf)}};
+}
+
+json volatility_json(const std::shared_ptr<const UnderlyingMetrics>& metrics, const MetricsSource& source) {
+  const auto cache = surface_cache(metrics);
+  const std::lock_guard response_lock(cache->mutex);
+  if (const auto found = cache->volatility_responses.find(&source); found != cache->volatility_responses.end())
+    return found->second;
+  const auto& m = *metrics;
+  analytics::VolatilityMetrics v;
+  analytics::RealizedMetrics r;
+  {
+    if (!cache->volatility) {
+      while (cache->fits.size() < m.slices.size())
+        cache->fits.push_back(analytics::fit_svi(m.slices[cache->fits.size()]));
+      cache->volatility = analytics::volatility_metrics(m, cache->fits);
+    }
+    v = *cache->volatility;
+    const auto* store = source.candles();
+    auto found = cache->realized.find(store);
+    if (found == cache->realized.end()) {
+      const auto days = store ? store->daily_history(m.symbol) : std::vector<md::Bar>{};
+      const auto minutes = store ? store->bars(m.symbol, BarInterval::Minute, 20000) : std::vector<md::Bar>{};
+      found = cache->realized.emplace(store, analytics::realized_metrics(days, minutes, m.as_of)).first;
+    }
+    r = found->second;
+  }
+  json mfiv_expiries = json::array(), atm_expiries = json::array(), skew_expiries = json::array();
+  double front = analytics::kNaN;
+  md::Timestamp front_time = std::numeric_limits<md::Timestamp>::max();
+  for (std::size_t i = 0; i < m.slices.size(); ++i) {
+    const auto& slice = m.slices[i];
+    const auto& expiry = v.expiries[i];
+    const auto& mfiv = expiry.mfiv;
+    const auto& smile = expiry.smile;
+    const auto id = expiry_id(slice);
+    if (slice.expiry_time > m.as_of && slice.expiry_time < front_time) {
+      front_time = slice.expiry_time; front = slice.forward.forward;
+    }
+    mfiv_expiries.push_back({{"id", id}, {"minutes", sig(expiry.minutes, 12)},
+        {"variance", sig(mfiv.variance, 12)}, {"vol", sig(mfiv.vol)}, {"k0", price(mfiv.k0)},
+        {"low", price(mfiv.low)}, {"high", price(mfiv.high)}, {"strikes", mfiv.strikes},
+        {"lower_stop", mfiv.lower_stop}, {"upper_stop", mfiv.upper_stop},
+        {"truncated", mfiv.truncated}, {"proxy", mfiv.proxy}, {"eep", mfiv.eep}, {"reason", reason_json(mfiv.reason)}});
+    atm_expiries.push_back({{"id", id}, {"minutes", sig(expiry.minutes, 12)}, {"vol", sig(smile.atm)},
+        {"source", smile.source}, {"slope", sig(smile.slope)}, {"curvature", sig(smile.curvature)},
+        {"reason", reason_json(smile.reason)}});
+    skew_expiries.push_back({{"id", id}, {"source", smile.source}, {"delta25", delta_json(smile.delta25)},
+        {"delta10", delta_json(smile.delta10)}, {"slope", sig(smile.slope)}, {"curvature", sig(smile.curvature)}});
+  }
+  auto constant = [&](const std::vector<analytics::ConstantVol>& values) {
+    json rows = json::array();
+    for (const auto& value : values) rows.push_back({{"days", value.days}, {"variance", sig(value.variance, 12)},
+        {"vol", sig(value.vol)}, {"near", value.reason == "target_not_bracketed" ? json(nullptr) : json(expiry_id(m.slices[value.near]))},
+        {"next", value.reason == "target_not_bracketed" ? json(nullptr) : json(expiry_id(m.slices[value.next]))},
+        {"truncated", value.truncated}, {"proxy", value.proxy}, {"reason", reason_json(value.reason)}});
+    return rows;
+  };
+  json windows = json::array(), cones = json::array(), intraday = json::array();
+  auto estimate = [](const analytics::RealizedEstimate& value) {
+    return json{{"vol", sig(value.vol)}, {"fallback", value.fallback}, {"reason", reason_json(value.reason)}};
+  };
+  double rv21 = analytics::kNaN;
+  for (const auto& window : r.windows) {
+    if (window.sessions == 21) rv21 = window.close_to_close.vol;
+    windows.push_back({{"sessions", window.sessions}, {"close_to_close", estimate(window.close_to_close)},
+        {"parkinson", estimate(window.parkinson)}, {"garman_klass", estimate(window.garman_klass)},
+        {"yang_zhang", estimate(window.yang_zhang)}});
+  }
+  for (const auto& cone : r.cones) {
+    const auto implied = analytics::session_implied_vol(v, m.as_of, cone.sessions);
+    cones.push_back({{"sessions", cone.sessions}, {"days_used", cone.days_used},
+        {"observations", cone.observations}, {"min", sig(cone.min)}, {"p10", sig(cone.p10)}, {"p25", sig(cone.p25)},
+        {"p50", sig(cone.p50)}, {"p75", sig(cone.p75)}, {"p90", sig(cone.p90)}, {"max", sig(cone.max)},
+        {"current", sig(cone.current)}, {"current_percentile", sig(cone.current_percentile)},
+        {"implied_days", sig(implied.days)}, {"implied_vol", sig(implied.vol)}, {"implied_proxy", implied.proxy},
+        {"implied_reason", reason_json(implied.reason)}});
+  }
+  for (const auto& day : r.intraday) intraday.push_back({{"date", md::format_date(day.date)}, {"vol", sig(day.vol)},
+      {"returns", day.returns}, {"observed_minutes", day.observed_minutes}, {"session_minutes", day.session_minutes},
+      {"partial", day.partial}, {"reason", reason_json(day.reason)}});
+  const auto moves = analytics::implied_moves(m, v, source.events());
+  json sessions = json::array();
+  for (const auto& move : moves.sessions) sessions.push_back({{"date", md::format_date(move.date)},
+      {"points", sig(move.points)}, {"percent", sig(move.percent)}, {"forward", price(move.forward)},
+      {"shared", move.shared}, {"calendar_arbitrage", move.calendar_arbitrage},
+      {"proxy", move.proxy}, {"truncated", move.truncated}, {"label", reason_json(move.label)}, {"reason", reason_json(move.reason)}});
+  json intervals = json::array();
+  for (const auto& interval : moves.intervals) intervals.push_back({{"from", md::format_timestamp(interval.from)},
+      {"to", md::format_timestamp(interval.to)}, {"forward_variance", sig(interval.forward_variance, 12)},
+      {"sessions", interval.sessions}, {"calendar_arbitrage", interval.calendar_arbitrage},
+      {"proxy", interval.proxy}, {"truncated", interval.truncated}, {"reason", reason_json(interval.reason)}});
+  const auto vrp = analytics::variance_risk_premium(v.mfiv[1], rv21);
+  json response = {{"symbol", m.symbol}, {"as_of", md::format_timestamp(m.as_of)}, {"version", m.version},
+      {"spot", price(m.spot)}, {"forward", price(front)}, {"units", "vol_points"},
+      {"mfiv", {{"expiries", mfiv_expiries}, {"constant", constant(v.mfiv)}}},
+      {"atm", {{"expiries", atm_expiries}, {"constant", constant(v.atm)}}},
+      {"skew", {{"delta_convention", analytics::kDeltaConvention}, {"expiries", skew_expiries},
+          {"days", 30}, {"delta25", delta_json(v.skew25)}, {"delta10", delta_json(v.skew10)},
+          {"proxy", v.skew_proxy}, {"reason", reason_json(v.skew_reason)}}},
+      {"term", {{"mfiv9_30", sig(v.ratio9_30)}, {"mfiv30_93", sig(v.ratio30_93)}, {"atm30_7", sig(v.atm30_7)},
+          {"truncated", v.mfiv[0].truncated || v.mfiv[1].truncated || v.mfiv[2].truncated},
+          {"proxy", v.mfiv[0].proxy || v.mfiv[1].proxy || v.mfiv[2].proxy || v.atm[0].proxy || v.atm[1].proxy}}},
+      {"realized", {{"daily_as_of", reason_json(r.daily_as_of)}, {"windows", windows}, {"cones", cones}, {"intraday", intraday}, {"today", sig(r.today)}}},
+      {"vrp", {{"spread", sig(vrp.spread)}, {"ratio", sig(vrp.ratio)},
+          {"truncated", vrp.truncated}, {"proxy", vrp.proxy}, {"reason", reason_json(vrp.reason)}}},
+      {"implied_moves", {{"sessions", sessions}, {"intervals", intervals}, {"today_points", sig(moves.today_points)},
+          {"today_percent", sig(moves.today_percent)}, {"today_reason", reason_json(moves.today_reason)},
+          {"today_proxy", moves.today_proxy}, {"today_truncated", moves.today_truncated},
+          {"today_calendar_arbitrage", moves.today_calendar_arbitrage}}},
+      {"sources", {{"mfiv", "OTM quote mids, parity forward/discount; known American EEP removed; subscribed strike window"},
+          {"atm", "Checked SVI at forward; otherwise observed smile IV interpolated in log-moneyness; total variance in time"},
+          {"skew", "Own-smile forward delta solves within quote range; each delta point interpolated in total variance"},
+          {"term", "Ratios of model-free IV; ATM 30d minus 7d, in vol points"},
+          {"realized", "CandleStore completed daily bars and complete 5-minute blocks; 252 sessions/year; OHLC fallback is close-to-close"},
+          {"vrp", "Ex ante: 30d model-free IV minus/divided by 21-session close-to-close RV"},
+          {"implied_moves", "Consecutive-expiry total-variance increments, MFIV else ATM; equal business sessions with fractional remaining regular hours; AM overnight assigned to settlement session"}}}};
+  cache->volatility_responses[&source] = response;
+  return response;
+}
+
 ApiResponse candles_response(const MetricsSource& source, const std::string& symbol,
                              const std::map<std::string, std::string>& query) {
   const auto symbols = source.symbols();
@@ -579,6 +712,7 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   if (!metrics) return error(404, "no data for " + symbol + " yet");
 
   if (view == "summary") return ok(summary_json(*metrics));
+  if (view == "volatility") return ok(volatility_json(metrics, source));
   if (view == "chain") {
     const auto it = query.find("expiry");
     const SliceMetrics* slice = nullptr;

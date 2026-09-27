@@ -115,7 +115,7 @@ std::vector<md::Bar> parse_cboe_daily(std::string_view json) {
     const md::Timestamp open = md::new_york_to_utc(day, 9, 30);
     const md::Bar bar{open, loose_number(row, "open"), loose_number(row, "high"),
                       loose_number(row, "low"), loose_number(row, "close")};
-    if (open != md::kInvalidTimestamp && md::valid_bar(bar)) bars.push_back(bar);
+    if (open != md::kInvalidTimestamp && std::isfinite(bar.close) && bar.close > 0) bars.push_back(bar);
   }
   return ordered(std::move(bars));
 }

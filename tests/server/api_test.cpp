@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <atomic>
+#include <future>
 #include <fstream>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -456,4 +458,109 @@ TEST(Api, RateSourcesAndDeamericanisationAreIncludedInBothExpiryViews) {
   EXPECT_TRUE(expiry["rate_curve_symbol"].is_null());
 }
 
+}  // namespace
+
+namespace {
+class VolatilitySource final : public server::MetricsSource {
+ public:
+  std::shared_ptr<const analytics::UnderlyingMetrics> snapshot;
+  mutable server::CandleStore store;
+  mutable std::atomic<int> event_reads{0};
+  std::vector<std::string> symbols() const override { return {"SPX"}; }
+  std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string& symbol) const override {
+    return symbol == "SPX" ? snapshot : nullptr;
+  }
+  server::EngineStatus status() const override { return {}; }
+  const server::CandleStore* candles() const override { return &store; }
+  std::vector<analytics::EventLabel> events() const override {
+    ++event_reads;
+    return {{{2026, 9, 23}, "Supplied label"}};
+  }
+};
+
+TEST(Api, VolatilityShapeUsesNullsForMissingMetricsAndExplicitReasons) {
+  analytics::UnderlyingMetrics metrics;
+  metrics.symbol = "SPX";
+  metrics.as_of = md::new_york_to_utc({2026, 9, 22}, 15, 0);
+  VolatilitySource source;
+  source.snapshot = std::make_shared<const analytics::UnderlyingMetrics>(metrics);
+  const auto body = get(source, "/api/underlyings/SPX/volatility");
+  for (const auto* key : {"mfiv", "atm", "skew", "term", "realized", "vrp", "implied_moves", "sources"})
+    EXPECT_TRUE(body.contains(key)) << key;
+  EXPECT_EQ(body["as_of"], md::format_timestamp(metrics.as_of));
+  EXPECT_TRUE(body["spot"].is_null()); EXPECT_TRUE(body["forward"].is_null());
+  EXPECT_EQ(body["units"], "vol_points");
+  ASSERT_EQ(body["mfiv"]["constant"].size(), 5u);
+  EXPECT_EQ(body["mfiv"]["constant"][1]["days"], 30);
+  EXPECT_TRUE(body["mfiv"]["constant"][1]["vol"].is_null());
+  EXPECT_TRUE(body["mfiv"]["constant"][1]["near"].is_null());
+  EXPECT_EQ(body["mfiv"]["constant"][1]["reason"], "target_not_bracketed");
+  EXPECT_TRUE(body["skew"]["delta25"]["rr"].is_null());
+  EXPECT_TRUE(body["realized"]["daily_as_of"].is_null());
+  EXPECT_EQ(body["realized"]["windows"].size(), 6u);
+  EXPECT_TRUE(body["realized"]["windows"][0]["close_to_close"]["vol"].is_null());
+  EXPECT_EQ(body["realized"]["windows"][0]["close_to_close"]["reason"], "insufficient_history");
+  EXPECT_TRUE(body["vrp"]["spread"].is_null());
+  EXPECT_TRUE(body["vrp"]["ratio"].is_null());
+  EXPECT_EQ(body["implied_moves"]["sessions"][1]["label"], "Supplied label");
+  EXPECT_TRUE(body["implied_moves"]["sessions"][0]["points"].is_null());
+  EXPECT_EQ(body, get(source, "/api/underlyings/SPX/volatility"));
+  EXPECT_EQ(source.event_reads, 1);
+  get(source, "/api/underlyings/QQQ/volatility", 404);
+}
+
+TEST(Api, VolatilityUsesSnapshotCacheAndRetainsCloseOnlyHistory) {
+  test::SyntheticChain chain;
+  auto metrics = analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of);
+  VolatilitySource source;
+  source.snapshot = std::make_shared<const analytics::UnderlyingMetrics>(metrics);
+  auto day = md::days_since_epoch({2026, 8, 1});
+  std::vector<md::Bar> bars;
+  for (int i = 0; i < 30; ++day) {
+    const auto date = md::date_from_days(day);
+    const auto time = md::new_york_to_utc(date, 9, 30);
+    if (!md::market_session(time).open) continue;
+    const double close = 100 + (i % 4);
+    bars.push_back({time, 0, 104, 99, close});
+    ++i;
+  }
+  source.store.merge_days("SPX", bars);
+  const auto body = get(source, "/api/underlyings/SPX/volatility");
+  EXPECT_EQ(body["mfiv"]["expiries"].size(), 1u);
+  EXPECT_TRUE(body["mfiv"]["expiries"][0]["vol"].is_number());
+  EXPECT_EQ(body["skew"]["delta_convention"], analytics::kDeltaConvention);
+  const auto& rv = body["realized"]["windows"][2];
+  EXPECT_TRUE(rv["close_to_close"]["vol"].is_number());
+  EXPECT_EQ(rv["parkinson"]["vol"], rv["close_to_close"]["vol"]);
+  EXPECT_EQ(rv["parkinson"]["fallback"], true);
+  EXPECT_TRUE(source.store.bars("SPX", server::BarInterval::Day, 100).empty());
+  EXPECT_EQ(body, get(source, "/api/underlyings/SPX/volatility"));
+  // A different snapshot owner, even with the same symbol/version, cannot reuse it.
+  metrics.slices.clear();
+  source.snapshot = std::make_shared<const analytics::UnderlyingMetrics>(metrics);
+  EXPECT_TRUE(get(source, "/api/underlyings/SPX/volatility")["mfiv"]["expiries"].empty());
+}
+}  // namespace
+
+namespace {
+TEST(Api, ConcurrentVolatilityRequestsShareOneColdComputationAndSurfaceFits) {
+  test::SyntheticChain chain;
+  VolatilitySource source;
+  source.snapshot = std::make_shared<const analytics::UnderlyingMetrics>(
+      analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of));
+  const auto surface = get(source, "/api/underlyings/SPX/surface");
+  std::vector<std::future<server::ApiResponse>> requests;
+  for (int i = 0; i < 4; ++i) requests.push_back(std::async(std::launch::async, [&] {
+    return server::handle_api({"GET", "/api/underlyings/SPX/volatility"}, source);
+  }));
+  std::string first;
+  for (auto& request : requests) {
+    const auto result = request.get();
+    EXPECT_EQ(result.status, 200);
+    if (first.empty()) first = result.body;
+    EXPECT_EQ(result.body, first);
+  }
+  EXPECT_EQ(source.event_reads, 1);
+  EXPECT_EQ(surface, get(source, "/api/underlyings/SPX/surface"));
+}
 }  // namespace

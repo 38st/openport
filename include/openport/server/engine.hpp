@@ -20,6 +20,7 @@
 #include "openport/md/provider.hpp"
 #include "openport/md/recording.hpp"
 #include "openport/server/candles.hpp"
+#include "openport/analytics/volatility.hpp"
 #include "openport/server/paper.hpp"
 #include "openport/trading/dividends.hpp"
 
@@ -83,7 +84,9 @@ class MetricsSource {
   [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view(std::string_view account) const {
     return account.empty() || account == kMainAccount ? trading_view() : nullptr;
   }
-  /// Price history for charts; nullptr when this source keeps none.
+  /// Supplied labels for the volatility view; they do not affect trading.
+  [[nodiscard]] virtual std::vector<analytics::EventLabel> events() const { return {}; }
+  /// Price history for charts and realized volatility; nullptr when absent.
   [[nodiscard]] virtual const CandleStore* candles() const { return nullptr; }
   /// False means unavailable or full. Completion runs on the engine thread;
   /// network callers must dispatch it onto their own executor.
@@ -105,6 +108,7 @@ class Engine final : public MetricsSource {
     trading::SessionConfig paper;
     /// Dividends every account pays on held shares at the rollover into each ex-date.
     std::vector<trading::Dividend> dividends;
+    std::vector<analytics::EventLabel> events;
     std::shared_ptr<trading::Journal> paper_sink;  ///< Optional in-process test/simulation sink.
     std::size_t command_capacity = 256;
     std::string write_mode = "open";
@@ -143,6 +147,7 @@ class Engine final : public MetricsSource {
   [[nodiscard]] md::Timestamp wall_time() const override { return options_.clock(); }
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view() const override;
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view(std::string_view account) const override;
+  [[nodiscard]] std::vector<analytics::EventLabel> events() const override { return options_.events; }
   [[nodiscard]] const CandleStore* candles() const override { return options_.candles.get(); }
   bool post_trading(TradingCommand command, TradingCompletion completion) override;
   [[nodiscard]] md::RecordingStats recording_stats() const;

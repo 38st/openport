@@ -340,3 +340,99 @@ export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "1h" | "1d"
 /** One OHLC bar; t is its start in Unix seconds of market-data time. */
 export interface Candle { t: number; o: number; h: number; l: number; c: number }
 export interface Candles { symbol: string; interval: CandleInterval; bars: Candle[] }
+
+/** Current snapshot metrics. Every vol, RR/BF and slope is in vol points. */
+export interface ConstantVol {
+  days: number
+  variance: number | null
+  vol: number | null
+  near: string | null
+  next: string | null
+  truncated: boolean
+  proxy: boolean
+  reason: string | null
+}
+export interface DeltaSkew {
+  call: { strike: number | null; vol: number | null; reason: string | null }
+  put: { strike: number | null; vol: number | null; reason: string | null }
+  rr: number | null
+  bf: number | null
+}
+export interface RealizedEstimate {
+  vol: number | null
+  fallback: boolean
+  reason: string | null
+}
+export interface VolCone {
+  sessions: number
+  days_used: number
+  observations: number
+  min: number | null
+  p10: number | null
+  p25: number | null
+  p50: number | null
+  p75: number | null
+  p90: number | null
+  max: number | null
+  current: number | null
+  current_percentile: number | null
+  implied_days: number
+  implied_vol: number | null
+  implied_proxy: boolean
+  implied_reason: string | null
+}
+export interface Volatility {
+  symbol: string
+  as_of: string
+  version: number
+  spot: number | null
+  forward: number | null
+  units: "vol_points"
+  mfiv: {
+    expiries: { id: string; minutes: number; variance: number | null; vol: number | null;
+      k0: number | null; low: number | null; high: number | null; strikes: number;
+      lower_stop: "window" | "zero_bids"; upper_stop: "window" | "zero_bids";
+      truncated: boolean; proxy: boolean; eep: string; reason: string | null }[]
+    constant: ConstantVol[]
+  }
+  atm: {
+    expiries: { id: string; minutes: number; vol: number | null; source: string;
+      slope: number | null; curvature: number | null; reason: string | null }[]
+    constant: ConstantVol[]
+  }
+  skew: {
+    delta_convention: string
+    expiries: { id: string; source: string; delta25: DeltaSkew; delta10: DeltaSkew;
+      slope: number | null; curvature: number | null }[]
+    days: number
+    delta25: DeltaSkew
+    delta10: DeltaSkew
+    proxy: boolean
+    reason: string | null
+  }
+  term: { mfiv9_30: number | null; mfiv30_93: number | null; atm30_7: number | null; truncated: boolean; proxy: boolean }
+  realized: {
+    daily_as_of: string | null
+    windows: { sessions: number; close_to_close: RealizedEstimate; parkinson: RealizedEstimate;
+      garman_klass: RealizedEstimate; yang_zhang: RealizedEstimate }[]
+    cones: VolCone[]
+    intraday: { date: string; vol: number | null; returns: number; observed_minutes: number;
+      session_minutes: number; partial: boolean; reason: string | null }[]
+    today: number | null
+  }
+  vrp: { spread: number | null; ratio: number | null; truncated: boolean; proxy: boolean; reason: string | null }
+  implied_moves: {
+    intervals: { from: string; to: string; forward_variance: number | null; sessions: number;
+      calendar_arbitrage: boolean; proxy: boolean; truncated: boolean; reason: string | null }[]
+    sessions: { date: string; points: number | null; percent: number | null; forward: number | null;
+      shared: boolean; calendar_arbitrage: boolean; proxy: boolean; truncated: boolean;
+      label: string | null; reason: string | null }[]
+    today_points: number | null
+    today_percent: number | null
+    today_reason: string | null
+    today_proxy: boolean
+    today_truncated: boolean
+    today_calendar_arbitrage: boolean
+  }
+  sources: Record<"mfiv" | "atm" | "skew" | "term" | "realized" | "vrp" | "implied_moves", string>
+}

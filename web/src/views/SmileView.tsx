@@ -3,6 +3,8 @@ import { useMemo, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { LineChart, type Series } from "../charts/LineChart"
+import { VolatilityDetails, VolatilitySummary } from "../components/VolatilityMetrics"
+import { volatilityTerm, volPoints } from "../lib/volatility"
 import { SviTable } from "../components/SviTable"
 import { Empty, Panel, Segmented } from "../components/ui"
 import { days, expiryLabel, fixed, isNum, pct, price, vol } from "../lib/format"
@@ -30,6 +32,12 @@ export function SmileView({ symbol }: { symbol: string }) {
     queryFn: ({ signal }) => api.summary(symbol, signal),
     placeholderData: (previous) => matchingPayload(previous, symbol),
   })
+  const volatility = useQuery({
+    queryKey: ["volatility", symbol, version],
+    queryFn: ({ signal }) => api.volatility(symbol, signal),
+    placeholderData: (previous) => matchingPayload(previous, symbol),
+  })
+  const volatilityData = matchingPayload(volatility.data, symbol)
   const surfaceData = matchingPayload(surface.data, symbol)
   const summaryData = matchingPayload(summary.data, symbol)
 
@@ -38,12 +46,13 @@ export function SmileView({ symbol }: { symbol: string }) {
     [shown, axis, mode, surfaceData?.spot, surfaceData?.ssvi, window])
 
   const term = useMemo<Series[]>(() => {
+    if (volatilityData) return volatilityTerm(volatilityData)
     // Square-root time axis: a week and five years both stay readable.
     const points = (summaryData?.expiries ?? [])
       .filter((e) => (e.days ?? 0) > 1 / 24 && isNum(e.atm_iv))
-      .map((e) => ({ x: Math.sqrt(e.days ?? 0), y: e.atm_iv }))
-    return [{ id: "atm", label: "ATM vol", color: "var(--chart-1)", points }]
-  }, [summaryData])
+      .map((e) => ({ x: Math.sqrt(e.days ?? 0), y: (e.atm_iv ?? 0) * 100 }))
+    return [{ id: "atm", label: "ATM IV (summary)", color: "var(--chart-2)", points }]
+  }, [summaryData, volatilityData])
 
   const spot = surfaceData?.spot
   const markers = axis === "strike"
@@ -53,6 +62,7 @@ export function SmileView({ symbol }: { symbol: string }) {
   if (surface.isError) return <Empty>{String(surface.error)}</Empty>
   return (
     <div className="grid gap-3 xl:grid-cols-[2fr_1fr]">
+      {volatilityData ? <VolatilitySummary data={volatilityData} /> : <div className="text-xs text-muted xl:col-span-2">{volatility.isError ? `Volatility metrics unavailable: ${String(volatility.error)}` : "Loading volatility metrics…"}</div>}
       <Panel
         title="Volatility smile"
         actions={
@@ -96,18 +106,19 @@ export function SmileView({ symbol }: { symbol: string }) {
       </Panel>
 
       <div className="flex flex-col gap-3">
-        <Panel title="Term structure">
+        <Panel title="Model-free / ATM term structure">
           {term[0]?.points.length ? (
             <LineChart
               series={term}
               height={220}
               formatX={(x) => tenor(x * x)}
-              formatY={(y) => vol(y, 1)}
+              formatY={(y) => volPoints(y, 1)}
               xTicks={tenorTicks}
             />
           ) : (
             <Empty>Loading…</Empty>
           )}
+          <p className="text-[11px] text-muted">{volatilityData && <><span style={{ color: "var(--chart-1)" }}>Model-free IV{volatilityData.mfiv.expiries.some(e => e.proxy) ? " ≈" : ""}</span> · </>}<span style={{ color: "var(--chart-2)" }}>ATM IV{volatilityData?.atm.expiries.some(e => e.source !== "svi") ? " ≈" : ""}</span> · <span className="text-warn">dots: truncated †</span></p>
         </Panel>
         <Panel title="Forwards">
           <div className="max-h-72 overflow-auto">
@@ -139,6 +150,7 @@ export function SmileView({ symbol }: { symbol: string }) {
           </div>
         </Panel>
       </div>
+      {volatilityData && <VolatilityDetails data={volatilityData} />}
     </div>
   )
 }

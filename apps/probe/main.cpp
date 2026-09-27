@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <fstream>
+#include <mutex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -20,6 +22,9 @@
 
 #include "openport/analytics/chain_analytics.hpp"
 #include "openport/analytics/chain_book.hpp"
+#include "openport/analytics/comparison.hpp"
+#include "openport/analytics/volatility.hpp"
+#include "openport/providers/cboe.hpp"
 #include "openport/md/event_queue.hpp"
 #include "openport/md/recording.hpp"
 #include "openport/providers/factory.hpp"
@@ -45,7 +50,7 @@ int usage() {
   std::fprintf(
       stderr,
       "usage: openport-probe <provider> <underlying>... [--expiries N] [--window F] "
-      "[--seconds S] [--quotes N] [--analyze] [--record FILE] [--option KEY=VALUE]...\n"
+      "[--seconds S] [--quotes N] [--analyze] [--compare-mfiv] [--comparison-dir DIR] [--record FILE] [--option KEY=VALUE]...\n"
       "replay: --option file=PATH [--option speed=1|10|60|max] [--option loop=on|off]\n"
       "streaming: definitions and N quotes per underlying (default 100), else timeout failure\n"
       "polling: one complete snapshot per underlying\n"
@@ -112,6 +117,61 @@ void print_analytics(const analytics::ChainBook& book) {
   }
 }
 
+constexpr std::array<const char*, 5> comparison_indices{"_VIX9D", "_VIX", "_VIX3M", "_VIX6M", "_VIX1Y"};
+struct VolComparison {
+  struct Sample {
+    std::array<double, 5> vols;
+    double rr = analytics::kNaN, bf = analytics::kNaN;
+    bool truncated = false;
+  };
+  std::map<md::Timestamp, Sample> samples;
+  md::Timestamp last_time = 0;
+  void capture(const analytics::ChainBook& book, md::Timestamp snapshot_time = 0) {
+    const auto found = book.underlyings().find("SPX");
+    if (found == book.underlyings().end()) return;
+    const auto time = snapshot_time > 0 ? snapshot_time : found->second.data_time;
+    if (time <= 0 || time <= last_time) return;
+    last_time = time;
+    const auto metrics = analytics::analyze(found->second, book, time);
+    std::vector<analytics::SviFit> fits;
+    for (const auto& slice : metrics.slices) fits.push_back(analytics::fit_svi(slice));
+    const auto own = analytics::volatility_metrics(metrics, fits);
+    const auto vendor = analytics::volatility_metrics(metrics, {}, true);
+    Sample sample;
+    for (std::size_t i = 0; i < comparison_indices.size(); ++i) {
+      sample.vols[i] = own.mfiv[i].vol;
+      sample.truncated = sample.truncated || own.mfiv[i].truncated;
+    }
+    sample.rr = own.skew25.rr - vendor.skew25.rr;
+    sample.bf = own.skew25.bf - vendor.skew25.bf;
+    samples[time - time % md::kNanosPerMinute] = sample;
+  }
+  static void print_stats(const char* label, const analytics::ComparisonStats& stats) {
+    std::printf("  %-9s samples=%zu median |delta|=%.4f p90 |delta|=%.4f max |delta|=%.4f median delta=%+.4f vp\n",
+                label, stats.samples, stats.median_absolute, stats.p90_absolute, stats.max_absolute, stats.median_signed);
+  }
+  void report(const std::map<std::string, std::vector<md::Bar>>& references) const {
+    std::printf("\nSPX model-free IV comparison (same market minute; our value minus published index)\n");
+    for (std::size_t i = 0; i < comparison_indices.size(); ++i) {
+      std::vector<analytics::ComparisonSample> values;
+      for (const auto& [time, sample] : samples) values.push_back({time, sample.vols[i]});
+      const auto found = references.find(comparison_indices[i]);
+      print_stats(comparison_indices[i], analytics::compare_minutes(values,
+          found == references.end() ? std::span<const md::Bar>{} : std::span<const md::Bar>(found->second)));
+    }
+    std::vector<double> rr, bf;
+    std::size_t truncated = 0;
+    for (const auto& [time, sample] : samples) {
+      rr.push_back(sample.rr); bf.push_back(sample.bf);
+      if (sample.truncated) ++truncated;
+    }
+    std::printf("  %zu market minutes, %zu with a truncated MFIV maturity; nan means no matched observations\n", samples.size(), truncated);
+    std::printf("  30d skew: checked SVI/own smile minus OTM vendor-IV interpolation; %s\n", analytics::kDeltaConvention);
+    print_stats("RR25", analytics::comparison_stats(rr));
+    print_stats("BF25", analytics::comparison_stats(bf));
+  }
+};
+
 }  // namespace
 
 int run(int argc, char** argv) {
@@ -121,11 +181,18 @@ int run(int argc, char** argv) {
   std::filesystem::path record_file;
   int seconds = 60;
   bool analyze = false;
+  bool compare_mfiv = false;
+  std::filesystem::path comparison_dir;
   int minimum_quotes = 100;
   for (int i = 2; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--analyze") {
       analyze = true;
+    } else if (arg == "--compare-mfiv") {
+      compare_mfiv = true;
+    } else if (arg == "--comparison-dir" && i + 1 < argc) {
+      comparison_dir = argv[++i];
+      if (comparison_dir.empty()) throw std::invalid_argument("--comparison-dir requires a nonempty path");
     } else if (arg == "--expiries" && i + 1 < argc) {
       subscription.max_expiries = providers::parse_integer(argv[++i], arg, 0);
     } else if (arg == "--window" && i + 1 < argc) {
@@ -152,6 +219,10 @@ int run(int argc, char** argv) {
   }
   if (subscription.underlyings.empty()) return usage();
 
+  if (compare_mfiv && std::find(subscription.underlyings.begin(), subscription.underlyings.end(), "SPX") == subscription.underlyings.end())
+    throw std::invalid_argument("--compare-mfiv requires SPX");
+  if (!comparison_dir.empty() && !compare_mfiv)
+    throw std::invalid_argument("--comparison-dir requires --compare-mfiv");
   providers::validate_subscription(config.name, subscription);
   auto provider = providers::make_provider(config);
 
@@ -163,6 +234,28 @@ int run(int argc, char** argv) {
               caps.trades ? "yes" : "no", caps.open_interest ? "yes" : "no",
               caps.vendor_greeks ? "yes" : "no");
 
+  VolComparison comparison;
+  std::mutex reference_mutex;
+  std::map<std::string, std::vector<md::Bar>> references;
+  std::unique_ptr<providers::CboeChartHistory> index_history;
+  if (compare_mfiv && !comparison_dir.empty()) {
+    for (const auto* index : comparison_indices) {
+      std::ifstream file(comparison_dir / (std::string(index) + ".json"));
+      if (!file) throw std::invalid_argument("cannot read comparison index " + std::string(index));
+      const std::string contents{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+      references[index] = providers::parse_cboe_intraday(contents);
+    }
+  } else if (compare_mfiv) {
+    index_history = std::make_unique<providers::CboeChartHistory>(
+        std::vector<std::string>(comparison_indices.begin(), comparison_indices.end()),
+        [&](const std::string& symbol, providers::CboeChart chart, std::vector<md::Bar> bars) {
+          if (chart != providers::CboeChart::Intraday) return;
+          const std::lock_guard lock(reference_mutex);
+          auto& saved = references[symbol];
+          saved.insert(saved.end(), bars.begin(), bars.end());
+        });
+    index_history->start();
+  }
   md::EventQueue queue;
   std::unique_ptr<md::RecordingSink> recorder;
   if (!record_file.empty())
@@ -190,12 +283,20 @@ int run(int argc, char** argv) {
   analytics::ChainBook book;
   std::vector<md::Event> batch;
   const auto deadline = started + std::chrono::seconds(seconds);
-  while (std::chrono::steady_clock::now() < deadline && !readiness.all_ready() && !failed && !ended) {
+  while (std::chrono::steady_clock::now() < deadline && (compare_mfiv || !readiness.all_ready()) && !failed && !ended) {
     batch.clear();
     queue.drain(batch, std::chrono::milliseconds(200));
     for (md::Event& event : batch) {
       readiness.apply(event);
       book.apply(event);
+      if (compare_mfiv) {
+        const auto* complete = std::get_if<md::SnapshotComplete>(&event);
+        const auto* status = std::get_if<md::ProviderStatus>(&event);
+        if ((complete && complete->underlying == "SPX") ||
+            (status && status->underlying == "SPX" &&
+             (status->state == md::FeedState::Live || status->state == md::FeedState::Delayed)))
+          comparison.capture(book, complete ? complete->ts : 0);
+      }
       std::visit(Overloaded{
                      [&](md::ContractDefinition& e) {
                        ++counts["contracts"];
@@ -224,6 +325,7 @@ int run(int argc, char** argv) {
                  },
                  event);
     }
+    if (compare_mfiv && caps.poll_interval.count() == 0 && readiness.all_ready()) comparison.capture(book);
   }
   provider->stop();
   if (recorder) {
@@ -287,6 +389,16 @@ int run(int argc, char** argv) {
     }
   }
   if (analyze) print_analytics(book);
+  if (compare_mfiv) {
+    comparison.capture(book);
+    if (index_history) {
+      index_history->stop();
+      const auto error = index_history->error();
+      if (!error.empty()) std::fprintf(stderr, "comparison history: %s\n", error.c_str());
+    }
+    const std::lock_guard lock(reference_mutex);
+    comparison.report(references);
+  }
   return failed || !readiness.all_ready() ? 1 : 0;
 }
 

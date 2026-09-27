@@ -37,6 +37,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 ///   GET /api/underlyings/{symbol}/summary
 ///   GET /api/underlyings/{symbol}/chain?expiry={id}[&window=0.1]
 ///   GET /api/underlyings/{symbol}/exposure[?expiries=8][&window=0.08]
+///   GET /api/underlyings/{symbol}/volatility
 ///   GET /api/underlyings/{symbol}/surface[?expiries=12][&window=0.2]
 ///   GET /api/underlyings/{symbol}/candles[?interval=5m][&limit=500]
 /// Candles: {symbol, interval, bars: [{t, o, h, l, c}]}, oldest first, where t is

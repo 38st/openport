@@ -10,6 +10,9 @@ add_library(openport_core
   analytics/chain_analytics.cpp
   analytics/svi.cpp
   analytics/ssvi.cpp
+  analytics/volatility.cpp
+  analytics/realized.cpp
+  analytics/comparison.cpp
 )
 add_library(openport::core ALIAS openport_core)
 target_include_directories(openport_core PUBLIC

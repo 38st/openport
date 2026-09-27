@@ -80,7 +80,8 @@ enum class CboeChart : std::uint8_t { Intraday, Daily };
 [[nodiscard]] std::vector<md::Bar> parse_cboe_intraday(std::string_view json);
 
 /// Daily bars, oldest first, each starting at its session's 09:30 ET open. Cboe's
-/// oldest index history has no open; rows that are not valid bars are skipped.
+/// oldest index history has no open; retain any positive finite close for RV
+/// fallback. OHLC consumers must validate the other fields.
 /// Throws std::runtime_error without a data array.
 [[nodiscard]] std::vector<md::Bar> parse_cboe_daily(std::string_view json);
 
