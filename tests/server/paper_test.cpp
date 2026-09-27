@@ -109,6 +109,8 @@ class PaperEngine : public testing::Test {
 
 TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
   seed();
+  // Analytics publish before the account's view of the same quotes; wait for both.
+  engine->synchronize().get();
   const auto before = engine->trading_view();
   ASSERT_TRUE(before->contracts.empty());
   auto request = order(market, "preview-client", "4.20");
