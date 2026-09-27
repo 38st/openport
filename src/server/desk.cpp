@@ -1,4 +1,5 @@
 #include "openport/server/desk.hpp"
+#include "openport/server/playbooks.hpp"
 
 #include "openport/pricing/black.hpp"
 #include "run_json.hpp"
@@ -373,9 +374,19 @@ void Desk::start_trading() {
   breaker_storage_ = !options_.replay && !options_.paper_journal.empty() && accounts_.front().session != nullptr;
   load_circuit_breaker();
   publish_circuit_breaker();
+  if (accounts_.front().session) {
+    try {
+      const auto file = options_.paper_journal.empty() ? std::filesystem::path{} : options_.paper_journal.parent_path() / (options_.replay ? options_.paper_journal.stem().string() + ".playbooks.json" : "playbooks.json");
+      playbooks_ = std::make_shared<Playbooks>(file, options_.initial_playbooks.empty() ? nlohmann::json(nullptr) : nlohmann::json::parse(options_.initial_playbooks));
+    } catch (const std::exception& error) {
+      fail_trading(accounts_.front(), std::string("PLAYBOOK_STORAGE: ") + error.what());
+    }
+  }
   if (!options_.run_input.empty()) {
-    record_input(nlohmann::json{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
-        {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}}.dump(), options_.initial_actor);
+    nlohmann::json start{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
+        {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
+    if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
+    record_input(start.dump(), options_.initial_actor);
   }
   publish_trading();
 }
@@ -464,6 +475,13 @@ void Desk::publish_trading() {
       const auto& session = *account.session;
       view = std::make_shared<TradingView>();
       view->snapshot = session.snapshot();
+      if (playbooks_) {
+        // Quote batches publish far more often than playbooks change.
+        auto& published = playbook_publications_[account.id];
+        if (published.second.empty() || published.first != playbooks_->revision())
+          published = {playbooks_->revision(), playbooks_->publication(account.id, options_.replay).dump()};
+        view->playbooks_json = published.second;
+      }
       if (options_.replay && market_time_ > view->snapshot->time) {
         auto clocked = std::make_shared<trading::TradingSnapshot>(*view->snapshot);
         clocked->time = market_time_;
@@ -865,6 +883,12 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     }
   }
   publish_trading();
+  // Playbooks read the analytics, so they are evaluated when those change, not on
+  // every batch of quotes.
+  if (!playbook_running_ && playbook_generation_ != analytics_generation_) {
+    playbook_generation_ = analytics_generation_;
+    evaluate_playbooks(driver_time);
+  }
 }
 
 void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time) {
@@ -899,6 +923,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
     try {
       CommandResult result;
       switch (c.kind) {
+        case TradingCommand::Kind::Playbook: playbook_command(c, reply, driver_time); break;
         case TradingCommand::Kind::Preview:
         case TradingCommand::Kind::Submit: {
           // Every contract the order trades (each leg of a multi-leg order).
@@ -1052,7 +1077,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
     reply.account = account->id;
     reply.view = trading_view(account->id);
   }
-  if (!options_.run_input.empty() && c.kind != TradingCommand::Kind::Preview) {
+  if (!playbook_running_ && !options_.run_input.empty() && c.kind != TradingCommand::Kind::Preview) {
     record_input(nlohmann::json{{"kind", "command"}, {"command", c}, {"time", market_time_}, {"driver_time", driver_time}}.dump(), c.actor);
     publish_trading();
     if (account) {
@@ -1120,6 +1145,7 @@ void Desk::apply_analytics(std::shared_ptr<const analytics::UnderlyingMetrics> r
   if (!result || result->as_of != time) throw std::invalid_argument("Analytics time does not match result");
   const auto symbol = result->symbol;
   metrics_[symbol] = std::move(result);
+  ++analytics_generation_;
 }
 void Desk::record_input(const std::string& input, const std::string& actor) {
   if (options_.run_input.empty()) return;

@@ -4,7 +4,7 @@ import { api } from "../api/client"
 import { useLive } from "../api/live"
 import type { Chain, Expiry } from "../api/types"
 import { matchingPayload } from "../lib/payload"
-import { buildTemplate, netQuote, templateTag, type StrategyTemplate, type TemplateSetup, type TemplateTarget } from "../lib/strategy"
+import { netQuote, templateTag, type StrategyTemplate, type TemplateSetup, type TemplateTarget } from "../lib/strategy"
 import { loadStrategyPresets, saveStrategyPresets } from "../lib/strategy-presets"
 import { Dialog } from "./Dialog"
 import { netText } from "./StrategyTicket"
@@ -50,7 +50,14 @@ export function StrategyTemplates({ near, expiries, onApply, onClose }: {
     placeholderData: (previous) => matchingPayload(previous, near.symbol, farId),
   })
   const far = matchingPayload(farQuery.data, near.symbol, farId)
-  const setup = buildTemplate(template, near, far)
+  const selection = useQuery({
+    queryKey: ["template", live.accountScope, near.symbol, near.expiry.id, near.version, near.strikes[0]?.strike, near.strikes.at(-1)?.strike, template, far?.version],
+    queryFn: ({ signal }) => api.buildTemplate(template, near, signal),
+    enabled: farId == null || far != null,
+    retry: false,
+  })
+  const setup = selection.data ?? { reason: selection.error ? selection.error.message : farId && !far
+    ? `Load the far chain (${farId}) before building this template.` : "Selecting listed contracts…" }
   const modes: TemplateTarget["mode"][] = template.kind === "vertical" ? ["delta", "points", "moves"]
     : template.kind === "condor" ? ["delta", "moves"] : template.kind === "butterfly" ? ["atm", "strike"] : ["atm", "delta"]
   const save = () => {

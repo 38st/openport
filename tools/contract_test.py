@@ -140,6 +140,8 @@ class Contract:
         summary = self.call("GET", prefix + "/underlyings/" + quote(symbol, safe="") + "/summary")
         expiry = summary.get("expiries", [{}])[0].get("id") if summary.get("expiries") else None
         accounts = self.call("GET", prefix + "/accounts", success=True)["accounts"]
+        playbooks = self.call("GET", prefix + "/playbooks", success=True)["definitions"]
+        playbook = next(iter(playbooks), None)
         for template, raw in self.spec["paths"].items():
             if not template.startswith("/api/") or "get" not in self.resolve(raw):
                 continue
@@ -150,6 +152,8 @@ class Contract:
             if run_id is not None and not template.startswith("/api/replay/history/{run_id}/"):
                 continue
             path = template.replace("{symbol}", quote(symbol, safe="")).replace("{run_id}", quote(run_id or "", safe=""))
+            if playbook is not None:
+                path = path.replace("/playbooks/{id}", "/playbooks/" + quote(playbook, safe=""))
             if "{" in path:
                 continue
             item = self.resolve(raw)

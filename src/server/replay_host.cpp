@@ -18,6 +18,7 @@
 #include "openport/providers/replay.hpp"
 #include "openport/server/plans.hpp"
 #include "openport/server/run.hpp"
+#include "openport/server/playbooks.hpp"
 
 namespace openport::server {
 namespace {
@@ -260,12 +261,35 @@ struct ReplayHost::Session {
 class ArchivedReplay final : public MetricsSource {
  public:
   explicit ArchivedReplay(const std::filesystem::path& file) {
-    const auto session = trading::TradingSession::recover(trading::FileJournal::read(file.string()));
+    const auto recovery = trading::FileJournal::read(file.string());
+    const auto session = trading::TradingSession::recover(recovery);
     view_ = std::make_shared<TradingView>();
     view_->snapshot = session.snapshot();
     view_->config = session.config();
     view_->contracts = session.contracts();
     view_->valuations = session.valuations();
+    // Replay definitions are journaled as inputs. Archives do not depend on the
+    // current live catalogue or a mutable sidecar to explain historical trades.
+    std::unique_ptr<Playbooks> playbooks;
+    for (const auto& record : recovery.records) {
+      if (record.type != "run_input") continue;
+      const auto payload = json::parse(record.payload);
+      for (const auto& event : payload.at("events")) {
+        if (event.at("type") != "run_input") continue;
+        const auto& input = event.at("payload");
+        if (input.at("kind") == "start") {
+          playbooks = std::make_unique<Playbooks>(std::filesystem::path{}, input.value("playbooks", json(nullptr)));
+        } else if (input.at("kind") == "command" && playbooks) {
+          const auto& request = input.at("command");
+          if (request.at("kind").get<int>() != static_cast<int>(TradingCommand::Kind::Playbook)) continue;
+          const auto change = json::parse(request.at("note").get<std::string>());
+          if (change.at("action") == "send" || change.at("action") == "dismiss") continue;
+          // Invalid user commands are also recorded; leave the last valid catalogue.
+          try { playbooks->change(change, "main", true); } catch (const std::exception&) {}
+        }
+      }
+    }
+    if (playbooks) view_->playbooks_json = playbooks->publication("main", false).dump();
     std::ifstream metadata(std::filesystem::path(file).replace_extension(".json"));
     if (metadata) simulated_ = json::parse(metadata).value("demo", false);
   }
@@ -356,6 +380,7 @@ class ReplayHost::History {
     std::filesystem::remove(file);
     std::error_code ec;
     std::filesystem::remove(directory_ / (id + ".json"), ec);
+    std::filesystem::remove(directory_ / (id + ".playbooks.json"), ec);
     const std::lock_guard lock(cache_mutex_);
     cache_.erase(id);
     summaries_.erase(id);
@@ -629,6 +654,16 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       session->durable = history_->writable();
       engine.paper.rules = plan->rules;
       engine.paper.initial_cash = plan->initial_cash;
+      // Copy definitions, never live-feed bindings, into this isolated run.
+      if (!engine.paper_journal.empty()) {
+        const auto definitions = engine.paper_journal.parent_path() / "playbooks.json";
+        if (std::filesystem::exists(definitions)) {
+          std::ifstream input(definitions);
+          auto catalogue = json::parse(input);
+          catalogue["modes"] = json::object();
+          engine.initial_playbooks = catalogue.dump();
+        }
+      }
       engine.paper_journal = history_->create(*session, engine.paper);
       engine.replay = true;
       engine.initial_actor = request.actor;

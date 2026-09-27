@@ -446,7 +446,8 @@ TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
   const std::vector<std::pair<std::string, std::string>> trades = {
       {"POST", "/orders"}, {"POST", "/orders/preview"}, {"PUT", "/orders/1"}, {"DELETE", "/orders/1"},
       {"POST", "/orders/cancel"}, {"POST", "/positions/close"}, {"POST", "/positions/exercise"},
-      {"POST", "/stocks/close"}, {"PUT", "/trades/1/note"}, {"PUT", "/days/2026-09-22/note"}};
+      {"POST", "/stocks/close"}, {"PUT", "/trades/1/note"}, {"PUT", "/days/2026-09-22/note"},
+      {"POST", "/playbooks/staged/12/send"}, {"POST", "/playbooks/staged/12/dismiss"}};
   for (const auto& [method, path] : trades) {
     EXPECT_FALSE(check(method, "/api" + path + "?account=practice", "agent-secret")) << path;
     EXPECT_TRUE(check(method, "/api" + path, "agent-secret")) << path;
@@ -462,7 +463,8 @@ TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
     EXPECT_TRUE(check(method, "/api/replay", "agent-secret"));
   }
   for (const auto* path : {"/api/risk/limits", "/api/risk/guardrails", "/api/risk/kill", "/api/account/reset",
-       "/api/account/payout", "/api/accounts", "/api/settlements", "/api/replay/risk/limits", "/api/replay/history/run", "/api/future-write"}) {
+       "/api/account/payout", "/api/accounts", "/api/settlements", "/api/replay/risk/limits", "/api/replay/history/run", "/api/future-write",
+       "/api/playbooks", "/api/playbooks/morning/mode"}) {
     EXPECT_TRUE(check("POST", path, "agent-secret")) << path;
     EXPECT_TRUE(check("POST", path, "replay-secret")) << path;
     EXPECT_FALSE(check("POST", path, "owner-secret")) << path;

@@ -13,7 +13,7 @@ namespace openport::server {
 class CandleStore;
 class MetricsSource;
 
-// Shared by API workers and the series worker; never locked by the engine.
+// Shared by API workers, the series worker and enabled playbook conditions.
 struct SurfaceFits {
   std::mutex mutex;
   std::vector<analytics::SviFit> fits;

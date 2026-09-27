@@ -99,7 +99,6 @@ class Engine final : public MetricsSource {
     std::filesystem::path record_file;
     md::RecordingSink::Options recording;
     /// Volatility history written by the live engine only; replays and the demo reset it.
-    std::shared_ptr<SeriesStore> series;
     std::function<md::Timestamp()> clock = md::now;
     /// Monotonic cadence for publishing receipt timestamps, independent of wall-clock jumps.
     std::function<std::chrono::steady_clock::time_point()> monotonic_clock =

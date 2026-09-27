@@ -1,3 +1,4 @@
+import { StagedOrders } from "../components/Playbooks"
 import type { View } from "../lib/route"
 import { ChainView } from "./ChainView"
 import { ExposureView } from "./ExposureView"
@@ -15,6 +16,7 @@ export function TradeView({ symbol, view, expiry, onNavigate }: {
 }) {
   return (
     <div className="min-w-0 space-y-3">
+      <StagedOrders />
       <div role="tablist" aria-label="Trade views" className="flex flex-wrap gap-1 border-b border-border">
         {tabs.map((tab) => (
           <button key={tab.view} type="button" role="tab" aria-selected={view === tab.view} title={tab.hint}

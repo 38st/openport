@@ -1,3 +1,5 @@
+import type { Playbook, PlaybooksResponse, PassOdds } from "./playbook-types"
+import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
 import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
@@ -90,6 +92,18 @@ function scoped(path: string): string {
 }
 
 export const api = {
+  playbooks: (signal?: AbortSignal) => get<PlaybooksResponse>(scoped("/api/playbooks"), signal),
+  savePlaybook: (definition: Playbook, mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks${definition.version ? `/${encodeURIComponent(definition.id)}` : ""}`), definition.version ? "PUT" : "POST", mode, definition),
+  deletePlaybook: (id: string, version: number, mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks/${encodeURIComponent(id)}?version=${version}`), "DELETE", mode),
+  playbookMode: (id: string, value: "off" | "stage" | "auto", mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks/${encodeURIComponent(id)}/mode`), "PUT", mode, { mode: value }),
+  stagedAction: (id: string, action: "send" | "dismiss", mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks/staged/${encodeURIComponent(id)}/${action}`), "POST", mode, {}),
+  passOdds: (days: number, samples: number, playbook = "", signal?: AbortSignal) => get<PassOdds>(scoped(`/api/account/pass-odds?days=${days}&samples=${samples}${playbook ? `&playbook=${encodeURIComponent(playbook)}` : ""}`), signal),
+  buildTemplate: (template: StrategyTemplate, near: Chain, signal?: AbortSignal) => {
+    const strikes = near.strikes.map((row) => row.strike).filter(Number.isFinite)
+    const query = new URLSearchParams({ symbol: near.symbol, expiry: near.expiry.id, template: JSON.stringify(template) })
+    if (strikes.length) { query.set("min_strike", String(Math.min(...strikes))); query.set("max_strike", String(Math.max(...strikes))) }
+    return get<TemplateResult>(`/api/strategy-template?${query}`, signal)
+  },
   previewOrder: (order: NewOrder, mode: WriteMode, floor_share = 0.5) => write<OrderPreview>(scoped("/api/orders/preview"), "POST", mode, { ...order, floor_share }),
   equity: (signal?: AbortSignal) => get<EquityHistory>(scoped("/api/account/equity"), signal),
   updateGuardrails: (expected_revision: string, guardrails: Guardrails, mode: WriteMode) => write<Risk>(scoped("/api/risk/guardrails"), "PUT", mode, { expected_revision, guardrails }),

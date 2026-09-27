@@ -6,6 +6,7 @@ import { HBarChart } from "../charts/HBarChart"
 import { LineChart, type Reference, type Series } from "../charts/LineChart"
 import { IntradayEquity } from "../components/IntradayEquity"
 import { BreachPanel } from "../components/BreachPanel"
+import { PassOddsCard, StagedOrders } from "../components/Playbooks"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
@@ -110,12 +111,14 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
         </div>
       )}
       {!e.marked && <p role="status" className="text-xs text-warn">Some positions have no mark yet; rules wait for fully marked equity.</p>}
+      <StagedOrders />
 
       <IntradayEquity account={data} />
       <Panel title="Breach risk"><BreachPanel breach={data.breach} />
         {e.closest_floor != null && <p className="mt-2 text-xs text-muted">Closest approach this attempt: {formatMoney(e.closest_floor)} above the floor · {timestampET(e.closest_floor_at)}</p>}
         {e.day_low_equity != null && <p className="mt-1 text-xs text-muted">Today's low {formatMoney(e.day_low_equity)} · {timestampET(e.day_low_at)}; high {formatMoney(e.day_high_equity)} · {timestampET(e.day_high_at)}</p>}
       </Panel>
+      {e.enabled && e.status === "active" && <PassOddsCard />}
       <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_18rem]">
         <Panel title="Equity" actions={<span className="text-[11px] text-muted">{e.days.length ? `${e.days.length} finished day${e.days.length === 1 ? "" : "s"}` : "first day"}</span>}>
           <LineChart series={chart.series} references={chart.references} xTicks={chart.ticks} height={300} marginLeft={64}

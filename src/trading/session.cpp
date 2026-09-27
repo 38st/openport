@@ -573,16 +573,6 @@ FillContext fill_context(const State& s, const std::string& symbol, const Tradin
   context.buying_power = snapshot.buying_power.available;
   return context;
 }
-/// The trailing floor, peak - max drawdown. With a lock balance it stops once
-/// it reaches that level and stays there (`locked` latches).
-Money floor_for(const AccountRules& rules, Money peak, bool& locked) {
-  if (rules.max_drawdown <= Money{}) return {};
-  if (rules.lock_balance > Money{} && (locked || peak - rules.max_drawdown >= rules.lock_balance)) {
-    locked = true;
-    return rules.lock_balance;
-  }
-  return peak - rules.max_drawdown;
-}
 Money net_realised(const State& s) { return s.ledger.account().realised - s.ledger.account().fees; }
 Money whole_cents(Money value) {
   return value > Money{} ? Money::from_micros(value.micros() / 10'000 * 10'000) : Money{};
@@ -594,7 +584,7 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.started = s.time;
   e.starting_balance = s.ledger.account().cash;
   e.peak = e.starting_balance;
-  e.floor = floor_for(s.config.rules, e.peak, e.floor_locked);
+  e.floor = evaluation_floor(s.config.rules, e.peak, e.floor_locked);
   e.day_open_realised = net_realised(s);
   e.cycle_started = s.time;
   e.first_order = static_cast<OrderId>(s.orders.size() + 1);
@@ -1334,18 +1324,14 @@ void observe_equity(State& s, Events& events) {
       if (!e.day_low_equity || *equity < *e.day_low_equity) { e.day_low_equity = *equity; e.day_low_at = s.time; }
       if (!e.day_high_equity || *equity > *e.day_high_equity) { e.day_high_equity = *equity; e.day_high_at = s.time; }
     }
-    if (rules.evaluation() && e.status == EvaluationStatus::Active) {
-      if (rules.drawdown_mode == DrawdownMode::Intraday && *equity > e.peak) {
-        e.peak = *equity;
-        e.floor = floor_for(rules, e.peak, e.floor_locked);
-      }
+    const auto outcome = evaluate_equity(e, rules, *equity);
+    if (outcome != e.status) {
       const auto target = e.starting_balance + rules.profit_target;
-      if (rules.max_drawdown > Money{} && *equity <= e.floor) {
-        decide(s, EvaluationStatus::Failed, *equity, "Equity " + dollars(*equity) + " reached the drawdown floor " +
+      if (outcome == EvaluationStatus::Failed) {
+        decide(s, outcome, *equity, "Equity " + dollars(*equity) + " reached the drawdown floor " +
                dollars(e.floor) + " (peak " + dollars(e.peak) + ", max drawdown " + dollars(rules.max_drawdown) + ")", events);
-      } else if (rules.profit_target > Money{} && *equity >= target) {
-        decide(s, EvaluationStatus::Passed, *equity, "Equity " + dollars(*equity) + " reached the profit target " +
-               dollars(target), events);
+      } else {
+        decide(s, outcome, *equity, "Equity " + dollars(*equity) + " reached the profit target " + dollars(target), events);
       }
     }
     if (rules.max_drawdown > Money{} && (!e.closest_floor || *equity - e.floor < *e.closest_floor)) {
@@ -2424,11 +2410,7 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
     // on every transaction by monitor_rules.
     auto& e = s.evaluation;
     const auto& rules = s.config.rules;
-    if (rules.evaluation() && e.status == EvaluationStatus::Active &&
-        rules.drawdown_mode == DrawdownMode::EndOfDay && e.day_close_equity > e.peak) {
-      e.peak = e.day_close_equity;
-      e.floor = floor_for(rules, e.peak, e.floor_locked);
-    }
+    evaluation_rollover(e, rules);
     // A placeholder date from before the attempt started is not a trading day.
     // On a funded account, a day with enough net realised profit counts once,
     // toward the payout cycle in progress when it closes.
@@ -2499,7 +2481,7 @@ CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
     e.day_close_equity = e.day_close_equity - amount;
     if (!e.floor_locked) {
       e.peak = e.peak - amount;
-      e.floor = floor_for(rules, e.peak, e.floor_locked);
+      e.floor = evaluation_floor(rules, e.peak, e.floor_locked);
     }
     e.payouts.push_back({quote.number, s.time, e.day, amount, amount.prorate(rules.payouts.split_percent, 100), equity});
     e.qualifying_days = 0;

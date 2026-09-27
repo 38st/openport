@@ -1,3 +1,4 @@
+import { templateServer } from "../test/template-server"
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act } from "react"
@@ -24,6 +25,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} })
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+  vi.spyOn(api, "buildTemplate").mockImplementation(templateServer)
   vi.spyOn(api, "summary").mockResolvedValue({ ...summary, spot: 100, expiries: [chain.expiry, far.expiry] })
   vi.spyOn(api, "chain").mockImplementation(async (_symbol, expiry) => expiry === far.expiry.id ? far : chain)
   vi.spyOn(api, "surface").mockResolvedValue(surface)
@@ -69,7 +71,7 @@ async function field(label: string, value: string) {
   })
 }
 async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) }) }
-async function openTemplates() { await render(); await click("Strategy"); await click("Templates") }
+async function openTemplates() { await render(); await click("Strategy"); await click("Templates"); await flush() }
 
 describe("strategy template review", { timeout: 20_000 }, () => {
   it("shows picked legs, risk, net, POP, source, actual width and tag before sending", async () => {
@@ -130,6 +132,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
   it("saves and recalls parameters by name without submitting an order", async () => {
     await openTemplates()
     await field("Delta (absolute, 0–100)", "10")
+    await flush()
     await field("Preset name", "0DTE put spread 10Δ 5 wide")
     await click("Save preset")
     expect(host.textContent).toContain("Preset saved in this browser")
@@ -142,6 +145,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
   it("explains unavailable wings and disables review", async () => {
     await openTemplates()
     await field("Width (points)", "50")
+    await flush()
     expect(host.textContent).toContain("put wing at 40: outside the loaded strike range 70–130")
     expect(button("Review in ticket").disabled).toBe(true)
     expect(api.submitOrder).not.toHaveBeenCalled()

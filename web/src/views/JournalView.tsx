@@ -28,14 +28,17 @@ export function JournalView() {
 function Journal({ trading }: { trading: TradingStatus }) {
   const [scope, setScope] = useState<"current" | "all">("current")
   const [tag, setTag] = useState("")
+  const [playbook, setPlaybook] = useState("")
   const trades = useTrades(scope)
   const all = useMemo(() => trades.data?.trades ?? [], [trades.data])
   const shares = useMemo(() => trades.data?.share_trades ?? [], [trades.data])
   const tags = useMemo(() => tradeTags([...all, ...shares]), [all, shares])
   // Every panel reads the trades with the chosen tag; shares from exercise and
   // assignment count beside the options.
-  const list = useMemo(() => tag ? all.filter((t) => t.tags?.includes(tag)) : all, [all, tag])
-  const shareList = useMemo(() => tag ? shares.filter((t) => t.tags?.includes(tag)) : shares, [shares, tag])
+  const playbooks = [...new Set(tags.filter((value) => value.startsWith("playbook:")).map((value) => value.slice(9).split("@v")[0]!))].sort()
+  const matches = (trade: { tags?: string[] }) => (!tag || trade.tags?.includes(tag)) && (!playbook || trade.tags?.some((value) => value.startsWith(`playbook:${playbook}@v`)))
+  const list = all.filter(matches)
+  const shareList = shares.filter(matches)
   const entries = useMemo<JournalTrade[]>(() => [...list, ...shareList], [list, shareList])
   const stats = useMemo(() => journalStats(entries), [entries])
   if (trades.error) return <TradingError error={trades.error} />
@@ -44,6 +47,11 @@ function Journal({ trading }: { trading: TradingStatus }) {
   return (
     <div className="min-w-0 space-y-4">
       <PageHeader title="Journal" subtitle={`${stats.trades} closed trade${stats.trades === 1 ? "" : "s"} · ${scope === "current" ? `attempt ${trades.data.attempt}` : "all attempts"}${tag ? ` · tagged ${tag}` : ""}`}>
+        {(playbooks.length > 0 || playbook) && <label className="flex items-center gap-2 text-xs text-muted">Playbook
+          <select className="trade-input !w-auto !py-1" aria-label="Playbook" value={playbook} onChange={(event) => setPlaybook(event.target.value)}>
+            <option value="">All playbooks</option>{playbooks.map((id) => <option key={id} value={id}>{id} · all versions</option>)}
+          </select>
+        </label>}
         {(tags.length > 0 || tag) && <label className="flex items-center gap-2 text-xs text-muted">Tag
           <select className="trade-input !w-auto !py-1" aria-label="Tag" value={tag} onChange={(e) => setTag(e.target.value)}>
             <option value="">All trades</option>

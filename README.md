@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **759 C++, 463 web and 55 Python tests**, built in CI with GCC 13 on Ubuntu and
+- **780 C++, 481 web and 55 Python tests**, built in CI with GCC 13 on Ubuntu and
   Apple Clang on macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -111,6 +111,12 @@ with generated prices labelled as simulated on every page:
   previews show buying power, maximum loss and a size that uses at most half the
   floor room. Breach risk shows the spot moves that could reach the floor and
   labelled model estimates of touching it before the close.
+- **Playbooks**: versioned setups with entry windows and conditions, shared strategy
+  templates, preview sizing and spread exits. Trade, Brief and Dashboard stage orders
+  for review; replays and scenarios can send them automatically. The Playbooks page
+  compares adherence and expectancy, and the Journal filters by playbook. Dashboard
+  and playbook pass odds are labelled estimates from past results, not predictions.
+  [Rules and limits](docs/playbooks.md).
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market.
 - **Replay**: record every session and trade any recorded day again beside the live
@@ -290,7 +296,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
 | `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
-| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Equity history is kept beside each journal as `.equity.csv` |
+| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
 | `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
@@ -405,6 +411,10 @@ these routes, so anything it does can be scripted:
 | --- | --- |
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders and fills with actors, risk and breach estimates, rules and progress, and its round trips |
 | `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to floor and projected breach risk |
+| `GET/POST /api/playbooks`, `GET/PUT/DELETE /api/playbooks/{id}` | Versioned definitions, archive, account stages and adherence/expectancy reports; `?version=N` reads an old version |
+| `PUT /api/playbooks/{id}/mode`, `POST /api/playbooks/staged/{stage}/send`, `/dismiss` | Enable staging or replay-only auto; send or dismiss a current stage |
+| `GET /api/account/pass-odds?days=N&samples=M&playbook=ID&seed=S` | Seeded estimate from historical equity days, not a prediction; needs ten days with intraday extremes |
+| `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | Shared server leg selection for terminal templates and playbooks |
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
 | `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
@@ -464,7 +474,7 @@ flag is set. The existing `OPENPORT_WRITE_TOKEN`, `--write-token TOKEN` and
 `--write-token-file PATH` token grants `admin` and requires authentication for writes.
 Named tokens from `--token-file FILE` grant `read`, `trade:ACCOUNT`, `trade:*`,
 `replay` or `admin`. `admin` includes account creation, limits, guardrails, resets,
-the kill switch and history deletion. Writes always check the token they carry;
+the kill switch, playbook definitions and history deletion. Writes always check the token they carry;
 without `--require-token`, reads ignore one that matches nothing. The server prints
 only the link for a token it keeps in a file, as the Docker image does, and never
 prints named tokens. The token file is read at startup; protect it with owner-only
@@ -505,6 +515,7 @@ exists; GitHub tags the commit when you publish the draft.
 
 ## Roadmap
 
+- [x] Versioned playbooks, staged orders, replay auto mode, adherence and historical pass-odds estimates
 - [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors
 
 - [x] Plan-locked limits, personal guardrails, order previews and size to floor, breach

@@ -702,6 +702,21 @@ model estimates, not observed market outcomes. Dashboard, Risk and both ticket
 previews label them accordingly. Tickets debounce previews, offer **Size to floor**,
 and show an explicit failure without guessing when the endpoint is unavailable.
 
+## Playbooks
+
+[Playbooks](playbooks.md) combine versioned setups, server template selection,
+preview sizing, GTC entries, brackets and per-account entry limits. Definitions
+live beside the main journal, outside reducer state. Staged orders write nothing
+until sent through the normal order path. Only replay and scenario accounts allow
+auto entries and time stops; live-feed practice accounts do not. Orders retain the
+exact playbook version in a tag. The Playbooks page reports adherence and expectancy;
+the Journal filters across versions.
+
+`GET /api/account/pass-odds` resamples recorded equity days through the same plan
+arithmetic as the reducer. It requires ten completed days with intraday extrema.
+It is an estimate from past results, not a prediction. Per-playbook sampling excludes
+days whose account equity cannot be attributed exclusively to that setup.
+
 ## Account rules and evaluations
 
 `SessionConfig::rules` (`AccountRules`) turns the account into an evaluation. The
@@ -1498,9 +1513,9 @@ read only at startup; protect it and restart the server to rotate credentials.
 | Scope | Permission |
 | --- | --- |
 | `read` | Every API GET, CSV export and WebSocket ticks |
-| `trade:ACCOUNT` / `trade:*` | Orders and previews, cancels, flatten, exercise, stock closure and notes on the named account / all live accounts |
+| `trade:ACCOUNT` / `trade:*` | Orders and previews, cancels, flatten, exercise, stock closure, notes and sending or dismissing playbook stages on the named account / all live accounts |
 | `replay` | Start, control and stop replays, and trade their isolated accounts |
-| `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation and replay history deletion |
+| `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation, playbook definitions and modes, and replay history deletion |
 
 The legacy write token has `admin` scope and actor name `legacy`. Writes always
 check the token they carry: an unknown one gets 403 `WRITE_TOKEN_REQUIRED`, and a

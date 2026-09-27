@@ -42,6 +42,12 @@ def shaped(schema_name, **fields):
     return {**example(SPEC["components"]["schemas"][schema_name]), **fields}
 
 
+PLAYBOOK = {"id": "morning", "version": 1, "name": "Morning spread", "description": "Synthetic", "underlyings": ["SPX"],
+            "window": {"start": "09:45", "end": "11:00", "weekdays": [1, 2, 3, 4, 5]}, "conditions": {},
+            "structure": {"template": {"kind": "vertical"}, "expiry": {"min": 0, "max": 1}}, "sizing": {"units": 1},
+            "management": {"close_by": "15:45"}, "guardrails": {"max_entries_per_day": 1, "cooldown_minutes": 30}}
+
+
 class Stub:
     """Synthetic API fixture; all prices are explicitly simulated."""
     def __init__(self):
@@ -90,6 +96,14 @@ class Stub:
             if name == "Summary":
                 value["expiries"] = [self.expiry]
             return 200, value
+        if path == "/api/playbooks" and method == "GET":
+            return 200, shaped("PlaybooksResponse", definitions={"morning": {"versions": [PLAYBOOK], "deleted": False}})
+        if path == "/api/playbooks/morning" and method == "GET":
+            return 200, PLAYBOOK
+        if path == "/api/account/pass-odds":
+            return 200, shaped("PassOdds", seed="81723")
+        if path == "/api/strategy-template":
+            return 200, shaped("TemplateResult")
         if path == "/api/orders/preview":
             return 200, shaped("OrderPreview", simulated=True)
         if path == "/api/orders" and method == "POST":

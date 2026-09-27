@@ -1,4 +1,5 @@
 #include "paper_json.hpp"
+#include "playbook_api.hpp"
 #include "paper_csv.hpp"
 
 #include <algorithm>
@@ -585,6 +586,7 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       }
       break;
     }
+    case TradingCommand::Kind::Playbook: body = json::parse(reply.playbook_result); break;
     case TradingCommand::Kind::Preview:
       if (!reply.preview) return api_error(503, "TRADING_UNAVAILABLE", "No preview available");
       body = preview_json(*reply.preview);
@@ -1178,6 +1180,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
 
 void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete) {
   if (request.method == "GET") { complete(handle_api(request, source)); return; }
+  if (playbook_write(request, source, complete)) return;
   // Writes take one query parameter, account=ID; the route is the path alone.
   const auto question = request.target.find('?');
   const std::string path = request.target.substr(0, question);

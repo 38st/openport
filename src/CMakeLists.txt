@@ -26,6 +26,7 @@ if(NOT TARGET OpenSSL::Crypto)
   find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
 endif()
 add_library(openport_trading
+  trading/evaluation.cpp
   trading/money.cpp
   trading/types.cpp
   trading/guardrails.cpp
@@ -132,6 +133,10 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/series.cpp
     server/series_api.cpp
     server/equity.cpp
+    server/strategy_template.cpp
+    server/playbooks.cpp
+    server/playbook_api.cpp
+    server/desk_playbooks.cpp
     server/desk.cpp
     server/run.cpp
     server/engine.cpp

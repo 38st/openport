@@ -14,6 +14,8 @@
 #include "openport/analytics/volatility.hpp"
 
 namespace openport::server {
+class Playbooks;
+class SeriesStore;
 
 /// Single-owner market-to-account kernel. The caller supplies both clocks and
 /// drain boundaries; this class has no threads, queue, HTTP or clock reads.
@@ -21,6 +23,8 @@ class Desk {
  public:
   struct Options {
     std::string initial_actor = "system";
+    std::string initial_playbooks;  ///< Replay provenance snapshot; empty loads the journal sibling.
+    std::shared_ptr<SeriesStore> series;
     std::string run_input;  ///< Canonical provenance JSON; empty for legacy/live desks.
     bool paper_enabled = true;
     bool replay = false;  ///< Publish the replay market clock and keep halt state isolated.
@@ -83,6 +87,13 @@ class Desk {
   void publish_trading();
   void record_input(const std::string& input, const std::string& actor = "system");
   void sample_equity(PaperAccount& account);
+  void evaluate_playbooks(md::Timestamp driver_time);
+  void playbook_command(const TradingCommand& command, TradingReply& reply, md::Timestamp driver_time);
+  std::shared_ptr<Playbooks> playbooks_;
+  bool playbook_running_ = false;
+  std::uint64_t analytics_generation_ = 0;  ///< Counts published analytics results.
+  std::uint64_t playbook_generation_ = 0;   ///< The generation playbooks last evaluated.
+  std::map<std::string, std::pair<std::uint64_t, std::string>> playbook_publications_;  ///< By account, at a revision.
   /// Stops one account after a journal or integration failure; the others carry on.
   void fail_trading(PaperAccount& account, std::string reason);
 

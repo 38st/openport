@@ -84,6 +84,7 @@ struct TradingView {
   trading::BreachRisk breach;
   std::vector<EquitySample> equity_samples;
   std::string equity_error;
+  std::string playbooks_json;  ///< Immutable catalogue and transient stages for this account.
 };
 
 /// The market's implied variance of an underlying's log price from its analytics'
@@ -104,7 +105,7 @@ struct AccountStatus {
 
 struct TradingCommand {
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
-                    Exercise, CloseStock, DayNote, Preview, Guardrails };
+                    Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook };
   Kind kind = Kind::Submit;
   std::string actor = "unknown";
   trading::OrderRequest order;
@@ -147,6 +148,7 @@ struct TradingReply {
   std::string account;  ///< The account the command acted on (a new account's ID for CreateAccount).
   bool replayed = false;  ///< A retried order answered as first submitted.
   std::optional<trading::OrderPreview> preview;
+  std::string playbook_result;
 };
 using TradingCompletion = std::function<void(TradingReply)>;
 

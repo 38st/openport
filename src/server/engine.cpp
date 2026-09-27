@@ -12,8 +12,10 @@ Engine::Options driver_options(md::Provider& provider, Engine::Options options) 
     options.replay = true;
     options.paper_accounts.clear();
     if (options.run_input.empty()) options.run_input = recording_input(replay->file());
+    options.candles = std::make_shared<CandleStore>();
     options.clock = [replay] { return replay->time(); };
   }
+  if (options.replay || provider.name().starts_with("replay") || provider.name() == "demo") options.series.reset();
   return options;
 }
 }  // namespace

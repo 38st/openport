@@ -9,8 +9,8 @@ slope and curvature values are in **vol points**; variance is decimal annual
 variance. A 20 vol-point value has variance 0.04. Percent moves are percentages,
 not fractions. Ratios are dimensionless.
 
-These calculations run on the requesting API worker, never in the engine's
-once-a-second pass. They share the lazy SVI fits and per-snapshot lock used by the
+These calculations normally run on the requesting API worker. Enabled playbook
+conditions also read them on the Desk thread, using the shared snapshot cache. They share the lazy SVI fits and per-snapshot lock used by the
 surface route. Successes and missing results are cached by snapshot ownership,
 so independent engines cannot share results even if symbol and version match.
 History and event labels are read for that snapshot's first volatility request.
@@ -379,3 +379,10 @@ The browser can remember a toggle to draw Brief levels on Trade's candle chart. 
 uses the same level lines and edge markers as strikes and triggers. Coincident Brief
 levels share one label; unavailable levels are omitted. The overlay fetches only while
 the chart is visible and enabled, and does not fetch IV history.
+
+## Playbook conditions
+
+[Playbooks](playbooks.md) may require an IV-rank range, a minimum ex-ante VRP spread,
+or an inverted 9d/30d model-free term ratio. They use the calculations and history
+rules above. Missing values fail a required condition; no default IV or realized
+history is supplied. Replays and scenarios use only their own available history.

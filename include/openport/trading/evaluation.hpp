@@ -68,6 +68,24 @@ struct Evaluation {
   Timestamp closest_floor_at = 0;
 };
 
+/// Shared plan arithmetic. Observations check the floor before the target; rollover
+/// ratchets an end-of-day floor from the last fully marked close.
+[[nodiscard]] Money evaluation_floor(const AccountRules& rules, Money peak, bool& locked);
+[[nodiscard]] EvaluationStatus evaluate_equity(Evaluation& evaluation, const AccountRules& rules, Money equity);
+void evaluation_rollover(Evaluation& evaluation, const AccountRules& rules);
+
+struct PassOdds {
+  double pass = 0, fail = 0, neither = 0;
+  std::optional<double> median_days_to_pass;
+  std::size_t historical_days = 0;
+  std::uint64_t seed = 0;
+};
+/// Circular blocks of three consecutive completed days. Low/high order follows
+/// their recorded timestamps, widened to cover each day's open and close. Older
+/// days without recorded extrema are left out, not fabricated.
+[[nodiscard]] PassOdds pass_odds(const Evaluation& current, const AccountRules& rules,
+    Money equity, const std::vector<EvaluationDay>& history, int days, int samples, std::uint64_t seed);
+
 /// An earlier attempt, summarised when the account is reset.
 struct AttemptSummary {
   std::uint64_t attempt = 0;

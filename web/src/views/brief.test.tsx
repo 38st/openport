@@ -31,6 +31,7 @@ function seed(scope = 0) {
   client.setQueryData(queries.portfolio.queryKey, { ...portfolio, positions: [{ ...portfolio.positions[0]!, expiry: day, expiry_time: "2026-09-23T20:00:00Z", last_trade_time: "2026-09-23T20:00:00Z" }], stocks: [] })
   client.setQueryData(queries.orders.queryKey, { account_version: "17", orders: [order] })
   client.setQueryData(queries.trades("current").queryKey, { account_version: "17", trades: [], attempt: 2, day_notes: notes })
+  client.setQueryData(["playbooks", scope, "17"], { definitions: {}, modes: {}, staged: [], reasons: {}, auto_allowed: false })
   client.setQueryData(["summary", "SPX", 1], briefSummary)
   client.setQueryData(["volatility", "SPX", 1], briefVolatility)
   client.setQueryData(["brief-series", "SPX", "live/", minute], { symbol: "SPX", interval: "1d", fields: [], rows: [{ t: Date.parse("2026-09-22T20:00Z") / 1000, mfiv30: 18, atm30: 20, rr25: -3, sources: {} }] })
@@ -197,7 +198,7 @@ describe("morning brief", () => {
     expect(host.textContent).toContain("↓ Gamma flip")
   })
   it("keeps Brief in sidebar number-key order for trading and analytics-only servers", () => {
-    expect(navigableViews(true, false)[6]).toBe("brief")
+    expect(navigableViews(true, false)[7]).toBe("brief")
     expect(navigableViews(false, false)[1]).toBe("brief")
     expect(parseRoute(formatRoute({ symbol: "SPX", view: "brief", expiry: null })).view).toBe("brief")
   })

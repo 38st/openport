@@ -20,6 +20,7 @@
 #include "openport/analytics/ssvi.hpp"
 #include "openport/providers/demo.hpp"
 #include "paper_json.hpp"
+#include "playbook_api.hpp"
 
 namespace openport::server {
 namespace {
@@ -661,6 +662,7 @@ ApiResponse candles_response(const MetricsSource& source, const std::string& sym
 
 ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   if (request.method != "GET") return error(405, "only GET is supported");
+  if (auto response = playbook_read(request, source)) return *response;
   if (auto response = paper_read(request, source)) return *response;
   const std::string_view target = request.target;
   const std::size_t question = target.find('?');

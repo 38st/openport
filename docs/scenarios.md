@@ -90,6 +90,16 @@ the far end still responds. Scenarios clamp ATM IV to 2%–200%. Quotes keep
 the product's ticks. Gap and spike returns are log returns, so `0.01` moves the
 level by about 1.005%.
 
+## Playbook runs
+
+Replay and scenario accounts may enable [playbooks](playbooks.md) in auto mode.
+Pause a new run, enable its copied definition and step the market clock. Entries
+use the normal preview, risk and order paths; time stops submit reducing orders at
+their market-time deadlines. Definitions and commands enter run provenance, so the
+same scenario, seed and commands reproduce the fills and journal. Live-feed accounts
+cannot use auto mode. Missing volatility history in a replay prevents an entry
+condition from passing; it never borrows future or live-feed history.
+
 ## Runs and drills
 
 `POST /api/replay` accepts `scenario: ID` (or the compatible `demo: ID` / `demo:

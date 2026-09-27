@@ -59,8 +59,8 @@ flowchart LR
   worker, sharing the per-snapshot SVI cache. The history worker records at most one
   row per underlying per market minute in monthly CSVs. Replay/demo engines cannot
   write to that store. Pure analytics functions compute model-free IV, delta skew, realized
-  volatility, cones and business-session moves. They do not run in the engine pass
-  or change the trading reducer or journal. [Definitions](volatility.md).
+  volatility, cones and business-session moves. Enabled playbook volatility conditions
+  also read these metrics on the Desk thread; they do not change the trading reducer. [Definitions](volatility.md).
 - **Market-wide halts** belong to the Desk, shared by every account. The engine
   publishes the breaker reference, daily level and halt history under the status
   mutex for HTTP and WebSocket readers. With a paper journal, an atomic JSON file
@@ -76,6 +76,20 @@ flowchart LR
   its own; the journal it appends to is passed in. Market time comes from the data, so
   a replay runs on its day's clock. The journal records each transaction's changes and
   a checkpoint of the whole state every thousand records.
+
+## Playbooks
+
+The Desk owns the versioned definition catalogue and each account's transient
+stages. `playbooks.json` is separate from the reducer journal. Evaluation runs when
+the analytics update; preview is read-only, and sends use the normal queued command path.
+A single C++ template picker serves the terminal and playbooks. Auto entries and
+time stops require a replay Desk. Immutable publications carry account stages to
+HTTP readers. Replay provenance includes definitions and edits for verification
+and archived adherence reports. [Playbook contract](playbooks.md).
+
+The trading evaluation functions are shared by the reducer and the historical
+pass-odds bootstrap. The bootstrap owns its explicit seed and never changes account
+state or supplies a wall clock to the reducer.
 
 ## Reproducible runs
 
@@ -159,9 +173,9 @@ Small submit timings also include valuation/risk work and do not grow monotonica
 
 ## Tests
 
-759 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+780 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
-recovery and tampering, the calendar and the HTTP API; 463 Vitest cases cover the
+recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
 terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13
 on Ubuntu and Apple Clang on macOS, both with warnings as errors, smoke-tests the
 Docker image and validates its responses against the OpenAPI contract.

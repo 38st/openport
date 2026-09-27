@@ -11,7 +11,7 @@ import { Badge, Meter, toneOf, toneText } from "./ui"
 
 export const viewLabels: Record<View, string> = {
   brief: "Brief", dashboard: "Dashboard", chain: "Trade", positions: "Positions", orders: "Orders", journal: "Journal",
-  rules: "Rules", payouts: "Payouts", smile: "Volatility", exposure: "Exposure", replay: "Replay", engine: "Status",
+  playbooks: "Playbooks", rules: "Rules", payouts: "Payouts", smile: "Volatility", exposure: "Exposure", replay: "Replay", engine: "Status",
 }
 
 const icons: Partial<Record<View, ReactNode>> = {
@@ -22,6 +22,7 @@ const icons: Partial<Record<View, ReactNode>> = {
   orders: <path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" />,
   journal: <path d="M4 5h16v15H4zM4 10h16M9 3v4m6-4v4" />,
   rules: <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Zm-3 9 2 2 4-4" />,
+  playbooks: <path d="M4 5c3-1 5-1 8 1 3-2 5-2 8-1v14c-3-1-5-1-8 1-3-2-5-2-8-1zM12 6v14" />,
   payouts: <path d="M3 7h18v11H3zM3 11h18M7 15h4m6 0h.01M6 7l9-3 1 3" />,
   replay: <path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v3h3M10 9l5 3-5 3z" />,
   engine: <path d="M3 12h4l3-8 4 16 3-8h4" />,

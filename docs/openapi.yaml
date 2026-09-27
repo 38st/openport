@@ -2685,6 +2685,601 @@
           }
         }
       ]
+    },
+    "/api/playbooks": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/playbooks",
+        "description": "Read the current publication. Definitions, this account's modes, staged orders, reasons and per-playbook reports.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /api/playbooks",
+        "description": "Requires admin. Creates version 1; IDs are never reused.",
+        "x-scope": "admin",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookDefinition"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/playbooks": {
+      "$ref": "#/paths/~1api~1playbooks"
+    },
+    "/api/playbooks/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/playbooks/{id}",
+        "description": "Read the current publication. The latest version, or ?version=N.",
+        "x-scope": "read",
+        "parameters": [
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "A saved version; old versions stay readable."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookDefinition"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "summary": "PUT /api/playbooks/{id}",
+        "description": "Requires admin. Saves a new version; the body carries the version it edits.",
+        "x-scope": "admin",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookDefinition"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/playbooks/{id}",
+        "description": "Requires admin. Archives the playbook; its versions stay readable.",
+        "x-scope": "admin",
+        "parameters": [
+          {
+            "name": "version",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "The latest version, as a conflict check."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/replay/playbooks/{id}": {
+      "$ref": "#/paths/~1api~1playbooks~1{id}"
+    },
+    "/api/playbooks/{id}/mode": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "put": {
+        "summary": "PUT /api/playbooks/{id}/mode",
+        "description": "Requires admin. Auto is refused except on replay and scenario accounts.",
+        "x-scope": "admin",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "off",
+                      "stage",
+                      "auto"
+                    ]
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/playbooks/{id}/mode": {
+      "$ref": "#/paths/~1api~1playbooks~1{id}~1mode"
+    },
+    "/api/playbooks/staged/{stage}/send": {
+      "parameters": [
+        {
+          "name": "stage",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/playbooks/staged/{stage}/send",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts. Sends the stage's latest order through the normal order checks, tagged playbook:ID@vN.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/playbooks/staged/{stage}/send": {
+      "$ref": "#/paths/~1api~1playbooks~1staged~1{stage}~1send"
+    },
+    "/api/playbooks/staged/{stage}/dismiss": {
+      "parameters": [
+        {
+          "name": "stage",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/playbooks/staged/{stage}/dismiss",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts. Dismisses the setup on this underlying for the rest of the day.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/replay/playbooks/staged/{stage}/dismiss": {
+      "$ref": "#/paths/~1api~1playbooks~1staged~1{stage}~1dismiss"
+    },
+    "/api/account/pass-odds": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/account/pass-odds",
+        "description": "Read the current publication. A seeded block bootstrap of completed days through the plan's rules; 400 with fewer than ten usable days.",
+        "x-scope": "read",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 252,
+              "default": 20
+            },
+            "description": "Trading days ahead."
+          },
+          {
+            "name": "samples",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 1000
+            },
+            "description": "Bootstrap samples."
+          },
+          {
+            "name": "seed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 81723
+            },
+            "description": "Random seed; the response repeats it."
+          },
+          {
+            "name": "playbook",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only days attributable to this playbook."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PassOdds"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/replay/account/pass-odds": {
+      "$ref": "#/paths/~1api~1account~1pass-odds"
+    },
+    "/api/strategy-template": {
+      "get": {
+        "summary": "GET /api/strategy-template",
+        "description": "Read the current publication. Selects listed contracts for a strategy template, as the terminal and playbooks do.",
+        "x-scope": "read",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Underlying."
+          },
+          {
+            "name": "expiry",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Expiry ID."
+          },
+          {
+            "name": "template",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The template as JSON."
+          },
+          {
+            "name": "min_strike",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number"
+            },
+            "description": "Lowest strike to consider; with max_strike."
+          },
+          {
+            "name": "max_strike",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number"
+            },
+            "description": "Highest strike to consider; with min_strike."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TemplateResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/replay/strategy-template": {
+      "$ref": "#/paths/~1api~1strategy-template"
+    },
+    "/api/replay/history/{run_id}/playbooks": {
+      "parameters": [
+        {
+          "name": "run_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/playbooks",
+        "description": "Read the current publication. Definitions, this account's modes, staged orders, reasons and per-playbook reports.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybooksResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/replay/history/{run_id}/account/pass-odds": {
+      "parameters": [
+        {
+          "name": "run_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/account/pass-odds",
+        "description": "Read the current publication. A seeded block bootstrap of completed days through the plan's rules; 400 with fewer than ten usable days.",
+        "x-scope": "read",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 252,
+              "default": 20
+            },
+            "description": "Trading days ahead."
+          },
+          {
+            "name": "samples",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 1000
+            },
+            "description": "Bootstrap samples."
+          },
+          {
+            "name": "seed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 81723
+            },
+            "description": "Random seed; the response repeats it."
+          },
+          {
+            "name": "playbook",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only days attributable to this playbook."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PassOdds"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2692,7 +3287,7 @@
       "BearerToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Legacy write token is admin. Named --token-file tokens grant read, trade:ACCOUNT, trade:*, replay or admin. --require-token requires read authorization for GET and WebSocket. Without it GET is public; loopback writes without a configured legacy token remain open. Provided tokens are always checked. Browser WebSocket credentials use a subprotocol; HTTP uses Authorization: Bearer SECRET."
+        "description": "Legacy write token is admin. Named --token-file tokens grant read, trade:ACCOUNT, trade:*, replay or admin. --require-token requires read authorization for GET and WebSocket. Without it GET is public and ignores a token that matches nothing; loopback writes without a configured legacy token remain open. Writes always check the token they carry. Browser WebSocket credentials use a subprotocol; HTTP uses Authorization: Bearer SECRET."
       }
     },
     "parameters": {
@@ -10436,6 +11031,744 @@
         },
         "required": [
           "symbol"
+        ]
+      },
+      "PlaybookDefinition": {
+        "type": "object",
+        "description": "A versioned playbook. Writes reject unknown fields; see docs/playbooks.md for every field and limit.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,15}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "underlyings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "window": {
+            "type": "object",
+            "properties": {
+              "start": {
+                "type": "string",
+                "pattern": "^\\d{2}:\\d{2}$"
+              },
+              "end": {
+                "type": "string",
+                "pattern": "^\\d{2}:\\d{2}$"
+              },
+              "weekdays": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 5
+                }
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "weekdays"
+            ]
+          },
+          "conditions": {
+            "type": "object",
+            "properties": {
+              "price": {
+                "type": "object",
+                "properties": {
+                  "reference": {
+                    "enum": [
+                      "level",
+                      "prior_close",
+                      "day_open"
+                    ]
+                  },
+                  "direction": {
+                    "enum": [
+                      "above",
+                      "below"
+                    ]
+                  },
+                  "value": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "reference",
+                  "direction",
+                  "value"
+                ]
+              },
+              "iv_rank": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number"
+                  },
+                  "max": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              },
+              "vrp_min": {
+                "type": "number"
+              },
+              "term_inverted": {
+                "type": "boolean"
+              },
+              "dte": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number"
+                  },
+                  "max": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              }
+            }
+          },
+          "structure": {
+            "type": "object",
+            "properties": {
+              "template": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              },
+              "expiry": {
+                "type": "object",
+                "properties": {
+                  "min": {
+                    "type": "number"
+                  },
+                  "max": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "min",
+                  "max"
+                ]
+              }
+            },
+            "required": [
+              "template",
+              "expiry"
+            ]
+          },
+          "sizing": {
+            "type": "object",
+            "properties": {
+              "units": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "floor_share": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1
+              }
+            }
+          },
+          "management": {
+            "type": "object",
+            "properties": {
+              "take_profit_percent": {
+                "type": "number"
+              },
+              "stop_credit_multiple": {
+                "type": "number"
+              },
+              "stop_underlying": {
+                "type": "object",
+                "properties": {
+                  "level": {
+                    "type": "number"
+                  },
+                  "direction": {
+                    "enum": [
+                      "above",
+                      "below"
+                    ]
+                  }
+                },
+                "required": [
+                  "level",
+                  "direction"
+                ]
+              },
+              "close_by": {
+                "type": "string",
+                "pattern": "^\\d{2}:\\d{2}$"
+              },
+              "max_hold_days": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "close_by"
+            ]
+          },
+          "guardrails": {
+            "type": "object",
+            "properties": {
+              "max_entries_per_day": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "cooldown_minutes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "max_entries_per_day",
+              "cooldown_minutes"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "underlyings",
+          "window",
+          "conditions",
+          "structure",
+          "sizing",
+          "management",
+          "guardrails"
+        ]
+      },
+      "TemplateLeg": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "underlying": {
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "ratio": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "type": {
+            "enum": [
+              "call",
+              "put"
+            ]
+          },
+          "strike": {
+            "type": "number"
+          },
+          "expiry": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "object",
+            "description": "The contract's quote and Greeks when selected."
+          }
+        },
+        "required": [
+          "symbol",
+          "underlying",
+          "side",
+          "ratio",
+          "type",
+          "strike",
+          "expiry",
+          "quote"
+        ]
+      },
+      "TemplateResult": {
+        "type": "object",
+        "description": "Listed contracts a strategy template selects; failures are 400 errors naming the reason.",
+        "properties": {
+          "legs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateLeg"
+            }
+          },
+          "tag": {
+            "type": "string"
+          },
+          "widths": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "legs",
+          "tag",
+          "widths"
+        ]
+      },
+      "StagedOrder": {
+        "type": "object",
+        "description": "An order a playbook would send now. Not journaled until sent; the ID stays while the same contracts are selected.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "playbook": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "underlying": {
+            "type": "string"
+          },
+          "time": {
+            "type": "integer",
+            "description": "Market time of the evaluation, nanoseconds since the epoch."
+          },
+          "request": {
+            "type": "object",
+            "description": "The order as the simulator would receive it."
+          },
+          "legs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TemplateLeg"
+            }
+          },
+          "units": {
+            "type": "integer"
+          },
+          "net": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "max_loss": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_loss_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "close_by": {
+            "type": "string"
+          },
+          "management": {
+            "type": "object"
+          },
+          "simulated": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "playbook",
+          "version",
+          "name",
+          "underlying",
+          "time",
+          "request",
+          "legs",
+          "units",
+          "net",
+          "max_loss",
+          "close_by",
+          "management",
+          "simulated"
+        ]
+      },
+      "PlaybookStats": {
+        "type": "object",
+        "properties": {
+          "trades": {
+            "type": "integer"
+          },
+          "win_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "average_win": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "average_loss": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expectancy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "profit_factor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "no_losses": {
+            "type": "boolean"
+          },
+          "average_r": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "adherence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "trades",
+          "win_rate",
+          "average_win",
+          "average_loss",
+          "expectancy",
+          "profit_factor",
+          "no_losses",
+          "average_r",
+          "adherence"
+        ]
+      },
+      "PlaybookTrade": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "opened": {
+            "type": "string"
+          },
+          "closed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "net": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "rules": {
+            "type": "object",
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "Pass or fail per rule; null while a rule is still pending."
+          },
+          "passed_rules": {
+            "type": "integer"
+          },
+          "measured_rules": {
+            "type": "integer"
+          },
+          "followed": {
+            "type": "boolean"
+          },
+          "r": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "order",
+          "version",
+          "tag",
+          "opened",
+          "closed",
+          "net",
+          "rules",
+          "passed_rules",
+          "measured_rules",
+          "followed",
+          "r"
+        ]
+      },
+      "PlaybookReport": {
+        "type": "object",
+        "properties": {
+          "trades": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlaybookTrade"
+            }
+          },
+          "all": {
+            "$ref": "#/components/schemas/PlaybookStats"
+          },
+          "followed": {
+            "$ref": "#/components/schemas/PlaybookStats"
+          },
+          "deviated": {
+            "$ref": "#/components/schemas/PlaybookStats"
+          }
+        },
+        "required": [
+          "trades",
+          "all",
+          "followed",
+          "deviated"
+        ]
+      },
+      "PlaybooksResponse": {
+        "type": "object",
+        "properties": {
+          "schema": {
+            "type": "integer"
+          },
+          "definitions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "versions": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlaybookDefinition"
+                  }
+                },
+                "deleted": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "versions",
+                "deleted"
+              ]
+            }
+          },
+          "modes": {
+            "type": "object",
+            "additionalProperties": {
+              "enum": [
+                "off",
+                "stage",
+                "auto"
+              ]
+            },
+            "description": "This account's mode for each playbook."
+          },
+          "staged": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StagedOrder"
+            }
+          },
+          "reasons": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Why each PLAYBOOK:UNDERLYING is or is not staged."
+          },
+          "auto_allowed": {
+            "type": "boolean",
+            "description": "Auto mode is offered only on replay and scenario accounts."
+          },
+          "simulated": {
+            "const": true,
+            "type": "boolean"
+          },
+          "reports": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PlaybookReport"
+            }
+          }
+        },
+        "required": [
+          "definitions",
+          "modes",
+          "staged",
+          "reasons",
+          "auto_allowed"
+        ]
+      },
+      "PassOdds": {
+        "type": "object",
+        "description": "An estimate from past results, not a prediction.",
+        "properties": {
+          "pass": {
+            "type": "number"
+          },
+          "fail": {
+            "type": "number"
+          },
+          "neither": {
+            "type": "number"
+          },
+          "median_days_to_pass": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "historical_days": {
+            "type": "integer"
+          },
+          "seed": {
+            "type": "string"
+          },
+          "days": {
+            "type": "integer"
+          },
+          "samples": {
+            "type": "integer"
+          },
+          "block_days": {
+            "type": "integer"
+          },
+          "label": {
+            "type": "string"
+          },
+          "history_basis": {
+            "type": "string"
+          },
+          "path_assumption": {
+            "type": "string"
+          },
+          "simulated": {
+            "const": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pass",
+          "fail",
+          "neither",
+          "median_days_to_pass",
+          "historical_days",
+          "seed",
+          "days",
+          "samples",
+          "block_days",
+          "label",
+          "history_basis",
+          "path_assumption",
+          "simulated"
         ]
       }
     }

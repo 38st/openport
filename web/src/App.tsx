@@ -19,6 +19,7 @@ import { defaultExpiry } from "./lib/expiry"
 import { BriefView } from "./views/BriefView"
 import { DashboardView } from "./views/DashboardView"
 import { EngineView } from "./views/EngineView"
+import { PlaybooksView } from "./views/PlaybooksView"
 import { JournalView } from "./views/JournalView"
 import { OrdersView } from "./views/OrdersView"
 import { PayoutsView } from "./views/PayoutsView"
@@ -77,6 +78,7 @@ export function App() {
     : view === "brief" ? <BriefView symbol={symbol} />
     : view === "positions" ? <PositionsView />
     : view === "orders" ? <OrdersView />
+    : view === "playbooks" ? <PlaybooksView />
     : view === "journal" ? <JournalView />
     : view === "rules" ? <RulesView />
     : view === "payouts" ? <PayoutsView />

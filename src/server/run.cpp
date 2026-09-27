@@ -165,7 +165,9 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     auto comparison = std::make_shared<ComparisonJournal>(expected);
     Desk::Options options;
     options.replay = true;
+    options.candles = std::make_shared<CandleStore>();
     options.run_input = input.dump();
+    if (start.contains("playbooks") && !start.at("playbooks").is_null()) options.initial_playbooks = start.at("playbooks").dump();
     options.paper_sink = comparison;
     options.initial_actor = json::parse(expected.records.front().payload).value("actor", std::string("system"));
     options.paper = json::parse(expected.records.front().payload).at("state").at("config").get<trading::SessionConfig>();
