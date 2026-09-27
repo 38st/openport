@@ -226,6 +226,8 @@ Greeks and no underlying price, while others ship their own Greeks. OpenPort nor
 all of them into the same contracts, quotes and open interest, then computes everything
 itself, so the numbers mean the same thing whichever provider you use.
 
+To add a feed, see [writing a provider adapter](docs/providers.md).
+
 ## Configuration
 
 | Flags | Controls |

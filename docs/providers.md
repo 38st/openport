@@ -1,0 +1,233 @@
+# Writing a provider adapter
+
+An adapter translates a vendor feed into OpenPort's market-data events. Pricing,
+analytics and paper trading consume those events without knowing the vendor.
+Read the [architecture](architecture.md) for the data flow and the
+[runtime notes](runtime.md) for provider options and shutdown behaviour.
+
+## The interface
+
+Implement [`md::Provider`](../include/openport/md/provider.hpp) in
+`include/openport/providers/` and `src/providers/`. It exposes:
+
+- `name()` and `capabilities()`, both `const noexcept`.
+- `start(const md::Subscription&, md::EventSink&)`, which starts delivery on the
+  adapter's threads and returns promptly. The sink must outlive the provider.
+- `stop()`, which stops delivery and joins every thread. Repeated calls must be
+  safe. Call it from the derived destructor before members used by workers die.
+
+`EventSink::publish(md::Event)` takes an event by value. Production sinks must be
+thread-safe. Use one ordered publication path when definitions and data could
+otherwise race across workers. Do not retain a sink after stopping. The engine's
+queue coalesces state while analytics is busy; an optional recording sink captures
+events before that queue. The adapter must not change downstream state directly.
+
+`Capabilities` describes what the adapter supplies: quotes, trades, open interest,
+vendor Greeks, history, real-time data, poll interval and delay. Zero poll interval
+means streaming. Set `realtime_plan_dependent` for plan-dependent entitlement and
+report the actual `Live` or `Delayed` state per underlying; Massive is the example.
+Do not advertise real-time data simply because requests succeed. A capability flag
+alone does not implement a history endpoint; the current candle backfill is a
+separate Cboe service, described in [price history](runtime.md#price-history).
+
+`Subscription` names underlyings and optionally limits nearest expiries or the
+fractional strike window around spot. Zero means unrestricted. Snapshot adapters
+use `ChainFilter` for new contracts and continue updating contracts already
+defined, even if they move outside the window. Otherwise positions could keep stale
+prices. If the vendor cannot honour a filter, reject it explicitly: Databento
+parent subscriptions send whole chains upstream and reject both filters.
+
+Register the name in `provider_names()` and construct the adapter in
+[`providers::make_provider`](../src/providers/factory.cpp). The factory takes
+`md::ProviderConfig` (name, API key and string options). Allowlist option keys,
+validate values with [`options.hpp`](../include/openport/providers/options.hpp),
+and extend `validate_subscription()` if needed. Both
+[daemon](../apps/openportd/main.cpp) and [probe](../apps/probe/main.cpp) look up
+`<UPPERCASE_PROVIDER_NAME>_API_KEY`; keep secrets out of URLs, exceptions and status
+messages. Add source files to [src/CMakeLists.txt](../src/CMakeLists.txt) and tests
+to [tests/CMakeLists.txt](../tests/CMakeLists.txt). Optional vendor SDKs must remain
+behind a build option, as Databento does.
+
+## Events and ordering
+
+The complete vocabulary is in [`md/events.hpp`](../include/openport/md/events.hpp).
+Contract conventions and OSI parsing live in
+[`md/contract.hpp`](../include/openport/md/contract.hpp). Keep SPX and SPXW's AM and
+PM settlement families separate, even on the same expiry date; preserve exercise
+style, multiplier and the nonstandard-contract flag.
+
+| Event | Meaning and obligations |
+| --- | --- |
+| `ContractDefinition` | Assign a stable, dense, per-feed `InstrumentId`. Publish its definition before any event referring to that ID. Definitions are ordering barriers in the queue. |
+| `OptionQuote` | Best bid and offer, with sizes in contracts. A zero price means no quote on that side, not an executable free option. Preserve missing sides and sizes; never manufacture liquidity. |
+| `OptionTrade` | A reported execution price and size, not an inferred mid-price trade. Trades may be dropped under queue overload; quote state is retained. |
+| `OpenInterest` | The vendor's reported contract count. Missing OI is not zero OI: publish only what is known. |
+| `VendorGreeks` | Comparison values, not OpenPort's pricing inputs. IV is decimal, gamma per dollar of underlying, vega per vol point, theta per calendar day and rho per 1% of rate, all per unit of underlying. Use NaN for an unpublished field or undocumented unit. |
+| `UnderlyingQuote` | The underlying's bid, ask and/or last, on its own market clock. An index's old closing print must not acquire the options' newer overnight timestamp. If no underlying price is supplied, leave it absent; analytics can infer spot from parity. |
+| `UnderlyingClose` | A vendor-published official close for a particular trading date, with the market-data time of publication. Send revisions when supplied. It supports circuit-breaker references and PM settlement; do not invent it from the last option quote. |
+| `SnapshotComplete` | A complete snapshot of one underlying at its market time. It vouches for all defined contracts in that underlying, including unchanged quotes suppressed by deduplication. |
+| `ProviderStatus` | `Connecting`, `Live`, `Delayed`, `Stale`, `Error` or `Stopped`, with a useful message and underlying. An empty underlying is reserved for provider-wide failures. |
+
+A normal snapshot sequence is: status `Connecting`, underlying data if supplied,
+definition before each contract's first data, quote/OI/Greek updates, retirement of
+missing quotes, `SnapshotComplete`, then the underlying's healthy status. All
+definitions need not precede the first quote; each definition must precede its own
+data. Underlying events do not need contract IDs. A stream publishes definitions
+before dependent updates, then reports each underlying live when its quotes arrive.
+Connection metadata alone is not evidence that every subscription is live.
+
+### Timestamps
+
+`md::Timestamp` is signed Unix nanoseconds in UTC. Convert the vendor's documented
+units and time zone with the helpers in [`md/time.hpp`](../include/openport/md/time.hpp).
+Retain separate option, underlying and close clocks. A response received now may
+describe a delayed market or yesterday's close. Market events and
+`SnapshotComplete` must describe that market time, not the HTTP receipt time.
+Unknown timestamps must remain unknown or cause an explicit error; do not make
+old quotes fresh by stamping them with `md::now()`.
+
+`ProviderStatus::ts` may use wall time for operational health. Network timeouts,
+polling and retry waits also use local clocks; these are separate from the
+simulator's market clock. Recording stores receipt time separately to pace replay
+and preserves each event's market timestamp. Events of different kinds need not
+have globally increasing timestamps: a newly reported OI value or official close
+can describe an older market observation. Preserve source order and avoid
+artificially advancing a snapshot's clock on a repeated cached response.
+
+Cboe's session-aware delayed timestamp mapping is in `publish_chain()` in
+[`cboe.cpp`](../src/providers/cboe.cpp). Databento's CBBO uses `ts_recv`, the vendor
+record's observation time, while CMBP-1 uses `ts_event`; these are not the local
+machine's receipt timestamp. ThetaData's `publish_chain()` uses the latest data
+clock and retains a per-underlying high-water mark. Its current all-clocks-missing
+fallback uses `md::now()`; do not copy that fallback into a new adapter. The
+timestamped path is covered by `ASnapshotIsStampedWithItsDataNotTheWallClock`.
+
+### Snapshots and streams
+
+Reuse [`PollingProvider` and `SnapshotPublisher`](../include/openport/providers/snapshot.hpp)
+for a snapshot API. Implement `poll()` and `healthy_state()`. `poll_once()` accepts
+an injectable HTTP client and reports success or failure for the requested
+underlying. The loop continues with other underlyings after a failure.
+
+Fetch and validate every required page or root before publishing the completed
+chain. `SnapshotPublisher::define()` emits each definition once; `quote()`,
+`open_interest()` and `greeks()` suppress unchanged values. Track the IDs present
+and call `finish(underlying, seen, market_time, sink)` only after a successful,
+complete snapshot. It clears quotes absent from that snapshot for that underlying
+and sends `SnapshotComplete`. A failed page must not retire the previous complete
+chain or claim freshness. An empty successful snapshot and a failed request have
+different meanings. Optional IV/OI endpoint failures can report degradation while
+still publishing a complete quote snapshot, as ThetaData does.
+
+Streaming adapters publish updates as received and do not manufacture
+`SnapshotComplete` messages for heartbeats. On reconnect, restore subscriptions
+and definitions before dependent data and reset health per underlying. See
+`DatabentoMapper` and `DatabentoRecovery` for parsing separated from reconnection.
+Bound retries and make waits interruptible. HTTP polling passes `cancellation()`
+to requests and checks it between pages and endpoints. System DNS resolution
+remains the shutdown exception documented in [runtime](runtime.md).
+
+## Existing vendor mappings
+
+These are implementation maps, not live certification. As the README states,
+Databento, Massive and ThetaData have sample-response tests but have not yet been
+run live with a key.
+
+| Adapter | Mapping and code to read |
+| --- | --- |
+| [Cboe](../src/providers/cboe.cpp) | `parse_cboe_chain()` reads chain JSON; `cboe_page_chain()` extracts the embedded chain from quote pages when data files fall behind. Index file names use an underscore. OSI symbols become contract definitions, quote/OI/Greek fields become events, and the underlying retains `last_trade_time`. `publish_chain()` applies the delay and each product's sessions, publishes official closes and revisions, then completes the snapshot. |
+| [Massive](../src/providers/massive.cpp) | `parse_massive_chain_page()` reads `/v3/snapshot/options/{underlying}`, strips `O:` from option tickers and follows `next_url`. Index requests use `I:`. `publish_chain()` uses quote `last_updated` and the underlying's separate timestamp; quote `timeframe` determines entitlement. Published Greeks use the normalised units; rho is NaN because it is not supplied. All pages are collected before publication. |
+| [ThetaData](../src/providers/thetadata.cpp) | `parse_theta_rows()` reads v3 NDJSON. The adapter requests `quote`, `greeks/implied_volatility` and periodically `open_interest` for each option root, then joins by root, expiry, strike and right. Times without a zone are New York times. The latest timestamped IV row supplies spot. Only vendor IV is published; other Greek units are undocumented and remain NaN. Auxiliary failures appear in status. |
+| [Databento](../src/providers/databento.cpp) | OPRA parent symbols cover every root (`.OPT`). `DatabentoMapper::on_record()` maps definitions, CBBO/CMBP-1 quotes, trades and OI statistics. It converts fixed-point prices, handles undefined sentinels and ignores data for unknown instruments. OPRA provides neither underlying prices nor vendor Greeks here. Definitions and statistics are subscribed with replay before the current quote stream. |
+
+## Test without the network
+
+Use saved, hand-written response shapes with generated values. Do not commit a
+downloaded market-data response or recording: the [contribution policy](../CONTRIBUTING.md#data)
+prohibits redistributing provider data. Tests must run without keys, a local vendor
+terminal or network access.
+
+Start with parser tests using string literals, then exercise publication through
+a collecting `EventSink`. A vector-backed collector is sufficient when the test
+calls `publish_chain()` or `poll_once()` synchronously; protect it if testing worker
+threads. Check event order as well as field values and units.
+
+[`tests/support/http_stub.hpp`](../tests/support/http_stub.hpp) provides
+`test::HttpStub`: set `respond` to return a `net::HttpResponse` for each requested
+URL and inspect `urls` afterwards. Pass the stub to `poll_once()` without starting
+the background loop. This exercises pagination, status, failures and cancellation
+without opening a socket. For Databento, construct SDK record structs and call
+`DatabentoMapper::on_record()` directly; no live client is needed.
+
+Useful examples:
+
+- [Cboe tests](../tests/providers/cboe_test.cpp): definitions before data,
+  deduplication, per-product clocks, filter drift, close revisions and page fallback.
+- [Massive tests](../tests/providers/massive_test.cpp): reordered fields, null
+  nested objects, missing quotes, plan entitlement and failed pagination.
+- [ThetaData tests](../tests/providers/thetadata_test.cpp): endpoint joins,
+  per-underlying OI refresh, auxiliary failures and a failed required quote root.
+- [Databento tests](../tests/providers/databento_test.cpp): record conversion,
+  undefined values, reconnect ordering and per-underlying live state.
+- [Runtime tests](../tests/providers/runtime_test.cpp): cancellation between
+  requests, option validation and probe readiness.
+
+After building, run the focused cases and then the full suite:
+
+```sh
+./build/tests/openport_tests --gtest_filter='Cboe*:Massive*:ThetaData*:Databento*:SnapshotPublisher*:PollingProvider*:ProviderOptions*:Replay*:Cli*'
+./build/tests/openport_tests
+```
+
+Add the new test suite to the filter while iterating. CI uses GCC 13 and Apple
+Clang with warnings as errors. If the adapter needs terminal changes, add Vitest
+coverage too; see [Contributing](../CONTRIBUTING.md#building-and-testing).
+
+## Record a session for replay
+
+When you have authorised access to a feed, run this from a checkout. Use paths
+inside your workspace to keep the recording, account and candle files together:
+
+```sh
+mkdir -p var/provider-check
+./build/apps/openportd --provider cboe --symbols SPX,SPY \
+  --paper-journal var/provider-check/paper.jsonl \
+  --candle-dir var/provider-check/candles --no-history --no-cboe-holidays \
+  --record-dir var/provider-check/recordings --web-root web/dist
+```
+
+Substitute the new provider and its documented options to test it. Stop normally
+to write the clean-end marker. The Replay page lists the recorded sessions and
+opens one beside the live feed in its own practice account. To inspect a file
+without connecting a live provider, replace `FILE.oprec` with the generated name:
+
+```sh
+./build/apps/openport-probe replay SPX \
+  --option file=var/provider-check/recordings/FILE.oprec \
+  --option speed=max --analyze
+```
+
+`--record FILE` is an alternative for a single named recording. Files are created
+exclusively, never overwritten; full chains can be large. Recordings contain the
+normalised events, original capabilities and subscription, not raw vendor JSON.
+Keys and provider options are excluded, but status messages are saved verbatim.
+Keep recordings private and check the vendor's terms before sharing. See
+[recording and replay](runtime.md#recording-and-replay) for timing and recovery.
+
+## Pull-request checklist
+
+- [ ] Register the factory name, validated options, build sources and tests.
+- [ ] Document required plan, key environment variable, defaults and supported
+  filters in the README's Providers and Configuration sections and runtime notes.
+- [ ] Check definitions before data, stable IDs, contract conventions, price and
+  size units, missing values, timestamps and delayed/real-time entitlement.
+- [ ] Test multiple underlyings, unchanged snapshots, disappearing contracts,
+  filter drift, partial failures and per-underlying status.
+- [ ] Test malformed responses, pagination or stream recovery, cancellation and
+  repeated `stop()`. No keys, sleeps waiting for a market, or external services.
+- [ ] Verify record/replay preserves the mapped events. Prefer the existing event
+  vocabulary; new fields or formats need explicit compatibility tests for older
+  recordings or journals they affect.
+- [ ] Report whether validation used fixtures or a live account. Never present
+  generated quotes as observed data or promise entitlement you have not checked.
+- [ ] Run the full C++ suite and relevant web checks, and include the results.
