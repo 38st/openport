@@ -211,7 +211,7 @@ TEST(TradingRisk, GreekUnitsAndScenarioSignsForCallsPutsLongsShorts) {
       Ledger ledger(m("100000"));
       ledger.fill(f.contract, direction, m("4.20"), m("0.65"));
       const auto v = f.valuation();
-      const std::map<std::string, Valuation> values{{f.symbol(), v}};
+      const Valuations values{{f.symbol(), v}};
       const auto risk = portfolio_risk(ledger, {}, {{f.symbol(), f.contract}}, values, {}, f.time);
       EXPECT_DOUBLE_EQ(risk.aggregate.position.dollar_delta, static_cast<double>(direction) * 250000);
       EXPECT_DOUBLE_EQ(risk.aggregate.position.dollar_gamma_1pct, static_cast<double>(direction) * 25000);

@@ -75,8 +75,8 @@ struct TradingStatus {
 struct TradingView {
   std::shared_ptr<const trading::TradingSnapshot> snapshot;
   trading::SessionConfig config;
-  std::map<std::string, md::OptionContract> contracts;
-  std::map<std::string, trading::Valuation> valuations;
+  trading::Contracts contracts;
+  trading::Valuations valuations;
   /// Per-underlying data clocks, seeded from persisted quotes on recovery.
   std::map<std::string, md::Timestamp> market_times;
   /// Circuit-breaker halts of the last day.

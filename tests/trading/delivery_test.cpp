@@ -345,7 +345,7 @@ TEST(TradingDelivery, SharesAreMarkedRiskedAndClosedAtTheUnderlyingsPrice) {
 
 TEST(TradingDelivery, ShareRoundTripsReverseAndCloseAtAResetsMark) {
   const auto t = md::new_york_to_utc({2026, 9, 22}, 10, 0);
-  const std::vector<StockFill> fills{
+  const SharedVector<StockFill> fills{
       {1, "SPY", 100, m("500"), t, StockSource::Delivery, "SPY   260922P00500000"},
       {2, "SPY", -300, m("503"), t + 1, StockSource::Delivery, "SPY   260922C00503000"},
       {3, "QQQ", -100, m("400"), t + 2, StockSource::Delivery, "QQQ   260922C00400000"},

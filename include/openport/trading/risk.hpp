@@ -36,9 +36,8 @@ struct RiskSnapshot {
 /// Shares count at their dollar delta, at `stock_prices` (fresh prices by
 /// underlying); a holding without one leaves the result incomplete.
 [[nodiscard]] RiskSnapshot portfolio_risk(
-    const Ledger& ledger, const std::vector<Order>& orders,
-    const std::map<std::string, md::OptionContract>& contracts,
-    const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now,
+    const Ledger& ledger, const std::vector<Order>& orders, const Contracts& contracts,
+    const Valuations& valuations, const Limits& limits, Timestamp now,
     const std::map<std::string, double>& stock_prices = {});
 [[nodiscard]] Decision check_exposure(const RiskSnapshot& risk);
 
@@ -54,7 +53,7 @@ struct ScenarioGrid {
 };
 void validate_scenarios(const ScenarioConfig& config);
 [[nodiscard]] ScenarioGrid scenario_grid(const Ledger& ledger,
-    const std::map<std::string, Valuation>& valuations, const ScenarioConfig& config,
+    const Valuations& valuations, const ScenarioConfig& config,
     Timestamp now, Timestamp max_age, const std::map<std::string, double>& stock_prices = {});
 
 struct BreachLevel {
@@ -82,7 +81,7 @@ struct BreachRisk {
 /// fixed. Search to -99.75% / +1000%, then bisect the first crossing. Missing
 /// ATM vol leaves the driftless log-return reflection estimate absent.
 [[nodiscard]] BreachRisk breach_risk(const Ledger& ledger,
-    const std::map<std::string, Valuation>& valuations, Money equity,
+    const Valuations& valuations, Money equity,
     std::optional<Money> floor, std::optional<Money> soft_floor, Timestamp now, Timestamp max_age,
     const std::map<std::string, double>& stock_prices = {}, const std::map<std::string, double>& close_variances = {});
 

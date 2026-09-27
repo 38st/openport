@@ -70,6 +70,8 @@ target_sources(openport_tests PRIVATE
   trading/sessions_test.cpp
   trading/notes_test.cpp
   trading/review_test.cpp
+  trading/scaling_test.cpp
+  trading/shared_test.cpp
   trading/attribution_test.cpp
   trading/delivery_test.cpp
   trading/dividends_test.cpp

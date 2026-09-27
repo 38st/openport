@@ -2,6 +2,7 @@
 
 #include <set>
 #include <nlohmann/json.hpp>
+#include "openport/trading/history.hpp"
 #include "openport/trading/session.hpp"
 
 namespace nlohmann {
@@ -200,6 +201,17 @@ struct Reference {
   Money mark;
   std::optional<Valuation> valuation;
 };
+/// Derived, never journaled: the lifecycles whose reviews can still change, kept
+/// up to date as fills and closures are recorded (`fills` and `closures` of them
+/// applied so far), and how many reviews are unfinished. update_reviews then costs
+/// the open positions rather than every fill. Built on first use after a load.
+struct Reviewing {
+  bool ready = false;
+  std::size_t fills = 0;
+  std::size_t closures = 0;
+  LifecycleBuilder builder;
+  std::size_t unfinished = 0;
+};
 struct State {
   std::string actor = "system"; ///< Transient command context, not persisted as account state.
   SessionConfig config;
@@ -209,13 +221,13 @@ struct State {
   Ledger ledger;
   Money start_equity;
   md::Date day;
-  std::map<std::string, md::OptionContract> contracts;
-  std::map<std::string, Book> books;
-  std::map<std::string, Mark> marks;
-  std::map<std::string, Valuation> valuations;
-  std::vector<Order> orders;
-  std::vector<Fill> fills;
-  std::set<std::string> settled;
+  Contracts contracts;
+  SharedMap<std::string, Book> books;
+  SharedMap<std::string, Mark> marks;
+  Valuations valuations;
+  SharedVector<Order> orders;
+  SharedVector<Fill> fills;
+  SharedSet<std::string> settled;
   bool kill = false;
   std::string kill_reason;
   Evaluation evaluation;
@@ -224,24 +236,59 @@ struct State {
   GuardrailState guardrails;
   Timestamp pending_applied_at = 0;
   std::vector<AttemptSummary> attempts;
-  std::vector<Closure> closures;
-  std::map<std::string, Annotation> annotations;
-  std::map<std::string, DayNote> day_notes;
-  std::map<std::string, TradeReview> trade_reviews;
-  std::map<std::string, TradeReview> strategy_reviews;
+  SharedVector<Closure> closures;
+  SharedMap<std::string, Annotation> annotations;
+  SharedMap<std::string, DayNote> day_notes;
+  SharedMap<std::string, TradeReview> trade_reviews;
+  SharedMap<std::string, TradeReview> strategy_reviews;
   /// Open stretches by held contract (or stock), and today's finished ones (and costs).
   std::map<std::string, Reference> references;
   std::map<std::string, Attribution> explained;
   /// The underlyings' latest prices, which mark and trade delivered shares.
   std::map<std::string, Mark> stock_marks;
-  std::vector<StockFill> stock_fills;
-  std::vector<DividendPayment> dividends;
-  std::map<std::string, ClosingPrint> closing_prints;
+  SharedVector<StockFill> stock_fills;
+  SharedVector<DividendPayment> dividends;
+  SharedMap<std::string, ClosingPrint> closing_prints;
+  /// Derived, never journaled: the IDs of the orders open when the orders were
+  /// last indexed, in ID order, and how many orders there were then. A closed
+  /// order never reopens, so those still open and the orders placed since are
+  /// every open order, and a scan for them costs the open orders, not the past.
+  std::vector<OrderId> working;
+  std::size_t indexed = 0;
+  /// Derived, never journaled: the first order each client order ID named.
+  SharedMap<std::string, OrderId> clients;
+  /// Derived, never journaled: see Reviewing.
+  Reviewing reviewing;
 };
+/// The open orders' IDs, in ID order.
+inline std::vector<OrderId> open_ids(const State& s) {
+  std::vector<OrderId> ids;
+  for (const auto id : s.working)
+    if (id <= s.orders.size() && s.orders[id - 1].open()) ids.push_back(id);
+  for (auto i = s.indexed; i < s.orders.size(); ++i)
+    if (s.orders[i].open()) ids.push_back(static_cast<OrderId>(i + 1));
+  return ids;
+}
+inline void reindex(State& s) {
+  s.working = open_ids(s);
+  s.indexed = s.orders.size();
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Book, quote, bid_left, ask_left)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mark, price, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations, references, explained, stock_marks, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews, pending_limits, pending_guardrails, guardrails, pending_applied_at)
+/// Every journaled field of State, once: its JSON writer and the journal's
+/// change finder (state_change) both come from this list.
+#define OPENPORT_STATE_FIELDS(X) \
+  X(config) X(time) X(version) X(limits_revision) X(ledger) X(start_equity) X(day) X(contracts) X(books) \
+  X(marks) X(valuations) X(orders) X(fills) X(settled) X(kill) X(kill_reason) X(evaluation) X(attempts) \
+  X(closures) X(annotations) X(references) X(explained) X(stock_marks) X(stock_fills) X(dividends) \
+  X(closing_prints) X(day_notes) X(trade_reviews) X(strategy_reviews) X(pending_limits) \
+  X(pending_guardrails) X(guardrails) X(pending_applied_at)
+inline void to_json(Json& j, const State& s) {
+#define OPENPORT_STATE_TO(field) j[#field] = s.field;
+  OPENPORT_STATE_FIELDS(OPENPORT_STATE_TO)
+#undef OPENPORT_STATE_TO
+}
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
   j.at("limits_revision").get_to(s.limits_revision); j.at("ledger").get_to(s.ledger);
@@ -258,6 +305,12 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "strategy_reviews", s.strategy_reviews);
   added_field(j, "pending_limits", s.pending_limits); added_field(j, "pending_guardrails", s.pending_guardrails);
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
+  s.working.clear();
+  s.indexed = 0;
+  reindex(s);
+  s.clients.clear();
+  for (const auto& order : s.orders) s.clients.emplace(order.request.client_order_id, order.id);
+  s.reviewing = {};
 }
 }  // namespace detail
 }  // namespace openport::trading

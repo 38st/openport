@@ -151,7 +151,7 @@ TEST(TradingMargin, PortfolioMinimumCoversFarOutOfTheMoneyLongsAndMissingScansAr
 TEST(TradingMargin, PortfolioScanFindsLossesBetweenItsEndpoints) {
   const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
   std::vector<MarginLeg> legs;
-  std::map<std::string, Valuation> valuations;
+  Valuations valuations;
   for (const auto* symbol : {"SPY261022C00090000", "SPY261022C00100000", "SPY261022C00110000"}) {
     const auto c = *md::parse_osi(symbol);
     const auto key = c.osi_symbol();

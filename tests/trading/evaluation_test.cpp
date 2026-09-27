@@ -377,14 +377,14 @@ TEST(TradingEquityOptions, AmericanContractsUseTheirSessionTicksAndSettleAtIntri
 TEST(TradingHistory, LifecyclesSplitReversalsAndCloseOnSettlement) {
   const auto contract = *md::parse_osi("SPXW261022C05000000");
   const auto symbol = contract.osi_symbol();
-  const std::map<std::string, md::OptionContract> contracts{{symbol, contract}};
+  const Contracts contracts{{symbol, contract}};
   auto fill = [&](std::uint64_t id, Side side, Quantity q, std::string_view price, std::string_view fee) {
     return Fill{id, id, symbol, side, q, m(price), m(fee), id, static_cast<Timestamp>(id), static_cast<Timestamp>(id * 10)};
   };
-  const std::vector<Fill> fills{fill(1, Side::Buy, 2, "4.20", "1.30"), fill(2, Side::Buy, 1, "4.40", "0.65"),
+  const SharedVector<Fill> fills{fill(1, Side::Buy, 2, "4.20", "1.30"), fill(2, Side::Buy, 1, "4.40", "0.65"),
                                 fill(3, Side::Sell, 3, "4.00", "1.95"), fill(4, Side::Buy, 2, "4.00", "1.30"),
                                 fill(5, Side::Sell, 5, "4.50", "3.25")};
-  const std::vector<Closure> closures{{symbol, -3, m("0"), 60, ClosureKind::Settlement, 5}};
+  const SharedVector<Closure> closures{{symbol, -3, m("0"), 60, ClosureKind::Settlement, 5}};
   const auto trades = lifecycles(fills, closures, contracts);
   ASSERT_EQ(trades.size(), 3);
   EXPECT_EQ(trades[0].direction, 1);

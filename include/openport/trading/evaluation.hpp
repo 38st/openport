@@ -185,7 +185,7 @@ struct MarginLeg {
 /// option contract if that is larger. Shares move linearly. No result if the scan
 /// lacks fresh valuations or share prices.
 [[nodiscard]] std::optional<Money> portfolio_margin_requirement(const std::vector<MarginLeg>& legs,
-    const std::map<std::string, Valuation>& valuations, Timestamp now, Timestamp max_age,
+    const Valuations& valuations, Timestamp now, Timestamp max_age,
     const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {});
 /// Short contracts that no long covers: each short pairs with a long of the same
 /// type on the same underlying that expires with it or later, whatever the

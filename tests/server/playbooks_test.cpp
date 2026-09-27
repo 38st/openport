@@ -344,7 +344,7 @@ TEST(Playbooks, ScenarioAutoEntriesAndTimeStopsReproduceJournalAndVerification) 
     EXPECT_EQ(report.at("trades")[0].at("rules").at("time_stop"), true);
     auto malformed = *view;
     auto snapshot = std::make_shared<trading::TradingSnapshot>(*view->snapshot);
-    snapshot->recent_orders.front().request.note = R"({"playbook":42,"max_units":1,"floor_share":0.8})";
+    snapshot->recent_orders.mut(0).request.note = R"({"playbook":42,"max_units":1,"floor_share":0.8})";
     malformed.snapshot = snapshot;
     EXPECT_NO_THROW(server::playbook_report(store.catalogue(), malformed));
     std::ifstream input(journal); std::ostringstream bytes; bytes << input.rdbuf();

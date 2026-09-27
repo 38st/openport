@@ -8,6 +8,7 @@
 
 #include "openport/md/contract.hpp"
 #include "openport/trading/money.hpp"
+#include "openport/trading/shared.hpp"
 
 namespace openport::trading {
 
@@ -221,6 +222,9 @@ struct Valuation {
   bool valid = true;
   std::string spot_source = {};  ///< quote, parity, or empty when unknown.
 };
+/// Registered contract definitions and their latest valuations, by padded OSI.
+using Contracts = SharedMap<std::string, md::OptionContract>;
+using Valuations = SharedMap<std::string, Valuation>;
 
 /// An underlying's price, for the shares that exercise and assignment deliver.
 struct StockPrice {

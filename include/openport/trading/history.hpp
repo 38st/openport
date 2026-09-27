@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "openport/trading/evaluation.hpp"
@@ -49,18 +50,39 @@ struct ShareLifecycle {
   std::vector<std::uint64_t> fills;  ///< StockFill IDs, the first one opening it.
 };
 
+/// The state machine lifecycles() runs, fed one fill or closure at a time in
+/// execution order. `open` holds each contract's lifecycle in progress; one that
+/// finishes moves to `closed`. `started` numbers them in the order they opened.
+class LifecycleBuilder {
+ public:
+  struct Open {
+    std::uint64_t started = 0;
+    Lifecycle life;
+    Ledger ledger;
+  };
+  void fill(const Fill& fill, const Contracts& contracts);
+  void closure(const Closure& closure, const Contracts& contracts);
+  std::map<std::string, Open> open;
+  std::vector<std::pair<std::uint64_t, Lifecycle>> closed;
+
+ private:
+  void start(const Fill& fill, const md::OptionContract& contract, Quantity signed_quantity);
+  void finish(const std::string& symbol, Timestamp time);
+  std::uint64_t started_ = 0;
+};
+
 /// Rebuilds lifecycles in execution order, in the order each opened. Each one
 /// replays its own fills through a fresh Ledger, so realised P&L uses the same
 /// basis allocation and rounding as the account. A reversing fill closes one
 /// lifecycle and opens the next at the same price, splitting its fee pro rata.
 /// Closures apply after the fills they follow; unknown contracts are skipped.
-[[nodiscard]] std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills,
-    const std::vector<Closure>& closures, const std::map<std::string, md::OptionContract>& contracts);
+[[nodiscard]] std::vector<Lifecycle> lifecycles(const SharedVector<Fill>& fills,
+    const SharedVector<Closure>& closures, const Contracts& contracts);
 
 /// The same for shares, from the account's stock fills: a fill that reverses the
 /// holding closes one round trip and opens the next at its price. Each dividend
 /// belongs to the round trip holding its shares when it was paid.
-[[nodiscard]] std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills,
-                                                          const std::vector<DividendPayment>& dividends = {});
+[[nodiscard]] std::vector<ShareLifecycle> share_lifecycles(const SharedVector<StockFill>& fills,
+                                                          const SharedVector<DividendPayment>& dividends = {});
 
 }  // namespace openport::trading

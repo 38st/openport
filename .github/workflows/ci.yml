@@ -34,6 +34,11 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ./build/tests/openport_tests
+      - name: Test incremental reviews and journal changes against full rebuilds
+        env:
+          OPENPORT_VERIFY_REVIEWS: 1
+          OPENPORT_VERIFY_JOURNAL: 1
+        run: ./build/tests/openport_tests
 
   cpp-sanitize:
     name: C++ (GCC 13, AddressSanitizer + UndefinedBehaviorSanitizer)

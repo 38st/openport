@@ -122,7 +122,7 @@ Money margin_requirement(const std::vector<MarginLeg>& legs) {
 }
 
 std::optional<Money> portfolio_margin_requirement(const std::vector<MarginLeg>& legs,
-    const std::map<std::string, Valuation>& valuations, Timestamp now, Timestamp max_age,
+    const Valuations& valuations, Timestamp now, Timestamp max_age,
     const std::map<std::string, StockPosition>& stocks, const std::map<std::string, double>& stock_prices) {
   struct Group {
     std::map<std::string, Position> options;

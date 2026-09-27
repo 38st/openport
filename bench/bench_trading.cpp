@@ -15,6 +15,8 @@ using namespace openport;
 trading::TradingSession history(test::ScriptedMarket& market, std::int64_t fills) {
   trading::SessionConfig config;
   config.initial_cash = trading::Money::parse("1000000000");
+  // Each round trip pays the spread and fees; the history must not stop at the loss limit.
+  config.limits.max_daily_loss = trading::Money::parse("1000000000");
   trading::TradingSession session(config, market.time);
   market.seed(session, "4.00", "4.20", fills + 10);
   for (std::int64_t i = 0; i < fills; ++i) {
@@ -24,18 +26,37 @@ trading::TradingSession history(test::ScriptedMarket& market, std::int64_t fills
   }
   return session;
 }
-void BM_TradingOnQuotes(benchmark::State& state) {
-  test::ScriptedMarket market;
-  auto session = history(market, state.range(0));
-  // A resting order keeps this on the active transaction path without growing
-  // fill or order history during the measurement.
-  session.submit(market.limit("resting", 1, "1.00"), market.time);
+void rest(test::ScriptedMarket& market, trading::TradingSession& session) {
+  // A bid inside the price band, below the ask: it rests, keeping each batch on the
+  // active transaction path without growing fill or order history.
+  if (!session.submit(market.limit("resting", 1, "3.70"), market.time).decision.ok())
+    throw std::runtime_error("The resting order was refused");
+}
+void quotes(benchmark::State& state, test::ScriptedMarket& market, trading::TradingSession& session) {
   for (auto _ : state) {
     ++market.observation;
     benchmark::DoNotOptimize(session.on_quotes({market.quote()}, {market.valuation()}, market.time));
   }
 }
+void BM_TradingOnQuotes(benchmark::State& state) {
+  test::ScriptedMarket market;
+  auto session = history(market, state.range(0));
+  rest(market, session);
+  quotes(state, market, session);
+}
 BENCHMARK(BM_TradingOnQuotes)->Arg(10)->Arg(1000)->Arg(10000)->Unit(benchmark::kMicrosecond);
+
+// The same with a position open, so each batch also samples its trade review.
+void BM_TradingOnQuotesHolding(benchmark::State& state) {
+  test::ScriptedMarket market;
+  auto session = history(market, state.range(0));
+  rest(market, session);
+  if (session.submit(market.market("held", 1), market.time).decision.code != trading::Reason::NONE ||
+      session.snapshot()->positions.empty())
+    throw std::runtime_error("The held position did not open");
+  quotes(state, market, session);
+}
+BENCHMARK(BM_TradingOnQuotesHolding)->Arg(10)->Arg(1000)->Arg(10000)->Unit(benchmark::kMicrosecond);
 
 void BM_TradingSubmit(benchmark::State& state) {
   test::ScriptedMarket market;

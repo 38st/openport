@@ -74,8 +74,11 @@ flowchart LR
   of market data and commands.
 - **Each account's reducer** turns (state, input) into (state, events) with no clock of
   its own; the journal it appends to is passed in. Market time comes from the data, so
-  a replay runs on its day's clock. The journal records each transaction's changes and
-  a checkpoint of the whole state every thousand records.
+  a replay runs on its day's clock. A transaction works on a copy of the account and
+  commits it whole or not at all; the copy shares the account's history, so it costs
+  the open positions and working orders, not the past ([measurements](#trading-measurements)).
+  The journal records each transaction's changes and a checkpoint of the whole state
+  every thousand records.
 
 ## Playbooks
 
@@ -144,28 +147,57 @@ input error, not silently treated as a different run.
 
 ## Trading measurements
 
-`openport_bench_trading` measures active `on_quotes` transactions and a fresh
-`submit` after 10, 1,000 and 10,000 historical fills. Setup is outside the timed
-loop. Quote measurements keep one resting order and do not grow history; submit
-uses one iteration per seeded session, with three repetitions. No journal I/O is
-timed. The scenario benchmark reads a generated SPX day, runs analytics and a flat
-paper account, and reports market-hours simulated per wall-second.
+A transaction applies a command or a market batch to a copy of the account and
+commits the copy whole or not at all, so what it costs is the copy and the rules it
+runs. None of that reads the account's history:
 
-Measured in this sandbox on 2026-09-27, Release/Apple Clang, Apple M2 Max MacBook Pro
-(12 cores, 32 GB). Other validation jobs were running; these are local measurements,
-not capacity claims. Times below are wall time; submit is the median of three.
+- **Shared history.** Orders, fills, closures, reviews, notes and the contract, book
+  and valuation maps are chunked containers whose copies share storage; a write copies
+  only the chunk it changes. Snapshots for readers share the same chunks.
+- **Working orders.** Scans for open orders read an index of them, rebuilt at each
+  commit from the orders open before and those placed since (a closed order never
+  reopens); duplicate and retried client order IDs look up an index of first uses.
+- **Rules read positions.** Loss, floor and exposure checks compute equity, risk and
+  buying power from the positions and working orders, not from a full snapshot.
+- **Reviews.** Trade and strategy reviews are sampled from lifecycles kept current as
+  fills and closures arrive, not rebuilt from every fill; a finished trade's lifecycle
+  is dropped once no review can change.
+- **Journal changes.** A record's change from the record before is found field by
+  field, skipping the chunks the transaction did not touch, instead of writing out and
+  comparing both states. The records are byte for byte what comparing whole states
+  gives; a checkpoint still writes the whole state every thousand records.
 
-| Historical fills | `on_quotes` | `submit` |
-| --- | ---: | ---: |
-| 10 | 16.3 µs | 2,353 µs |
-| 1,000 | 855 µs | 1,215 µs |
-| 10,000 | 3,751 µs | 5,209 µs |
+`OPENPORT_VERIFY_REVIEWS=1` and `OPENPORT_VERIFY_JOURNAL=1` make the reducer check each
+review update and each record's change against a rebuild from every fill and a
+comparison of both states, and throw on any difference; CI runs the whole suite with
+both. `TradingScaling.QuoteBatchesCostTheOpenBookNotTheHistory` keeps a quote batch
+after 10,000 fills within four times one after 10, flat and holding a position.
 
-The simulated SPX scenario ran 6.75 market hours in 1.88 wall seconds, or 3.59
-market-hours per second. It has no orders or journal writes. Quote transaction
-cost grew with history: the reducer copies its full state for each transaction,
-including prior orders and fills. This task does not restructure that state.
-Small submit timings also include valuation/risk work and do not grow monotonically.
+`openport_bench_trading` measures quote batches and a fresh `submit` after 10, 1,000
+and 10,000 historical fills (alternating one-lot market orders), and quote batches
+again holding one contract, whose trade review samples each batch. A resting bid
+inside the price band keeps every batch on the full transaction path. Setup is outside
+the timed loop and no journal I/O is timed; submit is the median of three.
+
+Measured on 2026-09-27, Release/Apple Clang, Apple M2 Max MacBook Pro (12 cores,
+32 GB), as CPU time: other work kept the machine busy, so wall time is not reported.
+"Before" is the same benchmark built against the previous reducer, run alongside.
+
+| Historical fills | Quote batch, before | After | Holding, before | After | `submit`, before | After |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 113 µs | 77 µs | 2,693 µs | 529 µs | 2,670 µs | 559 µs |
+| 1,000 | 1,109 µs | 79 µs | 5,049 µs | 528 µs | 5,494 µs | 573 µs |
+| 10,000 | 10,103 µs | 79 µs | 26,629 µs | 530 µs | 32,971 µs | 577 µs |
+
+With a journal, a record now costs its disk sync plus about 1% for finding the
+change; before, writing out and comparing the whole state took most of the time and
+grew with the history. What remains of a held position's batch is mostly calendar
+arithmetic (sessions and holidays), recomputed on each lookup.
+
+The scenario benchmark reads a generated SPX day, runs analytics and a flat paper
+account, and reports market-hours simulated per wall-second: 6.75 market hours in 1.88
+wall seconds (3.59 per second) when measured earlier the same day, before this change;
+it has no orders or journal writes.
 
 ```sh
 ./build/bench/openport_bench_trading --benchmark_min_time=0.1s
@@ -173,7 +205,7 @@ Small submit timings also include valuation/risk work and do not grow monotonica
 
 ## Tests
 
-780 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+785 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
 terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13

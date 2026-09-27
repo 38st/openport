@@ -265,7 +265,7 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
     ASSERT_GE(view->snapshot->recent_fills.size(), 6U);
     if (golden.empty()) {
       golden = read_file(journal);
-      fills = view->snapshot->recent_fills;
+      fills = view->snapshot->recent_fills.to_vector();
       equity = view->snapshot->equity;
       json summary = json::array();
       for (const auto& fill : fills) summary.push_back({fill.symbol, fill.quantity, fill.price.micros(), fill.fee.micros(), fill.time});

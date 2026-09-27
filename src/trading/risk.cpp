@@ -65,8 +65,8 @@ Timestamp observation_time(const md::OptionContract& contract, Timestamp now) {
   return session.open || session.market_time == md::kInvalidTimestamp ? now : std::min(now, session.market_time);
 }
 RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orders,
-    const std::map<std::string, md::OptionContract>& contracts,
-    const std::map<std::string, Valuation>& valuations, const Limits& limits, Timestamp now,
+    const Contracts& contracts,
+    const Valuations& valuations, const Limits& limits, Timestamp now,
     const std::map<std::string, double>& stock_prices) {
   RiskSnapshot result;
   result.aggregate.limits = limits.aggregate;
@@ -144,7 +144,7 @@ void validate_scenarios(const ScenarioConfig& c) {
   for (double y : c.vol_points) valid &= std::isfinite(y) && std::abs(y) <= 1000;
   if (!valid) throw TradingError(Reason::INVALID_SCENARIO, "Invalid or oversized spot/vol grid");
 }
-ScenarioGrid scenario_grid(const Ledger& ledger, const std::map<std::string, Valuation>& valuations,
+ScenarioGrid scenario_grid(const Ledger& ledger, const Valuations& valuations,
     const ScenarioConfig& config, Timestamp now, Timestamp max_age, const std::map<std::string, double>& stock_prices) {
   validate_scenarios(config);
   ScenarioGrid result;
@@ -187,7 +187,7 @@ ScenarioGrid scenario_grid(const Ledger& ledger, const std::map<std::string, Val
   if (!result.complete) for (auto& cell : result.cells) cell.pnl = 0;
   return result;
 }
-BreachRisk breach_risk(const Ledger& ledger, const std::map<std::string, Valuation>& valuations,
+BreachRisk breach_risk(const Ledger& ledger, const Valuations& valuations,
     Money equity, std::optional<Money> floor, std::optional<Money> soft_floor, Timestamp now, Timestamp max_age,
     const std::map<std::string, double>& stock_prices, const std::map<std::string, double>& close_variances) {
   BreachRisk result;

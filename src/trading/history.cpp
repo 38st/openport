@@ -22,120 +22,129 @@ struct Open {
 Quantity magnitude(Quantity q) { return q < 0 ? -q : q; }
 }  // namespace
 
-std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vector<Closure>& closures,
-                                  const std::map<std::string, md::OptionContract>& contracts) {
-  std::vector<Lifecycle> out;
-  std::map<std::string, Open> open;
-  auto finish = [&](const std::string& symbol, Timestamp time) {
-    const auto it = open.find(symbol);
-    auto& life = out[it->second.index];
-    life.closed = time;
-    life.quantity = 0;
-    life.basis = Money{};
-    open.erase(it);
-  };
-  auto start = [&](const Fill& fill, const md::OptionContract& contract, Quantity signed_quantity) {
-    Lifecycle life;
-    life.symbol = fill.symbol;
-    life.contract = contract;
-    life.direction = signed_quantity > 0 ? 1 : -1;
-    life.opened = fill.time;
-    life.first_fill = fill.id;
-    life.entry_context = fill.context;
-    out.push_back(std::move(life));
-    open[fill.symbol] = Open{out.size() - 1, Ledger{}};
-  };
-  auto apply_fill = [&](const Fill& fill) {
-    const auto contract = contracts.find(fill.symbol);
-    if (contract == contracts.end() || fill.quantity <= 0) return;
-    const Quantity signed_quantity = fill.side == Side::Buy ? fill.quantity : -fill.quantity;
-    auto it = open.find(fill.symbol);
-    if (it == open.end()) {
-      start(fill, contract->second, signed_quantity);
+void LifecycleBuilder::start(const Fill& fill, const md::OptionContract& contract, Quantity signed_quantity) {
+  Open entry;
+  entry.started = started_++;
+  auto& life = entry.life;
+  life.symbol = fill.symbol;
+  life.contract = contract;
+  life.direction = signed_quantity > 0 ? 1 : -1;
+  life.opened = fill.time;
+  life.first_fill = fill.id;
+  life.entry_context = fill.context;
+  open[fill.symbol] = std::move(entry);
+}
+void LifecycleBuilder::finish(const std::string& symbol, Timestamp time) {
+  const auto it = open.find(symbol);
+  auto& life = it->second.life;
+  life.closed = time;
+  life.quantity = 0;
+  life.basis = Money{};
+  closed.emplace_back(it->second.started, std::move(life));
+  open.erase(it);
+}
+void LifecycleBuilder::fill(const Fill& fill, const Contracts& contracts) {
+  const auto contract = contracts.find(fill.symbol);
+  if (contract == contracts.end() || fill.quantity <= 0) return;
+  const Quantity signed_quantity = fill.side == Side::Buy ? fill.quantity : -fill.quantity;
+  auto it = open.find(fill.symbol);
+  if (it == open.end()) {
+    start(fill, contract->second, signed_quantity);
+    it = open.find(fill.symbol);
+  }
+  auto* life = &it->second.life;
+  const auto held = life->quantity;
+  if (held == 0 || (held > 0) == (signed_quantity > 0)) {
+    it->second.ledger.fill(contract->second, signed_quantity, fill.price, fill.fee);
+    life->quantity = held + signed_quantity;
+    life->opened_contracts += fill.quantity;
+    life->open_notional = life->open_notional + fill.price * fill.quantity;
+  } else {
+    life->exit_context = fill.context;
+    const auto closing = std::min(magnitude(held), fill.quantity);
+    const auto remainder = fill.quantity - closing;
+    const Money closing_fee = fill.fee.prorate(closing, fill.quantity);
+    it->second.ledger.fill(contract->second, signed_quantity > 0 ? closing : -closing, fill.price, closing_fee);
+    life->quantity = held + (signed_quantity > 0 ? closing : -closing);
+    life->closed_contracts += closing;
+    life->close_notional = life->close_notional + fill.price * closing;
+    if (remainder > 0) {
+      life->fills.push_back(fill.id);
+      life->gross = it->second.ledger.account().realised;
+      life->fees = it->second.ledger.account().fees;
+      finish(fill.symbol, fill.time);
+      start(fill, contract->second, signed_quantity > 0 ? remainder : -remainder);
       it = open.find(fill.symbol);
+      life = &it->second.life;
+      it->second.ledger.fill(contract->second, signed_quantity > 0 ? remainder : -remainder,
+                             fill.price, fill.fee - closing_fee);
+      life->quantity = signed_quantity > 0 ? remainder : -remainder;
+      life->opened_contracts += remainder;
+      life->open_notional = life->open_notional + fill.price * remainder;
     }
-    auto* life = &out[it->second.index];
-    const auto held = life->quantity;
-    if (held == 0 || (held > 0) == (signed_quantity > 0)) {
-      it->second.ledger.fill(contract->second, signed_quantity, fill.price, fill.fee);
-      life->quantity = held + signed_quantity;
-      life->opened_contracts += fill.quantity;
-      life->open_notional = life->open_notional + fill.price * fill.quantity;
-    } else {
-      life->exit_context = fill.context;
-      const auto closing = std::min(magnitude(held), fill.quantity);
-      const auto remainder = fill.quantity - closing;
-      const Money closing_fee = fill.fee.prorate(closing, fill.quantity);
-      it->second.ledger.fill(contract->second, signed_quantity > 0 ? closing : -closing, fill.price, closing_fee);
-      life->quantity = held + (signed_quantity > 0 ? closing : -closing);
-      life->closed_contracts += closing;
-      life->close_notional = life->close_notional + fill.price * closing;
-      if (remainder > 0) {
-        life->fills.push_back(fill.id);
-        life->gross = it->second.ledger.account().realised;
-        life->fees = it->second.ledger.account().fees;
-        finish(fill.symbol, fill.time);
-        start(fill, contract->second, signed_quantity > 0 ? remainder : -remainder);
-        it = open.find(fill.symbol);
-        life = &out[it->second.index];
-        it->second.ledger.fill(contract->second, signed_quantity > 0 ? remainder : -remainder,
-                               fill.price, fill.fee - closing_fee);
-        life->quantity = signed_quantity > 0 ? remainder : -remainder;
-        life->opened_contracts += remainder;
-        life->open_notional = life->open_notional + fill.price * remainder;
-      }
-    }
-    life->basis = it->second.ledger.positions().contains(fill.symbol)
-        ? it->second.ledger.positions().at(fill.symbol).basis : Money{};
-    life->max_quantity = std::max(life->max_quantity, magnitude(life->quantity));
-    life->fills.push_back(fill.id);
-    life->gross = it->second.ledger.account().realised;
-    life->fees = it->second.ledger.account().fees;
-    if (life->quantity == 0) finish(fill.symbol, fill.time);
-  };
-  auto apply_closure = [&](const Closure& closure) {
-    const auto it = open.find(closure.symbol);
-    const auto contract = contracts.find(closure.symbol);
-    if (it == open.end() || contract == contracts.end()) return;
-    auto& life = out[it->second.index];
-    const auto held = life.quantity;
-    if (held == 0) return;
-    // Exercise and assignment can take part of the position; the rest stays open.
-    const auto closing = (closure.kind == ClosureKind::Exercise || closure.kind == ClosureKind::Assignment)
-        ? std::min(magnitude(closure.quantity), magnitude(held)) : magnitude(held);
-    if (closure.kind == ClosureKind::Settlement) {
-      it->second.ledger.settle(closure.symbol, closure.price);
-    } else {
-      it->second.ledger.fill(contract->second, held > 0 ? -closing : closing, closure.price, Money{});
-    }
-    life.exit_context.reset();
-    life.basis = it->second.ledger.positions().contains(closure.symbol)
-        ? it->second.ledger.positions().at(closure.symbol).basis : Money{};
-    life.quantity = held > 0 ? held - closing : held + closing;
-    life.closed_contracts += closing;
-    life.close_notional = life.close_notional + closure.price * closing;
-    life.gross = it->second.ledger.account().realised;
-    life.fees = it->second.ledger.account().fees;
-    if (life.quantity != 0) return;
-    life.closure = closure.kind;
-    finish(closure.symbol, closure.time);
-  };
+  }
+  life->basis = it->second.ledger.positions().contains(fill.symbol)
+      ? it->second.ledger.positions().at(fill.symbol).basis : Money{};
+  life->max_quantity = std::max(life->max_quantity, magnitude(life->quantity));
+  life->fills.push_back(fill.id);
+  life->gross = it->second.ledger.account().realised;
+  life->fees = it->second.ledger.account().fees;
+  if (life->quantity == 0) finish(fill.symbol, fill.time);
+}
+void LifecycleBuilder::closure(const Closure& closure, const Contracts& contracts) {
+  const auto it = open.find(closure.symbol);
+  const auto contract = contracts.find(closure.symbol);
+  if (it == open.end() || contract == contracts.end()) return;
+  auto& life = it->second.life;
+  const auto held = life.quantity;
+  if (held == 0) return;
+  // Exercise and assignment can take part of the position; the rest stays open.
+  const auto closing = (closure.kind == ClosureKind::Exercise || closure.kind == ClosureKind::Assignment)
+      ? std::min(magnitude(closure.quantity), magnitude(held)) : magnitude(held);
+  if (closure.kind == ClosureKind::Settlement) {
+    it->second.ledger.settle(closure.symbol, closure.price);
+  } else {
+    it->second.ledger.fill(contract->second, held > 0 ? -closing : closing, closure.price, Money{});
+  }
+  life.exit_context.reset();
+  life.basis = it->second.ledger.positions().contains(closure.symbol)
+      ? it->second.ledger.positions().at(closure.symbol).basis : Money{};
+  life.quantity = held > 0 ? held - closing : held + closing;
+  life.closed_contracts += closing;
+  life.close_notional = life.close_notional + closure.price * closing;
+  life.gross = it->second.ledger.account().realised;
+  life.fees = it->second.ledger.account().fees;
+  if (life.quantity != 0) return;
+  life.closure = closure.kind;
+  finish(closure.symbol, closure.time);
+}
+
+std::vector<Lifecycle> lifecycles(const SharedVector<Fill>& fills, const SharedVector<Closure>& closures,
+                                  const Contracts& contracts) {
+  LifecycleBuilder builder;
   std::size_t next_closure = 0;
   auto closures_until = [&](std::uint64_t executed) {
     while (next_closure < closures.size() && closures[next_closure].after_fill <= executed)
-      apply_closure(closures[next_closure++]);
+      builder.closure(closures[next_closure++], contracts);
   };
   closures_until(0);
   for (std::size_t i = 0; i < fills.size(); ++i) {
-    apply_fill(fills[i]);
+    builder.fill(fills[i], contracts);
     closures_until(i + 1);
   }
-  while (next_closure < closures.size()) apply_closure(closures[next_closure++]);
+  while (next_closure < closures.size()) builder.closure(closures[next_closure++], contracts);
+  // In the order they opened, as the account traded them.
+  auto started = std::move(builder.closed);
+  for (auto& [symbol, entry] : builder.open) started.emplace_back(entry.started, std::move(entry.life));
+  std::sort(started.begin(), started.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  std::vector<Lifecycle> out;
+  out.reserve(started.size());
+  for (auto& entry : started) out.push_back(std::move(entry.second));
   return out;
 }
 
-std::vector<ShareLifecycle> share_lifecycles(const std::vector<StockFill>& fills,
-                                             const std::vector<DividendPayment>& dividends) {
+std::vector<ShareLifecycle> share_lifecycles(const SharedVector<StockFill>& fills,
+                                             const SharedVector<DividendPayment>& dividends) {
   std::vector<ShareLifecycle> out;
   std::map<std::string, Open> open;
   auto start = [&](const StockFill& fill, Quantity signed_shares) {
