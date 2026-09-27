@@ -223,7 +223,7 @@ changes; it has no orders or journal writes.
 
 ## Tests
 
-786 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+788 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
 terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13

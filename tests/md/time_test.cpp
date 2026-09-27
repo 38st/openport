@@ -389,6 +389,52 @@ TEST(Time, AnnouncedClosuresAndEarlyClosesOverrideTheRules) {
   EXPECT_EQ(trading_session("SPX", new_york_to_utc({2026, 9, 6}, 21, 0)).name, "global");
 }
 
+TEST(Time, UnnamedAnnouncedClosureClosesOptionsAndStocks) {
+  using namespace openport::md;
+  const Date before{2026, 10, 6}, closed{2026, 10, 7}, after{2026, 10, 8};
+  const auto noon = new_york_to_utc(closed, 12, 0);
+  const Announced announced({{closed, "", true, 13, 0}});
+  const auto market = market_session(noon);
+  EXPECT_FALSE(market.open);
+  EXPECT_EQ(market.note, "closed (holiday)");
+  EXPECT_EQ(market.next_open, new_york_to_utc(after, 9, 30));
+  const auto options = trading_session("SPX", noon);
+  EXPECT_FALSE(options.open);
+  EXPECT_EQ(options.note, "closed (holiday)");
+  EXPECT_EQ(options.market_time, new_york_to_utc(before, 17, 0));
+  const auto stocks = stock_session(noon);
+  EXPECT_FALSE(stocks.open);
+  EXPECT_EQ(stocks.note, "closed (holiday)");
+  EXPECT_EQ(stocks.market_time, new_york_to_utc(before, 16, 0));
+  EXPECT_FALSE(trading_session("SPX", new_york_to_utc(before, 21, 0)).open);
+  EXPECT_EQ(trading_date(new_york_to_utc(before, 21, 0)), after);
+  EXPECT_EQ(previous_business_day(after), before);
+  EXPECT_EQ(regular_close_hour(closed), 16);
+}
+
+TEST(Time, UnnamedAnnouncedClosureKeepsItsOvernightSession) {
+  using namespace openport::md;
+  const Date before{2026, 10, 6}, closed{2026, 10, 7}, after{2026, 10, 8};
+  const Announced announced({{closed, "", true, 13, 11 * 60 + 30}});
+  const auto end = new_york_to_utc(closed, 11, 30);
+  for (const auto time : {new_york_to_utc(before, 20, 15), new_york_to_utc(closed, 9, 30), end - 1}) {
+    const auto session = trading_session("SPX", time);
+    EXPECT_TRUE(session.open);
+    EXPECT_EQ(session.name, "global");
+    EXPECT_EQ(session.market_time, time);
+    EXPECT_EQ(session.end, end);
+    EXPECT_EQ(trading_date(time), after);
+  }
+  for (const auto time : {end, new_york_to_utc(closed, 16, 30)}) {
+    const auto session = trading_session("SPX", time);
+    EXPECT_FALSE(session.open);
+    EXPECT_EQ(session.note, "closed (holiday)");
+    EXPECT_EQ(session.market_time, end);
+  }
+  EXPECT_FALSE(market_session(new_york_to_utc(closed, 10, 0)).open);
+  EXPECT_FALSE(stock_session(new_york_to_utc(closed, 10, 0)).open);
+}
+
 // Each thread remembers the calendar answers it has worked out; an announcement
 // published on one thread must reach another's next answer, however warm.
 TEST(Time, AnnouncementsReachEveryThreadsNextAnswer) {

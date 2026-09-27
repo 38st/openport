@@ -154,15 +154,14 @@ bool early_close(const Schedule* schedule, Date date) noexcept {
 /// What the rules and one schedule say about a date.
 struct Day {
   std::optional<Holiday> holiday;
-  bool business = false;  ///< a weekday that no named holiday closes
+  bool business = false;  ///< a weekday that no holiday closes
   int close_hour = 0;     ///< regular_close_hour
-  [[nodiscard]] std::string_view name() const noexcept { return holiday ? holiday->name : std::string_view{}; }
 };
 Day day_under(const Schedule* schedule, Date date) noexcept {
   Day day;
   day.holiday = holiday_on(schedule, date);
   const int wd = weekday(date);
-  day.business = wd != 0 && wd != 6 && day.name().empty();
+  day.business = wd != 0 && wd != 6 && !day.holiday;
   if (const auto* announced = scheduled(schedule, date)) day.close_hour = announced->closed ? 16 : announced->close_hour;
   else day.close_hour = early_close(schedule, date) ? 13 : 16;
   return day;
@@ -182,7 +181,7 @@ struct Window {
   bool filled = false;
   std::int64_t days = 0;
   bool weekend = false;
-  std::string_view holiday;  ///< the date's, if named
+  std::optional<Holiday> holiday;  ///< the date's, if closed
   std::size_t count = 0;
   std::array<Span, 4 * 16> spans{};
 };
@@ -225,7 +224,7 @@ class Memo {
     if (w.filled && w.days == days) return w;
     const auto date = date_from_days(days);
     w.weekend = weekday(date) == 0 || weekday(date) == 6;
-    w.holiday = day(date).name();
+    w.holiday = day(date).holiday;
     w.count = 0;
     const auto add = [&](Span::Kind span, Timestamp start, Timestamp end) {
       // A session that cannot end in the timestamp range never counts.
@@ -425,8 +424,8 @@ MarketSession market_session(Timestamp ts) {
   const int wd = weekday(date);
   if (wd == 0 || wd == 6)
     result.note = "closed (weekend)";
-  else if (const auto h = today.name(); !h.empty())
-    result.note = "closed (holiday: " + std::string(h) + ")";
+  else if (const auto& h = today.holiday; h)
+    result.note = h->name.empty() ? "closed (holiday)" : "closed (holiday: " + std::string(h->name) + ")";
   else if (rem < 9 * 3600 + 30 * 60)
     result.note = "closed (pre-market)";
   else if (rem >= today.close_hour * 3600)
@@ -465,9 +464,10 @@ TradingSession session_at(bool global, bool curb, bool quarter_hour, Timestamp t
   TradingSession result;
   if (!in_force) {
     result.market_time = latest_end;
-    result.note = !window.holiday.empty() ? "closed (holiday: " + std::string(window.holiday) + ")"
-                  : window.weekend        ? "closed (weekend)"
-                                          : "closed (between sessions)";
+    result.note = window.holiday ? (window.holiday->name.empty() ? "closed (holiday)"
+                                     : "closed (holiday: " + std::string(window.holiday->name) + ")")
+                  : window.weekend ? "closed (weekend)"
+                                   : "closed (between sessions)";
     return result;
   }
   result.open = true;
