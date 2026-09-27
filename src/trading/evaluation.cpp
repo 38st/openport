@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <random>
+#include <stdexcept>
 
 namespace openport::trading {
 Money evaluation_floor(const AccountRules& rules, Money peak, bool& locked) {

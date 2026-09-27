@@ -335,7 +335,9 @@ TEST(Playbooks, ScenarioAutoEntriesAndTimeStopsReproduceJournalAndVerification) 
     EXPECT_TRUE(view->snapshot->open_orders.empty());
     EXPECT_EQ(view->snapshot->recent_orders.front().request.tags.front(), "playbook:morning@v1");
     // Automatic entries and time stops are the system's actions.
-    for (const auto& order : view->snapshot->recent_orders) EXPECT_EQ(order.actor, "system") << order.request.client_order_id;
+    for (const auto& order : view->snapshot->recent_orders) {
+      EXPECT_EQ(order.actor, "system") << order.request.client_order_id;
+    }
     const auto report = server::playbook_report(store.catalogue(), *view).at("morning");
     EXPECT_EQ(report.at("all").at("trades"), 1);
     EXPECT_EQ(report.at("all").at("adherence"), 1);
