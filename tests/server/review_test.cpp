@@ -15,6 +15,7 @@ class ReviewSource final : public server::MetricsSource {
   std::vector<std::string> symbols() const override { return {}; }
   std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string&) const override { return {}; }
   server::EngineStatus status() const override { server::EngineStatus s; s.provider = "replay (demo)"; return s; }
+  using server::MetricsSource::trading_view;
   std::shared_ptr<const server::TradingView> trading_view() const override { return view; }
   void publish(const trading::TradingSession& session) {
     view = std::make_shared<server::TradingView>();

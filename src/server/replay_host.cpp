@@ -267,6 +267,7 @@ class ArchivedReplay final : public MetricsSource {
   }
   std::vector<std::string> symbols() const override { return {}; }
   std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string&) const override { return {}; }
+  using MetricsSource::trading_view;  // the account-id overload answers for the main account
   std::shared_ptr<const TradingView> trading_view() const override { return view_; }
   md::Timestamp wall_time() const override { return view_->snapshot->time; }
   EngineStatus status() const override {
