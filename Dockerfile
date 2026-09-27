@@ -9,6 +9,8 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
+# The type check includes web tests, which share the C++ template parity fixture.
+COPY tests/data/template-parity.json /tests/data/template-parity.json
 RUN npm run build
 
 FROM ubuntu:24.04 AS build
