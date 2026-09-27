@@ -148,16 +148,26 @@ ScenarioGrid scenario_grid(const Ledger& ledger, const Valuations& valuations,
     const ScenarioConfig& config, Timestamp now, Timestamp max_age, const std::map<std::string, double>& stock_prices) {
   validate_scenarios(config);
   ScenarioGrid result;
+  struct ValuedPosition {
+    const Position* position;
+    const Valuation* valuation;
+  };
+  std::vector<ValuedPosition> positions;
+  positions.reserve(ledger.positions().size());
+  for (const auto& [symbol, p] : ledger.positions()) {
+    const auto it = valuations.find(symbol);
+    if (now >= p.contract.expiry_time() || it == valuations.end() || !fresh(it->second, p.contract, now, max_age)) {
+      result.complete = false;  // Validation above guarantees at least one cell.
+      continue;
+    }
+    positions.push_back({&p, &it->second});
+  }
   for (double spot : config.spot_percent) {
     for (double vol : config.vol_points) {
       ScenarioCell cell{spot, vol, 0, false};
-      for (const auto& [symbol, p] : ledger.positions()) {
-        const auto it = valuations.find(symbol);
-        if (now >= p.contract.expiry_time() || it == valuations.end() || !fresh(it->second, p.contract, now, max_age)) {
-          result.complete = false;
-          continue;
-        }
-        const auto& v = it->second;
+      for (const auto& [position, valuation] : positions) {
+        const auto& p = *position;
+        const auto& v = *valuation;
         const double shocked_vol = v.smile_iv + vol / 100;
         cell.clamped |= shocked_vol < config.vol_floor;
         // Avoid subtraction and floor artifacts: zero shock is exactly zero.

@@ -167,8 +167,8 @@ runs. None of that reads the account's history:
   comparing both states. The records are byte for byte what comparing whole states
   gives; a checkpoint still writes the whole state every thousand records.
 
-The rules also ask the calendar many times a batch: the scenario grid asks for each
-position's session and expiry in every cell. A date's holiday, business day and close,
+The rules also ask the calendar many times a batch, for each position's session and
+expiry; the scenario grid asks once per position, not once per cell. A date's holiday, business day and close,
 and for each kind of root the sessions around a New York date, are worked out once per
 thread and remembered, so a session lookup takes about 135 ns instead of 10 µs. Each
 thread keeps its own memo, so reading takes no lock; a thread that finds a newly
@@ -209,8 +209,8 @@ With a journal, a record now costs its disk sync plus about 1% for finding the
 change; before, writing out and comparing the whole state took most of the time and
 grew with the history. A `submit` still grows a little with the history: appending an
 order, a fill and a client order ID each copies its container's list of chunks, one
-pointer per 32 entries. Calendar answers are still about a third of a held position's
-batch, from the number of lookups rather than their cost.
+pointer per 32 entries. Asking once per position instead of once per grid cell took
+about a sixth more off a held position's batch.
 
 The scenario benchmark reads a generated SPX day, runs analytics and a flat paper
 account, and reports market-hours simulated per wall-second: 6.75 market hours in 1.88
@@ -223,7 +223,7 @@ changes; it has no orders or journal writes.
 
 ## Tests
 
-788 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+791 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
 terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13

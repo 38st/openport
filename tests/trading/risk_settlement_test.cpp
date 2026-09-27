@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <gtest/gtest.h>
 
@@ -235,6 +236,80 @@ TEST(TradingRisk, GreekUnitsAndScenarioSignsForCallsPutsLongsShorts) {
       config.spot_percent = {-100};
       EXPECT_THROW((void)scenario_grid(ledger, values, config, f.time, md::kNanosPerMinute), TradingError);
     }
+  }
+}
+TEST(TradingRisk, ScenarioGridKeepsCellAndMixedBookSummationOrder) {
+  ScriptedMarket call, put;
+  put.contract.type = pricing::OptionType::Put;
+  auto call_value = call.valuation(), put_value = put.valuation();
+  call_value.smile_iv = 0.1;
+  put_value.smile_iv = 0.3;
+  const Valuations values{{call.symbol(), call_value}, {put.symbol(), put_value}};
+  Ledger calls, puts, mixed;
+  calls.fill(call.contract, 3, m("4.20"), {});
+  puts.fill(put.contract, -2, m("4.20"), {});
+  // Insert in reverse order; the ledger sums calls, puts, then stocks by symbol.
+  mixed.fill(put.contract, -2, m("4.20"), {});
+  mixed.fill(call.contract, 3, m("4.20"), {});
+  mixed.trade_stock("QQQ", -11, m("411.17"), {});
+  mixed.trade_stock("AAPL", 7, m("199.13"), {});
+  const ScenarioConfig config{{1, 0, -2, 1}, {5, 0, -50}, 0.2};
+  const auto call_grid = scenario_grid(calls, values, config, call.time, md::kNanosPerMinute);
+  const auto put_grid = scenario_grid(puts, values, config, call.time, md::kNanosPerMinute);
+  const auto grid = scenario_grid(mixed, values, config, call.time, md::kNanosPerMinute,
+                                  {{"AAPL", 199.13}, {"QQQ", 411.17}});
+  ASSERT_TRUE(grid.complete);
+  ASSERT_EQ(grid.cells.size(), 12u);
+  for (std::size_t i = 0; i < grid.cells.size(); ++i) {
+    const auto& cell = grid.cells[i];
+    EXPECT_EQ(cell.spot_percent, config.spot_percent[i / 3]);
+    EXPECT_EQ(cell.vol_points, config.vol_points[i % 3]);
+    double expected = call_grid.cells[i].pnl;
+    expected += put_grid.cells[i].pnl;
+    expected += 7.0 * 199.13 * cell.spot_percent / 100;
+    expected += -11.0 * 411.17 * cell.spot_percent / 100;
+    EXPECT_EQ(std::memcmp(&cell.pnl, &expected, sizeof expected), 0);
+    EXPECT_TRUE(cell.clamped);
+  }
+  EXPECT_EQ(grid.cells[4].pnl, 0);  // Zero shock still bypasses the volatility floor.
+}
+TEST(TradingRisk, ScenarioGridSkipsUnvaluedPositionsWithoutClampingThem) {
+  for (const std::string_view problem : {"missing", "stale", "expired", "invalid", "future", "negative", "nonfinite"}) {
+    SCOPED_TRACE(problem);
+    ScriptedMarket good, bad;
+    bad.contract.type = pricing::OptionType::Put;
+    if (problem == "expired") bad.contract.expiry = {2026, 9, 21};
+    auto value = bad.valuation();
+    value.years = 0.1;
+    value.smile_iv = 0.01;  // Would clamp even the zero-shock cell if it were valued.
+    if (problem == "stale") value.time -= md::kNanosPerMinute + 1;
+    if (problem == "invalid") value.valid = false;
+    if (problem == "future") ++value.time;
+    if (problem == "negative") value.time = -1;
+    if (problem == "nonfinite") value.forward = std::numeric_limits<double>::infinity();
+    Ledger ledger;
+    ledger.fill(good.contract, 1, m("4.20"), {});
+    ledger.fill(bad.contract, -1, m("4.20"), {});
+    auto fresh_value = good.valuation();
+    fresh_value.time -= md::kNanosPerMinute;  // The inclusive freshness boundary.
+    Valuations values{{good.symbol(), fresh_value}};
+    if (problem != "missing") values[bad.symbol()] = value;
+    const ScenarioConfig config{{-1, 0, 1}, {0, 5}, 0.1};
+    const auto grid = scenario_grid(ledger, values, config, good.time, md::kNanosPerMinute);
+    EXPECT_FALSE(grid.complete);
+    ASSERT_EQ(grid.cells.size(), 6u);
+    for (const auto& cell : grid.cells) {
+      EXPECT_EQ(cell.pnl, 0);
+      EXPECT_FALSE(cell.clamped);
+    }
+  }
+}
+TEST(TradingRisk, ScenarioGridRejectsEmptyAxes) {
+  ScriptedMarket f;
+  Ledger ledger;
+  ledger.fill(f.contract, 1, m("4.20"), {});
+  for (const auto& config : {ScenarioConfig{{}, {0}}, ScenarioConfig{{0}, {}}, ScenarioConfig{{}, {}}}) {
+    EXPECT_THROW((void)scenario_grid(ledger, {}, config, f.time, md::kNanosPerMinute), TradingError);
   }
 }
 TEST(TradingSettlement, AmSettlementRequiresExplicitValueAndWorksWhileKilled) {
