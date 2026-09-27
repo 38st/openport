@@ -21,7 +21,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
 
   if(OPENPORT_SANITIZE)
     target_compile_options(openport_options INTERFACE
-      -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+      -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
+      # GCC's flow-based bounds warnings misread ASan's instrumentation (for
+      # example a one-element initializer list copied into a vector); the
+      # unsanitized builds keep them as errors.
+      $<$<CXX_COMPILER_ID:GNU>:-Wno-array-bounds -Wno-stringop-overflow -Wno-stringop-overread>)
     target_link_options(openport_options INTERFACE -fsanitize=address,undefined)
   endif()
 
