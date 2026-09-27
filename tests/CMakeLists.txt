@@ -32,6 +32,9 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/cli_test.cpp
     providers/massive_test.cpp
     providers/thetadata_test.cpp
+    providers/tradier_test.cpp
+    providers/tastytrade_test.cpp
+    providers/dxlink_test.cpp
     server/api_test.cpp
     server/candles_test.cpp
     server/equity_test.cpp

@@ -120,6 +120,10 @@ int usage(const char* error = nullptr) {
       "allowed hosts: names the server answers to besides IP addresses, localhost and the\n"
       "               allowed origins' hosts, such as a reverse proxy's upstream name\n"
       "databento: --expiries and --window must be 0 (whole-chain upstream subscription)\n"
+      "tradier: --option sandbox=true for delayed data; poll interval follows request budget\n"
+      "         --option option_size_unit=contracts only after confirming option size units\n"
+      "tastytrade: production OAuth only; DXLink time units unknown unless confirmed with\n"
+      "            --option dxlink_time_unit=milliseconds\n"
       "record: create a new compressed event file (existing files are never overwritten);\n"
       "        --record-dir names one per run by provider and start time there, and the\n"
       "        web terminal replays recordings from it (default ~/.openport/recordings)\n"
@@ -134,7 +138,9 @@ int usage(const char* error = nullptr) {
     std::fprintf(stderr, " %.*s", static_cast<int>(name.size()), name.data());
   }
   std::fprintf(stderr,
-               "\nkeys are read from the environment: DATABENTO_API_KEY, MASSIVE_API_KEY\n");
+               "\nkeys are read from the environment: DATABENTO_API_KEY, MASSIVE_API_KEY,\n"
+               "TRADIER_ACCESS_TOKEN, TASTYTRADE_CLIENT_SECRET, TASTYTRADE_REFRESH_TOKEN,\n"
+               "and optionally TASTYTRADE_CLIENT_ID. No broker credential flags.\n");
   return 2;
 }
 

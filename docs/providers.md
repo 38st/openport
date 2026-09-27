@@ -43,7 +43,8 @@ Register the name in `provider_names()` and construct the adapter in
 validate values with [`options.hpp`](../include/openport/providers/options.hpp),
 and extend `validate_subscription()` if needed. Both
 [daemon](../apps/openportd/main.cpp) and [probe](../apps/probe/main.cpp) look up
-`<UPPERCASE_PROVIDER_NAME>_API_KEY`; keep secrets out of URLs, exceptions and status
+`<UPPERCASE_PROVIDER_NAME>_API_KEY`; the broker factory instead reads
+`TRADIER_ACCESS_TOKEN` or tastytrade's OAuth environment variables. Keep secrets out of URLs, exceptions and status
 messages. Add source files to [src/CMakeLists.txt](../src/CMakeLists.txt) and tests
 to [tests/CMakeLists.txt](../tests/CMakeLists.txt). Optional vendor SDKs must remain
 behind a build option, as Databento does.
@@ -130,8 +131,8 @@ remains the shutdown exception documented in [runtime](runtime.md).
 ## Existing vendor mappings
 
 These are implementation maps, not live certification. As the README states,
-Databento, Massive and ThetaData have sample-response tests but have not yet been
-run live with a key.
+Databento, Massive, ThetaData, Tradier and tastytrade have sample-response tests
+but have not yet been run live with credentials.
 
 | Adapter | Mapping and code to read |
 | --- | --- |
@@ -139,6 +140,14 @@ run live with a key.
 | [Massive](../src/providers/massive.cpp) | `parse_massive_chain_page()` reads `/v3/snapshot/options/{underlying}`, strips `O:` from option tickers and follows `next_url`. Index requests use `I:`. `publish_chain()` uses quote `last_updated` and the underlying's separate timestamp; quote `timeframe` determines entitlement. Published Greeks use the normalised units; rho is NaN because it is not supplied. All pages are collected before publication. |
 | [ThetaData](../src/providers/thetadata.cpp) | `parse_theta_rows()` reads v3 NDJSON. The adapter requests `quote`, `greeks/implied_volatility` and periodically `open_interest` for each option root, then joins by root, expiry, strike and right. Times without a zone are New York times. The latest timestamped IV row supplies spot. Only vendor IV is published; other Greek units are undocumented and remain NaN. Auxiliary failures appear in status. |
 | [Databento](../src/providers/databento.cpp) | OPRA parent symbols cover every root (`.OPT`). `DatabentoMapper::on_record()` maps definitions, CBBO/CMBP-1 quotes, trades and OI statistics. It converts fixed-point prices, handles undefined sentinels and ignores data for unknown instruments. OPRA provides neither underlying prices nor vendor Greeks here. Definitions and statistics are subscribed with replay before the current quote stream. |
+| [Tradier](../src/providers/tradier.cpp) | Expirations and lookup accept both documented shapes and object/array/null lists. Lookup resolves root/date pairs, including SPXW; every selected chain is fetched before publication. Compact OCC symbols become canonical padded OSI. Quotes retain millisecond clocks; underlying last keeps its own clock. OI, delta and gamma are mapped. Unknown option-size, IV and scaled-Greek units are not guessed; an operator can explicitly confirm contract size units. `TradierBudget` accounts for each request and rate-limit headers. Production index timing remains unconfirmed. |
+| [tastytrade](../src/providers/tastytrade.cpp) | OAuth refresh uses JSON and environment credentials. Nested chains supply canonical OSI definitions and streamer-symbol mappings; instrument responses supply index streamer names. `TastytradeMapper` applies filters and maps Quote, Greeks, Summary and underlying Trade events. `DxlinkProtocol` implements the handshake, accepted COMPACT field order, keepalive and paced add/remove subscriptions independently of `net::WebSocket`. Reconnect repeats the handshake with the retained subscription set. Unknown timestamps and Greek units stay unknown; an explicit operator option can select millisecond timestamps. No complete snapshots or inferred trades are emitted. |
+
+The broker adapters allowlist their REST paths and use non-redirecting HTTP calls.
+OAuth is the only POST. Error messages exclude server bodies and tokens. Broker
+rate timers use operational time, independently of market-event clocks. See
+[runtime limitations](runtime.md#broker-market-data) for unverified units and the
+consequences for paper fills.
 
 ## Test without the network
 
@@ -169,13 +178,18 @@ Useful examples:
   per-underlying OI refresh, auxiliary failures and a failed required quote root.
 - [Databento tests](../tests/providers/databento_test.cpp): record conversion,
   undefined values, reconnect ordering and per-underlying live state.
+- [Broker tests](../tests/providers/tradier_test.cpp): complete root-aware polls,
+  missing fields, clocks, filter drift, cancellation, budgets and backoff.
+  [tastytrade tests](../tests/providers/tastytrade_test.cpp) cover OAuth and mapping;
+  [DXLink tests](../tests/providers/dxlink_test.cpp) use a fake transport and clock
+  for recorded message shapes, keepalive, subscription caps and resubscription.
 - [Runtime tests](../tests/providers/runtime_test.cpp): cancellation between
   requests, option validation and probe readiness.
 
 After building, run the focused cases and then the full suite:
 
 ```sh
-./build/tests/openport_tests --gtest_filter='Cboe*:Massive*:ThetaData*:Databento*:SnapshotPublisher*:PollingProvider*:ProviderOptions*:Replay*:Cli*'
+./build/tests/openport_tests --gtest_filter='Cboe*:Massive*:ThetaData*:Databento*:Tradier*:Tastytrade*:Dxlink*:BrokerFactory*:SnapshotPublisher*:PollingProvider*:ProviderOptions*:Replay*:Cli*'
 ./build/tests/openport_tests
 ```
 

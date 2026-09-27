@@ -103,6 +103,7 @@ std::shared_ptr<const analytics::UnderlyingMetrics> Engine::metrics(const std::s
 EngineStatus Engine::status() const {
   const std::lock_guard lock(mutex_);
   EngineStatus out = status_;
+  out.capabilities = provider_.capabilities();  // a broker can revise its request-budgeted interval
   const auto queue = queue_.status();
   out.queue_depth = queue.depth;
   out.coalesced_events = queue.coalesced;
@@ -198,7 +199,8 @@ void Engine::update_health(const md::Event& event, md::Timestamp received) {
       auto& health = it->second;
       const auto state =
           status_.capabilities.delay.count() > 0 ? md::FeedState::Delayed : md::FeedState::Live;
-      if (health.state != state) {
+      // Plan-dependent streams report entitlement and unknown timing explicitly.
+      if (!status_.capabilities.realtime_plan_dependent && health.state != state) {
         health_changed_ = true;
         health.state = state;
         health.message = status_.provider + " " + *symbol + ": receiving quotes";

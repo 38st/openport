@@ -27,15 +27,19 @@ struct Url {
 /// for anything else, and for a move from https down to http.
 [[nodiscard]] std::optional<Url> redirect_target(const Url& from, std::string_view location);
 
+using Headers = std::vector<std::pair<std::string, std::string>>;
+
 struct HttpResponse {
   int status = 0;
   std::string body;            ///< decompressed if the server sent gzip
   std::size_t wire_bytes = 0;  ///< body bytes as received, before decompression
   std::chrono::microseconds elapsed{0};
   std::string location{};      ///< a redirect's Location header, if any
+  Headers headers{};
+  [[nodiscard]] std::string_view header(std::string_view name) const noexcept;
 };
 
-using Headers = std::vector<std::pair<std::string, std::string>>;
+[[nodiscard]] std::string_view user_agent() noexcept;
 
 /// A blocking HTTP/1.1 client for http and https URLs. It keeps the connection to
 /// the last host alive between requests, asks for gzip and decompresses it,
@@ -62,6 +66,15 @@ class HttpClient {
   /// System DNS resolution (getaddrinfo) can still block until the OS returns.
   HttpResponse get(std::string_view url, const Headers& headers, std::chrono::seconds timeout,
                    const std::atomic<bool>* cancellation);
+
+  /// Single-origin requests for brokers. Never follow redirects or retry a POST:
+  /// a redirect must not forward an OAuth body or escape an adapter's path allowlist.
+  virtual HttpResponse get_direct(std::string_view url, const Headers& headers,
+                                  std::chrono::seconds timeout,
+                                  const std::atomic<bool>* cancellation = nullptr);
+  virtual HttpResponse post(std::string_view url, std::string_view body, const Headers& headers,
+                            std::chrono::seconds timeout,
+                            const std::atomic<bool>* cancellation = nullptr);
 
  private:
   struct Impl;

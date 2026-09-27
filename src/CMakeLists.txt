@@ -61,6 +61,7 @@ if(OPENPORT_BUILD_PROVIDERS)
   # HTTPS and WebSocket plumbing shared by the provider adapters.
   add_library(openport_net
     net/http.cpp
+    net/websocket.cpp
   )
   add_library(openport::net ALIAS openport_net)
   target_compile_definitions(openport_net PRIVATE OPENPORT_VERSION="${PROJECT_VERSION}")
@@ -104,12 +105,15 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/cboe.cpp
     providers/massive.cpp
     providers/thetadata.cpp
+    providers/tradier.cpp
+    providers/tastytrade.cpp
+    providers/dxlink.cpp
   )
   add_library(openport::providers ALIAS openport_providers)
   target_link_libraries(openport_providers PUBLIC openport::recording)
   target_link_libraries(openport_providers
-    PUBLIC openport::core openport::net
-    PRIVATE simdjson::simdjson nlohmann_json::nlohmann_json openport::options)
+    PUBLIC openport::core openport::net nlohmann_json::nlohmann_json
+    PRIVATE simdjson::simdjson openport::options)
 
   if(OPENPORT_WITH_DATABENTO)
     target_sources(openport_providers PRIVATE providers/databento.cpp)

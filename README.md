@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **651 C++ and 393 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **697 C++ and 393 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -122,6 +122,9 @@ with generated prices labelled as simulated on every page:
 ### Operations
 
 - **Status**: feed health per underlying, trading sessions, queue and analytics timing.
+- **Broker data**: Tradier snapshot polling and tastytrade DXLink streams, for
+  traders whose brokerage account includes real-time option data; credentials stay
+  in the environment and neither adapter can place orders.
 - Light and dark themes, keyboard shortcuts (number keys switch pages, arrows step
   expiries).
 
@@ -237,11 +240,22 @@ recording all day.
 | Databento | `databento` | Real-time OPRA consolidated quotes (`cbbo-1s` or `cmbp-1`), trades and open interest, streamed | `DATABENTO_API_KEY` |
 | Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
+| Tradier | `tradier` | Option chain snapshots and underlying prices; production options are real-time, index timing is unconfirmed. Sandbox is 15-minute delayed. Polling follows the request budget. Not yet run live with an account; reports welcome | `TRADIER_ACCESS_TOKEN` |
+| tastytrade | `tastytrade` | Production DXLink option quotes, open interest, delta/gamma and underlying prices. Not yet run live with an account; reports welcome | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN`; optional `TASTYTRADE_CLIENT_ID` |
 | Replay | `replay` | A recording played back as the whole feed, at 1×, 10×, 60× or full speed (`--option file=PATH --option speed=10`) | none |
 
 Databento, Massive and ThetaData follow their documented APIs and are tested against
 sample responses, but have not yet been run live with a key. If you have one, an
 [issue](https://github.com/38st/openport/issues) saying how it went is welcome.
+
+Tradier and tastytrade adapters read market data only. They never send broker
+orders or read accounts. Credentials come from environment variables, never flags.
+tastytrade requires a funded production account; its sandbox has no market data.
+Tradier option sizes are read as contracts and DXLink times as milliseconds, each with
+an option to override; IV and Greek scalings the brokers' documents leave unclear stay
+missing rather than guessed.
+See [broker operation and limitations](docs/runtime.md#broker-market-data) before
+using either feed for paper trading.
 
 Providers deliver very different things: Databento sends raw exchange quotes with no
 Greeks and no underlying price, while others ship their own Greeks. OpenPort normalises
@@ -254,7 +268,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 
 | Flags | Controls |
 | --- | --- |
-| `--provider NAME`, `--poll-seconds N`, `--option KEY=VALUE` | The market-data provider and its settings, such as `quotes=cmbp-1` for Databento |
+| `--provider NAME`, `--poll-seconds N`, `--option KEY=VALUE` | The market-data provider and its settings, such as `quotes=cmbp-1` for Databento or `sandbox=true` for Tradier; Tradier validates poll intervals against its request budget |
 | `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
@@ -441,7 +455,8 @@ exists; GitHub tags the commit when you publish the draft.
       estimates, intraday equity history and rule alerts
 - [x] Pricing core: Black-76 and Black-Scholes-Merton with full Greeks, safeguarded IV
       solver, Cox-Ross-Rubinstein and Leisen-Reimer trees
-- [x] Providers: Cboe, Databento, Massive and ThetaData, with record and replay of any feed
+- [x] Providers: Cboe, Databento, Massive, ThetaData, Tradier and tastytrade, with
+      record and replay of any feed; broker adapters await live-account validation
 - [x] Chain analytics: parity forwards, IV and Greeks, SVI surfaces, GEX and VEX, and
       de-Americanised IV for equity options
 - [x] Paper trading against live quotes: risk limits, scenarios, index and American

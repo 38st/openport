@@ -1,6 +1,7 @@
 #include "openport/providers/factory.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <initializer_list>
 #include <stdexcept>
 #include <string>
@@ -10,6 +11,8 @@
 #include "openport/providers/options.hpp"
 #include "openport/providers/replay.hpp"
 #include "openport/providers/thetadata.hpp"
+#include "openport/providers/tradier.hpp"
+#include "openport/providers/tastytrade.hpp"
 #ifdef OPENPORT_WITH_DATABENTO
 #include "openport/providers/databento.hpp"
 #endif
@@ -38,6 +41,17 @@ void validate_keys(const md::ProviderConfig& config,
   }
 }
 
+std::string environment(const char* name) {
+  const auto* value = std::getenv(name);
+  return value ? value : "";
+}
+
+bool sandbox_option(const md::ProviderConfig& config) {
+  const auto value = option_or(config, "sandbox", "false");
+  if (value != "true" && value != "false") throw std::invalid_argument("sandbox must be true or false");
+  return value == "true";
+}
+
 }  // namespace
 
 std::vector<std::string_view> provider_names() {
@@ -48,6 +62,8 @@ std::vector<std::string_view> provider_names() {
 #endif
       "massive",
       "thetadata",
+      "tradier",
+      "tastytrade",
       "replay",
   };
 }
@@ -68,6 +84,30 @@ void validate_subscription(std::string_view provider, const md::Subscription& su
 }
 
 std::unique_ptr<md::Provider> make_provider(const md::ProviderConfig& config) {
+  if (config.name == "tradier") {
+    validate_keys(config, {"sandbox", "poll_seconds", "option_size_unit"});
+    TradierProvider::Options options;
+    options.access_token = environment("TRADIER_ACCESS_TOKEN");
+    options.sandbox = sandbox_option(config);
+    options.poll_seconds = seconds_option(config, "poll_seconds", std::chrono::seconds(0));
+    const auto unit = option_or(config, "option_size_unit", "contracts");
+    if (unit != "contracts" && unit != "hundreds" && unit != "unknown")
+      throw std::invalid_argument("tradier: option_size_unit must be contracts, hundreds or unknown");
+    options.size_multiplier = unit == "contracts" ? 1 : unit == "hundreds" ? 100 : 0;
+    return std::make_unique<TradierProvider>(std::move(options));
+  }
+  if (config.name == "tastytrade") {
+    validate_keys(config, {"sandbox", "dxlink_time_unit"});
+    TastytradeProvider::Options options;
+    options.sandbox = sandbox_option(config);
+    options.credentials = {environment("TASTYTRADE_CLIENT_SECRET"), environment("TASTYTRADE_REFRESH_TOKEN"),
+                           environment("TASTYTRADE_CLIENT_ID")};
+    const auto unit = option_or(config, "dxlink_time_unit", "milliseconds");
+    if (unit != "unknown" && unit != "milliseconds")
+      throw std::invalid_argument("tastytrade: dxlink_time_unit must be unknown or milliseconds");
+    options.timestamps_in_milliseconds = unit == "milliseconds";
+    return std::make_unique<TastytradeProvider>(std::move(options));
+  }
   if (config.name == "replay") {
     validate_keys(config, {"file", "speed", "loop"});
     ReplayProvider::Options options;

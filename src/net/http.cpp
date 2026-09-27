@@ -30,6 +30,14 @@ constexpr std::string_view kUserAgent =
 
 }  // namespace
 
+std::string_view user_agent() noexcept { return "openport/" OPENPORT_VERSION; }
+
+std::string_view HttpResponse::header(std::string_view name) const noexcept {
+  for (const auto& [key, value] : headers)
+    if (beast::iequals(key, name)) return value;
+  return {};
+}
+
 std::optional<Url> parse_url(std::string_view url) {
   Url out;
   if (url.starts_with("https://")) {
@@ -181,12 +189,16 @@ struct HttpClient::Impl {
 
   template <typename Stream>
   HttpResponse exchange(Stream& stream, const Url& url, const Headers& headers,
-                        std::chrono::seconds timeout) {
-    http::request<http::empty_body> req{http::verb::get, url.target, 11};
+                        std::chrono::seconds timeout, http::verb method, std::string_view body) {
+    http::request<http::string_body> req{method, url.target, 11};
     req.set(http::field::host, url.host);
     req.set(http::field::user_agent, kUserAgent);
     req.set(http::field::accept_encoding, "gzip");
     for (const auto& [name, value] : headers) req.set(name, value);
+    if (method == http::verb::post) {
+      req.body() = body;
+      req.prepare_payload();
+    }
 
     const auto started = std::chrono::steady_clock::now();
     tcp_layer().expires_after(timeout);
@@ -207,6 +219,8 @@ struct HttpClient::Impl {
     HttpResponse out;
     out.status = static_cast<int>(response.result_int());
     out.location = std::string(response[http::field::location]);
+    for (const auto& field : response.base())
+      out.headers.emplace_back(field.name_string(), field.value());
     out.wire_bytes = response.body().size();
     const bool gzipped = beast::iequals(response[http::field::content_encoding], "gzip");
     out.body = gzipped ? gunzip(response.body()) : std::move(response.body());
@@ -216,14 +230,47 @@ struct HttpClient::Impl {
     return out;
   }
 
-  HttpResponse request(const Url& url, const Headers& headers, std::chrono::seconds timeout) {
-    return tls ? exchange(*tls, url, headers, timeout) : exchange(*plain, url, headers, timeout);
+  HttpResponse request(const Url& url, const Headers& headers, std::chrono::seconds timeout,
+                       http::verb method = http::verb::get, std::string_view body = {}) {
+    return tls ? exchange(*tls, url, headers, timeout, method, body)
+               : exchange(*plain, url, headers, timeout, method, body);
+  }
+
+  HttpResponse direct(std::string_view url, std::string_view body, const Headers& headers,
+                      std::chrono::seconds timeout, const std::atomic<bool>* cancel,
+                      http::verb method) {
+    const auto previous = cancellation;
+    cancellation = cancel;
+    try {
+      check_cancelled();
+      const auto target = parse_url(url);
+      if (!target) throw std::runtime_error("invalid HTTP URL");
+      if (!connected_to(*target)) connect(*target, timeout);
+      auto response = request(*target, headers, timeout, method, body);
+      check_cancelled();
+      cancellation = previous;
+      return response;
+    } catch (...) {
+      close();
+      cancellation = previous;
+      throw;
+    }
   }
 };
 
 HttpClient::HttpClient() : impl_(std::make_unique<Impl>()) {}
 
 HttpClient::~HttpClient() { impl_->close(); }
+
+HttpResponse HttpClient::get_direct(std::string_view url, const Headers& headers,
+                                    std::chrono::seconds timeout, const std::atomic<bool>* cancel) {
+  return impl_->direct(url, {}, headers, timeout, cancel, http::verb::get);
+}
+
+HttpResponse HttpClient::post(std::string_view url, std::string_view body, const Headers& headers,
+                              std::chrono::seconds timeout, const std::atomic<bool>* cancel) {
+  return impl_->direct(url, body, headers, timeout, cancel, http::verb::post);
+}
 
 HttpResponse HttpClient::get(std::string_view url, const Headers& headers,
                              std::chrono::seconds timeout) {

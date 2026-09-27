@@ -66,12 +66,109 @@ Supported `openportd --option KEY=VALUE` keys:
 | Cboe | `poll_seconds` |
 | Massive | `poll_seconds`, `base_url` |
 | ThetaData | `poll_seconds`, `base_url` |
+| Tradier | `sandbox=true` or `false` (default), `poll_seconds` (default: calculated from the cycle request count), `option_size_unit=contracts` (default), `hundreds` or `unknown` |
+| tastytrade | `sandbox=false` only; `dxlink_time_unit=milliseconds` (default) or `unknown` |
 | Databento | `quotes=cbbo-1s` or `quotes=cmbp-1`, `trades=on` or `trades=off` |
 | Replay | `file=PATH` (required), `speed=1`, `10`, `60` or `max`, `loop=on` or `off` |
 
 Databento parent subscriptions stream the entire option chain upstream. Both
 CLIs reject nonzero `--expiries` or `--window` with that provider; those filters
 cannot reduce upstream traffic.
+
+## Broker market data
+
+Both broker adapters are data only. Neither reads accounts nor sends orders.
+Only the documented market-data paths and tastytrade's OAuth refresh POST are
+allowed; broker requests do not follow redirects. Credentials are environment
+variables, not `--option` values or command-line flags:
+
+| Provider | Environment |
+| --- | --- |
+| Tradier | `TRADIER_ACCESS_TOKEN` |
+| tastytrade | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN`; `TASTYTRADE_CLIENT_ID` is optional and must match the grant if supplied |
+
+Set those variables in your shell or service environment, then run, for example:
+
+```sh
+./build/apps/openportd --provider tradier --symbols SPX,SPY --expiries 2 --window 0.1
+./build/apps/openportd --provider tradier --symbols SPY --option sandbox=true
+./build/apps/openportd --provider tastytrade --symbols SPX,SPY --expiries 2 --window 0.1
+```
+
+Tradier production uses `https://api.tradier.com/v1`; sandbox uses
+`https://sandbox.tradier.com/v1` and reports a 15-minute delay. Production equity
+and option quotes are real-time. Tradier's sources conflict on index freshness,
+and index values may be derived. Index subscriptions report `Stale` with timing
+unconfirmed rather than promising real-time index prices. There is no separate
+unknown-timing state in the event vocabulary.
+
+Each Tradier cycle requests expirations with `includeAllRoots=true`, an option
+lookup, the underlying quote, and chains with `greeks=true` for selected root/date
+pairs. Looking up roots avoids assuming an SPX chain contains SPXW. The nearest
+expiry and strike filters limit new definitions; previously defined contracts
+keep receiving updates when spot moves. All required responses must succeed
+before a complete snapshot is published.
+
+The default poll interval is the cycle's request count × 60 / 120 seconds, rounded
+up (60 requests/minute in sandbox), across all subscribed underlyings. Discovery
+adjusts the estimate as each underlying is fetched. An explicit `--poll-seconds`
+is checked after discovery and reports an error if too short. A rolling request
+budget also paces cycles larger than one minute and honours available/used/allowed
+headers. Zero availability waits at least a minute. Expiry headers have unconfirmed
+units; plausible epoch seconds or milliseconds may extend that wait. HTTP 429 and
+quota/rate-limit messages cause exponential waits capped at five minutes; explicit
+reset or Retry-After headers can extend the wait. Budgets are local to one adapter;
+headers account for other users of the same token.
+
+Tradier's field reference describes quote sizes as "in hundreds", which fits its
+stock quotes; the sizes in its option-chain examples read as contracts, the unit OPRA
+publishes, so option sizes are taken as contracts. `--option option_size_unit=hundreds`
+multiplies them by 100, and `unknown` withholds them, which stops paper fills that need
+displayed size. No sizes are invented for missing fields.
+IV, vega, theta and rho scaling are unconfirmed and remain NaN; delta and gamma are
+mapped as price derivatives. The unzoned Greek update time stays unknown. Quote
+clocks are milliseconds; conflicting seconds-shaped examples are rejected when
+they would give a priced side an unknown clock. No volume event exists, so cumulative
+volume is not represented as trades.
+
+tastytrade requires a funded production account and OAuth credentials created in
+the broker's own application. `sandbox=true` is rejected because the sandbox has
+no market data. The adapter uses one TLS WebSocket per provider, verifies its
+certificate and host, and sends `openport/<version>` on HTTP and WebSocket requests.
+OAuth access tokens refresh before `expires_in` (15 minutes if absent). Quote tokens
+refresh before their explicit expiry or after 23 hours when expiry is absent.
+Quote tokens are cached across reconnects and re-fetched if rejected.
+Chains refresh on an hourly reconnect; all subscriptions are restored after a
+connection failure. Missing or expired instruments are unsubscribed after a
+complete chain refresh, and their old quotes are cleared with an unknown timestamp.
+Eight consecutive failed connection attempts stop the feed;
+a minute of connected service resets that count. Retry waits grow to 60 seconds.
+Shutdown interrupts waits and I/O; system DNS remains the exception described above.
+
+DXLink requests Quote, Greeks, Summary, Trade and Profile. Underlying/index streamer
+symbols come from instrument responses, and option streamer symbols come from
+nested chains. Strike filtering waits for an actual underlying price; it does not
+invent spot. A subscription is an event type plus symbol: four per option, three
+per underlying. The adapter refuses more than 25,000, sends at most 10,000 changes
+per minute and opens at most five sessions in one process. Other programs using the
+same credentials also count toward the broker's five-session limit. Large initial
+subscriptions therefore take multiple minutes to establish.
+
+DXLink event times follow dxFeed's event model, where a Quote's `bidTime` and
+`askTime` are milliseconds since the epoch, so they become market times.
+`--option dxlink_time_unit=unknown` leaves market times at zero instead (health then
+reports `Stale` and paper fills wait), for a feed whose units turn out otherwise; the
+adapter has not yet run against a live account. IV, vega, theta and rho remain NaN because their scaling is
+unconfirmed; delta and gamma are mapped. Summary supplies open interest with an
+unknown timestamp. Trade is a last-trade snapshot, not a distinct execution tape;
+it supplies underlying last prices but emits no option trades. Underlying events
+are not requested because entitlement to that DXLink event type is unverified;
+Quote and Trade supply the underlying instead. Profile is requested but currently
+has no corresponding normalised event. Streaming emits no `SnapshotComplete`.
+
+Both adapters are tested with generated fixtures shaped like broker documentation,
+not live accounts. Empty response shapes, index symbols, entitlement and the noted
+units still need account validation. No new journal or recording fields are added.
 
 ## Recording and replay
 

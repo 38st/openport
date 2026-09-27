@@ -124,7 +124,7 @@ void PollingProvider::run(md::Subscription subscription, md::EventSink* sink) {
       if (stopping_) break;
       poll_once(http, underlying, subscription, *sink);
     }
-    if (!sleep(interval_)) break;
+    if (!sleep(poll_interval())) break;
   }
   for (const auto& underlying : subscription.underlyings) {
     sink->publish(md::ProviderStatus{md::now(), md::FeedState::Stopped, label + " " + underlying,

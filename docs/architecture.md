@@ -7,7 +7,7 @@ terminal it serves. This page is the map; the other documents hold the detail.
 ```mermaid
 flowchart LR
   subgraph feed["Market data (provider threads)"]
-    P["Cboe · Databento · Massive · ThetaData<br/>replay · demo market"]
+    P["Cboe · Databento · Massive · ThetaData<br/>Tradier · tastytrade · replay · demo market"]
   end
   P -- "md::Event" --> Q["EventQueue<br/>latest value per contract"]
   P -. "optional" .-> R[("Recording<br/>zstd frames")]
@@ -42,7 +42,8 @@ flowchart LR
 ## Threads and data flow
 
 - **Provider threads** publish events into the queue. Polling providers (Cboe, Massive,
-  ThetaData) turn successive snapshots into only the changes; Databento streams.
+  ThetaData, Tradier) turn successive snapshots into only the changes; Databento
+  and tastytrade stream.
 - **One engine thread** owns all mutable state. It drains the queue into the chain
   book, recomputes analytics at most once a second for the underlyings whose data or
   rate curve or cash-dividend schedule changed, and publishes each result as an
@@ -81,7 +82,7 @@ flowchart LR
 
 ## Tests
 
-651 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+697 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 295 Vitest cases cover the
 terminal. CI builds with GCC 13 on Ubuntu and Apple Clang on macOS, both with warnings

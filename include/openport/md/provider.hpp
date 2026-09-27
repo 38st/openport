@@ -46,6 +46,7 @@ class Provider {
   virtual ~Provider() = default;
 
   [[nodiscard]] virtual std::string_view name() const noexcept = 0;
+  /// May be read while running, including a snapshot adapter's revised poll budget.
   [[nodiscard]] virtual Capabilities capabilities() const noexcept = 0;
 
   /// Starts delivering events to `sink` on the adapter's own thread(s) and returns

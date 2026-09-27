@@ -98,6 +98,47 @@ TEST(Engine, StreamingQuotesRefreshOnlyTheirUnderlyingWithASixtySecondMinimum) {
   engine.stop();
 }
 
+TEST(Engine, PlanDependentStreamsKeepAdapterTimingStatusWhileQuotesRefreshReceipt) {
+  ManualProvider provider;
+  provider.caps.realtime_plan_dependent = true;
+  std::atomic<md::Timestamp> clock{1000 * md::kNanosPerSecond};
+  server::Engine::Options options;
+  options.clock = [&] { return clock.load(); };
+  server::Engine engine(provider, {{"SPY"}}, options);
+  engine.start();
+  provider.sink->publish(md::ProviderStatus{1, md::FeedState::Stale, "timestamp units unconfirmed", "SPY"});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", 0, 0, 0, 500});
+  ASSERT_TRUE(eventually([&] { return engine.status().underlyings.at("SPY").last_success == clock; }));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").state, md::FeedState::Stale);
+  EXPECT_EQ(engine.status().underlyings.at("SPY").message, "timestamp units unconfirmed");
+  provider.sink->publish(md::ProviderStatus{1, md::FeedState::Delayed, "delayed", "SPY"});
+  clock += md::kNanosPerSecond;
+  provider.sink->publish(md::UnderlyingQuote{"SPY", 1, 0, 0, 501});
+  ASSERT_TRUE(eventually([&] { return engine.status().underlyings.at("SPY").last_success == clock; }));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").state, md::FeedState::Delayed);
+  engine.stop();
+}
+
+TEST(Engine, StatusUsesRevisedPollBudgetForStaleness) {
+  ManualProvider provider;
+  provider.caps.poll_interval = std::chrono::seconds(1);
+  std::atomic<md::Timestamp> clock{1000 * md::kNanosPerSecond};
+  server::Engine::Options options;
+  options.clock = [&] { return clock.load(); };
+  server::Engine engine(provider, {{"SPY"}}, options);
+  // Change before the worker starts; the static startup capability was one second.
+  provider.caps.poll_interval = std::chrono::seconds(60);
+  engine.start();
+  provider.sink->publish(md::ProviderStatus{1, md::FeedState::Live, "complete", "SPY"});
+  ASSERT_TRUE(eventually([&] { return engine.status().underlyings.at("SPY").last_success == clock; }));
+  clock += 90 * md::kNanosPerSecond;
+  EXPECT_EQ(engine.status().capabilities.poll_interval, std::chrono::seconds(60));
+  EXPECT_EQ(engine.status().underlyings.at("SPY").state, md::FeedState::Live);
+  clock += 91 * md::kNanosPerSecond;
+  EXPECT_EQ(engine.status().underlyings.at("SPY").state, md::FeedState::Stale);
+  engine.stop();
+}
+
 }  // namespace
 
 namespace {

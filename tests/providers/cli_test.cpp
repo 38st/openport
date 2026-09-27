@@ -74,6 +74,15 @@ TEST(Cli, ProbeRejectsBadValuesUnknownFlagsAndDatabentoFilters) {
   rejects("openport-probe", "missing SPY", "unknown provider");
   rejects("openport-probe", "databento SPX --expiries 1", "whole chain upstream");
 }
+
+TEST(Cli, BrokerNamesHelpSandboxAndCredentialFlagsAreValidatedOffline) {
+  rejects("openportd", "--help", "tradier tastytrade");
+  rejects("openport-probe", "--help", "tradier tastytrade");
+  rejects("openportd", "--provider tastytrade --option sandbox=true", "funded production");
+  rejects("openport-probe", "tastytrade SPX --option sandbox=true", "funded production");
+  rejects("openportd", "--provider tradier --option access_token=fake", "unknown provider option");
+  rejects("openport-probe", "tastytrade SPX --option refresh_token=fake", "unknown provider option");
+}
 TEST(Cli, ReplayAndRecordValidationWorksInBothApplications) {
   openport::test::RecordingFile file;
   openport::test::record_events(file.path, {});

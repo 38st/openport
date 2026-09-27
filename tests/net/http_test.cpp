@@ -1,4 +1,5 @@
 #include "openport/net/http.hpp"
+#include "openport/net/websocket.hpp"
 
 #include <gtest/gtest.h>
 #include <zlib.h>
@@ -75,6 +76,30 @@ TEST(Http, ParsesUrls) {
 
   EXPECT_FALSE(parse_url("ftp://example.com/"));
   EXPECT_FALSE(parse_url("https://"));
+}
+
+TEST(Http, BrokerCallsCancelBeforeDnsAndExposeCaseInsensitiveHeaders) {
+  openport::net::HttpClient client;
+  const std::atomic<bool> cancelled{true};
+  EXPECT_THROW((void)client.post("https://does-not-exist.invalid/oauth/token", "secret", {},
+                                 std::chrono::seconds(1), &cancelled), std::runtime_error);
+  EXPECT_THROW((void)client.get_direct("https://does-not-exist.invalid/data", {},
+                                       std::chrono::seconds(1), &cancelled), std::runtime_error);
+  openport::net::HttpResponse response;
+  response.headers = {{"x-ratelimit-available", "7"}, {"Retry-After", "60"}};
+  EXPECT_EQ(response.header("X-Ratelimit-Available"), "7");
+  EXPECT_EQ(response.header("retry-after"), "60");
+  EXPECT_TRUE(response.header("absent").empty());
+  EXPECT_TRUE(openport::net::user_agent().starts_with("openport/"));
+}
+
+TEST(Http, WebSocketRejectsPlaintextAndCancelsBeforeDns) {
+  auto socket = openport::net::make_websocket();
+  EXPECT_THROW(socket->connect("ws://does-not-exist.invalid/", nullptr), std::runtime_error);
+  const std::atomic<bool> cancelled{true};
+  EXPECT_THROW(socket->connect("wss://does-not-exist.invalid/", &cancelled), std::runtime_error);
+  socket->close();
+  socket->close();
 }
 
 TEST(Http, ResolvesRedirectTargets) {
