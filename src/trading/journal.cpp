@@ -114,11 +114,17 @@ JournalRecovery verify_journal(std::string_view jsonl, std::string_view expected
   } catch (const Json::exception& e) { corrupt("Invalid journal JSON: " + std::string(e.what())); }
   return result;
 }
-FileJournal::FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time)
-    : fd_(fd), sequence_(sequence), head_(std::move(head)), last_time_(last_time) {}
-FileJournal::~FileJournal() { if (fd_ >= 0) ::close(fd_); }
+FileJournal::FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time, Options options)
+    : fd_(fd), sequence_(sequence), head_(std::move(head)), last_time_(last_time), options_(std::move(options)) {}
+FileJournal::~FileJournal() {
+  try { flush(); } catch (...) {}  // Explicit boundaries report failures; destruction cannot throw.
+  if (fd_ >= 0) ::close(fd_);
+}
 std::shared_ptr<FileJournal> FileJournal::create(const std::string& path) {
-  return std::shared_ptr<FileJournal>(new FileJournal(open_locked(path, true), 0, genesis, 0));
+  return create(path, Options{});
+}
+std::shared_ptr<FileJournal> FileJournal::create(const std::string& path, Options options) {
+  return std::shared_ptr<FileJournal>(new FileJournal(open_locked(path, true), 0, genesis, 0, std::move(options)));
 }
 JournalRecovery FileJournal::read(const std::string& path, std::string_view expected_head) {
   struct stat info {};
@@ -126,13 +132,17 @@ JournalRecovery FileJournal::read(const std::string& path, std::string_view expe
   return verify_journal(read_file(path), expected_head);
 }
 std::shared_ptr<FileJournal> FileJournal::resume(const std::string& path) {
+  return resume(path, Options{});
+}
+std::shared_ptr<FileJournal> FileJournal::resume(const std::string& path, Options options) {
   const int fd = open_locked(path, false);
   try {
     const auto recovery = read(path);
     if (recovery.truncated_final_line)
       io("Torn journal suffix, as a full disk leaves: with openportd stopped, "
          "openportd --repair-journals cuts it off and keeps the original");
-    return std::shared_ptr<FileJournal>(new FileJournal(fd, recovery.records.size(), recovery.head, recovery.records.empty() ? 0 : recovery.records.back().time));
+    return std::shared_ptr<FileJournal>(new FileJournal(fd, recovery.records.size(), recovery.head,
+        recovery.records.empty() ? 0 : recovery.records.back().time, std::move(options)));
   } catch (...) { ::close(fd); throw; }
 }
 JournalRepair FileJournal::repair(const std::string& path) {
@@ -187,11 +197,26 @@ void FileJournal::append(Timestamp time, std::string_view type, std::string_view
       if (count <= 0) io("Journal write failed: " + std::string(std::strerror(errno)));
       done += static_cast<std::size_t>(count);
     }
-    if (!full_sync(fd_)) io("Journal sync failed: " + std::string(std::strerror(errno)));
+    pending_ = true;
+    if (options_.sync_policy == SyncPolicy::PerRecord || !synced_ ||
+        options_.hooks.clock() - last_sync_ >= options_.sync_interval) flush();
     ++sequence_;
     head_ = hash;
     last_time_ = time;
   } catch (const TradingError&) { failed_ = true; throw; }
     catch (const std::exception& e) { failed_ = true; io("Journal append failed: " + std::string(e.what())); }
+}
+void FileJournal::flush() {
+  if (failed_) io("Journal is latched failed; recover before trading");
+  if (!pending_) return;
+  try {
+    if (!(options_.hooks.sync ? options_.hooks.sync(fd_) : full_sync(fd_)))
+      io("Journal sync failed: " + std::string(std::strerror(errno)));
+    last_sync_ = options_.hooks.clock();
+    synced_ = true;
+    pending_ = false;
+  } catch (const TradingError&) { failed_ = true; throw; }
+    catch (const std::exception& e) { failed_ = true; io("Journal sync failed: " + std::string(e.what())); }
+    catch (...) { failed_ = true; io("Journal sync failed"); }
 }
 }  // namespace openport::trading

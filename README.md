@@ -30,7 +30,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **791 C++, 481 web and 55 Python tests**, built in CI with GCC 13 on Ubuntu and
+- **801 C++, 481 web and 55 Python tests**, built in CI with GCC 13 on Ubuntu and
   Apple Clang on macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -124,7 +124,9 @@ with generated prices labelled as simulated on every page:
 - **Replay**: record every session and trade any recorded day again beside the live
   feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
   at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
-  Finished runs open read-only in Journal and Dashboard.
+  Finished runs open read-only in Journal and Dashboard. Replay journals sync to disk
+  every 250 ms rather than every record, so a power cut can lose their last quarter
+  second.
 
   - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
     Step to a market time with `PUT /api/replay {"until":"10:30"}`; check a saved run
@@ -200,8 +202,9 @@ Dashboard or Rules page, and add accounts from the account switcher in the sideb
 
 Every account survives restarts through an append-only, hash-chained journal: the main
 account at `~/.openport/paper-journal.jsonl` (`--paper-journal`), the others in an
-`accounts` directory beside it. Each record carries what its transaction changed, with
-the whole state every thousand records; `openportd --compact-journals` rewrites journals
+`accounts` directory beside it. Each record reaches the disk before its transaction is
+published, and carries what the transaction changed, with the whole state every
+thousand records; `openportd --compact-journals` rewrites journals
 from older builds that way, keeping each original as `.bak`, and `--repair-journals`
 cuts off a last line a full disk tore. `--no-paper` turns trading off. The engine also
 models the funded phase that follows a pass (`funded-*` plans with a locking floor and

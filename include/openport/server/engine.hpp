@@ -118,7 +118,8 @@ class Engine final : public MetricsSource {
   /// Returns after paper journal initialization; failures are reported in status.
   void start();
   void stop();
-  /// Flush already-published events through analytics and account publication.
+  /// Flush already-published events through analytics and account publication,
+  /// including pending journal syncs for replays.
   /// The provider waits interruptibly, so shutdown and startup failure cannot deadlock.
   [[nodiscard]] std::future<void> synchronize();
   /// Replaces dividends for day rollovers and American analytics (Options::dividends

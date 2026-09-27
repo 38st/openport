@@ -14,7 +14,7 @@ and monotone. Delayed feeds must pass their delayed market time, not receipt tim
 | `types.hpp` | `Reason`, `TradingError`, `Decision`, contracts/quotes/valuation checks, orders, fills, limits, configuration |
 | `ledger.hpp` | `Account`, `Position`, `Ledger::fill`, `settle`, `restore` |
 | `risk.hpp` | `portfolio_risk`, `check_exposure`, `scenario_grid`, risk buckets and scenario cells |
-| `journal.hpp` | `Journal`, `FileJournal::create/read/resume`, `verify_journal`, `JournalRecovery` |
+| `journal.hpp` | `Journal`, `FileJournal::create/read/resume/flush`, `verify_journal`, `JournalRecovery` |
 | `session.hpp` | `TradingSession`, `CommandResult`, immutable `TradingSnapshot`, `PayoutQuote`, `payout_quote` |
 | `evaluation.hpp` | `Evaluation`, `EvaluationDay`, `Payout`, `AttemptSummary`, `Closure`, `BuyingPower`, `naked_requirement`, `MarginLeg`, `margin_requirement` |
 | `history.hpp` | `Lifecycle`, `lifecycles` (round trips rebuilt from fills and closures) |
@@ -1138,20 +1138,34 @@ Hash is lowercase hex SHA-256 (OpenSSL EVP) over the canonical entire record wit
 the original line to equal canonical serialization, detecting duplicate keys and
 whitespace alterations. Hashes, sequence and monotone time are verified.
 
-The complete line is written and synced before a transition is published: with
-`F_FULLFSYNC` on macOS, whose `fsync` leaves data in the drive's cache for a power loss
-(such as a laptop's battery running out) to lose, and `fsync` elsewhere. A transaction
-that would leave less than 64 MiB free on the disk is refused instead of written, so a
+Live paper accounts write and sync every complete line before publishing the
+transaction: with `F_FULLFSYNC` on macOS, whose `fsync` leaves data in the drive's
+cache for a power loss to lose, and `fsync` elsewhere. This is `FileJournal`'s
+default policy for both creation and resume.
+
+Replay, drill and scenario journals, including kept runs, use batched syncs. Each
+append writes its complete line immediately; the first record syncs, then an append
+syncs when at least 250 ms of steady-clock time has passed since the last sync.
+`flush()` syncs pending records immediately, and destruction attempts a final flush
+without throwing. Replay pause, stop, finish and teardown flush on the owner thread
+before handing on the journal. A process crash loses no completed writes. A power
+cut or kernel panic may lose the last quarter second of replay records. Readers can
+see complete lines before the sync. Batching is append-driven: an idle journal
+waits for another append or a boundary. Compaction and repair still sync fully.
+
+A transaction that would leave less than 64 MiB free on the disk is refused, so a
 full disk stops trading without tearing the journal. If a write is torn anyway, resume
 refuses the journal until, with openportd stopped, `openportd --repair-journals` cuts
 the torn last line off it and each account journal beside it, keeping the original as
 `FILE.torn-YYYYMMDDTHHMMSSZ`; damage before the last line is reported and left alone.
-I/O failure throws `JOURNAL_IO`, leaves the prior account/orders visible, sets the
+An append failure throws `JOURNAL_IO`, leaves the prior account/orders visible, sets the
 snapshot's `journal_failed` flag, and refuses every subsequent command. The disk
 outcome can be indeterminate after a failed write/sync: **stop trading and recover**;
 do not retry against the old in-memory account. A custom `Journal` must honor the
-same all-or-error durability contract. File creation uses restrictive permissions;
-the hosting application should durably provision the containing directory.
+same complete-write or error contract and its chosen durability policy. A deferred
+sync failure also latches `JOURNAL_IO`; the replay account stops trading and reports
+the failure while preserving its last published state. File creation uses restrictive
+permissions; the hosting application should durably provision the containing directory.
 
 Recovery verifies the chain and restores **recorded outcomes/state**, including
 cash, basis residues, liquidity budgets, observation high-water marks, definitions,

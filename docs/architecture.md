@@ -124,6 +124,12 @@ still recover. A replay needs a fresh journal. Verification reproduces the recor
 prefix, including an intentionally stopped run, without starting Engine or HTTP.
 It compares every transaction hash, final equity and the head hash.
 
+Replay, drill and scenario journals write each line at once but sync it to disk at
+most every 250 ms, and at pause, stop, finish and teardown, so a kept run is synced
+before it is listed or opened. A process crash loses nothing written; a power cut can
+lose the last quarter second. Live paper accounts sync every record before its
+transaction is published. The journal bytes are the same either way.
+
 The golden scenario trades a vertical, a bracket and a flatten. It asserts identical
 journal bytes for repeated runs on one build/platform at different playback speeds,
 and tests lockstep against continuous playback. Floating-point analytics and scenario
@@ -205,12 +211,17 @@ The calendar memo, as the fastest of five interleaved runs, since noise only add
 | 1,000 | 64 µs | 8 µs | 441 µs | 24 µs | 461 µs | 34 µs |
 | 10,000 | 65 µs | 8 µs | 438 µs | 24 µs | 474 µs | 43 µs |
 
-With a journal, a record now costs its disk sync plus about 1% for finding the
-change; before, writing out and comparing the whole state took most of the time and
-grew with the history. A `submit` still grows a little with the history: appending an
-order, a fill and a client order ID each copies its container's list of chunks, one
-pointer per 32 entries. Asking once per position instead of once per grid cell took
+With a live paper journal, each record costs its disk sync plus about 1% for finding
+the change; before, writing out and comparing the whole state took most of the time
+and grew with the history. A replay journal shares one sync among the records of each
+250 ms. A `submit` still grows a little with the history: appending an order, a fill
+and a client order ID each copies its container's list of chunks, one pointer per 32
+entries. Asking once per position instead of once per grid cell took
 about a sixth more off a held position's batch.
+
+A simulated SPX replay with analytics and a flat account, writing 906 journal records,
+took a median 11.8 s of wall time syncing every record and 2.6 s batched, in three
+interleaved runs each on the busy machine above; its syncs fell from 906 to 8–19.
 
 The scenario benchmark reads a generated SPX day, runs analytics and a flat paper
 account, and reports market-hours simulated per wall-second: 6.75 market hours in 1.88
@@ -223,7 +234,7 @@ changes; it has no orders or journal writes.
 
 ## Tests
 
-791 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+801 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
 terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13

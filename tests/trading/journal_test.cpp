@@ -30,6 +30,137 @@ class TemporaryJournal {
  private:
   std::filesystem::path directory_;
 };
+TEST(TradingJournal, BatchedWritesAreImmediatelyReadableAndFlushOnlyWhenPending) {
+  TemporaryJournal file;
+  int syncs = 0;
+  FileJournal::Options options;
+  options.sync_policy = FileJournal::SyncPolicy::Batched;
+  options.sync_interval = std::chrono::hours(1);
+  options.hooks.sync = [&](int) { ++syncs; return true; };
+  options.hooks.clock = [] { return std::chrono::steady_clock::time_point{}; };
+  auto journal = FileJournal::create(file.path, options);
+  journal->flush();
+  EXPECT_EQ(syncs, 0);
+  for (std::uint64_t record = 1; record <= 10; ++record) {
+    journal->append(static_cast<Timestamp>(record), "test", "{}");
+    const auto recovered = FileJournal::read(file.path, journal->head());
+    EXPECT_EQ(recovered.records.size(), record);
+    EXPECT_FALSE(recovered.truncated_final_line);
+    EXPECT_EQ(syncs, 1);  // The first append always syncs.
+  }
+  journal->flush();
+  EXPECT_EQ(syncs, 2);
+  journal->flush();
+  journal.reset();
+  EXPECT_EQ(syncs, 2);
+}
+
+TEST(TradingJournal, BatchedIntervalUsesSteadyTimeAndFlushRestartsIt) {
+  TemporaryJournal file;
+  int syncs = 0;
+  auto now = std::chrono::steady_clock::time_point{};
+  FileJournal::Options options;
+  options.sync_policy = FileJournal::SyncPolicy::Batched;
+  options.hooks.sync = [&](int) { ++syncs; return true; };
+  options.hooks.clock = [&] { return now; };
+  auto journal = FileJournal::create(file.path, options);
+  journal->append(0, "first", "{}");
+  now += std::chrono::milliseconds(249);
+  journal->append(md::kNanosPerDay, "market_time_does_not_sync", "{}");
+  EXPECT_EQ(syncs, 1);
+  now += std::chrono::milliseconds(1);
+  journal->append(md::kNanosPerDay, "interval", "{}");
+  EXPECT_EQ(syncs, 2);
+  now += std::chrono::milliseconds(100);
+  journal->append(md::kNanosPerDay, "pending", "{}");
+  journal->flush();
+  EXPECT_EQ(syncs, 3);
+  now += std::chrono::milliseconds(249);
+  journal->append(md::kNanosPerDay, "pending", "{}");
+  EXPECT_EQ(syncs, 3);
+  now += std::chrono::milliseconds(1);
+  journal->append(md::kNanosPerDay, "interval", "{}");
+  EXPECT_EQ(syncs, 4);
+}
+
+TEST(TradingJournal, DestructionFlushesPendingRecordsAndNeverThrows) {
+  for (const bool fail : {false, true}) {
+    TemporaryJournal file;
+    int syncs = 0;
+    FileJournal::Options options;
+    options.sync_policy = FileJournal::SyncPolicy::Batched;
+    options.hooks.clock = [] { return std::chrono::steady_clock::time_point{}; };
+    options.hooks.sync = [&](int) { return ++syncs == 1 || !fail; };
+    {
+      const auto journal = FileJournal::create(file.path, options);
+      journal->append(0, "first", "{}");
+      journal->append(1, "pending", "{}");
+      EXPECT_EQ(syncs, 1);
+    }
+    EXPECT_EQ(syncs, 2);
+    EXPECT_EQ(FileJournal::read(file.path).records.size(), 2U);
+    EXPECT_NO_THROW(FileJournal::resume(file.path));  // Destruction also releases the lock.
+  }
+}
+
+TEST(TradingJournal, DeferredSyncFailureIsIndeterminateAndLatchesAppendFailure) {
+  for (const bool explicit_flush : {false, true}) {
+    TemporaryJournal file;
+    int syncs = 0;
+    auto now = std::chrono::steady_clock::time_point{};
+    FileJournal::Options options;
+    options.sync_policy = FileJournal::SyncPolicy::Batched;
+    options.hooks.clock = [&] { return now; };
+    options.hooks.sync = [&](int) { return ++syncs == 1; };
+    const auto journal = FileJournal::create(file.path, options);
+    journal->append(0, "first", "{}");
+    journal->append(1, "pending", "{}");
+    const auto head = journal->head();
+    now += options.sync_interval;
+    try {
+      if (explicit_flush) journal->flush();
+      else journal->append(2, "indeterminate", "{}");
+      FAIL() << "Deferred sync must fail";
+    } catch (const TradingError& error) { EXPECT_EQ(error.code(), Reason::JOURNAL_IO); }
+    EXPECT_EQ(journal->sequence(), 2U);
+    EXPECT_EQ(journal->head(), head);
+    const auto written = file.read();
+    EXPECT_EQ(FileJournal::read(file.path).records.size(), explicit_flush ? 2U : 3U);
+    try {
+      journal->append(3, "must_not_write", "{}");
+      FAIL() << "Failed journal must stay failed";
+    } catch (const TradingError& error) { EXPECT_EQ(error.code(), Reason::JOURNAL_IO); }
+    EXPECT_THROW(journal->flush(), TradingError);
+    EXPECT_EQ(syncs, 2);
+    EXPECT_EQ(file.read(), written);
+  }
+}
+
+TEST(TradingJournal, ResumeSyncsItsFirstAppendAndDefaultsToPerRecord) {
+  TemporaryJournal file;
+  { const auto journal = FileJournal::create(file.path); journal->append(0, "older", "{}"); }
+  int syncs = 0;
+  FileJournal::Options options;
+  options.hooks.sync = [&](int) { ++syncs; return true; };
+  options.hooks.clock = [] { return std::chrono::steady_clock::time_point{}; };
+  {
+    const auto journal = FileJournal::resume(file.path, options);
+    journal->append(1, "default", "{}");
+    journal->append(2, "default", "{}");
+    EXPECT_EQ(syncs, 2);
+  }
+  options.sync_policy = FileJournal::SyncPolicy::Batched;
+  {
+    const auto journal = FileJournal::resume(file.path, options);
+    journal->append(3, "first_after_resume", "{}");
+    EXPECT_EQ(syncs, 3);
+    journal->append(4, "pending", "{}");
+    EXPECT_EQ(syncs, 3);
+  }
+  EXPECT_EQ(syncs, 4);
+  EXPECT_EQ(FileJournal::read(file.path).records.size(), 5U);
+}
+
 class FailingJournal final : public Journal {
  public:
   bool fail = false;

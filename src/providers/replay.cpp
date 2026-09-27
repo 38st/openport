@@ -97,6 +97,7 @@ bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
   while (!stopping_.load()) {
     if (seeking_.load()) return true;
     if (paused_.load()) {
+      if (!synchronize()) return false;
       std::unique_lock lock(control_mutex_);
       control_.wait(lock, [&] { return !paused_.load() || seeking_.load() || stopping_.load(); });
       lock.unlock();
@@ -253,10 +254,11 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
   finished_ = true;
 }
 
-void ReplayProvider::set_driver(Driver driver) {
+void ReplayProvider::set_driver(Driver driver, std::function<std::future<void>()> barrier) {
   if (started_) throw std::logic_error("Set replay driver before start");
   if (options_.loop) throw std::invalid_argument("Trading replays require loop=off; start a fresh run to repeat the day");
   driver_ = std::move(driver);
+  if (barrier) options_.synchronize = std::move(barrier);
 }
 void ReplayProvider::until(md::Timestamp target) {
   if (!driver_) throw std::invalid_argument("Lockstep requires a deterministic consumer");
@@ -291,6 +293,9 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       {
         std::unique_lock lock(control_mutex_);
         if (step_pending_ && next->time > step_target_) {
+          lock.unlock();
+          if (!synchronize()) break;
+          lock.lock();
           market_time_ = step_target_;
           settled_ = step_target_;
           paused_ = true;
@@ -321,6 +326,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       previous = receipt;
       next = batches.next();
       if (preparing && receipt >= options_.start_at && (!next || next->received > receipt)) {
+        if (paused_.load() && !synchronize()) break;
         preparing = false;
         seeking_ = false;
         deadline = options_.clock->now();

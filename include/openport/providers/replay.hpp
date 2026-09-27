@@ -58,7 +58,8 @@ class ReplayProvider final : public md::Provider {
   /// Install before start. Each completed batch waits for its consumer; no queue
   /// coalescing or playback-clock scheduling can change its contents.
   using Driver = std::function<std::future<void>(ReplayBatch)>;
-  void set_driver(Driver driver);
+  /// The optional barrier settles pending I/O at pauses, steps and EOF.
+  void set_driver(Driver driver, std::function<std::future<void>()> barrier = {});
   /// Synchronous lockstep advance; returns only after all complete input through
   /// the target is settled. Controls and shutdown interrupt the pacing wait.
   void until(md::Timestamp target);

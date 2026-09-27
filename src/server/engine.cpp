@@ -25,7 +25,8 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
       queue_(md::kEventQueueCapacity, options.paper_enabled || options.replay),
       desk_(std::string(provider.name()), provider.capabilities(), subscription_, options_) {
   replay_ = dynamic_cast<providers::ReplayProvider*>(&provider_);
-  if (replay_) replay_->set_driver([this](providers::ReplayBatch batch) { return consume_replay(std::move(batch)); });
+  if (replay_) replay_->set_driver([this](providers::ReplayBatch batch) { return consume_replay(std::move(batch)); },
+                                  [this] { return synchronize(); });
   // Replays and the demo market never write the volatility history.
   if (options_.replay || provider.name().starts_with("replay") || provider.name() == "demo") options_.series.reset();
   status_.provider = std::string(provider.name());
@@ -302,6 +303,7 @@ void Engine::run() {
         } catch (...) { pending.done.set_exception(std::current_exception()); }
       }
       for (const auto& event : batch) update_health(event, received);
+      if (!synchronized.empty() || (replay_->paused() && !replay_->fast_forwarding())) desk_.flush_journals();
       publish_desk();
       {
         const std::lock_guard lock(mutex_);
@@ -373,6 +375,7 @@ void Engine::run() {
   // Release the exclusive journal writers on their owner thread. Published values
   // remain readable, and a replacement Engine can recover as soon as stop returns.
   desk_.stop();
+  publish_desk();
 }
 
 void Engine::publish_desk() {

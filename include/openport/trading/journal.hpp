@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -30,23 +32,41 @@ struct JournalRepair {
 
 /// Optional durable sink; all other trading components are filesystem-free.
 /// One reducer transaction per newline contains all typed outcomes plus the
-/// resulting state. append must persist the complete line or throw JOURNAL_IO.
+/// resulting state. append must write the complete line or throw JOURNAL_IO.
+/// File journals sync each record by default; replay callers may defer durability
+/// until an interval or flush. Completed writes survive a process crash either way.
 /// A failure is indeterminate on disk: stop trading and recover before retrying.
 class Journal {
  public:
   virtual ~Journal() = default;
   virtual void append(Timestamp time, std::string_view type, std::string_view payload) = 0;
+  /// Sync pending records now. Memory sinks need no durability barrier.
+  virtual void flush() {}
   [[nodiscard]] virtual std::uint64_t sequence() const = 0;
   [[nodiscard]] virtual std::string head() const = 0;
 };
 
-/// Exclusive single-writer file, O_EXCL on creation, write + fsync before return.
+/// Exclusive single-writer file, O_EXCL on creation, immediate writes with optional
+/// batched syncs. Single owner: append and flush must not run concurrently.
 /// Non-blocking flock excludes other opens (including in this process) until destruction.
 /// Resume requires a clean verified file. A torn suffix is never silently erased.
 class FileJournal final : public Journal {
  public:
+  enum class SyncPolicy { PerRecord, Batched };
+  struct Hooks {
+    /// Empty uses full disk sync. Injectable for counting and failure tests.
+    std::function<bool(int)> sync;
+    std::function<std::chrono::steady_clock::time_point()> clock = std::chrono::steady_clock::now;
+  };
+  struct Options {
+    SyncPolicy sync_policy = SyncPolicy::PerRecord;
+    std::chrono::milliseconds sync_interval{250};
+    Hooks hooks;
+  };
   static std::shared_ptr<FileJournal> create(const std::string& path);
+  static std::shared_ptr<FileJournal> create(const std::string& path, Options options);
   static std::shared_ptr<FileJournal> resume(const std::string& path);
+  static std::shared_ptr<FileJournal> resume(const std::string& path, Options options);
   static JournalRecovery read(const std::string& path, std::string_view expected_head = {});
   /// Cuts a torn final line, as a write the disk ran out for leaves, off a journal so
   /// that it resumes, after copying the original beside it as FILE.torn-YYYYMMDDTHHMMSSZ.
@@ -57,15 +77,20 @@ class FileJournal final : public Journal {
   FileJournal(const FileJournal&) = delete;
   FileJournal& operator=(const FileJournal&) = delete;
   void append(Timestamp time, std::string_view type, std::string_view payload) override;
+  void flush() override;
   [[nodiscard]] std::uint64_t sequence() const override { return sequence_; }
   [[nodiscard]] std::string head() const override { return head_; }
  private:
-  FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time);
+  FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time, Options options);
   int fd_ = -1;
   std::uint64_t sequence_ = 0;
   std::string head_;
   bool failed_ = false;
   Timestamp last_time_ = 0;
+  Options options_;
+  std::chrono::steady_clock::time_point last_sync_{};
+  bool synced_ = false;
+  bool pending_ = false;
 };
 
 /// Same verifier for in-memory captured JSONL; useful for imported audit files.

@@ -36,6 +36,7 @@ class Desk {
     std::vector<trading::Dividend> dividends;
     std::vector<analytics::EventLabel> events;
     std::shared_ptr<trading::Journal> paper_sink;  ///< Optional in-process test/simulation sink.
+    trading::FileJournal::Hooks journal_io;  ///< Injectable I/O only; replay selects the sync policy.
     std::string write_mode = "open";
     analytics::AnalyticsOptions analytics;
     std::shared_ptr<CandleStore> candles;
@@ -50,7 +51,9 @@ class Desk {
   Desk(std::string provider, md::Capabilities capabilities, md::Subscription subscription, Options options);
   void start_trading();
   void halt() { stopping_ = true; }
-  void stop() { halt(); accounts_.clear(); }
+  void stop() { halt(); flush_journals(); accounts_.clear(); }
+  /// Owner-thread durability barrier. A failed sync disables that account.
+  void flush_journals();
   void set_dividends(std::vector<trading::Dividend> dividends);
   void observe(const md::Event& event);
   bool refresh_analytics();
@@ -80,6 +83,7 @@ class Desk {
     std::string failure;  ///< Why it cannot trade; empty while it can.
     std::unique_ptr<EquityStore> equity;
     std::shared_ptr<const trading::TradingSnapshot> sampled_snapshot;
+    std::shared_ptr<trading::Journal> journal;
   };
   PaperAccount* find_account(std::string_view id);
   void create_account(const TradingCommand& command, TradingReply& reply);

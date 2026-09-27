@@ -38,6 +38,58 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
   if (!result) throw std::runtime_error("Desk did not complete command");
   return *result;
 }
+TEST(Desk, OnlyExplicitReplayJournalsBatchSyncs) {
+  for (const bool replay : {false, true}) {
+    test::RecordingFile file;
+    test::ScriptedMarket market;
+    int syncs = 0;
+    server::Desk::Options options;
+    options.replay = replay;
+    options.analytics.fallback_rate = 0;
+    options.paper_journal = file.directory / "account.jsonl";
+    options.journal_io.sync = [&](int) { ++syncs; return true; };
+    options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    desk.replay_batch(market_batch(market), market.time);
+    server::TradingCommand order;
+    order.order = market.market("sync-policy");
+    const auto reply = command(desk, order, market.time, market.time);
+    ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+    const auto records = trading::FileJournal::read(options.paper_journal.string()).records.size();
+    ASSERT_GT(records, 1U);
+    EXPECT_EQ(static_cast<std::size_t>(syncs), replay ? 1U : records);
+    desk.stop();
+    EXPECT_EQ(static_cast<std::size_t>(syncs), replay ? 2U : records);
+    EXPECT_NO_THROW(trading::FileJournal::resume(options.paper_journal.string()));
+  }
+}
+
+TEST(Desk, FailedBoundarySyncDisablesTradingAndPreservesThePublishedAccount) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  bool fail = false;
+  server::Desk::Options options;
+  options.replay = true;
+  options.paper_journal = file.directory / "account.jsonl";
+  options.journal_io.sync = [&](int) { return !fail; };
+  options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading();
+  desk.replay_batch(market_batch(market), market.time);
+  const auto before = desk.trading_view()->snapshot;
+  fail = true;
+  desk.flush_journals();
+  EXPECT_NE(desk.trading_status().reason.find("JOURNAL_IO"), std::string::npos);
+  EXPECT_EQ(desk.trading_status().write, "disabled");
+  server::TradingCommand order;
+  order.order = market.market("failed-sync");
+  const auto reply = command(desk, order, market.time, market.time);
+  EXPECT_EQ(reply.error_code, "TRADING_UNAVAILABLE");
+  EXPECT_EQ(desk.trading_view()->snapshot->account_version, before->account_version);
+  EXPECT_TRUE(desk.trading_view()->snapshot->recent_fills.empty());
+}
+
 TEST(Desk, ExplicitClockControlsFeedStallWithoutThreads) {
   test::ScriptedMarket market;
   server::Desk::Options options;
@@ -336,6 +388,124 @@ server::ApiResponse replay_call(server::ReplayHost& host, std::string method, st
   if (result.wait_for(5s) != std::future_status::ready) throw std::runtime_error("Replay request timed out");
   return result.get();
 }
+TEST(ReplayRun, KeptJournalFlushesAtPauseStepFinishStopAndTeardown) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  const test::ScriptedMarket market;
+  for (const std::string ending : {"finish", "stop", "teardown"}) {
+    const auto directory = file.directory / ending;
+    std::filesystem::create_directory(directory);
+    std::atomic<std::uintmax_t> synced_bytes{0};
+    std::atomic<unsigned> syncs{0};
+    server::Engine::Options options;
+    options.paper_journal = directory / "main.jsonl";
+    options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
+    options.journal_io.sync = [&](int fd) {
+      synced_bytes = static_cast<std::uintmax_t>(::lseek(fd, 0, SEEK_END));
+      ++syncs;
+      return true;
+    };
+    std::filesystem::path journal;
+    {
+      server::ReplayHost host({file.directory, options, false});
+      const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 0}, {"paused", true}});
+      ASSERT_EQ(started.status, 201) << started.body;
+      const auto id = json::parse(started.body).at("replay").at("id").get<std::string>();
+      journal = directory / "replays" / (id + ".jsonl");
+      ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+      EXPECT_EQ(synced_bytes.load(), std::filesystem::file_size(journal));
+      const auto initial_syncs = syncs.load();
+      const auto stepped = replay_call(host, "PUT", "/api/replay", {{"until", md::format_timestamp(market.time + 4 * md::kNanosPerSecond)}});
+      ASSERT_EQ(stepped.status, 200) << stepped.body;
+      EXPECT_GT(syncs.load(), initial_syncs);
+      EXPECT_EQ(synced_bytes.load(), std::filesystem::file_size(journal));
+      // Pausing explicitly also waits for the owner-thread durability barrier.
+      ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", true}}).status, 200);
+      EXPECT_EQ(synced_bytes.load(), std::filesystem::file_size(journal));
+      if (ending == "finish") {
+        ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", false}}).status, 200);
+        ASSERT_TRUE(test::recording_eventually([&] { return json::parse(host.tick()).at("replay").at("finished").get<bool>(); }));
+        EXPECT_EQ(synced_bytes.load(), std::filesystem::file_size(journal));
+        const auto listing = json::parse(replay_call(host, "GET", "/api/replay").body);
+        EXPECT_EQ(listing.at("history").size(), 1U);
+        EXPECT_EQ(replay_call(host, "GET", "/api/replay/history/" + id).status, 200);
+      } else {
+        ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"speed", 1}, {"paused", false}}).status, 200);
+        if (ending == "stop") {
+          EXPECT_EQ(replay_call(host, "DELETE", "/api/replay").status, 200);
+          EXPECT_EQ(synced_bytes.load(), std::filesystem::file_size(journal));
+        }
+      }
+    }
+    EXPECT_EQ(synced_bytes.load(), std::filesystem::file_size(journal));
+    const auto recovered = trading::FileJournal::read(journal.string());
+    EXPECT_LT(syncs.load(), recovered.records.size());
+    EXPECT_TRUE(server::verify_run(journal).matched);
+  }
+}
+
+TEST(ReplayRun, HistoryWaitsForTheStoppingJournalsFinalSync) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  std::promise<void> syncing, release;
+  auto entered = syncing.get_future();
+  const auto released = release.get_future().share();
+  std::atomic<bool> hold{false};
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  options.analytics.fallback_rate = 0;
+  options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
+  options.journal_io.sync = [&](int) {
+    if (hold.exchange(false)) { syncing.set_value(); released.wait(); }
+    return true;
+  };
+  server::ReplayHost host({file.directory, options, false});
+  const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 1}, {"paused", true}});
+  ASSERT_EQ(started.status, 201) << started.body;
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+  ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", false}}).status, 200);
+  // This command records input even if the order is rejected. Leave it unsynced.
+  const test::ScriptedMarket market;
+  const auto ordered = replay_call(host, "POST", "/api/replay/orders", {{"client_order_id", "before-stop"}, {"symbol", market.symbol()},
+      {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}});
+  ASSERT_EQ(ordered.status, 201) << ordered.body;
+  hold = true;
+  auto stopping = std::async(std::launch::async, [&] { host.stop(); });
+  const auto waiting = entered.wait_for(3s);
+  EXPECT_EQ(waiting, std::future_status::ready);
+  if (waiting != std::future_status::ready) { release.set_value(); stopping.get(); return; }
+  auto listing = std::async(std::launch::async, [&] { return replay_call(host, "GET", "/api/replay"); });
+  EXPECT_EQ(listing.wait_for(20ms), std::future_status::timeout);
+  release.set_value();
+  stopping.get();
+  const auto response = listing.get();
+  ASSERT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body).at("history").size(), 1U);
+}
+
+TEST(ReplayRun, StandaloneEngineFlushesBeforePublishingFinished) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  std::atomic<std::uintmax_t> synced_bytes{0};
+  std::atomic<unsigned> syncs{0};
+  providers::ReplayProvider replay({file.path, 0, false, {}});
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "run.jsonl";
+  options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
+  options.journal_io.sync = [&](int fd) {
+    synced_bytes = static_cast<std::uintmax_t>(::lseek(fd, 0, SEEK_END));
+    ++syncs;
+    return true;
+  };
+  server::Engine engine(replay, {{"SPX"}}, options);
+  engine.start();
+  ASSERT_TRUE(test::recording_eventually([&] { return replay.finished(); }));
+  EXPECT_EQ(synced_bytes.load(), std::filesystem::file_size(options.paper_journal));
+  EXPECT_EQ(syncs.load(), 2U);  // First record and EOF, regardless of the market clock.
+  EXPECT_TRUE(server::verify_run(options.paper_journal).matched);
+  engine.stop();
+}
+
 TEST(ReproducibleRun, LockstepSmallAndLargeStepsMatchContinuousCommandsAndVerify) {
   test::RecordingFile file;
   write_stream(file.path, true);

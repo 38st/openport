@@ -57,6 +57,7 @@ class ReplayHost {
   struct Session;
   class DemoRecordings;
   class History;
+  void stop_session();  // control_mutex_ held
   void control(const ApiRequest& request, const ApiCompletion& complete);
   [[nodiscard]] std::shared_ptr<Session> current() const;
 
@@ -65,7 +66,7 @@ class ReplayHost {
   std::unique_ptr<DemoRecordings> demos_;
   std::vector<providers::Scenario> scenarios_;
   std::unique_ptr<History> history_;
-  std::mutex control_mutex_;  // serializes starts, stops, deletions and controls
+  std::mutex control_mutex_;  // serializes controls and history handoffs
   mutable std::mutex mutex_;
   std::shared_ptr<Session> session_;
 };

@@ -456,6 +456,11 @@ void ReplayHost::set_dividends(std::vector<trading::Dividend> dividends) {
 }
 
 void ReplayHost::stop() {
+  const std::lock_guard control_lock(control_mutex_);
+  stop_session();
+}
+
+void ReplayHost::stop_session() {
   std::shared_ptr<Session> old;
   {
     const std::lock_guard lock(mutex_);
@@ -473,7 +478,8 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
   if (!target.starts_with(prefix)) return false;
   const auto rest = target.substr(prefix.size());
   std::unique_lock control_lock(control_mutex_, std::defer_lock);
-  if (request.method != "GET" && (rest.empty() || rest.starts_with("?") || rest.starts_with("/history/"))) control_lock.lock();
+  // A retiring journal becomes history only after Engine::stop has flushed it.
+  if (rest.empty() || rest.starts_with("?") || rest.starts_with("/history/")) control_lock.lock();
   if (rest.empty() || rest.front() == '?') {
     control(request, complete);
     return true;
@@ -492,7 +498,7 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
         if (options_.engine.write_mode == "disabled" || !history_->writable()) {
           complete(api_error(403, "WRITE_DISABLED", "Replay history is read-only"));
         } else {
-          if (session && session->id == id) { session->engine->stop(); stop(); }
+          if (session && session->id == id) { session->engine->stop(); stop_session(); }
           history_->remove(id);
           complete(ok({{"deleted", id}}));
         }
@@ -642,9 +648,6 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       playback.speed = speed;
       playback.start_at = session->target;
       playback.paused = paused;
-      // Bind before provider.start; Engine::stop joins the provider before destruction.
-      const auto consumer = std::make_shared<Engine*>(nullptr);
-      playback.synchronize = [consumer] { return (*consumer)->synchronize(); };
       session->provider = std::make_unique<providers::ReplayProvider>(std::move(playback));
       session->demo = providers::simulated_provider(session->provider->header().provider);
       auto engine = [&] {
@@ -677,7 +680,6 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       engine.clock = [provider] { return provider->time(); };
       const auto& header = provider->header();
       session->engine = std::make_unique<Engine>(*provider, md::Subscription{header.subscription.underlyings, 0, 0.0}, engine);
-      *consumer = session->engine.get();
       session->engine->start();
       if (engine.paper_enabled && !session->engine->status().trading.enabled)
         throw std::runtime_error(session->engine->status().trading.reason);
@@ -723,9 +725,10 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       if (body.contains("speed")) session->provider->set_speed(speed_field(body));
       if (body.contains("paused")) session->provider->set_paused(body.at("paused").get<bool>());
       if (body.contains("skip") && body.at("skip").get<bool>()) session->provider->skip();
+      if (body.value("paused", false)) session->engine->synchronize().get();
       complete(ok({{"replay", session->state()}}));
     } else if (request.method == "DELETE") {
-      stop();
+      stop_session();
       complete(ok({{"replay", nullptr}}));
     } else {
       complete(api_error(405, "METHOD_NOT_ALLOWED", "Use GET, POST, PUT or DELETE"));

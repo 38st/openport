@@ -34,6 +34,7 @@ class SettlementJournal final : public Journal {
   }
   std::uint64_t sequence() const override { return sink_->sequence(); }
   std::string head() const override { return sink_->head(); }
+  void flush() override { sink_->flush(); }
  private:
   std::shared_ptr<Journal> sink_;
   const std::map<std::string, std::string>& source_;
@@ -103,7 +104,8 @@ Valuation valuation_for(const std::string& symbol, const md::OptionContract& con
 }
 /// Opens a journal for writing, making each directory created on the way durable:
 /// an existing file is locked, then read for recovery; otherwise a new one is created.
-std::pair<std::shared_ptr<Journal>, std::optional<JournalRecovery>> open_journal(const std::filesystem::path& file) {
+std::pair<std::shared_ptr<Journal>, std::optional<JournalRecovery>> open_journal(
+    const std::filesystem::path& file, const FileJournal::Options& options) {
   const auto parent = std::filesystem::absolute(file).parent_path();
   auto existing = parent;
   while (!std::filesystem::exists(existing)) existing = existing.parent_path();
@@ -112,12 +114,19 @@ std::pair<std::shared_ptr<Journal>, std::optional<JournalRecovery>> open_journal
   sync_directory(existing);
   if (std::filesystem::exists(file)) {
     // Lock before reading, then recover the same verified head held by the writer.
-    std::shared_ptr<Journal> journal = FileJournal::resume(file.string());
+    std::shared_ptr<Journal> journal = FileJournal::resume(file.string(), options);
     return {journal, FileJournal::read(file.string())};
   }
-  std::shared_ptr<Journal> journal = FileJournal::create(file.string());
+  std::shared_ptr<Journal> journal = FileJournal::create(file.string(), options);
   sync_directory(parent);
   return {journal, std::nullopt};
+}
+FileJournal::Options journal_options(const Desk::Options& desk) {
+  FileJournal::Options options;
+  // Live callers cannot inherit a configurable batching policy from another desk.
+  if (desk.replay) options.sync_policy = FileJournal::SyncPolicy::Batched;
+  options.hooks = desk.journal_io;
+  return options;
 }
 
 /// Account IDs name journal files: lowercase letters, digits and single hyphens.
@@ -332,8 +341,9 @@ void Desk::start_trading() {
     try {
       std::shared_ptr<Journal> journal = file.empty() ? options_.paper_sink : nullptr;
       std::optional<JournalRecovery> recovery;
-      if (!file.empty()) std::tie(journal, recovery) = open_journal(file);
+      if (!file.empty()) std::tie(journal, recovery) = open_journal(file, journal_options(options_));
       if (journal) journal = std::make_shared<SettlementJournal>(journal, settlement_source_);
+      account.journal = journal;
       if (recovery && !options_.run_input.empty())
         throw TradingError(Reason::JOURNAL_CORRUPT, "A reproducible run needs a new journal; select an unused --paper-journal path");
       if (recovery) account.session = std::make_unique<TradingSession>(TradingSession::recover(*recovery, journal));
@@ -348,7 +358,7 @@ void Desk::start_trading() {
       account.failure = std::string("JOURNAL_IO: ") + error.what();
     }
   };
-  accounts_.push_back({std::string(kMainAccount), "Main", nullptr, {}, nullptr, {}});
+  accounts_.push_back({std::string(kMainAccount), "Main", nullptr, {}, nullptr, {}, {}});
   open(accounts_.back(), options_.paper_journal, true);
   std::error_code ec;
   if (!options_.paper_accounts.empty() && std::filesystem::is_directory(options_.paper_accounts, ec)) {
@@ -357,7 +367,7 @@ void Desk::start_trading() {
       if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string())) files.push_back(entry.path());
     std::sort(files.begin(), files.end());
     for (const auto& file : files) {
-      PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}, nullptr, {}};
+      PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}, nullptr, {}, {}};
       std::ifstream named(std::filesystem::path(file).replace_extension(".name"));
       if (std::string name; named && std::getline(named, name) && !name.empty() && name.size() <= 64) account.name = name;
       open(account, file, false);
@@ -401,13 +411,13 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
   if (base.empty() || base == kMainAccount) base = "account";
   auto id = base;
   for (int n = 2; find_account(id); ++n) id = base + "-" + std::to_string(n);
-  PaperAccount account{id, c.name, nullptr, {}, nullptr, {}};
+  PaperAccount account{id, c.name, nullptr, {}, nullptr, {}, {}};
   try {
     auto config = options_.paper;
     config.rules = c.rules;
     config.initial_cash = c.initial_cash;
     const auto file = options_.paper_accounts / (id + ".jsonl");
-    auto [journal, recovery] = open_journal(file);
+    auto [journal, recovery] = open_journal(file, journal_options(options_));
     if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists at " + file.string());
     {
       const auto named = options_.paper_accounts / (id + ".name");
@@ -416,8 +426,8 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
       out.flush();
       if (!out) throw TradingError(Reason::JOURNAL_IO, "Cannot write " + named.string());
     }
-    account.session = std::make_unique<TradingSession>(config, market_time_,
-        std::make_shared<SettlementJournal>(journal, settlement_source_), c.actor);
+    account.journal = std::make_shared<SettlementJournal>(journal, settlement_source_);
+    account.session = std::make_unique<TradingSession>(config, market_time_, account.journal, c.actor);
     account.session->set_actor("system");
     account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
   } catch (const TradingError& error) {
@@ -430,6 +440,16 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
   accounts_.push_back(std::move(account));
   publish_trading();
   reply.account = id;
+}
+
+void Desk::flush_journals() {
+  for (auto& account : accounts_) {
+    if (!account.journal || !account.failure.empty()) continue;
+    try { account.journal->flush(); }
+    catch (const std::exception& error) {
+      fail_trading(account, std::string("JOURNAL_IO: ") + error.what());
+    }
+  }
 }
 
 void Desk::sample_equity(PaperAccount& account) {
