@@ -21,6 +21,7 @@
 #include "openport/md/provider.hpp"
 #include "openport/md/recording.hpp"
 #include "openport/server/candles.hpp"
+#include "openport/server/series.hpp"
 #include "openport/analytics/volatility.hpp"
 #include "openport/server/desk.hpp"
 #include "openport/providers/replay.hpp"
@@ -80,6 +81,7 @@ class MetricsSource {
   [[nodiscard]] virtual std::vector<analytics::EventLabel> events() const { return {}; }
   /// Price history for charts and realized volatility; nullptr when absent.
   [[nodiscard]] virtual const CandleStore* candles() const { return nullptr; }
+  [[nodiscard]] virtual const SeriesStore* series() const { return nullptr; }
   /// False means unavailable or full. Completion runs on the engine thread;
   /// network callers must dispatch it onto their own executor.
   virtual bool post_trading(TradingCommand, TradingCompletion) { return false; }
@@ -96,6 +98,8 @@ class Engine final : public MetricsSource {
     std::size_t command_capacity = 256;
     std::filesystem::path record_file;
     md::RecordingSink::Options recording;
+    /// Volatility history written by the live engine only; replays and the demo reset it.
+    std::shared_ptr<SeriesStore> series;
     std::function<md::Timestamp()> clock = md::now;
     /// Monotonic cadence for publishing receipt timestamps, independent of wall-clock jumps.
     std::function<std::chrono::steady_clock::time_point()> monotonic_clock =
@@ -131,6 +135,7 @@ class Engine final : public MetricsSource {
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view(std::string_view account) const override;
   [[nodiscard]] std::vector<analytics::EventLabel> events() const override { return options_.events; }
   [[nodiscard]] const CandleStore* candles() const override { return options_.candles.get(); }
+  [[nodiscard]] const SeriesStore* series() const override { return options_.series.get(); }
   bool post_trading(TradingCommand command, TradingCompletion completion) override;
   [[nodiscard]] md::RecordingStats recording_stats() const;
   [[nodiscard]] std::string recording_error() const;
@@ -154,6 +159,7 @@ class Engine final : public MetricsSource {
   std::unique_ptr<md::RecordingSink> recorder_;
   Desk desk_;  // engine thread only
 
+  std::unique_ptr<SeriesWorker> series_worker_;
   std::thread thread_;
   std::atomic<bool> stopping_{false};
   bool started_ = false;

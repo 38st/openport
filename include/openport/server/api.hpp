@@ -39,6 +39,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 ///   GET /api/underlyings/{symbol}/summary
 ///   GET /api/underlyings/{symbol}/chain?expiry={id}[&window=0.1]
 ///   GET /api/underlyings/{symbol}/exposure[?expiries=8][&window=0.08]
+///   GET /api/underlyings/{symbol}/series[?fields=mfiv30,atm30][&interval=1m|1d][&from=][&to=]
 ///   GET /api/underlyings/{symbol}/volatility
 ///   GET /api/underlyings/{symbol}/surface[?expiries=12][&window=0.2]
 ///   GET /api/underlyings/{symbol}/candles[?interval=5m][&limit=500]

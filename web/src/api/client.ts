@@ -1,4 +1,4 @@
-import type { Volatility } from "./types"
+import type { Volatility, VolatilitySeries } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
 import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
@@ -112,6 +112,7 @@ export const api = {
   resetAccount: (request: ResetRequest, mode: WriteMode) => write<Account>(scoped("/api/account/reset"), "POST", mode, request),
   requestPayout: (amount: Money, mode: WriteMode) => write<Account>(scoped("/api/account/payout"), "POST", mode, { amount }),
   status: (signal?: AbortSignal) => get<Status>("/api/status", signal),
+  series: (symbol: string, signal?: AbortSignal) => get<VolatilitySeries>(`${underlying(symbol)}/series?interval=1d&fields=mfiv30,atm30,rr25,rv21,proxy_iv30`, signal),
   volatility: (symbol: string, signal?: AbortSignal) => get<Volatility>(`${underlying(symbol)}/volatility`, signal),
   summary: (symbol: string, signal?: AbortSignal) => get<Summary>(`${underlying(symbol)}/summary`, signal),
   chain: (symbol: string, expiry: string, window: number, signal?: AbortSignal) =>

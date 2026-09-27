@@ -252,6 +252,7 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   test::RecordingFile file;
   server::Engine::Options base;
   base.analytics_interval = 1ms;
+  base.series = std::make_shared<server::SeriesStore>();
   server::ReplayHost host({file.directory, base});
   const auto listing = json::parse(call(host, "GET", "/api/replay").body);
   EXPECT_EQ(listing["demo"]["provider"], "demo");
@@ -283,6 +284,8 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
     return false;
   }));
   const auto status = json::parse(call(host, "GET", "/api/replay/status").body);
+  EXPECT_EQ(status["series"]["enabled"], false);
+  EXPECT_TRUE(base.series->rows("SPX", 0, md::now()).empty());
   EXPECT_EQ(status["provider"]["name"], "replay (demo)");
   EXPECT_EQ(status["provider"]["simulated"], true);
   EXPECT_EQ(status["trading"]["plan"], "Intraday 25K");

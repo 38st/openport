@@ -98,6 +98,7 @@ export interface CircuitBreaker {
 }
 
 export interface Status {
+  series?: { enabled: boolean; directory: string | null; rows_today: number; last_write: string | null; last_error: string | null }
   trading?: TradingStatus | null
   /** Every paper account, the main one first; absent on older servers. */
   accounts?: AccountBrief[] | null
@@ -407,6 +408,13 @@ export interface VolCone {
   implied_reason: string | null
 }
 export interface Volatility {
+  iv_rank?: Num
+  iv_percentile?: Num
+  history_sessions?: number
+  history_basis?: { current: "own_mfiv" | "own_atm" | "missing"; own_sessions: number; proxy_sessions: number; window: number }
+  proxy?: { name: string | null; used: boolean; start: string | null }
+  history_values?: { date: string; value: number; source: string }[]
+  ex_post_vrp?: ExPostVrp | null
   symbol: string
   as_of: string
   version: number
@@ -460,4 +468,30 @@ export interface Volatility {
     today_calendar_arbitrage: boolean
   }
   sources: Record<"mfiv" | "atm" | "skew" | "term" | "realized" | "vrp" | "implied_moves", string>
+}
+
+export interface VolatilitySeriesRow {
+  t: number
+  sample_time?: number
+  mfiv30?: Num
+  atm30?: Num
+  rr25?: Num
+  rv21?: Num
+  proxy_iv30?: Num
+  sources: Record<string, string | null>
+}
+export interface VolatilitySeries {
+  symbol: string
+  interval: "1m" | "1d"
+  fields: string[]
+  rows: VolatilitySeriesRow[]
+}
+export interface ExPostVrp {
+  proxy: boolean
+  implied_source: string
+  realized_source: string
+  convention: string
+  points: { date: string; end: string; implied: Num; realized: Num; variance: Num; vol_points: Num; source: string }[]
+  summaries: { years: number; observations: number; proxy_observations: number; from: string; to: string;
+    mean_variance: Num; median_variance: Num; mean_vol_points: Num; median_vol_points: Num; positive_share: Num }[]
 }

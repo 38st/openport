@@ -11,6 +11,7 @@ add_executable(openport_tests
   analytics/ssvi_test.cpp
   analytics/volatility_test.cpp
   analytics/realized_test.cpp
+  analytics/volatility_history_test.cpp
   analytics/american_test.cpp
 )
 target_link_libraries(openport_tests PRIVATE openport::options GTest::gtest_main)
@@ -37,6 +38,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/dxlink_test.cpp
     server/api_test.cpp
     server/candles_test.cpp
+    server/series_test.cpp
     server/equity_test.cpp
     server/web_policy_test.cpp
     server/engine_test.cpp

@@ -51,6 +51,14 @@ afterEach(() => {
 })
 
 describe("web follow-up rendering", () => {
+  it("shows the series directory, market write time, row count and storage errors", () => {
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, series: { enabled: true, directory: "/tmp/series", rows_today: 391, last_write: asOf, last_error: "disk full" } }, null, "open"))
+    const html = render(<EngineView />)
+    for (const text of ["Volatility history store", "Enabled", "/tmp/series", "391", "Last write · market time", "disk full"]) expect(html).toContain(text)
+    vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+    expect(render(<EngineView />)).toContain("Disabled")
+  })
+
   it("labels a matching parity snapshot, the closed session, and the actual delayed plan", () => {
     vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
     const html = render(<Header symbol="SPY" onSymbol={() => {}} />)

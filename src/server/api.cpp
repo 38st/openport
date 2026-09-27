@@ -1,4 +1,6 @@
 #include "openport/server/api.hpp"
+#include "metric_cache.hpp"
+#include "series_api.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -310,6 +312,7 @@ json status_json(const MetricsSource& source) {
   return {
       {"trading", trading_status_json(s.trading)},
       {"accounts", account_ticks_json(s)},
+      {"series", series_status_json(source)},
       {"circuit_breaker", circuit_breaker_json(s.circuit_breaker)},
       {"market", market_json(now)},
       {"provider",
@@ -425,29 +428,6 @@ json exposure_json(const UnderlyingMetrics& m, std::size_t max_expiries, double 
           {"expiries", expiries},
           {"total_gex", total_json},
           {"exposure", exposure_summary(m)}};
-}
-
-// Weak ownership ties the cache to immutable snapshots, including source identity:
-// separate engines with the same symbol/version cannot reuse each other's fits.
-// A per-snapshot lock coalesces simultaneous HTTP requests, never the engine pass.
-struct SurfaceFits {
-  std::mutex mutex;
-  std::vector<analytics::SviFit> fits;
-  std::optional<analytics::SsviFit> ssvi;
-  std::optional<analytics::VolatilityMetrics> volatility;
-  std::map<const CandleStore*, analytics::RealizedMetrics> realized;
-  std::map<const MetricsSource*, json> volatility_responses;
-};
-
-std::shared_ptr<SurfaceFits> surface_cache(const std::shared_ptr<const UnderlyingMetrics>& m) {
-  using Key = std::weak_ptr<const UnderlyingMetrics>;
-  static std::mutex mutex;
-  static std::map<Key, std::shared_ptr<SurfaceFits>, std::owner_less<Key>> cache;
-  const std::lock_guard lock(mutex);
-  std::erase_if(cache, [](const auto& entry) { return entry.first.expired(); });
-  auto& entry = cache[Key(m)];
-  if (!entry) entry = std::make_shared<SurfaceFits>();
-  return entry;
 }
 
 json svi_json(const analytics::SviFit& fit) {
@@ -710,11 +690,16 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
 
   // History can arrive before the first analysis.
   if (view == "candles") return candles_response(source, symbol, query);
+  if (view == "series") return series_response(source, symbol, query);
   const auto metrics = source.metrics(symbol);
   if (!metrics) return error(404, "no data for " + symbol + " yet");
 
   if (view == "summary") return ok(summary_json(*metrics));
-  if (view == "volatility") return ok(volatility_json(metrics, source));
+  if (view == "volatility") {
+    auto response = volatility_json(metrics, source);
+    add_volatility_history(response, source, metrics);
+    return ok(response);
+  }
   if (view == "chain") {
     const auto it = query.find("expiry");
     const SliceMetrics* slice = nullptr;

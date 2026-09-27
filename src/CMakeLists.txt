@@ -12,6 +12,7 @@ add_library(openport_core
   analytics/ssvi.cpp
   analytics/volatility.cpp
   analytics/realized.cpp
+  analytics/volatility_history.cpp
   analytics/comparison.cpp
 )
 add_library(openport::core ALIAS openport_core)
@@ -127,6 +128,9 @@ if(OPENPORT_BUILD_PROVIDERS)
   # The engine thread, JSON API and HTTP/WebSocket server behind openportd.
   add_library(openport_server
     server/candles.cpp
+    server/metric_cache.cpp
+    server/series.cpp
+    server/series_api.cpp
     server/equity.cpp
     server/desk.cpp
     server/run.cpp

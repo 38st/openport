@@ -154,6 +154,7 @@ md::Timestamp CboeChartHistory::poll_once(net::HttpClient& http) {
   md::Timestamp next = std::numeric_limits<md::Timestamp>::max();
   for (const auto& underlying : underlyings_) {
     for (const auto chart : {CboeChart::Intraday, CboeChart::Daily}) {
+      if (options_.daily_only && chart == CboeChart::Intraday) continue;
       const auto key = std::pair{underlying, chart};
       md::Timestamp& due = due_[key];
       const md::Timestamp now = options_.clock();

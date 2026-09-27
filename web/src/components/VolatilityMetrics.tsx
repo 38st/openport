@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import type { Volatility } from "../api/types"
 import { LineChart } from "../charts/LineChart"
 import { Panel, Stat } from "./ui"
+import { IvHistoryBadge } from "./VolatilityHistory"
 import { expiryLabel } from "../lib/format"
 import { coneSeries, metricMark, volPoints as vp } from "../lib/volatility"
 
@@ -24,6 +25,7 @@ export function VolatilitySummary({ data }: { data: Volatility }) {
       <Stat label="Model-free IV · 30d/93d" value={vp(data.term.mfiv30_93, 3) + metricMark({ truncated: mfiv?.truncated || mfiv93?.truncated, proxy: mfiv?.proxy || mfiv93?.proxy })} hint={data.sources.term} />
       <Stat label="ATM IV · 30d − 7d" value={vp(data.term.atm30_7) + metricMark({ proxy: atm?.proxy || data.atm.constant.find(v => v.days === 7)?.proxy })} />
     </div>
+    <div className="mt-2"><IvHistoryBadge data={data} /></div>
     <p className="mt-2 text-[11px] text-muted">{note}</p>
   </div>
 }

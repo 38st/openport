@@ -24,6 +24,8 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
       desk_(std::string(provider.name()), provider.capabilities(), subscription_, options_) {
   replay_ = dynamic_cast<providers::ReplayProvider*>(&provider_);
   if (replay_) replay_->set_driver([this](providers::ReplayBatch batch) { return consume_replay(std::move(batch)); });
+  // Replays and the demo market never write the volatility history.
+  if (options_.replay || provider.name().starts_with("replay") || provider.name() == "demo") options_.series.reset();
   status_.provider = std::string(provider.name());
   status_.capabilities = provider.capabilities();
   status_.trading.fee_per_contract = options_.paper.fee_per_contract;
@@ -65,9 +67,16 @@ void Engine::start() {
     publish_desk();
     { const std::lock_guard lock(command_mutex_); accepting_commands_ = options_.paper_enabled; }
     thread_ = options_.launch([this] { run(); });
+    if (options_.series) {
+      series_worker_ = std::make_unique<SeriesWorker>(*this, *options_.series);
+      series_worker_->start();
+    }
   } catch (...) {
+    stopping_ = true;
+    if (series_worker_) series_worker_->stop();
     // Even a partially started provider must stop before the queue can be destroyed.
     if (provider_started_) provider_.stop();
+    if (thread_.joinable()) thread_.join();
     provider_started_ = false;
     if (recorder_) recorder_->close();
     desk_.stop();
@@ -80,6 +89,7 @@ void Engine::start() {
 }
 
 void Engine::stop() {
+  if (series_worker_) series_worker_->stop();
   if (provider_started_) {
     provider_.stop();
     provider_started_ = false;

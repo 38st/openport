@@ -95,6 +95,7 @@ class CboeChartHistory {
   using Sink = std::function<void(const std::string& underlying, CboeChart chart,
                                   std::vector<md::Bar> bars)>;
   struct Options {
+    bool daily_only = false;  ///< Volatility proxies need daily closes only.
     std::chrono::seconds session_interval{60};
     std::chrono::seconds idle_interval{900};
     std::chrono::seconds daily_interval{3600};

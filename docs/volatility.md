@@ -1,4 +1,4 @@
-# Current volatility metrics
+# Volatility metrics
 
 `GET /api/underlyings/{symbol}/volatility` computes current values from an immutable
 analytics snapshot and the underlying's CandleStore. It returns market `as_of`,
@@ -14,9 +14,11 @@ once-a-second pass. They share the lazy SVI fits and per-snapshot lock used by t
 surface route. Successes and missing results are cached by snapshot ownership,
 so independent engines cannot share results even if symbol and version match.
 History and event labels are read for that snapshot's first volatility request.
-The next snapshot refreshes the results. There is no derived-metric history or
-IV rank. The pure definitions live in `analytics/volatility.hpp`, `realized.hpp`
-and their implementations, for reuse by a later series store.
+The next snapshot refreshes the current results. The history worker shares the
+same fits and metric cache. Rank and ex-post results read current history on each
+request, so a backfill is visible even before the next analytics snapshot. The
+pure definitions live in `analytics/volatility.hpp`, `realized.hpp` and
+`volatility_history.hpp`.
 
 ## Model-free implied volatility
 
@@ -231,3 +233,115 @@ option chains, exact minute-alignment cases and hand-computed statistics. No rea
 Cboe data files are committed. A live accuracy comparison has not been measured
 for this feature. The README will carry measured numbers from a live session;
 no accuracy claim is inferred from the synthetic tests.
+
+
+## Local history
+
+The live engine samples each underlying at most once per market minute on a
+separate worker. Only live or delayed, current feed states qualify; stale,
+connecting, stopped and error states do not. The first published snapshot sampled
+in a minute wins. No missing minute is synthesized. Replays and simulated demo
+engines have no series store, including engines started by ReplayHost.
+
+Each row stores spot, the front unexpired forward, model-free IV at 9/30/93/182/365
+calendar days, ATM IV at 7/30/60/90/180 days, 30-day 25Δ and 10Δ RR/BF, the 9/30 and
+30/93 model-free ratios, total GEX, gamma flip and call/put walls. Volatility and
+skew use vol points. Missing values are empty CSV cells and JSON nulls. Exposure
+is missing when no usable open interest was received. These are the existing
+finite-strip and smile estimates, with the same limitations as current metrics.
+The CSV does not retain each estimate's truncation or interpolation diagnostics.
+
+Daily rows are cached separately from minutes, indexed by session. Each uses
+the last row from 09:30 through 16:00 ET, or through the scheduled early close
+(usually 13:00 ET). A session becomes visible only once its close is at or before
+the requested market time. Daily API results also exclude sessions unfinished at
+the current snapshot, even when `to` requests a later date. Later and overnight
+rows cannot displace that close.
+The API reports both the session close `t` and the selected `sample_time`, so an
+incomplete recording's last observation is visible. A daily row does not prove
+full-session feed coverage. Reload and backfill rebuild the same daily view;
+there is no second persisted copy of every close to reconcile. The minute cache
+keeps the newest 45 days per underlying; older disk-backed minutes are read on
+demand. Daily history is retained for all sessions. See
+[storage and memory](runtime.md#volatility-series-storage).
+
+`--series-dir DIR` selects storage, `--no-series` disables local collection, and
+`--backfill-series FILE...` builds history offline and exits. Backfill applies
+recorded events in order, with one analytics pass per `SnapshotComplete`, then
+samples the first such snapshot of each minute. It uses the supplied `--rate`
+when no parity curve is available. Recordings without snapshot markers produce
+no rows. Existing minutes win unless `--force` is supplied. A forced change
+appends a correction; an identical value appends nothing. Repeating the same
+recording and settings is byte-identical. Demo recordings are refused before any
+file in a multi-file invocation is processed. Backfill does not start a provider,
+web server, trading account or network history fetch. See [storage](runtime.md#volatility-series-storage).
+
+### Series API
+
+`GET /api/underlyings/{symbol}/series?fields=mfiv30,atm30,rr25,rv21,proxy_iv30&interval=1d&from=2026-01-01&to=2026-09-22`
+
+`interval` is `1m` or `1d` (default `1d`). `from` and `to` are inclusive Unix
+seconds, ISO timestamps, or New York dates. A date's start is midnight; a `to`
+date includes its full day. Defaults are one day for minutes and 366 days for
+daily rows, ending at the current snapshot's market time, or server time before
+any snapshot. Ranges over 7 days for minutes or 3,660 days for daily rows, reversed
+ranges, malformed or duplicate parameters, unknown fields and results over
+10,000 rows return 400. Unknown underlyings return 404.
+
+Fields are `spot`, `forward`, `mfiv9`, `mfiv30`, `mfiv93`, `mfiv182`, `mfiv365`,
+`atm7`, `atm30`, `atm60`, `atm90`, `atm180`, `rr25`, `bf25`, `rr10`, `bf10`,
+`ratio9_30`, `ratio30_93`, `gex`, `gamma_flip`, `call_wall`, `put_wall`. Daily
+queries also support `proxy_iv30` and `rv21` (trailing 21-session close RV).
+Omitting fields returns all applicable fields. Rows are oldest first, each with
+`t`, selected fields and a `sources` map per value (`own`, the named index,
+`daily_closes`, or null). Missing sessions between daily observations have null
+rows to break chart lines. Proxy IV never occupies a local MFIV or ATM column.
+
+### IV rank and percentile
+
+`/volatility` adds `iv_rank`, `iv_percentile`, `history_sessions`, `history_basis`,
+`history_values` and `proxy`. The basis is the last 252 scheduled **completed**
+sessions as of market time. A missing session reduces the count; it does not
+extend the window. Local 30-day model-free IV is used, falling back to local ATM
+30d. The current value follows the same fallback.
+
+Rank is `(current − min) / (max − min)`. Equal min and max give null. Rank is not
+clamped when current IV exceeds the historical range. Percentile is the fraction
+of usable sessions **strictly below** current IV; ties are not counted. Both are
+fractions in the API and percentages in the terminal. An empty window or missing
+current IV gives null. The badge states “n of 252 sessions”, the current basis,
+and the counts of local and proxy observations. `history_values` lists each
+observation's date, value and source (`own_mfiv`, `own_atm`, or the proxy index).
+
+Cboe daily closes optionally extend dates **before the first local daily row**:
+VIX for SPX and SPY, VXN for QQQ, RVX for IWM, and VXD for DIA. These are proxies,
+not OpenPort's model-free IV. Local rows win on overlap, even if a local value is
+missing; gaps after collection starts stay missing. The API's `proxy` reports the
+name, whether the rank used it, and its first date in the rank window. The
+terminal draws proxy history separately. `--no-history` disables all Cboe history
+fetches, including these proxies. They use the existing chart parser, hourly
+fetcher and in-memory daily-bar cache, with no intraday index requests.
+
+### Ex-post variance risk premium
+
+SPX, and SPY explicitly by SPX proxy, add `ex_post_vrp`. Each completed starting
+session uses SPX 30d model-free IV, or VIX before local history, then the SPX
+close-to-close realized variance over the **following** 21 sessions. ATM is not
+an ex-post fallback. All 22 closes must be present, consecutive and valid; the
+last session must already be complete. The RV estimator is the same annualized,
+demeaned sample variance used above. The existing pre-2022 calendar limitation
+also applies. Unfinished outcomes and missing windows are excluded.
+
+`variance = (IV² − RV²) / 10000` is decimal annual variance. `vol_points = IV − RV`
+is a separate volatility spread, not the square root of that signed difference.
+Each point reports its starting date, end date, IV, RV and implied source. The
+chart shows variance terms and separates local and VIX-derived points.
+
+Summaries cover starting sessions within 1, 3 and 10 calendar years of market
+time. They report means and medians in both units, the share with positive
+variance premium, observation and proxy counts, and actual first/last dates.
+Partial histories remain labelled by those counts and dates. “Positive months”
+means overlapping forward 21-session windows, one starting each session, not
+independent calendar-month observations. SPY uses both SPX implied history and
+SPX daily closes; it does not claim an ETF-specific realized premium. No series
+is extrapolated to create a ten-year result.

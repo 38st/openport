@@ -326,4 +326,35 @@ TEST(Cli, MfivProbeComparesSyntheticReplayWithSavedIndexMinutesOffline) {
   EXPECT_NE(output.find("RR25      samples=1"), std::string::npos) << output;
   EXPECT_NE(output.find("BF25      samples=1"), std::string::npos) << output;
 }
+TEST(Cli, SeriesBackfillIsOfflineUsesSiblingDirectoryAndRejectsDemoAndBadFlags) {
+  using namespace openport;
+  test::RecordingFile file;
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  test::record_events(file.path, {md::UnderlyingQuote{"SPX", time, 99, 101, 100}, md::SnapshotComplete{"SPX", time}});
+  const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/openportd\" --candle-dir '" +
+      (file.directory / "candles").string() + "' --backfill-series '" + file.path.string() + "' --force 2>&1";
+  for (int pass = 0; pass < 2; ++pass) {
+    FILE* pipe = popen(command.c_str(), "r");
+    ASSERT_NE(pipe, nullptr);
+    std::string output;
+    char buffer[512];
+    while (fgets(buffer, sizeof buffer, pipe)) output += buffer;
+    const auto status = pclose(pipe);
+    ASSERT_TRUE(WIFEXITED(status)) << output;
+    EXPECT_EQ(WEXITSTATUS(status), 0) << output;
+    EXPECT_NE(output.find(pass == 0 ? "1 minutes written" : "0 minutes written"), std::string::npos) << output;
+  }
+  EXPECT_TRUE(std::filesystem::exists(file.directory / "series/SPX-2026-09.csv"));
+  EXPECT_FALSE(std::filesystem::exists(file.directory / "candles"));
+  rejects("openportd", "--backfill-series", "requires recording files");
+  rejects("openportd", "--force", "requires --backfill-series");
+  rejects("openportd", "--series-dir ''", "nonempty path");
+  rejects("openportd", "--no-series --backfill-series '" + file.path.string() + "'", "conflicts");
+  auto header = test::recording_header(); header.provider = "demo";
+  const auto demo = file.directory / "demo.oprec";
+  test::record_events(demo, {}, header);
+  const auto target = file.directory / "refused";
+  rejects("openportd", "--series-dir '" + target.string() + "' --backfill-series '" + file.path.string() + "' '" + demo.string() + "'", "demo recordings are simulated");
+  EXPECT_FALSE(std::filesystem::exists(target));
+}
 }  // namespace

@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **718 C++ and 412 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **746 C++ and 417 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -58,7 +58,9 @@ with generated prices labelled as simulated on every page:
   expiry's forward and rate and where it came from.
 - **Volatility metrics**: model-free IV and ATM term structures, delta risk reversals
   and butterflies, realized volatility and cones, the variance risk premium, and
-  implied session moves with optional event labels. Values use current market time;
+  implied session moves with optional event labels. Local minute and close history
+  adds IV rank and percentile, labelled index proxies, and ex-post variance risk
+  premium for SPX (SPY by proxy). Values use current market time;
   missing, truncated and proxy estimates are marked. [Definitions](docs/volatility.md).
 - **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
   call and put walls.
@@ -127,7 +129,8 @@ with generated prices labelled as simulated on every page:
 
 ### Operations
 
-- **Status**: feed health per underlying, trading sessions, queue and analytics timing.
+- **Status**: feed health per underlying, trading sessions, queue and analytics timing,
+  and the local volatility history store.
 - **Broker data**: Tradier snapshot polling and tastytrade DXLink streams, for
   traders whose brokerage account includes real-time option data; credentials stay
   in the environment and neither adapter can place orders.
@@ -282,7 +285,9 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
 | `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
-| `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
+| `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe backfills prices and volatility-index proxies ([price history](docs/runtime.md#price-history)) |
+| `--series-dir DIR`, `--no-series` | Local minute volatility history; defaults to `series` beside the candle directory, or disables collection ([storage](docs/runtime.md#volatility-series-storage)) |
+| `--backfill-series FILE...`, `--force` | Build metric history offline from recordings and exit; keep existing minutes unless forced; refuse demo recordings |
 | `--dividends FILE\|massive` | Known cash dividends for held shares and American analytics: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
 | `--events FILE` | Supplied `YYYY-MM-DD,Label` lines for the implied-session-move table; no event dates are bundled ([volatility](docs/volatility.md)) |
 | `--no-cboe-holidays` | Don't read Cboe's published holiday schedule, which lets a special closure it announces apply without a new build ([calendar](docs/runtime.md#product-sessions-and-cboe-clocks)) |
@@ -377,7 +382,8 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 | `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks, early-exercise premium and `volume` (session contracts or null); coverage includes `volume` |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
 | `GET /api/underlyings/{symbol}/surface?expiries=12` | Smile points per expiry |
-| `GET /api/underlyings/{symbol}/volatility` | Current model-free IV, ATM and skew, term ratios, realized volatility and cones, VRP and implied session moves, with sources and missing-value reasons |
+| `GET /api/underlyings/{symbol}/volatility` | Current model-free IV, ATM/skew, realized vol, cones, implied moves, IV rank/percentile and ex-ante/ex-post VRP, with sources and history counts |
+| `GET /api/underlyings/{symbol}/series?fields=mfiv30,atm30,rr25&from=&to=&interval=1d` | Selected metric history at `1m` or `1d`; bounded date ranges, null gaps and per-value sources ([fields and limits](docs/volatility.md#series-api)) |
 | `GET /api/underlyings/{symbol}/candles?interval=5m` | OHLC bars at 1m, 5m, 15m, 30m, 1h or 1d, oldest first |
 | `WS /ws` | A small tick each second with versions, so clients refetch only what changed |
 
@@ -503,7 +509,7 @@ exists; GitHub tags the commit when you publish the draft.
       outside the session
 - [x] Cboe's delayed data from its new host, following redirects if it moves again
 - [x] Current model-free IV, ATM/skew, realized volatility, cones and implied session moves
-- [ ] Volatility metric history and IV rank
+- [x] Local volatility history, IV rank and percentile, labelled index proxies and ex-post VRP
 
 ## License
 

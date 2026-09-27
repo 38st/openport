@@ -519,6 +519,28 @@ TEST(CboeCharts, IntradayBarsStartAMinuteBeforeTheirLabel) {
   EXPECT_THROW((void)providers::parse_cboe_intraday(R"({"data": {}})"), std::runtime_error);
 }
 
+TEST(CboeCharts, VolatilityProxyHistoryRequestsOnlyDailyIndexFiles) {
+  providers::CboeChartHistory::Options options;
+  options.daily_only = true;
+  options.clock = [] { return md::new_york_to_utc({2026, 9, 22}, 11, 0); };
+  std::size_t received = 0;
+  providers::CboeChartHistory history({"_VIX", "_VXN", "_RVX", "_VXD"},
+      [&](const std::string&, providers::CboeChart chart, std::vector<md::Bar> bars) {
+        EXPECT_EQ(chart, providers::CboeChart::Daily);
+        ASSERT_FALSE(bars.empty());
+        ++received;
+      }, options);
+  test::HttpStub http;
+  http.respond = [](std::string_view) { return net::HttpResponse{200, std::string(kDaily)}; };
+  const auto next = history.poll_once(http);
+  EXPECT_EQ(received, 4u);
+  EXPECT_EQ(next, options.clock() + 3600 * md::kNanosPerSecond);
+  for (std::size_t i = 0; i < http.urls.size(); ++i)
+    EXPECT_NE(http.urls[i].find("/charts/historical/_"), std::string::npos);
+  history.poll_once(http);
+  EXPECT_EQ(http.urls.size(), 4u);
+}
+
 TEST(CboeCharts, DailyBarsRetainCloseOnlyHistoryForRealizedFallback) {
   const auto bars = providers::parse_cboe_daily(kDaily);
   ASSERT_EQ(bars.size(), 3u);

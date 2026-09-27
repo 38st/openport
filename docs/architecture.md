@@ -55,8 +55,10 @@ flowchart LR
   block the feed. It hands each underlying's known dividends to its American
   analytics as dates and dollar amounts, so the analytics and pricing layers do not
   depend on trading.
-- **Volatility metrics** run lazily on the API worker and share the per-snapshot SVI
-  cache. Pure analytics functions compute model-free IV, delta skew, realized
+- **Volatility metrics** run lazily on API workers and a separate live-history
+  worker, sharing the per-snapshot SVI cache. The history worker records at most one
+  row per underlying per market minute in monthly CSVs. Replay/demo engines cannot
+  write to that store. Pure analytics functions compute model-free IV, delta skew, realized
   volatility, cones and business-session moves. They do not run in the engine pass
   or change the trading reducer or journal. [Definitions](volatility.md).
 - **Market-wide halts** belong to the Desk, shared by every account. The engine
@@ -154,7 +156,7 @@ Small submit timings also include valuation/risk work and do not grow monotonica
 
 ## Tests
 
-718 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+746 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 295 Vitest cases cover the
 terminal. CI builds with GCC 13 on Ubuntu and Apple Clang on macOS, both with warnings

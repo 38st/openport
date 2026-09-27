@@ -34,6 +34,7 @@
 #include <openssl/rand.h>
 #include <unistd.h>
 
+#include "openport/analytics/volatility_history.hpp"
 #include "openport/providers/cboe.hpp"
 #include "openport/providers/factory.hpp"
 #include "openport/providers/massive.hpp"
@@ -66,6 +67,10 @@ struct Settings {
   std::filesystem::path record_dir;
   std::optional<std::filesystem::path> candle_dir;
   bool history = true;
+  bool series = true;
+  bool force = false;
+  std::optional<std::filesystem::path> series_dir;
+  std::vector<std::filesystem::path> backfill_series;
   bool cboe_holidays = true;
   bool paper_enabled = true;
   bool compact_journals = false;
@@ -116,6 +121,8 @@ int usage(const char* error = nullptr) {
       "           held shares receive the dividend and short shares pay it. \"massive\" reads\n"
       "           them for the stock and ETF symbols from Massive's API instead, every six\n"
       "           hours, with MASSIVE_API_KEY (any stocks plan), whatever the provider\n"
+      "series: --series-dir DIR (default series beside candle-dir), --no-series\n"
+      "        --backfill-series FILE... [--force] rebuilds recording minutes offline and exits\n"
       "events: YYYY-MM-DD,Label lines for volatility session moves; labels are 1-160 bytes\n"
       "rate: assumed flat zero rate in [-0.05, 0.25], default 0.04 (4%%)\n"
       "allowed origins: exact http[s]://host[:port], in addition to same-origin\n"
@@ -284,6 +291,15 @@ int run(int argc, char** argv) {
     if (arg == "--help" || arg == "-h") return usage();
     if (arg == "--version") { std::printf("openportd %s\n", OPENPORT_VERSION); return 0; }
     if (arg == "--no-paper") { settings.paper_enabled = false; continue; }
+    if (arg == "--no-series") { settings.series = false; continue; }
+    if (arg == "--force") { settings.force = true; continue; }
+    if (arg == "--backfill-series") {
+      const auto before = settings.backfill_series.size();
+      while (i + 1 < argc && !std::string_view(argv[i + 1]).starts_with("--"))
+        settings.backfill_series.emplace_back(argv[++i]);
+      if (settings.backfill_series.size() == before) return usage("--backfill-series requires recording files");
+      continue;
+    }
     if (arg == "--no-history") { settings.history = false; continue; }
     if (arg == "--no-cboe-holidays") { settings.cboe_holidays = false; continue; }
     if (arg == "--compact-journals") { settings.compact_journals = true; continue; }
@@ -328,6 +344,9 @@ int run(int argc, char** argv) {
     } else if (arg == "--record-dir") {
       if (value.empty()) return usage("--record-dir requires a nonempty path");
       settings.record_dir = value;
+    } else if (arg == "--series-dir") {
+      if (value.empty()) return usage("--series-dir requires a nonempty path");
+      settings.series_dir = value;
     } else if (arg == "--candle-dir") {
       if (value.empty()) return usage("--candle-dir requires a nonempty path");
       settings.candle_dir = value;
@@ -370,6 +389,31 @@ int run(int argc, char** argv) {
     } else {
       return usage(("unknown option " + arg).c_str());
     }
+  }
+  std::filesystem::path candle_directory;
+  if (settings.candle_dir) candle_directory = *settings.candle_dir;
+  else if (const auto* home = std::getenv("HOME")) candle_directory = std::filesystem::path(home) / ".openport/candles";
+  const auto series_directory = settings.series_dir.value_or(candle_directory.empty()
+      ? std::filesystem::path{} : std::filesystem::absolute(candle_directory).parent_path() / "series");
+  if (settings.force && settings.backfill_series.empty()) return usage("--force requires --backfill-series");
+  if (!settings.backfill_series.empty()) {
+    if (!settings.series) return usage("--backfill-series conflicts with --no-series");
+    if (series_directory.empty()) return usage("specify --series-dir when HOME is unavailable");
+    // Reject any simulated input before writing any of a multi-file invocation.
+    for (const auto& file : settings.backfill_series) {
+      md::RecordingReader reader(file);
+      if (server::simulated_series_recording(reader.header().provider)) return usage("demo recordings are simulated and cannot be backfilled");
+    }
+    server::SeriesStore store(series_directory);
+    analytics::AnalyticsOptions options;
+    options.fallback_rate = settings.rate;
+    std::size_t written = 0;
+    for (const auto& file : settings.backfill_series)
+      written += server::backfill_series(file, store, settings.force, options);
+    const auto state = store.status(0);
+    if (!state.last_error.empty()) { std::fprintf(stderr, "%s\n", state.last_error.c_str()); return 1; }
+    std::printf("series: %zu minutes written to %s\n", written, series_directory.c_str());
+    return 0;
   }
   // More named accounts live beside the main journal, one journal each.
   const auto paper_accounts = settings.paper_journal.empty()
@@ -414,6 +458,8 @@ int run(int argc, char** argv) {
 
   server::Engine::Options engine_options;
   engine_options.candles = candles;
+  if (settings.series && !replay && settings.provider.name != "demo")
+    engine_options.series = std::make_shared<server::SeriesStore>(series_directory);
   engine_options.analytics.fallback_rate = settings.rate;
   engine_options.record_file = settings.record_file;
   engine_options.paper_enabled = settings.paper_enabled;
@@ -440,6 +486,26 @@ int run(int argc, char** argv) {
             candles->merge_days(symbol, bars);
         });
     history->start();
+  }
+  std::unique_ptr<providers::CboeChartHistory> proxy_history;
+  if (settings.history && settings.series && !replay) {
+    std::vector<std::string> indices;
+    for (const auto& symbol : settings.subscription.underlyings) {
+      const auto index = analytics::iv_proxy(symbol);
+      if (!index.empty() && std::find(indices.begin(), indices.end(), "_" + index) == indices.end())
+        indices.push_back("_" + index);
+    }
+    // SPY's ex-post estimate uses SPX closes and is labelled as a proxy.
+    if (std::find(settings.subscription.underlyings.begin(), settings.subscription.underlyings.end(), "SPY") != settings.subscription.underlyings.end() &&
+        std::find(settings.subscription.underlyings.begin(), settings.subscription.underlyings.end(), "SPX") == settings.subscription.underlyings.end())
+      indices.push_back("SPX");
+    providers::CboeChartHistory::Options options;
+    options.daily_only = true;
+    proxy_history = std::make_unique<providers::CboeChartHistory>(indices,
+        [candles](const std::string& symbol, providers::CboeChart, std::vector<md::Bar> bars) {
+          candles->merge_days(symbol.starts_with('_') ? symbol.substr(1) : symbol, bars);
+        }, options);
+    proxy_history->start();
   }
   // Closures the exchange announces reach the calendar without a new build.
   std::unique_ptr<providers::CboeHolidaySchedule> holidays;
@@ -513,7 +579,7 @@ int run(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
   std::string recording_error;
-  std::string history_error;
+  std::string history_error, proxy_error, series_error;
   std::string holidays_error;
   std::string dividends_error;
   std::string candle_error;
@@ -529,6 +595,8 @@ int run(int argc, char** argv) {
     report(engine.recording_error(), recording_error);
     report(engine.status().circuit_breaker.error, breaker_error);
     if (history) report(history->error(), history_error);
+    if (proxy_history) report(proxy_history->error(), proxy_error);
+    if (engine_options.series) report(engine_options.series->status(md::now()).last_error, series_error);
     if (holidays) report(holidays->error(), holidays_error);
     if (dividends) report(dividends->error(), dividends_error);
     report(candles->error(), candle_error);
@@ -537,6 +605,7 @@ int run(int argc, char** argv) {
   web.stop();
   replays.stop();
   if (history) history->stop();
+  if (proxy_history) proxy_history->stop();
   if (holidays) holidays->stop();
   if (dividends) dividends->stop();
   engine.stop();

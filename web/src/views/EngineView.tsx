@@ -64,6 +64,14 @@ export function EngineView() {
         <Row label="Uptime">{Math.floor(engine.uptime_seconds / 60)} min</Row>
       </Panel>
 
+      <Panel title="Volatility history store">
+        <Row label="State">{status.series?.enabled ? "Enabled" : "Disabled"}</Row>
+        <Row label="Directory">{status.series?.directory || "—"}</Row>
+        <Row label="Rows today">{count(status.series?.rows_today ?? 0)}</Row>
+        <Row label="Last write · market time">{status.series?.last_write ? timestampET(status.series.last_write) : "—"}</Row>
+        <Row label="Last error"><span className={status.series?.last_error ? "text-warn" : ""}>{status.series?.last_error ?? "—"}</span></Row>
+      </Panel>
+
       <Panel title="Underlyings">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

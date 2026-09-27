@@ -4,6 +4,7 @@ import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { LineChart, type Series } from "../charts/LineChart"
 import { VolatilityDetails, VolatilitySummary } from "../components/VolatilityMetrics"
+import { VolatilityHistory } from "../components/VolatilityHistory"
 import { volatilityTerm, volPoints } from "../lib/volatility"
 import { SviTable } from "../components/SviTable"
 import { Empty, Panel, Segmented } from "../components/ui"
@@ -35,9 +36,17 @@ export function SmileView({ symbol }: { symbol: string }) {
   const volatility = useQuery({
     queryKey: ["volatility", symbol, version],
     queryFn: ({ signal }) => api.volatility(symbol, signal),
+    refetchInterval: 60_000,
     placeholderData: (previous) => matchingPayload(previous, symbol),
   })
   const volatilityData = matchingPayload(volatility.data, symbol)
+  const history = useQuery({
+    queryKey: ["volatility-series", symbol, Math.floor(Date.parse(volatilityData?.as_of ?? "") / 60_000) || 0],
+    queryFn: ({ signal }) => api.series(symbol, signal),
+    placeholderData: previous => matchingPayload(previous, symbol),
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  })
   const surfaceData = matchingPayload(surface.data, symbol)
   const summaryData = matchingPayload(summary.data, symbol)
 
@@ -63,6 +72,7 @@ export function SmileView({ symbol }: { symbol: string }) {
   return (
     <div className="grid gap-3 xl:grid-cols-[2fr_1fr]">
       {volatilityData ? <VolatilitySummary data={volatilityData} /> : <div className="text-xs text-muted xl:col-span-2">{volatility.isError ? `Volatility metrics unavailable: ${String(volatility.error)}` : "Loading volatility metrics…"}</div>}
+      {volatilityData && <VolatilityHistory data={volatilityData} history={matchingPayload(history.data, symbol)} error={history.isError ? String(history.error) : undefined} />}
       <Panel
         title="Volatility smile"
         actions={

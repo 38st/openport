@@ -644,3 +644,73 @@ No event dates are bundled. See [volatility metrics](volatility.md).
 
 Daily Cboe history with a positive close and invalid OHLC is kept for realized
 volatility's close-to-close fallback. Candle charts continue to omit invalid OHLC.
+
+
+## Volatility series storage
+
+`--series-dir DIR` stores local analytics history. The default is a `series`
+directory beside the candle directory (`~/.openport/series` with default candle
+settings). `--no-series` disables it. Replay and demo engines cannot write to it,
+even when they inherit the live engine's options.
+
+Each underlying has one append-only file per New York calendar month, for example
+`series/SPX-2026-09.csv`. The first line is `#openport-series,1`; the second names
+`minute` and the 22 metric columns. Minute is Unix seconds. Finite doubles use
+17 significant digits and the classic locale; missing numbers are empty cells.
+A forced backfill correction appends the same minute again; the last record for
+that minute wins on reload. Normal sampling and backfill keep existing rows.
+Daily close rows are cached separately for all sessions, rebuilt on reload.
+
+The minute cache retains 45 elapsed days per underlying, measured from that
+underlying's newest market minute, not wall time. `kSeriesMinuteRetention`
+defines the window: minute starts after `newest - 45 days` through `newest`.
+Each arrival updates the daily close before older minutes are evicted. Startup
+streams every monthly file to rebuild all daily rows and the same minute window;
+it does not retain the full minute history while loading. Daily queries use the
+daily cache. Queries for older minutes read only the relevant monthly CSVs,
+merge with cached minutes, and discard the temporary rows after the query.
+They use the loader's parser and damage handling. The API's seven-day minute
+range and 10,000-row limit still apply.
+
+At roughly 230 bytes per cached row, 1,000 minutes a day use about 10 MB per
+underlying for the window, or 52 MB for five underlyings. Continuous coverage
+can retain at most 64,800 minutes (about 15 MB) per underlying. Daily rows add
+roughly 60 KB per year per underlying at 252 sessions; file metadata and other
+engine caches are additional. These are estimates, not measured process limits.
+
+A store without a directory keeps the same minute window and all daily rows in
+memory. Its evicted minutes are gone. An announced calendar change rebuilds the
+daily cache from disk once, without repopulating old minutes. A memory-only
+store can reselect closes only from retained minutes; if an old cached close
+becomes invalid, that session is dropped rather than showing an incorrect close.
+
+CSV files have no automatic retention or compaction. A typical populated row is
+about 400 bytes (up to roughly 550 with long double representations): about 40 MB
+per underlying per year for 391 regular-session minutes × 252 sessions, or about
+145 MB for 1,440 minutes × 252 sessions with extended-hours coverage. Missing
+fields reduce that size. Back up the directory and plan disk retention for
+long-running extended-hours subscriptions.
+
+Writes flush on each row. Storage errors do not stop the engine and appear in
+`/api/status.series` with `enabled`, `directory`, `rows_today`, `last_write` and
+`last_error`; Status displays them. `rows_today` counts unique minute rows on the
+current New York date. `last_write` is the newest successfully stored market
+minute (also recovered from disk), not wall-clock file modification time. Failed
+minutes are not fabricated. The worker attempts a minute once; an offline
+backfill can recover it later. Unsupported headers and torn or malformed files
+are reported and block further appends to that file; valid preceding rows remain
+readable. Repair such a file offline from a backup or recording.
+
+To rebuild recordings without starting any network services:
+
+```sh
+openportd --series-dir ./series --backfill-series monday.oprec tuesday.oprec
+openportd --series-dir ./series --backfill-series monday.oprec --force
+```
+
+The first complete snapshot of a minute is sampled. Repeating an unchanged
+recording writes nothing. `--force` appends only changed values. Demo recordings
+are refused. A recording without `SnapshotComplete` events cannot be backfilled.
+Cboe proxy closes share the existing in-memory daily-bar cache; they are fetched
+again after restart, and `--no-history` disables that fetch. They are never
+written into the local metric CSVs. [Definitions and API](volatility.md#local-history).
