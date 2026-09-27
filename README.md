@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **544 C++ and 309 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **544 C++ and 357 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -66,10 +66,12 @@ QQQ options), with generated prices labelled as simulated on every page:
   level, and brackets whose stop-loss and take-profit (on the option or the underlying)
   cancel each other. Working orders change in place: size, limit or trigger level.
 - **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
-  and diagonals) picked on the chain and filled together at a net debit or credit. The
-  ticket shows the P&L at expiry and today, the probability of profit and the expected
-  move. A held strategy is one row with its net P&L and Greeks, closed or rolled to a
-  later expiry in one order.
+  and diagonals) picked on the chain, or built from a template such as a 10-wide put
+  spread at 15 delta or a condor one expected move out, with presets saved in the
+  browser. Legs fill together at a net debit or credit. The ticket shows the P&L at
+  expiry and today, the expected move, and the probability of profit from the smile's
+  risk-neutral distribution, skew included. A held strategy is one row with its net
+  P&L and Greeks, closed or rolled to a later expiry in one order.
 - **Evaluations**: a profit target and a trailing drawdown floor (intraday or end of day)
   decide pass or fail, with buy-only, defined-risk and buying-power rules and auto-close
   before expiry.
@@ -407,7 +409,7 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets and a trade
       journal, with the funded phase and payouts in the engine
 - [x] Strategies: multi-leg orders with spread-aware buying power, held strategies as
-      positions, rolls, risk graph and probability of profit
+      positions, rolls, risk graph, probability of profit with skew, and templates
 - [x] Terminal: underlying chart, order changes in place, flatten, multiple named
       accounts and trading recorded days in replay
 - [x] Paper trading in Cboe's overnight and curb sessions

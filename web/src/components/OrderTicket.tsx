@@ -1,13 +1,14 @@
 import { useQuery } from "@tanstack/react-query"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { api, ApiError } from "../api/client"
 import { useLive } from "../api/live"
+import { useSmileSurface } from "../api/smiles"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
 import type { Bracket, NewOrder, Order, Side, Trigger, TradingStatus } from "../api/trading-types"
-import type { Expiry, OptionQuote } from "../api/types"
+import type { Expiry, OptionQuote, Surface } from "../api/types"
 import { count, days, fixed, isNum, price } from "../lib/format"
 import { heldPositions, orderPowerUse } from "../lib/margin"
-import { probabilityOfProfit, singleLeg, smileVol } from "../lib/probability"
+import { probabilityOfProfit, probabilitySource, singleLeg, smileDistribution } from "../lib/probability"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
 import { deliversShares, extendedSession, formatMoney, limitOnlyNotice, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -59,13 +60,14 @@ export function OrderResult({ order, error, children }: { order?: Order; error?:
 const quickSizes = [1, 5, 10, 25, 50]
 
 /** A dialog by default; `panel` docks it beside the chain. */
-export function OrderTicket({ selection, quote, trading, onClose, variant = "dialog", smile }: {
+export function OrderTicket({ selection, quote, trading, onClose, variant = "dialog", smile, surface }: {
   selection: TicketSelection; quote: OptionQuote | null; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel"
   /** The expiry's smile, for the probability of profit; the option's own volatility otherwise. */
   smile?: readonly { strike: number; iv: number | null }[]
+  surface?: Surface
 }) {
   const title = "Paper order"
-  const body = <TicketBody selection={selection} quote={quote} trading={trading} onClose={onClose} variant={variant} smile={smile} />
+  const body = <TicketBody selection={selection} quote={quote} trading={trading} onClose={onClose} variant={variant} smile={smile} surface={surface} />
   if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
     <aside aria-label="Order ticket" className="flex max-h-[calc(100dvh-7rem)] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-chart">
@@ -78,11 +80,12 @@ export function OrderTicket({ selection, quote, trading, onClose, variant = "dia
   )
 }
 
-function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
+function TicketBody({ selection, quote, trading, onClose, variant, smile, surface }: {
   selection: TicketSelection; quote: OptionQuote | null; trading: TradingStatus; onClose: () => void; variant: "dialog" | "panel"
   smile?: readonly { strike: number; iv: number | null }[]
+  surface?: Surface
 }) {
-  const { accountScope, underlyings } = useLive()
+  const { accountScope, underlyings, source, replay } = useLive()
   const token = useWriteToken()
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
@@ -139,10 +142,11 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
   const closes = held !== 0 && (held > 0) !== (side === "buy")
   const premium = Number(estimatedPrice)
   const terms = selection.expiry
-  const odds = !closes && Number.isFinite(premium) && premium > 0 && isNum(terms.forward) && isNum(terms.days) && terms.days > 0 ? (() => {
+  const fitted = useSmileSurface(selection.underlying, [terms.id], !surface && !closes)
+  const distribution = useMemo(() => smileDistribution(terms, smile, surface ?? fitted, isNum(quote?.iv) && quote.iv > 0 ? quote.iv : terms.atm_iv), [terms, smile, surface, fitted, quote?.iv])
+  const odds = !closes && Number.isFinite(premium) && premium > 0 && distribution ? (() => {
     const { breakeven, value } = singleLeg(selection.optionType, side, selection.strike, premium)
-    const vol = smileVol(smile ?? [], isNum(quote?.iv) ? quote.iv : isNum(terms.atm_iv) ? terms.atm_iv : null)
-    return { breakeven, pop: probabilityOfProfit(value, [breakeven], { forward: terms.forward, years: terms.days / 365, vol }) }
+    return { breakeven, pop: probabilityOfProfit(value, [breakeven], distribution) }
   })() : null
   const trigger: Trigger | undefined = condition === "cross" && validMoney(crossLevel) && Number(crossLevel) > 0
     ? { source: "underlying", direction: crossDirection(Number(crossLevel), spot), level: crossLevel } : undefined
@@ -330,8 +334,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
         <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{formatMoney(estimate.fees)}</dd>
         {odds && <>
           <dt className="text-muted">Breakeven at expiry</dt><dd className="text-right tabular">{odds.breakeven.toFixed(2)}</dd>
-          <dt className="text-muted" title="Risk-neutral: lognormal around the expiry's forward, with the smile's volatility at the breakeven">Probability of profit</dt>
-          <dd className="text-right tabular">{odds.pop == null ? "—" : `≈ ${(odds.pop * 100).toFixed(0)}%`}</dd>
+          <dt className="text-muted" title="Risk-neutral mass beyond the breakeven, including the smile’s skew">Probability of profit · risk-neutral</dt>
+          <dd className="text-right tabular">{odds.pop == null ? "—" : `≈ ${(odds.pop * 100).toFixed(0)}%`}{distribution && <span className="block text-[11px] text-muted">{probabilitySource(distribution, [odds.breakeven])}</span>}</dd>
         </>}
         <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
         {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
@@ -346,6 +350,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile }: {
         <p className="mb-2 mt-2 text-muted">Quantity × 100 × per-unit Greek, signed by side</p>
         <dl className="grid grid-cols-2 gap-2 tabular sm:grid-cols-4">{(["delta", "gamma", "vega", "theta"] as const).map((key) => <div key={key}><dt className="capitalize text-muted">{key}</dt><dd>{fixed(estimate[key], key === "gamma" ? 4 : 2)}</dd></div>)}</dl>
       </details>
+      {source === "replay" && replay?.demo && <p className="text-xs text-warn">Demo market · simulated prices</p>}
       <p className="text-[11px] text-muted">Estimates use the {type === "limit" ? "limit price" : "current executable quote"}. Fills and fees are determined by the server.{type === "market" ? " Market orders always use IOC." : ""}</p>
       {(!submitted || pending) && <button className={`w-full rounded-md px-3 py-2.5 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50 ${side === "buy" ? "bg-bullish" : "bg-bearish"}`}
         type="submit" aria-label="Submit order" disabled={!valid || blocked || pending}>

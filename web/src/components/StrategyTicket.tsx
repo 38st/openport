@@ -1,16 +1,17 @@
 import { useQuery } from "@tanstack/react-query"
-import { useRef, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
+import { useSmileSurface } from "../api/smiles"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
 import type { NewOrder, Order, TradingStatus } from "../api/trading-types"
-import type { Expiry } from "../api/types"
+import type { Expiry, Surface } from "../api/types"
 import { LineChart } from "../charts/LineChart"
 import { expectedMove } from "../lib/candles"
 import { isNum, money, price } from "../lib/format"
 import { heldPositions } from "../lib/margin"
-import { probabilityOfProfit, smileVol, valueToday } from "../lib/probability"
-import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, type StrategyLeg } from "../lib/strategy"
+import { probabilityOfProfit, probabilitySource, smileDistribution, valueToday } from "../lib/probability"
+import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { comboTickCents, extendedSession, formatMoney, limitOnlyNotice, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -38,14 +39,16 @@ const shortDate = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateSt
  * nothing, so the ticket says what the order does instead. The `bare` variant is
  * the body alone, for a dialog that adds its own controls.
  */
-export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order", closing = false, roll = false, smiles }: {
+export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, trading, onClose, variant = "panel", units, title = "Strategy order", closing = false, roll = false, smiles, surface, template }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
   spot: number | null | undefined; trading: TradingStatus; onClose: () => void; variant?: "dialog" | "panel" | "bare"; units?: number; title?: string
   closing?: boolean; roll?: boolean
   /** Each expiry's smile, by expiry id, for the probability of profit; flat at-the-money volatility otherwise. */
   smiles?: ReadonlyMap<string, readonly { strike: number; iv: number | null }[]>
+  surface?: Surface
+  template?: Pick<TemplateSetup, "tag" | "widths">
 }) {
-  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} closing={closing} roll={roll} smiles={smiles} />
+  const body = <StrategyBody legs={legs} onLegs={onLegs} expiries={expiries} underlying={underlying} spot={spot} trading={trading} initialUnits={units} closing={closing} roll={roll} smiles={smiles} surface={surface} template={template} />
   if (variant === "bare") return body
   if (variant === "dialog") return <Dialog title={title} onClose={onClose}>{body}</Dialog>
   return (
@@ -59,12 +62,14 @@ export function StrategyTicket({ legs, onLegs, expiries, underlying, spot, tradi
   )
 }
 
-function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits, closing, roll, smiles }: {
+function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initialUnits, closing, roll, smiles, surface, template }: {
   legs: StrategyLeg[]; onLegs: (legs: StrategyLeg[]) => void; expiries: Expiry[]; underlying: string
   spot: number | null | undefined; trading: TradingStatus; initialUnits?: number; closing: boolean; roll: boolean
   smiles?: ReadonlyMap<string, readonly { strike: number; iv: number | null }[]>
+  surface?: Surface
+  template?: Pick<TemplateSetup, "tag" | "widths">
 }) {
-  const { accountScope, underlyings } = useLive()
+  const { accountScope, underlyings, source, replay } = useLive()
   const token = useWriteToken()
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
@@ -128,8 +133,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const approx = profile?.estimated ? "≈ " : ""
   // The first expiry's risk-neutral distribution: its forward, time left and smile.
   const front = known[0]
-  const distribution = front && isNum(front.forward) && isNum(front.days) && front.days > 0
-    ? { forward: front.forward, years: front.days / 365, vol: smileVol(smiles?.get(front.id) ?? [], isNum(front.atm_iv) ? front.atm_iv : null) } : null
+  const fitted = useSmileSurface(underlying, front ? [front.id] : [], !surface && !closing && !roll)
+  const distribution = useMemo(() => front ? smileDistribution(front, smiles?.get(front.id), surface ?? fitted) : null, [front, smiles, surface, fitted])
   const pop = profile && value && distribution ? probabilityOfProfit(value, profile.breakevens, distribution) : null
   const move = front ? expectedMove(front.forward, front.atm_iv, front.days) : null
   const legTerms = new Map(known.map((e) => [e.id, { forward: e.forward, discount: e.discount, years: isNum(e.days) ? e.days / 365 : null }]))
@@ -211,6 +216,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     <div>
       <div className="text-base font-semibold">{underlying} <span className="font-normal text-muted">{closing ? "Close" : roll ? "Roll" : label}</span></div>
       <div className="mt-1 text-sm">{known.length === 1 ? `${known[0]!.expiry} ${known[0]!.settlement}` : known.map((e) => shortDate(e.expiry)).join(" / ")} · {legs.length} of {MAX_LEGS} legs</div>
+      {source === "replay" && replay?.demo && <p className="mt-1 text-xs text-warn">Demo market · simulated prices</p>}
+      {template && <p className="mt-1 text-xs text-muted">Template tag: <span className="tabular">{template.tag}</span> · Width: {template.widths.join(" / ")} points</p>}
       {legs.length < 2 && <p className="mt-1 text-xs text-muted">Click another bid or ask on the chain to add a leg: an ask buys, a bid sells.</p>}
     </div>
     <div className="overflow-hidden rounded-md border border-border">
@@ -294,8 +301,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           <dt className="text-muted">Max profit</dt><dd className="text-right tabular text-bullish">{profile ? profile.maxProfit == null ? "Unlimited" : `${approx}${formatMoney(profile.maxProfit.toFixed(2))}` : "—"}</dd>
           <dt className="text-muted">Max loss</dt><dd className="text-right tabular text-bearish">{profile ? profile.maxLoss == null ? "Unlimited" : `${approx}${formatMoney(profile.maxLoss.toFixed(2))}` : "—"}</dd>
           <dt className="text-muted">Breakevens</dt><dd className="text-right tabular">{profile ? profile.breakevens.length ? `${approx}${profile.breakevens.map((b) => b.toFixed(2)).join(", ")}` : "None" : "—"}</dd>
-          <dt className="text-muted" title="Risk-neutral: lognormal around the expiry's forward, with the smile's volatility at each breakeven">Probability of profit</dt>
-          <dd className="text-right tabular">{pop == null ? "—" : `≈ ${(pop * 100).toFixed(0)}%`}</dd>
+          <dt className="text-muted" title="Risk-neutral mass in profitable intervals, including the smile’s skew">Probability of profit · risk-neutral</dt>
+          <dd className="text-right tabular">{pop == null ? "—" : `≈ ${(pop * 100).toFixed(0)}%`}{distribution && <span className="block text-[11px] text-muted">{probabilitySource(distribution, profile?.breakevens ?? [])}</span>}</dd>
           <dt className="text-muted" title="One standard deviation: forward × ATM volatility × √(years)">1σ move{front ? ` by ${shortDate(front.expiry)}` : ""}</dt>
           <dd className="text-right tabular">{move == null ? "—" : `±${move.toFixed(2)}`}</dd>
           </>}

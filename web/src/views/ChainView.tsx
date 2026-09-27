@@ -13,7 +13,8 @@ import { americanApproximation, rateSourceHint } from "../lib/model"
 import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
 import { PriceChart } from "../components/PriceChart"
 import { StrategyTicket } from "../components/StrategyTicket"
-import { MAX_LEGS, strategyLabel, toggleLeg, type StrategyLeg } from "../lib/strategy"
+import { StrategyTemplates } from "../components/StrategyTemplates"
+import { MAX_LEGS, strategyLabel, toggleLeg, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { Dialog } from "../components/Dialog"
 import { usePortfolio } from "../api/trading"
 import { useMediaQuery } from "../lib/media"
@@ -50,6 +51,9 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   // Strategy mode collects up to four legs from the chain for one multi-leg order.
   const [mode, setMode] = useState<"single" | "strategy">("single")
   const [legs, setLegs] = useState<StrategyLeg[]>([])
+  const [templatesOpen, setTemplatesOpen] = useState(false)
+  const [template, setTemplate] = useState<TemplateSetup>()
+  const editLegs = (next: StrategyLeg[]) => { setLegs(next); setTemplate(undefined) }
   // Narrow screens collect legs in a bar and open the ticket only to review, so the chain stays usable.
   const [reviewing, setReviewing] = useState(false)
   const [untradable, setUntradable] = useState<string | null>(null)
@@ -67,9 +71,9 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const expiries = summaryData?.expiries ?? []
   const now = marketTime(live, symbol, summaryData?.as_of)
   const selected = expiry && expiries.some((e) => e.id === expiry) ? expiry : defaultExpiry(expiries, now)
-  useEffect(() => { setTicket(null); setUntradable(null) }, [symbol, selected, live.accountScope])
+  useEffect(() => { setTicket(null); setUntradable(null); setTemplatesOpen(false) }, [symbol, selected, live.accountScope])
   // A strategy keeps its legs across expiries, for calendars and diagonals.
-  useEffect(() => { setLegs([]); setReviewing(false) }, [symbol, live.accountScope])
+  useEffect(() => { setLegs([]); setTemplate(undefined); setReviewing(false) }, [symbol, live.accountScope])
 
   const chain = useQuery({
     queryKey: ["chain", symbol, selected, window, version],
@@ -146,8 +150,9 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         actions={
           <>
             <CoverageBadge coverage={coverage} />
-            {live.trading && <Segmented label="Ticket mode" value={mode} onChange={(next) => { setMode(next); setTicket(null); setLegs([]); setReviewing(false) }}
+            {live.trading && <Segmented label="Ticket mode" value={mode} onChange={(next) => { setMode(next); setTicket(null); editLegs([]); setTemplatesOpen(false); setReviewing(false) }}
               options={[{ value: "single", label: "Single" }, { value: "strategy", label: "Strategy" }]} />}
+            {live.trading && mode === "strategy" && <button type="button" className="trade-button" disabled={!data} onClick={() => setTemplatesOpen(true)}>Templates</button>}
             <Segmented label="Strike window" value={window} options={windows} onChange={setWindow} />
             <Segmented
               label="Columns"
@@ -168,6 +173,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
               if (!quote.tradable || !quote.symbol) { setUntradable(quote.untradable_reason ?? "Contract unavailable for paper trading"); return }
               if (mode === "strategy") {
                 if (legs.length >= MAX_LEGS && !legs.some((leg) => leg.symbol === quote.symbol)) { setUntradable(`A strategy has at most ${MAX_LEGS} legs.`); return }
+                setTemplate(undefined)
                 setLegs((current) => toggleLeg(current, { symbol: quote.symbol!, underlying: symbol, side: sideFromCell(cell), ratio: 1, type: optionType,
                   strike: row.strike, expiry: data.expiry.id, quote }))
                 return
@@ -191,9 +197,9 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
         )}
       </Panel>
       {live.trading && strategyOpen && data && (docked ? <div className="sticky top-16">
-        <StrategyTicket key={live.accountScope} smiles={smiles} legs={liveLegs} onLegs={setLegs} expiries={legExpiries} underlying={symbol} spot={data.spot}
-          trading={live.trading} variant="panel" onClose={() => setLegs([])} />
-      </div> : reviewing ? <StrategyTicket key={live.accountScope} smiles={smiles} legs={liveLegs} onLegs={(next) => { setLegs(next); if (!next.length) setReviewing(false) }}
+        <StrategyTicket key={live.accountScope} smiles={smiles} template={template} legs={liveLegs} onLegs={editLegs} expiries={legExpiries} underlying={symbol} spot={data.spot}
+          trading={live.trading} variant="panel" onClose={() => editLegs([])} />
+      </div> : reviewing ? <StrategyTicket key={live.accountScope} smiles={smiles} template={template} legs={liveLegs} onLegs={(next) => { editLegs(next); if (!next.length) setReviewing(false) }}
           expiries={legExpiries} underlying={symbol} spot={data.spot} trading={live.trading} variant="dialog" onClose={() => setReviewing(false)} />
       : <div role="region" aria-label="Strategy legs" className="fixed inset-x-3 bottom-3 z-20 flex items-center justify-between gap-3 rounded-lg border border-accent/50 bg-panel p-3 shadow-chart">
           <div className="min-w-0 text-sm">
@@ -201,7 +207,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
             <div className="text-xs text-muted">{legs.length} of {MAX_LEGS} legs{legExpiries.length > 1 ? ` · ${legExpiries.length} expiries` : ""} · {legs.length < 2 ? "tap another bid or ask" : "tap to add or remove"}</div>
           </div>
           <div className="flex shrink-0 gap-2">
-            <button type="button" className="trade-button" onClick={() => setLegs([])}>Clear</button>
+            <button type="button" className="trade-button" onClick={() => editLegs([])}>Clear</button>
             <button type="button" className="trade-button border-accent" disabled={legs.length < 2} onClick={() => setReviewing(true)}>Review</button>
           </div>
         </div>)}
@@ -213,6 +219,8 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
           onClose={() => setTicket(null)} />
       </div>}
       </div>
+      {live.trading && templatesOpen && data && <StrategyTemplates key={`${symbol}/${selected}`} near={data} expiries={expiries}
+        onClose={() => setTemplatesOpen(false)} onApply={(setup) => { setLegs(setup.legs); setTemplate(setup); setTemplatesOpen(false); setReviewing(true) }} />}
       {live.trading && untradable && <Dialog title="Paper trading unavailable" onClose={() => setUntradable(null)}><p className="text-sm text-warn">{untradable}</p></Dialog>}
     </div>
   )

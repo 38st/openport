@@ -1039,6 +1039,42 @@ slippage, both order tickets leave the buying-power estimate blank and explain
 that it is checked on submission. Price previews are labelled as excluding slippage
 when enabled. Buy-only plans and decided attempts block submission with the reason.
 
+Strategy mode's **Templates** menu selects verticals, iron condors, iron butterflies,
+strangles, straddles, long call or put butterflies, calendars and diagonals. Delta
+selection uses the chain's per-strike deltas. Forward offsets use points or the
+expiry's expected move, F × ATM IV × √T. Positive offsets go out of the money;
+condors use both sides. Verticals target the short leg for credit and debit spreads.
+Calendars and diagonals sell the selected near expiry and buy the chosen far expiry,
+whose full chain must load first. A diagonal's signed offset sets its far strike
+relative to the near strike. Calendars require the same listed strike in both chains.
+
+Targets snap to listed strikes in the loaded chain, with ties going to the lower
+strike. Targets outside that range, missing quotes or deltas, overlapping legs and
+unequal butterfly wings give a reason instead of an order. Widen the chain window
+when needed. Review shows the legs, actual widths, net credit or debit, max loss and
+probability of profit before submission. Calendars and diagonals retain the ticket's
+estimated first-expiry risk, valuing later legs at today's IV. Named presets are
+stored per underlying in this browser; the selected near expiry remains the near
+expiry when a preset is reused. Each template exposes a parameter tag, displayed in
+the ticket and cleared on manual leg edits. Tags are not sent to the order or note API.
+
+Single-leg and strategy tickets show risk-neutral probability of profit before fees,
+using the distribution of the underlying at the order's first expiry. They prefer
+that expiry's raw SVI fit when its butterfly and calendar checks pass, then its SSVI
+slice, then the chain's smile. The digital probability is the strike derivative of
+the smile-priced call, N(d2) − φ(d2)√T ∂σ/∂ln(K/F). SVI and SSVI use analytic
+volatility derivatives. Chain IV is interpolated in log moneyness; skew comes from a
+local least-squares fit over up to five neighbouring strikes. Without a smile the
+ticket labels the flat-IV estimate “lognormal, no smile”. No usable volatility means
+no probability estimate.
+
+Outside the fitted or quoted range, volatility stays flat and skew is zero. A fixed
+log-strike grid, including quoted knots and both sides of the range endpoints, clamps
+the digital to [0, 1] and takes its running minimum. Interpolation of that grid gives
+non-increasing probabilities at every strike; flat smiles retain N(d2) exactly.
+Any repair is labelled approximate, and breakevens outside the range disclose flat
+volatility. These are model probabilities, not forecasts of realised returns.
+
 After HTTP 400/403/404/409/422, the ticket shows the rejection details and **New order**,
 which preserves form values and starts a fresh client ID. **Retry same order** keeps
 the frozen request and ID only after a network failure, timeout or 503. Other

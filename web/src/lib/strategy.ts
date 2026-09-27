@@ -1,5 +1,6 @@
-import type { OptionQuote } from "../api/types"
+import type { Chain, ChainRow, OptionQuote } from "../api/types"
 import type { Side } from "../api/trading-types"
+import { expectedMove } from "./candles"
 import { powerUse, trade, type MarginPosition, type PowerUse } from "./margin"
 
 export type Kind = "call" | "put"
@@ -11,7 +12,7 @@ export interface StrategyLeg {
   ratio: number
   type: Kind
   strike: number
-  /** Expiry id; a strategy's legs share one in the ticket. */
+  /** Expiry id, including settlement family. */
   expiry: string
   quote: OptionQuote | null
 }
@@ -215,4 +216,149 @@ export function closingLegs(positions: { symbol: string; underlying: string; exp
     ratio: Math.abs(p.quantity) / units, type: p.type, strike: p.strike, expiry: `${p.expiry}${p.settlement}`, quote: null }))
   if (legs.some((l) => l.ratio > MAX_RATIO)) return { reason: `Sizes this uneven exceed a ${MAX_RATIO}-to-1 ratio; close them separately.` }
   return { legs, units }
+}
+
+export type TemplateTarget = { mode: "atm" } | { mode: "delta" | "points" | "moves" | "strike"; value: number }
+export type StrategyTemplate =
+  | { kind: "vertical"; type: Kind; direction: "credit" | "debit"; target: TemplateTarget; width: number }
+  | { kind: "condor"; target: TemplateTarget; width: number }
+  | { kind: "iron-butterfly"; width: number }
+  | { kind: "strangle"; delta: number; side: Side }
+  | { kind: "straddle"; side: Side }
+  | { kind: "butterfly"; type: Kind; target: TemplateTarget; width: number }
+  | { kind: "calendar" | "diagonal"; type: Kind; target: TemplateTarget; farExpiry: string; offset: number }
+
+export interface TemplateSetup { legs: StrategyLeg[]; tag: string; widths: number[] }
+export type TemplateResult = TemplateSetup | { reason: string }
+
+const targetTag = (target: TemplateTarget) => target.mode === "atm" ? "atm"
+  : `${target.value}${{ delta: "d", points: "pt", moves: "em", strike: "k" }[target.mode]}`
+/** Describes requested parameters; actual snapped strikes and widths remain in the review. */
+export function templateTag(template: StrategyTemplate): string {
+  switch (template.kind) {
+    case "vertical": return `${template.type}-${template.direction}-${targetTag(template.target)}-${template.width}w`
+    case "condor": return `iron-condor-${targetTag(template.target)}-${template.width}w`
+    case "iron-butterfly": return `iron-butterfly-atm-${template.width}w`
+    case "strangle": return `${template.side === "sell" ? "short" : "long"}-strangle-${template.delta}d`
+    case "straddle": return `${template.side === "sell" ? "short" : "long"}-straddle-atm`
+    case "butterfly": return `long-${template.type}-butterfly-${targetTag(template.target)}-${template.width}w`
+    case "calendar": case "diagonal": return `${template.type}-${template.kind}-${targetTag(template.target)}${template.kind === "diagonal" ? `-${template.offset}pt` : ""}-${template.farExpiry}`
+  }
+}
+
+/** Deterministic leg selection from listed contracts. Never substitute another strike for a missing quote. */
+export function buildTemplate(template: StrategyTemplate, near: Chain, far?: Chain): TemplateResult {
+  const fail = (reason: string): never => { throw new Error(reason) }
+  const rows = near.strikes.filter((r) => finite(r.strike) && r.strike > 0).sort((a, b) => a.strike - b.strike)
+  const nearest = (chain: Chain, target: number, purpose: string): ChainRow => {
+    const listed = chain.strikes.filter((r) => finite(r.strike) && r.strike > 0).sort((a, b) => a.strike - b.strike)
+    if (!listed.length) return fail(`${chain.expiry.id}: no listed strikes for ${purpose}.`)
+    if (!finite(target) || target < listed[0]!.strike || target > listed.at(-1)!.strike)
+      return fail(`${purpose} at ${target}: outside the loaded strike range ${listed[0]!.strike}–${listed.at(-1)!.strike}. Widen the chain window.`)
+    return listed.reduce((best, row) => Math.abs(row.strike - target) < Math.abs(best.strike - target) ? row : best)
+  }
+  const atm = () => {
+    if (!finite(near.expiry.forward) || near.expiry.forward <= 0) return fail("The selected expiry has no forward for an ATM strike.")
+    return near.expiry.forward
+  }
+  const pick = (type: Kind, target: TemplateTarget) => {
+    if (target.mode === "atm") return nearest(near, atm(), "ATM strike")
+    if (!finite(target.value)) return fail("Enter a finite strike target.")
+    if (target.mode === "delta") {
+      if (!(target.value > 0 && target.value < 100)) return fail("Target delta must be between 0 and 100, excluding the endpoints.")
+      const signed = (type === "put" ? -1 : 1) * target.value / 100
+      const candidates = rows.filter((row) => finite(row[type]?.delta) && (type === "put"
+        ? row[type]!.delta! >= -1 && row[type]!.delta! <= 0 : row[type]!.delta! >= 0 && row[type]!.delta! <= 1))
+      if (!candidates.length) return fail(`No ${type} deltas in the loaded chain.`)
+      const deltas = candidates.map((row) => row[type]!.delta!)
+      if (signed < Math.min(...deltas) || signed > Math.max(...deltas)) return fail(`${target.value}Δ ${type} is outside the loaded delta range. Widen the chain window.`)
+      return candidates.reduce((best, row) => Math.abs(row[type]!.delta! - signed) < Math.abs(best[type]!.delta! - signed) ? row : best)
+    }
+    if (target.mode === "strike") return nearest(near, target.value, "Centre strike")
+    let offset = target.value
+    if (target.mode === "moves") {
+      const move = expectedMove(near.expiry.forward, near.expiry.atm_iv, near.expiry.days)
+      if (move == null || !(move > 0)) return fail("Expected move unavailable: the expiry needs a forward, ATM volatility and time remaining.")
+      offset *= move
+    }
+    return nearest(near, atm() + (type === "put" ? -offset : offset), `${type} target`)
+  }
+  const leg = (chain: Chain, row: ChainRow, type: Kind, side: Side, ratio = 1): StrategyLeg => {
+    const quote = row[type]
+    const name = `${chain.expiry.id} ${row.strike} ${type}`
+    if (!quote || !finite(quote.bid) || !finite(quote.ask) || !finite(quote.mid) || quote.bid < 0 || quote.ask < quote.bid)
+      return fail(`${name}: no valid two-sided quote.`)
+    if (!quote.symbol || quote.tradable !== true) return fail(`${name}: ${quote.untradable_reason ?? "unavailable for paper trading"}.`)
+    return { symbol: quote.symbol, underlying: chain.symbol, side, ratio, type, strike: row.strike, expiry: chain.expiry.id, quote }
+  }
+  const wing = (center: ChainRow, offset: number, type: Kind, side: Side) => {
+    const row = nearest(near, center.strike + offset, `${type} wing`)
+    if ((row.strike - center.strike) * offset <= 0) return fail(`${type} wing snaps to the centre strike ${center.strike}; increase the width.`)
+    return leg(near, row, type, side)
+  }
+  try {
+    if (!rows.length) return fail("The selected chain has no listed strikes.")
+    if ("width" in template && (!finite(template.width) || template.width <= 0)) return fail("Width must be greater than zero points.")
+    let legs: StrategyLeg[]
+    let widths: number[] = []
+    switch (template.kind) {
+      case "vertical": {
+        const short = pick(template.type, template.target)
+        const direction = (template.type === "call" ? 1 : -1) * (template.direction === "credit" ? 1 : -1)
+        const long = wing(short, direction * template.width, template.type, "buy")
+        legs = [leg(near, short, template.type, "sell"), long]
+        widths = [Math.abs(short.strike - long.strike)]
+        break
+      }
+      case "condor": case "iron-butterfly": {
+        const target: TemplateTarget = template.kind === "iron-butterfly" ? { mode: "atm" } : template.target
+        if (template.kind === "condor" && target.mode !== "delta" && target.mode !== "moves") return fail("Condor shorts require a delta or expected-move target.")
+        if ("value" in target && target.value <= 0) return fail("Condor target must be greater than zero.")
+        const put = pick("put", target), call = pick("call", target)
+        if (template.kind === "condor" && put.strike >= call.strike) return fail("Condor short put must be below the short call after snapping.")
+        const low = wing(put, -template.width, "put", "buy"), high = wing(call, template.width, "call", "buy")
+        legs = [low, leg(near, put, "put", "sell"), leg(near, call, "call", "sell"), high]
+        widths = [put.strike - low.strike, high.strike - call.strike]
+        break
+      }
+      case "strangle": case "straddle": {
+        const target: TemplateTarget = template.kind === "straddle" ? { mode: "atm" } : { mode: "delta", value: template.delta }
+        const put = pick("put", target), call = pick("call", target)
+        if (template.kind === "strangle" && put.strike >= call.strike) return fail("Strangle put must be below the call after snapping.")
+        legs = [leg(near, put, "put", template.side), leg(near, call, "call", template.side)]
+        widths = [call.strike - put.strike]
+        break
+      }
+      case "butterfly": {
+        if (template.target.mode !== "atm" && template.target.mode !== "strike") return fail("Butterfly centre requires ATM or a strike.")
+        const center = pick(template.type, template.target)
+        const low = wing(center, -template.width, template.type, "buy"), high = wing(center, template.width, template.type, "buy")
+        if (Math.abs((center.strike - low.strike) - (high.strike - center.strike)) > 1e-8) return fail("Listed strikes cannot form equal butterfly wings at this centre and width.")
+        legs = [low, leg(near, center, template.type, "sell", 2), high]
+        widths = [center.strike - low.strike, high.strike - center.strike]
+        break
+      }
+      case "calendar": case "diagonal": {
+        if (template.target.mode !== "atm" && template.target.mode !== "delta") return fail("Calendar and diagonal strikes require ATM or delta.")
+        if (!far || far.expiry.id !== template.farExpiry) return fail(`Load the far chain (${template.farExpiry || "choose an expiry"}) before building this template.`)
+        if (far.symbol !== near.symbol) return fail("Both expiries must have the same underlying.")
+        if (!(Date.parse(far.expiry.expiry_time) > Date.parse(near.expiry.expiry_time))) return fail("Far expiry must settle after the selected expiry.")
+        const short = pick(template.type, template.target)
+        let long: ChainRow
+        if (template.kind === "calendar") long = far.strikes.find((r) => r.strike === short.strike) ?? fail(`Far expiry has no listed ${short.strike} strike for a calendar.`)
+        else {
+          if (!finite(template.offset) || template.offset === 0) return fail("Diagonal far-strike offset must be nonzero points.")
+          long = nearest(far, short.strike + template.offset, "Far strike")
+          if (long.strike === short.strike) return fail("Diagonal offset snaps to the near strike; increase its size.")
+        }
+        legs = [leg(near, short, template.type, "sell"), leg(far, long, template.type, "buy")]
+        widths = [Math.abs(long.strike - short.strike)]
+        break
+      }
+    }
+    if (new Set(legs.map((l) => l.symbol)).size !== legs.length) return fail("The selected contracts overlap after snapping.")
+    return { legs, tag: templateTag(template), widths }
+  } catch (error) {
+    return { reason: error instanceof Error ? error.message : "Unable to select template legs." }
+  }
 }
