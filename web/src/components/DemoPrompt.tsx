@@ -54,6 +54,8 @@ export function DemoPrompt({ onNavigate }: { onNavigate: (view: View) => void })
           <button type="button" className="trade-button !py-0.5" onClick={() => demoPrompt.hide()}>Not now</button>
         </span>
       </div>
+      {day?.description && <p className="mt-1 text-muted">{day.description} {day.goal && `Goal: ${day.goal}`} {day.session === "overnight" && "Overnight session."}</p>}
+      <button type="button" className="trade-button mt-1 !py-0.5" onClick={() => onNavigate("replay")}>Choose a plan, seed and start time</button>
       <TradingError error={offer.controls.error} />
     </div>
   )

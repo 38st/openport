@@ -1,0 +1,34 @@
+{
+  "id": "gap-up-fade",
+  "title": "Gap up and fade",
+  "description": "A simulated opening gap gives way to a steady retreat.",
+  "goal": "Manage a fading gap without chasing the open.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 81729,
+  "generator": 1,
+  "drift": [
+    [
+      0.3,
+      -0.002
+    ],
+    [
+      1,
+      -0.011
+    ]
+  ],
+  "volatility": 0.12,
+  "iv_shift": 0.01,
+  "spot_vol": -2,
+  "events": [
+    {
+      "type": "gap",
+      "move": 0.012
+    }
+  ]
+}

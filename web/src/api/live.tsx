@@ -40,9 +40,11 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
   const main = connectedTick?.trading === undefined ? status?.trading : connectedTick.trading
   // Another account's status comes from the account list; older servers have only the main one.
   const trading = account === MAIN_ACCOUNT ? main : accounts.find((a) => a.id === account)?.trading
+  const replayReason = source === "replay" && (replay?.fast_forwarding ? "REPLAY_FAST_FORWARD" : replay?.finished ? "REPLAY_READ_ONLY" : null)
+  const availableTrading = replayReason && trading ? { ...trading, write: "disabled" as const, reason: replayReason } : trading
   return {
     // REST capability is required: old servers must never expose trading UI.
-    trading: status?.trading ? trading : undefined,
+    trading: status?.trading ? availableTrading : undefined,
     accountScope,
     accounts,
     account,
@@ -70,6 +72,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const [tick, setTick] = useState<Tick | null>(null)
   const [replayTick, setReplayTick] = useState<Tick | null>(null)
   const replaySeen = useRef(0)
+  const replayRun = useRef<string | undefined>(undefined)
   const [connection, setConnection] = useState<Connection>("connecting")
   const [accountScope, setAccountScope] = useState(0)
   const account = useActiveAccount()
@@ -86,6 +89,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     })
   }, [queryClient])
 
+  const history = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), refetchInterval: 10_000 })
+  const archived = source.startsWith("history:") ? history.data?.history?.find((run) => run.id === source.slice(8)) : undefined
   const status = useQuery({
     queryKey: ["status", source],
     queryFn: ({ signal }) => api.status(signal),
@@ -104,6 +109,17 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     queryClient.removeQueries()
     setAccountScope((scope) => scope + 1)
   }, [queryClient])
+  // A new run reuses /api/replay but has a different account, including when
+  // another browser started it. Do not reuse the previous run's cached trades.
+  useEffect(() => {
+    const id = replayTick?.replay?.id
+    if (id && replayRun.current && id !== replayRun.current && source === "replay") {
+      queryClient.removeQueries({ queryKey: ["trading"] })
+      void queryClient.invalidateQueries({ queryKey: ["status", "replay"] })
+      setAccountScope((scope) => scope + 1)
+    }
+    replayRun.current = id
+  }, [replayTick?.replay?.id, source, queryClient])
   // A replay that stopped, here or in another window, returns the terminal to the live feed.
   useEffect(() => {
     if (source !== "replay") return
@@ -116,16 +132,16 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     if (source === "live" && known && account !== MAIN_ACCOUNT && !known.some((a) => a.id === account)) switchAccount(MAIN_ACCOUNT)
   }, [source, known, account, switchAccount])
   const value = useMemo<Live>(
-    () => liveState(status.data, source === "replay" ? replayTick : tick, connection, accountScope,
-      source === "replay" ? MAIN_ACCOUNT : account, switchAccount, source, replayTick?.replay ?? null, switchSource),
-    [status.data, tick, replayTick, connection, accountScope, account, switchAccount, source, switchSource],
+    () => liveState(status.data, source === "replay" ? replayTick : source === "live" ? tick : null, connection, accountScope,
+      source !== "live" ? MAIN_ACCOUNT : account, switchAccount, source, source.startsWith("history:") ? archived ?? null : replayTick?.replay ?? null, switchSource),
+    [status.data, tick, replayTick, connection, accountScope, account, switchAccount, source, switchSource, archived],
   )
   return <LiveContext value={value}>{children}</LiveContext>
 }
 
 /** Now on the market's clock: the replay's while trading one, otherwise the wall clock. */
 export function marketNow(live: Pick<Live, "source" | "replay">): number {
-  const replay = live.source === "replay" && live.replay?.time ? Date.parse(live.replay.time) : Number.NaN
+  const replay = live.source !== "live" && live.replay?.time ? Date.parse(live.replay.time) : Number.NaN
   return Number.isFinite(replay) ? replay : Date.now()
 }
 

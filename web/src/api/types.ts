@@ -290,6 +290,16 @@ export interface Surface {
 
 /** The replay running beside the live feed: its recording, speed and clock. */
 export interface ReplayState {
+  id?: string
+  scenario?: string | null
+  seed?: string | null
+  generator?: number | null
+  date?: string
+  start_at?: string
+  plan?: string
+  durable?: boolean
+  fast_forwarding?: boolean
+  progress?: number
   file: string
   /** The demo market: a simulated day rather than a recording of real quotes. */
   demo?: boolean
@@ -304,6 +314,7 @@ export interface ReplayState {
   time: string | null
 }
 export interface ReplayRecording {
+  simulated?: boolean
   file: string
   bytes: number
   provider?: string
@@ -313,8 +324,18 @@ export interface ReplayRecording {
   error?: string
 }
 /** A simulated day the demo market plays, in these symbols. */
-export interface ReplayDemo { id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string }
+export interface ReplayDemo { goal?: string; session?: "regular" | "overnight"; date?: string; seed?: string; generator?: number; id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string }
+export interface ReplayHistory extends ReplayState {
+  id: string
+  result: "pass" | "fail" | "open"
+  pnl: string | null
+  valuation_complete?: boolean
+  error?: string
+  read_only: true
+}
 export interface ReplayListing {
+  write?: "open" | "token" | "disabled"
+  history?: ReplayHistory[]
   directory: string
   recordings: ReplayRecording[]
   /** The default demo day, and every one; absent from older servers. */

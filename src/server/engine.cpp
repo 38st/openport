@@ -8,7 +8,7 @@ namespace openport::server {
 
 Engine::Engine(md::Provider& provider, md::Subscription subscription, Options options)
     : provider_(provider), subscription_(std::move(subscription)), options_(options),
-      queue_(md::kEventQueueCapacity, options.paper_enabled) {
+      queue_(md::kEventQueueCapacity, options.paper_enabled || options.replay) {
   status_.provider = std::string(provider.name());
   status_.capabilities = provider.capabilities();
   status_.trading.fee_per_contract = options_.paper.fee_per_contract;
@@ -210,6 +210,15 @@ void Engine::update_health(const md::Event& event, md::Timestamp received) {
   }
 }
 
+std::future<void> Engine::synchronize() {
+  std::promise<void> done;
+  auto future = done.get_future();
+  const std::lock_guard lock(sync_mutex_);
+  synchronizations_.push_back(std::move(done));
+  queue_.wake();
+  return future;
+}
+
 void Engine::run() {
   std::vector<md::Event> batch;
   auto last_analytics = std::chrono::steady_clock::now();
@@ -218,8 +227,13 @@ void Engine::run() {
   constexpr auto kHealthInterval = std::chrono::milliseconds(100);
 
   while (!stopping_ || queue_.status().depth != 0) {
+    std::vector<std::promise<void>> synchronized;
+    {
+      const std::lock_guard lock(sync_mutex_);
+      synchronized.swap(synchronizations_);
+    }
     batch.clear();
-    queue_.drain(batch, std::chrono::milliseconds(50));
+    queue_.drain(batch, std::chrono::milliseconds(synchronized.empty() ? 50 : 0));
     std::deque<PendingCommand> commands;
     {
       const std::lock_guard lock(command_mutex_);
@@ -266,7 +280,7 @@ void Engine::run() {
       const auto* status = std::get_if<md::ProviderStatus>(&event);
       return status && status->state == md::FeedState::Stopped;
     });
-    if (ended || stopping_ || !commands.empty() ||
+    if (ended || stopping_ || !synchronized.empty() || !commands.empty() ||
         (!batch.empty() && std::any_of(accounts_.begin(), accounts_.end(), [](const PaperAccount& account) {
            return account.session && (!account.session->snapshot()->positions.empty() ||
                                        !account.session->snapshot()->open_orders.empty());
@@ -278,6 +292,7 @@ void Engine::run() {
     // Each account catches its own failures; nothing else here can fail the others.
     update_trading(batch, commands);
     for (auto& command : commands) apply_command(command);
+    for (auto& done : synchronized) done.set_value();
   }
   std::deque<PendingCommand> remaining;
   {

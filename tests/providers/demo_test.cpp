@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <filesystem>
 #include <map>
@@ -11,6 +12,7 @@
 
 #include "openport/md/recording.hpp"
 #include "openport/providers/demo.hpp"
+#include "openport/providers/scenario.hpp"
 #include "openport/trading/types.hpp"
 
 namespace {
@@ -192,5 +194,43 @@ TEST(DemoMarket, EachDayFollowsItsScript) {
   EXPECT_EQ(night.spx, 1U);
   EXPECT_EQ(night.etf, 0U);
   EXPECT_GT(night.quotes, 10'000U);
+}
+// Hash the ordered recording receipts and price/size payloads, independent of zstd framing.
+std::uint64_t recording_hash(const std::filesystem::path& path) {
+  std::uint64_t hash = 14695981039346656037ULL;
+  const auto mix = [&](std::uint64_t value) {
+    for (unsigned i = 0; i < 8; ++i) { hash ^= (value >> (8 * i)) & 255; hash *= 1099511628211ULL; }
+  };
+  const auto bits = [](double v) { std::uint64_t n = 0; std::memcpy(&n, &v, sizeof n); return n; };
+  md::RecordingReader reader(path);
+  while (const auto e = reader.next()) {
+    mix(static_cast<std::uint64_t>(e->received));
+    mix(e->event.index());
+    if (const auto* q = std::get_if<md::OptionQuote>(&e->event)) {
+      mix(q->id); mix(static_cast<std::uint64_t>(q->ts));
+      for (double v : {q->bid, q->ask, q->bid_size, q->ask_size}) mix(bits(v));
+    } else if (const auto* spot = std::get_if<md::UnderlyingQuote>(&e->event)) {
+      mix(static_cast<std::uint64_t>(spot->ts));
+      for (double v : {spot->bid, spot->ask, spot->last}) mix(bits(v));
+    } else if (const auto* oi = std::get_if<md::OpenInterest>(&e->event)) {
+      mix(oi->id); mix(bits(oi->contracts));
+    }
+  }
+  return hash;
+}
+
+TEST(DemoMarket, LegacyRecordingsAreUnchanged) {
+  const std::map<std::string, std::uint64_t> expected{{"reversal", 18374653777601044835ULL},
+      {"trend", 11930710970999195785ULL}, {"chop", 10781388607768009831ULL},
+      {"selloff", 16480548078743839308ULL}, {"overnight", 11921129588866157280ULL}};
+  for (const auto& [id, hash] : expected) {
+    const auto& scenarios = providers::builtin_scenarios();
+    const auto day = std::find_if(scenarios.begin(), scenarios.end(), [&](const auto& s) { return s.id == id; });
+    ASSERT_NE(day, scenarios.end());
+    const auto path = temporary("legacy");
+    providers::write_scenario_recording(path, *day, day->date, day->seed);
+    EXPECT_EQ(recording_hash(path), hash) << id;
+    std::filesystem::remove(path);
+  }
 }
 }  // namespace

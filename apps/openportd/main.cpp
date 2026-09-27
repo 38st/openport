@@ -60,6 +60,7 @@ struct Settings {
   std::string address = "127.0.0.1";
   unsigned short port = 8080;
   std::filesystem::path web_root;
+  std::filesystem::path scenario_dir;
   std::filesystem::path record_file;
   std::filesystem::path record_dir;
   std::optional<std::filesystem::path> candle_dir;
@@ -88,7 +89,7 @@ int usage(const char* error = nullptr) {
   std::fprintf(
       stderr,
       "usage: openportd [--provider NAME] [--symbols SPX,SPY,QQQ,IWM,DIA] [--address ADDR] [--port N]\n"
-      "                 [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
+      "                 [--scenario-dir DIR] [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--allowed-host NAME]...\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
@@ -203,8 +204,9 @@ int repair_journals(const std::filesystem::path& journal, const std::filesystem:
   std::error_code ec;
   if (std::filesystem::is_regular_file(journal, ec)) files.push_back(journal);
   std::vector<std::filesystem::path> named;
-  if (std::filesystem::is_directory(accounts, ec)) {
-    for (const auto& entry : std::filesystem::directory_iterator(accounts, ec))
+  for (const auto& directory : {accounts, std::filesystem::absolute(journal).parent_path() / "replays"}) {
+    if (!std::filesystem::is_directory(directory, ec)) continue;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, ec))
       if (entry.path().extension() == ".jsonl") named.push_back(entry.path());
   }
   std::sort(named.begin(), named.end());
@@ -336,6 +338,8 @@ int run(int argc, char** argv) {
       } catch (const std::invalid_argument& error) {
         return usage(error.what());
       }
+    } else if (arg == "--scenario-dir") {
+      settings.scenario_dir = value;
     } else if (arg == "--web-root") {
       settings.web_root = value;
     } else if (arg == "--expiries") {
@@ -441,6 +445,7 @@ int run(int argc, char** argv) {
   // Recorded days replay beside the live feed, each with its own paper account.
   server::ReplayHost::Options replay_options;
   replay_options.engine = engine_options;
+  replay_options.scenario_dir = settings.scenario_dir;
   if (!settings.record_dir.empty())
     replay_options.recordings = settings.record_dir;
   else if (const auto* home = std::getenv("HOME"))

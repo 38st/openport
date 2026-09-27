@@ -1,0 +1,41 @@
+{
+  "id": "morning-crush",
+  "title": "Morning vol crush",
+  "description": "Implied volatility falls after a simulated morning spike.",
+  "goal": "Manage premium exposure through the volatility drop.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 81731,
+  "generator": 1,
+  "drift": [
+    [
+      0.2,
+      0.001
+    ],
+    [
+      1,
+      0.003
+    ]
+  ],
+  "volatility": 0.1,
+  "iv_shift": 0.045,
+  "spot_vol": -2,
+  "events": [
+    {
+      "type": "spike",
+      "at": "10:00",
+      "move": 0.003,
+      "iv": 0.02
+    },
+    {
+      "type": "crush",
+      "at": "10:30",
+      "iv": -0.06
+    }
+  ]
+}

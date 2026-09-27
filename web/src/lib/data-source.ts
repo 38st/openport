@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react"
 
 /** Where the terminal reads its market and account from: the live feed, or the replay running beside it. */
-export type DataSource = "live" | "replay"
+export type DataSource = "live" | "replay" | `history:${string}`
 
 /** In memory only: a reload always opens on the live feed. */
 export function createSourceStore() {

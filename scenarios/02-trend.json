@@ -1,0 +1,36 @@
+{
+  "id": "trend",
+  "title": "Trend",
+  "description": "A steady climb of about 1% while implied volatility eases.",
+  "goal": "Practise risk limits through this simulated session.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-15",
+  "seed": 20260915,
+  "generator": 1,
+  "drift": [
+    [
+      0.2,
+      0.003
+    ],
+    [
+      0.5,
+      0.007
+    ],
+    [
+      0.8,
+      0.01
+    ],
+    [
+      1,
+      0.012
+    ]
+  ],
+  "volatility": 0.09,
+  "iv_shift": -0.015,
+  "spot_vol": -1.5
+}

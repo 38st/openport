@@ -988,6 +988,8 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry/last-trade/auto-close boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, triggers or brackets |
 | `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age` (a delayed feed: at least three minutes); message includes the lag behind the wall clock |
+| `REPLAY_FAST_FORWARD` | The replay is preparing its start state; wait before submitting orders or changing playback |
+| `REPLAY_READ_ONLY`, `REPLAY_RUNNING` | A finished run refuses writes; a running run cannot be opened as history or deleted |
 | `MARKET_HALTED` | A market-wide circuit breaker has halted trading; the message gives the S&P 500's fall and when trading resumes |
 | `INVALID_SETTLEMENT`, `ALREADY_SETTLED` | Invalid/premature settlement or already settled OSI |
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |

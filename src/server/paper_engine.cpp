@@ -260,6 +260,13 @@ std::vector<JournalCompaction> compact_paper_journals(const std::filesystem::pat
     std::sort(files.begin(), files.end());
     for (const auto& file : files) results.push_back(compact_journal(file));
   }
+  if (!journal.empty()) {
+    const auto replays = std::filesystem::absolute(journal).parent_path() / "replays";
+    if (std::filesystem::is_directory(replays, ec)) {
+      for (const auto& entry : std::filesystem::directory_iterator(replays, ec))
+        if (entry.is_regular_file(ec) && entry.path().extension() == ".jsonl") results.push_back(compact_journal(entry.path()));
+    }
+  }
   return results;
 }
 
@@ -327,7 +334,7 @@ void Engine::start_trading() {
       if (const auto quote = account.session->quote(symbol))
         observations_[symbol] = std::max(observations_[symbol], quote->observation);
   }
-  breaker_storage_ = !options_.paper_journal.empty() && accounts_.front().session != nullptr;
+  breaker_storage_ = !options_.replay && !options_.paper_journal.empty() && accounts_.front().session != nullptr;
   load_circuit_breaker();
   publish_circuit_breaker();
   publish_trading();
@@ -384,6 +391,11 @@ void Engine::publish_trading() {
       const auto& session = *account.session;
       view = std::make_shared<TradingView>();
       view->snapshot = session.snapshot();
+      if (options_.replay && market_time_ > view->snapshot->time) {
+        auto clocked = std::make_shared<trading::TradingSnapshot>(*view->snapshot);
+        clocked->time = market_time_;
+        view->snapshot = std::move(clocked);
+      }
       view->config = session.config();
       view->contracts = session.contracts();
       view->valuations = session.valuations();

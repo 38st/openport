@@ -1,0 +1,40 @@
+{
+  "id": "selloff",
+  "title": "Selloff",
+  "description": "SPX falls almost 3% as volatility climbs, and a midday bounce fails.",
+  "goal": "Practise risk limits through this simulated session.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-17",
+  "seed": 20260917,
+  "generator": 1,
+  "drift": [
+    [
+      0.15,
+      -0.006
+    ],
+    [
+      0.35,
+      -0.018
+    ],
+    [
+      0.5,
+      -0.014
+    ],
+    [
+      0.8,
+      -0.024
+    ],
+    [
+      1,
+      -0.028
+    ]
+  ],
+  "volatility": 0.24,
+  "iv_shift": 0.03,
+  "spot_vol": -2.5
+}

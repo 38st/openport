@@ -68,10 +68,35 @@ if(OPENPORT_BUILD_PROVIDERS)
     PUBLIC Boost::headers OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB Threads::Threads
     PRIVATE openport::options)
 
+  # Embed the library; both edits and added/removed files trigger reconfiguration.
+  file(GLOB OPENPORT_SCENARIO_FILES CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/scenarios/*.json")
+  if(NOT OPENPORT_SCENARIO_FILES)
+    message(FATAL_ERROR "No built-in scenarios in scenarios/")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${OPENPORT_SCENARIO_FILES})
+  set(OPENPORT_EMBEDDED_SCENARIOS "")
+  foreach(scenario_file IN LISTS OPENPORT_SCENARIO_FILES)
+    file(READ "${scenario_file}" scenario_text)
+    get_filename_component(scenario_name "${scenario_file}" NAME)
+    string(REPLACE "\\" "\\\\" scenario_name "${scenario_name}")
+    string(REPLACE "\"" "\\\"" scenario_name "${scenario_name}")
+    string(SHA256 scenario_hash "${scenario_text}")
+    string(SUBSTRING "${scenario_hash}" 0 12 scenario_delimiter)
+    string(FIND "${scenario_text}" ")${scenario_delimiter}\"" scenario_collision)
+    if(NOT scenario_collision EQUAL -1)
+      message(FATAL_ERROR "Raw string delimiter collision in ${scenario_file}")
+    endif()
+    string(APPEND OPENPORT_EMBEDDED_SCENARIOS
+      "    append(\"scenarios/${scenario_name}\", R\"${scenario_delimiter}(${scenario_text})${scenario_delimiter}\");\n")
+  endforeach()
+  configure_file(providers/builtin_scenarios.cpp.in builtin_scenarios.cpp @ONLY)
+
   # One adapter per market-data provider.
   add_library(openport_providers
+    "${CMAKE_CURRENT_BINARY_DIR}/builtin_scenarios.cpp"
     providers/factory.cpp
     providers/demo.cpp
+    providers/scenario.cpp
     providers/replay.cpp
     providers/snapshot.cpp
     providers/cboe.cpp
@@ -82,7 +107,7 @@ if(OPENPORT_BUILD_PROVIDERS)
   target_link_libraries(openport_providers PUBLIC openport::recording)
   target_link_libraries(openport_providers
     PUBLIC openport::core openport::net
-    PRIVATE simdjson::simdjson openport::options)
+    PRIVATE simdjson::simdjson nlohmann_json::nlohmann_json openport::options)
 
   if(OPENPORT_WITH_DATABENTO)
     target_sources(openport_providers PRIVATE providers/databento.cpp)

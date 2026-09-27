@@ -1,4 +1,5 @@
 #include "openport/providers/demo.hpp"
+#include "openport/providers/scenario.hpp"
 
 #include <algorithm>
 #include <array>
@@ -152,42 +153,13 @@ struct Listed {
   double ask_size = 0;
 };
 
-/// How a day goes: drift in fractions of its session, each (until, total change),
-/// realised volatility annualised over trading time, and implied volatility's shift
-/// and response to the index.
-struct Script {
-  DemoDay day;
-  const char* id;
-  const char* title;
-  const char* description;
-  md::Date date;
-  std::uint64_t seed;
-  std::vector<std::pair<double, double>> drift;
-  double volatility;
-  double iv_shift;
-  double spot_vol;
-  bool overnight = false;
-};
-const std::vector<Script>& scripts() {
-  static const std::vector<Script> all{
-      {DemoDay::Reversal, "reversal", "Slide and rebound", "SPX slides about 1% into late morning, then rallies into the close.",
-       {2026, 9, 16}, 20260916, {{0.1, -0.003}, {0.3, -0.009}, {0.5, 0.0}, {0.8, 0.012}, {1.0, 0.002}}, 0.13, 0.0, -2.0},
-      {DemoDay::Trend, "trend", "Trend", "A steady climb of about 1% while implied volatility eases.",
-       {2026, 9, 15}, 20260915, {{0.2, 0.003}, {0.5, 0.004}, {0.8, 0.003}, {1.0, 0.002}}, 0.09, -0.015, -1.5},
-      {DemoDay::Chop, "chop", "Chop", "A tight range that goes nowhere, with quiet volatility.",
-       {2026, 9, 14}, 20260914, {{0.25, 0.003}, {0.5, -0.004}, {0.75, 0.003}, {1.0, -0.002}}, 0.08, -0.01, -1.5},
-      {DemoDay::Selloff, "selloff", "Selloff", "SPX falls almost 3% as volatility climbs, and a midday bounce fails.",
-       {2026, 9, 17}, 20260917, {{0.15, -0.006}, {0.35, -0.012}, {0.5, 0.004}, {0.8, -0.010}, {1.0, -0.004}}, 0.24, 0.03, -2.5},
-      {DemoDay::Overnight, "overnight", "Overnight session",
-       "SPX options in Cboe's global trading hours, 8:15 pm to 9:25 am ET: limit orders only, with the index frozen at its close.",
-       {2026, 9, 16}, 2026091600, {{0.3, -0.002}, {0.6, -0.004}, {1.0, 0.003}}, 0.06, 0.0, -2.0, true},
-  };
-  return all;
-}
-const Script& script_for(DemoDay day) {
-  for (const auto& s : scripts())
-    if (s.day == day) return s;
-  return scripts().front();
+const Scenario& script_for(DemoDay day) {
+  constexpr const char* ids[] = {"reversal", "trend", "chop", "selloff", "overnight"};
+  const auto index = static_cast<std::size_t>(day);
+  const std::string_view id = index < 5 ? ids[index] : ids[0];
+  for (const auto& scenario : builtin_scenarios())
+    if (scenario.id == id) return scenario;
+  throw std::invalid_argument("Missing built-in scenario " + std::string(id));
 }
 
 /// When the day's snapshots run: the regular session to the 16:15 last trade,
@@ -198,7 +170,7 @@ struct Window {
   md::Timestamp last;
   md::Timestamp step;
 };
-Window window_for(const Script& script, md::Date date) {
+Window window_for(const Scenario& script, md::Date date) {
   if (script.overnight) {
     const auto evening = md::date_from_days(md::days_since_epoch(date) - 1);
     const auto end = md::new_york_to_utc(date, 9, 25);
@@ -220,10 +192,9 @@ bool simulated_provider(std::string_view name) noexcept {
 const std::vector<DemoInfo>& demo_days() {
   static const std::vector<DemoInfo> days = [] {
     std::vector<DemoInfo> out;
-    for (const auto& s : scripts()) {
-      std::vector<std::string> symbols{"SPX"};
-      if (!s.overnight) symbols = {"SPX", "SPY", "QQQ"};
-      out.push_back({s.day, s.id, s.title, s.description, s.date, symbols, window_for(s, s.date).first});
+    for (const auto day : {DemoDay::Reversal, DemoDay::Trend, DemoDay::Chop, DemoDay::Selloff, DemoDay::Overnight}) {
+      const auto& s = script_for(day);
+      out.push_back({day, s.id, s.title, s.description, s.date, s.symbols, window_for(s, s.date).first});
     }
     return out;
   }();
@@ -238,10 +209,18 @@ const DemoInfo* find_demo_day(std::string_view id) {
 
 void write_demo_recording(const std::filesystem::path& path, const DemoOptions& options) {
   const auto& script = script_for(options.day);
-  const auto date = options.date.value_or(script.date);
-  const auto seed = options.seed != 0 ? options.seed : script.seed;
+  write_scenario_recording(path, script, options.date.value_or(script.date), options.seed != 0 ? options.seed : script.seed);
+}
+
+void write_scenario_recording(const std::filesystem::path& path, const Scenario& script, md::Date date, std::uint64_t seed) {
+  if (script.generator != 1) throw std::invalid_argument("scenario.generator: only version 1 is supported");
   if (!md::valid_date(date) || !business_day(date)) throw std::invalid_argument("The demo day must be a trading day");
   const auto w = window_for(script, date);
+  for (const auto& event : script.events) {
+    if (event.type == "gap") continue;
+    const auto at = scenario_time(event.at, date, script.overnight);
+    if (at < w.first || at >= w.close) throw std::invalid_argument("scenario.events.at: outside this date's session");
+  }
 
   // Five expiries a chain: today, the next two business days, the Friday after,
   // and next month's third Friday (AM-settled for SPX).
@@ -254,7 +233,8 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
   std::vector<std::pair<Series, double>> series;
   const auto add = [&](const std::string& root, md::Date expiry, double step, double window, bool is_monthly) {
     const bool index = root == "SPX" || root == "SPXW";
-    if (script.overnight && !index) return;  // only SPX options trade overnight
+    const auto symbol = index ? "SPX" : root;
+    if (std::find(script.symbols.begin(), script.symbols.end(), symbol) == script.symbols.end()) return;
     series.push_back({{root, expiry, step, window, is_monthly}, index ? kOpen : root == "SPY" ? spy_open : kQqqOpen});
   };
   for (const auto& expiry : {date, d1, d2}) {
@@ -273,7 +253,7 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
   header.provider = std::string(kDemoProvider);
   header.capabilities.poll_interval = std::chrono::seconds(w.step / md::kNanosPerSecond);
   header.capabilities.open_interest = true;
-  header.subscription.underlyings = script.overnight ? std::vector<std::string>{"SPX"} : std::vector<std::string>{"SPX", "SPY", "QQQ"};
+  header.subscription.underlyings = script.symbols;
   header.started = w.first;
   md::Timestamp now = w.first;
   md::RecordingSink::Options sink_options;
@@ -325,11 +305,31 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
     // The script: each segment's change spread evenly over its part of the session.
     double scripted = 0;
     double start = 0;
-    for (const auto& [until, change] : script.drift) {
+    double cumulative = 0;
+    for (const auto& [until, move] : script.drift) {
+      const double change = move - cumulative;
       scripted += change * std::clamp((progress - start) / (until - start), 0.0, 1.0);
       start = until;
+      cumulative = move;
     }
     log_level = std::log(kOpen) + scripted + deviation;
+    double event_iv = 0;
+    for (const auto& event : script.events) {
+      if (event.type == "gap") { log_level += event.move; continue; }
+      const auto at = scenario_time(event.at, date, script.overnight);
+      if (now < at) continue;
+      if (event.type == "crush") event_iv += event.iv;
+      if (event.type == "spike") {
+        // A fast five-minute move; its IV jump is repriced across every expiry.
+        const double ramp = std::clamp(static_cast<double>(now - at) / (5 * md::kNanosPerMinute), 0.0, 1.0);
+        log_level += event.move * ramp;
+        event_iv += event.iv;
+      }
+      if (event.type == "pin") {
+        const double pull = std::clamp(static_cast<double>(now - at) / static_cast<double>(w.close - at), 0.0, 1.0);
+        log_level += (std::log(event.strike) - log_level) * pull;
+      }
+    }
     const double level = std::exp(log_level);
     if (!after_close) close_level = level;
     const double ratio = level / kOpen;
@@ -337,8 +337,9 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
     const double qqq = kQqqOpen * std::exp(kQqqBeta * (log_level - std::log(kOpen)) + idio);
     if (!script.overnight) {
       // The index prints until the close; SPY and QQQ trade on after it.
-      if (!after_close) sink.publish(md::UnderlyingQuote{"SPX", now, 0, 0, cents(level)});
+      if (!after_close && chains.contains("SPX")) sink.publish(md::UnderlyingQuote{"SPX", now, 0, 0, cents(level)});
       for (const auto& [symbol, price] : {std::pair<const char*, double>{"SPY", spy}, {"QQQ", qqq}}) {
+        if (!chains.contains(symbol)) continue;
         const double bid = std::floor(price * 100) / 100;
         sink.publish(md::UnderlyingQuote{symbol, now, bid, cents(bid + 0.01), cents(price)});
       }
@@ -355,7 +356,9 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
         if (now >= listed.expiry) continue;
         const double years = md::years_between(now, listed.expiry);
         const double forward = price * std::exp((kRate - kDividend) * years);
-        const double atm = atm_vol(years * 365, moved, script.spot_vol, noise) + script.iv_shift + extra;
+        const double base_atm = atm_vol(years * 365, moved, script.spot_vol, noise) + script.iv_shift + extra;
+        // Short maturities react most; the far end retains 25% of an event's shock.
+        const double atm = std::clamp(base_atm + event_iv * (0.25 + 0.75 * std::exp(-years * 365 / 7)), 0.02, 2.0);
         const double mid = pricing::black_price(c.type, forward, c.strike, years, smile(atm, forward, c.strike, years),
                                                 std::exp(-kRate * years));
         const auto q = quote(!index, mid);

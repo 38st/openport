@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <deque>
 #include <map>
 #include <memory>
@@ -102,6 +103,7 @@ class Engine final : public MetricsSource {
   struct Options {
     std::chrono::milliseconds analytics_interval{1000};
     bool paper_enabled = true;
+    bool replay = false;  ///< Publish the replay market clock and keep halt state isolated.
     std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;
@@ -136,6 +138,9 @@ class Engine final : public MetricsSource {
   /// Returns after paper journal initialization; failures are reported in status.
   void start();
   void stop();
+  /// Flush already-published events through analytics and account publication.
+  /// The provider waits interruptibly, so shutdown and startup failure cannot deadlock.
+  [[nodiscard]] std::future<void> synchronize();
   /// Replaces dividends for day rollovers and American analytics (Options::dividends
   /// at first), as a fetcher learns of new ones. Thread-safe.
   void set_dividends(std::vector<trading::Dividend> dividends);
@@ -196,6 +201,8 @@ class Engine final : public MetricsSource {
   EngineStatus status_;
   std::map<std::string, std::shared_ptr<const TradingView>, std::less<>> trading_views_;
 
+  std::mutex sync_mutex_;
+  std::vector<std::promise<void>> synchronizations_;
   std::mutex command_mutex_;
   std::deque<PendingCommand> commands_;
   std::uint64_t next_command_ = 1;

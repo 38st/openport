@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **597 C++ and 372 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **606 C++ and 378 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -36,10 +36,11 @@ pass (over 23 passes) and the Cboe comparison on live data during the session, a
 2026-09-24.
 
 No market open, or no data? The **demo market** plays simulated trading days you can
-trade (a reversal, a trend, a chop, a selloff and an overnight session in SPX, SPY and
-QQQ options), with generated prices labelled as simulated on every page:
+trade: fourteen scenarios in SPX, SPY and QQQ options, from a reversal or a selloff to
+an afternoon waterfall or a pin into the close, each run on a fresh or repeatable seed,
+with generated prices labelled as simulated on every page:
 
-![The demo market: its five simulated days, then SPX and QQQ trading one of them at 120 times real time](docs/screenshots/demo-market.gif)
+![The demo market: five of its simulated days, then SPX and QQQ trading one of them at 120 times real time](docs/screenshots/demo-market.gif)
 
 ## What you get
 
@@ -68,7 +69,7 @@ QQQ options), with generated prices labelled as simulated on every page:
   strikes, armed triggers and the selected expiry's expected move.
 - **Orders**: day and GTC limits, market orders, orders that wait for a price level,
   and brackets whose stop-loss and take-profit cancel each other. GTC orders wait
-  outside the regular session and last until the contract’s last trade or auto-close.
+  outside the regular session and last until the contract's last trade or auto-close.
   Working orders change in place: size, limit or trigger level. Entry notes and tags
   follow the trades into the Journal.
 - **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
@@ -96,12 +97,14 @@ QQQ options), with generated prices labelled as simulated on every page:
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market.
 - **Replay**: record every session and trade any recorded day again beside the live
-  feed, in its own practice account, at 1× to 300× or as fast as possible, with pause
-  and skip.
+  feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
+  at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
+  Finished runs open read-only in Journal and Dashboard.
 - **Demo market**: when markets are closed or the feed has stalled, the terminal offers
-  simulated days in SPX, SPY and QQQ options to trade instead (a reversal, a trend, a
-  chop, a selloff and an overnight session), generated on your machine and labelled as
-  simulated prices everywhere they show.
+  fourteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
+  gaps, volatility changes and overnight sessions. Each run chooses a fresh seed, or
+  repeats one you supply. Add your own JSON files with `--scenario-dir`; generated
+  prices stay labelled simulated. [Scenario format](docs/scenarios.md).
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
   the terminal and as browser notifications with an optional chime while it is open;
   assignments, exercises at expiry and dividends are always announced.
@@ -205,8 +208,9 @@ cmake --build build -j
 ```
 
 To install it, `cmake --install build --component openport --prefix ~/.local` puts
-`openportd` in `bin/` and the terminal in `share/openport/web`, where it finds it on its
-own. A release archive has the same layout: unpack it and run `bin/openportd` (Linux
+`openportd` in `bin/` and the terminal in `share/openport/web`, where it finds it on
+its own. The scenario library is compiled into the binary and needs no installed
+files. A release archive has the same layout: unpack it and run `bin/openportd` (Linux
 needs OpenSSL 3, zlib and zstd; the macOS archive, for Apple silicon, needs nothing
 installed). `openportd --version` prints the version. The terminal opens with a short
 welcome the first time; the footer's welcome link shows it again.
@@ -245,6 +249,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |
+| `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
 | `--dividends FILE\|massive` | Known cash dividends for held shares and American analytics: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
@@ -359,7 +364,8 @@ these routes, so anything it does can be scripted:
 | `PUT /api/risk/limits`, `POST /api/risk/kill` | Change the risk limits; trip or reset the kill switch |
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one; every route above takes `?account=ID` for one other than the main account |
-| `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings and the demo days; start one (`{file}`, or `{demo: true}` or a day's id), control or stop it. `/api/replay/X` is route `/api/X` on the replay |
+| `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`; control or stop. `/api/replay/X` mirrors `/api/X` |
+| `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, portfolio, trades or fills; delete its journal |
 
 This calendar buys the later put and sells the nearer one at a net debit of at most
 6.60:
@@ -439,6 +445,8 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] Expiry hours as the exchanges run them: ETF options to 16:15, auto-close five
       minutes before each contract's last trade, with the chain staying on 0DTE until then
 - [x] Demo market: a simulated day to trade when nothing else does
+- [x] Scenario library: simulated drills with fresh or repeatable seeds, start times and
+      replay journals that are kept
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [x] Partial, random early assignment, and dividend risk on short calls
 - [x] Market-wide circuit breakers, with a banner and kept across restarts, and Cboe's

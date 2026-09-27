@@ -1,0 +1,33 @@
+{
+  "id": "midday-v",
+  "title": "Midday V reversal",
+  "description": "A simulated morning decline reverses around midday.",
+  "goal": "Reassess directional exposure at the midday turn.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 81735,
+  "generator": 1,
+  "drift": [
+    [
+      0.38461538461538464,
+      -0.012
+    ],
+    [
+      0.55,
+      -0.003
+    ],
+    [
+      1,
+      0.008
+    ]
+  ],
+  "volatility": 0.13,
+  "iv_shift": 0.01,
+  "spot_vol": -2,
+  "events": []
+}

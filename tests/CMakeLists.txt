@@ -24,6 +24,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     md/recording_test.cpp
     providers/replay_test.cpp
     providers/demo_test.cpp
+    providers/scenario_test.cpp
     server/recording_test.cpp
     net/http_test.cpp
     providers/cboe_test.cpp

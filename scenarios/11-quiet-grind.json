@@ -1,0 +1,33 @@
+{
+  "id": "quiet-grind",
+  "title": "Low-vol grind up",
+  "description": "A simulated quiet climb tests patience and entry timing.",
+  "goal": "Avoid overtrading a slow upward session.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 81734,
+  "generator": 1,
+  "drift": [
+    [
+      0.3,
+      0.002
+    ],
+    [
+      0.6,
+      0.004
+    ],
+    [
+      1,
+      0.007
+    ]
+  ],
+  "volatility": 0.045,
+  "iv_shift": -0.025,
+  "spot_vol": -2,
+  "events": []
+}

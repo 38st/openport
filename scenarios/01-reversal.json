@@ -1,0 +1,40 @@
+{
+  "id": "reversal",
+  "title": "Slide and rebound",
+  "description": "SPX slides about 1% into late morning, then rallies into the close.",
+  "goal": "Practise risk limits through this simulated session.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 20260916,
+  "generator": 1,
+  "drift": [
+    [
+      0.1,
+      -0.003
+    ],
+    [
+      0.3,
+      -0.012
+    ],
+    [
+      0.5,
+      -0.012
+    ],
+    [
+      0.8,
+      0
+    ],
+    [
+      1,
+      0.002
+    ]
+  ],
+  "volatility": 0.13,
+  "iv_shift": 0,
+  "spot_vol": -2
+}

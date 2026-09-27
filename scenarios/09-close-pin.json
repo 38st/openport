@@ -1,0 +1,35 @@
+{
+  "id": "close-pin",
+  "title": "Round strike pin",
+  "description": "SPX is pulled toward 6000 into a simulated same-day expiry.",
+  "goal": "Manage gamma and expiry risk as spot approaches the strike.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 81732,
+  "generator": 1,
+  "drift": [
+    [
+      0.4,
+      0.004
+    ],
+    [
+      1,
+      0.005
+    ]
+  ],
+  "volatility": 0.1,
+  "iv_shift": 0,
+  "spot_vol": -2,
+  "events": [
+    {
+      "type": "pin",
+      "at": "14:30",
+      "strike": 6000
+    }
+  ]
+}

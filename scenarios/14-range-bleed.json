@@ -1,0 +1,68 @@
+{
+  "id": "range-bleed",
+  "title": "Range and IV bleed",
+  "description": "A simulated narrow range holds as implied volatility steadily fades.",
+  "goal": "Balance premium decay against a break out of the range.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 81737,
+  "generator": 1,
+  "drift": [
+    [
+      0.25,
+      0.002
+    ],
+    [
+      0.5,
+      -0.002
+    ],
+    [
+      0.75,
+      0.002
+    ],
+    [
+      1,
+      0
+    ]
+  ],
+  "volatility": 0.06,
+  "iv_shift": 0.015,
+  "spot_vol": -2,
+  "events": [
+    {
+      "type": "crush",
+      "at": "10:00",
+      "iv": -0.004
+    },
+    {
+      "type": "crush",
+      "at": "11:00",
+      "iv": -0.004
+    },
+    {
+      "type": "crush",
+      "at": "12:00",
+      "iv": -0.004
+    },
+    {
+      "type": "crush",
+      "at": "13:00",
+      "iv": -0.004
+    },
+    {
+      "type": "crush",
+      "at": "14:00",
+      "iv": -0.004
+    },
+    {
+      "type": "crush",
+      "at": "15:00",
+      "iv": -0.004
+    }
+  ]
+}

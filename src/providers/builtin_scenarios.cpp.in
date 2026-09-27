@@ -1,0 +1,22 @@
+#include "openport/providers/scenario.hpp"
+
+#include <algorithm>
+#include <stdexcept>
+
+namespace openport::providers {
+
+const std::vector<Scenario>& builtin_scenarios() {
+  static const auto scenarios = [] {
+    std::vector<Scenario> out;
+    const auto append = [&](const char* file, std::string_view text) {
+      auto scenario = parse_scenario(text, file);
+      if (std::any_of(out.begin(), out.end(), [&](const auto& prior) { return prior.id == scenario.id; }))
+        throw std::invalid_argument(std::string(file) + ": id: duplicate built-in id");
+      out.push_back(std::move(scenario));
+    };
+@OPENPORT_EMBEDDED_SCENARIOS@    return out;
+  }();
+  return scenarios;
+}
+
+}  // namespace openport::providers

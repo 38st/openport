@@ -1,10 +1,12 @@
 #include "support/recording.hpp"
+#include "support/scripted_market.hpp"
 
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <future>
+#include <fstream>
 #include <nlohmann/json.hpp>
 #include <unistd.h>
 
@@ -201,9 +203,8 @@ TEST(ReplayHost, ListsStartsTradesControlsAndStopsARecordedSession) {
   const json order{{"client_order_id", "replayed"}, {"symbol", symbol.osi_symbol()}, {"side", "buy"},
                    {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}};
   const auto bought = call(host, "POST", "/api/replay/orders", order.dump());
-  ASSERT_EQ(bought.status, 201) << bought.body;
-  EXPECT_EQ(json::parse(bought.body)["order"]["status"], "filled");
-  EXPECT_EQ(json::parse(call(host, "GET", "/api/replay/portfolio").body)["positions"].size(), 1);
+  ASSERT_EQ(bought.status, 403) << bought.body;
+  EXPECT_EQ(json::parse(bought.body)["error"]["code"], "REPLAY_READ_ONLY");
 
   const auto controlled = json::parse(call(host, "PUT", "/api/replay", R"({"speed": 60, "paused": true})").body);
   EXPECT_EQ(controlled["replay"]["speed"], 60);
@@ -256,7 +257,7 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   EXPECT_EQ(listing["demo"]["provider"], "demo");
   EXPECT_EQ(listing["demo"]["symbols"], json::array({"SPX", "SPY", "QQQ"}));
   EXPECT_EQ(listing["demo"]["id"], "reversal");
-  ASSERT_EQ(listing["demos"].size(), 5);
+  ASSERT_EQ(listing["demos"].size(), 14);
   EXPECT_EQ(listing["demos"][4]["id"], "overnight");
   EXPECT_EQ(listing["demos"][4]["symbols"], json::array({"SPX"}));
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": "sideways"})").status, 400);
@@ -265,7 +266,7 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": 1})").status, 400);
 
   // Generated on start; at 1x the opening snapshot plays at once and the next waits 15 seconds.
-  const auto started = call(host, "POST", "/api/replay", R"({"demo": true, "plan": "intraday-25k"})", 60s);
+  const auto started = call(host, "POST", "/api/replay", R"({"demo": true, "seed": "scenario", "plan": "intraday-25k"})", 60s);
   ASSERT_EQ(started.status, 201) << started.body;
   const auto replay = json::parse(started.body)["replay"];
   EXPECT_EQ(replay["demo"], true);
@@ -294,7 +295,7 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   host.stop();
   // Started again, the day is already generated.
   const auto again = std::chrono::steady_clock::now();
-  ASSERT_EQ(call(host, "POST", "/api/replay", R"({"demo": true})", 60s).status, 201);
+  ASSERT_EQ(call(host, "POST", "/api/replay", R"({"demo": true, "seed": "scenario"})", 60s).status, 201);
   EXPECT_LT(std::chrono::steady_clock::now() - again, 500ms);
   host.stop();
 
@@ -410,4 +411,274 @@ TEST(RecordingPerformance, SyntheticChain) {
   EXPECT_EQ(recovered, stats.events);
   EXPECT_TRUE(reader.diagnostic().empty());
 }
+
+void drill_recording(const std::filesystem::path& path) {
+  auto header = test::recording_header();
+  const md::Date date{2026, 9, 16};
+  header.started = md::new_york_to_utc(date, 9, 30);
+  md::Timestamp now = header.started;
+  md::RecordingSink::Options options;
+  options.clock = [&] { return now; };
+  test::DiscardEvents discard;
+  md::RecordingSink sink(path, header, discard, options);
+  std::vector<md::OptionContract> contracts;
+  for (int i = 0; i < 7; ++i) {
+    for (const auto type : {pricing::OptionType::Call, pricing::OptionType::Put}) {
+      auto contract = *md::parse_osi("SPXW261022C06000000");
+      contract.strike = 5925 + i * 25;
+      contract.type = type;
+      sink.publish(md::ContractDefinition{static_cast<md::InstrumentId>(contracts.size()), contract});
+      contracts.push_back(contract);
+    }
+  }
+  for (int minute = 0; minute <= 390; minute += 5) {
+    now = header.started + minute * md::kNanosPerMinute;
+    const double spot = 6000 + minute * .01;
+    sink.publish(md::UnderlyingQuote{"SPX", now, 0, 0, spot});
+    for (std::size_t i = 0; i < contracts.size(); ++i) {
+      const auto& c = contracts[i];
+      const auto years = md::years_between(now, c.expiry_time());
+      const auto mid = pricing::black_price(c.type, spot * std::exp(.027 * years), c.strike, years, .15, std::exp(-.04 * years));
+      const auto bid = std::floor(mid * 10) / 10;
+      sink.publish(md::OptionQuote{static_cast<md::InstrumentId>(i), now, bid, bid + .2, 20, 20});
+    }
+    sink.publish(md::ProviderStatus{now, md::FeedState::Live, "fixture", "SPX"});
+  }
+  sink.close();
+}
+
+TEST(ReplayHost, DrillsReachTheEngineBeforeTradingAndKeepTheirJournalsAcrossRestart) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  std::string id;
+  json expected;
+  {
+    server::ReplayHost host({file.directory, base, false});
+    for (const auto* time : {"9:30", "24:00", "15:60", "garbage", "08:00", "17:00", ""}) {
+      const json body{{"file", "session.oprec"}, {"start_at", time}};
+      EXPECT_EQ(call(host, "POST", "/api/replay", body.dump()).status, 400) << time;
+    }
+    const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","start_at":"15:00","paused":true,"speed":60,"plan":"intraday-25k"})");
+    ASSERT_EQ(started.status, 201) << started.body;
+    const auto state = json::parse(started.body)["replay"];
+    id = state["id"];
+    EXPECT_TRUE(state["durable"]);
+    EXPECT_NE(id.find("2026-09-16-recording-15-00"), std::string::npos);
+    const json order{{"client_order_id", "drill"}, {"symbol", md::parse_osi("SPXW261022C06000000")->osi_symbol()},
+                     {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}};
+    const auto early = call(host, "POST", "/api/replay/orders", order.dump());
+    ASSERT_EQ(early.status, 409) << early.body;
+    EXPECT_EQ(json::parse(early.body)["error"]["code"], "REPLAY_FAST_FORWARD");
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(call(host, "GET", "/api/replay").body)["replay"]["fast_forwarding"].get<bool>(); }));
+    const auto replay = json::parse(call(host, "GET", "/api/replay").body)["replay"];
+    EXPECT_TRUE(replay["paused"]);
+    EXPECT_EQ(replay["time"], "2026-09-16T19:00:00.000Z");
+    EXPECT_EQ(replay["speed"], 60);
+    const auto account = json::parse(call(host, "GET", "/api/replay/account").body);
+    EXPECT_EQ(account["time"], "2026-09-16T19:00:00.000Z");
+    const auto fills = json::parse(call(host, "GET", "/api/replay/fills").body);
+    EXPECT_TRUE(fills["fills"].empty());
+    const auto chain = json::parse(call(host, "GET", "/api/replay/underlyings/SPX/summary").body);
+    EXPECT_EQ(chain["as_of"], "2026-09-16T19:00:00.000Z");
+    const auto candles = json::parse(call(host, "GET", "/api/replay/underlyings/SPX/candles?interval=1m&limit=500").body);
+    EXPECT_GT(candles["bars"].size(), 50U);
+    const auto bought = call(host, "POST", "/api/replay/orders", order.dump());
+    ASSERT_EQ(bought.status, 201) << bought.body;
+    EXPECT_EQ(json::parse(bought.body)["order"]["status"], "filled");
+    expected = json::parse(call(host, "GET", "/api/replay/fills").body);
+    EXPECT_TRUE(json::parse(call(host, "GET", "/api/replay").body)["history"].empty());
+    host.stop();
+    const auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];
+    ASSERT_EQ(history.size(), 1U) << history;
+    EXPECT_FALSE(history[0].contains("error")) << history;
+    EXPECT_EQ(history[0]["result"], "open");
+    EXPECT_EQ(history[0]["plan"], "Intraday 25K");
+    EXPECT_TRUE(history[0]["pnl"].is_string());
+    EXPECT_FALSE(std::filesystem::exists(base.paper_journal));
+    EXPECT_EQ(call(host, "POST", "/api/replay/history/" + id + "/orders", order.dump()).status, 403);
+  }
+  server::ReplayHost restarted({file.directory, base, false});
+  const auto history = json::parse(call(restarted, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(history.size(), 1U);
+  EXPECT_EQ(history[0]["id"], id);
+  EXPECT_EQ(json::parse(call(restarted, "GET", "/api/replay/history/" + id + "/fills").body), expected);
+  EXPECT_EQ(call(restarted, "GET", "/api/replay/history/" + id + "/account").status, 200);
+  EXPECT_EQ(call(restarted, "GET", "/api/replay/history/" + id + "/trades").status, 200);
+  EXPECT_EQ(call(restarted, "DELETE", "/api/replay/history/" + id).status, 200);
+  EXPECT_TRUE(json::parse(call(restarted, "GET", "/api/replay").body)["history"].empty());
+  EXPECT_EQ(call(restarted, "POST", "/api/replay", R"({"file":"session.oprec","paused":true})").status, 201);
+  restarted.stop();
+  const auto practice = json::parse(call(restarted, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(practice.size(), 1U);
+  EXPECT_EQ(practice[0]["plan"], "Practice");
+  EXPECT_FALSE(practice[0].contains("error")) << practice;
+}
+
+TEST(ReplayHost, PaperDisabledAndReadOnlyNeverCreateReplayJournals) {
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  base.paper_enabled = false;
+  {
+    server::ReplayHost host({file.directory, base, false});
+    EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file":"session.oprec","paused":true})").status, 201);
+    EXPECT_FALSE(std::filesystem::exists(file.directory / "replays"));
+  }
+  base.paper_enabled = true;
+  base.write_mode = "disabled";
+  server::ReplayHost host({file.directory, base, false});
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file":"session.oprec"})").status, 403);
+  EXPECT_FALSE(std::filesystem::exists(file.directory / "replays"));
+}
+
+
+TEST(ReplayHost, FreshAndExplicitSeedsAndScenarioDrillsUseABoundedCache) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  server::Engine::Options base;
+  server::ReplayHost host({file.directory, base});
+  std::vector<std::string> fresh;
+  for (int i = 0; i < 2; ++i) {
+    const auto started = call(host, "POST", "/api/replay", R"({"scenario":"overnight","paused":true})", 60s);
+    ASSERT_EQ(started.status, 201) << started.body;
+    const auto state = json::parse(started.body)["replay"];
+    fresh.push_back(state["seed"]);
+    EXPECT_EQ(state["generator"], 1);
+    EXPECT_EQ(state["scenario"], "overnight");
+  }
+  EXPECT_NE(fresh[0], fresh[1]);
+  for (const auto* seed : {"0", "18446744073709551615", "scenario"}) {
+    const json body{{"scenario", "overnight"}, {"seed", seed}, {"paused", true}};
+    const auto started = call(host, "POST", "/api/replay", body.dump(), 60s);
+    ASSERT_EQ(started.status, 201) << started.body;
+    EXPECT_EQ(json::parse(started.body)["replay"]["seed"], std::string(seed) == "scenario" ? "2026091600" : seed);
+  }
+  const auto directories = demo_directories();
+  ASSERT_EQ(directories.size(), 1U);
+  std::size_t count = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(directories.front()))
+    if (entry.path().extension() == ".oprec") ++count;
+  EXPECT_LE(count, 4U);
+  for (const auto& seed : {json(-1), json(1.5), json("18446744073709551616"), json("fresh")})
+    EXPECT_EQ(call(host, "POST", "/api/replay", json{{"scenario", "overnight"}, {"seed", seed}}.dump()).status, 400);
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"scenario":"overnight","start_at":"19:00"})").status, 400);
+  const auto started = call(host, "POST", "/api/replay", R"({"scenario":"overnight","seed":"scenario","start_at":"21:00","paused":true})", 60s);
+  ASSERT_EQ(started.status, 201) << started.body;
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  EXPECT_EQ(json::parse(host.tick())["replay"]["time"], "2026-09-16T01:00:00.000Z");
+  EXPECT_TRUE(json::parse(host.tick())["replay"]["paused"]);
+}
+
+
+TEST(ReplayHost, SavedRunSummariesOutliveTheFullAccountCache) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  const auto replays = file.directory / "replays";
+  std::filesystem::create_directory(replays);
+  test::ScriptedMarket market;
+  trading::SessionConfig config;
+  config.rules.plan = "Practice";
+  for (int i = 0; i < 20; ++i) {
+    const auto path = replays / ("run-" + std::to_string(i) + ".jsonl");
+    const trading::TradingSession session(config, market.time, trading::FileJournal::create(path.string()));
+  }
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  server::ReplayHost host({{}, options, false});
+  const auto list = [&] { return json::parse(call(host, "GET", "/api/replay").body)["history"]; };
+  const auto first = list();
+  ASSERT_EQ(first.size(), 20U);
+  for (const auto& item : first) {
+    EXPECT_FALSE(item.contains("error")) << item;
+    EXPECT_EQ(item["result"], "open");
+    EXPECT_EQ(item["pnl"], "0.00");
+    EXPECT_TRUE(item["valuation_complete"]);
+    EXPECT_EQ(item["plan"], "Practice");
+    EXPECT_EQ(item["time"], md::format_timestamp(market.time));
+  }
+  EXPECT_EQ(host.history_recoveries(), 20U);
+  EXPECT_EQ(list(), first);
+  EXPECT_EQ(host.history_recoveries(), 20U);
+
+  // Opening more full archives than fit in their cache must not evict summaries.
+  for (int i = 0; i < 20; ++i)
+    ASSERT_EQ(call(host, "GET", "/api/replay/history/run-" + std::to_string(i) + "/account").status, 200);
+  EXPECT_EQ(host.history_recoveries(), 40U);
+  EXPECT_EQ(list(), first);
+  EXPECT_EQ(host.history_recoveries(), 40U);
+
+  const auto changed = replays / "run-0.jsonl";
+  const auto modified = std::filesystem::last_write_time(changed) + 1s;
+  std::filesystem::last_write_time(changed, modified);
+  EXPECT_EQ(list(), first);
+  EXPECT_EQ(host.history_recoveries(), 41U);
+  EXPECT_EQ(list(), first);
+  EXPECT_EQ(host.history_recoveries(), 41U);
+
+  std::string pnl;
+  {
+    auto session = trading::TradingSession::recover(trading::FileJournal::read(changed.string()),
+                                                    trading::FileJournal::resume(changed.string()));
+    market.next();
+    market.seed(session);
+    ASSERT_TRUE(session.submit(market.market("buy"), market.time).decision.ok());
+    pnl = (session.snapshot()->equity - session.config().initial_cash).str();
+  }
+  // Preserve mtime to prove size changes alone invalidate a cached summary.
+  std::filesystem::last_write_time(changed, modified);
+  const auto updated = list();
+  EXPECT_EQ(host.history_recoveries(), 42U);
+  EXPECT_NE(updated, first);
+  for (const auto& item : updated) if (item["id"] == "run-0") {
+    EXPECT_EQ(item["pnl"], pnl);
+    EXPECT_NE(item["pnl"], "0.00");
+    EXPECT_EQ(item["time"], md::format_timestamp(market.time));
+  }
+  EXPECT_EQ(list(), updated);
+  EXPECT_EQ(host.history_recoveries(), 42U);
+  EXPECT_EQ(call(host, "DELETE", "/api/replay/history/run-0").status, 200);
+  EXPECT_EQ(list().size(), 19U);
+  EXPECT_EQ(host.history_recoveries(), 42U);
+}
+
+TEST(ReplayHost, OlderJournalRecordsNeedNoReplayFieldsAndStillCompactAndRepair) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  const auto replays = file.directory / "replays";
+  std::filesystem::create_directory(replays);
+  const auto journal = replays / "older.jsonl";
+  std::string expected;
+  {
+    test::ScriptedMarket market;
+    trading::TradingSession session({}, market.time, trading::FileJournal::create(file.path.string()));
+    market.seed(session);
+    ASSERT_TRUE(session.submit(market.market("buy"), market.time).decision.ok());
+    expected = session.snapshot_json();
+  }
+  // Expand to the whole-state records older builds wrote; no replay sidecar.
+  trading::TradingSession::expand(trading::FileJournal::read(file.path.string()), *trading::FileJournal::create(journal.string()));
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  server::ReplayHost host({{}, options, false});
+  const auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(history.size(), 1U);
+  EXPECT_FALSE(history[0].contains("error")) << history;
+  EXPECT_EQ(history[0]["result"], "open");
+  EXPECT_EQ(call(host, "GET", "/api/replay/history/older/account").status, 200);
+  const auto compacted = server::compact_paper_journals(options.paper_journal, {});
+  ASSERT_EQ(compacted.size(), 1U);
+  EXPECT_TRUE(compacted[0].error.empty());
+  EXPECT_FALSE(compacted[0].backup.empty());
+  EXPECT_EQ(trading::TradingSession::recover(trading::FileJournal::read(journal.string())).snapshot_json(), expected);
+  { std::ofstream tail(journal, std::ios::app); tail << "{torn"; }
+  const auto repaired = trading::FileJournal::repair(journal.string());
+  EXPECT_GT(repaired.bytes_cut, 0U);
+  EXPECT_EQ(trading::TradingSession::recover(trading::FileJournal::read(journal.string())).snapshot_json(), expected);
+  EXPECT_EQ(call(host, "GET", "/api/replay/history/older/fills").status, 200);
+}
+
 }  // namespace

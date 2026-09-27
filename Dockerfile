@@ -28,6 +28,7 @@ COPY cmake cmake
 COPY include include
 COPY src src
 COPY apps apps
+COPY scenarios scenarios
 COPY tests tests
 COPY bench bench
 RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \

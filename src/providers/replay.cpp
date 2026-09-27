@@ -62,6 +62,9 @@ ReplayProvider::ReplayProvider(Options options)
   if (!valid_speed(options_.speed))
     throw std::invalid_argument("replay: speed must be max, 1, 2, 5, 10, 30, 60, 120 or 300");
   if (!options_.clock) options_.clock = std::make_shared<SystemReplayClock>();
+  seeking_ = options_.start_at > 0 || options_.paused;
+  if (options_.start_at == 0 && options_.paused) options_.start_at = reader_.header().started;
+  set_paused(options_.paused);
 }
 
 void ReplayProvider::wake() {
@@ -151,6 +154,15 @@ void ReplayProvider::stop() {
   }
 }
 
+bool ReplayProvider::synchronize() {
+  if (!options_.synchronize) return !stopping_.load();
+  auto done = options_.synchronize();
+  while (!stopping_.load()) {
+    if (done.wait_for(std::chrono::milliseconds(10)) == std::future_status::ready) { done.get(); return true; }
+  }
+  return false;
+}
+
 void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
   const std::set<std::string> symbols(subscription.underlyings.begin(),
                                       subscription.underlyings.end());
@@ -161,10 +173,24 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
       std::optional<md::Timestamp> previous;
       std::uint64_t remainder = 0;
       bool any = false;
+      md::Timestamp synchronized_at = 0;
       while (!stopping_.load()) {
         auto record = reader_.next();
         if (!record) break;
-        if (previous)
+        if (seeking_.load() && previous && record->received > *previous) {
+          // Finish the entire receipt group, then wait for the engine. Periodic
+          // barriers keep inferred candles and the progress tick moving too.
+          if (*previous >= options_.start_at || *previous - synchronized_at >= md::kNanosPerMinute) {
+            if (!synchronize()) break;
+            synchronized_at = *previous;
+          }
+          if (*previous >= options_.start_at) {
+            seeking_ = false;
+            if (paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
+          }
+          deadline = options_.clock->now();
+        }
+        if (previous && !seeking_.load())
           deadline = advance(deadline, *previous, record->received, speed_.load(), remainder);
         previous = record->received;
         const bool include = std::visit(
@@ -188,13 +214,17 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
             },
             record->event);
         if (!include) continue;
-        if (!pace(deadline)) break;
+        if (!seeking_.load() && !pace(deadline)) break;
         if (stopping_.load()) break;
         time_ = record->received;
         sink.publish(std::move(record->event));
         any = true;
       }
       if (stopping_.load()) break;
+      if (seeking_.load()) {
+        if (!synchronize()) break;
+        seeking_ = false;
+      }
       if (!reader_.diagnostic().empty()) {
         sink.publish(md::ProviderStatus{md::now(), md::FeedState::Stopped,
                                         name_ + ": " + reader_.diagnostic(), ""});
@@ -212,6 +242,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
     sink.publish(
         md::ProviderStatus{md::now(), md::FeedState::Error, name_ + ": " + error.what(), ""});
   }
+  if (!stopping_.load()) (void)synchronize();
   finished_ = true;
 }
 

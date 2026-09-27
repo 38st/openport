@@ -27,6 +27,7 @@ const replay: ReplayState = { file: "cboe-2026-09-22T133000Z.oprec", provider: "
 const recordings: ReplayListing = { directory: "/home/trader/.openport/recordings", replay: null, recordings: [
   { file: replay.file, bytes: 48_300_000, provider: "cboe", symbols: ["SPX", "SPY"], started: replay.started, delay_seconds: 900 },
   { file: "broken.oprec", bytes: 10, error: "recording truncated" },
+  { file: "generated.oprec", bytes: 100, provider: "demo", simulated: true },
 ] }
 beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "open")))
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks(); vi.unstubAllGlobals(); dataSource.set("live"); activeAccount.set(MAIN_ACCOUNT) })
@@ -76,6 +77,8 @@ describe("the replay page", () => {
     expect(html).toContain(replay.file)
     expect(html).toContain("SPX, SPY")
     expect(html).toContain("48.3 MB")
+    expect(html).toContain("demo · simulated")
+    expect(html).toContain("cboe · recording")
     expect(html).toContain("Tue, Sep 22, 09:30:00 ET")
     expect(html).toContain("recording truncated")
     expect(html).toContain(`aria-label="Replay ${replay.file}"`)
@@ -101,9 +104,9 @@ describe("the replay page", () => {
   })
 })
 
-const reversal = { id: "reversal", title: "Slide and rebound", description: "SPX slides about 1% into late morning, then rallies into the close.",
+const reversal = { goal: "Stay above the floor", session: "regular" as const, seed: "81723", id: "reversal", title: "Slide and rebound", description: "SPX slides about 1% into late morning, then rallies into the close.",
   provider: "demo", symbols: ["SPX", "SPY", "QQQ"], started: "2026-09-16T13:30:00.000Z" }
-const overnight = { ...reversal, id: "overnight", title: "Overnight session", description: "SPX options in Cboe's global trading hours.",
+const overnight = { ...reversal, session: "overnight" as const, id: "overnight", title: "Overnight session", description: "SPX options in Cboe's global trading hours.",
   symbols: ["SPX"], started: "2026-09-16T00:15:00.000Z" }
 const demoListing: ReplayListing = { ...recordings, recordings: [], demo: reversal, demos: [reversal, overnight] }
 const demoReplay: ReplayState = { ...replay, file: "Demo market: Slide and rebound", provider: "demo", demo: true, delay_seconds: 0 }
@@ -114,6 +117,12 @@ describe("the demo market", () => {
   it("is offered on the replay page and plays as a simulated day", () => {
     const html = render(<ReplayView />, demoListing)
     expect(html).toContain("Demo market")
+    expect(html).toContain("Stay above the floor")
+    expect(html).toContain("simulated · overnight")
+    expect(html).toContain('aria-label="Replay plan"')
+    expect(html).toContain('aria-label="Start at"')
+    expect(html).toContain('aria-label="Seed mode"')
+    expect(html).toContain("Pause at start")
     expect(html).toContain("Simulated trading days in SPX, SPY and QQQ options")
     expect(html).toContain("not market data")
     expect(html).toContain("SPX slides about 1% into late morning")
@@ -132,7 +141,7 @@ describe("the demo market", () => {
     const html = render(<ReplayBanner />)
     expect(html).toContain(">Demo</span>")
     expect(html).toContain("Simulated prices, not market data")
-    expect(html).not.toContain(demoReplay.file)
+    expect(html).toContain(demoReplay.file)
   })
 
   it("starts from the API with demo instead of a file", async () => {

@@ -7,6 +7,7 @@ import { writeToken } from "../lib/write-token"
 
 /** What a replay plays: a recording in the recordings directory, or the demo market. */
 export type ReplaySource = { file: string } | { demo: true | string }
+export interface ReplayStart { plan?: string; start_at?: string; paused?: boolean; seed?: string; date?: string }
 
 export class ApiError extends Error {
   constructor(
@@ -47,8 +48,10 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 
 /** On the replay every route is the replay's: /api/X becomes /api/replay/X. Replay controls stay put. */
 function routed(path: string): string {
-  if (dataSource.get() !== "replay" || path === "/api/replay" || path.startsWith("/api/replay?")) return path
-  return path.replace(/^\/api\//, "/api/replay/")
+  if (path === "/api/replay" || path.startsWith("/api/replay/")) return path
+  const source = dataSource.get()
+  if (source.startsWith("history:")) return path.replace(/^\/api\//, `/api/replay/history/${encodeURIComponent(source.slice(8))}/`)
+  return source === "replay" ? path.replace(/^\/api\//, "/api/replay/") : path
 }
 const get = <T,>(path: string, signal?: AbortSignal) => request<T>(routed(path), { signal, headers: { Accept: "application/json" } })
 function write<T>(path: string, method: "POST" | "PUT" | "DELETE", mode: WriteMode, body?: unknown) {
@@ -67,7 +70,7 @@ const underlying = (symbol: string) => `/api/underlyings/${encodeURIComponent(sy
 function scoped(path: string): string {
   const account = activeAccount.get()
   // A replay has one account of its own.
-  if (account === MAIN_ACCOUNT || dataSource.get() === "replay") return path
+  if (account === MAIN_ACCOUNT || dataSource.get() !== "live") return path
   return `${path}${path.includes("?") ? "&" : "?"}account=${encodeURIComponent(account)}`
 }
 
@@ -106,7 +109,9 @@ export const api = {
   surface: (symbol: string, expiries: number, window: number, signal?: AbortSignal) =>
     get<Surface>(`${underlying(symbol)}/surface?expiries=${expiries}&window=${window}`, signal),
   replay: (signal?: AbortSignal) => get<ReplayListing>("/api/replay", signal),
-  startReplay: (source: ReplaySource, speed: number, mode: WriteMode) => write<{ replay: ReplayState }>("/api/replay", "POST", mode, { ...source, speed }),
+  startReplay: (source: ReplaySource, speed: number, mode: WriteMode, options: ReplayStart = {}) =>
+    write<{ replay: ReplayState }>("/api/replay", "POST", mode, { ...source, speed, ...options }),
+  deleteReplay: (id: string, mode: WriteMode) => write<{ deleted: string }>(`/api/replay/history/${encodeURIComponent(id)}`, "DELETE", mode),
   controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean }, mode: WriteMode) =>
     write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),
   stopReplay: (mode: WriteMode) => write<{ replay: null }>("/api/replay", "DELETE", mode),

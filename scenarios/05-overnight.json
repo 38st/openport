@@ -1,0 +1,30 @@
+{
+  "id": "overnight",
+  "title": "Overnight session",
+  "description": "SPX options in Cboe's global trading hours, 8:15 pm to 9:25 am ET: limit orders only, with the index frozen at its close.",
+  "goal": "Practise risk limits through this simulated session.",
+  "symbols": [
+    "SPX"
+  ],
+  "session": "overnight",
+  "date": "2026-09-16",
+  "seed": 2026091600,
+  "generator": 1,
+  "drift": [
+    [
+      0.3,
+      -0.002
+    ],
+    [
+      0.6,
+      -0.006
+    ],
+    [
+      1,
+      -0.003
+    ]
+  ],
+  "volatility": 0.06,
+  "iv_shift": 0,
+  "spot_vol": -2
+}

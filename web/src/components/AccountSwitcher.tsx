@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query"
 import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -6,6 +7,7 @@ import type { TradingStatus } from "../api/trading-types"
 import { offeredPlans } from "../lib/payouts"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
+import { Badge } from "./ui"
 import { planFacts } from "./ResetDialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
 
@@ -14,19 +16,27 @@ import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
  * journal, rules, orders and positions. The switcher picks the one the terminal acts on.
  */
 export function AccountSwitcher() {
-  const { accounts, account, switchAccount, trading } = useLive()
+  const { accounts, account, switchAccount, trading, source, switchSource } = useLive()
+  const history = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), staleTime: 5_000 })
   const [creating, setCreating] = useState(false)
   if (!trading || !accounts.length) return null
   return (
     <div className="space-y-1">
       <label className="block text-[10px] uppercase tracking-wide text-muted" htmlFor="account-switcher">Account</label>
-      <select id="account-switcher" className="trade-input !py-1 text-xs" value={account}
-        onChange={(event) => { if (event.target.value === "+new") setCreating(true); else switchAccount(event.target.value) }}>
+      <select id="account-switcher" className="trade-input !py-1 text-xs" value={source.startsWith("history:") ? source : account}
+        onChange={(event) => {
+          const id = event.target.value
+          if (id === "+new") setCreating(true)
+          else if (id.startsWith("history:")) switchSource(id as `history:${string}`)
+          else { if (source.startsWith("history:")) switchSource("live"); switchAccount(id) }
+        }}>
         {accounts.map((a) => (
-          <option key={a.id} value={a.id}>{a.name}{a.trading.plan ? ` · ${a.trading.plan}` : ""}{a.trading.enabled ? "" : " (unavailable)"}</option>
+          <option key={a.id} value={a.id}>{source.startsWith("history:") ? "Live main account" : a.name}{source.startsWith("history:") ? "" : a.trading.plan ? ` · ${a.trading.plan}` : ""}{a.trading.enabled ? "" : " (unavailable)"}</option>
         ))}
-        <option value="+new">New account…</option>
+        {(history.data?.history ?? []).map((run) => <option key={run.id} value={`history:${run.id}`}>Replay · {run.file} · {run.demo ? "simulated" : "recording"} · {run.result}</option>)}
+        {source === "live" && <option value="+new">New account…</option>}
       </select>
+      {source !== "live" && <Badge tone="neutral">replay{source.startsWith("history:") ? " · read-only" : ""}</Badge>}
       {creating && <NewAccountDialog trading={trading} onClose={() => setCreating(false)}
         onCreated={(id) => { setCreating(false); switchAccount(id) }} />}
     </div>

@@ -78,7 +78,7 @@ export function App() {
     : view === "rules" ? <RulesView />
     : view === "payouts" ? <PayoutsView />
     : view === "engine" ? <EngineView />
-    : view === "replay" ? <ReplayView />
+    : view === "replay" ? <ReplayView onNavigate={(next) => navigate({ view: next })} />
     : !symbol ? (
       <Empty>
         <div className="text-center">

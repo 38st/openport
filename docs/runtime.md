@@ -234,53 +234,51 @@ adapter is disabled; no additional Docker packages are required.
 
 ### Replaying in the terminal
 
-A running `openportd` replays recordings beside its live feed, one at a time. The
-Replay page (or `/api/replay`) lists the files in `--record-dir` (default
-`~/.openport/recordings`), starts one at 1, 2, 5, 10, 30, 60, 120 or 300 times real
-time or as fast as possible, and pauses, resumes, changes speed or skips a gap such
-as an overnight close while it plays. Each replay has its own engine, an in-memory
-practice account and chart history, all on the replay's clock: the recorded receipt
-times, so sessions, the feed delay and paper-trading gates behave as they did that
-day (a recording of a stalled feed replays as stalled). "Trade this replay" points
-every page at it, `/api/X` becoming `/api/replay/X`, until "Back to live"; the live
-accounts keep trading meanwhile. Stopping the replay discards its account. Recording
-names are plain file names inside the directory; anything else is refused.
-Without a replay, `/api/replay/...` returns 404 `NO_REPLAY`; a recording that cannot
-be read fails to start with 422 `REPLAY_FAILED`.
+`GET /api/replay` lists recordings from `--record-dir` (default
+`~/.openport/recordings`), the scenario library (`demos`) and finished runs
+(`history`). A replay runs beside the live feed with its own engine, account and
+chart history. The terminal routes `/api/X` to `/api/replay/X` while showing it;
+“Back to live” returns to the live accounts, which keep running meanwhile.
 
-The **demo market** is a replay of a simulated day, for trying the terminal when
-nothing trades. `POST /api/replay {"demo": ID}` (`true` for the default) plays it like a
-recording under the provider name `demo`. Each day is generated once
-(`providers::write_demo_recording`, a second or two) into a directory only the server
-process uses, removed when it exits, and starting it again plays that file at once;
-`GET /api/replay`, which the terminal asks before offering the demo, prepares the
-default day in the background. Its prices are generated, not market data: status reports
-`provider.simulated`, the terminal labels them "simulated prices", and the replay
-banner reads "Demo". `GET /api/replay` lists the days (`demos`), each fixed and the
-same on every run of a build:
+`POST /api/replay` starts `{file: NAME}` or `{scenario: ID}`; `demo: ID` and
+`demo: true` remain accepted. Optional fields are `plan` (default `practice`),
+`speed` (0, 1, 2, 5, 10, 30, 60, 120 or 300), `start_at` (`HH:MM` New York) and
+`paused`. Scenarios also accept a trading `date` and `seed`: omit it for a fresh
+seed, use `"scenario"` for the file's seed, or supply a uint64 decimal string.
+`PUT` changes speed or pause, or skips a gap; `DELETE` stops playback.
 
-| Day | `demo` | How it goes |
-| --- | --- | --- |
-| Slide and rebound (default) | `reversal` | SPX slides about 1% into late morning, then rallies into the close |
-| Trend | `trend` | A steady climb of about 1% while implied volatility eases |
-| Chop | `chop` | A tight range that goes nowhere, with quiet volatility |
-| Selloff | `selloff` | SPX falls almost 3% as volatility climbs, and a midday bounce fails |
-| Overnight session | `overnight` | SPX options in Cboe's global trading hours, 20:15 to 09:25 ET, limit orders only |
+A drill fast-forwards to the complete receipt group at or after `start_at`, then
+waits for the engine's book, analytics, candles and account publication. The tick
+reports progress and writes return `REPLAY_FAST_FORWARD` until ready. `paused:
+true` then permits trading at that prepared state. Evening overnight times are
+on the calendar date before the session date; morning times are on the session
+date. Recorded feeds retain their original delay and market timestamps.
 
-`tools/demo_soak.py` plays the default day against a server you start for it, holding
-an SPX iron condor with far wings, and reports every order the account refused and
-every moment its marks were incomplete: a regression check for fills and freshness
-through a whole session.
+The demo market has fourteen built-in scenarios, compiled from `scenarios/*.json`,
+plus `--scenario-dir` additions and overrides. No built-in files need installing
+or locating at runtime. They include the
+five original days, gaps, crushes, pins and reversals. All are simulations, never
+historical reconstructions. Status keeps `provider.simulated`; the terminal shows
+the scenario and seed with the simulated label. Generated recordings are cached by
+scenario, date and seed, with four completed entries retained. Generation uses
+fixed version 1; unsupported versions are rejected.
 
-On the regular days SPX opens at 6,000 and wanders around its script, SPY follows at
-a tenth and QQQ at 1.25 times its moves, and implied volatility rises as the index
-falls, with a put skew and a term structure. Each chain has five expiries, 0DTE to next
-month's AM-settled SPX, in 15-second snapshots from 09:30 until the 16:15 close of SPY
-and QQQ options, with open interest; quotes sit on each product's ticks. Overnight only
-SPX options quote, every minute, while the index stays at its close, so the analytics
-infer spot from put-call parity. The terminal offers the default day under the header,
-and in the welcome, when no underlying on the live feed takes orders; the Replay page
-starts any of them at any speed. `ReplayHost::Options::demo` turns it off.
+Each run's account journal is retained in `replays/` beside `--paper-journal`, on
+the chosen plan or practice. EOF and stopped runs are read-only in the terminal's
+Journal and Dashboard. Their stats stay separate from live accounts. A confirmed
+delete removes a finished journal. The existing repair and compaction commands
+include replay journals. `--no-paper` creates no replay journals; disabled write
+access allows history reads but refuses starts, controls and deletes.
+
+History listings cache each journal's result, P&L, plan, time and valuation
+completeness until its modified time or size changes. These summaries have no
+entry limit; opening full archives uses a separate cache of sixteen accounts.
+
+Recording names must be plain file names inside the configured directory. Without
+an active replay, `/api/replay/X` returns `NO_REPLAY`; a file that cannot be read
+returns `REPLAY_FAILED`. Archive routes remain readable after stopping and after
+restart. See [scenarios](scenarios.md) for the JSON format, events, timing semantics,
+seed guarantees and history routes.
 
 ## Price history
 

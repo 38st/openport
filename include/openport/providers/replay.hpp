@@ -4,6 +4,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -31,6 +33,9 @@ class ReplayProvider final : public md::Provider {
     int speed = 1;  ///< 0 means maximum throughput; otherwise one of valid_speed's
     bool loop = false;
     std::shared_ptr<ReplayClock> clock;
+    md::Timestamp start_at = 0;
+    bool paused = false;
+    std::function<std::future<void>()> synchronize = {};
   };
 
   /// 0 (as fast as possible), 1, 2, 5, 10, 30, 60, 120 or 300 times real time.
@@ -53,6 +58,7 @@ class ReplayProvider final : public md::Provider {
   [[nodiscard]] bool paused() const noexcept { return paused_.load(); }
   /// The replay's clock: the recorded receipt time of the latest event published, 0 before the first.
   [[nodiscard]] md::Timestamp time() const noexcept { return time_.load(); }
+  [[nodiscard]] bool fast_forwarding() const noexcept { return seeking_.load(); }
   [[nodiscard]] bool finished() const noexcept { return finished_.load(); }
   [[nodiscard]] const md::RecordingHeader& header() const { return reader_.header(); }
 
@@ -60,6 +66,7 @@ class ReplayProvider final : public md::Provider {
   void run(md::Subscription subscription, md::EventSink& sink);
   /// Waits until `deadline`, honouring the controls; false once stopping.
   bool pace(ReplayClock::TimePoint& deadline);
+  bool synchronize();
   void wake();
   Options options_;
   md::RecordingReader reader_;
@@ -75,6 +82,7 @@ class ReplayProvider final : public md::Provider {
   std::atomic<bool> skip_{false};
   std::atomic<md::Timestamp> time_{0};
   std::atomic<bool> finished_{false};
+  std::atomic<bool> seeking_{false};
   std::mutex control_mutex_;
   std::condition_variable control_;
   bool started_ = false;

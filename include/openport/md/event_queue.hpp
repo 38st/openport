@@ -67,10 +67,17 @@ class EventQueue final : public EventSink {
     ready_.notify_one();
   }
 
+  /// Wake a consumer for a control barrier without adding a market event.
+  void wake() {
+    { const std::lock_guard lock(mutex_); wake_requested_ = true; }
+    ready_.notify_one();
+  }
+
   /// Appends every retained event in publication order, waiting for the first one.
   std::size_t drain(std::vector<Event>& out, std::chrono::milliseconds timeout) {
     std::unique_lock lock(mutex_);
-    if (!depth_) ready_.wait_for(lock, timeout, [this] { return depth_ != 0; });
+    if (!depth_) ready_.wait_for(lock, timeout, [this] { return depth_ != 0 || wake_requested_; });
+    wake_requested_ = false;
     const auto count = depth_;
     out.reserve(out.size() + count);
     for (auto& event : events_)
@@ -161,6 +168,7 @@ class EventQueue final : public EventSink {
   std::uint64_t coalesced_ = 0;
   std::uint64_t dropped_ = 0;
   bool dropped_since_drain_ = false;
+  bool wake_requested_ = false;
 };
 
 }  // namespace openport::md

@@ -1,0 +1,34 @@
+{
+  "id": "gap-down-recover",
+  "title": "Gap down and recover",
+  "description": "A simulated lower open recovers through the afternoon.",
+  "goal": "Limit early losses and adapt to the recovery.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 81730,
+  "generator": 1,
+  "drift": [
+    [
+      0.3,
+      0.002
+    ],
+    [
+      1,
+      0.012
+    ]
+  ],
+  "volatility": 0.14,
+  "iv_shift": 0.02,
+  "spot_vol": -2,
+  "events": [
+    {
+      "type": "gap",
+      "move": -0.012
+    }
+  ]
+}

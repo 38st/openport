@@ -75,13 +75,14 @@ export function Welcome({ onNavigate }: { onNavigate: (view: View) => void }) {
       <li>The bell sets price and fill alerts. Number keys switch pages; the arrow keys step through expiries.</li>
     </ul>
     {offer.offered && <p className="text-sm">{offer.reason}. In the meantime the demo market plays a simulated day
-      in {joinList(offer.symbols)} options, with generated prices and its own paper account.</p>}
+      in {joinList(offer.symbols)} options, with generated prices and its own paper account. The Replay page has scenario goals, repeatable seeds, start times and saved runs.</p>}
     <p className="text-xs text-muted">Simulated fills, no order routing, not investment advice.</p>
     <TradingError error={offer.controls.error} />
     <div className="flex flex-wrap gap-2">
       {offer.offered && <button type="button" className="trade-button border-accent text-foreground" disabled={offer.controls.pending}
         onClick={() => offer.start(() => go("replay"), undefined, () => welcome.close())}>
         {offer.controls.pending ? "Starting…" : "Try the demo"}</button>}
+      <button type="button" className="trade-button" onClick={() => go("replay")}>Practice library</button>
       <button type="button" className={`trade-button ${offer.offered ? "" : "border-accent text-foreground"}`} onClick={() => go("chain")}>Start on the chain</button>
       {trading?.enabled && <button type="button" className="trade-button" onClick={() => go("dashboard")}>See the account</button>}
     </div>
