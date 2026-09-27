@@ -9,9 +9,9 @@ import type { Expiry, Surface } from "../api/types"
 import { LineChart } from "../charts/LineChart"
 import { expectedMove } from "../lib/candles"
 import { isNum, money, price } from "../lib/format"
-import { heldPositions } from "../lib/margin"
+import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
 import { probabilityOfProfit, probabilitySource, smileDistribution, valueToday } from "../lib/probability"
-import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, strategyPowerUse, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
+import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { comboTickCents, extendedSession, formatMoney, limitOnlyNotice, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -146,12 +146,6 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const fee = Number(trading.fee_per_contract ?? 0)
   const contracts = validUnits ? q * legs.reduce((total, leg) => total + leg.ratio, 0) : 0
   const rules = account?.rules
-  // Mirrors the server: margin on the held positions after the fill, plus the net and fees.
-  const power = rules?.margin === "portfolio" || rules?.slippage_ticks ? null
-    : strategyPowerUse(legs, q, net, fee, spot, heldPositions(positions ?? []))
-  const effect = power?.effect ?? null
-  const available = account ? Number(account.buying_power.available) : null
-  const after = effect != null && available != null ? available + effect : null
   const marketable = quote.ask != null && (type === "market" || (net != null && quote.ask <= net + 1e-9))
   const notice = paperNotice(underlying, status)
   const limitOnly = notice ? null : limitOnlyNotice(underlying, status)
@@ -163,6 +157,11 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   })
   const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
   const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount) && (closing || roll || extended || exits.valid)
+
+  const preview = useOrderPreview(valid ? {
+    client_order_id: "preview:strategy", legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
+    ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitText }),
+  } : null, trading)
 
   // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is
   // wider, and the expected move within a quarter of spot.
@@ -316,12 +315,9 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           <dt className="text-muted" title="One standard deviation: forward × ATM volatility × √(years)">1σ move{front ? ` by ${shortDate(front.expiry)}` : ""}</dt>
           <dd className="text-right tabular">{move == null ? "—" : `±${move.toFixed(2)}`}</dd>
           </>}
-          <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
-          {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
         </dl>
-        {(rules?.margin === "portfolio" || !!rules?.slippage_ticks) && <p className="text-xs text-muted">Buying power is checked on submission for this plan.</p>}
-        {!!rules?.slippage_ticks && <p className="text-xs text-muted">Price previews exclude the account's {rules.slippage_ticks} ticks of slippage.</p>}
-        {rules?.buying_power && after != null && after < 0 && power?.uses && <p role="status" className="text-xs text-danger">Exceeds available buying power; the server will reject it.</p>}
+        <OrderPreviewPanel preview={preview} onSize={(size) => setUnits(String(size))} disabled={pending || order != null} />
+        {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}
         {chart && <figure aria-label="Profit and loss at expiry">
           <LineChart height={160} marginLeft={60} series={[{ id: "payoff", label: "P&L at expiry", color: "var(--chart-1)", points: chart, area: true },
             ...(todayChart ? [{ id: "today", label: "P&L today", color: "var(--chart-4)", points: todayChart, dashed: true }] : [])]}

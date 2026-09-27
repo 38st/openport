@@ -106,6 +106,64 @@ class PaperEngine : public testing::Test {
   std::unique_ptr<server::Engine> engine;
 };
 
+TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
+  seed();
+  const auto before = engine->trading_view();
+  ASSERT_TRUE(before->contracts.empty());
+  auto request = order(market, "preview-client", "4.20");
+  request["floor_share"] = 0.5;
+  const auto response = write(*engine, "POST", "/api/orders/preview", request);
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto preview = json::parse(response.body);
+  EXPECT_EQ(preview["decision"], "ok");
+  EXPECT_EQ(preview["max_loss"], "420.65");
+  EXPECT_TRUE(preview["simulated"]);
+  EXPECT_EQ(engine->trading_view()->snapshot->account_version, before->snapshot->account_version);
+  EXPECT_TRUE(engine->trading_view()->contracts.empty());
+  EXPECT_TRUE(engine->trading_view()->snapshot->recent_orders.empty());
+  request.erase("floor_share");
+  const auto submitted = write(*engine, "POST", "/api/orders", request);
+  ASSERT_EQ(submitted.status, 201) << submitted.body;
+  EXPECT_EQ(json::parse(submitted.body)["order"]["id"], "1");
+  EXPECT_EQ(json::parse(submitted.body)["fills"].size(), 1U);
+  request["floor_share"] = 0;
+  expect_error(write(*engine, "POST", "/api/orders/preview", request), 400, "INVALID_REQUEST");
+}
+
+TEST_F(PaperEngine, PendingLimitsGuardrailsAndBreachAreExposedWithRevisionChecks) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "eod-25k"}, {"reason", "evaluation"}}).status, 200);
+  auto risk = read(*engine, "/api/risk");
+  auto limits = risk["limits"];
+  limits["max_order_contracts"] = 200;
+  auto response = write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", risk["limits_revision"]}, {"limits", limits}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  risk = json::parse(response.body);
+  EXPECT_EQ(risk["limits"]["max_order_contracts"], 100);
+  EXPECT_EQ(risk["pending_limits"]["max_order_contracts"], 200);
+  EXPECT_EQ(risk["pending_effective"], "next_trading_day");
+  auto guardrails = risk["guardrails"];
+  guardrails["max_opening_trades"] = 1;
+  response = write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", guardrails}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  expect_error(write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", guardrails}}), 409, "LIMITS_REVISION");
+  auto opening = order(market, "entry", "4.20");
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", opening).status, 201);
+  const auto account = read(*engine, "/api/account");
+  EXPECT_EQ(account["guardrail_state"]["latched"][0], "TRADE_LIMIT");
+  EXPECT_TRUE(account["breach"]["room"].is_string());
+  EXPECT_EQ(account["breach"]["underlyings"].size(), 1U);
+  EXPECT_TRUE(account["evaluation"]["day_low_equity"].is_string());
+  opening["client_order_id"] = "blocked";
+  const auto preview = write(*engine, "POST", "/api/orders/preview", opening);
+  ASSERT_EQ(preview.status, 200);
+  EXPECT_EQ(json::parse(preview.body)["decision"], "TRADE_LIMIT");
+  expect_error(write(*engine, "POST", "/api/orders", opening), 422, "TRADE_LIMIT");
+  EXPECT_EQ(read(*engine, "/api/account/equity")["samples"].size(), 0U); // no journal, no history
+  EXPECT_EQ(server::handle_api({"GET", "/api/account/equity?from=bad"}, *engine).status, 400);
+  EXPECT_EQ(server::handle_api({"GET", "/api/account/equity?from=2026-09-23T00:00:00Z&to=2026-09-22T00:00:00Z"}, *engine).status, 400);
+}
+
 class PaperFeed : public PaperEngine {
  protected:
   void TearDown() override { engine->stop(); }
@@ -1054,6 +1112,44 @@ TEST(PaperFreshness, AnUnderlyingWhoseFeedRunsBehindAnothersTradesUntilItStalls)
   const auto stalled = write(engine, "POST", "/api/orders", order(market, "stalled", "4.20"));
   ASSERT_EQ(stalled.status, 422) << stalled.body;
   EXPECT_EQ(json::parse(stalled.body)["error"]["code"], "FEED_STALLED");
+}
+
+TEST_F(PaperEngine, EquityHistoryReloadsPerAccountWithFillSamplesBoundsAndAGap) {
+  engine->stop(); engine.reset();
+  const auto path = paper_path();
+  auto options = paper_options(); options.paper_journal = path;
+  options.paper_accounts = path.parent_path() / "accounts";
+  options.clock = [this] { return market.time; };
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  ASSERT_EQ(write(*engine, "POST", "/api/accounts", {{"name", "Evaluation"}, {"plan", "eod-25k"}}).status, 201);
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders?account=evaluation", order(market, "entry", "4.20")).status, 201);
+  const auto initial = read(*engine, "/api/account/equity?account=evaluation")["samples"];
+  ASSERT_GE(initial.size(), 2U);
+  EXPECT_EQ(initial.back()["fill"], "1");
+  EXPECT_EQ(initial.back()["equity"], "24989.35");
+  EXPECT_EQ(initial.back()["floor"], "23500.00");
+  EXPECT_EQ(initial.back()["tomorrow_floor"], "23500.00");
+  EXPECT_EQ(read(*engine, "/api/account/equity")["samples"].back()["equity"], "100000.00");
+  engine->stop(); engine.reset();
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view("evaluation") != nullptr; }));
+  EXPECT_EQ(read(*engine, "/api/account/equity?account=evaluation")["samples"], initial);
+  market.time += 10 * md::kNanosPerMinute;
+  seed();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view("evaluation")->equity_samples.size() > initial.size(); }));
+  const auto resumed = read(*engine, "/api/account/equity?account=evaluation")["samples"];
+  EXPECT_EQ(resumed.size(), initial.size() + 1);
+  EXPECT_EQ(resumed.back()["time"], md::format_timestamp(market.time));
+  const auto bounded = read(*engine, "/api/account/equity?account=evaluation&from=2026-09-22T14%3A10%3A00Z&to=2026-09-22T14%3A10%3A00Z")["samples"];
+  ASSERT_EQ(bounded.size(), 1U);
+  EXPECT_EQ(bounded.front(), resumed.back());
+  EXPECT_EQ(server::handle_api({"GET", "/api/account/equity?from=%zz"}, *engine).status, 400);
+  engine->stop(); engine.reset();
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
@@ -2264,3 +2360,37 @@ TEST_F(PaperEngine, GtcMetadataAndHeldComboExitsOverHttp) {
 }
 
 }  // namespace
+
+// The breach estimate's horizon is the rest of today's session. A same-day expiry's
+// implied variance is exactly that; a later expiry's is shared out in trading time,
+// not calendar time, so a quiet weekend cannot dilute the hours left today.
+TEST(PaperBreach, ImpliedVarianceToTheCloseSharesTheFrontExpiryInTradingTime) {
+  const auto now = md::new_york_to_utc({2026, 9, 23}, 10, 30);  // a Wednesday
+  const auto slice_at = [&](md::Timestamp expiry) {
+    analytics::SliceMetrics slice;
+    slice.expiry_time = expiry;
+    slice.years = md::years_between(now, expiry);
+    analytics::StrikeMetrics strike;
+    strike.strike = 100;
+    strike.iv = 0.2;
+    slice.strikes.push_back(strike);
+    return slice;
+  };
+  analytics::UnderlyingMetrics metrics;
+  metrics.spot = 100;
+  metrics.as_of = now;
+  const auto today = md::new_york_to_utc({2026, 9, 23}, 16, 0);
+  metrics.slices = {slice_at(today)};
+  using openport::server::implied_variance_to_close;
+  ASSERT_TRUE(implied_variance_to_close(metrics));
+  EXPECT_NEAR(*implied_variance_to_close(metrics), 0.04 * md::years_between(now, today), 1e-15);
+  const auto friday = md::new_york_to_utc({2026, 9, 25}, 16, 0);
+  metrics.slices = {slice_at(friday)};
+  // 5.5 of the 5.5 + 6.5 + 6.5 regular-session hours to Friday's close are today's.
+  EXPECT_NEAR(*implied_variance_to_close(metrics), 0.04 * md::years_between(now, friday) * 5.5 / 18.5, 1e-15);
+  metrics.as_of = md::new_york_to_utc({2026, 9, 23}, 16, 30);  // after the close
+  metrics.slices = {slice_at(friday)};
+  EXPECT_EQ(*implied_variance_to_close(metrics), 0.0);
+  metrics.slices.clear();
+  EXPECT_FALSE(implied_variance_to_close(metrics));
+}

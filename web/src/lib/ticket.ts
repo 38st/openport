@@ -47,13 +47,6 @@ export function marketability(side: Side, type: "limit" | "market", limit: strin
     message: `Rests ${buy ? "below the ask" : "above the bid"} ($${formatPrice(far)}). Fills when the ${book} reaches $${formatPrice(value)}.` }
 }
 
-/** Per-contract naked short requirement, excluding premium; the strike stands in for a missing spot. */
-export function nakedRequirement(type: Kind, strike: number, spot: number | null | undefined): number {
-  const s = spot != null && Number.isFinite(spot) && spot > 0 ? spot : strike
-  const otm = Math.max(0, type === "call" ? strike - s : s - strike)
-  return 100 * Math.max(0.2 * s - otm, 0.1 * (type === "call" ? s : strike))
-}
-
 export type Direction = "at_or_below" | "at_or_above"
 export const opposite = (direction: Direction): Direction => (direction === "at_or_below" ? "at_or_above" : "at_or_below")
 /**

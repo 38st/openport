@@ -26,10 +26,10 @@ enum class Reason {
   INVALID_REASON, JOURNAL_IO, JOURNAL_CORRUPT, JOURNAL_LOCKED,
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
   OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED,
-  LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE, DEFINED_RISK, MARKET_HALTED
+  LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE, DEFINED_RISK, MARKET_HALTED, SOFT_FLOOR, TRADE_LIMIT, COOLDOWN, PROFIT_LOCK
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::MARKET_HALTED;
+inline constexpr Reason kLastReason = Reason::PROFIT_LOCK;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -269,6 +269,27 @@ struct Limits {
   Timestamp max_quote_age = 60 * md::kNanosPerSecond;
   Timestamp max_valuation_age = 60 * md::kNanosPerSecond;
 };
+/// Personal rules, independent of the plan. Zero disables a field. A percentage
+/// floor keeps that share of the plan's drawdown distance above its current floor.
+struct Guardrails {
+  Money soft_floor;
+  std::int64_t soft_floor_percent = 0;
+  Quantity max_opening_trades = 0;
+  Money cooldown_loss;
+  std::int64_t cooldown_minutes = 0;
+  Money profit_lock;
+  bool operator==(const Guardrails&) const = default;
+};
+struct GuardrailState {
+  bool owns_kill = false;  ///< This rule, rather than a manual/daily-loss trip, owns the shared latch.
+  Quantity opening_trades = 0;
+  Timestamp cooldown_until = 0;
+  std::vector<Reason> latched;
+};
+void validate_guardrails(const Guardrails& rules);
+[[nodiscard]] Limits tightened_limits(const Limits& current, const Limits& requested);
+[[nodiscard]] Guardrails tightened_guardrails(const Guardrails& current, const Guardrails& requested);
+
 struct ScenarioConfig {
   std::vector<double> spot_percent{-10, -5, -2, -1, 0, 1, 2, 5, 10};
   std::vector<double> vol_points{-5, 0, 5, 10};
@@ -322,6 +343,7 @@ struct SessionConfig {
   Limits limits;
   ScenarioConfig scenarios;
   AccountRules rules;
+  Guardrails guardrails;
 };
 
 [[nodiscard]] Decision eligible(const md::OptionContract& contract);

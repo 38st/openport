@@ -48,6 +48,11 @@ struct TradingSnapshot {
   ScenarioGrid scenarios;
   std::vector<Reason> quality_flags;
   Evaluation evaluation;             ///< Current attempt's rule progress.
+  std::optional<Limits> pending_limits;
+  std::optional<Guardrails> pending_guardrails;
+  GuardrailState guardrails;
+  std::optional<Money> soft_floor;
+  Timestamp pending_applied_at = 0;
   BuyingPower buying_power;
   std::vector<Closure> closures;     ///< Settlements and resets, in sequence.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
@@ -95,6 +100,28 @@ struct CommandResult {
   bool replayed = false;
 };
 
+/// Current integration inputs for contracts not yet registered by this account.
+/// Used only on the preview's private copy.
+struct PreviewMarket {
+  std::vector<md::OptionContract> contracts;
+  std::vector<QuoteObservation> quotes;
+  std::vector<Valuation> valuations;
+};
+struct OrderPreview {
+  Decision decision;
+  Money buying_power_required;
+  Money buying_power_before;
+  std::optional<Money> buying_power_after;
+  std::optional<Exposure> exposure_change;
+  std::optional<Money> max_loss;
+  std::string max_loss_basis;  ///< "expiry_payoff" or "scenario_grid"; empty when unavailable.
+  std::optional<Money> equity_at_max_loss;
+  std::optional<bool> breaches_floor;
+  std::optional<bool> breaches_soft_floor;
+  Quantity max_units = 0;
+  BreachRisk breach;
+};
+
 /// New terms for an open order; each field left empty keeps its value.
 struct OrderChange {
   std::optional<Quantity> quantity;    ///< The total, filled contracts (or units) included.
@@ -122,6 +149,12 @@ class TradingSession {
   /// The integration may reject a resolved but unsupported definition before
   /// registration; it still consumes the client ID and journals a rejected order.
   CommandResult submit(OrderRequest request, Timestamp time, Decision rejection = {});
+  /// Pure pre-trade check and full-size projection; never takes displayed size,
+  /// allocates IDs or writes a journal. floor_share is in (0, 1], default 0.5.
+  [[nodiscard]] OrderPreview preview(const OrderRequest& request, Timestamp time, double floor_share = 0.5,
+      Decision rejection = {}, const std::map<std::string, double>& close_variances = {}, const PreviewMarket& market = {}) const;
+  /// `close_variances`: each underlying's implied variance of its log price to today's close.
+  [[nodiscard]] BreachRisk breach(const std::map<std::string, double>& close_variances = {}) const;
   CommandResult cancel(OrderId id, Timestamp time);
   /// Change a resting order in place: a DAY limit order, an armed order or a
   /// bracket exit. Its ID, fills and place among equal prices stay. The new
@@ -158,6 +191,7 @@ class TradingSession {
                           const std::vector<Valuation>& valuations, Timestamp time,
                           const std::vector<StockPrice>& stocks = {});
   CommandResult set_limits(Limits limits, Timestamp time);
+  CommandResult set_guardrails(Guardrails guardrails, Timestamp time);
   CommandResult trip_kill(std::string reason, Timestamp time);
   CommandResult reset_kill(std::string reason, Timestamp time);
   /// Explicit authoritative reference, including AM imports. Only after expiry.

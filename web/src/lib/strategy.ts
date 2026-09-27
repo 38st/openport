@@ -1,7 +1,6 @@
 import type { Chain, ChainRow, OptionQuote } from "../api/types"
 import type { Side } from "../api/trading-types"
 import { expectedMove } from "./candles"
-import { powerUse, trade, type MarginPosition, type PowerUse } from "./margin"
 
 export type Kind = "call" | "put"
 /** A leg as the ticket holds it, with its latest quote. */
@@ -186,19 +185,6 @@ export function estimatedProfile(value: (spot: number) => number, legs: Strategy
     breakevens: breakevens.map((b) => Math.round(b * 100) / 100),
     estimated: true,
   }
-}
-
-/**
- * Mirrors the server's reservation for a multi-leg order: fees, plus the change
- * in the margin requirement from the held positions to after the fill (legs
- * sold short at their mid), plus the net debit (less a net credit).
- */
-export function strategyPowerUse(legs: StrategyLeg[], units: number, net: number | null, fee: number,
-  spot: number | null | undefined, held: MarginPosition[] = []): PowerUse | null {
-  if (!legs.length || !Number.isSafeInteger(units) || units <= 0 || net == null || !Number.isFinite(net) || !Number.isFinite(fee)) return null
-  const fees = fee * units * legs.reduce((total, leg) => total + leg.ratio, 0)
-  const after = legs.reduce((book, leg) => trade(book, leg, sign(leg.side) * leg.ratio * units, leg.quote?.mid ?? 0), held)
-  return powerUse(held, after, net * 100 * units, fees, spot)
 }
 
 const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))

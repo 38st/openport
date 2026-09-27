@@ -10,6 +10,7 @@ import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderResult, OrderTicket } from "../components/OrderTicket"
+import { PersonalRules } from "../components/PersonalRules"
 import { ScenarioGrid } from "../components/ScenarioGrid"
 import { Sidebar } from "../components/Sidebar"
 import { formatRoute, navigableViews, parseRoute, primaryViews } from "../lib/route"
@@ -40,16 +41,27 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("paper trading fixtures", () => {
+  it("shows pending personal rules, exposure limits and market-time cooldown", () => {
+    const guardrails = { soft_floor: "99000", soft_floor_percent: 0, max_opening_trades: 5, cooldown_loss: "100", cooldown_minutes: 5, profit_lock: "500" }
+    const html = render(<PersonalRules risk={{ ...risk, guardrails, pending_guardrails: { ...guardrails, max_opening_trades: 10 },
+      pending_limits: { ...risk.limits, aggregate: { dollar_delta: 10000, vega: 250 } },
+      guardrail_state: { opening_trades: 2, cooldown_until: null, cooldown_seconds: 90, latched: ["COOLDOWN"], soft_floor: "99000" },
+    }} />)
+    expect(html).toContain("10 next trading day")
+    expect(html).toContain("dollar delta: 10000 · vega: 250")
+    expect(html).toContain("Cooldown 2 market minutes left")
+    expect(html).toContain("$99,000.00")
+  })
   it("leaves buying power to the server for portfolio margin or slippage", () => {
     for (const optional of [{ margin: "portfolio" as const }, { slippage_ticks: 2 }]) {
       const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />, (client) => {
         client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
           { ...account, rules: { ...account.rules, ...optional }, buying_power: { ...account.buying_power, available: "0" } })
       })
-      expect(html).toContain("Buying power is checked on submission for this plan")
-      expect(html).toMatch(/Buying power effect<\/dt><dd[^>]*>—<\/dd>/)
+      expect(html).toContain("Simulated order preview")
+      expect(html).not.toContain("Buying power effect")
       expect(html).not.toContain("the server will reject it")
-      if (optional.slippage_ticks) expect(html).toContain("2 ticks of slippage")
+      if (optional.slippage_ticks) expect(html).toContain("the server preview includes it")
     }
   })
   it("renders a labelled buy ticket with quotes, sizes, exact premium and its own Greeks", () => {
@@ -63,7 +75,7 @@ describe("paper trading fixtures", () => {
     expect(html).toContain("7000 call")
     expect(html).toContain('aria-checked="true" tabindex="0" class="rounded px-2 py-0.5 text-xs transition-colors bg-raised text-foreground">Buy</button>')
     expect(html).toContain("Long Call")
-    expect(html).toContain("Buying power effect")
+    expect(html).toContain("Simulated order preview")
     expect(html).toContain("4.50 × 10")
     expect(html).toContain("4.60 × 3")
     expect(html).toContain("4.55")

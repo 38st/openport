@@ -36,7 +36,7 @@ flowchart LR
 | Analytics | `src/analytics` | Per expiry: a weighted put-call parity fit for the forward and discount factor, IVs and Greeks on that forward, de-Americanised IVs for equity options, SVI and SSVI surfaces with arbitrage checks, dealer gamma and vanna exposure, and lazy current volatility metrics |
 | Simulator | `src/trading` | `TradingSession`, a deterministic reducer per account: orders, fills against displayed quotes with optional slippage, risk limits, buying power with strategy or portfolio margin, evaluation rules, settlement, exercise and assignment, and P&L attribution by Greek |
 | Journal | `trading/journal` | Every transaction as one SHA-256 hash-chained JSON line recording what changed; recovery replays and verifies the chain |
-| Server | `src/server` | The engine thread, the JSON API and WebSocket ticks, paper accounts, one-minute candles, and the replay host that runs recorded days beside the live feed |
+| Server | `src/server` | The engine thread, the JSON API and WebSocket ticks, paper accounts, persisted account-equity samples, one-minute candles, and the replay host that runs recorded days beside the live feed |
 | Terminal | `web/` | React 19, TanStack Query and Tailwind, with its own SVG charts; no chart or UI library |
 
 ## Threads and data flow
@@ -81,7 +81,7 @@ flowchart LR
 
 ## Tests
 
-620 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+651 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 295 Vitest cases cover the
 terminal. CI builds with GCC 13 on Ubuntu and Apple Clang on macOS, both with warnings

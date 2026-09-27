@@ -47,6 +47,49 @@ json decision_json(const Decision& d) {
   return {{"code", to_string(d.code)}, {"message", d.message},
           {"actual", d.actual ? number(*d.actual) : json(nullptr)}, {"limit", d.limit ? number(*d.limit) : json(nullptr)}};
 }
+json time_or_null(Timestamp time) { return time > 0 ? json(md::format_timestamp(time)) : json(nullptr); }
+json guardrails_json(const Guardrails& g) {
+  return {{"soft_floor", g.soft_floor.str()}, {"soft_floor_percent", g.soft_floor_percent},
+          {"max_opening_trades", g.max_opening_trades}, {"cooldown_loss", g.cooldown_loss.str()},
+          {"cooldown_minutes", g.cooldown_minutes}, {"profit_lock", g.profit_lock.str()}};
+}
+json guardrail_state_json(const TradingSnapshot& s) {
+  json latched = json::array();
+  for (auto reason : s.guardrails.latched) latched.push_back(to_string(reason));
+  if (s.time < s.guardrails.cooldown_until) latched.push_back("COOLDOWN");
+  return {{"opening_trades", s.guardrails.opening_trades}, {"latched", latched},
+          {"cooldown_until", time_or_null(s.guardrails.cooldown_until)},
+          {"cooldown_seconds", std::max<Timestamp>(0, s.guardrails.cooldown_until - s.time) / md::kNanosPerSecond},
+          {"soft_floor", money(s.soft_floor)}};
+}
+json breach_json(const BreachRisk& b) {
+  const auto level = [](const std::optional<BreachLevel>& value) -> json {
+    if (!value) return nullptr;
+    return {{"points", number(value->points)}, {"percent", number(value->percent)},
+            {"touch_probability", value->touch_probability ? number(*value->touch_probability) : json(nullptr)}};
+  };
+  json underlyings = json::array();
+  for (const auto& item : b.underlyings)
+    underlyings.push_back({{"underlying", item.underlying}, {"spot", number(item.spot)}, {"complete", item.complete},
+        {"close_sigma", item.close_sigma ? number(*item.close_sigma) : json(nullptr)}, {"down", level(item.down)}, {"up", level(item.up)}});
+  return {{"room", money(b.room)}, {"soft_room", money(b.soft_room)}, {"complete", b.complete},
+          {"underlyings", underlyings}, {"model", "Driftless log-return reflection estimate; unchanged volatility, one underlying at a time"},
+          {"scan_down_percent", -99.75}, {"scan_up_percent", 1000}};
+}
+json preview_json(const OrderPreview& p) {
+  json change = nullptr;
+  if (p.exposure_change) change = {{"dollar_delta", number(p.exposure_change->dollar_delta)},
+      {"dollar_gamma_1pct", number(p.exposure_change->dollar_gamma_1pct)},
+      {"vega", number(p.exposure_change->vega)}, {"theta", number(p.exposure_change->theta)}};
+  return {{"decision", p.decision.ok() ? "ok" : to_string(p.decision.code)}, {"reason", decision_json(p.decision)},
+      {"buying_power", {{"required", p.buying_power_required.str()}, {"before", p.buying_power_before.str()}, {"after", money(p.buying_power_after)}}},
+      {"exposure_change", change}, {"max_loss", money(p.max_loss)}, {"max_loss_basis", nullable(p.max_loss_basis)},
+      {"equity_at_max_loss", money(p.equity_at_max_loss)},
+      {"breaches_floor", p.breaches_floor ? json(*p.breaches_floor) : json(nullptr)},
+      {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
+      {"max_units", p.max_units}, {"breach", breach_json(p.breach)}, {"simulated", true}};
+}
+
 /// The next payout's requirements, or null outside the funded phase.
 json payout_json(const TradingView& view) {
   const auto& r = view.config.rules;
@@ -250,7 +293,9 @@ json account_json(const TradingView& view) {
                     {"close_equity", d.close_equity.str()}, {"peak", d.peak.str()},
                     {"floor", floor ? json(d.floor.str()) : json(nullptr)},
                     {"realised", d.realised.str()}, {"qualifying", d.qualifying},
-                    {"attribution", attribution_json(d.attribution)}});
+                    {"attribution", attribution_json(d.attribution)},
+                    {"low_equity", money(d.low_equity)}, {"high_equity", money(d.high_equity)},
+                    {"low_at", time_or_null(d.low_at)}, {"high_at", time_or_null(d.high_at)}});
   json payouts = json::array();
   for (const auto& p : e.payouts)
     payouts.push_back({{"number", p.number}, {"time", md::format_timestamp(p.time)}, {"day", md::format_date(p.day)}, {"amount", p.amount.str()},
@@ -262,7 +307,8 @@ json account_json(const TradingView& view) {
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
                         {"decision", nullable(a.decision)}});
   return {{"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
-          {"rules", rules_json(r)},
+          {"rules", rules_json(r)}, {"breach", breach_json(view.breach)},
+          {"guardrails", guardrails_json(view.config.guardrails)}, {"guardrail_state", guardrail_state_json(s)},
           {"evaluation", {
               {"enabled", r.evaluation()}, {"attempt", e.attempt}, {"status", status_name(e.status)},
               {"started", md::format_timestamp(e.started)}, {"starting_balance", e.starting_balance.str()},
@@ -277,6 +323,9 @@ json account_json(const TradingView& view) {
               {"decision", nullable(e.decision)},
               {"day", md::format_date(e.day)}, {"day_open_equity", e.day_open_equity.str()},
               {"day_close_equity", e.day_close_equity.str()}, {"days", days},
+              {"day_low_equity", money(e.day_low_equity)}, {"day_high_equity", money(e.day_high_equity)},
+              {"day_low_at", time_or_null(e.day_low_at)}, {"day_high_at", time_or_null(e.day_high_at)},
+              {"closest_floor", money(e.closest_floor)}, {"closest_floor_at", time_or_null(e.closest_floor_at)},
               {"floor_locked", floor && e.floor_locked}, {"qualifying_days", e.qualifying_days},
               {"cycle_started", md::format_timestamp(e.cycle_started)}, {"payouts", payouts}}},
           {"buying_power", buying_power_json(s.buying_power)},
@@ -474,7 +523,14 @@ json risk_json(const TradingView& view) {
     pnl.push_back(std::move(row)); clamped.push_back(std::move(clamps));
   }
   return {{"account_version", std::to_string(s.account_version)}, {"limits_revision", std::to_string(s.risk.limits_revision)},
-          {"limits", limits_json(view.config.limits)}, {"complete", s.risk.complete}, {"daily_loss", s.risk.daily_loss.str()},
+          {"limits", limits_json(view.config.limits)},
+          {"pending_limits", s.pending_limits ? limits_json(*s.pending_limits) : json(nullptr)},
+          {"guardrails", guardrails_json(view.config.guardrails)},
+          {"pending_guardrails", s.pending_guardrails ? guardrails_json(*s.pending_guardrails) : json(nullptr)},
+          {"guardrail_state", guardrail_state_json(s)}, {"pending_applied_at", time_or_null(s.pending_applied_at)},
+          {"pending_applied_day", s.pending_applied_at > 0 ? json(md::format_date(md::trading_date(s.pending_applied_at))) : json(nullptr)},
+          {"pending_effective", s.pending_limits || s.pending_guardrails ? json("next_trading_day") : json(nullptr)},
+          {"time", md::format_timestamp(s.time)}, {"breach", breach_json(view.breach)}, {"complete", s.risk.complete}, {"daily_loss", s.risk.daily_loss.str()},
           {"kill", kill_json(s.risk)}, {"aggregate", bucket_json(s.risk.aggregate)}, {"underlyings", underlyings},
           {"scenarios", {{"spot_percent", view.config.scenarios.spot_percent}, {"vol_points", view.config.scenarios.vol_points},
                          {"pnl", pnl}, {"clamped", clamped}, {"complete", s.scenarios.complete}}}};
@@ -529,6 +585,12 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       }
       break;
     }
+    case TradingCommand::Kind::Preview:
+      if (!reply.preview) return api_error(503, "TRADING_UNAVAILABLE", "No preview available");
+      body = preview_json(*reply.preview);
+      body["account_version"] = std::to_string(s.account_version);
+      break;
+    case TradingCommand::Kind::Guardrails:
     case TradingCommand::Kind::Limits: body = risk_json(view); break;
     case TradingCommand::Kind::Trip:
     case TradingCommand::Kind::Reset:
@@ -742,7 +804,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     return command;
   }
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
-  const auto body = strict_json(request.body);
+  auto body = strict_json(request.body);
   if (request.method == "PUT" && path.starts_with("/api/orders/")) {
     fields(body, {}, {"quantity", "limit_price", "trigger_level"});
     command.kind = TradingCommand::Kind::Modify;
@@ -841,7 +903,15 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     }
     return command;
   }
-  if (path == "/api/orders") {
+  if (path == "/api/orders" || path == "/api/orders/preview") {
+    if (path == "/api/orders/preview") {
+      command.kind = TradingCommand::Kind::Preview;
+      if (body.contains("floor_share")) {
+        command.floor_share = number_field(body, "floor_share");
+        if (command.floor_share <= 0 || command.floor_share > 1) throw std::invalid_argument("floor_share must be in (0, 1]");
+        body.erase("floor_share");
+      }
+    }
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
     if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only"});
@@ -897,6 +967,15 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       if (!order.bracket->stop_loss && !order.bracket->take_profit)
         throw std::invalid_argument("A bracket needs a stop_loss, a take_profit or both");
     }
+  } else if (path == "/api/risk/guardrails") {
+    fields(body, {"expected_revision", "guardrails"});
+    command.kind = TradingCommand::Kind::Guardrails;
+    command.expected_revision = identifier(string_field(body, "expected_revision"));
+    const auto& g = body.at("guardrails");
+    fields(g, {"soft_floor", "soft_floor_percent", "max_opening_trades", "cooldown_loss", "cooldown_minutes", "profit_lock"});
+    command.guardrails = {decimal_field(g, "soft_floor"), integer_field(g, "soft_floor_percent"), integer_field(g, "max_opening_trades"),
+        decimal_field(g, "cooldown_loss"), integer_field(g, "cooldown_minutes"), decimal_field(g, "profit_lock")};
+    validate_guardrails(command.guardrails);
   } else if (path == "/api/risk/limits") {
     fields(body, {"expected_revision", "limits"});
     command.kind = TradingCommand::Kind::Limits;
@@ -992,6 +1071,25 @@ std::optional<std::map<std::string, std::string>> query_pairs(std::string_view q
   return pairs;
 }
 
+std::optional<std::string> decode_bound(std::string_view value) {
+  std::string decoded;
+  const auto hex = [](char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    if (value[i] != '%') { decoded += value[i]; continue; }
+    if (i + 2 >= value.size()) return {};
+    const auto high = hex(value[i + 1]), low = hex(value[i + 2]);
+    if (high < 0 || low < 0) return {};
+    decoded += static_cast<char>(16 * high + low);
+    i += 2;
+  }
+  return decoded;
+}
+
 /// Whether `account` names an account the source publishes (the main one when empty).
 bool known_account(const MetricsSource& source, const std::string& account) {
   if (account.empty() || account == kMainAccount) return true;
@@ -1003,16 +1101,24 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto question = request.target.find('?');
   const auto path = request.target.substr(0, question);
   if (path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
-      path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/trades" && path != "/api/plans" && path != "/api/accounts") return {};
+      path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/account/equity" &&
+      path != "/api/trades" && path != "/api/plans" && path != "/api/accounts") return {};
   const auto query = question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1);
   // Every route takes account=ID; orders take status=open|all; trades take
   // status=open|closed|all and attempt=current|all. Each key at most once.
   const auto pairs = query_pairs(query);
   const bool csv = path == "/api/trades.csv" || path == "/api/fills.csv";
+  // CSV exports filter by New York date; the equity history by instant.
   std::string account, status = "all", attempt = csv ? "all" : "current", from, to;
+  std::optional<Timestamp> since, until;
   bool valid_query = pairs.has_value();
   for (const auto& [key, value] : pairs.value_or(std::map<std::string, std::string>{})) {
-    if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
+    if ((key == "from" || key == "to") && path == "/api/account/equity") {
+      const auto decoded = decode_bound(value);
+      const auto parsed = decoded ? md::parse_datetime(*decoded, md::Zone::Utc) : std::nullopt;
+      if (!parsed || *parsed < 0) valid_query = false;
+      else if (key == "from") since = parsed; else until = parsed;
+    } else if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
     else if (key == "status" && path == "/api/orders" && (value == "open" || value == "all")) status = value;
     else if (key == "status" && (path == "/api/trades" || path == "/api/trades.csv") && (value == "open" || value == "closed" || value == "all")) status = value;
     else if (key == "attempt" && (path == "/api/trades" || path == "/api/trades.csv") && (value == "current" || value == "all")) attempt = value;
@@ -1021,6 +1127,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
     else valid_query = false;
   }
   if (!from.empty() && !to.empty() && from > to) valid_query = false;
+  if (since && until && *since > *until) valid_query = false;
   if (!valid_query) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   if (path == "/api/plans") return ApiResponse{200, plans_json().dump()};
   if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source)}}.dump()};
@@ -1028,6 +1135,17 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto view = source.trading_view(account);
   if (!view || !view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "Paper trading is disabled or unavailable");
   const auto& s = *view->snapshot;
+  if (path == "/api/account/equity") {
+    json samples = json::array();
+    for (const auto& sample : view->equity_samples) {
+      if ((since && sample.time < *since) || (until && sample.time > *until)) continue;
+      samples.push_back({{"time", md::format_timestamp(sample.time)}, {"day", md::format_date(md::trading_date(sample.time))},
+          {"attempt", sample.attempt}, {"equity", sample.equity.str()}, {"floor", money(sample.floor)}, {"peak", sample.peak.str()},
+          {"target", money(sample.target)}, {"tomorrow_floor", money(sample.tomorrow_floor)},
+          {"fill", sample.stock_fill ? json("s" + std::to_string(sample.stock_fill)) : sample.fill ? json(std::to_string(sample.fill)) : json(nullptr)}});
+    }
+    return ApiResponse{200, json{{"samples", samples}, {"error", nullable(view->equity_error)}}.dump()};
+  }
   if (path == "/api/portfolio") return ApiResponse{200, portfolio_json(*view).dump()};
   if (path == "/api/risk") return ApiResponse{200, risk_json(*view).dump()};
   if (path == "/api/account") return ApiResponse{200, account_json(*view).dump()};
@@ -1064,12 +1182,12 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   const auto question = request.target.find('?');
   const std::string path = request.target.substr(0, question);
   const auto pairs = query_pairs(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
-  const bool route = (request.method == "POST" && (path == "/api/orders" ||
+  const bool route = (request.method == "POST" && (path == "/api/orders" || path == "/api/orders/preview" ||
       path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/accounts" ||
       path == "/api/positions/exercise" || path == "/api/stocks/close" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout")) ||
-      (request.method == "PUT" && (path == "/api/risk/limits" || path.starts_with("/api/orders/") ||
+      (request.method == "PUT" && (path == "/api/risk/limits" || path == "/api/risk/guardrails" || path.starts_with("/api/orders/") ||
                                    ((path.starts_with("/api/trades/") || path.starts_with("/api/days/")) && path.ends_with("/note")))) ||
       (request.method == "DELETE" && path.starts_with("/api/orders/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }

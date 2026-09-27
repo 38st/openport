@@ -64,6 +64,10 @@ export interface Attribution {
   total: number
 }
 export interface EvaluationDay {
+  low_equity?: Money | null
+  high_equity?: Money | null
+  low_at?: string | null
+  high_at?: string | null
   day: string
   open_equity: Money
   close_equity: Money
@@ -130,6 +134,12 @@ export interface Evaluation {
   day: string
   day_open_equity: Money
   day_close_equity: Money
+  day_low_equity?: Money | null
+  day_high_equity?: Money | null
+  day_low_at?: string | null
+  day_high_at?: string | null
+  closest_floor?: Money | null
+  closest_floor_at?: string | null
   days: EvaluationDay[]
   floor_locked: boolean
   /** Days closed since the last payout (or the start) that qualified. */
@@ -148,6 +158,9 @@ export interface AttemptSummary {
   decision: string | null
 }
 export interface Account {
+  breach?: Breach
+  guardrails?: Guardrails
+  guardrail_state?: GuardrailState
   account_version: string
   time: string
   rules: AccountRules
@@ -458,6 +471,15 @@ export interface Scenarios {
   complete: boolean
 }
 export interface Risk {
+  time?: string
+  breach?: Breach
+  guardrails?: Guardrails
+  guardrail_state?: GuardrailState
+  pending_limits?: Limits | null
+  pending_guardrails?: Guardrails | null
+  pending_applied_day?: string | null
+  pending_applied_at?: string | null
+  pending_effective?: "next_trading_day" | null
   account_version: string
   limits_revision: string
   limits: Limits
@@ -483,3 +505,54 @@ export interface CreateAccountResponse { account: { id: string; name: string; ac
 export interface ClosePositionsResponse extends CancelAllResponse { orders: Order[]; fills: Fill[] }
 export interface KillResponse { account_version: string; kill: KillState; cancelled_orders: string[] }
 export interface SettlementResponse { account_version: string; position_closed: boolean }
+
+export interface Guardrails {
+  soft_floor: Money
+  soft_floor_percent: number
+  max_opening_trades: number
+  cooldown_loss: Money
+  cooldown_minutes: number
+  profit_lock: Money
+}
+export interface GuardrailState {
+  opening_trades: number
+  latched: string[]
+  cooldown_until: string | null
+  cooldown_seconds: number
+  soft_floor: Money | null
+}
+export interface BreachLevel { points: number; percent: number; touch_probability: number | null }
+export interface Breach {
+  room: Money | null
+  soft_room: Money | null
+  complete: boolean
+  model: string
+  underlyings: { underlying: string; spot: number; complete: boolean; close_sigma: number | null; down: BreachLevel | null; up: BreachLevel | null }[]
+}
+export interface OrderPreview {
+  account_version: string
+  decision: string
+  reason: { code: string; message: string } | null
+  buying_power: { required: Money; before: Money; after: Money | null }
+  exposure_change: { dollar_delta: number; dollar_gamma_1pct: number; vega: number; theta: number } | null
+  max_loss: Money | null
+  max_loss_basis: "expiry_payoff" | "scenario_grid" | null
+  equity_at_max_loss: Money | null
+  breaches_floor: boolean | null
+  breaches_soft_floor: boolean | null
+  max_units: number
+  breach: Breach
+  simulated: true
+}
+export interface EquitySample {
+  time: string
+  day: string
+  attempt: number
+  equity: Money
+  floor: Money | null
+  peak: Money
+  target: Money | null
+  tomorrow_floor: Money | null
+  fill: string | null
+}
+export interface EquityHistory { samples: EquitySample[]; error: string | null }

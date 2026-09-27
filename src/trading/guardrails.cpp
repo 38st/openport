@@ -1,0 +1,47 @@
+#include "openport/trading/types.hpp"
+
+#include <algorithm>
+#include <set>
+
+namespace openport::trading {
+void validate_guardrails(const Guardrails& g) {
+  if (g.soft_floor < Money{} || g.soft_floor_percent < 0 || g.soft_floor_percent > 100 ||
+      g.max_opening_trades < 0 || g.cooldown_loss < Money{} || g.cooldown_minutes < 0 ||
+      g.cooldown_minutes > 1440 || g.profit_lock < Money{})
+    throw TradingError(Reason::INVALID_LIMITS, "Guardrails must be nonnegative; floor percent is 0-100 and cooldown at most 1440 minutes");
+}
+Limits tightened_limits(const Limits& current, const Limits& requested) {
+  auto result = requested;
+  result.max_order_contracts = std::min(current.max_order_contracts, requested.max_order_contracts);
+  result.price_band_absolute = std::min(current.price_band_absolute, requested.price_band_absolute);
+  result.price_band_relative = std::min(current.price_band_relative, requested.price_band_relative);
+  result.max_daily_loss = std::min(current.max_daily_loss, requested.max_daily_loss);
+  result.max_quote_age = std::min(current.max_quote_age, requested.max_quote_age);
+  result.max_valuation_age = std::min(current.max_valuation_age, requested.max_valuation_age);
+  const auto tighter = [](const ExposureLimits& a, const ExposureLimits& b) {
+    return ExposureLimits{std::min(a.dollar_delta, b.dollar_delta), std::min(a.vega, b.vega)};
+  };
+  result.aggregate = tighter(current.aggregate, requested.aggregate);
+  result.per_underlying = tighter(current.per_underlying, requested.per_underlying);
+  std::set<std::string> names;
+  for (const auto& [name, limit] : current.underlying_overrides) names.insert(name);
+  for (const auto& [name, limit] : requested.underlying_overrides) names.insert(name);
+  for (const auto& name : names) {
+    const auto a = current.underlying_overrides.find(name), b = requested.underlying_overrides.find(name);
+    result.underlying_overrides[name] = tighter(a == current.underlying_overrides.end() ? current.per_underlying : a->second,
+                                               b == requested.underlying_overrides.end() ? requested.per_underlying : b->second);
+  }
+  return result;
+}
+Guardrails tightened_guardrails(const Guardrails& current, const Guardrails& requested) {
+  const auto earlier = [](auto a, auto b) { return a == decltype(a){} ? b : b == decltype(b){} ? a : std::min(a, b); };
+  Guardrails result;
+  result.soft_floor = std::max(current.soft_floor, requested.soft_floor);
+  result.soft_floor_percent = std::max(current.soft_floor_percent, requested.soft_floor_percent);
+  result.max_opening_trades = earlier(current.max_opening_trades, requested.max_opening_trades);
+  result.cooldown_minutes = std::max(current.cooldown_minutes, requested.cooldown_minutes);
+  result.cooldown_loss = earlier(current.cooldown_loss, requested.cooldown_loss);
+  result.profit_lock = earlier(current.profit_lock, requested.profit_lock);
+  return result;
+}
+}  // namespace openport::trading

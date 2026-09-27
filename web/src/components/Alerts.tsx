@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react"
 import { useLive } from "../api/live"
-import { useFills, useTrades } from "../api/trading"
+import { useAccount, useRisk, useFills, useTrades } from "../api/trading"
 import { alertStore, describeAlert, directionFor, dividendMessage, deliveryMessage, fillMessage, newestFill, newFills, priceAlertMessage, reached, unordered, useAlertSettings } from "../lib/alerts"
+import { useActiveAccount } from "../lib/active-account"
+import { ruleAlerts, ruleAlertStore } from "../lib/rule-alerts"
 import { isNum } from "../lib/format"
 import { notificationPermission, notify, requestNotifications, toasts, useToasts } from "../lib/notify"
 import { Dialog } from "./Dialog"
@@ -27,7 +29,20 @@ export function AlertWatcher() {
   return <>
     {settings.fills && <FillWatcher sound={settings.sound} />}
     <DeliveryWatcher sound={settings.sound} />
+    <RuleWatcher sound={settings.sound} />
   </>
+}
+
+function RuleWatcher({ sound }: { sound: boolean }) {
+  const account = useAccount().data
+  const risk = useRisk().data
+  const id = useActiveAccount()
+  useEffect(() => {
+    if (!account || !risk || account.account_version !== risk.account_version) return
+    const alerts = ruleAlertStore.fresh(id, account.evaluation.day, ruleAlerts(account, risk))
+    for (const alert of alerts) notify(alert.title, alert.body, sound)
+  }, [account, risk, id, sound])
+  return null
 }
 
 /** Assignments, exercises at expiry and dividends arrive without an order, often

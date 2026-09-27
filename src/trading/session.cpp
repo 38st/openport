@@ -514,6 +514,16 @@ TradingSnapshot snapshot_of(const State& s) {
   if (std::any_of(out.positions.begin(), out.positions.end(), [](const auto& p) { return p.awaiting_settlement; }))
     out.quality_flags.push_back(Reason::AWAITING_SETTLEMENT);
   out.evaluation = s.evaluation;
+  out.pending_limits = s.pending_limits;
+  out.pending_guardrails = s.pending_guardrails;
+  out.guardrails = s.guardrails;
+  out.pending_applied_at = s.pending_applied_at;
+  const auto& personal = s.config.guardrails;
+  if (personal.soft_floor > Money{}) out.soft_floor = personal.soft_floor;
+  if (personal.soft_floor_percent > 0 && s.config.rules.max_drawdown > Money{}) {
+    const auto level = s.evaluation.floor + s.config.rules.max_drawdown.prorate(personal.soft_floor_percent, 100);
+    out.soft_floor = out.soft_floor ? std::max(*out.soft_floor, level) : level;
+  }
   out.buying_power = buying_power(s).total;
   out.closures = s.closures;
   out.attempts = s.attempts;
@@ -600,10 +610,18 @@ void cancel_order(Order& order, Decision reason, Events& events) {
   order.reason = std::move(reason);
   event(events, "cancel", order);
 }
+bool personal_reason(std::string_view reason) {
+  return reason == "SOFT_FLOOR" || reason == "TRADE_LIMIT" || reason == "COOLDOWN" || reason == "PROFIT_LOCK";
+}
+Reason guardrail_reason(const State& s) {
+  if (!s.guardrails.latched.empty()) return s.guardrails.latched.front();
+  return s.time < s.guardrails.cooldown_until ? Reason::COOLDOWN : Reason::NONE;
+}
 void trip(State& s, const std::string& reason, Events& events) {
-  if (!s.kill) {
+  if (!s.kill || (s.guardrails.owns_kill && s.kill_reason != reason)) {
     s.kill = true;
     s.kill_reason = reason;
+    s.guardrails.owns_kill = personal_reason(reason);
     event(events, "kill_trip", Json{{"reason", reason}});
   }
   // Remove opening orders first, so they cannot take a close's capacity; then any
@@ -625,9 +643,46 @@ void monitor_loss(State& s, Events& events) {
   const auto snapshot = snapshot_of(s);
   if (!loss_check(s, snapshot).ok()) trip(s, "DAILY_LOSS", events);
 }
+void latch_guardrail(State& s, Reason reason, Events& events) {
+  auto& latched = s.guardrails.latched;
+  if (reason != Reason::COOLDOWN && std::find(latched.begin(), latched.end(), reason) == latched.end()) {
+    latched.push_back(reason);
+    event(events, "guardrail_latched", Json{{"reason", reason}});
+  }
+  trip(s, std::string(to_string(guardrail_reason(s))), events);
+}
+void refresh_guardrail_latch(State& s, Events& events) {
+  const auto reason = guardrail_reason(s);
+  if (reason != Reason::NONE) trip(s, std::string(to_string(reason)), events);
+  else if (s.kill && s.guardrails.owns_kill) {
+    s.kill = false;
+    s.kill_reason.clear();
+    s.guardrails.owns_kill = false;
+    event(events, "guardrail_released", Json::object());
+  }
+}
+void begin_cooldown(State& s, Events& events) {
+  if (s.config.guardrails.cooldown_minutes == 0) return;
+  const auto duration = s.config.guardrails.cooldown_minutes * md::kNanosPerMinute;
+  if (s.time > std::numeric_limits<Timestamp>::max() - duration)
+    throw TradingError(Reason::INVALID_TIME, "Cooldown time exceeds timestamp range");
+  s.guardrails.cooldown_until = std::max(s.guardrails.cooldown_until, s.time + duration);
+  event(events, "guardrail_latched", Json{{"reason", Reason::COOLDOWN}, {"until", s.guardrails.cooldown_until}});
+  latch_guardrail(s, Reason::COOLDOWN, events);
+}
+void guardrail_fill(State& s, OrderId id, bool opening, Money realised_before, Events& events) {
+  if (opening) ++s.guardrails.opening_trades;
+  const auto& g = s.config.guardrails;
+  if (g.max_opening_trades > 0 && s.guardrails.opening_trades >= g.max_opening_trades)
+    latch_guardrail(s, Reason::TRADE_LIMIT, events);
+  if (s.orders.at(static_cast<std::size_t>(id - 1)).role == OrderRole::StopLoss ||
+      (g.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -g.cooldown_loss))
+    begin_cooldown(s, events);
+}
 void advance(State& s, Timestamp time, Events& events) {
   if (time < 0 || time < s.time) throw TradingError(Reason::INVALID_TIME, "Market time must be nonnegative and monotone");
   s.time = time;
+  refresh_guardrail_latch(s, events);
   for (auto& o : s.orders) {
     if (!o.open()) continue;
     auto expiry = std::numeric_limits<Timestamp>::max();
@@ -685,7 +740,10 @@ Decision open_orders_risk_check(const State& s, const Order& o) {
                  "the order that sells its long, or that opens the short, first, or trade the spread as one order");
 }
 Decision account_check(const State& s, bool reducing = false) {
-  if (s.kill && !reducing) return failure(Reason::KILL_SWITCH, s.kill_reason);
+  if (s.kill && !reducing) {
+    const auto personal = guardrail_reason(s);
+    return failure(personal != Reason::NONE ? personal : Reason::KILL_SWITCH, s.kill_reason);
+  }
   if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
     return failure(Reason::EVALUATION_CLOSED, std::string("The evaluation has ") +
         (s.evaluation.status == EvaluationStatus::Passed ? "passed" : "failed") +
@@ -901,6 +959,7 @@ void annotate_opening(State& s, const OrderRequest& r, const std::string& symbol
   auto a = clean_annotation(r.note, r.tags);
   store_annotation(s, std::to_string(s.fills.size() + 1), std::move(a), events);
 }
+void observe_equity(State& s, Events& events);
 /// Stale marks, an invalid quote or a missing valuation hold a fill back until a
 /// later batch brings the data; they say nothing about the order itself.
 bool data_gap(Reason code) {
@@ -958,6 +1017,8 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   }
   const auto context = fill_context(s, o.request.symbol, snapshot_of(s));
   annotate_opening(s, o.request, o.request.symbol, o.request.side == Side::Buy ? quantity : -quantity, events);
+  const auto realised_before = s.ledger.account().realised;
+  const bool opening = quantity > capacity;
   fill_position(s, o.request.symbol, o.request.side == Side::Buy ? quantity : -quantity, price, fee);
   budget -= quantity;
   o.filled_quantity += quantity;
@@ -968,6 +1029,8 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   s.fills.push_back(fill);
   event(events, "fill", fill);
   on_fill(s, id, events);
+  guardrail_fill(s, id, opening, realised_before, events);
+  observe_equity(s, events);
 }
 /// A multi-leg order fills all its legs together, in ratio, at each leg's slipped
 /// far side when the net debit is at or below its limit; units are bounded by every
@@ -1014,6 +1077,11 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     return;
   }
   const auto before = snapshot_of(s);
+  const auto realised_before = s.ledger.account().realised;
+  const bool opening = std::any_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& leg) {
+    const auto position = held(s, leg.symbol);
+    return units * leg.ratio > (leg.side == Side::Buy ? std::max<Quantity>(0, -position) : std::max<Quantity>(0, position));
+  });
   for (const auto& leg : o.request.legs) {
     const auto context = fill_context(s, leg.symbol, before);
     auto& book = s.books.at(leg.symbol);
@@ -1033,6 +1101,8 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   o.filled_notional = o.filled_notional + *net * units;
   o.status = o.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
   on_fill(s, id, events);
+  guardrail_fill(s, id, opening, realised_before, events);
+  observe_equity(s, events);
 }
 void match_symbols(State& s, const std::set<std::string>& symbols, Events& events,
                    std::optional<OrderId> incoming = {}) {
@@ -1248,7 +1318,7 @@ void decide(State& s, EvaluationStatus status, Money equity, std::string message
 /// Runs after every command: tracks the day's closing equity, ratchets an
 /// intraday peak, decides pass/fail on fully marked equity (touching the floor
 /// fails), then liquidates a decided attempt and auto-closes expiring positions.
-void monitor_rules(State& s, Events& events) {
+void observe_equity(State& s, Events& events) {
   const auto& rules = s.config.rules;
   auto& e = s.evaluation;
   // A journal created before any market data starts at time zero; the attempt
@@ -1257,7 +1327,11 @@ void monitor_rules(State& s, Events& events) {
   // Likewise the first payout cycle; journals from before payouts start it here too.
   if (e.cycle_started == 0) e.cycle_started = e.started;
   if (const auto equity = marked_equity(snapshot_of(s))) {
-    if (md::trading_date(s.time) == e.day) e.day_close_equity = *equity;
+    if (md::trading_date(s.time) == e.day) {
+      e.day_close_equity = *equity;
+      if (!e.day_low_equity || *equity < *e.day_low_equity) { e.day_low_equity = *equity; e.day_low_at = s.time; }
+      if (!e.day_high_equity || *equity > *e.day_high_equity) { e.day_high_equity = *equity; e.day_high_at = s.time; }
+    }
     if (rules.evaluation() && e.status == EvaluationStatus::Active) {
       if (rules.drawdown_mode == DrawdownMode::Intraday && *equity > e.peak) {
         e.peak = *equity;
@@ -1272,8 +1346,24 @@ void monitor_rules(State& s, Events& events) {
                dollars(target), events);
       }
     }
+    if (rules.max_drawdown > Money{} && (!e.closest_floor || *equity - e.floor < *e.closest_floor)) {
+      e.closest_floor = *equity - e.floor;
+      e.closest_floor_at = s.time;
+    }
+    const auto snapshot = snapshot_of(s);
+    const auto& g = s.config.guardrails;
+    if (snapshot.soft_floor && *equity <= *snapshot.soft_floor) latch_guardrail(s, Reason::SOFT_FLOOR, events);
+    if (g.profit_lock > Money{} && *equity - s.start_equity >= g.profit_lock) latch_guardrail(s, Reason::PROFIT_LOCK, events);
+    if (g.max_opening_trades > 0 && s.guardrails.opening_trades >= g.max_opening_trades)
+      latch_guardrail(s, Reason::TRADE_LIMIT, events);
   }
-  if (rules.evaluation() && e.status != EvaluationStatus::Active) {
+}
+void monitor_rules(State& s, Events& events) {
+  observe_equity(s, events);
+  const auto& rules = s.config.rules;
+  const auto& e = s.evaluation;
+  const bool soft = std::find(s.guardrails.latched.begin(), s.guardrails.latched.end(), Reason::SOFT_FLOOR) != s.guardrails.latched.end();
+  if (soft || (rules.evaluation() && e.status != EvaluationStatus::Active)) {
     std::vector<std::pair<std::string, Quantity>> stocks;
     for (const auto& [symbol, stock] : s.ledger.stocks()) stocks.emplace_back(symbol, stock.shares);
     for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Rule, events);
@@ -1281,8 +1371,8 @@ void monitor_rules(State& s, Events& events) {
   std::vector<std::string> symbols;
   for (const auto& [symbol, position] : s.ledger.positions()) symbols.push_back(symbol);
   for (const auto& symbol : symbols) {
-    if (rules.evaluation() && e.status != EvaluationStatus::Active) {
-      flatten(s, symbol, e.status == EvaluationStatus::Passed ? "target" : "drawdown", events);
+    if (soft || (rules.evaluation() && e.status != EvaluationStatus::Active)) {
+      flatten(s, symbol, soft ? "soft_floor" : e.status == EvaluationStatus::Passed ? "target" : "drawdown", events);
       continue;
     }
     // The cutoff counts back from the last trade: 15:55 for SPXW, 16:10 for SPY,
@@ -1297,19 +1387,144 @@ void monitor_rules(State& s, Events& events) {
     }
   }
 }
+/// Both submit and preview check the candidate while its reservation is present.
+Decision acceptance_check(const State& s, const Order& candidate, const Decision& rejection) {
+  for (const auto& order : s.orders)
+    if (order.id != candidate.id && order.request.client_order_id == candidate.request.client_order_id)
+      return failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used");
+  if (!rejection.ok()) return rejection;
+  auto decision = order_check(s, candidate);
+  return decision.ok() ? open_orders_risk_check(s, candidate) : decision;
+}
+std::map<std::string, double> fresh_stock_prices(const State& s) {
+  std::map<std::string, double> prices;
+  for (const auto& [symbol, stock] : s.ledger.stocks())
+    if (const auto price = stock_price(s, symbol)) prices[symbol] = price->dollars();
+  return prices;
+}
+BreachRisk breach_of(const State& s, const std::map<std::string, double>& close_variances) {
+  const auto snapshot = snapshot_of(s);
+  auto result = breach_risk(s.ledger, s.valuations, snapshot.equity,
+      s.config.rules.max_drawdown > Money{} ? std::optional(s.evaluation.floor) : std::nullopt,
+      snapshot.soft_floor, s.time, s.config.limits.max_valuation_age, fresh_stock_prices(s), close_variances);
+  result.complete &= snapshot.valuation_complete;
+  if (!snapshot.valuation_complete) {
+    result.room.reset(); result.soft_room.reset();
+    for (auto& underlying : result.underlyings) {
+      underlying.complete = false;
+      underlying.down.reset(); underlying.up.reset();
+    }
+  }
+  return result;
+}
+/// A bounded same-expiry payoff is piecewise linear: its minimum is at zero or
+/// a strike, unless its terminal call slope is negative (unbounded loss).
+std::optional<Money> expiry_loss(const State& s, const OrderRequest& request, Money premium, Money fees) {
+  auto legs = request.legs;
+  if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
+  const auto& first = s.contracts.at(legs.front().symbol);
+  Quantity call_slope = 0;
+  std::vector<Money> knots{Money{}};
+  for (const auto& leg : legs) {
+    const auto& contract = s.contracts.at(leg.symbol);
+    if (contract.expiry_time() != first.expiry_time() || contract.underlying != first.underlying) return {};
+    if (contract.type == pricing::OptionType::Call) call_slope += leg.side == Side::Buy ? leg.ratio : -leg.ratio;
+    knots.push_back(Money::from_double(contract.strike));
+  }
+  if (call_slope < 0) return {};
+  std::optional<Money> minimum;
+  for (const auto spot : knots) {
+    Money payoff;
+    for (const auto& leg : legs) {
+      const auto& contract = s.contracts.at(leg.symbol);
+      const auto strike = Money::from_double(contract.strike);
+      const auto intrinsic = std::max(Money{}, contract.type == pricing::OptionType::Call ? spot - strike : strike - spot);
+      payoff = payoff + (intrinsic * contract.multiplier) * signed_contracts(leg, request.quantity);
+    }
+    minimum = minimum ? std::min(*minimum, payoff) : payoff;
+  }
+  return std::max(Money{}, premium + fees - *minimum);
+}
+struct PreviewProjection {
+  OrderPreview result;
+  State projected;
+};
+PreviewProjection project_order(const State& before, OrderRequest request, const Decision& rejection) {
+  PreviewProjection projection{{}, before};
+  auto& result = projection.result;
+  auto& after = projection.projected;
+  const auto snapshot = snapshot_of(before);
+  result.buying_power_before = snapshot.buying_power.available;
+  Order candidate;
+  candidate.id = static_cast<OrderId>(after.orders.size() + 1);
+  candidate.request = request;
+  candidate.accepted_at = before.time;
+  after.orders.push_back(candidate);
+  result.decision = acceptance_check(after, after.orders.back(), rejection);
+  auto legs = request.legs;
+  if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
+  if (request.quantity <= 0 || legs.size() > kMaxLegs) return projection;
+  for (const auto& leg : legs)
+    if (leg.ratio <= 0 || leg.ratio > kMaxRatio || request.quantity > std::numeric_limits<Quantity>::max() / (100 * leg.ratio) ||
+        !before.contracts.contains(leg.symbol) || !quote_check(before, leg.symbol).ok()) return projection;
+  const auto power = buying_power(after, candidate.id);
+  result.buying_power_required = power.focus_reservation;
+  after.orders.back().status = OrderStatus::Filled;
+  Money premium, fees;
+  for (const auto& leg : legs) {
+    const auto quantity = signed_contracts(leg, request.quantity);
+    const auto price = execution_price(before, leg.symbol, leg.side,
+        legs.size() == 1 ? request.limit_price : std::nullopt);
+    const auto fee = before.config.fee_per_contract * magnitude(quantity);
+    premium = premium + (price * 100) * quantity;
+    fees = fees + fee;
+    after.ledger.fill(before.contracts.at(leg.symbol), quantity, price, fee);
+  }
+  // For a resting limit, project its limit debit/credit, not an impossible fill
+  // at today's far sides. This also makes size-to-floor conservative at limits.
+  if (request.limit_price) {
+    const auto limit_premium = (*request.limit_price * 100) * request.quantity *
+        (legs.size() == 1 && request.side == Side::Sell ? -1 : 1);
+    auto account = after.ledger.account();
+    account.cash = account.cash + premium - limit_premium;
+    after.ledger = Ledger::restore(account, after.ledger.positions(), after.ledger.stocks());
+    premium = limit_premium;
+  }
+  const auto projected = snapshot_of(after);
+  result.buying_power_after = projected.buying_power.available;
+  if (snapshot.risk.complete && projected.risk.complete) {
+    const auto& a = snapshot.risk.aggregate.position;
+    const auto& b = projected.risk.aggregate.position;
+    result.exposure_change = Exposure{b.dollar_delta - a.dollar_delta, b.dollar_gamma_1pct - a.dollar_gamma_1pct,
+                                      b.vega - a.vega, b.theta - a.theta};
+  }
+  if (!snapshot.valuation_complete || !projected.valuation_complete) return projection;
+  result.max_loss = expiry_loss(before, request, premium, fees);
+  if (result.max_loss) {
+    result.max_loss_basis = "expiry_payoff";
+  } else if (projected.scenarios.complete) {
+    double worst = 0;
+    for (const auto& cell : projected.scenarios.cells) worst = std::min(worst, cell.pnl);
+    result.max_loss = std::max(Money{}, snapshot.equity - projected.equity - Money::from_double(worst));
+    result.max_loss_basis = "scenario_grid";
+  }
+  if (result.max_loss) {
+    result.equity_at_max_loss = snapshot.equity - *result.max_loss;
+    if (before.config.rules.max_drawdown > Money{}) result.breaches_floor = *result.equity_at_max_loss <= before.evaluation.floor;
+    if (snapshot.soft_floor) result.breaches_soft_floor = *result.equity_at_max_loss <= *snapshot.soft_floor;
+  }
+  return projection;
+}
+
 /// Accept or reject one new order; once accepted, arm it or match it at once.
 CommandResult place(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = std::move(request);
   order.accepted_at = time;
-  const bool duplicate = std::any_of(s.orders.begin(), s.orders.end(), [&](const auto& o) {
-    return o.request.client_order_id == order.request.client_order_id;
-  });
   s.orders.push_back(order);
   auto& stored = s.orders.back();
-  auto decision = duplicate ? failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used") : !rejection.ok() ? rejection : order_check(s, stored);
-  if (decision.ok()) decision = open_orders_risk_check(s, stored);
+  auto decision = acceptance_check(s, stored, rejection);
   if (!decision.ok()) {
     stored.status = OrderStatus::Rejected;
     stored.reason = decision;
@@ -1553,6 +1768,7 @@ Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit) {
       validate_limits(c.limits);
       validate_scenarios(c.scenarios);
       validate_rules(c.rules);
+      validate_guardrails(c.guardrails);
       validated = config;
     }
     visit(r, std::move(payload), std::as_const(state));
@@ -1610,6 +1826,7 @@ struct TradingSession::Impl {
     const auto& s = state;
     return !stopped && time >= s.time && s.ledger.positions().empty() && s.ledger.stocks().empty() &&
            s.evaluation.started > 0 && s.evaluation.cycle_started > 0 &&
+           s.guardrails.cooldown_until <= s.time &&
            std::none_of(s.orders.begin(), s.orders.end(), [](const Order& o) { return o.open(); });
   }
 
@@ -1666,6 +1883,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
   validate_limits(config.limits);
   validate_scenarios(config.scenarios);
   validate_rules(config.rules);
+  validate_guardrails(config.guardrails);
   if (time < 0) throw TradingError(Reason::INVALID_TIME, "Negative session time");
   if (config.fee_per_contract < Money{}) throw TradingError(Reason::INVALID_MONEY, "Fee cannot be negative");
   if (journal && journal->sequence() != 0) throw TradingError(Reason::JOURNAL_CORRUPT, "Use recover for a nonempty journal");
@@ -1713,6 +1931,135 @@ CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decis
     monitor_loss(s, events);
     return place(s, std::move(request), time, rejection, events);
   });
+}
+BreachRisk TradingSession::breach(const std::map<std::string, double>& close_variances) const {
+  return breach_of(impl_->state, close_variances);
+}
+OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time, double floor_share,
+    Decision rejection, const std::map<std::string, double>& close_variances, const PreviewMarket& market) const {
+  if (!std::isfinite(floor_share) || floor_share <= 0 || floor_share > 1)
+    throw TradingError(Reason::INVALID_ORDER, "floor_share must be greater than zero and at most one");
+  // Submit answers an identical retry before advancing market time. It cannot
+  // create another fill or reserve more buying power, even if the feed changed.
+  if (!impl_->stopped) {
+    const auto& state = impl_->state;
+    const auto first = std::find_if(state.orders.begin(), state.orders.end(), [&](const Order& order) {
+      return order.request.client_order_id == request.client_order_id;
+    });
+    if (first != state.orders.end() && first->request == request) {
+      const auto snapshot = snapshot_of(state);
+      OrderPreview retry;
+      retry.decision = first->status == OrderStatus::Rejected ? first->reason : Decision{};
+      retry.buying_power_before = snapshot.buying_power.available;
+      retry.buying_power_after = retry.buying_power_before;
+      retry.exposure_change = Exposure{};
+      retry.breach = breach_of(state, close_variances);
+      return retry;
+    }
+  }
+  State before = impl_->state;
+  for (const auto& contract : market.contracts) {
+    const auto symbol = contract.osi_symbol();
+    if (!eligible(contract).ok()) continue;
+    if (const auto saved = before.contracts.find(symbol); saved != before.contracts.end() && Json(saved->second) != Json(contract))
+      throw TradingError(Reason::INVALID_CONTRACT, "Preview definition conflicts with registered terms");
+    before.contracts[symbol] = contract;
+  }
+  for (const auto& quote : market.quotes) {
+    if (!before.contracts.contains(quote.symbol) || quote.time > time || quote.time < 0) continue;
+    before.books[quote.symbol] = {quote, 0, 0};
+    if (markable_quote(quote)) before.marks[quote.symbol] = {mark_of(quote), quote.time};
+  }
+  for (const auto& valuation : market.valuations)
+    if (before.contracts.contains(valuation.symbol) && valuation.time <= time && valuation.time >= 0)
+      before.valuations[valuation.symbol] = valuation;
+  Events ignored;
+  advance(before, time, ignored);
+  monitor_loss(before, ignored);
+  auto projection = project_order(before, request, rejection);
+  auto result = projection.result;
+  if (impl_->stopped) result.decision = failure(Reason::JOURNAL_IO, "Trading stopped after journal failure");
+  result.breach = breach_of(projection.projected, close_variances);
+  const auto snapshot = snapshot_of(before);
+  std::optional<Money> room;
+  if (before.config.rules.max_drawdown > Money{}) room = snapshot.equity - before.evaluation.floor;
+  if (snapshot.soft_floor) room = room ? std::min(*room, snapshot.equity - *snapshot.soft_floor) : snapshot.equity - *snapshot.soft_floor;
+  std::map<Quantity, OrderPreview> sized_previews;
+  const auto sized_preview = [&](Quantity quantity) -> const OrderPreview& {
+    const auto saved = sized_previews.find(quantity);
+    if (saved != sized_previews.end()) return saved->second;
+    auto sized = request;
+    sized.quantity = quantity;
+    OrderPreview value;
+    try { value = project_order(before, sized, rejection).result; }
+    catch (const TradingError& error) { value.decision = failure(error.code(), error.what()); }
+    return sized_previews.emplace(quantity, std::move(value)).first->second;
+  };
+  const auto fits_limits = [&](Quantity quantity) {
+    const auto& value = sized_preview(quantity);
+    return value.decision.ok() && value.buying_power_after && value.max_loss;
+  };
+  // Convert the requested share once to millionths; floor sizing then compares
+  // fixed-point dollars. Touching either floor is never an admissible size.
+  const auto share = static_cast<std::int64_t>(std::floor(floor_share * 1'000'000));
+  const auto fits_floor = [&](Quantity quantity) {
+    const auto& loss = sized_preview(quantity).max_loss;
+    return loss && (!room || (room->micros() > 0 && *loss <= room->prorate(share, 1'000'000) && *loss < *room));
+  };
+  Quantity upper = before.config.limits.max_order_contracts;
+  for (const auto& leg : request.legs) {
+    if (leg.ratio <= 0) { upper = 0; break; }
+    upper = std::min(upper, before.config.limits.max_order_contracts / leg.ratio);
+  }
+  if (upper < 1 || !fits_limits(1) || impl_->stopped) return result;
+  Quantity low = 1, high = upper;
+  // Pre-trade reservations include both the held position and the candidate,
+  // so increasing size cannot repair an already excessive reachable exposure.
+  while (low < high) {
+    const auto middle = low + (high - low) / 2 + (high - low) % 2;
+    if (fits_limits(middle)) low = middle; else high = middle - 1;
+  }
+  upper = low;
+  // Free buying power can improve while a hedge closes shorts, then decline as
+  // it starts a long position. Find its feasible interval before sizing to loss.
+  low = 1; high = upper;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2;
+    if (*sized_preview(middle).buying_power_after < *sized_preview(middle + 1).buying_power_after) low = middle + 1;
+    else high = middle;
+  }
+  const auto best_power = low;
+  if (*sized_preview(best_power).buying_power_after < Money{}) return result;
+  low = 1; high = best_power;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2;
+    if (*sized_preview(middle).buying_power_after >= Money{}) high = middle; else low = middle + 1;
+  }
+  const auto lower = low;
+  low = best_power; high = upper;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2 + (high - low) % 2;
+    if (*sized_preview(middle).buying_power_after >= Money{}) low = middle; else high = middle - 1;
+  }
+  upper = low;
+  // Scenario losses can first fall as an order hedges the book, then rise.
+  // Their maximum of linear per-cell losses is convex: find its minimum before
+  // searching the upper feasible edge, rather than assuming one unit fits.
+  low = lower; high = upper;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2;
+    const auto& a = sized_preview(middle).max_loss;
+    const auto& b = sized_preview(middle + 1).max_loss;
+    if (a && b && *a > *b) low = middle + 1; else high = middle;
+  }
+  if (!fits_floor(low)) return result;
+  high = upper;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2 + (high - low) % 2;
+    if (fits_floor(middle)) low = middle; else high = middle - 1;
+  }
+  result.max_units = low;
+  return result;
 }
 CommandResult TradingSession::cancel(OrderId id, Timestamp time) {
   return impl_->transact(time, "cancel", [&](State& s, Events& events) {
@@ -1830,6 +2177,7 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     }
     detail::update_reviews(s);
     monitor_loss(s, events);
+    monitor_rules(s, events);
     // Invalid quotes provide no liquidity. Keep orders until a new valid quote
     // permits the fill-time risk check (or a clock/kill command cancels them).
     for (auto it = changed.begin(); it != changed.end();) {
@@ -1851,10 +2199,12 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
 CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
   validate_limits(limits);
   return impl_->transact(time, "limit_change", [&](State& s, Events& events) {
-    s.config.limits = std::move(limits);
+    const auto effective = s.config.rules.evaluation() ? tightened_limits(s.config.limits, limits) : limits;
+    s.pending_limits = Json(effective) != Json(limits) ? std::optional(limits) : std::nullopt;
+    s.config.limits = effective;
     if (s.limits_revision == std::numeric_limits<std::uint64_t>::max()) throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Limits revision exhausted");
     ++s.limits_revision;
-    event(events, "limit_change", s.config.limits);
+    event(events, "limit_change", Json{{"effective", s.config.limits}, {"pending", s.pending_limits}});
     monitor_loss(s, events);
     for (auto& order : s.orders) {
       if (!order.open()) continue;
@@ -1869,16 +2219,40 @@ CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
     return CommandResult{};
   });
 }
+CommandResult TradingSession::set_guardrails(Guardrails guardrails, Timestamp time) {
+  validate_guardrails(guardrails);
+  return impl_->transact(time, "guardrail_change", [&](State& s, Events& events) {
+    if (guardrails.soft_floor > Money{} && s.config.rules.max_drawdown > Money{} && guardrails.soft_floor <= s.evaluation.floor)
+      throw TradingError(Reason::INVALID_LIMITS, "Soft floor equity must be above the plan floor");
+    const auto effective = tightened_guardrails(s.config.guardrails, guardrails);
+    if (s.guardrails.cooldown_until > s.time && effective.cooldown_minutes > s.config.guardrails.cooldown_minutes) {
+      const auto extension = (effective.cooldown_minutes - s.config.guardrails.cooldown_minutes) * md::kNanosPerMinute;
+      if (s.guardrails.cooldown_until > std::numeric_limits<Timestamp>::max() - extension)
+        throw TradingError(Reason::INVALID_TIME, "Cooldown time exceeds timestamp range");
+      s.guardrails.cooldown_until += extension;
+    }
+    s.pending_guardrails = effective != guardrails ? std::optional(guardrails) : std::nullopt;
+    s.config.guardrails = effective;
+    if (s.limits_revision == std::numeric_limits<std::uint64_t>::max()) throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Limits revision exhausted");
+    ++s.limits_revision;
+    event(events, "guardrail_change", Json{{"effective", effective}, {"pending", s.pending_guardrails}});
+    return CommandResult{};
+  });
+}
 CommandResult TradingSession::trip_kill(std::string reason, Timestamp time) {
   require_reason(reason);
   return impl_->transact(time, "kill_trip", [&](State& s, Events& events) {
     trip(s, reason, events);
+    s.kill_reason = reason;
+    s.guardrails.owns_kill = false;
     return CommandResult{};
   });
 }
 CommandResult TradingSession::reset_kill(std::string reason, Timestamp time) {
   require_reason(reason);
   return impl_->transact(time, "kill_reset", [&](State& s, Events& events) {
+    const auto personal = guardrail_reason(s);
+    if (personal != Reason::NONE) return CommandResult{failure(personal, "Personal guardrail remains active until its market-time expiry"), {}, 0};
     s.kill = false;
     s.kill_reason.clear();
     event(events, "kill_reset", Json{{"reason", reason}});
@@ -2048,9 +2422,25 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
       const bool qualifying = rules.phase == Phase::Funded && e.status == EvaluationStatus::Active &&
           payouts.qualifying_days > 0 && realised >= payouts.qualifying_profit && realised > Money{};
       if (qualifying) ++e.qualifying_days;
-      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying, snapshot.attribution});
+      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying, snapshot.attribution, e.day_low_equity, e.day_high_equity, e.day_low_at, e.day_high_at});
       event(events, "evaluation_day", e.days.back());
     }
+    if (s.pending_limits || s.pending_guardrails) {
+      if (s.limits_revision == std::numeric_limits<std::uint64_t>::max()) throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Limits revision exhausted");
+      if (s.pending_limits) { s.config.limits = *s.pending_limits; s.pending_limits.reset(); }
+      if (s.pending_guardrails) { s.config.guardrails = *s.pending_guardrails; s.pending_guardrails.reset(); }
+      ++s.limits_revision;
+      s.pending_applied_at = s.time;
+      event(events, "pending_limits_applied", Json{{"limits", s.config.limits}, {"guardrails", s.config.guardrails}});
+    }
+    const bool personal_latch = s.guardrails.owns_kill;
+    const auto cooldown_until = s.guardrails.cooldown_until;
+    s.guardrails = {};
+    s.guardrails.owns_kill = personal_latch;
+    if (cooldown_until > s.time) s.guardrails.cooldown_until = cooldown_until;
+    refresh_guardrail_latch(s, events);
+    e.day_low_equity = snapshot.equity; e.day_high_equity = snapshot.equity;
+    e.day_low_at = s.time; e.day_high_at = s.time;
     e.day_open_realised = net_realised(s);
     e.day = day;
     e.day_open_equity = snapshot.equity;
@@ -2133,6 +2523,11 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.start_equity = initial_cash;
     s.kill = false;
     s.kill_reason.clear();
+    if (s.pending_limits) { s.config.limits = *s.pending_limits; s.pending_limits.reset(); ++s.limits_revision; }
+    if (s.pending_guardrails) { s.config.guardrails = *s.pending_guardrails; s.pending_guardrails.reset(); ++s.limits_revision; }
+    s.guardrails = {};
+    s.pending_applied_at = 0;
+    s.day = md::trading_date(s.time);
     s.evaluation = fresh_evaluation(s, attempt);
     event(events, "account_reset", Json{{"reason", reason}, {"attempt", attempt}, {"initial_cash", initial_cash},
                                         {"rules", s.config.rules}});
@@ -2248,7 +2643,10 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
     if (!md::market_session(s.time).open) return CommandResult{failure(Reason::SESSION_CLOSED, "Stock trades in the regular session"), {}, 0};
     const auto price = stock_price(s, symbol);
     if (!price) return CommandResult{failure(Reason::STALE_QUOTE, "Needs a fresh price for " + symbol), {}, 0};
+    const auto realised_before = s.ledger.account().realised;
     trade_shares(s, symbol, signed_shares, *price, StockSource::Trade);
+    if (s.config.guardrails.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -s.config.guardrails.cooldown_loss)
+      begin_cooldown(s, events);
     event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", signed_shares}, {"price", *price}});
     return CommandResult{};
   });

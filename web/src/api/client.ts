@@ -1,6 +1,6 @@
 import type { Volatility } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderChange, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, DayNote, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { writeToken } from "../lib/write-token"
@@ -75,6 +75,9 @@ function scoped(path: string): string {
 }
 
 export const api = {
+  previewOrder: (order: NewOrder, mode: WriteMode, floor_share = 0.5) => write<OrderPreview>(scoped("/api/orders/preview"), "POST", mode, { ...order, floor_share }),
+  equity: (signal?: AbortSignal) => get<EquityHistory>(scoped("/api/account/equity"), signal),
+  updateGuardrails: (expected_revision: string, guardrails: Guardrails, mode: WriteMode) => write<Risk>(scoped("/api/risk/guardrails"), "PUT", mode, { expected_revision, guardrails }),
   portfolio: (signal?: AbortSignal) => get<Portfolio>(scoped("/api/portfolio"), signal),
   orders: (status: "open" | "all" = "all", signal?: AbortSignal) => get<OrdersResponse>(scoped(`/api/orders?status=${status}`), signal),
   fills: (signal?: AbortSignal) => get<FillsResponse>(scoped("/api/fills"), signal),

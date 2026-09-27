@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **620 C++ and 385 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **651 C++ and 393 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -83,8 +83,10 @@ with generated prices labelled as simulated on every page:
   a condor or iron butterfly can roll its put or call vertical as one four-leg order.
 - **Evaluations**: a profit target and a trailing drawdown floor (intraday or end of day)
   decide pass or fail, with buy-only, defined-risk and buying-power rules and auto-close
-  before expiry.
-  The Dashboard charts equity against the target and floor, and the Journal keeps a P&L
+  before expiry. Limits tighten immediately; looser evaluation limits wait for the
+  next trading day. Personal soft floors, trade limits, cooldowns and profit locks
+  keep the account reduce-only when reached.
+  The Dashboard charts minute and fill equity against the target and floor, and the Journal keeps a P&L
   calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
   per contract or per strategy, with shares from exercise and assignment as trades of
   their own. Each trade's review shows the market and the account at entry and exit,
@@ -96,7 +98,10 @@ with generated prices labelled as simulated on every page:
   (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
   keep working while opening orders are cancelled. Positions close together as one
-  order, or flatten an underlying or the whole account in one step.
+  order, or flatten an underlying or the whole account in one step. Server order
+  previews show buying power, maximum loss and a size that uses at most half the
+  floor room. Breach risk shows the spot moves that could reach the floor and
+  labelled model estimates of touching it before the close.
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market.
 - **Replay**: record every session and trade any recorded day again beside the live
@@ -110,7 +115,9 @@ with generated prices labelled as simulated on every page:
   prices stay labelled simulated. [Scenario format](docs/scenarios.md).
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
   the terminal and as browser notifications with an optional chime while it is open;
-  assignments, exercises at expiry and dividends are always announced.
+  assignments, exercises at expiry and dividends are always announced. Floor room,
+  daily loss, guardrails, pending limits and a nearby profit target also raise alerts,
+  once per threshold per account and trading day.
 
 ### Operations
 
@@ -251,7 +258,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
-| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only |
+| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Equity history is kept beside each journal as `.equity.csv` |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
@@ -360,13 +367,15 @@ these routes, so anything it does can be scripted:
 
 | Route | Does |
 | --- | --- |
-| `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders, fills, risk, rules and progress, and its round trips |
+| `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders, fills, risk and breach estimates, rules and progress, and its round trips |
+| `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to floor and projected breach risk |
+| `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
 | `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
 | `GET /api/trades.csv`, `/api/fills.csv` | Trades or fills, with context and excursions, filtered by account and New York `from`/`to` dates |
 | `PUT /api/days/{YYYY-MM-DD}/note` | The account's plan and review for a day; returned in `/api/trades` as `day_notes` |
 | `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |
-| `PUT /api/risk/limits`, `POST /api/risk/kill` | Change the risk limits; trip or reset the kill switch |
+| `PUT /api/risk/limits`, `PUT /api/risk/guardrails`, `POST /api/risk/kill` | Tighten rules now or queue looser values for rollover; set personal guardrails; trip or reset the kill switch |
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one; every route above takes `?account=ID` for one other than the main account |
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`; control or stop. `/api/replay/X` mirrors `/api/X` |
@@ -428,6 +437,8 @@ exists; GitHub tags the commit when you publish the draft.
 
 ## Roadmap
 
+- [x] Plan-locked limits, personal guardrails, order previews and size to floor, breach
+      estimates, intraday equity history and rule alerts
 - [x] Pricing core: Black-76 and Black-Scholes-Merton with full Greeks, safeguarded IV
       solver, Cox-Ross-Rubinstein and Leisen-Reimer trees
 - [x] Providers: Cboe, Databento, Massive and ThetaData, with record and replay of any feed

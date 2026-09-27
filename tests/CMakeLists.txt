@@ -34,6 +34,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/thetadata_test.cpp
     server/api_test.cpp
     server/candles_test.cpp
+    server/equity_test.cpp
     server/web_policy_test.cpp
     server/engine_test.cpp
     server/paper_test.cpp
@@ -55,6 +56,7 @@ target_sources(openport_tests PRIVATE
   trading/money_ledger_test.cpp
   trading/matching_test.cpp
   trading/kill_test.cpp
+  trading/floor_test.cpp
   trading/risk_settlement_test.cpp
   trading/journal_test.cpp
   trading/journal_schema_test.cpp

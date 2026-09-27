@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "openport/trading/session.hpp"
+#include "openport/server/equity.hpp"
 
 namespace openport::server {
 
@@ -79,15 +80,20 @@ struct TradingView {
   std::map<std::string, md::Timestamp> market_times;
   /// Circuit-breaker halts of the last day.
   std::vector<MarketHalt> halts;
+  trading::BreachRisk breach;
+  std::vector<EquitySample> equity_samples;
+  std::string equity_error;
 };
 
 struct TradingCommand {
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
-                    Exercise, CloseStock, DayNote };
+                    Exercise, CloseStock, DayNote, Preview, Guardrails };
   Kind kind = Kind::Submit;
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
   trading::Limits limits;
+  trading::Guardrails guardrails;
+  double floor_share = 0.5;
   std::uint64_t expected_revision = 0;
   std::string reason;
   std::string symbol;
@@ -122,6 +128,7 @@ struct TradingReply {
   std::vector<trading::OrderId> created_orders;  ///< Orders the command added, in sequence.
   std::string account;  ///< The account the command acted on (a new account's ID for CreateAccount).
   bool replayed = false;  ///< A retried order answered as first submitted.
+  std::optional<trading::OrderPreview> preview;
 };
 using TradingCompletion = std::function<void(TradingReply)>;
 

@@ -2,6 +2,8 @@ import { useState, type ReactNode } from "react"
 import { useLive } from "../api/live"
 import { useAccount, usePlans, useRisk } from "../api/trading"
 import type { Account, Plan, TradingStatus } from "../api/trading-types"
+import { PersonalRules } from "../components/PersonalRules"
+import { BreachPanel } from "../components/BreachPanel"
 import { ResetDialog } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
@@ -95,6 +97,8 @@ function Rules({ trading }: { trading: TradingStatus }) {
       <Panel title={<span className="flex items-center gap-2">{data.rules.plan ?? "Paper account"} {evaluationBadge(data, data.rules.plan)}</span>}>
         {ruleText(data, trading.fee_per_contract, risk?.limits.max_daily_loss).map((rule) => <Rule key={rule.title} title={rule.title}>{rule.body}</Rule>)}
       </Panel>
+      {risk && <PersonalRules risk={risk} />}
+      <BreachPanel breach={data.breach} />
       <TradingError error={plans.error} />
       {plans.data ? <>
         {/* Funded plans appear only when the terminal offers them (lib/features). */}

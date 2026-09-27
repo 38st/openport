@@ -28,7 +28,7 @@ const fields: { key: keyof ReturnType<typeof draftOf>; label: string; money?: bo
 ]
 export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; trading: TradingStatus; onClose: () => void }) {
   const [revision, setRevision] = useState(initial.limits_revision)
-  const [draft, setDraft] = useState(() => draftOf(initial.limits))
+  const [draft, setDraft] = useState(() => draftOf(initial.pending_limits ?? initial.limits))
   const [error, setError] = useState<unknown>()
   const [pending, setPending] = useState(false)
   const busy = useRef(false)
@@ -56,12 +56,12 @@ export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; tra
     busy.current = true; setPending(true)
     try {
       const latest = await api.risk()
-      if (sameSession()) { setRevision(latest.limits_revision); setDraft(draftOf(latest.limits)); setError(undefined) }
+      if (sameSession()) { setRevision(latest.limits_revision); setDraft(draftOf(latest.pending_limits ?? latest.limits)); setError(undefined) }
     } catch (failure) { if (sameSession()) setError(failure) }
     finally { busy.current = false; if (sameSession()) setPending(false) }
   }
   return <Dialog title="Edit risk limits" onClose={onClose}>
-    <p className="text-xs text-muted">Editing revision {revision}. A newer server revision must be reloaded before saving.</p>
+    <p className="text-xs text-muted">Editing revision {revision}. During an evaluation, tightening applies now and loosening takes effect next trading day. Practice limits change immediately. A newer revision must be reloaded before saving.</p>
     <WriteAccess trading={trading} />
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save() }}>
       <fieldset disabled={pending} className="grid min-w-0 grid-cols-2 gap-3"><legend className="sr-only">Limits</legend>{fields.map(({ key, label, integer }) => <label key={key} className="trade-label">{label}<input className="trade-input" inputMode={integer ? "numeric" : "decimal"} value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: e.target.value })} required /></label>)}</fieldset>

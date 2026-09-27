@@ -20,6 +20,10 @@ struct EvaluationDay {
   Money realised;      ///< Net realised P&L of the day (after fees).
   bool qualifying = false;  ///< Funded accounts: the day counted toward a payout.
   Attribution attribution;  ///< The day's P&L by Greek.
+  std::optional<Money> low_equity;
+  std::optional<Money> high_equity;
+  Timestamp low_at = 0;
+  Timestamp high_at = 0;
 };
 
 /// A funded-account withdrawal. The account pays out `amount`; the trader keeps
@@ -56,6 +60,12 @@ struct Evaluation {
   std::uint64_t qualifying_days = 0;  ///< Days closed since the last payout (or the start) that qualified.
   Timestamp cycle_started = 0;
   std::vector<Payout> payouts;
+  std::optional<Money> day_low_equity;
+  std::optional<Money> day_high_equity;
+  Timestamp day_low_at = 0;
+  Timestamp day_high_at = 0;
+  std::optional<Money> closest_floor;
+  Timestamp closest_floor_at = 0;
 };
 
 /// An earlier attempt, summarised when the account is reset.

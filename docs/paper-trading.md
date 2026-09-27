@@ -566,9 +566,13 @@ preserving the underlying reason in its message and actual/limit/scope. A data g
 batch brings an order's quote before the rest of the portfolio's after a stall, the
 order keeps working and a later batch fills it once the data is complete.
 Noncrossed resting orders wait; invalid quotes supply no fills.
-Limit changes apply immediately, increment a revision, and cancel affected orders
-in acceptance order when rechecks fail. Limits never force-liquidate positions; only
-account rules do (see Account rules).
+Limit changes increment a revision and recheck working orders. During an evaluation
+or funded attempt, each tighter field applies immediately; each looser field waits
+for the next trading-day rollover. The complete desired limits are journaled as
+`pending_limits`. A later edit replaces the pending request but cannot loosen a
+field already active today. Order size, exposure, price bands, daily loss and freshness
+windows all follow this rule. Practice limits change immediately. Resetting an attempt
+applies its pending limits. Limits themselves never liquidate positions.
 
 Daily loss is `max(0, start_of_day_equity - equity)` including marks and fees. A loss
 **strictly greater than** the configured allowance trips the latch **before matching**
@@ -589,7 +593,8 @@ attempts retain their existing restrictions.
 
 `reset_kill` requires a nonblank reason, records the reset, and immediately re-trips
 if the loss still breaches. The account remains reduce-only while latched. A new
-trading day's baseline permits a reset; rollover alone does not clear the latch.
+trading day's baseline permits a reset; rollover alone does not clear a manual or
+daily-loss latch.
 A reset cannot make stale data tradable.
 
 `roll_day` is an explicit command on a later trading date, requiring complete marked
@@ -598,11 +603,97 @@ equity. A trading date (`md::trading_date`) is a business day's New York date un
 holidays, it is the next business day, whose overnight session opens that evening. So
 an overnight trade counts toward the day it trades for, and a day's close is the last
 marked equity before 17:00. Rollover first monitors the old daily baseline, then
-stores the new baseline. Repeated same-day rollover rejects. The kill latch survives rollover and recovery.
+stores the new baseline. Repeated same-day rollover rejects. Manual and daily-loss kill latches survive rollover and recovery. Personal daily
+latches clear at rollover; cooldowns expire on market time.
 There are no deposits/withdrawals or cash interest. Without
 the `buying_power` rule, negative cash and short positions are permitted subject to
 the stated limits. With it, the selected margin requirement below applies; neither is a
 full brokerage margin model.
+
+### Personal guardrails
+
+Guardrails belong to the account, separately from its plan, and default to off.
+`PUT /api/risk/guardrails` takes `expected_revision` and a complete `guardrails` object:
+
+| Field | Meaning; zero disables |
+| --- | --- |
+| `soft_floor` | Decimal dollar equity level above the plan floor |
+| `soft_floor_percent` | Whole percent, 0–100, of the plan's drawdown distance to keep above its current floor; the higher of this level and `soft_floor` wins |
+| `max_opening_trades` | Number of opening executions per trading day; a partial execution counts once and an atomic multi-leg execution counts once |
+| `cooldown_minutes` | Market minutes without new opening orders after a stop-loss exit, up to 1440 |
+| `cooldown_loss` | A closing fill's realised loss before fees must exceed this dollar amount to also start the configured cooldown |
+| `profit_lock` | Day's marked P&L at or above this dollar amount makes the account reduce-only |
+
+Touching the soft floor submits closing orders and latches `SOFT_FLOOR`. Liquidation
+uses the same quotes, displayed liquidity and regular-session restrictions as a plan
+floor breach, and retries remaining positions on later updates. It does not itself
+fail the attempt. `TRADE_LIMIT` and `PROFIT_LOCK` leave positions open and cancel
+opening orders. All three last until rollover. `COOLDOWN` lasts until the journaled
+`cooldown_until`, including across rollover; wall time does not shorten it. A later stop restarts it, and a longer
+cooldown setting extends one already active. Closing orders, Flatten and exits keep
+working under all four reasons. Manual reset cannot bypass an active guardrail.
+
+Guardrails are tighten-only within the day on every account, including practice.
+Enabling a rule, raising a soft floor, lowering a trade/profit/loss threshold or
+lengthening a cooldown applies now. Other changes appear in `pending_guardrails`
+until rollover. Starting a new attempt applies pending settings and clears their
+progress; personal settings otherwise persist. A soft floor still above equity can
+trip again after rollover. The existing kill latch is shared; a manual or daily-loss
+trip still requires its own reset after the personal rule expires.
+
+`GET /api/risk` includes active and pending settings, `pending_effective`
+(`next_trading_day` or null), the last `pending_applied_at`/`pending_applied_day`, and
+`guardrail_state`: opening count, latched reasons, effective soft floor, cooldown end
+and market-time seconds left. Rules and Risk show pending values beside active ones.
+
+### Order preview and breach risk
+
+`POST /api/orders/preview` takes the same order body as submission, plus optional
+`floor_share` in (0, 1], default 0.5. The const reducer path shares submission checks
+and makes a private full-size projection. It writes no journal, changes no account or
+ID counter, and consumes no displayed size. The normal HTTP write protections apply.
+
+The response contains `decision` (`ok` or a reason code), `reason`, `buying_power`
+(`required`, `before`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
+vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
+`breaches_floor`, `breaches_soft_floor`, `max_units` and projected `breach`. Missing
+inputs produce null analytical values. `simulated: true` labels the projection.
+Market orders use slipped far sides; limit orders use their limit debit or credit.
+Fees are included. Identical client-ID retries return their original decision with no
+additional buying power or Greek change; loss projection and sizing are unavailable.
+
+A bounded same-expiry payoff has an exact maximum loss at zero or a strike; a net
+short call tail is unbounded. Other orders use the worst loss of the projected account
+on its configured spot × volatility grid, labelled `scenario_grid`. This finite grid
+is not a bound on all possible losses. The exact `expiry_payoff` value describes the
+order's own payoff, while the scenario value describes the account after the order.
+`max_units` fits buying power, pre-trade limits and the requested share of current
+room above the nearer plan or soft floor. Touching a floor never fits. The share is
+rounded down to millionths for fixed-point sizing. The preview is a current projection,
+not an execution promise; real orders still take all checks when submitted and filled.
+
+`GET /api/risk` and `GET /api/account` expose `breach`: dollar `room` and `soft_room`,
+`complete`, and `underlyings[]`. Each held underlying has `spot`, `close_sigma` (one
+standard deviation of its log price to today's close), `complete`, and optional
+`down`/`up` levels with signed `points`, `percent` and `touch_probability`. One underlying moves at a time while volatility and option
+life stay fixed. The scenario solver scans by 0.25% to −99.75% and +100%, then by 1%
+to +1000%, and bisects the first crossing. A missing level means no crossing in that
+scan, not safety outside it or between scan points. Missing valuations leave levels
+unavailable.
+
+Touch probability is a model estimate from the driftless log-return reflection formula
+`erfc(abs(log(level / spot)) / (sigma * sqrt(2)))`, about twice a terminal tail
+probability, where `sigma²` is the market's implied variance to that trading day's
+regular close: the nearest expiry's at-the-money IV² times its time to settlement (the
+calendar time the IV was solved on), of which today's session takes its share in
+regular-session time. A 0DTE expiry gives today's variance directly; a Friday expiry
+seen on Wednesday morning gives today about 5.5 of its 18.5 remaining session hours.
+Calendar time would spread that variance over nights and weekends and understate the
+hours left today several times over. After the close the probability is zero; without
+an IV it is null. These are simulated scenarios and
+model estimates, not observed market outcomes. Dashboard, Risk and both ticket
+previews label them accordingly. Tickets debounce previews, offer **Size to floor**,
+and show an explicit failure without guessing when the endpoint is unavailable.
 
 ## Account rules and evaluations
 
@@ -627,7 +718,8 @@ side, no buying-power check. All rule money is exact.
 
 Outcomes use **fully marked equity**: every position has a mark, fresh or not. A
 position without any mark defers the decision rather than counting as zero. Every
-transaction runs the monitor after its command and the daily-loss check: it records
+transaction runs the monitor after its command and the daily-loss check, as well as
+after each atomic fill and before matching a new quote batch: it records
 the day's latest marked equity, ratchets an intraday peak, fails on `equity <= floor`
 (the floor is breached by touching it) and otherwise passes on `equity >= target`.
 Breaches are checked on every transaction in both modes; the mode only controls when
@@ -721,6 +813,33 @@ attempt begins. Settlements are also recorded as closures.
 status and decision, plus one `EvaluationDay` per finished trading date (open and
 close equity, peak and floor after that day's ratchet, net realised P&L after fees,
 and whether it qualified toward a payout), appended at `roll_day`.
+
+### Equity extremes and history
+
+Each finished `EvaluationDay` keeps `low_equity`, `high_equity`, `low_at` and
+`high_at`. Current-day values use the `day_` prefix in `evaluation`. Only fully
+marked equity contributes, and ties keep the first time. `closest_floor` is the
+smallest equity minus floor observed during the attempt, with `closest_floor_at`.
+Older records leave these values null and times absent rather than inventing history.
+
+The engine stores marked equity once per market minute, at every fill and when the
+floor changes. Atomic spread legs share their post-execution equity. Share deliveries and closes
+use their committed transaction mark. History is
+appended beside each journal as `<journal>.equity.csv`, reloaded on start and compacted
+to the current attempt plus at most 90 days and 100,000 samples from older attempts.
+The CSV columns are nanosecond timestamp, attempt, equity micros, floor micros, peak
+micros, target micros, tomorrow-floor micros, option fill ID and share fill ID
+(both zero for a minute mark). The earlier eight-column format defaults share ID to zero.
+Absent levels are `null`. Invalid/torn rows are skipped and reported. Storage errors
+are exposed as `error` and do not stop trading. Replays without a journal store no
+history. The server never fills in a gap from its downtime.
+
+`GET /api/account/equity?from=&to=` returns `{samples, error}`. Optional bounds are
+inclusive UTC ISO timestamps; `account=ID` selects an account. Each sample carries
+`time`, trading `day`, `attempt`, `equity`, `floor`, `peak`, `target`, `tomorrow_floor`
+and `fill` (share IDs start with `s`). The Dashboard keeps its daily chart and adds a day-selectable intraday
+chart, with gaps, ratchet markers and the target. End-of-day plans also show the floor
+that would apply tomorrow if the day ended at that sample.
 
 ### Funded accounts and payouts
 
@@ -1067,6 +1186,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |
 | `DELTA_LIMIT`, `VEGA_LIMIT` | Worst reachable exposure exceeds underlying/aggregate limit |
+| `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; opening orders and manual latch resets are refused while closing orders and exits remain available |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, acceptance-day session end |
@@ -1185,7 +1305,12 @@ terminal alone: price alerts on an underlying and alerts on each new fill are ke
 the browser's local storage and run while the terminal is open, on the live feed only
 (not a replay). They show on the page and, where the browser allows notifications, as
 system notifications, with an optional chime. A price alert fires once, when the
-feed's price reaches its level from the side it was set on.
+feed's price reaches its level from the side it was set on. Rule alerts use the same
+notifications and chime: floor room below 50%, 25% and 10% of the plan drawdown;
+daily loss at 50%, 75% and 90% of its limit; a guardrail latch; pending rules taking
+effect; and a target within 10%. Each fires once per account and trading
+day, including after a page reload. Claims are stored in localStorage with an
+in-memory fallback when browser storage is denied.
 
 The web ticket estimates fees using `fee_per_contract`; only older servers without
 it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
@@ -1199,11 +1324,10 @@ tick table above (including downward steps across $3.00). Typed off-tick prices
 still receive the server's `INVALID_TICK` reason. On wide screens the ticket docks
 beside the chain; elsewhere it is a dialog. It names the strategy from the held
 position (Long Call, Close Short Put...), sets the limit from Bid/Mid/Ask, says whether
-the order is marketable at the far side or will rest, and estimates the buying-power
-effect with the server's strategy reservation rules. With portfolio margin or
-slippage, both order tickets leave the buying-power estimate blank and explain
-that it is checked on submission. Price previews are labelled as excluding slippage
-when enabled. Buy-only plans and decided attempts block submission with the reason.
+the order is marketable at the far side or will rest, and requests buying power and
+floor risk from the server preview. The web has no second copy of margin rules.
+Quoted premium estimates exclude slippage; the server preview includes the plan's
+slippage. Buy-only plans and decided attempts block submission with the reason.
 
 Strategy mode's **Templates** menu selects verticals, iron condors, iron butterflies,
 strangles, straddles, long call or put butterflies, calendars and diagonals. Delta
@@ -1255,6 +1379,8 @@ focus at the top of the ticket.
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, or the original rejection) and records nothing, while other terms under that ID reject with 409 `DUPLICATE_CLIENT_ID` |
+| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` and projected `breach` |
+| `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
@@ -1262,11 +1388,12 @@ focus at the top of the ticket.
 | `GET /api/fills` | Version and fills, newest first, with pre-execution `context` (null on older fills) |
 | `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |
 | `PUT /api/days/{YYYY-MM-DD}/note` | Required `plan` and `review` strings replace the day note; returns version, `day` and `note`. Invalid text returns `INVALID_NOTE` (422); invalid dates return 400 |
-| `GET /api/risk` | Version, limits revision, limits, complete flag, daily loss, kill state, aggregate/underlying buckets and scenario matrices |
-| `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |
+| `GET /api/risk` | Version, active/pending limits and guardrails, guardrail progress, pending activation, daily loss, kill state, aggregate/underlying buckets, scenario matrices and `breach` |
+| `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; tighter fields apply now, looser evaluation fields are pending until rollover; 200 returns the risk view, 409 if revision changed |
+| `PUT /api/risk/guardrails` | `expected_revision` string and complete `guardrails`; tighter fields apply now, looser fields wait for rollover on all accounts; returns the risk view |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
-| `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised`, `qualifying` and `attribution`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
+| `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id` and `strategy_review` (see [trade review](#trade-review)). `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |

@@ -135,7 +135,52 @@ std::string slug(std::string_view name) {
   while (!id.empty() && id.back() == '-') id.pop_back();
   return id;
 }
+/// Regular-session time between two instants, over each trading day's 09:30 open to
+/// its close (13:00 on early closes): business time, not calendar time.
+md::Timestamp session_time(md::Timestamp from, md::Timestamp to) {
+  md::Timestamp total = 0;
+  if (to <= from) return total;
+  auto day = md::days_since_epoch(md::new_york_time(from).date);
+  const auto last = md::days_since_epoch(md::new_york_time(to).date);
+  for (; day <= last; ++day) {
+    const auto date = md::date_from_days(day);
+    const auto open = md::new_york_to_utc(date, 9, 30);
+    const auto close = md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+    if (!md::market_session(open).open) continue;
+    total += std::max<md::Timestamp>(0, std::min(close, to) - std::max(open, from));
+  }
+  return total;
+}
+std::optional<double> close_variance(const std::shared_ptr<const analytics::UnderlyingMetrics>& metrics) {
+  return metrics ? implied_variance_to_close(*metrics) : std::nullopt;
+}
 }  // namespace
+
+/// The nearest expiry's at-the-money IV was solved on calendar time, so IV² × its
+/// years is the variance to its settlement; today's session takes its share of that in
+/// business time. Calendar time alone would spread a week's variance over nights and
+/// weekends and understate a few trading hours several times over.
+std::optional<double> implied_variance_to_close(const analytics::UnderlyingMetrics& metrics) {
+  if (!(metrics.spot > 0)) return {};
+  const analytics::SliceMetrics* front = nullptr;
+  double iv = 0, distance = std::numeric_limits<double>::max();
+  for (const auto& slice : metrics.slices) {
+    if (!(slice.years > 0) || slice.expiry_time <= metrics.as_of || (front && slice.years > front->years)) continue;
+    for (const auto& strike : slice.strikes) {
+      if (!(strike.iv > 0) || !std::isfinite(strike.iv)) continue;
+      const auto away = std::abs(strike.strike - metrics.spot);
+      if (!front || slice.years < front->years || away < distance) { front = &slice; iv = strike.iv; distance = away; }
+    }
+  }
+  if (!front) return {};
+  const auto date = md::trading_date(metrics.as_of);
+  const auto close = md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+  const auto today = session_time(metrics.as_of, close);
+  const auto until_expiry = session_time(metrics.as_of, front->expiry_time);
+  if (today <= 0) return 0.0;
+  if (until_expiry <= 0) return {};
+  return iv * iv * front->years * std::min(1.0, static_cast<double>(today) / static_cast<double>(until_expiry));
+}
 
 std::optional<MarketHalt> circuit_breaker(double reference, double price, md::Timestamp time, int tripped) {
   if (!(reference > 0) || !(price > 0) || !std::isfinite(reference) || !std::isfinite(price)) return std::nullopt;
@@ -306,13 +351,15 @@ void Engine::start_trading() {
       if (recovery) account.session = std::make_unique<TradingSession>(TradingSession::recover(*recovery, journal));
       else if (seed) account.session = std::make_unique<TradingSession>(options_.paper, 0, journal);
       else throw TradingError(Reason::JOURNAL_CORRUPT, "The account journal is empty");
+      if (!file.empty()) account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
+      account.sampled_snapshot = account.session->snapshot();
     } catch (const TradingError& error) {
       account.failure = std::string(to_string(error.code())) + ": " + error.what();
     } catch (const std::exception& error) {
       account.failure = std::string("JOURNAL_IO: ") + error.what();
     }
   };
-  accounts_.push_back({std::string(kMainAccount), "Main", nullptr, {}});
+  accounts_.push_back({std::string(kMainAccount), "Main", nullptr, {}, nullptr, {}});
   open(accounts_.back(), options_.paper_journal, true);
   std::error_code ec;
   if (!options_.paper_accounts.empty() && std::filesystem::is_directory(options_.paper_accounts, ec)) {
@@ -321,7 +368,7 @@ void Engine::start_trading() {
       if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string())) files.push_back(entry.path());
     std::sort(files.begin(), files.end());
     for (const auto& file : files) {
-      PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}};
+      PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}, nullptr, {}};
       std::ifstream named(std::filesystem::path(file).replace_extension(".name"));
       if (std::string name; named && std::getline(named, name) && !name.empty() && name.size() <= 64) account.name = name;
       open(account, file, false);
@@ -353,7 +400,7 @@ void Engine::create_account(const TradingCommand& c, TradingReply& reply) {
   if (base.empty() || base == kMainAccount) base = "account";
   auto id = base;
   for (int n = 2; find_account(id); ++n) id = base + "-" + std::to_string(n);
-  PaperAccount account{id, c.name, nullptr, {}};
+  PaperAccount account{id, c.name, nullptr, {}, nullptr, {}};
   try {
     auto config = options_.paper;
     config.rules = c.rules;
@@ -370,6 +417,7 @@ void Engine::create_account(const TradingCommand& c, TradingReply& reply) {
     }
     account.session = std::make_unique<TradingSession>(config, market_time_,
         std::make_shared<SettlementJournal>(journal, settlement_source_));
+    account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
   } catch (const TradingError& error) {
     reply.decision = {error.code(), error.what(), {}, {}, {}};
     return;
@@ -382,11 +430,40 @@ void Engine::create_account(const TradingCommand& c, TradingReply& reply) {
   reply.account = id;
 }
 
+void Engine::sample_equity(PaperAccount& account) {
+  if (!account.equity || !account.session) return;
+  const auto& session = *account.session;
+  const auto current = session.snapshot();
+  if (account.sampled_snapshot && current != account.sampled_snapshot)
+    for (const auto& sample : fill_equity_samples(session, *account.sampled_snapshot)) account.equity->append(sample);
+  const auto& snapshot = *current;
+  const auto& e = snapshot.evaluation;
+  const auto& rules = session.config().rules;
+  if (snapshot.valuation_complete && market_time_ > 0 && !snapshot.journal_failed) {
+    EquitySample sample;
+    sample.time = market_time_;
+    sample.attempt = e.attempt;
+    sample.equity = snapshot.equity;
+    sample.peak = e.peak;
+    if (rules.max_drawdown > Money{}) {
+      sample.floor = e.floor;
+      if (rules.drawdown_mode == DrawdownMode::EndOfDay) {
+        auto floor = std::max(e.peak, snapshot.equity) - rules.max_drawdown;
+        if (rules.lock_balance > Money{}) floor = std::min(floor, rules.lock_balance);
+        sample.tomorrow_floor = e.floor_locked ? e.floor : std::max(e.floor, floor);
+      }
+    }
+    if (rules.profit_target > Money{}) sample.target = e.starting_balance + rules.profit_target;
+    account.equity->append(sample);
+  }
+  account.sampled_snapshot = current;
+}
+
 void Engine::publish_trading() {
   if (!options_.paper_enabled) return;
   std::map<std::string, std::shared_ptr<const TradingView>, std::less<>> views;
   std::vector<AccountStatus> statuses;
-  for (const auto& account : accounts_) {
+  for (auto& account : accounts_) {
     std::shared_ptr<TradingView> view;
     if (account.session) {
       const auto& session = *account.session;
@@ -415,6 +492,15 @@ void Engine::publish_trading() {
         latest = std::max(latest, time);
       }
       view->halts = breaker_.halts;
+      std::map<std::string, double> vols;
+      for (const auto& [underlying, bucket] : view->snapshot->risk.underlyings)
+        if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
+      view->breach = session.breach(vols);
+      if (account.equity) {
+        sample_equity(account);
+        view->equity_samples = account.equity->samples();
+        view->equity_error = account.equity->error();
+      }
     }
     TradingStatus status;
     status.enabled = account.failure.empty() && view != nullptr;
@@ -722,6 +808,7 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
         if (const auto price = quote_price(book->second.spot)) stocks.push_back({symbol, time, *price});
       }
       session.on_quotes(quotes, valuations, market_time_, stocks);
+      sample_equity(account);
       // Each account keeps the closing print its PM positions will settle on, so
       // a restart before they expire (16:15 for ETF options) still uses it. When
       // none has come half an hour into the market's evening, the last print
@@ -767,6 +854,7 @@ void Engine::update_trading(const std::vector<md::Event>& batch,
                               {"provider", std::string(provider_.name())},
                               {"symbol", contract.underlying}, {"quote_time", md::format_timestamp(print->time)}};
         session.settle(contract.osi_symbol(), print->price, market_time_);
+        sample_equity(account);
       }
       // An overnight session belongs to the next trading date, so a day ends
       // when the last session of the one before (curb) does.
@@ -813,6 +901,7 @@ void Engine::apply_command(PendingCommand& pending) {
     try {
       CommandResult result;
       switch (c.kind) {
+        case TradingCommand::Kind::Preview:
         case TradingCommand::Kind::Submit: {
           // Every contract the order trades (each leg of a multi-leg order).
           Decision rejection;
@@ -831,7 +920,28 @@ void Engine::apply_command(PendingCommand& pending) {
             if (rejection.ok()) rejection = acceptance(contract->underlying);
             if (!rejection.ok()) break;
           }
-          result = session.submit(c.order, market_time_, rejection);
+          if (c.kind == TradingCommand::Kind::Preview) {
+            PreviewMarket market;
+            std::map<std::string, double> vols;
+            for (const auto& symbol : order_symbols(c.order)) {
+              const auto id = instruments_.find(symbol);
+              const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
+              if (!option) continue;
+              market.contracts.push_back(option->contract);
+              const auto& underlying = option->contract.underlying;
+              const auto complete = snapshots_.find(underlying);
+              const bool current = complete != snapshots_.end() && acceptance(underlying).ok();
+              if (option->has_quote) market.quotes.push_back({symbol, observations_[symbol], current ? market_time_ : option->quote_ts,
+                  quote_price(option->bid), quote_price(option->ask), whole_size(option->bid_size), whole_size(option->ask_size)});
+              auto valuation = valuation_for(symbol, option->contract, metrics(underlying));
+              if (current && valuation.time > 0) valuation.time = market_time_;
+              market.valuations.push_back(valuation);
+              if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
+            }
+            for (const auto& [underlying, bucket] : before->risk.underlyings)
+              if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
+            reply.preview = session.preview(c.order, market_time_, c.floor_share, rejection, vols, market);
+          } else result = session.submit(c.order, market_time_, rejection);
           break;
         }
         case TradingCommand::Kind::Modify: {
@@ -860,11 +970,13 @@ void Engine::apply_command(PendingCommand& pending) {
           break;
         }
         case TradingCommand::Kind::Cancel: result = session.cancel(c.order_id, market_time_); break;
+        case TradingCommand::Kind::Guardrails:
         case TradingCommand::Kind::Limits:
           if (c.expected_revision != before->risk.limits_revision) {
             reply.error_code = "LIMITS_REVISION";
             reply.decision.message = "Limits changed; refetch the current revision";
-          } else result = session.set_limits(c.limits, market_time_);
+          } else if (c.kind == TradingCommand::Kind::Guardrails) result = session.set_guardrails(c.guardrails, market_time_);
+          else result = session.set_limits(c.limits, market_time_);
           break;
         case TradingCommand::Kind::Trip: result = session.trip_kill(c.reason, market_time_); break;
         case TradingCommand::Kind::Reset: result = session.reset_kill(c.reason, market_time_); break;
@@ -918,7 +1030,7 @@ void Engine::apply_command(PendingCommand& pending) {
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;
       reply.replayed = result.replayed;
-      publish_trading();
+      if (c.kind != TradingCommand::Kind::Preview) publish_trading();
       const auto& orders = session.snapshot()->recent_orders;
       for (const auto& order : before->open_orders) {
         if (orders.at(static_cast<std::size_t>(order.id - 1)).status == OrderStatus::Cancelled)

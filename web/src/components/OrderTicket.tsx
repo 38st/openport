@@ -7,7 +7,7 @@ import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "
 import type { Bracket, NewOrder, Order, Side, Trigger, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote, Surface } from "../api/types"
 import { count, days, fixed, isNum, price } from "../lib/format"
-import { heldPositions, orderPowerUse } from "../lib/margin"
+import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
 import { probabilityOfProfit, probabilitySource, singleLeg, smileDistribution } from "../lib/probability"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
 import { deliversShares, extendedSession, formatMoney, limitOnlyNotice, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
@@ -175,14 +175,11 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const fill = type === "limit" && tif === "gtc" && extended
     ? { marketable: false, message: "GTC waits for the regular session, even if the current quote crosses its limit." }
     : marketability(side, type, limitPrice, quote)
-  // Mirrors the server: margin on the held positions (spreads netted) plus premium and fees.
-  const power = rules?.margin === "portfolio" || rules?.slippage_ticks ? null
-    : orderPowerUse({ side, quantity: q, price: estimatedPrice == null ? null : Number(estimatedPrice), fee: Number(effectiveFee ?? 0) },
-    { symbol: selection.symbol, underlying: selection.underlying, expiry: selection.expiry.id, type: selection.optionType, strike: selection.strike },
-    heldPositions(portfolio?.positions ?? []), selection.spot)
-  const effect = power?.effect ?? null
-  const available = account ? Number(account.buying_power.available) : null
-  const after = effect != null && available != null ? available + effect : null
+  const preview = useOrderPreview(valid ? {
+    client_order_id: "preview:single", symbol: selection.symbol, side, quantity: q,
+    ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitPrice }),
+    ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
+  } : null, trading)
   const expiryLabel = `${selection.expiry.expiry} ${selection.expiry.settlement}`
 
   function newOrder() {
@@ -342,14 +339,9 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           <dt className="text-muted" title="Risk-neutral mass beyond the breakeven, including the smile’s skew">Probability of profit · risk-neutral</dt>
           <dd className="text-right tabular">{odds.pop == null ? "—" : `≈ ${(odds.pop * 100).toFixed(0)}%`}{distribution && <span className="block text-[11px] text-muted">{probabilitySource(distribution, [odds.breakeven])}</span>}</dd>
         </>}
-        <dt className="text-muted">Buying power effect</dt><dd className={`text-right tabular ${effect != null && effect < 0 ? "text-bearish" : ""}`}>{effect == null ? "—" : formatMoney(effect.toFixed(2))}</dd>
-        {available != null && <><dt className="text-muted">Buying power after</dt><dd className={`text-right tabular ${after != null && after < 0 ? "text-danger" : ""}`}>{after == null ? "—" : formatMoney(after.toFixed(2))}</dd></>}
       </dl>
-      {(rules?.margin === "portfolio" || !!rules?.slippage_ticks) && <p className="text-xs text-muted">Buying power is checked on submission for this plan.</p>}
-      {!!rules?.slippage_ticks && <p className="text-xs text-muted">Price previews exclude the account's {rules.slippage_ticks} ticks of slippage.</p>}
-      {rules?.buying_power && after != null && after < 0 && power?.uses && <p role="status" className="text-xs text-danger">{opening > 0
-        ? "Exceeds available buying power; the server will reject it."
-        : "Selling this long uncovers a short it protects, which needs more buying power than you have. Buy the short back first, or close both together from Positions."}</p>}
+      <OrderPreviewPanel preview={preview} onSize={(size) => setQuantity(String(size))} disabled={submitted || pending} />
+      {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}
       <details className="text-xs">
         <summary className="cursor-pointer text-muted">This order’s Greeks impact</summary>
         <p className="mb-2 mt-2 text-muted">Quantity × 100 × per-unit Greek, signed by side</p>

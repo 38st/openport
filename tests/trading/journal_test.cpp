@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <gtest/gtest.h>
+#include "trading/state.hpp"
 #include <nlohmann/json.hpp>
 
 #include "support/scripted_market.hpp"
@@ -75,7 +76,7 @@ TEST(TradingJournal, PreReduceOnlyKillJournalRecoversItsOriginalState) {
   std::string snapshot;
   std::getline(expected, snapshot);
   ASSERT_FALSE(snapshot.empty());
-  EXPECT_EQ(mismatch(nlohmann::json::parse(restored.snapshot_json()), nlohmann::json::parse(snapshot)), "");
+  EXPECT_EQ(mismatch(nlohmann::json::parse(restored.snapshot_json()), nlohmann::json(nlohmann::json::parse(snapshot).get<TradingSnapshot>())), "");
   EXPECT_TRUE(restored.snapshot()->risk.kill_latched);
   EXPECT_TRUE(restored.snapshot()->open_orders.empty());
   ASSERT_EQ(restored.snapshot()->positions.size(), 1U);

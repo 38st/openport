@@ -35,6 +35,12 @@ struct UnderlyingHealth {
   md::Timestamp last_error_time = 0;
 };
 
+/// The market's implied variance of an underlying's log price from its analytics'
+/// market time to that day's regular close: the nearest expiry's at-the-money IV²
+/// times its years (as the IV was solved, on calendar time), with today's share of it
+/// in regular-session time. Zero once today's session is over; empty without an IV.
+[[nodiscard]] std::optional<double> implied_variance_to_close(const analytics::UnderlyingMetrics& metrics);
+
 /// The main account keeps the original journal; others are named alongside it.
 inline constexpr std::string_view kMainAccount = "main";
 
@@ -170,6 +176,8 @@ class Engine final : public MetricsSource {
     std::string name;
     std::unique_ptr<trading::TradingSession> session;
     std::string failure;  ///< Why it cannot trade; empty while it can.
+    std::unique_ptr<EquityStore> equity;
+    std::shared_ptr<const trading::TradingSnapshot> sampled_snapshot;
   };
   void run();
   void start_trading();
@@ -179,6 +187,7 @@ class Engine final : public MetricsSource {
   void update_trading(const std::vector<md::Event>& batch, std::deque<PendingCommand>& commands);
   void apply_command(PendingCommand& pending);
   void publish_trading();
+  void sample_equity(PaperAccount& account);
   /// Stops one account after a journal or integration failure; the others carry on.
   void fail_trading(PaperAccount& account, std::string reason);
   void refresh_analytics();

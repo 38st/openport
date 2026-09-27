@@ -27,6 +27,7 @@ endif()
 add_library(openport_trading
   trading/money.cpp
   trading/types.cpp
+  trading/guardrails.cpp
   trading/dividends.cpp
   trading/ledger.cpp
   trading/risk.cpp
@@ -121,6 +122,7 @@ if(OPENPORT_BUILD_PROVIDERS)
   # The engine thread, JSON API and HTTP/WebSocket server behind openportd.
   add_library(openport_server
     server/candles.cpp
+    server/equity.cpp
     server/engine.cpp
     server/paper_engine.cpp
     server/paper_api.cpp

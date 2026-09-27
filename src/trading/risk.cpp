@@ -187,4 +187,77 @@ ScenarioGrid scenario_grid(const Ledger& ledger, const std::map<std::string, Val
   if (!result.complete) for (auto& cell : result.cells) cell.pnl = 0;
   return result;
 }
+BreachRisk breach_risk(const Ledger& ledger, const std::map<std::string, Valuation>& valuations,
+    Money equity, std::optional<Money> floor, std::optional<Money> soft_floor, Timestamp now, Timestamp max_age,
+    const std::map<std::string, double>& stock_prices, const std::map<std::string, double>& close_variances) {
+  BreachRisk result;
+  if (floor) result.room = equity - *floor;
+  if (soft_floor) result.soft_room = equity - *soft_floor;
+  if (!floor) return result;
+  std::map<std::string, std::map<std::string, Position>> groups;
+  for (const auto& [symbol, position] : ledger.positions()) groups[position.contract.underlying][symbol] = position;
+  for (const auto& [symbol, stock] : ledger.stocks()) groups.try_emplace(symbol);
+  for (const auto& [underlying, positions] : groups) {
+    UnderlyingBreach item;
+    item.underlying = underlying;
+    std::map<std::string, StockPosition> stocks;
+    if (const auto stock = ledger.stocks().find(underlying); stock != ledger.stocks().end()) stocks.emplace(*stock);
+    const auto subset = Ledger::restore({}, positions, stocks);
+    Timestamp spot_time = -1;
+    for (const auto& [symbol, position] : positions) {
+      const auto v = valuations.find(symbol);
+      if (v != valuations.end() && fresh(v->second, position.contract, now, max_age) && v->second.time > spot_time) {
+        item.spot = v->second.spot;
+        spot_time = v->second.time;
+      }
+    }
+    if (const auto price = stock_prices.find(underlying); price != stock_prices.end()) item.spot = price->second;
+    if (const auto variance = close_variances.find(underlying);
+        variance != close_variances.end() && std::isfinite(variance->second) && variance->second >= 0)
+      item.close_sigma = std::sqrt(variance->second);
+    ScenarioConfig scan;
+    scan.vol_points = {0};
+    const auto pnl = [&](double percent) -> std::optional<double> {
+      scan.spot_percent = {percent};
+      const auto grid = scenario_grid(subset, valuations, scan, now, max_age, stock_prices);
+      if (!grid.complete) return {};
+      return grid.cells.front().pnl;
+    };
+    item.complete = item.spot > 0 && pnl(0).has_value();
+    result.complete &= item.complete;
+    if (item.complete) {
+      const auto solve = [&](bool up) -> std::optional<BreachLevel> {
+        double prior = 0;
+        const double room = result.room->dollars();
+        double crossing = 0;
+        bool found = room <= 0;
+        for (double distance = 0.25; !found && distance <= (up ? 1000 : 99.75); distance += distance < 100 ? 0.25 : 1) {
+          const double shock = up ? distance : -distance;
+          const auto loss = pnl(shock);
+          if (!loss) return {};
+          if (*loss <= -room) { crossing = shock; found = true; break; }
+          prior = shock;
+        }
+        if (!found) return {};
+        for (int i = 0; i < 40 && room > 0; ++i) {
+          const double middle = (prior + crossing) / 2;
+          const auto value = pnl(middle);
+          if (!value) return {};
+          if (*value <= -room) crossing = middle; else prior = middle;
+        }
+        BreachLevel level{item.spot * crossing / 100, crossing, {}};
+        if (crossing == 0) level.touch_probability = 1;
+        else if (item.close_sigma && *item.close_sigma > 0)
+          level.touch_probability = std::clamp(std::erfc(std::abs(std::log1p(crossing / 100)) /
+              (*item.close_sigma * std::sqrt(2.0))), 0.0, 1.0);
+        else if (item.close_sigma) level.touch_probability = 0;  // no session left today
+        return level;
+      };
+      item.down = solve(false);
+      item.up = solve(true);
+    }
+    result.underlyings.push_back(std::move(item));
+  }
+  return result;
+}
 }  // namespace openport::trading

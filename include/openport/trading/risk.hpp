@@ -57,4 +57,33 @@ void validate_scenarios(const ScenarioConfig& config);
     const std::map<std::string, Valuation>& valuations, const ScenarioConfig& config,
     Timestamp now, Timestamp max_age, const std::map<std::string, double>& stock_prices = {});
 
+struct BreachLevel {
+  double points = 0;
+  double percent = 0;
+  std::optional<double> touch_probability;
+};
+struct UnderlyingBreach {
+  std::string underlying;
+  double spot = 0;
+  /// One standard deviation of the log price to today's regular close, from the
+  /// market's implied variance (see Engine's close_variance).
+  std::optional<double> close_sigma;
+  std::optional<BreachLevel> down;
+  std::optional<BreachLevel> up;
+  bool complete = false;
+};
+struct BreachRisk {
+  std::optional<Money> room;
+  std::optional<Money> soft_room;
+  bool complete = true;
+  std::vector<UnderlyingBreach> underlyings;
+};
+/// One underlying moves at a time, today's vol and remaining option life held
+/// fixed. Search to -99.75% / +1000%, then bisect the first crossing. Missing
+/// ATM vol leaves the driftless log-return reflection estimate absent.
+[[nodiscard]] BreachRisk breach_risk(const Ledger& ledger,
+    const std::map<std::string, Valuation>& valuations, Money equity,
+    std::optional<Money> floor, std::optional<Money> soft_floor, Timestamp now, Timestamp max_age,
+    const std::map<std::string, double>& stock_prices = {}, const std::map<std::string, double>& close_variances = {});
+
 }  // namespace openport::trading
