@@ -120,7 +120,7 @@ TEST(Scenarios, GapCrushSpikeAndPinRepriceTheChainAndSeedsRepeat) {
       if (key.second.month == 10) long_drop = drop;
       ++expiries;
     }
-    if (key.first < at && crush.iv.contains(key)) EXPECT_DOUBLE_EQ(iv, crush.iv.at(key));
+    if (key.first < at && crush.iv.contains(key)) { EXPECT_DOUBLE_EQ(iv, crush.iv.at(key)); }
   }
   EXPECT_EQ(expiries, 5);
   EXPECT_GT(short_drop, long_drop);
