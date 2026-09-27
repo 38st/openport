@@ -95,7 +95,9 @@ TEST(SharedMap, MatchesAMapUnderRandomEditsAndSerializesTheSame) {
     }
     ASSERT_EQ(shared.size(), plain.size());
     ASSERT_EQ(shared.contains(k), plain.contains(k));
-    if (plain.contains(k)) ASSERT_EQ(shared.at(k), plain.at(k));
+    if (plain.contains(k)) {
+      ASSERT_EQ(shared.at(k), plain.at(k));
+    }
   }
   const auto entries = [](const auto& map) {
     std::vector<std::pair<std::string, int>> out;
