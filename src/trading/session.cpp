@@ -1765,7 +1765,7 @@ class StateRecorder {
 };
 
 /// state_delta of one field's JSON, before and after, or nothing when it is
-/// equal. History containers write out and compare only the chunks they do not
+/// equal. History containers write out and compare only the subtrees they do not
 /// share: a transaction copies the account, so the rest is untouched.
 template <class T>
 std::optional<Json> field_change(const T& before, const T& after) {
@@ -1779,16 +1779,12 @@ std::optional<Json> field_change(const SharedVector<T, N>& before, const SharedV
   const auto common = std::min(before.size(), after.size());
   Json changes = Json::object();
   std::size_t changed = 0;
-  for (std::size_t i = 0; i < common; ++i) {
-    if (i % N == 0 && before.same_chunk(after, i)) {
-      i += N - 1;
-      continue;
-    }
-    const Json a = before[i], b = after[i];
-    if (a == b) continue;
+  SharedVector<T, N>::compare(before, after, [&](std::size_t i, const T& old, const T& now) {
+    const Json a = old, b = now;
+    if (a == b) return;
     changes[std::to_string(i)] = detail::state_delta(a, b);
     ++changed;
-  }
+  });
   if (changed == 0 && before.size() == after.size()) return std::nullopt;
   // As state_delta: an array rewritten in place is smaller whole.
   if (changed * 2 > common && common > 0) return Json{{"v", after}};
@@ -1815,9 +1811,20 @@ std::optional<Json> field_change(const SharedMap<std::string, V, N>& before, con
 template <class K>
 std::optional<Json> field_change(const SharedSet<K>& before, const SharedSet<K>& after) {
   if (before.same(after)) return std::nullopt;
-  const Json a = before, b = after;
-  if (a == b) return std::nullopt;
-  return detail::state_delta(a, b);
+  const auto common = std::min(before.size(), after.size());
+  Json changes = Json::object();
+  std::size_t changed = 0;
+  SharedSet<K>::compare(before, after,
+      [&](std::size_t i, const K& old, const K& now) {
+        const Json a = old, b = now;
+        if (a == b) return;
+        changes[std::to_string(i)] = detail::state_delta(a, b);
+        ++changed;
+      },
+      [&](std::size_t i, const K& key) { changes[std::to_string(i)] = Json{{"v", key}}; });
+  if (changed == 0 && before.size() == after.size()) return std::nullopt;
+  if (changed * 2 > common && common > 0) return Json{{"v", after}};
+  return Json{{"a", std::move(changes)}, {"n", after.size()}};
 }
 /// state_delta(Json(before), Json(after)), found field by field without writing
 /// out either state: the change a record carries. Equal states give {"o": {}}.

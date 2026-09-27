@@ -158,8 +158,10 @@ commits the copy whole or not at all, so what it costs is the copy and the rules
 runs. None of that reads the account's history:
 
 - **Shared history.** Orders, fills, closures, reviews, notes and the contract, book
-  and valuation maps are chunked containers whose copies share storage; a write copies
-  only the chunk it changes. Snapshots for readers share the same chunks.
+  and valuation maps use persistent trees: a 32-way radix tree for vectors and a
+  balanced B+ tree for maps and sets. A copy shares one root; a write copies the
+  path to its chunk, with O(log n) pointer copies. Erases may also copy a neighbour
+  to rebalance a map. Snapshots for readers share the same subtrees.
 - **Working orders.** Scans for open orders read an index of them, rebuilt at each
   commit from the orders open before and those placed since (a closed order never
   reopens); duplicate and retried client order IDs look up an index of first uses.
@@ -169,7 +171,7 @@ runs. None of that reads the account's history:
   fills and closures arrive, not rebuilt from every fill; a finished trade's lifecycle
   is dropped once no review can change.
 - **Journal changes.** A record's change from the record before is found field by
-  field, skipping the chunks the transaction did not touch, instead of writing out and
+  field, skipping shared subtrees instead of walking every chunk or writing out and
   comparing both states. The records are byte for byte what comparing whole states
   gives; a checkpoint still writes the whole state every thousand records.
 
@@ -214,9 +216,10 @@ The calendar memo, as the fastest of five interleaved runs, since noise only add
 With a live paper journal, each record costs its disk sync plus about 1% for finding
 the change; before, writing out and comparing the whole state took most of the time
 and grew with the history. A replay journal shares one sync among the records of each
-250 ms. A `submit` still grows a little with the history: appending an order, a fill
-and a client order ID each copies its container's list of chunks, one pointer per 32
-entries. Asking once per position instead of once per grid cell took
+250 ms. Appending an order, a fill and a client order ID copies a tree path, O(log n)
+pointers, not a list of every chunk: in a loop of submits after 100,000 fills, a submit
+took about 95 µs of wall time with the trees and 250 µs with flat chunk lists, on the
+busy machine above. Asking once per position instead of once per grid cell took
 about a sixth more off a held position's batch.
 
 A simulated SPX replay with analytics and a flat account, writing 906 journal records,
@@ -234,7 +237,7 @@ changes; it has no orders or journal writes.
 
 ## Tests
 
-801 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+815 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
 recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
 terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13
