@@ -34,6 +34,7 @@ add_library(openport_trading
   trading/session.cpp
   trading/state_delta.cpp
   trading/history.cpp
+  trading/review.cpp
   trading/margin.cpp
 )
 add_library(openport::trading ALIAS openport_trading)

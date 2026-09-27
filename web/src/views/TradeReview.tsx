@@ -1,0 +1,65 @@
+import { useQuery } from "@tanstack/react-query"
+import { api } from "../api/client"
+import { marketNow, useLive } from "../api/live"
+import type { FillContext, Trade, TradeReview } from "../api/trading-types"
+import { LineChart, type Marker, type Series } from "../charts/LineChart"
+import { timestampET } from "../lib/freshness"
+import { formatMoney } from "../lib/trading"
+
+const chartTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
+const number = (value: number | null | undefined, digits = 2) => value == null ? "—" : value.toFixed(digits)
+
+export function ContextCard({ title, context }: { title: string; context?: FillContext | null }) {
+  const c = context
+  return <section className="rounded border border-border p-3">
+    <h3 className="mb-2 text-xs font-medium">{title}</h3>
+    <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs tabular">
+      <dt className="text-muted">Underlying</dt><dd>{number(c?.spot)}{c?.spot_source ? ` · ${c.spot_source}` : ""}</dd>
+      <dt className="text-muted">IV / delta</dt><dd>{c?.iv == null ? "—" : `${(c.iv * 100).toFixed(2)}%`} / {number(c?.delta, 3)}</dd>
+      <dt className="text-muted">Time to expiry</dt><dd>{c?.years == null ? "—" : `${(c.years * 365).toFixed(2)} days`}</dd>
+      <dt className="text-muted">Equity</dt><dd>{formatMoney(c?.equity)}</dd>
+      <dt className="text-muted">Room above floor</dt><dd>{formatMoney(c?.floor_room)}</dd>
+      <dt className="text-muted">Buying power</dt><dd>{formatMoney(c?.buying_power)}</dd>
+    </dl>
+  </section>
+}
+
+export function ReviewMetrics({ review, label = "Trade excursions" }: { review?: TradeReview | null; label?: string }) {
+  const r = review
+  return <section aria-label={label}>
+    <h3 className="mb-2 text-xs font-medium">{label}</h3>
+    <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+      {([['MAE', r?.mae, r?.worst], ['MFE', r?.mfe, r?.best]] as const).map(([name, value, point]) =>
+        <div key={name}><div className="text-muted">{name}</div><div className="tabular">{formatMoney(value)}</div>
+          <div className="text-[11px] text-muted">{point ? `${timestampET(point.time)} · spot ${number(point.spot)}` : "Not recorded"}</div></div>)}
+      <div><div className="text-muted">Give-back</div><div className="tabular">{formatMoney(r?.give_back)}</div></div>
+      <div><div className="text-muted">Heat / R</div><div className="tabular">{r?.heat == null ? "—" : `${(r.heat * 100).toFixed(1)}%`} / {r?.r_multiple == null ? "—" : `${r.r_multiple.toFixed(2)}R`}</div></div>
+    </div>
+    <p className="mt-2 text-[11px] text-muted">{r?.planned_risk == null ? "Planned risk unavailable: no option-price stop or measurable defined-risk structure." : `Planned risk ${formatMoney(r.planned_risk)}.`} Excursions include fees and resolve to the marking cadence, about 15 s on Cboe delayed data.</p>
+  </section>
+}
+
+/** Available candle closes only; exact stamped spots are separate points. */
+export function TradeChart({ trade }: { trade: Trade }) {
+  const live = useLive()
+  const from = Date.parse(trade.opened) / 1000
+  const to = trade.closed ? Date.parse(trade.closed) / 1000 : marketNow(live) / 1000
+  const query = useQuery({ queryKey: ["trade-candles", live.accountScope, trade.underlying, live.trading?.account_version],
+    queryFn: ({ signal }) => api.candles(trade.underlying, "1m", 5000, signal), staleTime: 15_000 })
+  const bars = (query.data?.bars ?? []).filter((bar) => bar.t >= Math.floor(from / 60) * 60 && bar.t <= to)
+  const marks = [
+    { label: "Entry", time: trade.opened, spot: trade.entry_context?.spot, color: "var(--accent)" },
+    { label: "Exit", time: trade.closed, spot: trade.exit_context?.spot, color: "var(--muted)" },
+    { label: "MAE", time: trade.review?.worst?.time, spot: trade.review?.worst?.spot, color: "var(--bearish)" },
+    { label: "MFE", time: trade.review?.best?.time, spot: trade.review?.best?.spot, color: "var(--bullish)" },
+  ].filter((m) => m.time != null)
+  const markers: Marker[] = marks.map((m) => ({ x: Date.parse(m.time!) / 1000, label: m.label, color: m.color }))
+  const series: Series[] = [{ id: "underlying", label: "1m candle close", color: "var(--muted)", points: bars.map((bar) => ({ x: bar.t, y: bar.c })) },
+    ...marks.map((m) => ({ id: m.label, label: m.label, color: m.color, dots: true, points: [{ x: Date.parse(m.time!) / 1000, y: m.spot ?? null }] }))]
+  return <section aria-label="Underlying across trade">
+    <h3 className="text-xs font-medium">{trade.underlying} across the trade{live.status?.provider.simulated ? " · Simulated prices" : ""}</h3>
+    {query.error ? <p className="text-xs text-muted">Underlying candles unavailable.</p> : !bars.length ? <p className="text-xs text-muted">{query.isPending ? "Loading underlying candles…" : "No stored candles for this trade."}</p> :
+      <LineChart series={series} markers={markers} height={190} formatX={(x) => chartTime.format(x * 1000)} xLabel="New York time" formatY={(y) => y.toFixed(2)} />}
+    <p className="text-[11px] text-muted">Candle closes and stamped spot markers. Missing history is not reconstructed.</p>
+  </section>
+}

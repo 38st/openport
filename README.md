@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **606 C++ and 378 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **620 C++ and 385 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -87,8 +87,11 @@ with generated prices labelled as simulated on every page:
   The Dashboard charts equity against the target and floor, and the Journal keeps a P&L
   calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
   per contract or per strategy, with shares from exercise and assignment as trades of
-  their own. Each trade takes a note and tags, kept in the account's journal. A new
-  attempt keeps the history.
+  their own. Each trade's review shows the market and the account at entry and exit,
+  how far it went against you and in your favour (MAE and MFE), what you gave back and
+  its R-multiple, on the underlying's chart. Trades take notes and tags, each day a
+  plan and a review, and trades and fills download as CSV. A new attempt keeps the
+  history.
 - **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
   (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
@@ -360,6 +363,8 @@ these routes, so anything it does can be scripted:
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders, fills, risk, rules and progress, and its round trips |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
 | `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
+| `GET /api/trades.csv`, `/api/fills.csv` | Trades or fills, with context and excursions, filtered by account and New York `from`/`to` dates |
+| `PUT /api/days/{YYYY-MM-DD}/note` | The account's plan and review for a day; returned in `/api/trades` as `day_notes` |
 | `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |
 | `PUT /api/risk/limits`, `POST /api/risk/kill` | Change the risk limits; trip or reset the kill switch |
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
@@ -440,6 +445,7 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] GTC limit orders, order notes and tags, spread brackets and held-spread exits
 - [x] Roll the put or call side of a four-leg strategy
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
+- [x] Fill context, trade and strategy excursions, CSV export and day plans and reviews
 - [x] P&L attribution by delta, gamma, vega and theta
 - [x] Stock positions from early exercise and from exercise and assignment at expiry
 - [x] Expiry hours as the exchanges run them: ETF options to 16:15, auto-close five

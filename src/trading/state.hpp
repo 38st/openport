@@ -56,9 +56,27 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "oco", o.oco); added_field(j, "stop_loss", o.stop_loss); added_field(j, "take_profit", o.take_profit);
   added_field(j, "triggered_at", o.triggered_at);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Fill, id, order_id, symbol, side, quantity, price, fee, observation, quote_time, time)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TradeReview, worst, best, planned_risk, finished)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DayNote, plan, review, time)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Fill, id, order_id, symbol, side, quantity, price, fee, observation, quote_time, time, context)
+inline void from_json(const Json& j, Fill& f) {
+  j.at("id").get_to(f.id); j.at("order_id").get_to(f.order_id); j.at("symbol").get_to(f.symbol);
+  j.at("side").get_to(f.side); j.at("quantity").get_to(f.quantity); j.at("price").get_to(f.price);
+  j.at("fee").get_to(f.fee); j.at("observation").get_to(f.observation);
+  j.at("quote_time").get_to(f.quote_time); j.at("time").get_to(f.time);
+  added_field(j, "context", f.context);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(QuoteObservation, symbol, observation, time, bid, ask, bid_size, ask_size)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Valuation, symbol, time, delta, gamma, vega, theta, spot, forward, discount, years, smile_iv, valid)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Valuation, symbol, time, delta, gamma, vega, theta, spot, forward, discount, years, smile_iv, valid, spot_source)
+inline void from_json(const Json& j, Valuation& v) {
+  j.at("symbol").get_to(v.symbol); j.at("time").get_to(v.time); j.at("delta").get_to(v.delta);
+  j.at("gamma").get_to(v.gamma); j.at("vega").get_to(v.vega); j.at("theta").get_to(v.theta);
+  j.at("spot").get_to(v.spot); j.at("forward").get_to(v.forward); j.at("discount").get_to(v.discount);
+  j.at("years").get_to(v.years); j.at("smile_iv").get_to(v.smile_iv); j.at("valid").get_to(v.valid);
+  added_field(j, "spot_source", v.spot_source);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Exposure, dollar_delta, dollar_gamma_1pct, vega, theta)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExposureLimits, dollar_delta, vega)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Limits, max_order_contracts, price_band_absolute, price_band_relative, aggregate, per_underlying, underlying_overrides, max_daily_loss, max_quote_age, max_valuation_age)
@@ -132,7 +150,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioCell, spot_percent, vol_points, pnl, 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioGrid, cells, complete)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedPosition, position, mark, mark_time, mark_age, market_value, unrealised, fresh, awaiting_settlement)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedStock, position, mark, mark_time, market_value, unrealised, fresh)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews)
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
   j.at("equity").get_to(s.equity); j.at("start_of_day_equity").get_to(s.start_of_day_equity);
@@ -147,6 +165,8 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   added_field(j, "attribution", s.attribution); added_field(j, "attributions", s.attributions);
   added_field(j, "stocks", s.stocks); added_field(j, "stock_fills", s.stock_fills);
   added_field(j, "dividends", s.dividends); added_field(j, "closing_prints", s.closing_prints);
+  added_field(j, "day_notes", s.day_notes); added_field(j, "trade_reviews", s.trade_reviews);
+  added_field(j, "strategy_reviews", s.strategy_reviews);
 }
 
 namespace detail {
@@ -187,6 +207,9 @@ struct State {
   std::vector<AttemptSummary> attempts;
   std::vector<Closure> closures;
   std::map<std::string, Annotation> annotations;
+  std::map<std::string, DayNote> day_notes;
+  std::map<std::string, TradeReview> trade_reviews;
+  std::map<std::string, TradeReview> strategy_reviews;
   /// Open stretches by held contract (or stock), and today's finished ones (and costs).
   std::map<std::string, Reference> references;
   std::map<std::string, Attribution> explained;
@@ -199,7 +222,7 @@ struct State {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Book, quote, bid_left, ask_left)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mark, price, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations, references, explained, stock_marks, stock_fills, dividends, closing_prints)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(State, config, time, version, limits_revision, ledger, start_equity, day, contracts, books, marks, valuations, orders, fills, settled, kill, kill_reason, evaluation, attempts, closures, annotations, references, explained, stock_marks, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews)
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
   j.at("limits_revision").get_to(s.limits_revision); j.at("ledger").get_to(s.ledger);
@@ -212,6 +235,8 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "references", s.references); added_field(j, "explained", s.explained);
   added_field(j, "stock_marks", s.stock_marks); added_field(j, "stock_fills", s.stock_fills);
   added_field(j, "dividends", s.dividends); added_field(j, "closing_prints", s.closing_prints);
+  added_field(j, "day_notes", s.day_notes); added_field(j, "trade_reviews", s.trade_reviews);
+  added_field(j, "strategy_reviews", s.strategy_reviews);
 }
 }  // namespace detail
 }  // namespace openport::trading

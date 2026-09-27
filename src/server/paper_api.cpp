@@ -1,4 +1,5 @@
 #include "paper_json.hpp"
+#include "paper_csv.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -118,11 +119,40 @@ json order_json(const Order& o, const TradingView& view) {
           {"role", nullable(roles[static_cast<int>(o.role)])}, {"parent", id_or_null(o.parent)}, {"oco", id_or_null(o.oco)},
           {"stop_loss_order", id_or_null(o.stop_loss)}, {"take_profit_order", id_or_null(o.take_profit)}};
 }
+json context_json(const std::optional<FillContext>& context) {
+  if (!context) return nullptr;
+  const auto& c = *context;
+  const auto optional_number = [](const std::optional<double>& n) { return n ? number(*n) : json(nullptr); };
+  return {{"spot", optional_number(c.spot)}, {"spot_source", nullable(c.spot_source)},
+          {"iv", optional_number(c.iv)}, {"delta", optional_number(c.delta)}, {"years", optional_number(c.years)},
+          {"equity", money(c.equity)}, {"floor_room", money(c.floor_room)}, {"buying_power", money(c.buying_power)}};
+}
+json review_json(const TradeReview* r, std::optional<Money> net) {
+  const auto extreme = [](const std::optional<Excursion>& e) -> json {
+    if (!e) return nullptr;
+    return {{"pnl", e->pnl.str()}, {"time", md::format_timestamp(e->time)}, {"spot", e->spot ? number(*e->spot) : json(nullptr)}};
+  };
+  const auto mae = r && r->worst ? std::optional(std::max(Money{}, -r->worst->pnl)) : std::nullopt;
+  const auto mfe = r && r->best ? std::optional(std::max(Money{}, r->best->pnl)) : std::nullopt;
+  const auto risk = r ? r->planned_risk : std::nullopt;
+  return {{"mae", money(mae)}, {"mfe", money(mfe)},
+          {"worst", r ? extreme(r->worst) : json(nullptr)}, {"best", r ? extreme(r->best) : json(nullptr)},
+          {"planned_risk", money(risk)},
+          {"give_back", mfe && net ? json(std::max(Money{}, *mfe - *net).str()) : json(nullptr)},
+          {"heat", mae && risk && *risk > Money{} ? number(mae->dollars() / risk->dollars()) : json(nullptr)},
+          {"r_multiple", net && risk && *risk > Money{} ? number(net->dollars() / risk->dollars()) : json(nullptr)}};
+}
+json day_notes_json(const TradingSnapshot& s) {
+  json notes = json::object();
+  for (const auto& [day, note] : s.day_notes)
+    notes[day] = {{"plan", note.plan}, {"review", note.review}, {"time", md::format_timestamp(note.time)}};
+  return notes;
+}
 json fill_json(const Fill& f, const TradingView& view) {
   return {{"id", std::to_string(f.id)}, {"order_id", std::to_string(f.order_id)},
           {"symbol", f.symbol}, {"underlying", underlying(view, f.symbol)},
           {"side", f.side == Side::Buy ? "buy" : "sell"}, {"quantity", f.quantity},
-          {"price", f.price.str()}, {"fee", f.fee.str()},
+          {"price", f.price.str()}, {"fee", f.fee.str()}, {"context", context_json(f.context)},
           {"quote_time", md::format_timestamp(f.quote_time)}, {"time", md::format_timestamp(f.time)}};
 }
 json position_greeks(const MarkedPosition& p, const TradingView& view) {
@@ -284,7 +314,20 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     json fills = json::array();
     for (const auto id : t.fills) fills.push_back(std::to_string(id));
     const auto a = s.annotations.find(std::to_string(t.first_fill));
-    trades.push_back({{"id", std::to_string(t.first_fill)}, {"attempt", attempt}, {"symbol", t.symbol},
+    const auto review = s.trade_reviews.find(std::to_string(t.first_fill));
+    const auto order_id = s.recent_fills.at(t.first_fill - 1).order_id;
+    const auto strategy = s.strategy_reviews.find(std::to_string(order_id));
+    std::optional<Money> strategy_net;
+    if (strategy != s.strategy_reviews.end() && strategy->second.finished) {
+      strategy_net = Money{};
+      for (const auto& leg : all)
+        if (s.recent_fills.at(leg.first_fill - 1).order_id == order_id) *strategy_net = *strategy_net + leg.gross - leg.fees;
+    }
+    trades.push_back({{"entry_context", context_json(t.entry_context)}, {"exit_context", context_json(t.exit_context)},
+        {"review", review_json(review == s.trade_reviews.end() ? nullptr : &review->second, open ? std::nullopt : std::optional(net))},
+        {"strategy_id", strategy == s.strategy_reviews.end() ? json(nullptr) : json(std::to_string(order_id))},
+        {"strategy_review", strategy == s.strategy_reviews.end() ? json(nullptr) : review_json(&strategy->second, strategy_net)},
+        {"id", std::to_string(t.first_fill)}, {"attempt", attempt}, {"symbol", t.symbol},
         {"underlying", c.underlying}, {"expiry", md::format_date(c.expiry)},
         {"settlement", c.settlement == md::Settlement::AM ? "AM" : "PM"}, {"strike", c.strike},
         {"type", c.type == pricing::OptionType::Call ? "call" : "put"},
@@ -385,7 +428,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     dividends.push_back({{"symbol", d.symbol}, {"ex_date", md::format_date(d.ex_date)}, {"per_share", d.per_share.str()},
         {"shares", d.shares}, {"amount", d.amount.str()}, {"time", md::format_timestamp(d.time)}});
   return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades},
-          {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}};
+          {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}, {"day_notes", day_notes_json(s)}};
 }
 json plans_json() {
   json plans = json::array();
@@ -497,6 +540,12 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::Payout: body = account_json(view); break;
     case TradingCommand::Kind::Exercise:
     case TradingCommand::Kind::CloseStock: body = portfolio_json(view); break;
+    case TradingCommand::Kind::DayNote: {
+      const auto key = md::format_date(command.day);
+      body["day"] = key;
+      body["note"] = day_notes_json(s).value(key, json{{"plan", ""}, {"review", ""}, {"time", nullptr}});
+      break;
+    }
     case TradingCommand::Kind::Annotate: {
       const auto key = (command.shares ? "s" : "") + std::to_string(command.trade);
       const auto a = s.annotations.find(key);
@@ -702,6 +751,16 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
     if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
     if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price or trigger_level");
+    return command;
+  }
+  if (request.method == "PUT" && path.starts_with("/api/days/") && path.ends_with("/note")) {
+    fields(body, {"plan", "review"});
+    const auto date = csv_date(path.substr(10, path.size() - 15));
+    if (!date) throw std::invalid_argument("Expected a valid YYYY-MM-DD date");
+    command.kind = TradingCommand::Kind::DayNote;
+    command.day = *date;
+    command.plan = string_field(body, "plan");
+    command.review = string_field(body, "review");
     return command;
   }
   if (request.method == "PUT" && path.starts_with("/api/trades/")) {
@@ -944,20 +1003,24 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto question = request.target.find('?');
   const auto path = request.target.substr(0, question);
   if (path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
-      path != "/api/account" && path != "/api/trades" && path != "/api/plans" && path != "/api/accounts") return {};
+      path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/trades" && path != "/api/plans" && path != "/api/accounts") return {};
   const auto query = question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1);
   // Every route takes account=ID; orders take status=open|all; trades take
   // status=open|closed|all and attempt=current|all. Each key at most once.
   const auto pairs = query_pairs(query);
-  std::string account, status = "all", attempt = "current";
+  const bool csv = path == "/api/trades.csv" || path == "/api/fills.csv";
+  std::string account, status = "all", attempt = csv ? "all" : "current", from, to;
   bool valid_query = pairs.has_value();
   for (const auto& [key, value] : pairs.value_or(std::map<std::string, std::string>{})) {
     if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
     else if (key == "status" && path == "/api/orders" && (value == "open" || value == "all")) status = value;
-    else if (key == "status" && path == "/api/trades" && (value == "open" || value == "closed" || value == "all")) status = value;
-    else if (key == "attempt" && path == "/api/trades" && (value == "current" || value == "all")) attempt = value;
+    else if (key == "status" && (path == "/api/trades" || path == "/api/trades.csv") && (value == "open" || value == "closed" || value == "all")) status = value;
+    else if (key == "attempt" && (path == "/api/trades" || path == "/api/trades.csv") && (value == "current" || value == "all")) attempt = value;
+    else if (csv && key == "from" && csv_date(value)) from = value;
+    else if (csv && key == "to" && csv_date(value)) to = value;
     else valid_query = false;
   }
+  if (!from.empty() && !to.empty() && from > to) valid_query = false;
   if (!valid_query) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   if (path == "/api/plans") return ApiResponse{200, plans_json().dump()};
   if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source)}}.dump()};
@@ -969,6 +1032,20 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   if (path == "/api/risk") return ApiResponse{200, risk_json(*view).dump()};
   if (path == "/api/account") return ApiResponse{200, account_json(*view).dump()};
   if (path == "/api/trades") return ApiResponse{200, trades_json(*view, status, attempt == "current").dump()};
+  if (csv) {
+    json rows = json::array();
+    const bool fills = path == "/api/fills.csv";
+    if (fills) {
+      for (auto it = s.recent_fills.rbegin(); it != s.recent_fills.rend(); ++it) rows.push_back(fill_json(*it, *view));
+    } else {
+      const auto trades = trades_json(*view, status, attempt == "current");
+      for (auto row : trades.at("trades")) { row["kind"] = "option"; rows.push_back(std::move(row)); }
+      for (const auto& row : trades.at("share_trades")) rows.push_back(row);
+    }
+    return ApiResponse{200, paper_csv(rows, fills, account.empty() ? std::string(kMainAccount) : account,
+                                    source.status().provider, s.account_version, from, to),
+                       "text/csv; charset=utf-8", fills ? "fills.csv" : "trades.csv"};
+  }
   json body{{"account_version", std::to_string(s.account_version)}};
   if (path == "/api/orders") {
     body["orders"] = json::array();
@@ -993,7 +1070,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout")) ||
       (request.method == "PUT" && (path == "/api/risk/limits" || path.starts_with("/api/orders/") ||
-                                   (path.starts_with("/api/trades/") && path.ends_with("/note")))) ||
+                                   ((path.starts_with("/api/trades/") || path.starts_with("/api/days/")) && path.ends_with("/note")))) ||
       (request.method == "DELETE" && path.starts_with("/api/orders/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
   std::string account;

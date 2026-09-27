@@ -1904,6 +1904,30 @@ TEST_F(PaperEngine, TradesTakeNotesAndTags) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, DayNotesAreValidatedAndKeptPerAccount) {
+  engine->stop();
+  const auto journal = paper_path();
+  auto options = paper_options(); options.paper_accounts = journal.parent_path() / "accounts";
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  const auto saved = write(*engine, "PUT", "/api/days/2026-09-22/note", {{"plan", "Wait"}, {"review", "Good exit"}});
+  ASSERT_EQ(saved.status, 200) << saved.body;
+  EXPECT_EQ(json::parse(saved.body)["note"]["plan"], "Wait");
+  EXPECT_EQ(read(*engine, "/api/trades")["day_notes"]["2026-09-22"]["review"], "Good exit");
+  const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Other"}, {"plan", "practice"}});
+  ASSERT_EQ(created.status, 201) << created.body;
+  const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
+  EXPECT_TRUE(read(*engine, "/api/trades?account=" + id)["day_notes"].empty());
+  expect_error(write(*engine, "PUT", "/api/days/2026-02-30/note", {{"plan", ""}, {"review", ""}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "PUT", "/api/days/2026-09-22/note", {{"plan", std::string(2001, 'x')}, {"review", ""}}), 422, "INVALID_NOTE");
+  expect_error(write(*engine, "PUT", "/api/days/2026-09-22/note", {{"plan", 1}, {"review", ""}}), 400, "INVALID_REQUEST");
+  ASSERT_EQ(write(*engine, "PUT", "/api/days/2026-09-22/note", {{"plan", ""}, {"review", ""}}).status, 200);
+  EXPECT_TRUE(read(*engine, "/api/trades")["day_notes"].empty());
+  engine->stop();
+  std::filesystem::remove_all(journal.parent_path());
+}
+
 TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
   const auto presets = read(*engine, "/api/plans")["plans"];
   for (const auto& preset : presets) {

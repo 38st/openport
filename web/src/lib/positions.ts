@@ -203,7 +203,7 @@ export function tradeGroups(trades: readonly Trade[], fills: readonly Fill[], or
     group.status = members.some((t) => t.status === "open") ? "open" : "closed"
     group.opened = members.map((t) => t.opened).sort()[0]!
     group.closed = group.status === "open" ? null : members.map((t) => t.closed ?? "").sort().at(-1) ?? null
-    group.net = members.reduce((total, t) => total + (t.status === "closed" ? Number(t.net) : 0), 0)
+    group.net = members.reduce((total, t) => total + Number(t.net), 0)
     const open = members.filter((t) => t.status === "open")
     group.unrealised = open.length ? open.reduce<number | null>((total, t) => total == null || t.unrealised == null ? null : total + Number(t.unrealised), 0) : null
     // The order's own sides and ratios name the strategy; the trades supply each leg's terms.

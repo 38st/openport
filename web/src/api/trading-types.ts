@@ -157,9 +157,36 @@ export interface Account {
   payout: PayoutStatus | null
   attempts: AttemptSummary[]
 }
+export interface FillContext {
+  spot: Num
+  spot_source: string | null
+  iv: Num
+  delta: Num
+  years: Num
+  equity: Money | null
+  floor_room: Money | null
+  buying_power: Money | null
+}
+export interface Excursion { pnl: Money; time: string; spot: Num }
+export interface TradeReview {
+  mae: Money | null
+  mfe: Money | null
+  worst: Excursion | null
+  best: Excursion | null
+  planned_risk: Money | null
+  give_back: Money | null
+  heat: Num
+  r_multiple: Num
+}
+export interface DayNote { plan: string; review: string; time?: string | null }
 export interface Trade {
   id: string
   attempt: number
+  entry_context?: FillContext | null
+  exit_context?: FillContext | null
+  review?: TradeReview
+  strategy_id?: string | null
+  strategy_review?: TradeReview | null
   symbol: string
   underlying: string
   expiry: string
@@ -247,6 +274,7 @@ export interface TradesResponse {
   attempt: number
   trades: Trade[]
   share_trades?: ShareTrade[]
+  day_notes?: Record<string, DayNote>
   /** Every change in shares and every dividend, oldest first; absent from older servers. */
   stock_fills?: StockFill[]
   dividends?: DividendPaid[]
@@ -327,6 +355,7 @@ export interface Order {
   take_profit_order?: string | null
 }
 export interface Fill {
+  context?: FillContext | null
   id: string
   order_id: string
   symbol: string

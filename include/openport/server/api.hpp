@@ -22,7 +22,9 @@ struct ApiRequest {
 
 struct ApiResponse {
   int status = 200;
-  std::string body;  ///< JSON
+  std::string body;
+  std::string content_type = "application/json";
+  std::string download = {};
 };
 
 using ApiCompletion = std::function<void(ApiResponse)>;

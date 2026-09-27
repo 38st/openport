@@ -31,6 +31,7 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
     auto& life = out[it->second.index];
     life.closed = time;
     life.quantity = 0;
+    life.basis = Money{};
     open.erase(it);
   };
   auto start = [&](const Fill& fill, const md::OptionContract& contract, Quantity signed_quantity) {
@@ -40,6 +41,7 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
     life.direction = signed_quantity > 0 ? 1 : -1;
     life.opened = fill.time;
     life.first_fill = fill.id;
+    life.entry_context = fill.context;
     out.push_back(std::move(life));
     open[fill.symbol] = Open{out.size() - 1, Ledger{}};
   };
@@ -60,6 +62,7 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
       life->opened_contracts += fill.quantity;
       life->open_notional = life->open_notional + fill.price * fill.quantity;
     } else {
+      life->exit_context = fill.context;
       const auto closing = std::min(magnitude(held), fill.quantity);
       const auto remainder = fill.quantity - closing;
       const Money closing_fee = fill.fee.prorate(closing, fill.quantity);
@@ -82,6 +85,8 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
         life->open_notional = life->open_notional + fill.price * remainder;
       }
     }
+    life->basis = it->second.ledger.positions().contains(fill.symbol)
+        ? it->second.ledger.positions().at(fill.symbol).basis : Money{};
     life->max_quantity = std::max(life->max_quantity, magnitude(life->quantity));
     life->fills.push_back(fill.id);
     life->gross = it->second.ledger.account().realised;
@@ -95,14 +100,17 @@ std::vector<Lifecycle> lifecycles(const std::vector<Fill>& fills, const std::vec
     auto& life = out[it->second.index];
     const auto held = life.quantity;
     if (held == 0) return;
-    // An early exercise can take part of the position; the rest stays open.
-    const auto closing = closure.kind == ClosureKind::Exercise
+    // Exercise and assignment can take part of the position; the rest stays open.
+    const auto closing = (closure.kind == ClosureKind::Exercise || closure.kind == ClosureKind::Assignment)
         ? std::min(magnitude(closure.quantity), magnitude(held)) : magnitude(held);
     if (closure.kind == ClosureKind::Settlement) {
       it->second.ledger.settle(closure.symbol, closure.price);
     } else {
       it->second.ledger.fill(contract->second, held > 0 ? -closing : closing, closure.price, Money{});
     }
+    life.exit_context.reset();
+    life.basis = it->second.ledger.positions().contains(closure.symbol)
+        ? it->second.ledger.positions().at(closure.symbol).basis : Money{};
     life.quantity = held > 0 ? held - closing : held + closing;
     life.closed_contracts += closing;
     life.close_notional = life.close_notional + closure.price * closing;

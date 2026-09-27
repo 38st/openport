@@ -1,17 +1,18 @@
 import { Fragment, useMemo, useState } from "react"
 import { api } from "../api/client"
 import { marketNow, useLive } from "../api/live"
-import { useAllOrders, useFills, useRefreshTrading, useTrades } from "../api/trading"
-import type { Fill, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
+import { useAllOrders, useFills, useRefreshTrading, useTrades, useTradingSession } from "../api/trading"
+import type { DayNote, Fill, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Empty, PageHeader, Panel, Segmented, Tile, toneOf, toneText } from "../components/ui"
 import { signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
-import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, parseTags, shareSourceLabel, tradeBuckets, tradeNet, tradeTags, type Dimension, type JournalTrade, type Side } from "../lib/journal"
+import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, parseTags, shareSourceLabel, strategyResults, tradeBuckets, tradeNet, tradeTags, type Dimension, type JournalTrade, type Side } from "../lib/journal"
 import { tradeGroups, type TradeGroup } from "../lib/positions"
 import { formatMoney, signedMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
+import { ContextCard, ReviewMetrics, TradeChart } from "./TradeReview"
 import { netLabel } from "./OrdersView"
 
 const usd = (value: number) => signedMoney(value.toFixed(2))
@@ -63,7 +64,8 @@ function Journal({ trading }: { trading: TradingStatus }) {
         <Tile label="Average hold" value={formatDuration(stats.averageHoldSeconds)} />
         <Tile label="Open trades" value={String(entries.filter((t) => t.status === "open").length)} />
       </div>
-      <Calendar trades={entries} />
+      <CsvDownloads scope={scope} />
+      <Calendar trades={entries} notes={trades.data.day_notes ?? {}} trading={trading} />
       <Reports trades={entries} />
       <History trades={list} trading={trading} />
       {shareList.length > 0 && <Shares trades={shareList} trading={trading} />}
@@ -71,11 +73,12 @@ function Journal({ trading }: { trading: TradingStatus }) {
   )
 }
 
-function Calendar({ trades }: { trades: JournalTrade[] }) {
+export function Calendar({ trades, notes, trading }: { trades: JournalTrade[]; notes: Record<string, DayNote>; trading: TradingStatus }) {
+  const [selected, setSelected] = useState<string | null>(null)
   const days = useMemo(() => dailyResults(trades), [trades])
   const live = useLive()
   const today = newYorkDate(new Date(marketNow(live)).toISOString())?.date ?? ""
-  const latest = [...days.keys()].sort().at(-1) ?? today
+  const latest = [...days.keys(), ...Object.keys(notes)].sort().at(-1) ?? today
   const [cursor, setCursor] = useState(() => ({ year: Number(latest.slice(0, 4)) || 2026, month: Number(latest.slice(5, 7)) || 1 }))
   const weeks = monthWeeks(cursor.year, cursor.month)
   const month = [...days.values()].filter((d) => d.date.startsWith(`${cursor.year}-${String(cursor.month).padStart(2, "0")}`))
@@ -110,13 +113,13 @@ function Calendar({ trades }: { trades: JournalTrade[] }) {
                   const intensity = result ? Math.round(12 + 38 * Math.min(1, Math.abs(result.net) / scale)) : 0
                   return <td key={i} className={`h-16 rounded-md align-top ${date ? "border border-border/60" : ""} ${date === today ? "ring-1 ring-accent" : ""}`}
                     style={result ? { background: `color-mix(in srgb, var(${result.net >= 0 ? "--bullish" : "--bearish"}) ${intensity}%, var(--panel))` } : undefined}>
-                    {date && <div className="flex h-full flex-col p-1.5">
-                      <span className="text-[10px] text-muted">{Number(date.slice(8))}</span>
+                    {date && <button type="button" className="flex h-full w-full flex-col p-1.5 text-left" aria-label={`${date}${notes[date] ? ", has day note" : ""}`} aria-pressed={selected === date} onClick={() => setSelected(date)}>
+                      <span className="text-[10px] text-muted">{Number(date.slice(8))}{notes[date] && <span className="ml-1 text-accent" aria-label="Day note">✎</span>}</span>
                       {result && <>
                         <span className="mt-auto font-medium tabular">{usd(result.net)}</span>
                         <span className="text-[10px] text-muted">{result.trades} trade{result.trades === 1 ? "" : "s"}</span>
                       </>}
-                    </div>}
+                    </button>}
                   </td>
                 })}
                 <td className="rounded-md border border-border/60 bg-raised/40 p-1.5 align-top">
@@ -129,7 +132,11 @@ function Calendar({ trades }: { trades: JournalTrade[] }) {
           </tbody>
         </table>
       </div>
-      <p className="mt-2 text-[11px] text-muted">Closed trades by the New York date they closed.</p>
+      <p className="mt-2 text-[11px] text-muted">Closed trades by the New York date they closed. Select a day to plan or review.</p>
+      {selected && <div className="mt-3 border-t border-border pt-3">
+        <h3 className="mb-2 text-sm">{selected} · {days.get(selected)?.trades ?? 0} closed trades · {usd(days.get(selected)?.net ?? 0)}</h3>
+        <DayNoteEditor key={selected} day={selected} note={notes[selected]} trading={trading} />
+      </div>}
     </Panel>
   )
 }
@@ -157,7 +164,7 @@ function Reports({ trades }: { trades: JournalTrade[] }) {
 }
 
 const pageSize = 25
-const headers = ["Contract", "Side", "Qty", "Opened", "Closed", "Held", "Avg open", "Avg close", "Net P&L", "Return"]
+const headers = ["Contract", "Side", "Qty", "Opened", "Closed", "Held", "Avg open", "Avg close", "Net P&L", "Return", "MAE", "R"]
 
 function Tags({ trade }: { trade: { note?: string; tags?: string[] } | undefined }) {
   return <>
@@ -226,13 +233,17 @@ function TradeRow({ trade: t, expanded, onToggle }: { trade: Trade; expanded: bo
       {t.status === "open" ? <span title="Unrealized">{signedMoney(t.unrealised)}</span> : signedMoney(t.net)}
     </td>
     <td className={`px-2 py-2 ${toneText[toneOf(t.return)]}`}>{signedPercent(t.return)}</td>
+    <td className="px-2 py-2">{formatMoney(t.review?.mae)}</td>
+    <td className="px-2 py-2">{t.review?.r_multiple == null ? "—" : `${t.review.r_multiple.toFixed(2)}R`}</td>
   </tr>
 }
 
 /** A strategy's round trips as one row: net P&L of its legs, opened at the order's net price. */
-function StrategyRow({ group, expanded, onToggle }: { group: TradeGroup; expanded: boolean; onToggle: () => void }) {
+export function StrategyRow({ group, expanded, onToggle }: { group: TradeGroup; expanded: boolean; onToggle: () => void }) {
   const order = group.order!
-  // Open strategies count their closed legs' net and the open legs' unrealized P&L.
+  const result = strategyResults(group.trades, order.filled_quantity)
+  const review = group.trades[0]?.strategy_review
+  // Open strategies keep realised P&L and fees on every leg, plus the remaining unrealised P&L.
   const value = group.status === "open" ? (group.unrealised == null ? null : group.unrealised + group.net) : group.net
   const held = group.closed ? (Date.parse(group.closed) - Date.parse(group.opened)) / 1000 : null
   return <tr className="cursor-pointer border-t border-border/40 hover:bg-raised/50" onClick={onToggle} aria-expanded={expanded}>
@@ -247,17 +258,20 @@ function StrategyRow({ group, expanded, onToggle }: { group: TradeGroup; expande
     <td className="px-2 py-2 text-muted">{group.closed ? short.format(Date.parse(group.closed)) : "open"}</td>
     <td className="px-2 py-2">{formatDuration(held)}</td>
     <td className="px-2 py-2">{order.average_fill_price ? netLabel(order.average_fill_price) : "—"}</td>
-    <td className="px-2 py-2">—</td>
+    <td className="px-2 py-2">{result.close == null ? "—" : formatMoney(result.close.toFixed(6))}</td>
     <td className={`px-2 py-2 ${toneText[toneOf(value)]}`}>
-      {value == null ? "—" : group.status === "open" ? <span title="Closed legs' net plus open legs' unrealized">{usd(value)}</span> : usd(value)}
+      {value == null ? "—" : group.status === "open" ? <span title="Realised P&L and fees plus remaining unrealised">{usd(value)}</span> : usd(value)}
     </td>
-    <td className="px-2 py-2">—</td>
+    <td className="px-2 py-2">{signedPercent(result.return)}</td>
+    <td className="px-2 py-2">{formatMoney(review?.mae)}</td>
+    <td className="px-2 py-2">{review?.r_multiple == null ? "—" : `${review.r_multiple.toFixed(2)}R`}</td>
   </tr>
 }
 
 function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus }) {
   const [filter, setFilter] = useState<"closed" | "open" | "all">("closed")
   const [grouping, setGrouping] = useState<"trades" | "strategies">("trades")
+  const [reviewFilter, setReviewFilter] = useState("all")
   const [page, setPage] = useState(0)
   const [expanded, setExpanded] = useState<string | null>(null)
   const fills = useFills().data?.fills
@@ -268,9 +282,14 @@ function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus 
     ? groups.filter((g) => filter === "all" || g.status === filter)
     : trades.filter((t) => filter === "all" || t.status === filter).map((t) => ({ key: `trade-${t.id}`, order: null, label: "", trades: [t],
         status: t.status, opened: t.opened, closed: t.closed, net: tradeNet(t), unrealised: null }))
-  const pages = Math.max(1, Math.ceil(items.length / pageSize))
+  const filtered = items.filter((group) => {
+    const review = group.order ? group.trades[0]?.strategy_review : group.trades[0]?.review
+    return reviewFilter === "all" || (reviewFilter === "risk" ? review?.planned_risk != null
+      : reviewFilter === "give_back" ? Number(review?.give_back ?? 0) > 0 : review?.planned_risk == null)
+  })
+  const pages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const current = Math.min(page, pages - 1)
-  const visible = items.slice(current * pageSize, (current + 1) * pageSize)
+  const visible = filtered.slice(current * pageSize, (current + 1) * pageSize)
   const net = trades.filter((t) => t.status === "closed").reduce((sum, t) => sum + tradeNet(t), 0)
   const toggle = (key: string) => setExpanded(expanded === key ? null : key)
   const detail = (t: Trade) => <TradeDetail trade={t} trading={trading} fills={t.fills.map((id) => fillsById.get(id)).filter((f): f is Fill => f != null)} />
@@ -279,10 +298,13 @@ function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus 
       <span className="text-xs text-muted">Net <span className={`tabular ${toneText[toneOf(net)]}`}>{usd(net)}</span></span>
       <Segmented label="Group trades" value={grouping} onChange={(v) => { setGrouping(v); setPage(0); setExpanded(null) }}
         options={[{ value: "trades", label: "Contracts" }, { value: "strategies", label: "Strategies" }]} />
+      <select className="trade-input !w-auto !py-1" aria-label="Review filter" value={reviewFilter} onChange={(e) => { setReviewFilter(e.target.value); setPage(0) }}>
+        <option value="all">All reviews</option><option value="risk">With planned risk</option><option value="unknown">Risk unavailable</option><option value="give_back">Positive give-back</option>
+      </select>
       <Segmented label="Trade status" value={filter} onChange={(v) => { setFilter(v); setPage(0) }}
         options={[{ value: "closed", label: "Closed" }, { value: "open", label: "Open" }, { value: "all", label: "All" }]} />
     </>}>
-      {!items.length ? <p className="text-sm text-muted">No {filter === "all" ? "" : `${filter} `}trades yet.</p> : <>
+      {!filtered.length ? <p className="text-sm text-muted">No {filter === "all" ? "" : `${filter} `}trades yet.</p> : <>
         <div className="max-w-full overflow-x-auto" tabIndex={0} role="region" aria-label="Trade history">
           <table className="w-full text-right text-xs tabular whitespace-nowrap">
             <thead className="text-[11px] uppercase tracking-wide text-muted"><tr>
@@ -297,6 +319,8 @@ function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus 
                   ? <>
                     {group.trades.map((t) => <TradeRow key={t.id} trade={t} expanded={false} onToggle={() => {}} />)}
                     <tr className="bg-raised/30"><td colSpan={headers.length} className="px-4 py-3 text-left">
+                      <ReviewMetrics review={group.trades[0]?.strategy_review} label="Strategy excursions" />
+                      <div className="mt-3 space-y-4">{group.trades.map((t) => <div key={t.id}>{detail(t)}</div>)}</div>
                       <NoteEditor key={group.trades.map((t) => t.id).join()} trades={group.trades} trading={trading} />
                     </td></tr>
                   </>
@@ -306,7 +330,7 @@ function History({ trades, trading }: { trades: Trade[]; trading: TradingStatus 
           </table>
         </div>
         {pages > 1 && <div className="mt-3 flex items-center justify-between text-xs text-muted">
-          <span>Showing {current * pageSize + 1}–{Math.min(items.length, (current + 1) * pageSize)} of {items.length}</span>
+          <span>Showing {current * pageSize + 1}–{Math.min(filtered.length, (current + 1) * pageSize)} of {filtered.length}</span>
           <span className="flex items-center gap-2">
             <button type="button" className="trade-button" disabled={current === 0} onClick={() => setPage(current - 1)}>Previous</button>
             <span className="tabular">{current + 1} / {pages}</span>
@@ -365,7 +389,7 @@ function Shares({ trades, trading }: { trades: ShareTrade[]; trading: TradingSta
   )
 }
 
-function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fill[]; trading: TradingStatus }) {
+export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fill[]; trading: TradingStatus }) {
   return <div className="space-y-4"><div className="grid gap-4 md:grid-cols-[16rem_1fr]">
     <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
       <dt className="text-muted">Entry cost</dt><dd className="tabular">{formatMoney(trade.cost)}</dd>
@@ -388,6 +412,50 @@ function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fill[]; t
       </table>
     </div>
   </div>
+  <div className="grid gap-3 md:grid-cols-2"><ContextCard title="Entry context" context={trade.entry_context} /><ContextCard title="Exit context" context={trade.exit_context} /></div>
+  <ReviewMetrics review={trade.review} />
+  <TradeChart trade={trade} />
   <NoteEditor key={trade.id} trades={[trade]} trading={trading} />
   </div>
+}
+
+export function CsvDownloads({ scope }: { scope: "current" | "all" }) {
+  const [from, setFrom] = useState("")
+  const [to, setTo] = useState("")
+  const invalid = Boolean(from && to && from > to)
+  return <div className="flex flex-wrap items-end gap-3 text-xs">
+    <label className="trade-label">Export from<input type="date" className="trade-input" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+    <label className="trade-label">Export to<input type="date" className="trade-input" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+    {(["trades", "fills"] as const).map((kind) => <a key={kind} className="trade-button" aria-disabled={invalid} download={`${kind}.csv`}
+      href={invalid ? undefined : api.journalCsvUrl(kind, from, to, scope)}>{kind === "trades" ? "Download trades CSV" : "Download fills CSV"}</a>)}
+    <span className="text-[11px] text-muted">{invalid ? "From must be before to." : "New York dates. Trades follow the attempt selection; fills include all attempts."}</span>
+  </div>
+}
+
+export function DayNoteEditor({ day, note, trading }: { day: string; note?: DayNote; trading: TradingStatus }) {
+  const [plan, setPlan] = useState(note?.plan ?? "")
+  const [review, setReview] = useState(note?.review ?? "")
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<unknown>()
+  const [saved, setSaved] = useState(false)
+  const token = useWriteToken()
+  const refresh = useRefreshTrading()
+  const currentSession = useTradingSession()
+  async function save() {
+    setPending(true); setError(undefined); setSaved(false)
+    try {
+      await api.annotateDay(day, { plan, review }, trading.write)
+      if (currentSession()) { setSaved(true); void refresh() }
+    } catch (failure) { if (currentSession()) setError(failure) }
+    finally { if (currentSession()) setPending(false) }
+  }
+  return <form className="space-y-2" onSubmit={(event) => { event.preventDefault(); void save() }}>
+    <div className="grid gap-3 md:grid-cols-2">
+      <label className="trade-label">Plan before the open<textarea className="trade-input min-h-24" maxLength={2000} value={plan} onChange={(e) => { setPlan(e.target.value); setSaved(false) }} /></label>
+      <label className="trade-label">Review after the close<textarea className="trade-input min-h-24" maxLength={2000} value={review} onChange={(e) => { setReview(e.target.value); setSaved(false) }} /></label>
+    </div>
+    <WriteAccess trading={trading} /><TradingError error={error} />
+    <button type="submit" className="trade-button" disabled={pending || writeBlocked(trading, token)}>{pending ? "Saving…" : "Save day note"}</button>
+    {saved && <span className="ml-2 text-xs text-muted" role="status">Saved</span>}
+  </form>
 }

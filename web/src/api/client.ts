@@ -1,6 +1,6 @@
 import type { Volatility } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderChange, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, FillsResponse, KillResponse, Limits, Money, NewOrder, OrderChange, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, DayNote, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { writeToken } from "../lib/write-token"
@@ -84,6 +84,15 @@ export const api = {
   modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "PUT", mode, change),
   cancelAllOrders: (underlying: string | null, mode: WriteMode) => write<CancelAllResponse>(scoped("/api/orders/cancel"), "POST", mode, underlying ? { underlying } : {}),
   closePositions: (underlying: string | null, mode: WriteMode) => write<ClosePositionsResponse>(scoped("/api/positions/close"), "POST", mode, underlying ? { underlying } : {}),
+  journalCsvUrl: (kind: "trades" | "fills", from = "", to = "", attempt: "current" | "all" = "all") => {
+    const query = new URLSearchParams()
+    if (from) query.set("from", from)
+    if (to) query.set("to", to)
+    if (kind === "trades") query.set("attempt", attempt)
+    return routed(scoped(`/api/${kind}.csv${query.size ? `?${query}` : ""}`))
+  },
+  annotateDay: (day: string, note: Pick<DayNote, "plan" | "review">, mode: WriteMode) =>
+    write<{ account_version: string; day: string; note: DayNote }>(scoped(`/api/days/${encodeURIComponent(day)}/note`), "PUT", mode, note),
   annotateTrade: (id: string, note: TradeNote, mode: WriteMode) => write<TradeNoteResponse>(scoped(`/api/trades/${encodeURIComponent(id)}/note`), "PUT", mode, note),
   exercise: (symbol: string, quantity: number, mode: WriteMode) => write<Portfolio>(scoped("/api/positions/exercise"), "POST", mode, { symbol, quantity }),
   closeStock: (symbol: string, shares: number | null, mode: WriteMode) =>

@@ -11,6 +11,7 @@
 
 #include "openport/trading/history.hpp"
 #include "state.hpp"
+#include "review.hpp"
 #include "state_delta.hpp"
 
 namespace openport::trading {
@@ -520,6 +521,9 @@ TradingSnapshot snapshot_of(const State& s) {
   out.dividends = s.dividends;
   out.closing_prints = s.closing_prints;
   out.annotations = s.annotations;
+  out.day_notes = s.day_notes;
+  out.trade_reviews = s.trade_reviews;
+  out.strategy_reviews = s.strategy_reviews;
   // Today's P&L by Greek: the finished stretches, and the open ones to the marks now.
   out.attributions = s.explained;
   for (const auto& [symbol, reference] : s.references) {
@@ -538,6 +542,26 @@ std::optional<Money> marked_equity(const TradingSnapshot& snapshot) {
   for (const auto& p : snapshot.positions) if (!p.market_value) return std::nullopt;
   for (const auto& p : snapshot.stocks) if (!p.market_value) return std::nullopt;
   return snapshot.equity;
+}
+/// All legs in an atomic execution share the account's pre-execution context.
+FillContext fill_context(const State& s, const std::string& symbol, const TradingSnapshot& snapshot) {
+  FillContext context;
+  if (const auto* v = valuation_of(s, symbol); v && s.time - v->time <= s.config.limits.max_valuation_age) {
+    context.spot = v->spot;
+    context.spot_source = v->spot_source;
+    context.iv = v->smile_iv;
+    context.delta = v->delta;
+    context.years = v->years;
+  } else if (const auto price = stock_price(s, s.contracts.at(symbol).underlying)) {
+    context.spot = price->dollars();
+    context.spot_source = "quote";
+  }
+  if (!context.years) context.years = static_cast<double>(std::max<Timestamp>(0, s.contracts.at(symbol).expiry_time() - s.time)) /
+      static_cast<double>(md::kNanosPerDay) / 365.0;
+  context.equity = marked_equity(snapshot);
+  if (context.equity && s.config.rules.max_drawdown > Money{}) context.floor_room = *context.equity - s.evaluation.floor;
+  context.buying_power = snapshot.buying_power.available;
+  return context;
 }
 /// The trailing floor, peak - max drawdown. With a lock balance it stops once
 /// it reaches that level and stays there (`locked` latches).
@@ -932,6 +956,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
     cancel_order(o, decision, events);
     return;
   }
+  const auto context = fill_context(s, o.request.symbol, snapshot_of(s));
   annotate_opening(s, o.request, o.request.symbol, o.request.side == Side::Buy ? quantity : -quantity, events);
   fill_position(s, o.request.symbol, o.request.side == Side::Buy ? quantity : -quantity, price, fee);
   budget -= quantity;
@@ -939,7 +964,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   o.filled_notional = o.filled_notional + price * quantity;
   o.status = o.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
   Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, o.request.symbol, o.request.side,
-            quantity, price, fee, book.quote.observation, book.quote.time, s.time};
+            quantity, price, fee, book.quote.observation, book.quote.time, s.time, context};
   s.fills.push_back(fill);
   event(events, "fill", fill);
   on_fill(s, id, events);
@@ -988,7 +1013,9 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     cancel_order(o, decision, events);
     return;
   }
+  const auto before = snapshot_of(s);
   for (const auto& leg : o.request.legs) {
+    const auto context = fill_context(s, leg.symbol, before);
     auto& book = s.books.at(leg.symbol);
     const auto contracts = signed_contracts(leg, units);
     const auto size = magnitude(contracts);
@@ -998,7 +1025,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     fill_position(s, leg.symbol, contracts, price, fee);
     (leg.side == Side::Buy ? book.ask_left : book.bid_left) -= size;
     Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, leg.symbol, leg.side,
-              size, price, fee, book.quote.observation, book.quote.time, s.time};
+              size, price, fee, book.quote.observation, book.quote.time, s.time, context};
     s.fills.push_back(fill);
     event(events, "fill", fill);
   }
@@ -1102,6 +1129,7 @@ void attach_exits(State& s, OrderId entry_id, Events& events) {
   }
 }
 void on_fill(State& s, OrderId id, Events& events) {
+  detail::update_reviews(s);
   const auto oco = s.orders.at(static_cast<std::size_t>(id - 1)).oco;
   if (oco != 0) {
     auto& sibling = s.orders.at(static_cast<std::size_t>(oco - 1));
@@ -1594,6 +1622,7 @@ struct TradingSession::Impl {
     auto result = action(next, events);
     monitor_loss(next, events);
     monitor_rules(next, events);
+    detail::update_reviews(next);
     std::optional<Json> recorded;
     if (journal) {
       // A transaction that changed nothing, as a batch at the same market time can,
@@ -1799,6 +1828,7 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
       if (prior != s.stock_marks.end() && price.time < prior->second.time) continue;
       s.stock_marks[price.symbol] = {price.price, price.time};
     }
+    detail::update_reviews(s);
     monitor_loss(s, events);
     // Invalid quotes provide no liquidity. Keep orders until a new valid quote
     // permits the fill-time risk check (or a clock/kill command cancels them).
@@ -2138,6 +2168,18 @@ CommandResult TradingSession::annotate(std::uint64_t trade, std::string note, st
     if (std::none_of(trades.begin(), trades.end(), [&](const Lifecycle& t) { return t.first_fill == trade; }))
       return CommandResult{failure(Reason::UNKNOWN_TRADE, "No trade opens with fill " + std::to_string(trade)), {}, 0};
     store_annotation(s, std::to_string(trade), std::move(annotation), events);
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::annotate_day(md::Date day, std::string plan, std::string review, Timestamp time) {
+  if (!md::valid_date(day))
+    throw TradingError(Reason::INVALID_NOTE, "A day note needs a valid YYYY-MM-DD date");
+  DayNote note{clean_annotation(std::move(plan), {}).note, clean_annotation(std::move(review), {}).note, time};
+  return impl_->transact(time, "day_note", [&](State& s, Events& events) {
+    const auto key = md::format_date(day);
+    if (note.plan.empty() && note.review.empty()) s.day_notes.erase(key);
+    else s.day_notes[key] = note;
+    event(events, "day_annotated", Json{{"day", key}, {"note", note}});
     return CommandResult{};
   });
 }

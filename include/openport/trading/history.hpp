@@ -26,6 +26,9 @@ struct Lifecycle {
   Money fees;                       ///< Fees allocated to this lifecycle.
   std::vector<std::uint64_t> fills;
   std::optional<ClosureKind> closure;  ///< A settlement or reset ended the position.
+  Money basis;                    ///< Signed basis of the remaining position.
+  std::optional<FillContext> entry_context;
+  std::optional<FillContext> exit_context;
   std::uint64_t first_fill = 0;     ///< ID of the opening fill, for attempt filtering.
 };
 

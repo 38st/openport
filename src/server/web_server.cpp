@@ -516,7 +516,8 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
   void send_api(ApiResponse api, unsigned version, bool keep_alive) {
     if (stopped_) return;
     http::response<http::string_body> response{static_cast<http::status>(api.status), version};
-    response.set(http::field::content_type, "application/json");
+    response.set(http::field::content_type, api.content_type);
+    if (!api.download.empty()) response.set(http::field::content_disposition, "attachment; filename=\"" + api.download + "\"");
     response.set(http::field::cache_control, "no-store");
     response.keep_alive(keep_alive);
     response.body() = std::move(api.body);

@@ -93,6 +93,7 @@ Valuation valuation_for(const std::string& symbol, const md::OptionContract& con
                   g.theta / 365.0, spot, forward, slice.forward.discount, slice.years, vol, true};
         result.valid = valid_valuation(result);
       }
+      result.spot_source = metrics->spot_source;
       return result;
     }
   }
@@ -887,6 +888,9 @@ void Engine::apply_command(PendingCommand& pending) {
           else result = session.reset_account(c.initial_cash, c.rules, c.reason, market_time_);
           break;
         case TradingCommand::Kind::Payout: result = session.request_payout(c.amount, market_time_); break;
+        case TradingCommand::Kind::DayNote:
+          result = session.annotate_day(c.day, c.plan, c.review, market_time_);
+          break;
         case TradingCommand::Kind::Annotate:
           result = c.shares ? session.annotate_shares(c.trade, c.note, c.tags, market_time_)
                             : session.annotate(c.trade, c.note, c.tags, market_time_);

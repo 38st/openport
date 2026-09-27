@@ -37,6 +37,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/web_policy_test.cpp
     server/engine_test.cpp
     server/paper_test.cpp
+    server/review_test.cpp
   )
   target_compile_definitions(openport_tests PRIVATE OPENPORT_APPS_DIR="${PROJECT_BINARY_DIR}/apps")
   add_dependencies(openport_tests openportd openport-probe)
@@ -59,6 +60,7 @@ target_sources(openport_tests PRIVATE
   trading/journal_schema_test.cpp
   trading/sessions_test.cpp
   trading/notes_test.cpp
+  trading/review_test.cpp
   trading/attribution_test.cpp
   trading/delivery_test.cpp
   trading/dividends_test.cpp

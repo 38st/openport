@@ -148,6 +148,33 @@ struct Annotation {
   std::vector<std::string> tags;
   Timestamp time = 0;  ///< When it last changed.
 };
+struct DayNote {
+  std::string plan;
+  std::string review;
+  Timestamp time = 0;
+};
+/// Observed immediately before execution; absent values were not available.
+struct FillContext {
+  std::optional<double> spot;
+  std::string spot_source;
+  std::optional<double> iv;
+  std::optional<double> delta;
+  std::optional<double> years;
+  std::optional<Money> equity;
+  std::optional<Money> floor_room;
+  std::optional<Money> buying_power;
+};
+struct Excursion {
+  Money pnl;  ///< Total marked P&L, including realised P&L and fees.
+  Timestamp time = 0;
+  std::optional<double> spot;
+};
+struct TradeReview {
+  std::optional<Excursion> worst;
+  std::optional<Excursion> best;
+  std::optional<Money> planned_risk;
+  bool finished = false;
+};
 struct Fill {
   std::uint64_t id = 0;
   OrderId order_id = 0;
@@ -159,6 +186,7 @@ struct Fill {
   std::uint64_t observation = 0;
   Timestamp quote_time = 0;
   Timestamp time = 0;
+  std::optional<FillContext> context = std::nullopt;
 };
 
 /// Observation numbers strictly increase per OSI. Repeated/older observations
@@ -189,6 +217,7 @@ struct Valuation {
   double years = 0;
   double smile_iv = 0;
   bool valid = true;
+  std::string spot_source = {};  ///< quote, parity, or empty when unknown.
 };
 
 /// An underlying's price, for the shares that exercise and assignment deliver.

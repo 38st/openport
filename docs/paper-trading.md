@@ -780,6 +780,59 @@ and opens the next at the same price with its fee split pro rata.
 assignment that takes more shares than are held closes the round trip and opens the
 opposite one at the same price.
 
+## Trade review
+
+Every option fill carries `context`, captured before it changes the account. It
+contains `spot`, `spot_source` (`quote`, `parity`, or null), `iv`, `delta`, `years`
+to expiry, `equity`, `floor_room` and available `buying_power`. The reducer copies
+its current valuation; it does not calculate Greeks. Missing or stale analytics
+stay null. A fresh stock price can supply spot when analytics cannot. Expiry time
+is known from the contract even without analytics. Equity uses the account's last
+marks and is null if a holding has no mark. Room above the floor is null without a
+drawdown rule. Atomic multi-leg fills share the same pre-execution account values.
+Older fills have null context. A trade's `entry_context` is its first opening
+fill's; `exit_context` is its last reducing fill's, including a partial close.
+Settlement, exercise, assignment and reset have no closing fill context.
+
+The reducer journals a `TradeReview` per option round trip and per opening
+multi-leg order. It samples total marked P&L: realised gross plus the remaining
+position's marked P&L, less all fees. Scaling and partial closes keep the same
+round trip until flat. Strategy samples combine the legs at the same instant;
+their extrema are not the sum of separate leg extrema. Ties keep the first time.
+Samples use market time, at quote batches and executions, and finish on closure.
+They resolve only to the marking cadence, about 15 seconds on Cboe's delayed feed;
+they cannot recover highs or lows between observations. Missing marks are not zero.
+
+The JSON `review` contains positive dollar `mae` and `mfe`, bounded below by zero.
+`worst` and `best` retain the actual signed marked `pnl`, UTC `time` and underlying
+`spot` (null when unavailable). Closed trades report `give_back = max(0, mfe - net)`
+and `r_multiple = net / planned_risk`; `heat = mae / planned_risk`. Planned risk
+excludes fees. A single-contract round trip uses its entry bracket's option-price
+stop distance times the opening quantity and multiplier. Later changes to the
+exit do not rewrite that plan. A strategy uses its opening debit or credit and the
+minimum payoff at all strikes and zero, if every leg settles at the same instant
+and the call payoff is bounded below. Risk grows with opening quantities, and is
+not reduced by partial closes. Risk, heat and R are null without a positive,
+measurable planned risk, including underlying-price stops, unbounded structures
+and calendars or diagonals. The option legs of a strategy carry its
+`strategy_id` and combined `strategy_review` separately from their own reviews.
+
+Strategy review follows the Journal's grouping by the order that opened each
+contract round trip. It requires all that order's legs to start round trips;
+contracts already shared with another strategy cannot be attributed separately.
+Older round trips without entry context keep null review fields: historical marks
+are not reconstructed. Share trades retain their existing P&L and notes. Greek
+attribution remains per day and contract; its daily stretch baselines do not supply
+an independent attribution for each round trip.
+
+The Journal shows context side by side, excursions and risk multiples, notes and
+tags, and stored one-minute underlying candles with entry, exit, MAE and MFE
+markers. Missing candle history is shown as unavailable. The candles route returns
+the latest 5,000 bars, so older trades may have partial or no coverage. Strategy
+closing prices are signed net premiums per unit; return divides leg net P&L by
+the absolute net entry premium, or is null at zero premium. List filters select
+known or unknown planned risk and positive give-back.
+
 ## Trade notes and tags
 
 Order requests accept optional `tags` and `note` with the same validation below.
@@ -802,6 +855,38 @@ each. Text past these limits throws `INVALID_NOTE`; a fill that opens no trade r
 its history across attempts, and they are allowed whatever the account's state or
 session. The snapshot's `annotations` maps each trade's ID to its note, tags and the
 time it last changed.
+
+### Day notes
+
+`annotate_day(day, plan, review, time)` replaces the account's note for a New York
+calendar date. Both fields use trade-note validation: trimmed UTF-8 text, each at
+most 2,000 bytes, with newlines and tabs allowed. Empty fields clear the note. A
+valid date is required; no trade is required on that day. Notes are reducer commands,
+journaled with market time and retained across account resets. The Journal calendar
+marks days with notes and opens the day's plan and review when selected.
+`GET /api/trades` includes `day_notes`, an object keyed by `YYYY-MM-DD`, with
+`plan`, `review` and the last edit's UTC `time`, independently of attempt filters.
+
+### CSV downloads
+
+`GET /api/trades.csv` exports option and share round trips; `GET /api/fills.csv`
+exports option fills. Both accept `account`, `from` and `to`; dates are inclusive
+New York calendar dates. Fills filter by execution date; closed trades by closing
+date and open trades by entry date. Invalid dates or an inverted range return 400.
+Trades also accept the JSON route's `status` and `attempt`, with CSV defaulting to
+all attempts. The Journal's trade download uses the selected attempt; fills always
+include all attempts. Export dates do not filter the page's other panels.
+
+Downloads use `text/csv; charset=utf-8`, attachment filenames, a fixed header even
+with no rows, CRLF row endings and RFC 4180 quoting. Commas, quotes and newlines in
+notes are preserved. Money retains micro-dollar precision, with two to six decimal places. Every JSON
+row field is included, with nested context and review fields in dotted columns;
+arrays, including tags and fill IDs, join with `;`. Missing values are empty cells.
+Times remain ISO UTC and each row adds `new_york_date`, account, account version,
+current provider and a price-source label. Paper P&L is simulated; demo prices are
+labelled simulated too. Other exports leave price provenance unrecorded because
+the current provider cannot establish the source of historical fills. The separate stock-fill, dividend and day-note collections are not
+trade rows in these exports.
 
 ## Scenarios
 
@@ -1174,13 +1259,15 @@ focus at the top of the ticket.
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
 | `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope and closes its positions at market, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason) and their `fills` |
-| `GET /api/fills` | Version and fills, newest first |
+| `GET /api/fills` | Version and fills, newest first, with pre-execution `context` (null on older fills) |
+| `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |
+| `PUT /api/days/{YYYY-MM-DD}/note` | Required `plan` and `review` strings replace the day note; returns version, `day` and `note`. Invalid text returns `INVALID_NOTE` (422); invalid dates return 400 |
 | `GET /api/risk` | Version, limits revision, limits, complete flag, daily loss, kill state, aggregate/underlying buckets and scenario matrices |
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; 200 returns the risk view, 409 if revision changed |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining, decision, current day, finished `days[]` with `realised`, `qualifying` and `attribution`, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
-| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
+| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement`/`reset`/null), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id` and `strategy_review` (see [trade review](#trade-review)). `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |

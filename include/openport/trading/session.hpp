@@ -55,6 +55,9 @@ struct TradingSnapshot {
   std::vector<DividendPayment> dividends;  ///< Dividends paid on held shares, oldest first.
   /// Notes and tags by trade, named by its opening fill's ID.
   std::map<std::string, Annotation> annotations;
+  std::map<std::string, DayNote> day_notes;
+  std::map<std::string, TradeReview> trade_reviews;
+  std::map<std::string, TradeReview> strategy_reviews;
   /// Closing prints recorded for PM settlement, by "UNDERLYING YYYY-MM-DD".
   std::map<std::string, ClosingPrint> closing_prints;
   /// Today's P&L by Greek for the account, and for each contract held or traded
@@ -187,6 +190,8 @@ class TradingSession {
   /// The same for a share round trip, named by the stock fill that opened it; its
   /// note is kept under "s" and that fill's ID.
   CommandResult annotate_shares(std::uint64_t first_fill, std::string note, std::vector<std::string> tags, Timestamp time);
+  /// Plan and review for a New York date, each at most 2,000 bytes. Empty clears it.
+  CommandResult annotate_day(md::Date day, std::string plan, std::string review, Timestamp time);
   /// Exercise `contracts` of a long, in-the-money American equity or ETF option
   /// before expiry: they close at intrinsic value against the underlying's fresh
   /// price, and 100 shares each are bought (calls) or sold (puts) at that price,

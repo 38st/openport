@@ -459,9 +459,13 @@ TEST(TradingDelivery, ShortsTheMarketValuesBelowTheirExerciseArePartlyAssignedOv
   EXPECT_NEAR(day_pnl(*s), -25.0 * static_cast<double>(puts) - 20.0 * static_cast<double>(calls), 1e-9);
   EXPECT_NEAR(snap->attribution.total(), day_pnl(*s), 1e-6);
   const auto trades = lifecycles(snap->recent_fills, snap->closures, s->contracts());
-  std::size_t closed = 0;
-  for (const auto& t : trades) closed += t.closure == ClosureKind::Assignment;
-  EXPECT_EQ(closed, 2U);
+  for (const auto& t : trades) {
+    if (t.symbol != deep && t.symbol != call) continue;
+    EXPECT_FALSE(t.closed);  // A partial assignment leaves this round trip open.
+    EXPECT_FALSE(t.closure);
+    EXPECT_EQ(t.quantity, held.at(t.symbol));
+    EXPECT_EQ(t.closed_contracts, t.symbol == deep ? puts : calls);
+  }
   // The draw is the account's, the contract's and the day's, so a replay assigns the same.
   const auto again = assigned_overnight()->snapshot();
   ASSERT_EQ(again->closures.size(), snap->closures.size());
