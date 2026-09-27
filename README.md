@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/38st/openport/actions/workflows/ci.yml/badge.svg)](https://github.com/38st/openport/actions/workflows/ci.yml)
 
-[![OpenPort, the open-source options trading simulator: practise prop-style evaluations on real option chains, with analytics you can check](site/social-preview.png)](https://38st.github.io/openport/)
+[![OpenPort, the open-source options trading simulator: practise prop-style evaluations on real option chains, with analytics you can check](site/social-preview.png)](https://openport.markets/)
 
 Self-hosted options analytics and a trading simulator on your own market data. Plug in
 the provider you already pay for, or start with Cboe's free delayed quotes, and get a
