@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "openport/trading/session.hpp"
+#include "openport/analytics/chain_analytics.hpp"
 #include "openport/server/equity.hpp"
 
 namespace openport::server {
@@ -83,6 +84,22 @@ struct TradingView {
   trading::BreachRisk breach;
   std::vector<EquitySample> equity_samples;
   std::string equity_error;
+};
+
+/// The market's implied variance of an underlying's log price from its analytics'
+/// market time to that day's regular close: the nearest expiry's at-the-money IV²
+/// times its years (as the IV was solved, on calendar time), with today's share of it
+/// in regular-session time. Zero once today's session is over; empty without an IV.
+[[nodiscard]] std::optional<double> implied_variance_to_close(const analytics::UnderlyingMetrics& metrics);
+
+/// The main account keeps the original journal; others are named alongside it.
+inline constexpr std::string_view kMainAccount = "main";
+
+/// One paper account's standing, for the account list and ticks.
+struct AccountStatus {
+  std::string id;
+  std::string name;
+  TradingStatus trading;
 };
 
 struct TradingCommand {

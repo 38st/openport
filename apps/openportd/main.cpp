@@ -42,6 +42,7 @@
 #include "openport/server/engine.hpp"
 #include "openport/server/plans.hpp"
 #include "openport/server/replay_host.hpp"
+#include "openport/server/run.hpp"
 #include "openport/server/web_server.hpp"
 #include "openport/server/web_policy.hpp"
 #include "openport/trading/journal.hpp"
@@ -95,6 +96,7 @@ int usage(const char* error = nullptr) {
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
+      "       openportd --verify-run JOURNAL\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --repair-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
@@ -556,6 +558,11 @@ int run(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string_view(argv[1]) == "--verify-run") {
+    const auto result = openport::server::verify_run(argv[2]);
+    std::fprintf(result.matched ? stdout : stderr, "%s\n", result.message.c_str());
+    return result.matched ? 0 : 1;
+  }
   try {
     return run(argc, argv);
   } catch (const std::exception& error) {

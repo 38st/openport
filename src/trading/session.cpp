@@ -1902,6 +1902,14 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
 }
 TradingSession::TradingSession(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 TradingSession::~TradingSession() = default;
+void TradingSession::record_input(std::string_view input, Timestamp time) {
+  const auto data = Json::parse(input);
+  if (!data.is_object()) throw std::invalid_argument("Run input must be an object");
+  impl_->transact(time, "run_input", [&](State&, Events& events) {
+    event(events, "run_input", data);
+    return CommandResult{};
+  });
+}
 TradingSession::TradingSession(TradingSession&&) noexcept = default;
 TradingSession& TradingSession::operator=(TradingSession&&) noexcept = default;
 CommandResult TradingSession::define(const md::OptionContract& contract, Timestamp time) {

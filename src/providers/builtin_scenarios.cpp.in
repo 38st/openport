@@ -10,6 +10,8 @@ const std::vector<Scenario>& builtin_scenarios() {
     std::vector<Scenario> out;
     const auto append = [&](const char* file, std::string_view text) {
       auto scenario = parse_scenario(text, file);
+      scenario.builtin = true;
+      scenario.source_file = file;
       if (std::any_of(out.begin(), out.end(), [&](const auto& prior) { return prior.id == scenario.id; }))
         throw std::invalid_argument(std::string(file) + ": id: duplicate built-in id");
       out.push_back(std::move(scenario));

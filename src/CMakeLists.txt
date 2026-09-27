@@ -101,6 +101,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/demo.cpp
     providers/scenario.cpp
     providers/replay.cpp
+    providers/replay_batches.cpp
     providers/snapshot.cpp
     providers/cboe.cpp
     providers/massive.cpp
@@ -127,6 +128,8 @@ if(OPENPORT_BUILD_PROVIDERS)
   add_library(openport_server
     server/candles.cpp
     server/equity.cpp
+    server/desk.cpp
+    server/run.cpp
     server/engine.cpp
     server/paper_engine.cpp
     server/paper_api.cpp

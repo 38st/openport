@@ -28,7 +28,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **709 C++ and 412 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
+- **718 C++ and 412 web tests**, built in CI with GCC 13 on Ubuntu and Apple Clang on
   macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -110,6 +110,10 @@ with generated prices labelled as simulated on every page:
   feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
   at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
   Finished runs open read-only in Journal and Dashboard.
+
+  - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
+    Step to a market time with `PUT /api/replay {"until":"10:30"}`; check a saved run
+    with `openportd --verify-run JOURNAL`.
 - **Demo market**: when markets are closed or the feed has stalled, the terminal offers
   fourteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
   gaps, volatility changes and overnight sessions. Each run chooses a fresh seed, or
@@ -276,6 +280,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Equity history is kept beside each journal as `.equity.csv` |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
+| `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe's history backfills it ([price history](docs/runtime.md#price-history)) |
 | `--dividends FILE\|massive` | Known cash dividends for held shares and American analytics: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
@@ -395,6 +400,7 @@ these routes, so anything it does can be scripted:
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one; every route above takes `?account=ID` for one other than the main account |
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`; control or stop. `/api/replay/X` mirrors `/api/X` |
+| `PUT /api/replay {"until":"HH:MM[:SS]"}` | Advance through a New York session time (or ISO timestamp), then pause; responds after analytics and trading settle, with `settled_through` |
 | `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, portfolio, trades or fills; delete its journal |
 
 This calendar buys the later put and sells the nearer one at a net debit of at most
@@ -482,6 +488,7 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] Demo market: a simulated day to trade when nothing else does
 - [x] Scenario library: simulated drills with fresh or repeatable seeds, start times and
       replay journals that are kept
+- [x] Deterministic replay batches, verifiable run journals and synchronous market-time stepping
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [x] Partial, random early assignment, and dividend risk on short calls
 - [x] Market-wide circuit breakers, with a banner and kept across restarts, and Cboe's

@@ -28,6 +28,9 @@ struct Scenario {
   std::vector<std::pair<double, double>> drift;  ///< fraction -> cumulative log return
   double volatility = 0, iv_shift = 0, spot_vol = 0;
   std::vector<ScenarioEvent> events;
+  std::string source;  ///< Exact parsed bytes, for run provenance.
+  std::filesystem::path source_file;
+  bool builtin = false;
 };
 
 /// Strict version 1 parser. Errors include the file and field.

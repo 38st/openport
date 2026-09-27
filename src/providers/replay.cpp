@@ -95,9 +95,10 @@ void ReplayProvider::skip() {
 
 bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
   while (!stopping_.load()) {
+    if (seeking_.load()) return true;
     if (paused_.load()) {
       std::unique_lock lock(control_mutex_);
-      control_.wait(lock, [&] { return !paused_.load() || stopping_.load(); });
+      control_.wait(lock, [&] { return !paused_.load() || seeking_.load() || stopping_.load(); });
       lock.unlock();
       if (stopping_.load()) return false;
       // Time spent paused does not count against the gap.
@@ -145,7 +146,10 @@ void ReplayProvider::start(const md::Subscription& subscription, md::EventSink& 
   for (const auto& symbol : subscription.underlyings)
     if (std::find(available.begin(), available.end(), symbol) == available.end())
       throw std::invalid_argument("replay: unknown symbol " + symbol + "; file contains: " + names);
-  thread_ = std::thread([this, subscription, &sink] { run(subscription, sink); });
+  thread_ = std::thread([this, subscription, &sink] {
+    if (driver_) run_deterministic(subscription, sink);
+    else run(subscription, sink);
+  });
 }
 
 void ReplayProvider::stop() {
@@ -247,6 +251,98 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
   }
   if (!stopping_.load()) (void)synchronize();
   finished_ = true;
+}
+
+void ReplayProvider::set_driver(Driver driver) {
+  if (started_) throw std::logic_error("Set replay driver before start");
+  if (options_.loop) throw std::invalid_argument("Trading replays require loop=off; start a fresh run to repeat the day");
+  driver_ = std::move(driver);
+}
+void ReplayProvider::until(md::Timestamp target) {
+  if (!driver_) throw std::invalid_argument("Lockstep requires a deterministic consumer");
+  std::unique_lock lock(control_mutex_);
+  if (target <= 0) throw std::invalid_argument("until must be a positive market timestamp");
+  if (target % md::kNanosPerSecond != 0 && !snapshot_batches_.load())
+    throw std::invalid_argument("Streaming replays settle at whole market seconds; until must name a whole second");
+  if (step_pending_) throw std::invalid_argument("Another lockstep advance is in progress");
+  if (target < std::max(market_time_.load(), in_flight_time_)) throw std::invalid_argument("until must not precede the current market time");
+  if (finished_.load() || stopping_.load()) throw std::invalid_argument("Replay has finished");
+  step_target_ = target;
+  step_pending_ = true;
+  seeking_ = true;
+  lock.unlock();
+  wake();
+  lock.lock();
+  control_.wait(lock, [&] { return !step_pending_ || finished_.load() || stopping_.load(); });
+  if (!playback_error_.empty()) throw std::runtime_error(playback_error_);
+  if (settled_.load() < target) throw std::invalid_argument("until exceeds the recording's end");
+}
+
+void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventSink& sink) {
+  try {
+    ReplayBatches batches(reader_, subscription);
+    snapshot_batches_ = batches.snapshot_feed();
+    auto next = batches.next();
+    auto deadline = options_.clock->now();
+    md::Timestamp previous = 0;
+    std::uint64_t remainder = 0;
+    bool preparing = seeking_.load();
+    while (!stopping_.load() && next) {
+      {
+        std::unique_lock lock(control_mutex_);
+        if (step_pending_ && next->time > step_target_) {
+          market_time_ = step_target_;
+          settled_ = step_target_;
+          paused_ = true;
+          paused_at_ = options_.clock->now().time_since_epoch().count();
+          seeking_ = false;
+          step_pending_ = false;
+          control_.notify_all();
+        }
+      }
+      const int measured = speed_.load();
+      if (previous > 0 && !seeking_.load()) deadline = advance(deadline, previous, next->received, measured, remainder);
+      if (!preparing && !pace(deadline, measured)) break;
+      if (stopping_.load()) break;
+      // An until request may have interrupted the wait before this future batch.
+      {
+        const std::lock_guard lock(control_mutex_);
+        if (step_pending_ && next->time > step_target_) continue;
+        in_flight_time_ = next->time;
+      }
+      const auto receipt = next->received;
+      const auto through = next->time;
+      auto done = driver_(std::move(*next));
+      while (!stopping_.load() && done.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {}
+      if (stopping_.load()) break;
+      done.get();
+      { const std::lock_guard lock(control_mutex_); time_ = receipt; market_time_ = through; in_flight_time_ = 0; }
+      settled_ = through;
+      previous = receipt;
+      next = batches.next();
+      if (preparing && receipt >= options_.start_at && (!next || next->received > receipt)) {
+        preparing = false;
+        seeking_ = false;
+        deadline = options_.clock->now();
+        if (paused_.load()) paused_at_ = deadline.time_since_epoch().count();
+      }
+
+    }
+    sink.publish(md::ProviderStatus{time_.load(), md::FeedState::Stopped,
+        name_ + (stopping_.load() ? ": stopped" : ": end of recording"), ""});
+  } catch (const std::exception& error) {
+    { const std::lock_guard lock(control_mutex_); playback_error_ = error.what(); }
+    sink.publish(md::ProviderStatus{time_.load(), md::FeedState::Error, name_ + ": " + error.what(), ""});
+  }
+  if (!stopping_.load()) (void)synchronize();
+  {
+    const std::lock_guard lock(control_mutex_);
+    if (step_pending_) paused_ = true;
+    step_pending_ = false;
+    seeking_ = false;
+    finished_ = true;
+  }
+  control_.notify_all();
 }
 
 }  // namespace openport::providers

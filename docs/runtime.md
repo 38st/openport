@@ -247,8 +247,8 @@ original filters.
 The provider is named `replay (<original provider>)` and exposes the original
 capabilities. Every selected event keeps its original fields and market timestamp;
 analytics uses the recorded market time. A clean end adds `Stopped`, allowing the
-engine to finish its analytics immediately and keep the result visible. Looping
-rewinds the same open file, resends definitions and repeats the recorded events
+engine to finish its analytics and keep the result visible. Trading replays require
+`loop=off`; repeat a day as a fresh run with a new journal. Probe-only looping rewinds the same open file, resends definitions and repeats the recorded events
 and their gaps, with no extra gap between passes. Empty recordings stop even with
 loop enabled. A truncated recording stops with its recovery diagnostic and never
 loops; malformed data produces `Error`. Neither the daemon nor its web terminal
@@ -333,17 +333,13 @@ The daemon prints accepted events, bytes, average sink nanoseconds/event and
 bytes/event on shutdown. Counters include accepted but not durable events if
 storage failed.
 
-The recording and replay provider are lossless; the engine/probe's existing
-latest-value queue still coalesces updates and can drop trades under overload.
-Consequently final analytics for the same data and analytics settings are
-reproducible, while intermediate UI snapshots, book version counters, health
-receipt times and compute durations depend on consumer scheduling. Looping
-repeats into the existing book; it does not reset analytics or rewind the book's
-maximum observed market time. Use a fresh Engine and one pass for regression
-comparisons. Paper trading on a replay sees the same coalesced batches, so its fills
-are not a deterministic per-event simulation. Replay stop interrupts pacing immediately;
-as with other providers, it cannot interrupt a blocked OS file read or a sink
-that itself blocks.
+Trading replays bypass the engine's latest-value queue. The replay driver applies
+complete snapshots, or fixed one-second market-time batches for streams and old
+recordings without snapshot markers. Analytics and trading settle at each boundary.
+Speed changes, fast-forward and consumer scheduling cannot change those batches.
+Live feeds and the probe retain their throughput-oriented coalescing queues.
+Replay stop interrupts pacing and consumer waits; it cannot interrupt a blocked OS
+file read. [Architecture](architecture.md#reproducible-runs) describes the two drivers.
 
 **Measured synthetic cost.** On this Apple M2 Max, Release/Apple Clang, the
 `RecordingPerformance.SyntheticChain` test publishes a 30,000-contract SPXW chain
@@ -381,7 +377,7 @@ chart history. The terminal routes `/api/X` to `/api/replay/X` while showing it;
 `speed` (0, 1, 2, 5, 10, 30, 60, 120 or 300), `start_at` (`HH:MM` New York) and
 `paused`. Scenarios also accept a trading `date` and `seed`: omit it for a fresh
 seed, use `"scenario"` for the file's seed, or supply a uint64 decimal string.
-`PUT` changes speed or pause, or skips a gap; `DELETE` stops playback.
+`PUT` changes speed or pause, skips a gap, or advances through `until`; `DELETE` stops playback.
 
 A drill fast-forwards to the complete receipt group at or after `start_at`, then
 waits for the engine's book, analytics, candles and account publication. The tick
@@ -415,6 +411,56 @@ an active replay, `/api/replay/X` returns `NO_REPLAY`; a file that cannot be rea
 returns `REPLAY_FAILED`. Archive routes remain readable after stopping and after
 restart. See [scenarios](scenarios.md) for the JSON format, events, timing semantics,
 seed guarantees and history routes.
+
+### Lockstep stepping
+
+`PUT /api/replay {"until":"10:30:00"}` runs as fast as possible through that New York
+time on the session date, then pauses. An ISO timestamp with a UTC offset also works.
+For overnight sessions, evening times refer to the preceding calendar date. `until`
+is the only field in that control request. Streams require a whole-second target;
+a fractional ISO target is rejected rather than reporting an unsettled partial batch.
+It cannot move backwards. A target past
+EOF returns an error. The response waits for every complete input boundary through
+the target, analytics, trading and publication, and includes `settled_through` both
+at the top level and in replay state. A snapshot is applied as one complete batch.
+
+```sh
+curl -X PUT http://localhost:8080/api/replay \
+  -H 'Content-Type: application/json' \
+  -d '{"until":"10:30"}'
+```
+
+Add the configured write token as usual. Commands submitted after the response use
+the paused market time. Stepping through intermediate times adds no account
+transactions; with the same commands at the same times it gives the same journal
+as continuous playback. `start_at` retains its receipt-time semantics for delayed
+recordings; `until` uses market time.
+
+### Verifying a run
+
+```sh
+openportd --verify-run /path/to/replays/run.jsonl
+```
+
+This mode opens no provider connection or HTTP listener and does not touch the main
+paper account. It verifies the journal chain, opens the original recording or
+regenerates the scenario, repeats its boundaries and commands, and checks every
+transaction hash, final equity and head hash. Exit 0 means a match. Exit 1 names the
+first differing transaction, or reports a damaged journal or missing/changed input.
+A stopped run verifies through its recorded prefix; it need not have reached EOF.
+
+The journal carries recording name, absolute path, byte size and SHA-256, or scenario
+id, source hash, generator version, date and seed. Built-ins are checked against the
+embedded source; user scenarios are reopened at their recorded path. Keep original
+recordings and user scenario files there. Generated cache files are unnecessary for
+scenario verification. The initial plan, analytics settings, dividends, calendar
+and command times are recorded too. Older account journals still load but have no
+run inputs to verify. New replay runs require an unused journal path.
+
+Verification currently compares exact hashes on the same build/platform. Math-library
+changes can alter analytic floating-point fields; see the platform qualification in
+[architecture](architecture.md#reproducible-runs). Journal compaction changes hashes,
+so keep the original when exact run verification is needed.
 
 ## Price history
 

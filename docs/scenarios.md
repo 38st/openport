@@ -105,15 +105,16 @@ Omit `seed` for a fresh seed from the host's `std::random_device`. Use
 for a repeat. API seed values are returned as strings to preserve all 64 bits in
 JavaScript. The generator uses its own deterministic draws; the engine and reducer
 do not choose seeds. Repeatability is for the same scenario contents, date, seed
-and generator on the same build/platform. This is not a guarantee of identical
-fills across playback speeds or consumer scheduling.
+and generator on the same build/platform. Replay batches, fills and journal bytes
+are independent of playback speed and consumer scheduling when commands occur at
+the same market times. `--verify-run JOURNAL` regenerates and checks a saved run.
 
 Generated recordings are cached by scenario, date and seed in a private temporary
 directory, with four completed entries retained. Old entries are removed first;
 readers already playing an evicted file keep their open descriptor. The directory
 is removed on clean shutdown. The recording header has no extensible metadata, so
-scenario id, generator version and seed are kept in replay state and the run's
-metadata file beside its journal.
+scenario id, source hash, generator version and seed are recorded in the account
+journal. Replay state and the JSON sidecar also retain the display metadata.
 
 `start_at` also works with `file: NAME` for a recorded feed. It uses New York wall
 time on the recording's session date, determined from its first receipt. Evening
@@ -122,7 +123,7 @@ are rejected. A delayed recording still uses receipt time for playback and its
 original market timestamps for analytics and the account.
 
 The provider fast-forwards complete receipt groups through the engine, refreshes
-analytics periodically and waits for the target group to reach the book, candles
+analytics at deterministic market boundaries and waits for the target group to reach the book, candles
 and account before enabling trading. Replay ticks expose `fast_forwarding` and
 `progress` (0–1). Writes during this phase return `REPLAY_FAST_FORWARD`.
 `paused: true` pauses after preparing that state; without a time it prepares the

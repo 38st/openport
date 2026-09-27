@@ -1,30 +1,41 @@
 #include "openport/server/engine.hpp"
+#include "openport/server/run.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 #include <type_traits>
 
 namespace openport::server {
+namespace {
+Engine::Options driver_options(md::Provider& provider, Engine::Options options) {
+  if (auto* replay = dynamic_cast<providers::ReplayProvider*>(&provider)) {
+    options.replay = true;
+    options.paper_accounts.clear();
+    if (options.run_input.empty()) options.run_input = recording_input(replay->file());
+    options.clock = [replay] { return replay->time(); };
+  }
+  return options;
+}
+}  // namespace
 
 Engine::Engine(md::Provider& provider, md::Subscription subscription, Options options)
-    : provider_(provider), subscription_(std::move(subscription)), options_(options),
-      queue_(md::kEventQueueCapacity, options.paper_enabled || options.replay) {
+    : provider_(provider), subscription_(std::move(subscription)), options_(driver_options(provider, options)),
+      queue_(md::kEventQueueCapacity, options.paper_enabled || options.replay),
+      desk_(std::string(provider.name()), provider.capabilities(), subscription_, options_) {
+  replay_ = dynamic_cast<providers::ReplayProvider*>(&provider_);
+  if (replay_) replay_->set_driver([this](providers::ReplayBatch batch) { return consume_replay(std::move(batch)); });
   status_.provider = std::string(provider.name());
   status_.capabilities = provider.capabilities();
   status_.trading.fee_per_contract = options_.paper.fee_per_contract;
   status_.trading.initial_cash = options_.paper.initial_cash;
   for (const auto& symbol : subscription_.underlyings) status_.underlyings.try_emplace(symbol);
-  breaker_.symbol = std::find(subscription_.underlyings.begin(), subscription_.underlyings.end(), "SPX") !=
-      subscription_.underlyings.end() ? "SPX" : "SPY";
-  status_.circuit_breaker = breaker_;
+  status_.circuit_breaker = desk_.breaker();
   health_ = status_.underlyings;
-  dividends_ = options_.dividends;
 }
 
 void Engine::set_dividends(std::vector<trading::Dividend> dividends) {
   const std::lock_guard lock(dividends_mutex_);
-  dividends_ = std::move(dividends);
-  ++dividends_version_;
+  pending_dividends_ = std::move(dividends);
 }
 
 Engine::~Engine() { stop(); }
@@ -50,14 +61,16 @@ void Engine::start() {
     provider_.start(subscription_, recorder_ ? static_cast<md::EventSink&>(*recorder_) : queue_);
     // Complete journal startup before returning so the daemon can report failures
     // even if constructing or binding its web server subsequently fails.
-    start_trading();
+    desk_.start_trading();
+    publish_desk();
+    { const std::lock_guard lock(command_mutex_); accepting_commands_ = options_.paper_enabled; }
     thread_ = options_.launch([this] { run(); });
   } catch (...) {
     // Even a partially started provider must stop before the queue can be destroyed.
     if (provider_started_) provider_.stop();
     provider_started_ = false;
     if (recorder_) recorder_->close();
-    accounts_.clear();
+    desk_.stop();
     {
       const std::lock_guard lock(command_mutex_);
       accepting_commands_ = false;
@@ -189,7 +202,7 @@ void Engine::update_health(const md::Event& event, md::Timestamp received) {
     // after the whole poll, including unchanged or empty chains.
     const std::string* symbol = nullptr;
     if (const auto* quote = std::get_if<md::OptionQuote>(&event)) {
-      if (const auto* option = book_.option(quote->id)) symbol = &option->contract.underlying;
+      if (const auto* option = desk_.book().option(quote->id)) symbol = &option->contract.underlying;
     } else if (const auto* spot = std::get_if<md::UnderlyingQuote>(&event)) {
       symbol = &spot->symbol;
     }
@@ -221,6 +234,14 @@ std::future<void> Engine::synchronize() {
   return future;
 }
 
+std::future<void> Engine::consume_replay(providers::ReplayBatch batch) {
+  PendingReplay pending{std::move(batch), {}};
+  auto result = pending.done.get_future();
+  { const std::lock_guard lock(command_mutex_); replay_batches_.push_back(std::move(pending)); }
+  queue_.wake();
+  return result;
+}
+
 void Engine::run() {
   std::vector<md::Event> batch;
   auto last_analytics = std::chrono::steady_clock::now();
@@ -228,7 +249,11 @@ void Engine::run() {
   auto last_health = options_.monotonic_clock();
   constexpr auto kHealthInterval = std::chrono::milliseconds(100);
 
-  while (!stopping_ || queue_.status().depth != 0) {
+  while (true) {
+    if (stopping_ && queue_.status().depth == 0) {
+      const std::lock_guard lock(command_mutex_);
+      if (replay_batches_.empty()) break;
+    }
     std::vector<std::promise<void>> synchronized;
     {
       const std::lock_guard lock(sync_mutex_);
@@ -237,19 +262,46 @@ void Engine::run() {
     batch.clear();
     queue_.drain(batch, std::chrono::milliseconds(synchronized.empty() ? 50 : 0));
     std::deque<PendingCommand> commands;
+    std::deque<PendingReplay> replay_batches;
     {
       const std::lock_guard lock(command_mutex_);
       commands.swap(commands_);
+      replay_batches.swap(replay_batches_);
+    }
+    {
+      const std::lock_guard lock(dividends_mutex_);
+      if (pending_dividends_) {
+        desk_.set_dividends(std::move(*pending_dividends_));
+        pending_dividends_.reset();
+      }
     }
     const auto received = options_.clock();
-    for (const md::Event& event : batch) {
-      book_.apply(event);
-      if (const auto* quote = std::get_if<md::UnderlyingQuote>(&event); quote && options_.candles) {
-        // Every print reaches the chart, however many arrive between analytics passes.
-        const auto& book = book_.underlyings().at(quote->symbol);
-        options_.candles->sample(quote->symbol, book.spot_ts, book.spot);
+    if (replay_) {
+      for (auto& command : commands) {
+        desk_.command(std::move(command.command), std::move(command.completion), replay_->market_time(), received);
       }
-      observe_trading(event);
+      for (auto& pending : replay_batches) {
+        try {
+          desk_.replay_batch(pending.batch.events, pending.batch.received, pending.batch.time);
+          for (const auto& event : pending.batch.events) update_health(event, pending.batch.received);
+          events_ += pending.batch.events.size();
+          publish_desk();
+          pending.done.set_value();
+        } catch (...) { pending.done.set_exception(std::current_exception()); }
+      }
+      for (const auto& event : batch) update_health(event, received);
+      publish_desk();
+      {
+        const std::lock_guard lock(mutex_);
+        status_.events = events_;
+        status_.underlyings = health_;
+        status_.feed_updated = feed_updated_;
+      }
+      for (auto& done : synchronized) done.set_value();
+      continue;
+    }
+    for (const md::Event& event : batch) {
+      desk_.observe(event);
       ++events_;
       update_health(event, received);
     }
@@ -283,17 +335,18 @@ void Engine::run() {
       return status && status->state == md::FeedState::Stopped;
     });
     if (ended || stopping_ || !synchronized.empty() || !commands.empty() ||
-        (!batch.empty() && std::any_of(accounts_.begin(), accounts_.end(), [](const PaperAccount& account) {
-           return account.session && (!account.session->snapshot()->positions.empty() ||
-                                       !account.session->snapshot()->open_orders.empty());
-         })) ||
+        (!batch.empty() && desk_.active()) ||
         now - last_analytics >= options_.analytics_interval) {
       last_analytics = now;
       refresh_analytics();
     }
     // Each account catches its own failures; nothing else here can fail the others.
-    update_trading(batch, commands);
-    for (auto& command : commands) apply_command(command);
+    if (stopping_) desk_.halt();
+    desk_.update_trading(batch, commands, options_.clock());
+    for (auto& command : commands) {
+      desk_.apply_command(command, desk_.market_time(), options_.clock());
+    }
+    publish_desk();
     for (auto& done : synchronized) done.set_value();
   }
   std::deque<PendingCommand> remaining;
@@ -302,95 +355,32 @@ void Engine::run() {
     accepting_commands_ = false;
     remaining.swap(commands_);
   }
-  for (auto& command : remaining) apply_command(command);
+  desk_.halt();
+  for (auto& command : remaining) desk_.apply_command(command, desk_.market_time(), options_.clock());
   refresh_analytics();
   // Release the exclusive journal writers on their owner thread. Published values
   // remain readable, and a replacement Engine can recover as soon as stop returns.
-  accounts_.clear();
+  desk_.stop();
 }
 
+void Engine::publish_desk() {
+  const std::lock_guard lock(mutex_);
+  metrics_ = desk_.publications();
+  trading_views_ = desk_.views();
+  status_.trading = desk_.trading_status();
+  status_.accounts = desk_.accounts();
+  status_.circuit_breaker = desk_.breaker();
+  status_.contracts = desk_.book().contracts();
+  status_.nonstandard_contracts = desk_.book().nonstandard_contracts();
+}
 void Engine::refresh_analytics() {
   const auto started = std::chrono::steady_clock::now();
-  std::vector<trading::Dividend> dividends;
-  std::uint64_t dividends_version = 0;
-  {
-    const std::lock_guard lock(dividends_mutex_);
-    dividends = dividends_;
-    dividends_version = dividends_version_;
-  }
-  const bool dividends_changed = dividends_version != analysed_dividends_version_;
-  bool recomputed = false;
-  const auto previous_curve = discount_curve_;
-  std::vector<std::string> european_updates;
-  auto has_style = [](const analytics::UnderlyingBook& book, pricing::ExerciseStyle style) {
-    return std::any_of(book.expiries.begin(), book.expiries.end(),
-                       [style](const auto& entry) { return entry.first.second == style; });
-  };
-  // An underlying is analysed from its first price on, at its market-data clock, which
-  // delayed and replayed feeds keep: before any price there is no market time to value
-  // it at, and the wall clock would run ahead of such a feed.
-  auto analyze = [&](const std::string& symbol, const analytics::UnderlyingBook& book) {
-    const md::Timestamp as_of = book.data_time;
-    auto options = options_.analytics;
-    options.dividends.clear();
-    for (const auto& d : dividends)
-      if (d.symbol == symbol) options.dividends.push_back({d.ex_date, d.per_share.dollars()});
-    if (discount_curve_) options.discount_curve = discount_curve_;
-    auto result = std::make_shared<const analytics::UnderlyingMetrics>(
-        analytics::analyze(book, book_, as_of, options));
-    analysed_versions_[symbol] = book.version;
-    // Quoted prints are charted as they arrive; a spot inferred from parity is charted
-    // at the option data's market time.
-    if (options_.candles && result->spot_source != "quote")
-      options_.candles->sample(symbol, result->as_of, result->spot);
-    {
-      const std::lock_guard lock(mutex_);
-      metrics_[symbol] = result;
-    }
-    recomputed = true;
-    return result;
-  };
-  // Build all European curves first, irrespective of symbol/map ordering. Mixed
-  // OEX/XEO books also enter this phase; only their European slices form a curve.
-  for (const auto& [symbol, book] : book_.underlyings()) {
-    if (book.data_time <= 0 || !has_style(book, pricing::ExerciseStyle::European) ||
-        book.version == analysed_versions_[symbol])
-      continue;
-    auto curve = analytics::make_discount_curve(*analyze(symbol, book));
-    european_updates.push_back(symbol);
-    if (curve) {
-      discount_curves_[symbol] = curve;
-      discount_curve_ = std::move(curve);  // latest, unless SPX is available below
-    } else {
-      discount_curves_.erase(symbol);
-      if (discount_curve_ && discount_curve_->symbol() == symbol) discount_curve_.reset();
-    }
-  }
-  if (const auto spx = discount_curves_.find("SPX"); spx != discount_curves_.end())
-    discount_curve_ = spx->second;
-  else if (!discount_curve_ && !discount_curves_.empty())
-    discount_curve_ = discount_curves_.begin()->second;
-  const bool curve_changed = previous_curve != discount_curve_;
-  // Curve or cash-schedule updates invalidate American results even without quotes.
-  for (const auto& [symbol, book] : book_.underlyings()) {
-    if (book.data_time <= 0 || book.expiries.empty() || !has_style(book, pricing::ExerciseStyle::American))
-      continue;
-    const bool mixed_updated = std::find(european_updates.begin(), european_updates.end(),
-                                         symbol) != european_updates.end();
-    if (book.version != analysed_versions_[symbol] || curve_changed || mixed_updated || dividends_changed)
-      analyze(symbol, book);
-  }
-  analysed_dividends_version_ = dividends_version;
-
+  const bool recomputed = desk_.refresh_analytics();
+  publish_desk();
   const auto now = std::chrono::steady_clock::now();
   const double elapsed = std::chrono::duration<double>(now - last_rate_time_).count();
   const std::lock_guard lock(mutex_);
-  status_.events = events_;
-  status_.contracts = book_.contracts();
-  status_.nonstandard_contracts = book_.nonstandard_contracts();
-  if (recomputed) {
-    status_.analytics_ms = std::chrono::duration<double, std::milli>(now - started).count();
-  }
+  if (recomputed) status_.analytics_ms = std::chrono::duration<double, std::milli>(now - started).count();
   if (elapsed >= 1.0) {
     status_.events_per_second = static_cast<double>(events_ - events_at_last_rate_) / elapsed;
     events_at_last_rate_ = events_;

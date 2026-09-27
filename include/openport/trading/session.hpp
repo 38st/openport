@@ -139,6 +139,8 @@ class TradingSession {
  public:
   TradingSession(SessionConfig config, Timestamp time, std::shared_ptr<Journal> journal = {});
   ~TradingSession();
+  /// Journal a driver input without introducing a clock or an external dependency.
+  void record_input(std::string_view input, Timestamp time);
   TradingSession(TradingSession&&) noexcept;
   TradingSession& operator=(TradingSession&&) noexcept;
   TradingSession(const TradingSession&) = delete;

@@ -22,7 +22,8 @@
 #include "openport/md/recording.hpp"
 #include "openport/server/candles.hpp"
 #include "openport/analytics/volatility.hpp"
-#include "openport/server/paper.hpp"
+#include "openport/server/desk.hpp"
+#include "openport/providers/replay.hpp"
 #include "openport/trading/dividends.hpp"
 
 namespace openport::server {
@@ -33,22 +34,6 @@ struct UnderlyingHealth {
   md::Timestamp last_success = 0;  ///< local receipt time, never the delayed market-data clock
   std::string last_error;
   md::Timestamp last_error_time = 0;
-};
-
-/// The market's implied variance of an underlying's log price from its analytics'
-/// market time to that day's regular close: the nearest expiry's at-the-money IV²
-/// times its years (as the IV was solved, on calendar time), with today's share of it
-/// in regular-session time. Zero once today's session is over; empty without an IV.
-[[nodiscard]] std::optional<double> implied_variance_to_close(const analytics::UnderlyingMetrics& metrics);
-
-/// The main account keeps the original journal; others are named alongside it.
-inline constexpr std::string_view kMainAccount = "main";
-
-/// One paper account's standing, for the account list and ticks.
-struct AccountStatus {
-  std::string id;
-  std::string name;
-  TradingStatus trading;
 };
 
 /// A consistent picture of the feed and the engine for the status endpoint.
@@ -106,25 +91,11 @@ class MetricsSource {
 /// threads never block the engine for longer than a pointer copy.
 class Engine final : public MetricsSource {
  public:
-  struct Options {
+  struct Options : Desk::Options {
     std::chrono::milliseconds analytics_interval{1000};
-    bool paper_enabled = true;
-    bool replay = false;  ///< Publish the replay market clock and keep halt state isolated.
-    std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
-    /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
-    std::filesystem::path paper_accounts;
-    trading::SessionConfig paper;
-    /// Dividends every account pays on held shares at the rollover into each ex-date.
-    std::vector<trading::Dividend> dividends;
-    std::vector<analytics::EventLabel> events;
-    std::shared_ptr<trading::Journal> paper_sink;  ///< Optional in-process test/simulation sink.
     std::size_t command_capacity = 256;
-    std::string write_mode = "open";
-    analytics::AnalyticsOptions analytics;
     std::filesystem::path record_file;
     md::RecordingSink::Options recording;
-    /// Receives the spot of every analysis, stamped with the time of its price.
-    std::shared_ptr<CandleStore> candles;
     std::function<md::Timestamp()> clock = md::now;
     /// Monotonic cadence for publishing receipt timestamps, independent of wall-clock jumps.
     std::function<std::chrono::steady_clock::time_point()> monotonic_clock =
@@ -165,31 +136,14 @@ class Engine final : public MetricsSource {
   [[nodiscard]] std::string recording_error() const;
 
  private:
-  struct PendingCommand {
-    std::uint64_t sequence;
-    TradingCommand command;
-    TradingCompletion completion;
+  using PendingCommand = Desk::PendingCommand;
+  struct PendingReplay {
+    providers::ReplayBatch batch;
+    std::promise<void> done;
   };
-  /// One paper account: a reducer and its journal. Engine thread only.
-  struct PaperAccount {
-    std::string id;
-    std::string name;
-    std::unique_ptr<trading::TradingSession> session;
-    std::string failure;  ///< Why it cannot trade; empty while it can.
-    std::unique_ptr<EquityStore> equity;
-    std::shared_ptr<const trading::TradingSnapshot> sampled_snapshot;
-  };
+  std::future<void> consume_replay(providers::ReplayBatch batch);
   void run();
-  void start_trading();
-  PaperAccount* find_account(std::string_view id);
-  void create_account(const TradingCommand& command, TradingReply& reply);
-  void observe_trading(const md::Event& event);
-  void update_trading(const std::vector<md::Event>& batch, std::deque<PendingCommand>& commands);
-  void apply_command(PendingCommand& pending);
-  void publish_trading();
-  void sample_equity(PaperAccount& account);
-  /// Stops one account after a journal or integration failure; the others carry on.
-  void fail_trading(PaperAccount& account, std::string reason);
+  void publish_desk();
   void refresh_analytics();
   void update_health(const md::Event& event, md::Timestamp received);
 
@@ -198,7 +152,7 @@ class Engine final : public MetricsSource {
   Options options_;
   md::EventQueue queue_;
   std::unique_ptr<md::RecordingSink> recorder_;
-  analytics::ChainBook book_;  // engine thread only
+  Desk desk_;  // engine thread only
 
   std::thread thread_;
   std::atomic<bool> stopping_{false};
@@ -214,44 +168,19 @@ class Engine final : public MetricsSource {
   std::vector<std::promise<void>> synchronizations_;
   std::mutex command_mutex_;
   std::deque<PendingCommand> commands_;
+  std::deque<PendingReplay> replay_batches_;
+  providers::ReplayProvider* replay_ = nullptr;
   std::uint64_t next_command_ = 1;
   bool accepting_commands_ = false;
 
-  // Initialized/recovered by start(), then owned exclusively by the engine thread.
-  std::vector<PaperAccount> accounts_;  // the main account first
-  std::map<std::string, std::string> settlement_source_;
-  /// Each underlying's first print at or after a date's regular close, and its
-  /// last one before it, for the last week of dates.
-  std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> closing_prints_;
-  std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> before_close_;
-  /// Official closes by symbol and date (md::UnderlyingClose), for a week of dates.
-  std::map<std::pair<std::string, md::Date>, md::UnderlyingClose> official_closes_;
-  CircuitBreakerStatus breaker_;
-  bool breaker_dirty_ = false;
-  bool breaker_storage_ = false;  // only while the main journal's writer lock is held
-  mutable std::mutex dividends_mutex_;
-  std::vector<trading::Dividend> dividends_;
-  std::uint64_t dividends_version_ = 0;
-  void check_circuit_breaker(const md::UnderlyingQuote& spot);
-  void advance_circuit_breaker(md::Timestamp time);
-  void publish_circuit_breaker();
-  void load_circuit_breaker();
-  void save_circuit_breaker();
-  md::Timestamp market_time_ = 0;
-  std::map<std::string, md::InstrumentId> instruments_;
-  std::map<std::string, std::uint64_t> observations_;
-  /// Each underlying's latest md::SnapshotComplete time, from snapshot providers.
-  std::map<std::string, md::Timestamp> snapshots_;
+  std::mutex dividends_mutex_;
+  std::optional<std::vector<trading::Dividend>> pending_dividends_;
 
   // Engine thread only: quote receipt never locks the reader-facing status mutex.
   std::map<std::string, UnderlyingHealth> health_;
   md::Timestamp feed_updated_ = 0;
   bool health_dirty_ = false;
   bool health_changed_ = false;
-  std::map<std::string, std::uint64_t> analysed_versions_;
-  std::uint64_t analysed_dividends_version_ = 0;
-  std::map<std::string, std::shared_ptr<const analytics::DiscountCurve>> discount_curves_;
-  std::shared_ptr<const analytics::DiscountCurve> discount_curve_;
   std::uint64_t events_ = 0;
   std::uint64_t events_at_last_rate_ = 0;
   std::chrono::steady_clock::time_point last_rate_time_;

@@ -12,6 +12,7 @@
 #include <thread>
 
 #include "openport/md/recording.hpp"
+#include "openport/providers/replay_batches.hpp"
 
 namespace openport::providers {
 
@@ -54,6 +55,16 @@ class ReplayProvider final : public md::Provider {
   void set_speed(int speed);
   void set_paused(bool paused);
   void skip();
+  /// Install before start. Each completed batch waits for its consumer; no queue
+  /// coalescing or playback-clock scheduling can change its contents.
+  using Driver = std::function<std::future<void>(ReplayBatch)>;
+  void set_driver(Driver driver);
+  /// Synchronous lockstep advance; returns only after all complete input through
+  /// the target is settled. Controls and shutdown interrupt the pacing wait.
+  void until(md::Timestamp target);
+  [[nodiscard]] md::Timestamp settled_through() const { return settled_.load(); }
+  [[nodiscard]] md::Timestamp market_time() const { return market_time_.load(); }
+  [[nodiscard]] const std::filesystem::path& file() const { return options_.file; }
   [[nodiscard]] int speed() const noexcept { return speed_.load(); }
   [[nodiscard]] bool paused() const noexcept { return paused_.load(); }
   /// The replay's clock: the recorded receipt time of the latest event published, 0 before the first.
@@ -63,6 +74,7 @@ class ReplayProvider final : public md::Provider {
   [[nodiscard]] const md::RecordingHeader& header() const { return reader_.header(); }
 
  private:
+  void run_deterministic(md::Subscription subscription, md::EventSink& sink);
   void run(md::Subscription subscription, md::EventSink& sink);
   /// Waits until `deadline`, honouring the controls; false once stopping.
   /// `basis` is the speed `deadline` was measured at; a different speed rescales
@@ -88,6 +100,14 @@ class ReplayProvider final : public md::Provider {
   std::mutex control_mutex_;
   std::condition_variable control_;
   bool started_ = false;
+  Driver driver_;
+  std::atomic<md::Timestamp> settled_{0};
+  std::atomic<bool> snapshot_batches_{false};
+  std::atomic<md::Timestamp> market_time_{0};
+  md::Timestamp in_flight_time_ = 0;  // control_mutex_
+  md::Timestamp step_target_ = 0;  // control_mutex_
+  bool step_pending_ = false;
+  std::string playback_error_;
 };
 
 }  // namespace openport::providers

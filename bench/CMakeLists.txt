@@ -11,3 +11,8 @@ if(OPENPORT_BUILD_PROVIDERS)
 else()
   target_link_libraries(openport_measure_svi PRIVATE openport::core)
 endif()
+
+if(OPENPORT_BUILD_PROVIDERS)
+  add_executable(openport_bench_trading bench_trading.cpp)
+  target_link_libraries(openport_bench_trading PRIVATE openport::server openport::options benchmark::benchmark_main)
+endif()

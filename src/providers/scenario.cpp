@@ -82,6 +82,8 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
     for (const auto* field : {"id", "title", "description", "symbols", "session", "date", "seed", "generator", "drift", "volatility", "iv_shift", "spot_vol"})
       require(j.contains(field), field, "required field is missing");
     Scenario s;
+    s.source = source;
+    s.source_file = std::filesystem::absolute(file);
     s.id = text(j.at("id"), "id", 40);
     require(s.id.front() != '-' && s.id.back() != '-' && std::all_of(s.id.begin(), s.id.end(), [](char c) {
       return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';

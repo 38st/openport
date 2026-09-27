@@ -16,6 +16,7 @@
 #include "openport/providers/demo.hpp"
 #include "openport/providers/replay.hpp"
 #include "openport/server/plans.hpp"
+#include "openport/server/run.hpp"
 
 namespace openport::server {
 namespace {
@@ -247,6 +248,8 @@ struct ReplayHost::Session {
     out["speed"] = provider->speed();
     out["paused"] = provider->paused();
     out["finished"] = provider->finished();
+    const auto settled = provider->settled_through();
+    out["settled_through"] = settled > 0 ? json(md::format_timestamp(settled)) : json(nullptr);
     out["time"] = time > 0 ? json(md::format_timestamp(time)) : json(nullptr);
     return out;
   }
@@ -295,13 +298,12 @@ class ReplayHost::History {
           std::filesystem::absolute(options.paper_journal).parent_path() / "replays"),
         writable_(options.paper_enabled && options.write_mode != "disabled" && !directory_.empty()) {}
   bool writable() const { return writable_; }
-  std::filesystem::path create(const Session& session, const trading::SessionConfig& config) {
+  std::filesystem::path create(const Session& session, const trading::SessionConfig&) {
     if (!writable_) return {};
     std::filesystem::create_directories(directory_);
     const auto path = directory_ / (session.id + ".jsonl");
     // The journal's exclusive create also prevents overwriting an earlier run.
-    const auto journal = trading::FileJournal::create(path.string());
-    const trading::TradingSession initial(config, 0, journal);
+    if (std::filesystem::exists(path)) throw std::runtime_error("Replay journal already exists");
     std::ofstream metadata(directory_ / (session.id + ".json"));
     metadata << session.state().dump() << '\n';
     metadata.close();
@@ -628,6 +630,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       engine.paper.initial_cash = plan->initial_cash;
       engine.paper_journal = history_->create(*session, engine.paper);
       engine.replay = true;
+      engine.run_input = demo ? scenario_input(*day, date, seed) : recording_input(path);
       engine.paper_accounts.clear();
       engine.paper_sink.reset();
       engine.record_file.clear();
@@ -650,7 +653,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       old.reset();
       complete(ok({{"replay", session->state()}}, 201));
     } else if (request.method == "PUT") {
-      const auto body = parse_body(request, {"speed", "paused", "skip"});
+      const auto body = parse_body(request, {"speed", "paused", "skip", "until"});
       const auto session = current();
       if (!session) {
         complete(api_error(404, "NO_REPLAY", "No replay is running"));
@@ -662,6 +665,24 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       }
       if (body.contains("paused") && !body.at("paused").is_boolean()) throw std::invalid_argument("paused must be true or false");
       if (body.contains("skip") && !body.at("skip").is_boolean()) throw std::invalid_argument("skip must be true or false");
+      if (body.contains("until")) {
+        if (body.size() != 1 || !body.at("until").is_string())
+          throw std::invalid_argument("until must be a time string and the only control");
+        auto value = body.at("until").get<std::string>();
+        std::optional<md::Timestamp> target;
+        if (value.size() == 5 || value.size() == 8) {
+          const auto date = md::trading_date(session->provider->header().started);
+          auto day = date;
+          if (md::new_york_time(session->provider->header().started).date < date && value.substr(0, 5) >= "20:15")
+            day = md::date_from_days(md::days_since_epoch(date) - 1);
+          if (value.size() == 5) value += ":00";
+          target = md::parse_datetime(md::format_date(day) + "T" + value, md::Zone::NewYork);
+        } else target = md::parse_datetime(value, md::Zone::Utc);
+        if (!target) throw std::invalid_argument("until must be New York HH:MM[:SS] or an ISO timestamp");
+        session->provider->until(*target);
+        complete(ok({{"replay", session->state()}, {"settled_through", md::format_timestamp(session->provider->settled_through())}}));
+        return;
+      }
       if (body.contains("speed")) session->provider->set_speed(speed_field(body));
       if (body.contains("paused")) session->provider->set_paused(body.at("paused").get<bool>());
       if (body.contains("skip") && body.at("skip").get<bool>()) session->provider->skip();
