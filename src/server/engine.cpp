@@ -65,11 +65,16 @@ void Engine::start() {
     throw std::logic_error("Engine::start may be called only once; construct a new Engine");
   started_ = true;
   stopping_ = false;
-  {
-    const std::lock_guard lock(mutex_);
-    status_.started = options_.clock();
-  }
   try {
+    if (auto* demo = dynamic_cast<providers::DemoProvider*>(&provider_)) {
+      // Recover all accounts before selecting the demo's first market day.
+      desk_.start_trading();
+      demo->start_after(desk_.market_time());
+    }
+    {
+      const std::lock_guard lock(mutex_);
+      status_.started = options_.clock();
+    }
     if (!options_.record_file.empty()) {
       auto recording = options_.recording;
       recording.clock = options_.clock;
@@ -81,7 +86,7 @@ void Engine::start() {
     provider_.start(subscription_, recorder_ ? static_cast<md::EventSink&>(*recorder_) : queue_);
     // Complete journal startup before returning so the daemon can report failures
     // even if constructing or binding its web server subsequently fails.
-    desk_.start_trading();
+    if (!demo_) desk_.start_trading();
     publish_desk();
     { const std::lock_guard lock(command_mutex_); accepting_commands_ = options_.paper_enabled; }
     thread_ = options_.launch([this] { run(); });

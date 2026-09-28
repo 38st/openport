@@ -607,8 +607,8 @@ in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2,
 Without `--symbols`, the feed subscribes to SPX, SPY and QQQ. Other symbols and
 nonzero `--expiries` or `--window` are rejected.
 
-The first date is the last trading date before startup's New York date. Each next
-session uses the next trading date, skipping weekends and calendar holidays.
+The default first date is the last trading date before startup's New York date.
+Each next session uses the next trading date, skipping weekends and calendar holidays.
 Timed scenario events scale proportionally into early-close sessions, rounded down
 to a minute. Seeds are FNV-1a of `id|YYYY-MM-DD`, independent of speed and wall time.
 The same scenario and date reproduce prices on the same build and platform.
@@ -627,10 +627,10 @@ off. `--dividends massive` is rejected; a supplied dividend file remains usable.
 Candles stay in memory unless `--candle-dir` is explicit. The default journal is
 `~/.openport/demo/paper-journal.jsonl`; accounts and replay history derive their
 directories beside it. Journals do not record their feed, so keep any explicit demo
-journal and Docker volume separate from live accounts. Restart begins again at
-the previous trading date, not the last simulated time in a saved account. An
-account ahead of that feed refuses backward market time with `INVALID_TIME`;
-use a fresh separate demo journal when restarting from an earlier market time.
+journal and Docker volume separate from live accounts. On restart, the first day
+is the next trading date after the latest recovered market time's trading date
+across the main and named accounts. Without recovered market time, the first day
+remains the last trading date before startup's New York date.
 
 ## Price history
 

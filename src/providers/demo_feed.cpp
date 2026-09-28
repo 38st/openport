@@ -94,6 +94,12 @@ void DemoProvider::set_driver(ReplayProvider::Driver driver) {
   if (started_) throw std::logic_error("demo: install driver before start");
   driver_ = std::move(driver);
 }
+void DemoProvider::start_after(md::Timestamp recovered_time) {
+  if (started_) throw std::logic_error("demo: select first date before start");
+  if (recovered_time <= 0) return;
+  first_date_ = next_date(md::trading_date(recovered_time));
+  time_ = scenario_open(days_.front(), first_date_);
+}
 void DemoProvider::start(const md::Subscription& subscription, md::EventSink& sink) {
   if (started_) throw std::logic_error("DemoProvider::start may be called only once");
   validate(subscription);

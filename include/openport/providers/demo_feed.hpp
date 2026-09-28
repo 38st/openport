@@ -22,6 +22,9 @@ class DemoProvider final : public md::Provider {
   void start(const md::Subscription& subscription, md::EventSink& sink) override;
   void stop() override;
   void set_driver(ReplayProvider::Driver driver);
+  /// Start on the trading date after recovered market time; zero keeps the default.
+  /// May only be called before start().
+  void start_after(md::Timestamp recovered_time);
   [[nodiscard]] md::Timestamp time() const noexcept { return time_.load(); }
   [[nodiscard]] const std::vector<std::string>& symbols() const { return symbols_; }
   [[nodiscard]] const std::vector<Scenario>& days() const { return days_; }

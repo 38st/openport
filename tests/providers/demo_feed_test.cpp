@@ -122,6 +122,22 @@ TEST(DemoFeed, DatesUseNewYorkWeekendsHolidaysAndRepeatableSeeds) {
   EXPECT_NO_THROW(providers::write_scenario_recording(file.path, shortened, {2026, 11, 27}, seed));
 }
 
+TEST(DemoFeed, RecoveredTimeSelectsTheFollowingTradingDate) {
+  providers::DemoProvider provider(settings());
+  provider.start_after(md::new_york_to_utc({2026, 12, 24}, 13, 15));
+  EXPECT_EQ(provider.first_date(), (md::Date{2026, 12, 28}));
+  EXPECT_EQ(provider.time(), md::new_york_to_utc({2026, 12, 28}, 9, 30));
+  // After 17:00 ET the saved trading date is already Monday.
+  provider.start_after(md::new_york_to_utc({2026, 12, 24}, 18, 0));
+  EXPECT_EQ(provider.first_date(), (md::Date{2026, 12, 29}));
+  // A saved date before startup also resumes on its following trading date.
+  provider.start_after(md::new_york_to_utc({2026, 7, 2}, 16, 15));
+  EXPECT_EQ(provider.first_date(), (md::Date{2026, 7, 6}));
+  EXPECT_EQ(provider.time(), md::new_york_to_utc({2026, 7, 6}, 9, 30));
+  EXPECT_EQ(provider.days()[0].id, "trend");
+  EXPECT_EQ(provider.days()[1].id, "reversal");
+}
+
 TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
   auto clock = std::make_shared<DemoClock>();
   providers::DemoProvider provider(settings(clock));
@@ -160,6 +176,8 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
     std::promise<void> done; done.set_value(); return done.get_future();
   });
   provider.start({{"SPX"}}, sink);
+  EXPECT_THROW(provider.start_after(md::new_york_to_utc({2026, 12, 24}, 13, 15)), std::logic_error);
+  EXPECT_THROW(provider.start_after(0), std::logic_error);
   const auto directory = provider.directory();
   EXPECT_EQ(std::filesystem::status(directory).permissions() & std::filesystem::perms::others_all, std::filesystem::perms::none);
   clock->through(24300s);
@@ -178,6 +196,7 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
   EXPECT_FALSE(std::filesystem::exists(directory));
   provider.stop();
   EXPECT_THROW(provider.start({{"SPX"}}, sink), std::logic_error);
+  EXPECT_THROW(provider.start_after(0), std::logic_error);
   EXPECT_EQ(dates, (std::vector<md::Date>{{2026, 9, 18}, {2026, 9, 21}, {2026, 9, 22}}));
   ASSERT_GE(titles.size(), 3U);
   EXPECT_NE(titles[0].find(provider.days()[0].title), std::string::npos);
@@ -206,6 +225,82 @@ server::TradingReply submit(server::Engine& engine, server::TradingCommand comma
   engine.post_trading(std::move(command), [&](auto reply) { done.set_value(std::move(reply)); });
   if (future.wait_for(10s) != std::future_status::ready) throw std::runtime_error("command timed out");
   return future.get();
+}
+
+TEST(DemoFeed, NoRecoveredMarketTimeKeepsTheDefaultFirstDate) {
+  providers::DemoProvider provider(settings(std::make_shared<DemoClock>()));
+  test::RecordingFile journals;
+  server::Engine::Options options;
+  options.paper_journal = journals.directory / "paper.jsonl";
+  options.paper_accounts = journals.directory / "accounts";
+  options.journal_io.sync = [](int) { return true; };
+  server::Engine engine(provider, {{"SPX"}}, options);
+  engine.start();
+  EXPECT_EQ(provider.first_date(), (md::Date{2026, 9, 18}));
+  EXPECT_EQ(engine.status().started, md::new_york_to_utc({2026, 9, 18}, 9, 30));
+  EXPECT_TRUE(engine.status().trading.enabled);
+  engine.stop();
+}
+
+TEST(DemoFeed, RestartAfterLatestMainOrNamedJournalStillFills) {
+  for (const bool named_ahead : {false, true}) {
+    SCOPED_TRACE(named_ahead ? "named account ahead" : "main account ahead");
+    test::RecordingFile journals;
+    server::Engine::Options options;
+    options.paper_journal = journals.directory / "paper.jsonl";
+    options.paper_accounts = journals.directory / "accounts";
+    options.record_file = journals.path;
+    options.journal_io.sync = [](int) { return true; };
+    std::filesystem::create_directory(options.paper_accounts);
+    const auto earlier = md::new_york_to_utc({2026, 12, 23}, 16, 15);
+    const auto later = md::new_york_to_utc({2026, 12, 24}, 13, 15);
+    trading::FileJournal::Options journal_options;
+    journal_options.hooks = options.journal_io;
+    for (const auto& [path, saved_time] : std::vector<std::pair<std::filesystem::path, md::Timestamp>>{
+        {options.paper_journal, named_ahead ? earlier : later},
+        {options.paper_accounts / "saved.jsonl", named_ahead ? later : earlier}}) {
+      trading::TradingSession session({}, 0, trading::FileJournal::create(path.string(), journal_options));
+      ASSERT_TRUE(session.roll_day(saved_time).decision.ok());
+    }
+    providers::DemoProvider provider(settings(std::make_shared<DemoClock>()));
+    EXPECT_EQ(provider.first_date(), (md::Date{2026, 9, 18}));
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    const auto first = md::new_york_to_utc({2026, 12, 28}, 9, 30);
+    EXPECT_EQ(provider.first_date(), (md::Date{2026, 12, 28}));
+    EXPECT_EQ(engine.status().started, first);
+    ASSERT_TRUE(eventually([&] {
+      const auto view = engine.trading_view();
+      return view && view->snapshot && view->snapshot->time >= first;
+    }));
+    const auto status = engine.status();
+    ASSERT_EQ(status.accounts.size(), 2U);
+    for (const auto& account : status.accounts) {
+      EXPECT_TRUE(account.trading.enabled) << account.id << ": " << account.trading.reason;
+    }
+    for (const auto& account : {std::string(server::kMainAccount), std::string("saved")}) {
+      const auto view = engine.trading_view(account);
+      ASSERT_NE(view, nullptr);
+      ASSERT_NE(view->snapshot, nullptr);
+      EXPECT_EQ(view->snapshot->time, first);
+      EXPECT_EQ(view->snapshot->evaluation.day, (md::Date{2026, 12, 28}));
+      server::TradingCommand order;
+      order.account = account;
+      order.order.client_order_id = "after-restart";
+      order.order.symbol = md::parse_osi("SPXW261228C05820000")->osi_symbol();
+      order.order.quantity = 1;
+      order.order.type = trading::OrderType::Market;
+      order.order.tif = trading::TimeInForce::Ioc;
+      const auto filled = submit(engine, order);
+      ASSERT_TRUE(filled.decision.ok()) << filled.decision.message;
+      ASSERT_EQ(filled.view->snapshot->recent_fills.size(), 1U);
+      EXPECT_EQ(filled.view->snapshot->recent_fills.front().time, first);
+      EXPECT_GT(filled.view->snapshot->recent_fills.front().price, trading::Money{});
+    }
+    engine.stop();
+    md::RecordingReader recording(options.record_file);
+    EXPECT_EQ(recording.header().started, first);
+  }
 }
 
 TEST(DemoFeed, ConsecutiveDaysFillRollAndSettleWithLivePaperAccounts) {
