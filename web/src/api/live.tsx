@@ -143,10 +143,15 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   return <LiveContext value={value}>{children}</LiveContext>
 }
 
-/** Now on the market's clock: the replay's while trading one, otherwise the wall clock. */
-export function marketNow(live: Pick<Live, "source" | "replay">): number {
+/** Replay and simulated feeds use market time; live providers use the wall clock. */
+export function marketNow(live: Pick<Live, "source" | "replay" | "status" | "underlyings">): number {
   const replay = live.source !== "live" && live.replay?.time ? Date.parse(live.replay.time) : Number.NaN
-  return Number.isFinite(replay) ? replay : Date.now()
+  if (Number.isFinite(replay)) return replay
+  if (live.status?.provider.simulated) {
+    const times = live.underlyings.map(underlying => Date.parse(underlying.as_of ?? "")).filter(Number.isFinite)
+    if (times.length) return Math.max(...times)
+  }
+  return Date.now()
 }
 
 /** Latest effective market time for a chain, including delayed feeds and paused replays. */

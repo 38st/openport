@@ -195,6 +195,17 @@ Provider data stays on the user's machine; never bundle, commit or upload it.
 See [historical import operation](runtime.md#importing-a-historical-day) for
 credentials, request limits, filtering, session coverage and failure handling.
 
+## Simulated feed
+
+[`DemoProvider`](../src/providers/demo_feed.cpp) registers as `demo`. It rotates
+built-in regular scenarios, generates the next recording while the current one
+plays, and uses `ReplayProvider` pacing and complete batches. Contract IDs are
+mapped by OSI across recordings; omitted quotes are retired before the next
+snapshot. The engine uses the simulated receipt clock for freshness while keeping
+live paper accounts. Capabilities declare 15-second snapshots and open interest;
+status names the current simulated day. No end-of-recording stop escapes between
+days. [Options, dates and storage](runtime.md#demo-feed).
+
 ## Test without the network
 
 Use saved, hand-written response shapes with generated values. Do not commit a

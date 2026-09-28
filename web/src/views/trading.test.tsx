@@ -335,3 +335,14 @@ it("labels generated volume as simulated on the chain", () => {
   vi.mocked(useLive).mockReturnValue(liveState({ ...status, provider: { ...status.provider, simulated: true } }, null, "open"))
   expect(render(<ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} />)).toContain("simulated prices and volume")
 })
+
+it("labels the demo feed simulated and ages it on its market clock", () => {
+  const simulated = { ...status, provider: { ...status.provider, name: "demo", simulated: true },
+    underlyings: status.underlyings.map(underlying => ({ ...underlying, as_of: "2026-09-18T13:30:00Z",
+      session: { name: "regular" as const, open: true, note: "Regular session" } })) }
+  vi.mocked(useLive).mockReturnValue(liveState(simulated, null, "open"))
+  const html = render(<Header symbol="SPX" onSymbol={() => {}} />)
+  expect(html).toContain("simulated prices")
+  expect(html).toContain("&lt;1 min old")
+  expect(html).not.toContain(">stale<")
+})

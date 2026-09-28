@@ -9,6 +9,7 @@ import * as connection from "../api/connection"
 import type { ReplayListing, ReplayState, Tick } from "../api/types"
 import { ReplayBanner } from "../components/ReplayBanner"
 import { status } from "../test/trading-fixtures"
+import { writeToken } from "../lib/write-token"
 import { dataSource } from "../lib/data-source"
 import { ReplayView } from "./ReplayView"
 
@@ -25,6 +26,7 @@ const listing: ReplayListing = { write: "open", directory: "", recordings: [], r
   demos: [{ id: "selloff", title: "Selloff", description: "A simulated decline.", goal: "Keep risk contained.", symbols: ["SPX"], provider: "demo", started: "2026-09-16T13:30:00Z" }],
   history: [{ ...replay, id: "saved-run", finished: true, result: "fail", pnl: "-123.450000", read_only: true }] }
 beforeEach(() => {
+  writeToken.set("")
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
@@ -39,6 +41,7 @@ beforeEach(() => {
 })
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); client.clear()
+  writeToken.set("")
   vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllGlobals(); dataSource.set("live")
 })
 async function render() { await act(async () => root.render(<QueryClientProvider client={client}><ReplayView onNavigate={navigate} /></QueryClientProvider>)) }
@@ -144,4 +147,36 @@ it("changes account scope when another browser starts a new replay run", async (
   await act(async () => receive({ ...tick, replay: { ...replay, id: "run-2" } }))
   expect(Number(host.querySelector("output")!.textContent)).toBe(previous + 1)
   expect(client.getQueryData(["trading", previous, "fills", "1"])).toBeUndefined()
+})
+
+it("blocks replay starts and every running control until a required token is held", async () => {
+  const required = { ...listing, write: "token" as const }
+  client.setQueryData(["replay-listing"], required)
+  vi.mocked(api.replay).mockResolvedValue(required)
+  vi.spyOn(api, "controlReplay").mockResolvedValue({ replay })
+  vi.spyOn(api, "stopReplay").mockResolvedValue({ replay: null })
+  await render()
+  const start = host.querySelector('[aria-label="Start Selloff"]') as HTMLButtonElement
+  expect(start.disabled).toBe(true)
+  await act(async () => start.click())
+  expect(api.startReplay).not.toHaveBeenCalled()
+  const running = { ...required, replay: { ...replay, paused: false } }
+  vi.mocked(api.replay).mockResolvedValue(running)
+  client.setQueryData(["replay-listing"], running)
+  await render()
+  for (const label of ["Pause", "Skip gap", "Stop"]) {
+    const button = [...host.querySelectorAll("button")].find(element => element.textContent === label)!
+    expect(button.disabled).toBe(true)
+    await act(async () => button.click())
+  }
+  const speed = host.querySelector('[aria-label="Replay speed"] button') as HTMLButtonElement
+  expect(speed.matches(":disabled")).toBe(true)
+  await act(async () => { start.click(); speed.click() })
+  expect(api.startReplay).not.toHaveBeenCalled()
+  expect(api.controlReplay).not.toHaveBeenCalled()
+  expect(api.stopReplay).not.toHaveBeenCalled()
+  await act(async () => { writeToken.set("write-token") })
+  expect(speed.matches(":disabled")).toBe(false)
+  await click("Pause")
+  expect(api.controlReplay).toHaveBeenCalledWith({ paused: true }, "token")
 })

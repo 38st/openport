@@ -144,7 +144,8 @@ with generated prices labelled as simulated on every page:
   fourteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
   gaps, volatility changes and overnight sessions. Each run chooses a fresh seed, or
   repeats one you supply. Add your own JSON files with `--scenario-dir`; generated
-  prices stay labelled simulated. [Scenario format](docs/scenarios.md).
+  prices stay labelled simulated. `--provider demo` rotates regular scenarios as
+  the server's own feed without network services. [Scenario format](docs/scenarios.md).
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
   the terminal and as browser notifications with an optional chime while it is open;
   assignments, exercises at expiry and dividends are always announced. Floor room,
@@ -307,6 +308,30 @@ Add `--record-dir ~/.openport/recordings` to record each session for the Replay 
 Full chains are large: see [recording](docs/runtime.md#recording-and-replay) before
 recording all day.
 
+## Public watch-only demo
+
+Run `openportd --provider demo --address 0.0.0.0 --write-token-file PATH` with
+`--allowed-host terminal.example.com` for your public name, or set
+`OPENPORT_WRITE_TOKEN` instead of the file. Terminate HTTPS at the reverse proxy.
+Keep the write token private; visitors can watch without it, and the terminal shows
+a watch-only notice with an action to enter a token. Paper trading and Replay
+writes still require the token.
+
+The demo feed uses only simulated prices. Without `--paper-journal`, it keeps the
+main account at `~/.openport/demo/paper-journal.jsonl`, with accounts and replay
+history beside it. Journals do not identify their feed: keep demo journals separate
+from live ones, including when you supply a path. With Docker, use a separate volume:
+
+```bash
+docker run --rm -p 127.0.0.1:8080:8080 -v openport-demo:/var/lib/openport \
+  ghcr.io/38st/openport --provider demo --allowed-host terminal.example.com
+```
+
+Put the HTTPS proxy in front of that local port. The image keeps its write token
+in the volume; do not share the token link printed at startup. Arguments after the
+image replace its default provider command. Its explicit journal path is in that
+volume. [Demo feed options](docs/runtime.md#demo-feed).
+
 ## Providers
 
 | Provider | `--provider` | Data | Key |
@@ -317,6 +342,7 @@ recording all day.
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
 | Tradier | `tradier` | Option chain snapshots and underlying prices; production options are real-time, index timing is unconfirmed. Sandbox is 15-minute delayed. Polling follows the request budget. Not yet run live with an account; reports welcome | `TRADIER_ACCESS_TOKEN` |
 | tastytrade | `tastytrade` | Production DXLink option quotes, open interest, delta/gamma and underlying prices. Not yet run live with an account; reports welcome | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN`; optional `TASTYTRADE_CLIENT_ID` |
+| Demo | `demo` | Simulated SPX, SPY and QQQ regular sessions, rotating on successive trading dates; `--option days=trend,chop --option speed=60` | none |
 | Replay | `replay` | A recording played back as the whole feed, at 1×, 10×, 60× or full speed (`--option file=PATH --option speed=10`) | none |
 
 Databento, Massive and ThetaData follow their documented APIs and are tested against
@@ -344,12 +370,13 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | Flags | Controls |
 | --- | --- |
 | `--provider NAME`, `--poll-seconds N`, `--option KEY=VALUE` | The market-data provider and its settings, such as `quotes=cmbp-1` for Databento or `sandbox=true` for Tradier; Tradier validates poll intervals against its request budget |
+| `--provider demo --option days=ID,ID,... --option speed=N` | Built-in regular scenarios in the given order; default all regular scenarios at 1×, supported speeds 1, 2, 5, 10, 30, 60, 120, 300. Symbols default to their coverage. Network services are off; candles stay in memory unless `--candle-dir` is given |
 | `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
 | `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
-| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Rules selects optional fill models for a new attempt. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
+| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account (demo defaults to `~/.openport/demo/paper-journal.jsonl`); plan, cash and fee seed a new journal only. Rules selects optional fill models for a new attempt. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
 | `--backtest PLAYBOOK[@VERSION]`, `--days FILE`, `--recordings DIR`, `--scenarios N --seed S`, `--out REPORT.json` | Headless batch backtest under `--plan`; choose one day source. `--workers 1..16` defaults to 4; `--playbooks FILE` overrides the saved catalogue. [Inputs and reports](docs/playbooks.md#batch-backtests) |
 | `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
@@ -458,7 +485,7 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 
 | Route | Returns |
 | --- | --- |
-| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health, engine counters |
+| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health (including the demo day title), engine counters |
 | `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX, coverage and `last_trade` / `auto_close` UTC ISO times |
 | `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks, early-exercise premium and `volume` (session contracts or null); coverage includes `volume` |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
@@ -630,7 +657,7 @@ tests parsing with fixture checksums. Users update with
 - [x] Stock positions from early exercise and from exercise and assignment at expiry
 - [x] Expiry hours as the exchanges run them: ETF options to 16:15, auto-close five
       minutes before each contract's last trade, with the chain staying on 0DTE until then
-- [x] Demo market: a simulated day to trade when nothing else does
+- [x] Demo market: simulated days to trade in Replay or rotate as an offline server feed
 - [x] Scenario library: simulated drills with fresh or repeatable seeds, start times and
       replay journals that are kept
 - [x] Deterministic replay batches, verifiable run journals and synchronous market-time stepping

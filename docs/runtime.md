@@ -597,6 +597,41 @@ changes can alter analytic floating-point fields; see the platform qualification
 [architecture](architecture.md#reproducible-runs). Journal compaction changes hashes,
 so keep the original when exact run verification is needed.
 
+## Demo feed
+
+`openportd --provider demo` rotates the twelve built-in regular scenarios in their
+Replay listing order. `--option days=trend,chop` selects and orders built-in ids;
+unknown ids, overnight sessions and empty entries are startup errors. Custom files
+in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2, 5,
+10, 30, 60, 120 or 300; default 1. Maximum-throughput playback is not supported.
+Without `--symbols`, the feed subscribes to SPX, SPY and QQQ. Other symbols and
+nonzero `--expiries` or `--window` are rejected.
+
+The first date is the last trading date before startup's New York date. Each next
+session uses the next trading date, skipping weekends and calendar holidays.
+Timed scenario events scale proportionally into early-close sessions, rounded down
+to a minute. Seeds are FNV-1a of `id|YYYY-MM-DD`, independent of speed and wall time.
+The same scenario and date reproduce prices on the same build and platform.
+Sessions have 15-second snapshots and jump directly from the last snapshot to the
+next open. Normal expiry, settlement, auto-close and the 17:00 ET trading-date
+rollover apply. Scenario opening levels can gap from the preceding close.
+
+The existing generator writes each day in a private temporary directory. Replay
+pacing consumes complete snapshots; the next day generates concurrently. Played
+files are deleted, and shutdown removes the directory. Feed status names the day
+and labels prices simulated, without an end-of-recording stop between days. The
+engine retains live accounts and write protection; Replay still runs beside it.
+
+Cboe chart and proxy history, holiday downloads and volatility-series writes are
+off. `--dividends massive` is rejected; a supplied dividend file remains usable.
+Candles stay in memory unless `--candle-dir` is explicit. The default journal is
+`~/.openport/demo/paper-journal.jsonl`; accounts and replay history derive their
+directories beside it. Journals do not record their feed, so keep any explicit demo
+journal and Docker volume separate from live accounts. Restart begins again at
+the previous trading date, not the last simulated time in a saved account. An
+account ahead of that feed refuses backward market time with `INVALID_TIME`;
+use a fresh separate demo journal when restarting from an earlier market time.
+
 ## Price history
 
 The chart on Trade reads `GET /api/underlyings/{symbol}/candles` from two sources:
@@ -626,8 +661,9 @@ Finished minutes persist in `--candle-dir` (default `~/.openport/candles`), one
 where the source is `o` for official and `s` for sampled and a later line for the
 same minute wins. The directory keeps the last ten days of minutes; files are
 compacted on startup and whenever superseded lines outnumber current ones. Daily
-bars are refetched rather than stored. A replay keeps its bars in memory and never
-fetches history, so a recorded day's prices do not mix with live ones. Storage
+bars are refetched rather than stored. Replay and demo feeds keep bars in memory
+by default and never fetch history, so a recorded day's prices do not mix with live
+ones. Storage
 failures are printed and never stop the engine.
 
 ## Probe readiness
@@ -688,8 +724,8 @@ fails. Each date Cboe lists overrides the rules for that date through
 `md::set_scheduled_days`: a closure, an early close, and whether the overnight session
 runs into a holiday. A national day of mourning therefore takes effect once Cboe posts
 it, without a new build, and dates seen earlier stay when the schedule rolls to the next
-year. `--no-cboe-holidays` turns the fetch off; a replay never fetches it. The National
-Day of Mourning on 2025-01-09 is built in.
+year. `--no-cboe-holidays` turns the fetch off; replay and demo feeds never fetch it.
+The National Day of Mourning on 2025-01-09 is built in.
 
 Around holidays GTH follows Cboe's schedule. It does not run into a weekend, New
 Year's Day, Good Friday or Christmas; into the other seven holidays it runs from

@@ -4,7 +4,7 @@ import { marketTime, useLive } from "./api/live"
 import { useAccount } from "./api/trading"
 import type { Summary } from "./api/types"
 import { AlertWatcher, Toasts } from "./components/Alerts"
-import { WriteAccess } from "./components/TradingControls"
+import { WatchOnlyNotice, WriteAccess } from "./components/TradingControls"
 import { Header } from "./components/Header"
 import { DemoPrompt } from "./components/DemoPrompt"
 import { CircuitBreakerBanner } from "./components/CircuitBreakerBanner"
@@ -106,6 +106,7 @@ export function App() {
         <Header symbol={symbol} onSymbol={(s) => navigate({ symbol: s, expiry: null })} onMenu={() => setMenu(true)} />
         <CircuitBreakerBanner />
         <UpdateNotice />
+        <WatchOnlyNotice trading={live.trading} />
         <main className="min-w-0 flex-1 p-3 lg:p-5">{content}</main>
         <AlertWatcher />
         <Toasts />

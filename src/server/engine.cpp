@@ -1,5 +1,6 @@
 #include "openport/server/engine.hpp"
 #include "openport/server/run.hpp"
+#include "openport/providers/demo_feed.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -15,6 +16,8 @@ Engine::Options driver_options(md::Provider& provider, Engine::Options options) 
     options.candles = std::make_shared<CandleStore>();
     options.clock = [replay] { return replay->time(); };
   }
+  if (auto* demo = dynamic_cast<providers::DemoProvider*>(&provider))
+    options.clock = [demo] { return demo->time(); };
   if (options.replay || provider.name().starts_with("replay") || provider.name() == "demo") options.series.reset();
   return options;
 }
@@ -27,6 +30,12 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
   replay_ = dynamic_cast<providers::ReplayProvider*>(&provider_);
   if (replay_) replay_->set_driver([this](providers::ReplayBatch batch) { return consume_replay(std::move(batch)); },
                                   [this] { return synchronize(); });
+  demo_ = dynamic_cast<providers::DemoProvider*>(&provider_) != nullptr;
+  if (auto* demo = dynamic_cast<providers::DemoProvider*>(&provider_))
+    demo->set_driver([this](providers::ReplayBatch batch) {
+      if (recorder_) for (const auto& event : batch.events) recorder_->publish(event);
+      return consume_replay(std::move(batch));
+    });
   // Replays and the demo market never write the volatility history.
   if (options_.replay || provider.name().starts_with("replay") || provider.name() == "demo") options_.series.reset();
   status_.provider = std::string(provider.name());
@@ -289,9 +298,11 @@ void Engine::run() {
       }
     }
     const auto received = options_.clock();
-    if (replay_) {
+    if (replay_ || demo_) {
       for (auto& command : commands) {
-        desk_.command(std::move(command.command), std::move(command.completion), replay_->market_time(), received);
+        const auto market_time = replay_ ? replay_->market_time() : desk_.market_time();
+        desk_.command(std::move(command.command), std::move(command.completion), market_time,
+                      demo_ ? market_time : received);
       }
       for (auto& pending : replay_batches) {
         try {
@@ -303,7 +314,7 @@ void Engine::run() {
         } catch (...) { pending.done.set_exception(std::current_exception()); }
       }
       for (const auto& event : batch) update_health(event, received);
-      if (!synchronized.empty() || (replay_->paused() && !replay_->fast_forwarding())) desk_.flush_journals();
+      if (!synchronized.empty() || (replay_ && replay_->paused() && !replay_->fast_forwarding())) desk_.flush_journals();
       publish_desk();
       {
         const std::lock_guard lock(mutex_);

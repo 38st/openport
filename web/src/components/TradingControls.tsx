@@ -41,3 +41,13 @@ export function WriteAccess({ trading }: { trading?: TradingStatus }) {
 export function writeBlocked(trading: TradingStatus, token: string) {
   return !trading.enabled || trading.write === "disabled" || (trading.write === "token" && !token)
 }
+
+/** One notice in the terminal shell, shared by all trading panels. */
+export function WatchOnlyNotice({ trading }: { trading?: TradingStatus | null }) {
+  const token = useWriteToken()
+  if (trading?.write !== "token" || token) return null
+  return <div role="status" aria-label="Watch only" className="flex flex-wrap items-center gap-3 border-b border-border bg-raised px-4 py-2 text-sm text-muted">
+    <span>Watch only. Trading on this server needs its write token.</span>
+    <WriteAccess trading={trading} />
+  </div>
+}

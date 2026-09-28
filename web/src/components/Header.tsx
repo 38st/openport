@@ -67,13 +67,13 @@ export function Header({
               </Flash>
             </span>
             <span className="min-w-0 text-[11px] text-muted">as of <AsOf asOf={current.as_of} delaySeconds={provider?.delay_seconds} market={market} session={current.session}
-              now={live.source === "replay" ? marketNow(live) : undefined} /></span>
+              now={live.source === "replay" || provider?.simulated ? marketNow(live) : undefined} /></span>
           </div>
         )}
 
         <div className="ml-auto flex min-w-0 flex-wrap items-center gap-3 text-[11px] text-muted">
           {provider && (
-            <span className="hidden min-w-0 [overflow-wrap:anywhere] sm:inline" title={`${dataLabel}${provider.realtime_plan_dependent ? " · based on the current feed state" : ""}`}>
+            <span className={`${provider.simulated ? "" : "hidden sm:inline "}min-w-0 [overflow-wrap:anywhere]`} title={`${dataLabel}${provider.realtime_plan_dependent ? " · based on the current feed state" : ""}`}>
               <span className="text-foreground">{provider.name}</span> {dataLabel}
             </span>
           )}

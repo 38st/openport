@@ -2,7 +2,7 @@ import { QueryClient, QueryObserver } from "@tanstack/react-query"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { writeToken } from "../lib/write-token"
 import { connectLive } from "./connection"
-import { liveState } from "./live"
+import { liveState, marketNow } from "./live"
 import type { Status, Tick } from "./types"
 
 const status: Status = {
@@ -171,4 +171,14 @@ it("authenticates browser sockets through subprotocols without putting tokens in
   cleanups.push(connectLive("ws://localhost/ws", client, () => {}, () => {}))
   expect(Socket.instances[0]?.url).toBe("ws://localhost/ws")
   expect(Socket.instances[0]?.protocols).toEqual(["openport", "openport.token.616263"])
+})
+
+it("uses simulated feed timestamps for ages and journal dates across the overnight jump", () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(new Date("2026-09-27T12:00:00Z"))
+  const simulated = { ...status, provider: { ...status.provider, name: "demo", simulated: true } }
+  expect(marketNow(liveState(simulated, null, "open"))).toBe(Date.parse(status.underlyings[0]!.as_of!))
+  const next = { ...tick, underlyings: [{ ...tick.underlyings[0]!, as_of: "2026-09-23T13:30:00Z" }] }
+  expect(marketNow(liveState(simulated, next, "open"))).toBe(Date.parse("2026-09-23T13:30:00Z"))
+  expect(marketNow(liveState(status, next, "open"))).toBeGreaterThan(Date.parse("2026-09-23T13:30:00Z"))
 })

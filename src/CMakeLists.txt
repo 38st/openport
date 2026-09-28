@@ -101,6 +101,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     "${CMAKE_CURRENT_BINARY_DIR}/builtin_scenarios.cpp"
     providers/factory.cpp
     providers/demo.cpp
+    providers/demo_feed.cpp
     providers/scenario.cpp
     providers/replay.cpp
     providers/replay_batches.cpp

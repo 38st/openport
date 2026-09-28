@@ -94,7 +94,7 @@ export function EngineView() {
                   <td className="py-1 text-right">{count(u.expiries)}</td>
                   <td className="py-1 text-right">{count(u.options)}</td>
                   <td className="py-1 text-right"><AsOf asOf={u.as_of} delaySeconds={provider.delay_seconds} market={market} session={u.session}
-                    now={live.source === "replay" ? marketNow(live) : undefined} /></td>
+                    now={live.source === "replay" || provider?.simulated ? marketNow(live) : undefined} /></td>
                 </tr>
               ))}
             </tbody>
@@ -120,7 +120,7 @@ export function EngineView() {
                   <th scope="row" className="px-2 py-2 font-normal tabular">{u.symbol}</th>
                   <td className="px-2 py-2">{u.state ? <FeedBadge state={u.state} message={u.message} /> : "—"}</td>
                   <td className="min-w-40 px-2 py-2 text-muted break-words">{u.message ?? "—"}</td>
-                  <td className="min-w-44 px-2 py-2 tabular">{u.last_success ? <AsOf asOf={u.last_success} showBadge={false} /> : "—"}</td>
+                  <td className="min-w-44 px-2 py-2 tabular">{u.last_success ? <AsOf asOf={u.last_success} showBadge={false} now={provider.simulated ? marketNow(live) : undefined} /> : "—"}</td>
                   <td className="min-w-44 px-2 py-2 break-words">
                     <div className={u.last_error ? "text-warn" : "text-muted"}>{u.last_error ?? "—"}</div>
                     {u.last_error_time && <time dateTime={u.last_error_time} className="text-[11px] text-muted tabular">{timestampET(u.last_error_time)}</time>}

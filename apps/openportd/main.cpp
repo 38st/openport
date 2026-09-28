@@ -36,6 +36,7 @@
 
 #include "openport/analytics/volatility_history.hpp"
 #include "openport/providers/cboe.hpp"
+#include "openport/providers/demo_feed.hpp"
 #include "openport/providers/factory.hpp"
 #include "openport/providers/history.hpp"
 #include "openport/providers/massive.hpp"
@@ -60,6 +61,7 @@ void on_signal(int) { g_stop = true; }
 
 struct Settings {
   md::ProviderConfig provider{"cboe", "", {}};
+  bool explicit_symbols = false;
   md::Subscription subscription{{"SPX", "SPY", "QQQ", "IWM", "DIA"}, 0, 0.0};
   std::string address = "127.0.0.1";
   unsigned short port = 8080;
@@ -144,12 +146,15 @@ int usage(const char* error = nullptr) {
       "record: create a new compressed event file (existing files are never overwritten);\n"
       "        --record-dir names one per run by provider and start time there, and the\n"
       "        web terminal replays recordings from it (default ~/.openport/recordings)\n"
-      "charts: one-minute bars persist in --candle-dir (default ~/.openport/candles; replay\n"
+      "charts: one-minute bars persist in --candle-dir (default ~/.openport/candles; replay/demo\n"
       "        keeps them in memory); Cboe's free delayed chart history backfills them\n"
-      "        unless --no-history (always off for replay)\n"
+      "        unless --no-history (always off for replay/demo)\n"
       "holidays: Cboe's published holiday schedule is read daily, so a closure it announces\n"
-      "          applies without a new build, unless --no-cboe-holidays (always off for replay)\n"
+      "          applies without a new build, unless --no-cboe-holidays (always off for replay/demo)\n"
       "replay: --option file=PATH [--option speed=1|10|60|max] [--option loop=on|off]\n"
+      "demo: simulated regular sessions, rotating forever; --option days=ID,ID,...\n"
+      "      --option speed=1|2|5|10|30|60|120|300 (default 1); no network services\n"
+      "      symbols default to the selected days; journal defaults to ~/.openport/demo/paper-journal.jsonl\n"
       "providers:");
   for (auto name : providers::provider_names()) {
     std::fprintf(stderr, " %.*s", static_cast<int>(name.size()), name.data());
@@ -327,7 +332,6 @@ int run(int argc, char** argv) {
   Settings settings;
   settings.web_root = find_web_root(argv[0]);
   if (const auto* token = std::getenv("OPENPORT_WRITE_TOKEN")) settings.write_token = token;
-  if (const auto* home = std::getenv("HOME")) settings.paper_journal = std::filesystem::path(home) / ".openport/paper-journal.jsonl";
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     const bool has_value = i + 1 < argc;
@@ -354,6 +358,7 @@ int run(int argc, char** argv) {
       settings.provider.name = value;
     } else if (arg == "--symbols") {
       settings.subscription.underlyings = split(value);
+      settings.explicit_symbols = true;
     } else if (arg == "--address") {
       settings.address = value;
     } else if (arg == "--port") {
@@ -438,6 +443,14 @@ int run(int argc, char** argv) {
       return usage(("unknown option " + arg).c_str());
     }
   }
+  const bool demo = settings.provider.name == providers::kDemoProvider;
+  const bool offline = demo || settings.provider.name == "replay";
+  if (settings.paper_journal.empty()) {
+    if (const auto* home = std::getenv("HOME"))
+      settings.paper_journal = std::filesystem::path(home) /
+          (demo ? ".openport/demo/paper-journal.jsonl" : ".openport/paper-journal.jsonl");
+  }
+  if (demo && settings.massive_dividends) return usage("demo: --dividends massive needs network access; use a file");
   std::filesystem::path candle_directory;
   if (settings.candle_dir) candle_directory = *settings.candle_dir;
   else if (const auto* home = std::getenv("HOME")) candle_directory = std::filesystem::path(home) / ".openport/candles";
@@ -487,11 +500,13 @@ int run(int argc, char** argv) {
 
   if (settings.paper_enabled && settings.paper_journal.empty())
     return usage("HOME is unavailable; specify --paper-journal or --no-paper");
-  providers::validate_subscription(settings.provider.name, settings.subscription);
+  if (!demo) providers::validate_subscription(settings.provider.name, settings.subscription);
   auto provider = providers::make_provider(settings.provider);
+  if (const auto* feed = dynamic_cast<providers::DemoProvider*>(provider.get())) {
+    if (!settings.explicit_symbols) settings.subscription.underlyings = feed->symbols();
+    feed->validate(settings.subscription);
+  }
 
-  // A replay's market times are in the past: its bars must not mix with live history.
-  const bool replay = settings.provider.name == "replay";
   // Each run records to its own file, named by provider and UTC start time.
   if (!settings.record_dir.empty() && settings.record_file.empty()) {
     std::filesystem::create_directories(settings.record_dir);
@@ -502,7 +517,7 @@ int run(int argc, char** argv) {
   server::CandleStore::Options candle_options;
   if (settings.candle_dir)
     candle_options.directory = *settings.candle_dir;
-  else if (const auto* home = std::getenv("HOME"); home && !replay)
+  else if (const auto* home = std::getenv("HOME"); home && !offline)
     candle_options.directory = std::filesystem::path(home) / ".openport/candles";
   const auto candles = std::make_shared<server::CandleStore>(candle_options);
   if (const auto error = candles->error(); !error.empty())
@@ -510,7 +525,7 @@ int run(int argc, char** argv) {
 
   server::Engine::Options engine_options;
   engine_options.candles = candles;
-  if (settings.series && !replay && settings.provider.name != "demo")
+  if (settings.series && !offline)
     engine_options.series = std::make_shared<server::SeriesStore>(series_directory);
   engine_options.analytics.fallback_rate = settings.rate;
   engine_options.record_file = settings.record_file;
@@ -528,7 +543,7 @@ int run(int argc, char** argv) {
   server::Engine engine(*provider, settings.subscription, engine_options);
   engine.start();
   std::unique_ptr<providers::CboeChartHistory> history;
-  if (settings.history && !replay) {
+  if (settings.history && !offline) {
     history = std::make_unique<providers::CboeChartHistory>(
         settings.subscription.underlyings,
         [candles](const std::string& symbol, providers::CboeChart chart, std::vector<md::Bar> bars) {
@@ -540,7 +555,7 @@ int run(int argc, char** argv) {
     history->start();
   }
   std::unique_ptr<providers::CboeChartHistory> proxy_history;
-  if (settings.history && settings.series && !replay) {
+  if (settings.history && settings.series && !offline) {
     std::vector<std::string> indices;
     for (const auto& symbol : settings.subscription.underlyings) {
       const auto index = analytics::iv_proxy(symbol);
@@ -561,7 +576,7 @@ int run(int argc, char** argv) {
   }
   // Closures the exchange announces reach the calendar without a new build.
   std::unique_ptr<providers::CboeHolidaySchedule> holidays;
-  if (settings.cboe_holidays && !replay) {
+  if (settings.cboe_holidays && !offline) {
     holidays = std::make_unique<providers::CboeHolidaySchedule>(md::set_scheduled_days);
     holidays->start();
   }

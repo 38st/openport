@@ -10,6 +10,7 @@
 #include "openport/providers/massive.hpp"
 #include "openport/providers/options.hpp"
 #include "openport/providers/replay.hpp"
+#include "openport/providers/demo_feed.hpp"
 #include "openport/providers/thetadata.hpp"
 #include "openport/providers/tradier.hpp"
 #include "openport/providers/tastytrade.hpp"
@@ -65,6 +66,7 @@ std::vector<std::string_view> provider_names() {
       "tradier",
       "tastytrade",
       "replay",
+      "demo",
   };
 }
 
@@ -72,6 +74,13 @@ void validate_subscription(std::string_view provider, const md::Subscription& su
   if (subscription.max_expiries < 0 || !std::isfinite(subscription.strike_window) ||
       subscription.strike_window < 0 || subscription.strike_window > 1)
     throw std::invalid_argument("expiries must be >= 0 and window must be in [0, 1]");
+  if (provider == "demo") {
+    if (subscription.max_expiries != 0 || subscription.strike_window != 0)
+      throw std::invalid_argument("demo: --expiries and --window must be zero");
+    for (const auto& symbol : subscription.underlyings)
+      if (symbol != "SPX" && symbol != "SPY" && symbol != "QQQ")
+        throw std::invalid_argument("demo: unsupported symbol " + symbol);
+  }
   if (provider == "replay" &&
       (subscription.max_expiries != 0 || subscription.strike_window != 0))
     throw std::invalid_argument("replay: --expiries and --window must be zero; "
@@ -107,6 +116,23 @@ std::unique_ptr<md::Provider> make_provider(const md::ProviderConfig& config) {
       throw std::invalid_argument("tastytrade: dxlink_time_unit must be unknown or milliseconds");
     options.timestamps_in_milliseconds = unit == "milliseconds";
     return std::make_unique<TastytradeProvider>(std::move(options));
+  }
+  if (config.name == "demo") {
+    validate_keys(config, {"days", "speed"});
+    DemoProvider::Options options;
+    options.speed = parse_integer(option_or(config, "speed", "1"), "demo speed", 1, 300);
+    if (const auto found = config.options.find("days"); found != config.options.end()) {
+      std::size_t begin = 0;
+      do {
+        const auto end = found->second.find(',', begin);
+        const auto id = found->second.substr(begin, end - begin);
+        if (id.empty()) throw std::invalid_argument("demo: days must contain nonempty scenario ids");
+        options.days.push_back(id);
+        if (end == std::string::npos) break;
+        begin = end + 1;
+      } while (true);
+    }
+    return std::make_unique<DemoProvider>(std::move(options));
   }
   if (config.name == "replay") {
     validate_keys(config, {"file", "speed", "loop"});

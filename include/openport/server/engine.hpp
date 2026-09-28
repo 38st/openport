@@ -176,6 +176,7 @@ class Engine final : public MetricsSource {
   std::deque<PendingCommand> commands_;
   std::deque<PendingReplay> replay_batches_;
   providers::ReplayProvider* replay_ = nullptr;
+  bool demo_ = false;
   std::uint64_t next_command_ = 1;
   bool accepting_commands_ = false;
 

@@ -75,6 +75,39 @@ TEST(Cli, DaemonRejectsMalformedRangesUnknownFlagsAndStartupFailures) {
   rejects("openportd", "--provider databento --window 0.1", "whole chain upstream");
 }
 
+TEST(Cli, DemoRejectsNetworkOptionsUnknownDaysAndUnsupportedSymbols) {
+  rejects("openportd", "--help", "demo: simulated regular sessions");
+  rejects("openportd", "--provider demo --option speed=max", "demo speed");
+  rejects("openportd", "--provider demo --option days=overnight", "not a regular session");
+  rejects("openportd", "--provider demo --symbols IWM", "unsupported symbol");
+  rejects("openportd", "--provider demo --dividends massive", "needs network access");
+  rejects("openportd", "--provider demo --window .1", "must be zero");
+}
+
+TEST(Cli, DemoDefaultJournalIsSeparateAndExplicitPathWins) {
+  const auto invoke = [&](const std::string& args) {
+    const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/openportd\" " + args + " 2>&1";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) throw std::runtime_error("popen failed");
+    std::string output;
+    char buffer[512];
+    while (fgets(buffer, sizeof buffer, pipe)) output += buffer;
+    const auto result = pclose(pipe);
+    EXPECT_TRUE(WIFEXITED(result));
+    EXPECT_EQ(WEXITSTATUS(result), 0) << output;
+    return output;
+  };
+  // Maintenance resolves the same default paths without starting a server or feed.
+  const auto demo = invoke("--provider demo --compact-journals");
+  EXPECT_NE(demo.find("/.openport/demo/paper-journal.jsonl"), std::string::npos);
+  const auto live = invoke("--compact-journals");
+  EXPECT_EQ(live.find("/.openport/demo/"), std::string::npos);
+  openport::test::RecordingFile file;
+  const auto explicit_path = file.directory / "custom.jsonl";
+  EXPECT_NE(invoke("--provider demo --paper-journal '" + explicit_path.string() + "' --compact-journals")
+      .find(explicit_path.string()), std::string::npos);
+}
+
 TEST(Cli, ProbeRejectsBadValuesUnknownFlagsAndDatabentoFilters) {
   rejects("openport-probe", "cboe SPY --window nan", "--window");
   rejects("openport-probe", "cboe SPY --window 1x", "--window");

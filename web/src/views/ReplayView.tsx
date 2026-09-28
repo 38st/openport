@@ -31,7 +31,7 @@ export function useReplayControls() {
   const mode = writeStatus.data?.write ?? trading?.write ?? "disabled"
   const blocked = mode === "disabled" || (mode === "token" && !token)
   async function run(request: () => Promise<unknown>) {
-    if (busy.current) return
+    if (busy.current || blocked) return
     busy.current = true
     setPending(true)
     setError(undefined)
@@ -52,8 +52,10 @@ function Controls({ replay }: { replay: ReplayState }) {
   const controls = useReplayControls()
   return <div className="space-y-3">
     <div className="flex flex-wrap items-center gap-2">
-      <Segmented label="Replay speed" value={replay.speed} onChange={(speed) => void controls.speed(speed)}
-        options={replaySpeeds.map((speed) => ({ value: speed, label: speedLabel(speed) }))} />
+      <fieldset disabled={controls.pending || controls.blocked}>
+        <Segmented label="Replay speed" value={replay.speed} onChange={(speed) => void controls.speed(speed)}
+          options={replaySpeeds.map((speed) => ({ value: speed, label: speedLabel(speed) }))} />
+      </fieldset>
       <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding}
         onClick={() => void controls.pause(!replay.paused)}>{replay.paused ? "Resume" : "Pause"}</button>
       <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.paused}
@@ -202,7 +204,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
     {deleting && <Dialog title="Delete replay run?" onClose={() => setDeleting(undefined)}>
       <p className="text-sm">This permanently deletes the run’s journal and trades. This cannot be undone.</p>
       <TradingError error={controls.error} />
-      <button type="button" className="trade-button" disabled={controls.pending} onClick={() => void controls.remove(deleting, () => { if (live.source === `history:${deleting}`) live.switchSource("live"); setDeleting(undefined); void listing.refetch() })}>Delete run</button>
+      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked} onClick={() => void controls.remove(deleting, () => { if (live.source === `history:${deleting}`) live.switchSource("live"); setDeleting(undefined); void listing.refetch() })}>Delete run</button>
       <button type="button" className="trade-button" onClick={() => setDeleting(undefined)}>Cancel</button>
     </Dialog>}
     <p className="text-[11px] text-muted">
