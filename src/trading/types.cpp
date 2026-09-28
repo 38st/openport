@@ -103,11 +103,12 @@ void validate_rules(const AccountRules& r) {
       (r.drawdown_mode != DrawdownMode::Intraday && r.drawdown_mode != DrawdownMode::EndOfDay) ||
       (r.phase != Phase::Evaluation && r.phase != Phase::Funded) ||
       r.slippage_ticks < 0 || r.slippage_ticks > 10 ||
+      r.fill_latency_ms < 0 || r.fill_latency_ms > 60'000 || r.impact_ticks < 0 || r.impact_ticks > 10 ||
       (r.margin != MarginMode::Strategy && r.margin != MarginMode::Portfolio) ||
       (r.phase == Phase::Funded && (r.profit_target > Money{} || p.qualifying_days < 1)))
     throw TradingError(Reason::INVALID_RULES,
         "Rule amounts must be nonnegative, percentages 0-100, caps positive, the expiry cutoff under one day and the plan name "
-        "at most 64 bytes; slippage is 0-10 ticks and margin is strategy or portfolio; "
+        "at most 64 bytes; slippage and impact are 0-10 ticks, fill latency is 0-60000 ms and margin is strategy or portfolio; "
         "a funded phase has no profit target and at least one qualifying day");
 }
 }  // namespace openport::trading

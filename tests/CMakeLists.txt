@@ -64,6 +64,7 @@ endif()
 target_sources(openport_tests PRIVATE
   trading/money_ledger_test.cpp
   trading/matching_test.cpp
+  trading/fills_test.cpp
   trading/kill_test.cpp
   trading/floor_test.cpp
   trading/risk_settlement_test.cpp

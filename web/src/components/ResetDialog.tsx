@@ -1,7 +1,7 @@
 import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useAccount, useRefreshTrading, usePlans, useTradingSession } from "../api/trading"
-import type { Plan, TradingStatus } from "../api/trading-types"
+import type { FillModel, Plan, TradingStatus } from "../api/trading-types"
 import { lockReason, offeredPlans } from "../lib/payouts"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -22,6 +22,8 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
     ...(r.buying_power ? ["Buying power enforced"] : []),
     ...(r.margin === "portfolio" ? ["Portfolio margin"] : []),
     ...(r.slippage_ticks ? [`${r.slippage_ticks} ${r.slippage_ticks === 1 ? "tick" : "ticks"} of slippage`] : []),
+    ...(r.fill_latency_ms ? [`${r.fill_latency_ms} ms fill latency on market time`] : []),
+    ...(r.impact_ticks ? [`${r.impact_ticks} extra ${r.impact_ticks === 1 ? "tick" : "ticks"} per displayed-size block`] : []),
     ...(r.expiry_cutoff_seconds > 0 ? [`Auto-close ${Math.round(r.expiry_cutoff_seconds / 60)} min before expiry`] : []),
     ...(p ? [`Payout every ${p.qualifying_days} days of ${formatMoney(p.qualifying_profit, 0)}+ net profit`,
       `Up to ${p.withdrawal_percent}% of profit per payout, ${p.split_percent}% to you`] : []),
@@ -36,6 +38,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
   const [choice, setChoice] = useState(initial ?? "")
+  const [fillModel, setFillModel] = useState<FillModel>("as_displayed")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
@@ -47,7 +50,8 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
     setPending(true)
     setError(undefined)
     try {
-      await api.resetAccount({ plan: selected.id, reason: `Start ${selected.name}` }, trading.write)
+      await api.resetAccount({ plan: selected.id, reason: `Start ${selected.name}`,
+        ...(fillModel === "conservative" ? { fill_model: fillModel } : {}) }, trading.write)
       if (sameSession()) onClose()
     } catch (failure) {
       if (sameSession()) setError(failure)
@@ -95,6 +99,18 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
             })}
           </fieldset>
         ))}
+        <label className="block space-y-1 text-sm">
+          <span>Simulated fills</span>
+          <select className="trade-input w-full" value={fillModel} disabled={pending}
+            onChange={(event) => setFillModel(event.target.value as FillModel)}>
+            <option value="as_displayed">As displayed</option>
+            <option value="conservative">Conservative</option>
+          </select>
+        </label>
+        <p className="text-xs text-muted">{fillModel === "conservative"
+          ? "For delayed feeds: wait 1,000 ms on market time, add 1 tick of slippage, and 1 extra tick for each additional displayed-size block. The next available quote may arrive much later."
+          : "Fill immediately at the displayed bid or ask, up to the available displayed size, with no slippage."}
+          {" "}Applies to this account’s new attempt. Neither model knows queue position, hidden liquidity, or whether the market would have traded at all.</p>
         {plans.isLoading && <p className="text-sm text-muted">Loading plans…</p>}
         <TradingError error={error} />
         <button type="submit" className="trade-button" disabled={!selected || pending || writeBlocked(trading, token)}>

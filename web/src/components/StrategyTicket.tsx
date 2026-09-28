@@ -297,10 +297,11 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           </div>}
           {!closing && !roll && !extended && <div className="col-span-2">{exits.fields}</div>}
         </fieldset>
-        <LiquidityWarning market={type === "market"} legs={legs.map((leg) => ({ label: `${leg.expiry} ${leg.strike} ${leg.type}`, quote: leg.quote, side: leg.side, quantity: q * leg.ratio }))} />
+        <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} market={type === "market"} legs={legs.map((leg) => ({ label: `${leg.expiry} ${leg.strike} ${leg.type}`, quote: leg.quote, side: leg.side, quantity: q * leg.ratio }))} />
         <p role="status" className={`rounded-md border px-3 py-2 text-xs ${marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>
           {type === "limit" && tif === "gtc" && extended ? "GTC waits for the regular session, even if the current quote crosses its limit."
             : quote.ask == null ? "Every leg needs a two-sided quote before the strategy can fill."
+            : rules?.fill_latency_ms || rules?.impact_ticks ? "Simulated fills use the account’s latency and each leg’s size impact. Displayed net prices are estimates; all legs still fill together within the net limit."
             : marketable ? `Marketable: fills now at ${netText(quote.ask)} per unit, all legs together, up to each leg's displayed size.`
             : `Rests: the legs trade now at ${netText(quote.ask)}; fills when that reaches ${netText(net)}.`}
         </p>
@@ -319,6 +320,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           </>}
         </dl>
         <OrderPreviewPanel preview={preview} onSize={(size) => setUnits(String(size))} disabled={pending || order != null} />
+        {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}
         {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}
         {chart && <figure aria-label="Profit and loss at expiry">
           <LineChart height={160} marginLeft={60} series={[{ id: "payoff", label: "P&L at expiry", color: "var(--chart-1)", points: chart, area: true },

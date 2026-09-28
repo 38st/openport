@@ -612,6 +612,57 @@ TEST(ReproducibleRun, LockstepWaitsForTheConsumerAndRejectsBackwardAndPastEndTim
   replay.stop();
 }
 
+TEST(ReproducibleRun, ConservativeFillsHaveIdenticalBytesAndPassCliVerification) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  const test::ScriptedMarket market;
+  std::string golden;
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    const auto journal = file.directory / ("conservative-" + std::to_string(repeat) + ".jsonl");
+    {
+      md::RecordingReader reader(file.path);
+      server::Desk::Options options;
+      options.run_input = server::recording_input(file.path);
+      options.replay = true;
+      options.paper_journal = journal;
+      options.paper.limits.aggregate = {1e9, 1e9};
+      options.paper.limits.per_underlying = {1e9, 1e9};
+      options.paper.rules.fill_latency_ms = 1000;
+      options.paper.rules.impact_ticks = 1;
+      options.paper.rules.slippage_ticks = 1;
+      server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
+      desk.start_trading();
+      providers::ReplayBatches batches(reader, reader.header().subscription);
+      bool submitted = false;
+      while (const auto batch = batches.next()) {
+        desk.replay_batch(batch->events, batch->received, batch->time);
+        if (!submitted) {
+          server::TradingCommand request;
+          request.order = market.market("conservative", 25);
+          const auto reply = command(desk, request, batch->time, batch->received);
+          ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+          EXPECT_TRUE(desk.trading_view()->snapshot->recent_fills.empty());
+          submitted = true;
+        }
+      }
+      const auto& fills = desk.trading_view()->snapshot->recent_fills;
+      ASSERT_EQ(fills.size(), 2U);
+      EXPECT_EQ(fills.front().time, market.time + md::kNanosPerSecond);
+      EXPECT_EQ(fills.front().quantity, 20);
+      EXPECT_EQ(fills.back().quantity, 5);
+      EXPECT_EQ(fills.front().price, Money::parse("100.40"));
+      EXPECT_EQ(fills.back().price, Money::parse("100.50"));
+      desk.stop();
+    }
+    if (repeat == 0) { golden = read_file(journal); } else { EXPECT_EQ(read_file(journal), golden); }
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+    const auto cli = std::string(OPENPORT_APPS_DIR) + "/openportd --verify-run " + journal.string() +
+                     " > " + (file.directory / "verify-fills.txt").string() + " 2>&1";
+    EXPECT_EQ(std::system(cli.c_str()), 0) << read_file(file.directory / "verify-fills.txt");
+  }
+}
+
 TEST(ReproducibleRun, MissingRecordingAndOldJournalsHaveClearDiagnostics) {
   test::RecordingFile file;
   write_stream(file.path, true);

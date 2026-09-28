@@ -334,6 +334,8 @@ struct AccountRules {
   /// underlying that expires with it or later: an order may not add a naked short.
   bool defined_risk = false;
   std::int64_t slippage_ticks = 0;  ///< Adverse ticks per option fill, from 0 to 10.
+  std::int64_t fill_latency_ms = 0; ///< Market-time delay before execution, from 0 to 60,000 ms.
+  std::int64_t impact_ticks = 0;    ///< Extra adverse ticks per displayed-size block, from 0 to 10.
   MarginMode margin = MarginMode::Strategy;
   bool buying_power = false;  ///< Enforce cash buying power under the selected margin mode.
   Timestamp expiry_cutoff = 0;  ///< Auto-close this long before a contract's last trade; zero disables.

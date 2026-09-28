@@ -331,8 +331,10 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           </>}
         </div>}
       </fieldset>
-      <LiquidityWarning market={type === "market"} legs={[{ label: `${selection.strike} ${selection.optionType}`, quote, side, quantity: q }]} />
-      <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{fill.message}</p>
+      <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} market={type === "market"} legs={[{ label: `${selection.strike} ${selection.optionType}`, quote, side, quantity: q }]} />
+      <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{rules?.fill_latency_ms || rules?.impact_ticks
+        ? "Simulated fills use the account’s latency and size impact. Displayed prices and quantities are estimates; the order may wait or fill at worse prices within its limit."
+        : fill.message}</p>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
         <dt className="text-muted">Estimated premium · {side === "buy" ? "debit" : "credit"}</dt><dd className="text-right tabular">{formatMoney(estimate.premium)}</dd>
         <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{formatMoney(estimate.fees)}</dd>
@@ -343,6 +345,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         </>}
       </dl>
       <OrderPreviewPanel preview={preview} onSize={(size) => setQuantity(String(size))} disabled={submitted || pending} />
+      {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}
       {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}
       <details className="text-xs">
         <summary className="cursor-pointer text-muted">This order’s Greeks impact</summary>

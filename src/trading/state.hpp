@@ -95,7 +95,15 @@ inline void from_json(const Json& j, MarginMode& mode) {
   if (value != "strategy" && value != "portfolio") throw TradingError(Reason::JOURNAL_CORRUPT, "Unknown recorded margin mode");
   mode = value == "portfolio" ? MarginMode::Portfolio : MarginMode::Strategy;
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(AccountRules, plan, profit_target, max_drawdown, drawdown_mode, buy_only, buying_power, expiry_cutoff, phase, lock_balance, payouts, defined_risk, slippage_ticks, margin)
+inline void to_json(Json& j, const AccountRules& r) {
+  j = Json{{"plan", r.plan}, {"profit_target", r.profit_target}, {"max_drawdown", r.max_drawdown},
+           {"drawdown_mode", r.drawdown_mode}, {"buy_only", r.buy_only}, {"buying_power", r.buying_power},
+           {"expiry_cutoff", r.expiry_cutoff}, {"phase", r.phase}, {"lock_balance", r.lock_balance},
+           {"payouts", r.payouts}, {"defined_risk", r.defined_risk}, {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin}};
+  // Preserve existing journal bytes when the optional models are off.
+  if (r.fill_latency_ms != 0) j["fill_latency_ms"] = r.fill_latency_ms;
+  if (r.impact_ticks != 0) j["impact_ticks"] = r.impact_ticks;
+}
 inline void from_json(const Json& j, AccountRules& r) {
   j.at("plan").get_to(r.plan); j.at("profit_target").get_to(r.profit_target); j.at("max_drawdown").get_to(r.max_drawdown);
   j.at("drawdown_mode").get_to(r.drawdown_mode); j.at("buy_only").get_to(r.buy_only); j.at("buying_power").get_to(r.buying_power);
@@ -105,6 +113,11 @@ inline void from_json(const Json& j, AccountRules& r) {
   if (const auto it = j.find("slippage_ticks"); it != j.end() && !it->is_number_integer())
     throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded slippage must be an integer");
   added_field(j, "slippage_ticks", r.slippage_ticks); added_field(j, "margin", r.margin);
+  for (const auto* key : {"fill_latency_ms", "impact_ticks"})
+    if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
+      throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded fill settings must be integers");
+  r.fill_latency_ms = j.value("fill_latency_ms", std::int64_t{0});
+  r.impact_ticks = j.value("impact_ticks", std::int64_t{0});
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {
@@ -187,6 +200,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
 namespace detail {
 struct Book {
   QuoteObservation quote;
+  // With impact enabled, negative budgets count contracts beyond displayed size.
   Quantity bid_left = 0;
   Quantity ask_left = 0;
 };

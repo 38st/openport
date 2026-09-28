@@ -56,6 +56,14 @@ describe("strategy ticket", () => {
       if (optional.slippage_ticks) expect(html).toContain("the server preview includes it")
     }
   })
+  it("labels net prices as estimates under latency and simulated size impact", () => {
+    const custom = { ...any, rules: { ...any.rules, fill_latency_ms: 1000, impact_ticks: 1 } }
+    const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, custom)
+    expect(html).toContain("each leg’s size impact")
+    expect(html).toContain("all legs still fill together within the net limit")
+    expect(html).toContain("cannot predict the later quote")
+    expect(html).not.toContain("fills now")
+  })
   it("prices the legs net, shows the expiry risk and places one order", () => {
     const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, any)
     for (const text of ["Strategy ticket", "SPX <span", "Bull put spread", "2 of 4 legs", "SELL", "BUY", "6900 P", "6890 P",

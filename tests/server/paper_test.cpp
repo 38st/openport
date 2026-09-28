@@ -2064,6 +2064,62 @@ TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, FillPresetsPreservePlanRulesAndValidateCustomSettings) {
+  engine->stop();
+  const auto journal = paper_path();
+  auto options = paper_options();
+  options.paper_accounts = journal.parent_path() / "accounts";
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  for (const auto* preset : {"conservative", "as_displayed"}) {
+    const auto response = write(*engine, "POST", "/api/account/reset",
+        {{"plan", "intraday-50k"}, {"reason", "fill model"}, {"fill_model", preset}});
+    ASSERT_EQ(response.status, 200) << response.body;
+    const auto rules = json::parse(response.body)["rules"];
+    EXPECT_EQ(rules["buy_only"], true);
+    EXPECT_EQ(rules["profit_target"], "5000.00");
+    if (std::string_view(preset) == "conservative") {
+      EXPECT_EQ(rules["fill_latency_ms"], 1000);
+      EXPECT_EQ(rules["impact_ticks"], 1);
+      EXPECT_EQ(rules["slippage_ticks"], 1);
+    } else {
+      EXPECT_FALSE(rules.contains("fill_latency_ms"));
+      EXPECT_FALSE(rules.contains("impact_ticks"));
+      EXPECT_EQ(rules["slippage_ticks"], 0);
+    }
+  }
+  expect_error(write(*engine, "POST", "/api/account/reset",
+      {{"plan", "practice"}, {"reason", "bad"}, {"fill_model", "unknown"}}), 400, "INVALID_REQUEST");
+  const auto created = write(*engine, "POST", "/api/accounts",
+      {{"name", "Conservative"}, {"plan", "practice"}, {"fill_model", "conservative"}});
+  ASSERT_EQ(created.status, 201) << created.body;
+  EXPECT_EQ(read(*engine, "/api/account?account=conservative")["rules"]["fill_latency_ms"], 1000);
+  EXPECT_EQ(read(*engine, "/api/account?account=conservative")["rules"]["impact_ticks"], 1);
+  EXPECT_FALSE(read(*engine, "/api/account")["rules"].contains("impact_ticks"));
+  json rules{{"profit_target", nullptr}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
+             {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0}};
+  for (const auto* key : {"fill_latency_ms", "impact_ticks"}) {
+    for (const auto& value : {json(-1), json(60'001), json(1.5), json("2"), json(true), json(nullptr)}) {
+      auto custom = rules;
+      custom[key] = value;
+      const auto response = write(*engine, "POST", "/api/account/reset",
+          {{"initial_cash", "100000"}, {"rules", custom}, {"reason", "invalid fill setting"}});
+      expect_error(response, value.is_number_integer() ? 422 : 400,
+                   value.is_number_integer() ? "INVALID_RULES" : "INVALID_REQUEST");
+    }
+  }
+  rules["fill_latency_ms"] = 60'000;
+  rules["impact_ticks"] = 10;
+  const auto custom = write(*engine, "POST", "/api/account/reset",
+      {{"initial_cash", "100000"}, {"rules", rules}, {"reason", "custom fills"}});
+  ASSERT_EQ(custom.status, 200) << custom.body;
+  EXPECT_EQ(json::parse(custom.body)["rules"]["fill_latency_ms"], 60'000);
+  EXPECT_EQ(json::parse(custom.body)["rules"]["impact_ticks"], 10);
+  engine->stop();
+  std::filesystem::remove_all(journal.parent_path());
+}
+
 TEST_F(PaperEngine, ResetRequestsAreStrict) {
   expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "platinum"}, {"reason", "x"}}), 400, "INVALID_REQUEST");
   expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"initial_cash", "1"}, {"reason", "x"}}), 400, "INVALID_REQUEST");

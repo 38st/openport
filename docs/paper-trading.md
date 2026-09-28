@@ -186,7 +186,8 @@ HTTP retry/idempotency semantics belong to the integration layer.
 Tickets show liquidity warnings for thin or absent two-sided quotes, including
 spread percentage, session volume and OI, without blocking submission. Strategy
 tickets check each leg. Market tickets show each executable side's displayed size
-and requested contracts; fills are simulated against that quote and size only.
+and requested contracts. Optional latency and impact can change the simulated fill,
+as described below.
 The [liquidity rules](runtime.md#chain-volume-and-liquidity) are browser cues, not
 new reducer checks or journal fields.
 
@@ -197,7 +198,8 @@ the displayed far side's tier even if slippage crosses $3. A limit executes only
 the displayed far side is no worse than its limit, including equality: buys fill at
 `min(limit, ask + slippage)` and sells at `max(limit, max(0, bid - slippage))`.
 Bracket exits, liquidation and expiry auto-close use the same slippage. Exercise,
-settlement and share trades keep their existing prices. Market orders never sweep undisplayed depth.
+settlement and share trades keep their existing prices. Without impact, market orders
+never sweep undisplayed depth.
 Unfilled DAY and GTC limits rest; unfilled IOC quantity cancels with `IOC_REMAINDER`.
 `filled_quantity` remains separate from terminal state: cancelled orders may have
 fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
@@ -223,6 +225,64 @@ processed first for deterministic cross-side risk effects. OSIs are processed in
 lexical order after atomic installation of the entire batch. Submissions also
 respect existing better orders when sharing the current budget. There is no queue
 position, trade-through or hidden-liquidity simulation in v1.
+
+### Optional fill models
+
+**As displayed** is the default: no latency, no impact and no slippage. Existing
+plans, account responses and journal records keep their previous bytes when the new
+settings are zero. The Rules page offers **Conservative** when starting a plan for
+an account's new attempt: 1,000 ms latency, 1 slippage tick and 1 impact tick. This
+adds friction for practice on a delayed feed; it does not reconstruct a live market.
+The choice does not change the plan's evaluation or margin rules. Custom account
+rules can set each value separately. Changing a preset starts a new attempt, with
+the usual reset of positions and cash; it does not change a running attempt.
+
+`impact_ticks` is an integer from 0 to 10. Zero keeps the displayed-size cap above.
+A positive value supplies **simulated depth** in blocks as large as the displayed
+size on that side. Block zero fills at the displayed price with the configured
+adverse slippage. Block one adds `impact_ticks` adverse ticks, block two twice that, and so
+on. The tick tier stays that of the displayed price; sell prices stop at zero.
+For example, with an ask of $4.20, size 2, one impact tick and no slippage, a buy of
+5 SPXW contracts fills 2 at $4.20, 2 at $4.30 and 1 at $4.40. With one slippage tick,
+those prices are $4.30, $4.40 and $4.50.
+
+Depth consumed by earlier orders on that side counts toward the same blocks.
+Bid and ask remain independent. A new observation resets the budget; reconfirming
+the same observation does not. There is no inferred depth when either displayed
+size or price is missing, nonpositive or invalid. With impact enabled, the whole
+price including slippage must fit a single-leg limit; slippage is not clipped to
+make a deeper block fill. DAY/GTC remainders rest, and IOC remainders cancel.
+Normal price-band, loss, buying-power and exposure checks still apply at each fill.
+
+Combos take one whole unit at a time with impact enabled. Each leg consumes its
+own side's blocks; a ratio spanning blocks records separate prices, using exact
+fixed-point money. All legs of that unit pass checks and fill together only if its
+entire net fits the limit. Fees remain per contract. Brackets, manual closes and
+account-owned liquidation/auto-close orders use the same impact model.
+
+`fill_latency_ms` is an integer from 0 to 60,000. A positive value holds an accepted
+order until every leg has a fresh, valid quote timestamped at or after acceptance
+plus that delay. Advancing transaction time alone cannot release it. A later
+snapshot confirming an unchanged quote can qualify without replenishing its size.
+On a sparse or 15-minute-delayed feed, the next quote can arrive much later than
+the configured delay. There is no wall clock or random timer in this rule.
+
+Stops start their delay when triggered, even if they were armed long before.
+Bracket targets start when created by the entry's first fill. In-place modifications
+keep the original acceptance time and delay. A delayed IOC stays working until its
+first eligible quote, attempts execution once, then cancels any remainder; a limit
+can continue waiting for its price. DAY ends, earliest-leg expiry and auto-close
+cutoffs run before matching. GTC and bracket exits wait for the regular session.
+Cancels and the kill switch still act immediately on pending orders; reduce-only
+closes remain eligible. Account-owned closes also wait, without creating duplicate
+pending closes. Normal session, halt and risk checks still apply.
+
+Both models are simulations. Neither knows queue position, hidden liquidity, or
+whether the market would have traded at all. Impact invents a price schedule, not
+observed market depth; latency selects a later supplied quote, not a future trade.
+Neither removes the hindsight advantage of a delayed feed.
+
+### Sessions
 
 Orders trade in the sessions `md::trading_session(root, time)` gives each product.
 Every product has its **regular** session: 09:30 to 16:15 ET for index roots and the
@@ -357,8 +417,8 @@ A multi-leg order fills **all legs together**, in ratio, when the net at the sli
 far sides (asks plus slippage for bought legs, bids less slippage for sold legs) is
 at or below its limit. Every leg takes its full slippage; an order whose net would
 exceed the limit waits, rather than allocating a partial slip among its legs.
-The net may improve on the limit, and units are bounded by every
-leg's remaining displayed size. Multi-leg orders match after single-leg orders on the
+The net may improve on the limit. Without impact, units are bounded by every
+leg's remaining displayed size. With impact, each leg uses the simulated blocks above. Multi-leg orders match after single-leg orders on the
 same books, in acceptance order, and only on quotes newer than their acceptance (except
 at submission). Each leg's fill is recorded under the order's ID; `filled_notional` and
 the average fill are the net per unit. The projected fill is checked for daily loss and,
@@ -431,8 +491,8 @@ quantity counts filled contracts too and must exceed them; the limit price appli
 to limit orders (a multi-leg order's signed net); the trigger level to armed orders
 with a trigger. The changed order takes every pre-trade check a new one would, with
 its own reservation released first, and a failure leaves it exactly as it was. A
-limit that becomes marketable trades at once against the cached fresh quote, and an
-armed order whose new level is reached activates in the regular session. Bracket
+limit that becomes marketable trades against the cached fresh quote, subject to
+any configured fill latency, and an armed order whose new level is reached activates in the regular session. Bracket
 exits change only their level or take-profit price (a signed net on the combo tick
 for spreads, positive on the tier tick for a single contract);
 their size follows the position. Time in force cannot change in place; cancel and
@@ -442,7 +502,7 @@ submit again to change DAY/GTC. The engine applies a new order's feed gate
 `cancel_all` cancels every open order, armed ones and bracket exits included, or
 only one underlying's. `close_positions` flattens the account or one underlying: it
 cancels the open orders in scope, then closes each unexpired position in scope with
-a market IOC order at the displayed quote, short positions first so buying one back
+a market IOC order under the account's fill model, short positions first so buying one back
 never uncovers another leg. These are the trader's own orders (client IDs
 `openport-close-{version}-{n}`) and take the normal checks; one the rules refuse is
 recorded as rejected with its reason and the others still go. Expired positions wait
@@ -732,7 +792,9 @@ side, no buying-power check. All rule money is exact.
 | `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Open orders count as if every sell they offer filled and no buy did (a multi-leg order fills whole; a bracket's two exits sell its position once), so a working sell can never take the long a short needs. Bracket exits and exercise keep shorts covered too. Off in every preset; custom rules take it |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
 | `slippage_ticks` | Integer from 0 to 10 adverse ticks per option fill, including each combo leg and closing orders; default 0 |
-| `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Presets use strategy margin and zero slippage; custom rules can enable either option |
+| `fill_latency_ms` | Integer from 0 to 60,000 milliseconds on market time before a quote can execute an order; default 0 |
+| `impact_ticks` | Integer from 0 to 10 extra adverse ticks per additional displayed-size block; 0 keeps the displayed-size cap |
+| `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Plans use strategy margin and As displayed fills by default; custom rules can select portfolio margin |
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
 | `lock_balance` | Once peak − drawdown reaches it, the floor stays there and stops trailing (zero disables) |
@@ -751,7 +813,8 @@ the floor rises. The decision is sticky for the attempt: open user orders cancel
 **System orders** perform liquidation and expiry auto-close: market IOC orders with
 `system = true` and client IDs `system:drawdown:N`, `system:target:N` or
 `system:expiry:N`. They need a registered unexpired contract, the regular session and
-a fresh executable book with displayed size on the closing side. They skip the kill
+a fresh executable book and available closing-side liquidity under the selected fill model.
+With latency, the close stays pending until an eligible later quote. They skip the kill
 latch, price band, daily-loss, exposure, rule and buying-power checks because they
 only reduce risk. Without executable liquidity nothing is recorded; the monitor retries
 on later transactions until the account is flat, so system orders never accumulate.
@@ -1460,9 +1523,10 @@ in its query for an account other than the main one (see [accounts](#accounts)).
 demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
-defined_risk, slippage_ticks, margin, buying_power, expiry_cutoff_seconds}`.
-`defined_risk`, `slippage_ticks` and `margin` are optional when creating or resetting
-an account, defaulting to false, 0 and `"strategy"`. Older journals missing these
+defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, margin, buying_power, expiry_cutoff_seconds}`.
+`defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks` and `margin` are optional when creating or resetting
+an account: `defined_risk` defaults to false, the execution settings to 0, and
+`margin` to `"strategy"`. Older journals missing these
 fields recover with the same defaults. Money is null for a disabled target or
 drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `buying_power: {available, reserved, short_requirement}`; orders add `origin`
@@ -1471,7 +1535,12 @@ drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `take_profit_order`; status and ticks add `trading.plan` and `trading.evaluation`
 (`active`/`passed`/`failed`, null without a target or drawdown rule). `--plan ID`
 chooses the rules for a new journal (default `practice`); `--paper-cash` then overrides
-its starting balance. Recovery keeps the recorded rules.
+its starting balance. Recovery keeps the recorded rules. New latency and impact fields default to zero
+when absent and are omitted from account responses and journals at zero. Pending
+orders recover their acceptance/trigger clocks and consumed depth.
+`POST /api/account/reset` and `POST /api/accounts` accept optional
+`fill_model: "as_displayed" | "conservative"` beside the plan or custom rules. It
+overrides only latency, impact and slippage for that account's new attempt.
 
 Money is an exact decimal string, quantities are integers, IDs/versions are strings,
 and timestamps use the same UTC ISO format as `as_of`. Analytical values may be

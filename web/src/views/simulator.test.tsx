@@ -118,6 +118,23 @@ describe("simulator pages", () => {
     for (const text of ["Rules", "Profit target", "Trailing drawdown", "Evaluation plans", "Intraday 100K", "Every new high", "Buy only", "5 min before", "Start"])
       expect(html).toContain(text)
   })
+  it("explains optional simulated fills and defaults older accounts to displayed fills", () => {
+    const custom = { ...account, rules: { ...account.rules, fill_latency_ms: 1000, impact_ticks: 1, slippage_ticks: 1 } }
+    const html = render(<RulesView />, custom)
+    for (const text of ["Latency is 1000 ms on market time", "stops start waiting when triggered", "Simulated impact adds 1 extra tick",
+      "Each combo leg uses its own size", "Automatic closes also wait", "queue position", "hidden liquidity", "whether the market would have traded at all"])
+      expect(html).toContain(text)
+    const facts = planFacts({ initial_cash: "100000", rules: custom.rules })
+    expect(facts).toContain("1000 ms fill latency on market time")
+    expect(facts).toContain("1 extra tick per displayed-size block")
+    const legacy = render(<RulesView />)
+    expect(legacy).toContain("No fill latency")
+    expect(legacy).toContain("Fills use up to the displayed size")
+    const dialog = render(<ResetDialog trading={status.trading!} attempt={2} initial="intraday-100k" onClose={() => {}} />)
+    expect(dialog).toContain("As displayed")
+    expect(dialog).toContain("Conservative")
+    expect(dialog).toContain("this account’s new attempt")
+  })
   it("shows slippage and portfolio margin and defaults older rules to strategy margin", () => {
     const custom = { ...account, rules: { ...account.rules, slippage_ticks: 2, margin: "portfolio" as const } }
     const html = render(<RulesView />, custom)

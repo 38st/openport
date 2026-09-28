@@ -212,6 +212,66 @@ TEST(TradingJournalSchema, OptionalExecutionRulesRoundTripAndOlderRulesKeepTheir
   }
 }
 
+TEST(TradingJournalSchema, FillModelsRecoverPendingLatencyAndConsumedImpactDepth) {
+  TemporaryDirectory directory;
+  test::ScriptedMarket f;
+  SessionConfig config;
+  config.rules.fill_latency_ms = 1000;
+  config.rules.impact_ticks = 1;
+  config.rules.slippage_ticks = 1;
+  const auto path = directory.file("fills.jsonl");
+  TradingSession session(config, f.time, FileJournal::create(path));
+  f.seed(session, "4.00", "4.20", 1);
+  ASSERT_TRUE(session.submit(f.market("pending", 3), f.time).decision.ok());
+  auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), session.snapshot_json());
+  EXPECT_EQ(recovered.config().rules.fill_latency_ms, 1000);
+  EXPECT_EQ(recovered.config().rules.impact_ticks, 1);
+  f.next();
+  for (auto* target : {&session, &recovered}) target->on_quotes({f.quote("4.00", "4.20", 1)}, {f.valuation()}, f.time);
+  EXPECT_EQ(recovered.snapshot_json(), session.snapshot_json());
+  EXPECT_EQ(session.snapshot()->recent_fills.back().price, Money::parse("4.50"));
+  auto depth = TradingSession::recover(FileJournal::read(path));
+  for (auto* target : {&session, &depth}) {
+    ASSERT_TRUE(target->submit(f.market("more"), f.time).decision.ok());
+  }
+  // Same observation confirmed later: both recoveries retain negative budgets.
+  f.time += md::kNanosPerSecond;
+  for (auto* target : {&session, &depth}) target->on_quotes({f.quote("4.00", "4.20", 1)}, {f.valuation()}, f.time);
+  EXPECT_EQ(depth.snapshot_json(), session.snapshot_json());
+  EXPECT_EQ(depth.snapshot()->recent_fills.back().price, Money::parse("4.60"));
+}
+
+TEST(TradingJournalSchema, DisabledFillModelsOmitFieldsAndOldRecordsKeepExactBytes) {
+  TemporaryDirectory directory;
+  test::ScriptedMarket f;
+  const auto path = directory.file("off.jsonl");
+  { TradingSession session({}, f.time, FileJournal::create(path)); f.seed(session); session.submit(f.market("old"), f.time); }
+  const auto recovery = FileJournal::read(path);
+  for (const auto& record : recovery.records) {
+    EXPECT_EQ(record.payload.find("fill_latency_ms"), std::string::npos);
+    EXPECT_EQ(record.payload.find("impact_ticks"), std::string::npos);
+  }
+  const auto older = TradingSession::recover(recovery);
+  EXPECT_EQ(older.config().rules.fill_latency_ms, 0);
+  EXPECT_EQ(older.config().rules.impact_ticks, 0);
+  EXPECT_EQ(older.snapshot()->recent_fills.front().price, Money::parse("4.20"));
+  // Read a committed pre-model record as well, without rewriting its hash chain.
+  const auto legacy = TradingSession::recover(FileJournal::read(std::string(OPENPORT_TEST_DATA_DIR) + "/kill-before-reduce-only.jsonl"));
+  EXPECT_EQ(legacy.config().rules.fill_latency_ms, 0);
+  EXPECT_EQ(legacy.config().rules.impact_ticks, 0);
+  for (const auto* key : {"fill_latency_ms", "impact_ticks"}) {
+    for (const auto& value : {Json(-1), Json(60'001), Json(1.5), Json(true), Json(nullptr)}) {
+      expect_corrupt([&] {
+        const auto bad = rewritten(directory, std::string(key) + value.dump() + ".jsonl", path, [&](std::size_t index, Json& payload) {
+          if (index == 0) payload["state"]["config"]["rules"][key] = value;
+        });
+        (void)TradingSession::recover(FileJournal::read(bad));
+      });
+    }
+  }
+}
+
 TEST(TradingJournalSchema, RecordsCarryTheChangeAndStaySmallAsHistoryGrows) {
   TemporaryDirectory directory;
   const auto path = directory.file("account.jsonl");

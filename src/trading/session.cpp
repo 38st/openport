@@ -252,26 +252,86 @@ bool touches(const OrderRequest& r, const std::string& symbol) {
   return r.symbol == symbol || std::any_of(r.legs.begin(), r.legs.end(), [&](const Leg& leg) { return leg.symbol == symbol; });
 }
 Quantity signed_contracts(const Leg& leg, Quantity units) { return leg.side == Side::Buy ? units * leg.ratio : -units * leg.ratio; }
-/// Slippage uses the displayed price's tick tier. Option proceeds cannot be negative.
-Money execution_price(const State& s, const std::string& symbol, Side side, std::optional<Money> limit = {}) {
-  const auto& quote = s.books.at(symbol).quote;
+Quantity depth_used(Quantity size, Quantity left, Quantity offset = 0) {
+  Quantity used = 0;
+  if (__builtin_sub_overflow(size, left, &used) || __builtin_add_overflow(used, offset, &used))
+    throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Simulated depth exceeds quantity range");
+  return used;
+}
+void consume_depth(Quantity& left, Quantity quantity) {
+  if (__builtin_sub_overflow(left, quantity, &left))
+    throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Liquidity budget exceeds quantity range");
+}
+/// Slippage and simulated depth use the displayed price's tick tier. A negative
+/// budget carries depth consumed by earlier orders on this same observation.
+Money execution_price(const State& s, const std::string& symbol, Side side, std::optional<Money> limit = {}, Quantity offset = 0) {
+  const auto& book = s.books.at(symbol);
+  const auto& quote = book.quote;
   const bool buy = side == Side::Buy;
   const auto displayed = buy ? *quote.ask : *quote.bid;
-  const auto slip = tick_size(s.contracts.at(symbol).root, displayed) * s.config.rules.slippage_ticks;
+  const auto size = buy ? quote.ask_size : quote.bid_size;
+  const auto left = buy ? book.ask_left : book.bid_left;
+  const auto blocks = s.config.rules.impact_ticks > 0 ? depth_used(size, left, offset) / size : 0;
+  const auto tick = tick_size(s.contracts.at(symbol).root, displayed);
+  const auto slip = tick * s.config.rules.slippage_ticks + tick * s.config.rules.impact_ticks * blocks;
   const auto price = buy ? displayed + slip : std::max(Money{}, displayed - slip);
-  return limit ? (buy ? std::min(*limit, price) : std::max(*limit, price)) : price;
+  return limit && s.config.rules.impact_ticks == 0 ? (buy ? std::min(*limit, price) : std::max(*limit, price)) : price;
 }
-/// A multi-leg order's net debit per unit with every leg slipped.
-/// Nothing without a valid book on every leg.
+struct ExecutionSlice {
+  std::string symbol;
+  Side side;
+  Quantity quantity;
+  Money price;
+};
+/// Impact combos execute one whole unit at a time. A ratio can span depth tiers;
+/// keep those prices separate so both the ledger and the net stay exact.
+std::vector<ExecutionSlice> combo_slices(const State& s, const OrderRequest& r, Quantity units) {
+  std::vector<ExecutionSlice> slices;
+  for (const auto& leg : r.legs) {
+    if (s.config.rules.impact_ticks == 0) {
+      slices.push_back({leg.symbol, leg.side, units * leg.ratio, execution_price(s, leg.symbol, leg.side)});
+    } else {
+      for (Quantity offset = 0; offset < units * leg.ratio; ++offset) {
+        const auto price = execution_price(s, leg.symbol, leg.side, {}, offset);
+        if (!slices.empty() && slices.back().symbol == leg.symbol && slices.back().price == price) ++slices.back().quantity;
+        else slices.push_back({leg.symbol, leg.side, 1, price});
+      }
+    }
+  }
+  return slices;
+}
+/// A multi-leg order's next executable net debit per unit.
 std::optional<Money> executable_net(const State& s, const OrderRequest& r) {
-  Money net;
   for (const auto& leg : r.legs) {
     const auto book = s.books.find(leg.symbol);
     if (book == s.books.end() || !valid_quote(book->second.quote)) return std::nullopt;
-    const auto price = execution_price(s, leg.symbol, leg.side) * leg.ratio;
-    net = leg.side == Side::Buy ? net + price : net - price;
+  }
+  Money net;
+  for (const auto& leg : r.legs) {
+    if (s.config.rules.impact_ticks == 0) {
+      const auto price = execution_price(s, leg.symbol, leg.side) * leg.ratio;
+      net = leg.side == Side::Buy ? net + price : net - price;
+    } else {
+      for (Quantity offset = 0; offset < leg.ratio; ++offset) {
+        const auto price = execution_price(s, leg.symbol, leg.side, {}, offset);
+        net = leg.side == Side::Buy ? net + price : net - price;
+      }
+    }
   }
   return net;
+}
+/// Quote time, not transaction time alone, must reach the delay. Reconfirmed
+/// snapshots may qualify but do not replenish the shared liquidity budget.
+bool latency_ready(const State& s, const Order& o) {
+  if (s.config.rules.fill_latency_ms == 0) return true;
+  const auto start = std::max(o.accepted_at, o.triggered_at);
+  const auto delay = s.config.rules.fill_latency_ms * (md::kNanosPerSecond / 1000);
+  for (const auto& symbol : order_symbols(o.request)) {
+    const auto& quote = s.books.at(symbol).quote;
+    if (quote.time < start || quote.time - start < delay || !quote_check(s, symbol).ok()) return false;
+    if ((persistent(o) || o.system) && !regular(s.contracts.at(symbol), s.time)) return false;
+  }
+  return true;
 }
 /// Positions for margin by symbol: signed contracts and, for shorts, their
 /// buy-back value.
@@ -1002,12 +1062,16 @@ bool data_gap(Reason code) {
 void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
   // Read here; every write goes through mut() below, after which `o` is not read.
   const auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
-  if (!o.open() || o.status == OrderStatus::Armed) return;
+  if (!o.open() || o.status == OrderStatus::Armed || !latency_ready(s, o)) return;
   if (incoming != id && s.books.at(o.request.symbol).quote.time < o.accepted_at) return;
   // Good-until-expiry exits and triggered orders outlive a session; outside
   // the regular session they wait for the next one.
   if (persistent(o) && !regular(s.contracts.at(o.request.symbol), s.time)) return;
   if (!quote_check(s, o.request.symbol).ok() || !marketable(o, s.books.at(o.request.symbol).quote)) return;
+  if (s.config.rules.impact_ticks > 0 && o.request.limit_price) {
+    const auto candidate = execution_price(s, o.request.symbol, o.request.side);
+    if (o.request.side == Side::Buy ? candidate > *o.request.limit_price : candidate < *o.request.limit_price) return;
+  }
   // System orders and bracket exits only ever reduce a position (exits are kept
   // within it), so they skip the price band and loss projection when executing.
   const bool reducing = o.system || o.role != OrderRole::Normal;
@@ -1024,7 +1088,9 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto& book = s.books.at(symbol);
   if (!marketable(o, book.quote)) return;
   const Money price = execution_price(s, symbol, side, o.request.limit_price);
-  const auto budget = side == Side::Buy ? book.ask_left : book.bid_left;
+  const auto remaining_depth = side == Side::Buy ? book.ask_left : book.bid_left;
+  const auto size = side == Side::Buy ? book.quote.ask_size : book.quote.bid_size;
+  const auto budget = s.config.rules.impact_ticks > 0 ? size - depth_used(size, remaining_depth) % size : remaining_depth;
   const auto position = held(s, o.request.symbol);
   const auto capacity = o.request.side == Side::Sell ? std::max<Quantity>(position, 0) : std::max<Quantity>(-position, 0);
   const Quantity quantity = reducing ? std::min({o.remaining(), budget, capacity}) : std::min(o.remaining(), budget);
@@ -1059,7 +1125,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto quote = book.quote;
   fill_position(s, symbol, side == Side::Buy ? quantity : -quantity, price, fee);
   auto& left = s.books[symbol];
-  (side == Side::Buy ? left.ask_left : left.bid_left) -= quantity;
+  consume_depth(side == Side::Buy ? left.ask_left : left.bid_left, quantity);
   auto& order = s.orders.mut(id - 1);
   order.filled_quantity += quantity;
   order.filled_notional = order.filled_notional + price * quantity;
@@ -1078,7 +1144,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
 void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
   // Read here; every write goes through mut() below, after which `o` is not read.
   const auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
-  if (!o.open() || o.status == OrderStatus::Armed) return;
+  if (!o.open() || o.status == OrderStatus::Armed || !latency_ready(s, o)) return;
   for (const auto& leg : o.request.legs) {
     if (persistent(o) && !regular(s.contracts.at(leg.symbol), s.time)) return;
     if (!quote_check(s, leg.symbol).ok()) return;
@@ -1089,18 +1155,18 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   const bool exit = o.role != OrderRole::Normal;
   auto decision = exit ? system_check(s, o) : order_check(s, o, true);
   if (data_gap(decision.code)) return;
-  Quantity units = o.remaining();
-  for (const auto& leg : o.request.legs) {
+  Quantity units = s.config.rules.impact_ticks > 0 ? 1 : o.remaining();
+  if (s.config.rules.impact_ticks == 0) for (const auto& leg : o.request.legs) {
     const auto& book = s.books.at(leg.symbol);
     units = std::min(units, (leg.side == Side::Buy ? book.ask_left : book.bid_left) / leg.ratio);
   }
   if (decision.ok() && units <= 0) return;
+  const auto slices = combo_slices(s, o.request, units);
   if (decision.ok() && !exit) {
     State projected = s;
-    for (const auto& leg : o.request.legs) {
-      const auto contracts = signed_contracts(leg, units);
-      projected.ledger.fill(s.contracts.at(leg.symbol), contracts, execution_price(s, leg.symbol, leg.side),
-                            s.config.fee_per_contract * magnitude(contracts));
+    for (const auto& slice : slices) {
+      const auto contracts = slice.side == Side::Buy ? slice.quantity : -slice.quantity;
+      projected.ledger.fill(s.contracts.at(slice.symbol), contracts, slice.price, s.config.fee_per_contract * slice.quantity);
     }
     projected.orders.mut(static_cast<std::size_t>(id - 1)).filled_quantity += units;
     if (!closing_only(s, o)) decision = loss_check(projected, measure(projected));
@@ -1125,18 +1191,18 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     const auto position = held(s, leg.symbol);
     return units * leg.ratio > (leg.side == Side::Buy ? std::max<Quantity>(0, -position) : std::max<Quantity>(0, position));
   });
-  for (const auto& leg : request.legs) {
-    const auto context = fill_context(s, leg.symbol, before);
-    const auto quote = s.books.at(leg.symbol).quote;
-    const auto contracts = signed_contracts(leg, units);
+  for (const auto& slice : slices) {
+    const auto context = fill_context(s, slice.symbol, before);
+    const auto quote = s.books.at(slice.symbol).quote;
+    const auto contracts = slice.side == Side::Buy ? slice.quantity : -slice.quantity;
     const auto size = magnitude(contracts);
-    const Money price = execution_price(s, leg.symbol, leg.side);
+    const Money price = slice.price;
     const Money fee = s.config.fee_per_contract * size;
-    annotate_opening(s, request, leg.symbol, contracts, events);
-    fill_position(s, leg.symbol, contracts, price, fee);
-    auto& book = s.books[leg.symbol];
-    (leg.side == Side::Buy ? book.ask_left : book.bid_left) -= size;
-    Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, leg.symbol, leg.side,
+    annotate_opening(s, request, slice.symbol, contracts, events);
+    fill_position(s, slice.symbol, contracts, price, fee);
+    auto& book = s.books[slice.symbol];
+    consume_depth(slice.side == Side::Buy ? book.ask_left : book.bid_left, size);
+    Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, slice.symbol, slice.side,
               size, price, fee, quote.observation, quote.time, s.time, context, actor};
     s.fills.push_back(fill);
     event(events, "fill", fill);
@@ -1148,6 +1214,22 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   on_fill(s, id, events);
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
+}
+/// Sweep successive simulated tiers, retaining the original one-fill path when
+/// impact is off. A delayed IOC gets its one attempt on an eligible quote.
+void match_order(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
+  const auto& initial = s.orders[id - 1];
+  if (!initial.open() || initial.status == OrderStatus::Armed || !latency_ready(s, initial)) return;
+  const bool combo = multi_leg(initial.request);
+  for (;;) {
+    const auto before = s.orders[id - 1].filled_quantity;
+    if (combo) match_combo(s, id, events, incoming); else match_one(s, id, events, incoming);
+    const auto& current = s.orders[id - 1];
+    if (s.config.rules.impact_ticks == 0 || !current.open() || current.filled_quantity == before) break;
+  }
+  const auto& stored = s.orders[id - 1];
+  if (s.config.rules.fill_latency_ms > 0 && stored.open() && stored.request.tif == TimeInForce::Ioc)
+    cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted eligible liquidity"), events);
 }
 void match_symbols(State& s, const std::set<std::string>& symbols, Events& events,
                    std::optional<OrderId> incoming = {}) {
@@ -1165,7 +1247,7 @@ void match_symbols(State& s, const std::set<std::string>& symbols, Events& event
         if (x.request.limit_price == y.request.limit_price) return a < b;
         return side == Side::Buy ? x.request.limit_price > y.request.limit_price : x.request.limit_price < y.request.limit_price;
       });
-      for (auto id : priority) match_one(s, id, events, incoming);
+      for (auto id : priority) match_order(s, id, events, incoming);
     }
   }
   // Multi-leg orders then take the displayed liquidity left, in acceptance order.
@@ -1176,7 +1258,7 @@ void match_symbols(State& s, const std::set<std::string>& symbols, Events& event
         std::any_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& leg) { return symbols.contains(leg.symbol); }))
       combos.push_back(id);
   }
-  for (const auto id : combos) match_combo(s, id, events, incoming);
+  for (const auto id : combos) match_order(s, id, events, incoming);
 }
 /// Keep bracket exits within the position they protect: shrink them when it
 /// shrinks and cancel them once it is closed, so an exit can never open one.
@@ -1308,7 +1390,7 @@ void activate(State& s, OrderId id, Events& events) {
   const auto symbols = order_symbols(s.orders.at(static_cast<std::size_t>(id - 1)).request);
   match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
   const auto& stored = s.orders.at(static_cast<std::size_t>(id - 1));
-  if (stored.open() && stored.request.tif == TimeInForce::Ioc)
+  if (s.config.rules.fill_latency_ms == 0 && stored.open() && stored.request.tif == TimeInForce::Ioc)
     cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
 }
 /// Armed orders activate only in their contract's regular session.
@@ -1336,19 +1418,21 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
     return;
   const auto side = q > 0 ? Side::Sell : Side::Buy;
   const auto& book = s.books.at(symbol);
-  if ((side == Side::Sell ? book.bid_left : book.ask_left) <= 0) return;
+  if (s.config.rules.impact_ticks == 0 && (side == Side::Sell ? book.bid_left : book.ask_left) <= 0) return;
+  for (const auto id : open_ids(s))
+    if (const auto& pending = s.orders[id - 1]; pending.open() && pending.system && pending.request.symbol == symbol) return;
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = {"system:" + std::string(why) + ":" + std::to_string(order.id), symbol, side,
                    OrderType::Market, TimeInForce::Ioc, magnitude(q), {}, {}, {}, {}};
   order.accepted_at = s.time;
-  order.day_end = s.time;  // IOC: never rests past this transaction.
+  order.day_end = s.config.rules.fill_latency_ms > 0 ? session_end(contract->second, s.time) : s.time;
   order.system = true;
   order.actor = "system";
   add_order(s, order);
   event(events, "order_accepted", order);
   match_symbols(s, {symbol}, events, order.id);
-  if (s.orders.at(static_cast<std::size_t>(order.id - 1)).open())
+  if (s.config.rules.fill_latency_ms == 0 && s.orders.at(static_cast<std::size_t>(order.id - 1)).open())
     cancel_order(s.orders.mut(order.id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
 }
 /// Close shares at the underlying's fresh price in the regular session; without
@@ -1636,7 +1720,7 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   // Matching can append bracket exits, so re-read the order by ID afterwards.
   match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
   const auto& accepted = s.orders.at(static_cast<std::size_t>(id - 1));
-  if (accepted.open() && accepted.request.tif == TimeInForce::Ioc)
+  if (s.config.rules.fill_latency_ms == 0 && accepted.open() && accepted.request.tif == TimeInForce::Ioc)
     cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
   return CommandResult{{}, id, 0};
 }
@@ -2141,7 +2225,13 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
   }
   for (const auto& quote : market.quotes) {
     if (!before.contracts.contains(quote.symbol) || quote.time > time || quote.time < 0) continue;
-    before.books[quote.symbol] = {quote, 0, 0};
+    const auto prior = before.books.find(quote.symbol);
+    if (prior != before.books.end() && prior->second.quote.observation == quote.observation) {
+      auto& book = before.books[quote.symbol];
+      book.quote = quote;
+    } else {
+      before.books[quote.symbol] = {quote, valid_quote(quote) ? quote.bid_size : 0, valid_quote(quote) ? quote.ask_size : 0};
+    }
     if (markable_quote(quote)) before.marks[quote.symbol] = {mark_of(quote), quote.time};
   }
   for (const auto& valuation : market.valuations)

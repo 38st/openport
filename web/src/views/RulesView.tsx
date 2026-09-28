@@ -70,7 +70,15 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
     { title: "Fills", body: <>{r.slippage_ticks
       ? <>Slippage is {r.slippage_ticks} {r.slippage_ticks === 1 ? "tick" : "ticks"}: buys pay more than the ask and sells receive less than the bid, never below zero, using the displayed price's tick size. This applies to every leg, bracket exits and automatic closes. </>
       : <>Slippage is 0 ticks: buys fill at the ask and sells at the bid. </>}
-      Fills use up to the displayed size. Single-leg fills stop at your limit; multi-leg orders wait if the slipped net exceeds the net limit.
+      {r.impact_ticks
+        ? <>Simulated impact adds {r.impact_ticks} extra {r.impact_ticks === 1 ? "tick" : "ticks"} for each additional block of the displayed size, shared across orders on that quote. Each combo leg uses its own size. Fills wait if the resulting price or net exceeds your limit. </>
+        : <>Fills use up to the displayed size. Single-leg fills stop at your limit; multi-leg orders wait if the slipped net exceeds the net limit. </>}
+      {r.fill_latency_ms
+        ? <>Latency is {r.fill_latency_ms} ms on market time. Orders wait for the first valid quote at or after that delay; stops start waiting when triggered. IOC orders make one attempt then cancel any remainder. Automatic closes also wait. </>
+        : <>No fill latency. </>}
+      Neither model knows queue position, hidden liquidity, or whether the market would have traded at all.
+      Choose As displayed or Conservative when starting a plan below. Conservative uses 1,000 ms latency, 1 tick of slippage and 1 extra tick per displayed-size block for practice on delayed feeds.
+      {" "}
       Unfilled day orders rest until the session ends. Each contract costs {fee ? formatMoney(fee) : "the configured fee"}.</> },
     { title: "Daily loss limit", body: dailyLoss ? <>Losing more than {formatMoney(dailyLoss)} from the day's starting equity trips the kill switch into reduce-only mode. Opening orders are cancelled; closing orders and exits still work.</> : "Set in Positions → Edit limits." },
     { title: "Exercise and assignment", body: "Equity and ETF options a cent or more in the money at expiry are exercised or assigned into 100 shares a contract, and long ones can be exercised early. A short option that trades below its exercise value at the close, such as a deep put, or a call whose time value is less than a dividend going ex the next day, can be assigned overnight, in part and at random, as real assignments are. Shares are marked at the underlying's price and can be sold or bought back in the regular session. Dividends are paid when the server knows them, from a dividend file or from Massive: on each ex-date, shares held into it receive the dividend and short shares pay it." },

@@ -43,6 +43,8 @@ export interface AccountRules {
   defined_risk?: boolean
   /** Older servers use zero slippage and strategy margin. */
   slippage_ticks?: number
+  fill_latency_ms?: number
+  impact_ticks?: number
   margin?: "strategy" | "portfolio"
   buying_power: boolean
   expiry_cutoff_seconds: number
@@ -302,7 +304,8 @@ export interface Plan {
   unlocked_by: string | null
 }
 export interface PlansResponse { plans: Plan[] }
-export type ResetRequest = { reason: string } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
+export type FillModel = "as_displayed" | "conservative"
+export type ResetRequest = { reason: string; fill_model?: FillModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export type Side = "buy" | "sell"
 /** Option triggers compare the order's executable side; underlying ones compare spot. */
 export interface Trigger { source: "option" | "underlying" | "combo"; direction: "at_or_below" | "at_or_above"; level: Money }
@@ -501,7 +504,7 @@ export interface OrderChange { quantity?: number; limit_price?: Money; trigger_l
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
 export interface AccountListItem { id: string; name: string; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
-export type CreateAccountRequest = { name: string } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
+export type CreateAccountRequest = { name: string; fill_model?: FillModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
 /** Each closing order with its outcome; a rejected one carries its reason. */
 export interface ClosePositionsResponse extends CancelAllResponse { orders: Order[]; fills: Fill[] }

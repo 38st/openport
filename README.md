@@ -29,7 +29,8 @@ terminal. Your API keys, your data and your trades stay on your machine.
 - **Within a few hundredths of a vol point** of Cboe's published IVs: median
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
-  under evaluation rules, with a hash-chained journal that survives restarts.
+  under evaluation rules, with optional latency and simulated size impact, and a
+  hash-chained journal that survives restarts.
 - **825 C++, 489 web and 56 Python tests**, built in CI with GCC 13 on Ubuntu and
   Apple Clang on macOS, warnings as errors.
 
@@ -167,9 +168,15 @@ with generated prices labelled as simulated on every page:
 The engine simulates orders on European cash-settled index options (SPX, XSP, NDX,
 RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single stocks)
 against displayed quotes: market and marketable orders take the far side up to the
-displayed size, with optional per-plan slippage of 0–10 ticks. Single-leg limits cap
+displayed size by default, with optional per-plan slippage of 0–10 ticks. Single-leg limits cap
 the fill price; multi-leg orders wait if the slipped net exceeds their limit.
-Resting limits fill when a later quote crosses them, and every fill
+Rules offers **As displayed** (the existing defaults) or **Conservative** for a new
+account attempt: 1 second of market-time latency, 1 slippage tick and 1 extra tick
+for each additional displayed-size block. Custom rules set latency up to 60 seconds
+and impact up to 10 ticks per block. With impact, limits wait when the full price
+or net exceeds them. This is simulated depth. Neither model knows queue position,
+hidden liquidity, or whether the market would have traded at all; a delayed feed
+still gives hindsight. Resting limits fill when a later quote crosses them, and every fill
 pays a per-contract fee. Positions are marked at the mid, and risk limits on dollar
 delta, vega, order size, price bands and daily loss are checked before and at every
 fill. Every product trades in its regular session (09:30 to 16:15 ET for index
@@ -196,7 +203,7 @@ Custom plans can instead select portfolio margin, as Cboe's and FINRA's rules se
 each underlying holds its largest loss across a price scan (−8% to +6% for index
 products, ±15% for stocks and ETFs), at least $37.50 a contract, and buying power is
 equity less that, so long options and shares count as collateral. Presets use strategy
-margin and no slippage; the
+margin and As displayed fills unless Conservative is selected; the
 [paper-trading guide](docs/paper-trading.md#account-rules-and-evaluations) has the details.
 
 Plans set an account's rules: `practice` (the default: buying power only),
@@ -309,7 +316,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
 | `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
-| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
+| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Rules selects optional fill models for a new attempt. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
 | `--backtest PLAYBOOK[@VERSION]`, `--days FILE`, `--recordings DIR`, `--scenarios N --seed S`, `--out REPORT.json` | Headless batch backtest under `--plan`; choose one day source. `--workers 1..16` defaults to 4; `--playbooks FILE` overrides the saved catalogue. [Inputs and reports](docs/playbooks.md#batch-backtests) |
 | `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
@@ -439,8 +446,8 @@ these routes, so anything it does can be scripted:
 | `PUT /api/days/{YYYY-MM-DD}/note` | The account's plan and review for a day; returned in `/api/trades` as `day_notes` |
 | `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |
 | `PUT /api/risk/limits`, `PUT /api/risk/guardrails`, `POST /api/risk/kill` | Tighten rules now or queue looser values for rollover; set personal guardrails; trip or reset the kill switch |
-| `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt on one |
-| `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one; every route above takes `?account=ID` for one other than the main account |
+| `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt; optional `fill_model` selects `as_displayed` or `conservative` |
+| `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one, with optional `fill_model`; every route above takes `?account=ID` for one other than the main account |
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`; control or stop. `/api/replay/X` mirrors `/api/X` |
 | `PUT /api/replay {"until":"HH:MM[:SS]"}` | Advance through a New York session time (or ISO timestamp), then pause; responds after analytics and trading settle, with `settled_through` |
 | `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, portfolio, trades or fills; delete its journal |
@@ -577,6 +584,7 @@ exists; GitHub tags the commit when you publish the draft.
 - [x] PM settlement on the provider's official close, revisions included
 - [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
+- [x] Optional market-time fill latency and simulated size impact, with As displayed and Conservative presets
 - [x] Optional slippage, and portfolio margin as Cboe's and FINRA's rules set it
 - [x] Known cash dividends in the American exercise model
 - [x] IWM and DIA by default, with stocks and ETFs marked at their regular close

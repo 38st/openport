@@ -34,7 +34,7 @@ json payout_rules_json(const PayoutRules& p) {
 }
 json rules_json(const AccountRules& r) {
   const bool funded = r.phase == Phase::Funded;
-  return {{"plan", nullable(r.plan)}, {"phase", funded ? "funded" : "evaluation"},
+  json result = {{"plan", nullable(r.plan)}, {"phase", funded ? "funded" : "evaluation"},
           {"profit_target", positive(r.profit_target)}, {"max_drawdown", positive(r.max_drawdown)},
           {"drawdown_mode", r.drawdown_mode == DrawdownMode::Intraday ? "intraday" : "end_of_day"},
           {"lock_balance", positive(r.lock_balance)},
@@ -42,6 +42,9 @@ json rules_json(const AccountRules& r) {
           {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin == MarginMode::Portfolio ? "portfolio" : "strategy"},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
+  if (r.fill_latency_ms != 0) result["fill_latency_ms"] = r.fill_latency_ms;
+  if (r.impact_ticks != 0) result["impact_ticks"] = r.impact_ticks;
+  return result;
 }
 json decision_json(const Decision& d) {
   if (d.ok()) return nullptr;
@@ -737,7 +740,7 @@ PayoutRules parse_payout_rules(const json& j) {
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
-         {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin"});
+         {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks"});
   AccountRules rules;
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
@@ -759,6 +762,8 @@ AccountRules parse_rules(const json& j) {
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");
+  if (j.contains("fill_latency_ms")) rules.fill_latency_ms = integer_field(j, "fill_latency_ms");
+  if (j.contains("impact_ticks")) rules.impact_ticks = integer_field(j, "impact_ticks");
   if (j.contains("margin")) {
     const auto margin = string_field(j, "margin");
     if (margin != "strategy" && margin != "portfolio") throw std::invalid_argument("margin must be strategy or portfolio");
@@ -770,6 +775,16 @@ AccountRules parse_rules(const json& j) {
   rules.expiry_cutoff = cutoff * md::kNanosPerSecond;
   validate_rules(rules);
   return rules;
+}
+/// Presets override only execution settings; all evaluation rules stay intact.
+void fill_model(const json& body, AccountRules& rules) {
+  if (!body.contains("fill_model")) return;
+  const auto model = string_field(body, "fill_model");
+  if (model != "as_displayed" && model != "conservative")
+    throw std::invalid_argument("fill_model must be as_displayed or conservative");
+  rules.fill_latency_ms = model == "conservative" ? 1000 : 0;
+  rules.impact_ticks = model == "conservative" ? 1 : 0;
+  rules.slippage_ticks = model == "conservative" ? 1 : 0;
 }
 json strict_json(const std::string& body) {
   // JSON parsers normally keep the last duplicate key; that is ambiguous for orders.
@@ -880,7 +895,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (path == "/api/accounts") {
     // A name, and either a preset plan or a starting balance and complete rules.
-    fields(body, {"name"}, {"plan", "initial_cash", "rules"});
+    fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model"});
     command.kind = TradingCommand::Kind::CreateAccount;
     command.name = string_field(body, "name");
     if (command.name.empty() || command.name.size() > 64 ||
@@ -903,6 +918,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       if (command.rules.phase == Phase::Funded)
         throw std::invalid_argument("A funded account starts from an account that passed its evaluation");
     }
+    fill_model(body, command.rules);
     return command;
   }
   if (path == "/api/orders" || path == "/api/orders/preview") {
@@ -991,7 +1007,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     command.reason = string_field(body, "reason");
   } else if (path == "/api/account/reset") {
     // Either a preset ID, or a custom starting balance and complete rules.
-    fields(body, {"reason"}, {"plan", "initial_cash", "rules"});
+    fields(body, {"reason"}, {"plan", "initial_cash", "rules", "fill_model"});
     command.kind = TradingCommand::Kind::ResetAccount;
     command.reason = string_field(body, "reason");
     if (body.contains("plan")) {
@@ -1009,6 +1025,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       if (command.initial_cash <= Money{}) throw std::invalid_argument("initial_cash must be positive");
       command.rules = parse_rules(body.at("rules"));
     }
+    fill_model(body, command.rules);
   } else if (path == "/api/account/payout") {
     fields(body, {"amount"});
     command.kind = TradingCommand::Kind::Payout;

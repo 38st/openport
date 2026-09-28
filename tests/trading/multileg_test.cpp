@@ -818,5 +818,120 @@ TEST(TradingMultiLeg, AClosingConditionalComboCanReduceABuyOnlyAccount) {
   EXPECT_TRUE(s.snapshot()->positions.empty());
 }
 
+
+TEST(TradingMultiLeg, ImpactFillsEachLegInRatioAcrossSizeTiers) {
+  Chain f;
+  auto settings = config();
+  settings.rules.impact_ticks = 1;
+  TradingSession s(settings, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 2);
+  const auto legs = std::vector<Leg>{leg(P4900, Side::Buy, 3), leg(P4890, Side::Sell)};
+  ASSERT_TRUE(s.submit(combo("ratio", legs, 2, "11.80"), f.time).decision.ok());
+  const auto first = s.snapshot();
+  EXPECT_EQ(first->recent_orders.back().filled_quantity, 1);
+  EXPECT_EQ(first->recent_orders.back().remaining(), 1);
+  ASSERT_EQ(first->recent_fills.size(), 3U);
+  EXPECT_EQ(first->recent_fills[0].quantity, 2);
+  EXPECT_EQ(first->recent_fills[0].price, m("5.20"));
+  EXPECT_EQ(first->recent_fills[1].quantity, 1);
+  EXPECT_EQ(first->recent_fills[1].price, m("5.30"));
+  EXPECT_EQ(first->recent_fills[2].price, m("4.00"));
+  EXPECT_EQ(first->recent_orders.back().filled_notional, m("11.70"));
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 2);
+  EXPECT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_orders.back().filled_notional, m("23.40"));
+  EXPECT_EQ(s.snapshot()->account.fees, m("5.20"));
+}
+
+TEST(TradingMultiLeg, ConservativeFillsWaitForEveryLegThenSweepAdverseBlocks) {
+  for (const bool credit : {false, true}) {
+    Chain f;
+    auto settings = config();
+    settings.rules.fill_latency_ms = 1000;
+    settings.rules.impact_ticks = 1;
+    settings.rules.slippage_ticks = 1;
+    TradingSession s(settings, f.time);
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 2);
+    const auto legs = credit ? std::vector<Leg>{leg(P4900, Side::Sell), leg(P4890, Side::Buy)}
+                             : std::vector<Leg>{leg(P4900, Side::Buy), leg(P4890, Side::Sell)};
+    ASSERT_TRUE(s.submit(combo("pending", legs, 3, {}), f.time).decision.ok());
+    EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}}, 2);
+    EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+    f.quote(s, {{P4890, "4.00", "4.20", -0.28}}, 2);
+    const auto snapshot = s.snapshot();
+    ASSERT_EQ(snapshot->recent_fills.size(), 6U);
+    EXPECT_EQ(snapshot->recent_orders.back().filled_quantity, 3);
+    EXPECT_EQ(snapshot->recent_orders.back().filled_notional, m(credit ? "-1.60" : "4.40"));
+    EXPECT_EQ(snapshot->recent_fills[4].price, m(credit ? "4.80" : "5.40"));
+    EXPECT_EQ(snapshot->recent_fills[5].price, m(credit ? "4.40" : "3.80"));
+    EXPECT_EQ(snapshot->account.fees, m("3.90"));
+  }
+}
+
+TEST(TradingMultiLeg, DelayedIocKeepsPartialRatioAndCancelsRemainder) {
+  Chain f;
+  auto settings = config();
+  settings.rules.fill_latency_ms = 1000;
+  TradingSession s(settings, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(combo("partial", {leg(P4900, Side::Buy, 2), leg(P4890, Side::Sell)}, 3, {}), f.time).decision.ok());
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 3);
+  const auto snapshot = s.snapshot();
+  EXPECT_EQ(snapshot->recent_orders.back().filled_quantity, 1);
+  EXPECT_EQ(snapshot->recent_orders.back().remaining(), 2);
+  EXPECT_EQ(snapshot->recent_orders.back().reason.code, Reason::IOC_REMAINDER);
+  ASSERT_EQ(snapshot->recent_fills.size(), 2U);
+  EXPECT_EQ(snapshot->recent_fills[0].quantity, 2);
+  EXPECT_EQ(snapshot->recent_fills[1].quantity, 1);
+}
+
+TEST(TradingMultiLeg, PendingLatencyRespectsCancellationAndEarliestLegExpiry) {
+  for (const bool cancel : {false, true}) {
+    Chain f;
+    f.time = md::new_york_to_utc({2026, 10, 22}, 15, 59, 57);
+    auto settings = config();
+    settings.rules.fill_latency_ms = 3000;
+    TradingSession s(settings, f.time);
+    f.define(s, {P4900, LATER});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {LATER, "4.00", "4.20", -0.28}});
+    ASSERT_TRUE(s.submit(combo("pending", {leg(P4900, Side::Buy), leg(LATER, Side::Sell)}, 1, "1.20", TimeInForce::Gtc), f.time).decision.ok());
+    if (cancel) s.cancel(1, f.time);
+    f.time += md::kNanosPerSecond;
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {LATER, "4.00", "4.20", -0.28}});
+    EXPECT_TRUE(s.snapshot()->recent_fills.empty());
+    EXPECT_EQ(s.snapshot()->recent_orders.back().reason.code, cancel ? Reason::USER_CANCEL : Reason::EXPIRED);
+  }
+}
+
+TEST(TradingMultiLeg, LatencyStopWaitsFromTriggerAndOcoCancelsRemainingEntry) {
+  Chain f;
+  auto settings = config();
+  settings.rules.fill_latency_ms = 1000;
+  TradingSession s(settings, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  auto request = combo("entry", {leg(P4900, Side::Buy), leg(P4890, Side::Sell)}, 3, "1.20");
+  request.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("-0.50")}, {}},
+                            ExitSpec{{}, m("-2.00")}};
+  ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+  EXPECT_EQ(s.snapshot()->recent_orders[0].filled_quantity, 1);
+  f.quote(s, {{P4900, "4.50", "4.70", -0.30}, {P4890, "4.10", "4.30", -0.28}}, 0);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Armed);
+  // Keep entry unmarketable while the closing net reaches the stop.
+  f.quote(s, {{P4900, "4.50", "6.00", -0.30}, {P4890, "4.10", "4.30", -0.28}}, 1);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Working);
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 2U);
+  f.quote(s, {{P4900, "4.40", "6.00", -0.30}, {P4890, "4.10", "4.40", -0.28}}, 1);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders[0].reason.code, Reason::OCO_FILLED);
+  EXPECT_EQ(s.snapshot()->recent_orders[2].reason.code, Reason::OCO_FILLED);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Filled);
+}
+
 }  // namespace
 }  // namespace openport::trading

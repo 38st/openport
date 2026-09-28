@@ -10,6 +10,7 @@ import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderResult, OrderTicket } from "../components/OrderTicket"
+import { LiquidityWarning } from "../components/LiquidityWarning"
 import { PersonalRules } from "../components/PersonalRules"
 import { ScenarioGrid } from "../components/ScenarioGrid"
 import { Sidebar } from "../components/Sidebar"
@@ -62,6 +63,24 @@ describe("paper trading fixtures", () => {
       expect(html).not.toContain("Buying power effect")
       expect(html).not.toContain("the server will reject it")
       if (optional.slippage_ticks) expect(html).toContain("the server preview includes it")
+    }
+  })
+  it("keeps market size labels factual for optional fill models", () => {
+    const legs = [{ label: "Call", quote, side: "buy" as const, quantity: 20 }]
+    const modeled = render(<LiquidityWarning market modeled legs={legs} />)
+    expect(modeled).toContain("inputs to the account’s simulated latency and impact model")
+    expect(modeled).not.toContain("displayed quote and size only")
+    expect(render(<LiquidityWarning market legs={legs} />)).toContain("displayed quote and size only")
+  })
+  it("labels ticket prices as estimates when latency or simulated impact is enabled", () => {
+    for (const optional of [{ fill_latency_ms: 1000 }, { impact_ticks: 1 }]) {
+      const html = render(<OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />, (client) => {
+        client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
+          { ...account, rules: { ...account.rules, ...optional } })
+      })
+      expect(html).toContain("Simulated fills use the account’s latency and size impact")
+      expect(html).toContain("cannot predict the later quote")
+      expect(html).not.toContain("Marketable: fills now")
     }
   })
   it("renders a labelled buy ticket with quotes, sizes, exact premium and its own Greeks", () => {

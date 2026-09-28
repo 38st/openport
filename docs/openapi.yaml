@@ -7068,6 +7068,20 @@
           "defined_risk": {
             "type": "boolean"
           },
+          "fill_latency_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 60000,
+            "default": 0,
+            "description": "Wait for a valid quote at or after acceptance (trigger time for stops) plus this market-time delay."
+          },
+          "impact_ticks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 0,
+            "description": "Simulated adverse ticks per extra displayed-size block; zero retains displayed-size caps."
+          },
           "slippage_ticks": {
             "type": "number"
           },
@@ -8655,6 +8669,11 @@
           {
             "type": "object",
             "properties": {
+              "fill_model": {
+                "type": "string",
+                "enum": ["as_displayed", "conservative"],
+                "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
+              },
               "reason": {
                 "type": "string"
               }
@@ -10211,6 +10230,11 @@
           {
             "type": "object",
             "properties": {
+              "fill_model": {
+                "type": "string",
+                "enum": ["as_displayed", "conservative"],
+                "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
+              },
               "name": {
                 "type": "string"
               }
