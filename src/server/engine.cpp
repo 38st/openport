@@ -1,6 +1,7 @@
 #include "openport/server/engine.hpp"
 #include "openport/server/run.hpp"
 #include "openport/providers/demo_feed.hpp"
+#include "openport/providers/demo.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -19,6 +20,8 @@ Engine::Options driver_options(md::Provider& provider, Engine::Options options) 
   if (auto* demo = dynamic_cast<providers::DemoProvider*>(&provider))
     options.clock = [demo] { return demo->time(); };
   if (options.replay || provider.name().starts_with("replay") || provider.name() == "demo") options.series.reset();
+  if (options.replay || provider.name().starts_with("replay") || providers::simulated_provider(provider.name()))
+    options.notifications.reset();
   return options;
 }
 }  // namespace
@@ -45,6 +48,9 @@ Engine::Engine(md::Provider& provider, md::Subscription subscription, Options op
   for (const auto& symbol : subscription_.underlyings) status_.underlyings.try_emplace(symbol);
   status_.circuit_breaker = desk_.breaker();
   health_ = status_.underlyings;
+  if (options_.notifications) desk_.set_publication_sink([this](std::string_view account, const TradingView& view) {
+    options_.notifications->observe(account, view);
+  });
 }
 
 void Engine::set_dividends(std::vector<trading::Dividend> dividends) {
@@ -372,6 +378,19 @@ void Engine::run() {
       desk_.apply_command(command, desk_.market_time(), options_.clock());
     }
     publish_desk();
+    if (options_.notifications && !stopping_) {
+      const auto stale_after = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::max(3 * provider_.capabilities().poll_interval, std::chrono::seconds(60))).count();
+      for (const auto& [symbol, health] : health_) {
+        const auto since = health.last_success > 0 ? health.last_success : status_.started;
+        const bool stalled = health.state == md::FeedState::Stale || health.state == md::FeedState::Stopped ||
+            (since > 0 && received - since > stale_after);
+        if (stalled && stalled_.insert(symbol).second)
+          options_.notifications->publish({"feed_stalled", "", desk_.market_time(),
+              symbol + ": feed stalled; check the terminal's feed status.", {{"underlying", symbol}}});
+        if (!stalled) stalled_.erase(symbol);
+      }
+    }
     for (auto& done : synchronized) done.set_value();
   }
   std::deque<PendingCommand> remaining;

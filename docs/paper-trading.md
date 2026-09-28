@@ -1415,8 +1415,8 @@ are cleared on account, source or date changes. Missing note reads cannot be ove
 with an empty note. Read-only runs keep the note visible with saving disabled.
 
 The Journal page edits each trade's note and tags (a strategy's apply to each of its
-legs), filters every panel by tag and reports P&L by tag. Alerts belong to the web
-terminal alone: price alerts on an underlying and alerts on each new fill are kept in
+legs), filters every panel by tag and reports P&L by tag. Browser alert settings
+for price levels on an underlying and each new fill are kept in
 the browser's local storage and run while the terminal is open, on the live feed only
 (not a replay). They show on the page and, where the browser allows notifications, as
 system notifications, with an optional chime. A price alert fires once, when the
@@ -1426,6 +1426,21 @@ daily loss at 50%, 75% and 90% of its limit; a guardrail latch; pending rules ta
 effect; and a target within 10%. Each fires once per account and trading
 day, including after a page reload. Claims are stored in localStorage with an
 in-memory fallback when browser storage is denied.
+
+External notifications run on the server while the browser is closed. Live account
+publications supply new fills, rejected orders, kill and daily-loss trips, assignments,
+exercises and staged playbooks. The engine also detects stalled feeds without an API
+reader. Each channel can warn when `breach.room` is at or below its dollar distance;
+missing room or incomplete account valuation supplies no price estimate. Channels
+rearm when room moves above the distance. Recovered fills and deliveries are history
+and are not sent again. Replays, drills, scenarios and backtests cannot send.
+
+The observer and delivery queue do not change reducer inputs or journal records.
+Messages label trading as paper/simulated and use the event's market time. Delivery
+timing uses a separate clock. The Notifications section in Alerts settings shows
+channels, editable filters and a test button; destinations and credentials stay on
+the server. See [external notifications](runtime.md#external-notifications) for setup,
+delivery guarantees and limits.
 
 The web ticket estimates fees using `fee_per_contract`; only older servers without
 it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,

@@ -24,6 +24,7 @@
 #include "openport/server/series.hpp"
 #include "openport/analytics/volatility.hpp"
 #include "openport/server/desk.hpp"
+#include "openport/server/notifications.hpp"
 #include "openport/providers/replay.hpp"
 #include "openport/trading/dividends.hpp"
 
@@ -70,6 +71,7 @@ class MetricsSource {
   [[nodiscard]] virtual std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
       const std::string& symbol) const = 0;
   [[nodiscard]] virtual EngineStatus status() const = 0;
+  [[nodiscard]] virtual Notifications* notifications() const { return nullptr; }
   [[nodiscard]] virtual md::Timestamp wall_time() const { return md::now(); }
   /// The main account's publication.
   [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view() const { return {}; }
@@ -94,6 +96,7 @@ class MetricsSource {
 class Engine final : public MetricsSource {
  public:
   struct Options : Desk::Options {
+    std::shared_ptr<Notifications> notifications;
     std::chrono::milliseconds analytics_interval{1000};
     std::size_t command_capacity = 256;
     std::filesystem::path record_file;
@@ -130,6 +133,7 @@ class Engine final : public MetricsSource {
   [[nodiscard]] std::shared_ptr<const analytics::UnderlyingMetrics> metrics(
       const std::string& symbol) const override;
   [[nodiscard]] EngineStatus status() const override;
+  [[nodiscard]] Notifications* notifications() const override { return options_.notifications.get(); }
   [[nodiscard]] md::Timestamp wall_time() const override { return options_.clock(); }
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view() const override;
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view(std::string_view account) const override;
@@ -185,6 +189,7 @@ class Engine final : public MetricsSource {
 
   // Engine thread only: quote receipt never locks the reader-facing status mutex.
   std::map<std::string, UnderlyingHealth> health_;
+  std::set<std::string> stalled_;
   md::Timestamp feed_updated_ = 0;
   bool health_dirty_ = false;
   bool health_changed_ = false;

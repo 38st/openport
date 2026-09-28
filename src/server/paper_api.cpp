@@ -1197,6 +1197,22 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
 
 void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete) {
   if (request.method == "GET") { complete(handle_api(request, source)); return; }
+  if (request.target.starts_with("/api/notifications/")) {
+    if (!source.notifications()) { complete(api_error(503, "NOTIFICATIONS_UNAVAILABLE", "Notifications are unavailable on this source")); return; }
+    try {
+      const auto body = json::parse(request.body);
+      if (request.method == "POST" && request.target == "/api/notifications/test") {
+        if (!body.is_object() || body.size() != 1 || !body.at("channel").is_string()) throw std::invalid_argument("request");
+        const int status = source.notifications()->test(body.at("channel").get<std::string>());
+        if (status == 202) complete({202, json{{"queued", true}}.dump()});
+        else complete(api_error(status, "NOTIFICATION_TEST_FAILED", "Channel is unknown, disabled, stopped or its queue is full"));
+      } else if (request.method == "PUT" && request.target.starts_with("/api/notifications/channels/") && request.target.find('?') == std::string::npos) {
+        if (!source.notifications()->configure(request.target.substr(28), body)) complete(api_error(404, "NOT_FOUND", "Unknown notification channel"));
+        else complete({200, source.notifications()->status().dump()});
+      } else complete(api_error(404, "NOT_FOUND", "Unknown notification endpoint or method"));
+    } catch (...) { complete(api_error(400, "INVALID_REQUEST", "Invalid notification settings or test request")); }
+    return;
+  }
   if (playbook_write(request, source, complete)) return;
   // Writes take one query parameter, account=ID; the route is the path alone.
   const auto question = request.target.find('?');

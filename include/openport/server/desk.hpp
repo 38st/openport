@@ -56,6 +56,9 @@ class Desk {
   /// Owner-thread durability barrier. A failed sync disables that account.
   void flush_journals();
   void set_dividends(std::vector<trading::Dividend> dividends);
+  void set_publication_sink(std::function<void(std::string_view, const TradingView&)> sink) {
+    publication_sink_ = std::move(sink);
+  }
   void observe(const md::Event& event);
   bool refresh_analytics();
   void apply_analytics(std::shared_ptr<const analytics::UnderlyingMetrics> result, md::Timestamp time);
@@ -78,6 +81,7 @@ class Desk {
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view(std::string_view account = {}) const;
 
  private:
+  std::function<void(std::string_view, const TradingView&)> publication_sink_;
   /// One paper account: a reducer and its journal. Single-owner state.
   struct PaperAccount {
     std::string id;

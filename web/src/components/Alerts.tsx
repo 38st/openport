@@ -7,6 +7,7 @@ import { ruleAlerts, ruleAlertStore } from "../lib/rule-alerts"
 import { isNum } from "../lib/format"
 import { notificationPermission, notify, requestNotifications, toasts, useToasts } from "../lib/notify"
 import { Dialog } from "./Dialog"
+import { NotificationSettings } from "./NotificationSettings"
 
 const setAt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
 
@@ -136,7 +137,7 @@ export function AlertsDialog({ initial, onClose }: { initial?: { symbol: string;
       </ul> : <p className="text-sm text-muted">No price alerts.</p>}
     </section>
     <section className="space-y-2">
-      <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Notifications</h3>
+      <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Browser notifications</h3>
       <label className="flex items-center justify-between gap-2 text-sm">Notify on each fill
         <input type="checkbox" role="switch" aria-label="Fill alerts" checked={settings.fills} className="h-4 w-4 accent-[var(--accent)]"
           onChange={(e) => alertStore.set({ ...settings, fills: e.target.checked })} /></label>
@@ -150,6 +151,7 @@ export function AlertsDialog({ initial, onClose }: { initial?: { symbol: string;
             onClick={() => void requestNotifications().then(setPermission)}>Allow browser notifications</button> to see them in other tabs too.</>}</p>
       <p className="text-[11px] text-faint">Alerts are kept in this browser and run while openport is open, on the feed's prices{delay ? `, which arrive ${Math.round(delay / 60)} minutes late` : ""}. A price alert fires once, then clears.</p>
     </section>
+    <NotificationSettings />
   </Dialog>
 }
 

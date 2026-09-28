@@ -69,6 +69,10 @@ flowchart LR
 - **API clients** use the checked OpenAPI contract. The Python client and MCP
   server call the same routes as the terminal. HTTP scope checks run before
   enqueueing; the authenticated actor travels with each command into the journal.
+- **External notifications** observe live account publications and feed health.
+  A bounded queue hands selected events to one HTTP worker; retries and rate limits
+  use its own clock. Replay engines never attach the observer. No notification
+  configuration, credentials or delivery state enters the trading journal.
 - **Commands** from the terminal (orders, cancels, resets) are queued and applied on
   the engine thread, between market batches, so each account sees one ordered stream
   of market data and commands.
@@ -248,9 +252,9 @@ changes; it has no orders or journal writes.
 
 ## Tests
 
-825 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+905 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
-recovery and tampering, the calendar and the HTTP API; 489 Vitest cases cover the
+recovery and tampering, the calendar and the HTTP API; 556 Vitest cases cover the
 terminal, and 56 pytest cases the Python client and MCP server. CI builds with GCC 13
 on Ubuntu and Apple Clang on macOS, both with warnings as errors, smoke-tests the
 Docker image and validates its responses against the OpenAPI contract.

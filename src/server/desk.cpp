@@ -555,6 +555,10 @@ void Desk::publish_trading() {
       }
     }
     statuses.push_back({account.id, account.name, std::move(status)});
+    if (view && publication_sink_) {
+      // Delivery observers cannot invalidate an already committed transaction.
+      try { publication_sink_(account.id, *view); } catch (...) {}
+    }
     if (view) views.emplace(account.id, std::move(view));
   }
   trading_views_ = std::move(views);

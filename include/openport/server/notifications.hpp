@@ -1,0 +1,114 @@
+#pragma once
+
+#include <atomic>
+#include <condition_variable>
+#include <cstdio>
+#include <deque>
+#include <filesystem>
+#include <functional>
+#include <map>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <set>
+#include <thread>
+
+#include "openport/net/http.hpp"
+#include "openport/server/paper.hpp"
+
+namespace openport::server {
+
+struct NotificationChannel {
+  std::string id;
+  std::string type;
+  std::string url;
+  std::string token;
+  std::string chat_id;
+  bool enabled = true;
+  std::set<std::string> events;
+  trading::Money floor_distance = trading::Money::from_micros(500'000'000);
+};
+struct NotificationConfig {
+  std::size_t capacity = 256;
+  std::vector<NotificationChannel> channels;
+};
+/// Parsing and file errors deliberately omit input, paths and JSON diagnostics.
+[[nodiscard]] NotificationConfig parse_notification_config(std::string_view text);
+[[nodiscard]] NotificationConfig load_notification_config(const std::filesystem::path& file,
+    const std::function<std::string(const char*)>& environment);
+
+struct NotificationEvent {
+  std::string kind;
+  std::string account;
+  md::Timestamp time = 0;
+  std::string message;
+  nlohmann::json details = nlohmann::json::object();
+};
+
+/// One bounded, memory-only delivery queue. No network or logging on producers.
+/// Account observation is single-owner; publish, settings and status are thread-safe.
+class Notifications {
+ public:
+  struct Options {
+    std::function<std::chrono::steady_clock::time_point()> clock = std::chrono::steady_clock::now;
+    std::function<md::Timestamp()> wall_clock = md::now;
+    std::function<void(std::uint64_t)> warn = [](std::uint64_t dropped) {
+      std::fprintf(stderr, "notifications: dropped %llu deliveries (queue full or shutdown)\n",
+                   static_cast<unsigned long long>(dropped));
+    };
+    bool worker = true;  ///< False allows deterministic pumping with deliver_one in tests.
+  };
+  Notifications(NotificationConfig config, std::unique_ptr<net::HttpClient> http, Options options);
+  ~Notifications();
+  Notifications(const Notifications&) = delete;
+  Notifications& operator=(const Notifications&) = delete;
+  void stop();
+  void publish(const NotificationEvent& event);
+  void observe(std::string_view account, const TradingView& view);
+  /// 202 queued, 404 unknown channel, 409 disabled, 429 full, 503 stopped.
+  int test(std::string_view channel);
+  /// Only nonsecret settings can be changed; invalid input throws a redacted error.
+  bool configure(std::string_view channel, const nlohmann::json& settings);
+  [[nodiscard]] nlohmann::json status() const;
+  /// Runs at most one due request, outside the queue mutex. Only the worker calls
+  /// this in production; tests call it with Options::worker=false.
+  bool deliver_one();
+
+ private:
+  using Time = std::chrono::steady_clock::time_point;
+  struct Channel {
+    NotificationChannel config;
+    Time next{};
+    std::uint64_t delivered = 0, failures = 0, dropped = 0;
+    md::Timestamp last_attempt = 0, last_delivery = 0;
+    std::string last_error;
+    std::map<std::string, bool> near_floor;
+  };
+  struct Pending {
+    std::size_t channel;
+    NotificationEvent event;
+    int attempts = 0;
+    Time due{};
+  };
+  struct Seen {
+    std::shared_ptr<const trading::TradingSnapshot> snapshot;
+    std::string playbooks;
+    std::set<std::string> stages;
+  };
+  bool enqueue(std::size_t channel, const NotificationEvent& event);
+  void run();
+  std::size_t capacity_;
+  std::unique_ptr<net::HttpClient> http_;
+  Options options_;
+  mutable std::mutex mutex_;
+  std::condition_variable wake_;
+  std::vector<Channel> channels_;
+  std::deque<Pending> queue_;
+  std::size_t in_flight_ = 0;
+  std::uint64_t dropped_ = 0, warned_ = 0;
+  std::map<std::string, Time> limits_;
+  std::atomic<bool> stopping_{false};
+  std::thread thread_;
+  std::map<std::string, Seen> seen_;  // engine thread only
+};
+
+}  // namespace openport::server

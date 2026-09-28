@@ -40,6 +40,7 @@
 #include "openport/providers/factory.hpp"
 #include "openport/providers/history.hpp"
 #include "openport/providers/massive.hpp"
+#include "openport/providers/demo.hpp"
 #include "openport/providers/options.hpp"
 #include "openport/server/api.hpp"
 #include "openport/server/backtest.hpp"
@@ -88,6 +89,7 @@ struct Settings {
   std::optional<trading::Money> paper_cash;
   std::string write_token;
   std::filesystem::path write_token_file;
+  std::filesystem::path notify_config;
   std::vector<server::NamedToken> tokens;
   bool require_token = false;
   int threads = 2;
@@ -104,6 +106,7 @@ int usage(const char* error = nullptr) {
       "                 [--scenario-dir DIR] [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--allowed-host NAME]... [--token-file FILE] [--require-token]\n"
+      "                 [--notify-config FILE]\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
@@ -384,6 +387,9 @@ int run(int argc, char** argv) {
     } else if (arg == "--write-token") {
       if (value.empty()) return usage("--write-token requires a nonempty token");
       settings.write_token = value;
+    } else if (arg == "--notify-config") {
+      if (value.empty()) return usage("--notify-config requires a nonempty path");
+      settings.notify_config = value;
     } else if (arg == "--token-file") {
       std::ifstream input(value);
       if (!input) return usage("Cannot read token file");
@@ -524,6 +530,13 @@ int run(int argc, char** argv) {
     std::fprintf(stderr, "openportd: %s\n", error.c_str());
 
   server::Engine::Options engine_options;
+  const auto notification_config = server::load_notification_config(settings.notify_config, [](const char* name) {
+    const auto* value = std::getenv(name);
+    return value ? std::string(value) : std::string{};
+  });
+  if (!offline && !providers::simulated_provider(settings.provider.name) && !notification_config.channels.empty())
+    engine_options.notifications = std::make_shared<server::Notifications>(notification_config,
+        std::make_unique<net::HttpClient>(), server::Notifications::Options{});
   engine_options.candles = candles;
   if (settings.series && !offline)
     engine_options.series = std::make_shared<server::SeriesStore>(series_directory);

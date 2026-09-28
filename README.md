@@ -12,7 +12,8 @@ that trade those chains under prop-firm evaluation rules, with multi-leg strateg
 chart of the underlying and replays of recorded days.
 
 One C++20 binary runs the feed, the analytics engine, the simulator and the web
-terminal. Your API keys, your data and your trades stay on your machine.
+terminal. Your data and trades stay on your machine unless you enable external
+notifications, which send the selected paper trading events to your channels.
 
 ![The Trade page: SPX five-minute candles and the option chain on Cboe's delayed data](docs/screenshots/trade-dark.png)
 
@@ -31,7 +32,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with optional latency and simulated size impact, and a
   hash-chained journal that survives restarts.
-- **825 C++, 489 web and 56 Python tests**, built in CI with GCC 13 on Ubuntu and
+- **905 C++, 556 web and 56 Python tests**, built in CI with GCC 13 on Ubuntu and
   Apple Clang on macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -151,6 +152,10 @@ with generated prices labelled as simulated on every page:
   assignments, exercises at expiry and dividends are always announced. Floor room,
   daily loss, guardrails, pending limits and a nearby profit target also raise alerts,
   once per threshold per account and trading day.
+- **External notifications**: send fills, rejected orders, floor warnings, rule trips,
+  assignments, exercises, ready playbooks and stalled feeds to Discord, Telegram,
+  ntfy or a webhook. Each channel has filters and a test button in Alerts settings.
+  Delivery runs separately from trading; replays and drills never send.
 
 ### Operations
 
@@ -375,6 +380,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--rate R` | The rate assumed when no index curve is available |
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
+| `--notify-config FILE` | Owner-only JSON file for notification channels and filters; alternatively `OPENPORT_NOTIFY_JSON` or channel environment variables ([setup](docs/runtime.md#external-notifications)) |
 | `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account (demo defaults to `~/.openport/demo/paper-journal.jsonl`); plan, cash and fee seed a new journal only. Rules selects optional fill models for a new attempt. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
@@ -485,7 +491,9 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 
 | Route | Returns |
 | --- | --- |
-| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health (including the demo day title), engine counters |
+| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health (including the demo day title), engine counters and notification delivery status (no secrets) |
+| `POST /api/notifications/test` | Queue a test for `{ "channel": "ID" }`; requires admin |
+| `PUT /api/notifications/channels/ID` | Change a channel's enabled state, event filters and floor distance for this process; requires admin |
 | `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX, coverage and `last_trade` / `auto_close` UTC ISO times |
 | `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks, early-exercise premium and `volume` (session contracts or null); coverage includes `volume` |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
@@ -627,6 +635,7 @@ tests parsing with fixture checksums. Users update with
 
 - [x] Headless playbook batch backtests, independent days and carried-account evaluation attempts, API and terminal reports
 - [x] Homebrew formula, Docker Compose and opt-in browser update notices
+- [x] External notifications through Discord, Telegram, ntfy and generic webhooks
 - [x] Versioned playbooks, staged orders, replay auto mode, adherence and historical pass-odds estimates
 - [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors
 

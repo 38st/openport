@@ -315,6 +315,8 @@ json status_json(const MetricsSource& source) {
       {"trading", trading_status_json(s.trading)},
       {"accounts", account_ticks_json(s)},
       {"series", series_status_json(source)},
+      {"notifications", source.notifications() ? source.notifications()->status() : nlohmann::json{
+          {"enabled", false}, {"queue_depth", 0}, {"queue_capacity", 0}, {"dropped", 0}, {"channels", nlohmann::json::array()}}},
       {"circuit_breaker", circuit_breaker_json(s.circuit_breaker)},
       {"market", market_json(now)},
       {"provider",

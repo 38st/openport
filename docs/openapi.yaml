@@ -3405,6 +3405,81 @@
           }
         }
       ]
+    },
+    "/api/notifications/test": {
+      "post": {
+        "summary": "Queue a notification test",
+        "description": "Requires admin. Queues a labelled test for one configured channel, bypassing event filters. No destinations or secrets accepted. 404 unknown channel, 409 disabled, 429 queue full, 503 unavailable (including replay and demo sources). A queued response does not confirm delivery; GET /api/status reports results.",
+        "x-scope": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationTestResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/notifications/channels/{channel}": {
+      "parameters": [
+        {
+          "name": "channel",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          }
+        }
+      ],
+      "put": {
+        "summary": "Update notification filters",
+        "description": "Requires admin. Changes enabled, event filters and nonnegative floor_distance in decimal dollars for this process only. Persist changes in the server configuration. Unknown fields, including credentials and destinations, are rejected. Disabling or filtering removes pending deliveries; an in-flight request may finish.",
+        "x-scope": "admin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4171,6 +4246,9 @@
                 "type": "null"
               }
             ]
+          },
+          "notifications": {
+            "$ref": "#/components/schemas/NotificationStatus"
           }
         },
         "required": [
@@ -8675,7 +8753,10 @@
             "properties": {
               "fill_model": {
                 "type": "string",
-                "enum": ["as_displayed", "conservative"],
+                "enum": [
+                  "as_displayed",
+                  "conservative"
+                ],
                 "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
               },
               "reason": {
@@ -10236,7 +10317,10 @@
             "properties": {
               "fill_model": {
                 "type": "string",
-                "enum": ["as_displayed", "conservative"],
+                "enum": [
+                  "as_displayed",
+                  "conservative"
+                ],
                 "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
               },
               "name": {
@@ -12838,6 +12922,217 @@
           "active",
           "label"
         ]
+      },
+      "NotificationEvent": {
+        "anyOf": [
+          {
+            "const": "fill",
+            "type": "string"
+          },
+          {
+            "const": "order_rejected",
+            "type": "string"
+          },
+          {
+            "const": "floor",
+            "type": "string"
+          },
+          {
+            "const": "rule_trip",
+            "type": "string"
+          },
+          {
+            "const": "assignment",
+            "type": "string"
+          },
+          {
+            "const": "exercise",
+            "type": "string"
+          },
+          {
+            "const": "playbook_ready",
+            "type": "string"
+          },
+          {
+            "const": "feed_stalled",
+            "type": "string"
+          }
+        ]
+      },
+      "NotificationChannel": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "const": "webhook",
+                "type": "string"
+              },
+              {
+                "const": "discord",
+                "type": "string"
+              },
+              {
+                "const": "telegram",
+                "type": "string"
+              },
+              {
+                "const": "ntfy",
+                "type": "string"
+              }
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationEvent"
+            },
+            "uniqueItems": true
+          },
+          "floor_distance": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "delivered": {
+            "type": "number",
+            "minimum": 0
+          },
+          "failures": {
+            "type": "number",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "number",
+            "minimum": 0
+          },
+          "last_attempt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_delivery": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "enabled",
+          "events",
+          "floor_distance",
+          "delivered",
+          "failures",
+          "dropped",
+          "last_attempt",
+          "last_delivery",
+          "last_error"
+        ],
+        "additionalProperties": false
+      },
+      "NotificationStatus": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "queue_depth": {
+            "type": "number",
+            "minimum": 0
+          },
+          "queue_capacity": {
+            "type": "number",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "number",
+            "minimum": 0
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationChannel"
+            }
+          }
+        },
+        "required": [
+          "enabled",
+          "queue_depth",
+          "queue_capacity",
+          "dropped",
+          "channels"
+        ],
+        "additionalProperties": false
+      },
+      "NotificationSettings": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationEvent"
+            },
+            "uniqueItems": true
+          },
+          "floor_distance": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "NotificationTestRequest": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel"
+        ],
+        "additionalProperties": false
+      },
+      "NotificationTestResponse": {
+        "type": "object",
+        "properties": {
+          "queued": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "additionalProperties": false
       }
     }
   }

@@ -2,6 +2,7 @@ import type { BacktestListing, BacktestState, BacktestStart } from "./backtest-t
 import type { Playbook, PlaybooksResponse, PassOdds } from "./playbook-types"
 import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
+import type { NotificationChannel, NotificationStatus } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
 import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
@@ -100,6 +101,9 @@ export const api = {
   cancelBacktest: (id: string, mode: WriteMode) => write<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, "DELETE", mode),
   backtestPlans: (signal?: AbortSignal) => request<PlansResponse>("/api/plans", { signal, headers: readHeaders() }),
   backtestPlaybooks: (signal?: AbortSignal) => request<PlaybooksResponse>("/api/playbooks", { signal, headers: readHeaders() }),
+  testNotification: (channel: string, mode: WriteMode) => write<{ queued: boolean }>("/api/notifications/test", "POST", mode, { channel }),
+  configureNotification: (channel: string, settings: Pick<NotificationChannel, "enabled" | "events" | "floor_distance">, mode: WriteMode) =>
+    write<NotificationStatus>(`/api/notifications/channels/${encodeURIComponent(channel)}`, "PUT", mode, settings),
   playbooks: (signal?: AbortSignal) => get<PlaybooksResponse>(scoped("/api/playbooks"), signal),
   savePlaybook: (definition: Playbook, mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks${definition.version ? `/${encodeURIComponent(definition.id)}` : ""}`), definition.version ? "PUT" : "POST", mode, definition),
   deletePlaybook: (id: string, version: number, mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks/${encodeURIComponent(id)}?version=${version}`), "DELETE", mode),

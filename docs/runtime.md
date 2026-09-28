@@ -885,3 +885,102 @@ are refused. A recording without `SnapshotComplete` events cannot be backfilled.
 Cboe proxy closes share the existing in-memory daily-bar cache; they are fetched
 again after restart, and `--no-history` disables that fetch. They are never
 written into the local metric CSVs. [Definitions and API](volatility.md#local-history).
+
+## External notifications
+
+`--notify-config FILE` enables server notifications. The JSON file must be a regular
+file owned by the daemon's user with no group or other permissions (`chmod 600`).
+Symlinks are refused. Keep tokens and private webhook URLs in this file or the
+environment, never in command flags. Configuration errors, delivery failures and
+`GET /api/status` omit destinations, tokens, chat IDs and provider response bodies.
+
+Example configuration (replace the placeholders locally):
+
+```json
+{
+  "queue_capacity": 256,
+  "channels": [
+    {"id": "hook", "type": "webhook", "url": "https://example.net/alerts",
+     "events": ["fill", "order_rejected", "rule_trip"]},
+    {"id": "discord", "type": "discord", "url": "https://discord.com/api/webhooks/ID/TOKEN"},
+    {"id": "telegram", "type": "telegram", "token": "BOT_TOKEN", "chat_id": "CHAT_ID"},
+    {"id": "phone", "type": "ntfy", "url": "https://ntfy.sh/YOUR_PRIVATE_TOPIC",
+     "events": ["floor", "assignment", "exercise", "playbook_ready", "feed_stalled"],
+     "floor_distance": "500.00", "enabled": true}
+  ]
+}
+```
+
+`id` is a unique name of 1–64 letters, digits, underscores or hyphens. At most 32
+channels are allowed. Webhooks and ntfy accept HTTP or HTTPS; use HTTPS to encrypt
+off-machine delivery. TLS certificates are verified. Discord URLs must use
+`https://discord.com/api/webhooks/`; Telegram always uses HTTPS. Redirects are not followed.
+Generic webhooks receive JSON with `event`, `account`, `market_time`, `message`,
+`simulated: true` and event-specific `details`. Discord receives plain content with
+mentions disabled; Telegram receives plain text through `sendMessage`; ntfy receives
+a UTF-8 text POST to the topic URL. Messages identify paper/simulated trading.
+
+A file takes precedence over environment configuration. With no file,
+`OPENPORT_NOTIFY_JSON` accepts the same JSON. If it is absent, these variables create
+channels with the default filters and distance:
+
+| Variables | Channel ID |
+| --- | --- |
+| `OPENPORT_NOTIFY_WEBHOOK_URL` | `webhook` |
+| `OPENPORT_NOTIFY_DISCORD_URL` | `discord` |
+| `OPENPORT_NOTIFY_TELEGRAM_TOKEN`, `OPENPORT_NOTIFY_TELEGRAM_CHAT_ID` | `telegram` |
+| `OPENPORT_NOTIFY_NTFY_URL` | `ntfy` |
+
+All eight events are enabled by default: `fill`, `order_rejected`, `floor`,
+`rule_trip`, `assignment`, `exercise`, `playbook_ready` and `feed_stalled`. An empty
+`events` array filters all automatic messages. Tests bypass event filters but require
+an enabled channel. `floor_distance` defaults to $500 and compares fixed-point
+`breach.room`, inclusive; missing floor room or incomplete valuation does not alert.
+It fires on entry to the distance and rearms after leaving it. A staged order fires
+when its stage ID becomes ready; price refreshes of the same stage stay quiet.
+Feed stalls use the status timeout, the greater of 60 seconds and three poll
+intervals, or an explicit stale/stopped state. Recovery rearms the feed warning.
+
+Only accounts on the live engine send. Historical fills and deliveries loaded at
+startup are ignored. Replay, demo, drill and backtest engines never attach delivery,
+including when the main provider is a replay. Browser price alerts and dividends
+remain in the terminal; this external event set does not forward them.
+
+The default queue holds 256 deliveries, including a request in flight; configure
+1–10,000 with `queue_capacity`. A full queue drops new deliveries and counts them
+per channel and globally. The delivery worker logs a counted warning without event
+content. Each request has a five-second timeout per network step. Network errors,
+HTTP 429 and HTTP 5xx retry at 1, 2 and 4 seconds, up to four attempts total. Retry
+hints can extend those waits. Other errors, including redirects, are terminal.
+
+Discord requests are spaced by at least two seconds per destination and honour
+`Retry-After`, `retry_after`, `X-RateLimit-Remaining`, `X-RateLimit-Reset-After` and
+global 429 responses. Its [rate limits](https://discord.com/developers/docs/topics/rate-limits)
+are dynamic. Telegram uses at least 3.1 seconds per chat, including groups, and
+35 ms per bot across chats; a 429's `parameters.retry_after` pauses that bot.
+These budgets stay below Telegram's [published messaging limits](https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this).
+Generic webhooks and ntfy use one second per destination and honour numeric
+`Retry-After`. Identical destinations share budgets even across channel IDs.
+
+`GET /api/status` includes `notifications`: enabled, queue depth/capacity, total
+dropped deliveries and each channel's public settings, successful deliveries,
+failed attempts, drops, last attempt, last successful delivery and last error code.
+The browser refreshes status periodically. Times in delivery status are wall time;
+event payload times are market time. Counters reset on restart.
+
+`POST /api/notifications/test` with `{"channel":"phone"}` requires admin and
+returns 202 when queued, not when delivered. Unknown, disabled and full channels
+return 404, 409 and 429; an unavailable service returns 503.
+`PUT /api/notifications/channels/phone` accepts only `enabled`, `events` and
+`floor_distance`, requires admin and returns the public notification status.
+Changes last until restart. Update the file or environment for lasting settings.
+Removing an event or disabling a channel clears matching queued messages; a request
+already in flight can finish. The Notifications section in Alerts settings exposes
+these controls and never receives credentials.
+
+Delivery is best effort. The queue is memory-only; a crash or shutdown can lose
+pending alerts, and a request whose reply was lost can be delivered twice. One slow
+channel can delay others on the single worker, but cannot block trading. Shutdown
+cancels active I/O; system DNS resolution can still wait for the OS. No live provider
+send was exercised in the offline test environment. Native SMTP is not included;
+use a generic webhook connected to a webhook-to-email service for email alerts.

@@ -1,5 +1,5 @@
 // Shapes of openportd's JSON API. Numbers the engine could not compute are null.
-import type { TradingStatus } from "./trading-types"
+import type { Money, TradingStatus } from "./trading-types"
 
 export type Num = number | null
 
@@ -100,6 +100,7 @@ export interface CircuitBreaker {
 export interface Status {
   /** Running openportd version; absent on older servers. */
   version?: string
+  notifications?: NotificationStatus
   series?: { enabled: boolean; directory: string | null; rows_today: number; last_write: string | null; last_error: string | null }
   trading?: TradingStatus | null
   /** Every paper account, the main one first; absent on older servers. */
@@ -110,6 +111,28 @@ export interface Status {
   engine: EngineInfo
   market?: MarketSession | null
   circuit_breaker?: CircuitBreaker | null
+}
+
+export type NotificationEvent = "fill" | "order_rejected" | "floor" | "rule_trip" | "assignment" | "exercise" | "playbook_ready" | "feed_stalled"
+export interface NotificationChannel {
+  id: string
+  type: "webhook" | "discord" | "telegram" | "ntfy"
+  enabled: boolean
+  events: NotificationEvent[]
+  floor_distance: Money
+  delivered: number
+  failures: number
+  dropped: number
+  last_attempt: string | null
+  last_delivery: string | null
+  last_error: string | null
+}
+export interface NotificationStatus {
+  enabled: boolean
+  queue_depth: number
+  queue_capacity: number
+  dropped: number
+  channels: NotificationChannel[]
 }
 
 export type SpotSource = "quote" | "parity" | null
