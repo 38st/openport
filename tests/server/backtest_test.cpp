@@ -153,7 +153,7 @@ TEST(Backtest, GeneratedDaysMatchSingleReplayAndParallelReportsAreByteIdentical)
     // compares every transaction, all fills, final equity and the head hash.
     const auto verified = server::verify_run(storage.directory / "sequential" / journal);
     EXPECT_TRUE(verified.matched) << verified.message;
-    EXPECT_EQ((verified.equity - request.config.initial_cash).str(), sequential.at("days")[index].at("pnl"));
+    EXPECT_EQ((verified.equity - request.config.initial_cash).str(), sequential.at("days")[index].at("pnl").get<std::string>());
   }
 }
 TEST(Backtest, CancellationPreservesCompletedDaysAndNeverInventsAttempts) {

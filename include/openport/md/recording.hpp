@@ -61,7 +61,7 @@ class RecordingSink final : public EventSink {
     std::size_t frame_bytes = 4 * 1024 * 1024;
     /// Optional syscall replacement for testing short storage/error paths.
     /// Must write the entire span or throw, and must not reenter this sink.
-    std::function<void(int, std::span<const char>)> write;
+    std::function<void(int, std::span<const char>)> write{};
   };
 
   RecordingSink(const std::filesystem::path& path, const RecordingHeader& header,

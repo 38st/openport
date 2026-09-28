@@ -51,7 +51,7 @@ md::Date expiration(const json& row) {
 }
 std::string clock_text(md::Timestamp time) {
   const auto seconds = md::new_york_time(time).seconds;
-  char buffer[20];
+  char buffer[64];  // GCC sizes each %02d for any int
   const auto milliseconds = static_cast<int>((time % md::kNanosPerSecond) / 1'000'000);
   std::snprintf(buffer, sizeof buffer, "%02d:%02d:%02d.%03d", seconds / 3600, seconds / 60 % 60, seconds % 60, milliseconds);
   return buffer;
