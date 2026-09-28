@@ -306,7 +306,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
       path.starts_with("/playbooks/staged/") ||
       ((path.starts_with("/trades/") || path.starts_with("/days/")) && path.ends_with("/note"));
   const bool permitted = has("admin") || (read ? has("read") || !policy.require_token :
-      (path == "/replay" ? has("replay") :
+      ((path == "/replay" || path == "/backtests" || path.starts_with("/backtests/")) ? has("replay") :
        trade && (replay ? has("replay") : has("trade:*") || has("trade:" + account))));
   if (!permitted) return api_error(403, "SCOPE_REQUIRED", "Token does not permit this operation");
   if (actor) *actor = name;

@@ -461,7 +461,10 @@ void Desk::sample_equity(PaperAccount& account) {
   const auto& session = *account.session;
   const auto current = session.snapshot();
   if (account.sampled_snapshot && current != account.sampled_snapshot)
-    for (const auto& sample : fill_equity_samples(session, *account.sampled_snapshot)) append(sample);
+    for (const auto& sample : fill_equity_samples(session, *account.sampled_snapshot, bool(options_.equity_sample))) {
+      if (!sample.fill && !sample.stock_fill) options_.equity_sample(account.id, sample);
+      else append(sample);
+    }
   const auto& snapshot = *current;
   const auto& e = snapshot.evaluation;
   const auto& rules = session.config().rules;
@@ -1150,6 +1153,22 @@ void Desk::observe(const md::Event& event) {
     options_.candles->sample(quote->symbol, underlying.spot_ts, underlying.spot);
   }
   observe_trading(event);
+}
+void Desk::replay_source(const std::string& input, const md::RecordingHeader& header) {
+  if (!options_.replay) throw std::invalid_argument("Source changes require a replay Desk");
+  // Instrument IDs are local to each recording. Keep account marks and candles,
+  // but never let an old chain row refer to a new recording's reused ID.
+  book_ = analytics::ChainBook{};
+  metrics_.clear();
+  snapshots_.clear();
+  analysed_versions_.clear();
+  discount_curves_.clear();
+  discount_curve_.reset();
+  instruments_.clear();
+  capabilities_ = header.capabilities;
+  provider_ = "replay (" + header.provider + ")";
+  record_input(nlohmann::json{{"kind", "source"}, {"input", nlohmann::json::parse(input)}}.dump());
+  publish_trading();
 }
 void Desk::replay_batch(const std::vector<md::Event>& batch, md::Timestamp driver_time, md::Timestamp boundary_time) {
   for (const auto& event : batch) observe(event);

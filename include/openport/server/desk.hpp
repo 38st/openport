@@ -8,6 +8,7 @@
 
 #include "openport/analytics/chain_book.hpp"
 #include "openport/md/provider.hpp"
+#include "openport/md/recording.hpp"
 #include "openport/server/candles.hpp"
 #include "openport/server/paper.hpp"
 #include "openport/trading/dividends.hpp"
@@ -61,6 +62,8 @@ class Desk {
   void update_trading(const std::vector<md::Event>& batch, std::deque<PendingCommand>& commands,
                       md::Timestamp driver_time);
   void apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time);
+  /// Begin a later recording while keeping the account and candle history.
+  void replay_source(const std::string& input, const md::RecordingHeader& header);
   void replay_batch(const std::vector<md::Event>& batch, md::Timestamp driver_time, md::Timestamp boundary_time = 0);
   void command(TradingCommand command, TradingCompletion completion, md::Timestamp time, md::Timestamp driver_time);
   [[nodiscard]] bool active() const;

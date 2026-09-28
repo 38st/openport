@@ -18,10 +18,11 @@ struct EquitySample {
   std::uint64_t fill = 0;  ///< Zero for a minute sample; otherwise the fill ID.
   std::uint64_t stock_fill = 0;  ///< A share change, at its committed transaction mark.
 };
-/// Exact marked-equity changes from committed fills. Atomic combo legs share
+/// Exact marked-equity changes from committed fills. include_pre_fill also emits
+/// the mark before option executions for headless drawdown measurement. Atomic combo legs share
 /// one mark. The engine calls this after each reducer transaction with fills.
 [[nodiscard]] std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session,
-    const trading::TradingSnapshot& before);
+    const trading::TradingSnapshot& before, bool include_pre_fill = false);
 /// Engine-thread owned. Append-only CSV beside the journal, monetary values in
 /// micro-dollars, timestamps in nanoseconds. Keeps the current attempt and at
 /// most 90 days / 100,000 samples of earlier attempts. Storage failures never throw.

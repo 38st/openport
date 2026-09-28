@@ -139,6 +139,8 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/desk_playbooks.cpp
     server/desk.cpp
     server/run.cpp
+    server/backtest.cpp
+    server/backtest_host.cpp
     server/engine.cpp
     server/paper_engine.cpp
     server/paper_api.cpp

@@ -142,3 +142,18 @@ requires durable replay history and leaves the completed test run in history.
 Static files and WebSocket transport are described in OpenAPI; the HTTP contract
 command checks the JSON API and CSV routes. The first mismatch prints its route
 and field and exits nonzero. CI runs it after the Docker smoke test.
+
+Batch backtests use the global routes even on a replay client. Results are simulated
+trading on recorded or generated days, not predictions or investment advice:
+
+```python
+run = client.start_backtest("morning-put@2", "eod-50k", scenarios=20, seed="81723")
+progress = client.get_backtest(run["id"])
+reports = client.list_backtests()
+client.cancel_backtest(run["id"])  # only while running
+```
+
+Pass `days=[{"file": "day.oprec"}, ...]` for recordings, including imports, or
+explicit scenario entries with `scenario`, `date` and `seed`. Dates must increase.
+The `replay` scope permits starts and cancellation. See the
+[batch contract](../docs/playbooks.md#batch-backtests) for attempt rules and journals.

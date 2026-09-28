@@ -224,3 +224,163 @@ modes need the `admin` scope; sending and dismissing a stage need the account's
 | `POST /api/playbooks/staged/{stage}/dismiss` | Empty object; dismiss for this day |
 | `GET /api/account/pass-odds` | Seeded, labelled estimate as above; 400 for insufficient history or invalid inputs |
 | `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | URL-encoded template JSON; return legs, tag and actual widths. Optional paired `min_strike`/`max_strike` preserve a terminal's loaded strike window |
+
+## Batch backtests
+
+Backtests are simulated trading on recorded or generated days. They are not
+predictions or investment advice. The CLI, API and Backtest page use the same
+headless runner, without a provider connection or HTTP server in the runner.
+
+```sh
+openportd --backtest morning-put@2 --plan eod-50k \
+  --scenarios 20 --seed 81723 --out report.json
+openportd --backtest morning-put --plan eod-50k \
+  --recordings ./recordings --out recorded.json
+openportd --backtest morning-put@2 --plan eod-50k \
+  --days days.json --out mixed.json --workers 4
+```
+
+Definitions come from `playbooks.json` beside `--paper-journal`, or from
+`--playbooks FILE`. Omitting `@VERSION` pins the latest version when the run starts.
+Archived versions can be tested. The snapshot contains only that playbook, in auto
+mode; editing the live catalogue cannot change an ongoing run.
+
+`--days` reads a JSON array. Recording paths are relative to the manifest. Imported
+recordings use the same `.oprec` format and follow the same replay path:
+
+```json
+[
+  {"file":"recordings/2026-09-14.oprec"},
+  {"scenario":"reversal","date":"2026-09-15","seed":"81723"}
+]
+```
+
+Supply 1–252 days with distinct, increasing trading dates. Each recording must
+contain one trading day. Partial recordings are accepted; results retain their
+first and last observed market times and do not imply full-session coverage.
+`--recordings` selects `.oprec` files ordered by header start time, then filename. `--scenarios N --seed S` cycles regular scenarios in
+catalogue order, starting at the first scenario's configured date and advancing
+one business day per entry. Seeds are S, S+1, …; overflow is refused. The API also
+accepts `scenario: ID` to repeat one scenario. Individual manifest entries can
+select overnight scenarios. The terminal's JSON manifest requires quoted seed
+strings to preserve all 64 bits. Dates select calendars and expiries; generated days
+do not reconstruct historical events. `--scenario-dir` supplies custom scenarios.
+
+`--plan` takes an evaluation preset ID, or a JSON file with `initial_cash`, `rules`
+and optional `fee_per_contract`. The API accepts that object directly as `plan`.
+Custom rule money uses decimal strings; drawdown mode is `intraday` or `end_of_day`,
+margin is `strategy` or `portfolio`, and `expiry_cutoff` is nanoseconds. Omitted
+rules use `AccountRules` defaults. Positive starting cash and a profit target are
+required; practice and funded plans are refused. A custom plan example is:
+
+```json
+{"initial_cash":"50000","rules":{"plan":"Example evaluation",
+ "profit_target":"6000","max_drawdown":"3000","drawdown_mode":"end_of_day",
+ "buying_power":true,"defined_risk":true,"expiry_cutoff":300000000000}}
+```
+
+### Days and attempts
+
+The independent daily pass runs a fresh account under the plan for each supplied
+day. A bounded pool uses four workers by default; `--workers 1` runs sequentially,
+and 16 is the maximum. Temporary generated recordings are removed after each day
+and regenerated for the attempt pass, so they do not accumulate with the batch
+size. Every selected replay batch reaches the Desk in file order. Each day admits
+its recording's full subscription, preserving cross-underlying analytics and
+history inputs; attempts
+admit the union of their supplied inputs' subscriptions.
+
+The attempt pass then replays those inputs in order on an actual carried account.
+Cash, positions, orders, fees, evaluation progress and candle history survive day
+boundaries. Instrument IDs and the analytics book are reset between input files,
+since IDs belong to their recordings. Position marks remain the reducer's last
+observations until new data supplies them. This pass is sequential: sizing and risk
+checks depend on the earlier days' account state. It does not add independent daily
+P&Ls or resample four equity points.
+
+An attempt starts at the plan's initial cash on the next unconsumed day. It ends at
+the first batch whose account has passed or failed. The reducer checks fully marked
+equity after transactions and atomic fills: touching the drawdown floor fails;
+otherwise reaching initial cash plus target passes. Intraday floors follow each
+high; end-of-day floors ratchet at the next observed trading-date rollover. The
+next attempt starts fresh on the following supplied day; unused observations on
+the decision day are not reused. A fresh attempt also starts with empty candle
+history; it uses recorded observations and earlier days within that attempt, not
+the prior attempt's market context. The last undecided attempt is `open`. Gaps between
+supplied trading dates are allowed, but no missing day's prices are invented.
+An entry rejection or daily-loss kill latch is recorded where it occurs; it is not
+an evaluation failure unless the reducer's evaluation rules fail the account.
+
+### Reports and reproducibility
+
+Each daily result includes marked P&L, maximum observed peak-to-later-trough equity
+drawdown, the smallest observed equity-minus-floor distance, rule trips, strategy
+trades, option and share fills, share round trips, adherence, entry-blocking reasons,
+mark quality and open positions.
+Drawdown includes the starting balance, pre-fill marks reconstructed from committed
+option executions, and committed fill observations. Missing
+final marks make P&L null; the last-mark estimate is separate. Floor distance is
+null when the plan has no drawdown floor. Adherence uses the normal playbook report,
+including pending checks. No trades means null expectancy and win rate.
+
+Share round trips are reported separately from strategy expectancy. Trade expectancy
+is mean net P&L per closed opening strategy in the independent
+daily pass. Win rate counts strictly profitable closed strategies; breakevens stay
+in the denominator. Daily P&L and drawdown distributions contain sorted decimal
+values, min, lower-index quartiles, max and an exact-money mean. Daily P&L statistics
+exclude incomplete final marks. Worst days are up to ten day indices sorted by P&L,
+with input order breaking ties. Pass rate is passed / (passed + failed) attempts;
+it is null without decided attempts. Open attempts are reported separately.
+
+The report uses no runtime timestamps, random IDs or worker counts. For unchanged
+inputs, configuration, initiating actor, calendar and build/platform, completed
+JSON reports and journals are byte-identical at every worker count. Results use decimal money
+strings; the complete `config` preserves journal encoding (integer micro-dollars
+and journal enum encodings) for reproducibility. Seeds in displayed input identities are
+decimal strings. Floating-point analytics are not guaranteed identical across
+platforms, as with individual replays.
+
+The CLI writes `REPORT.json` and a new `REPORT.json.d/` directory; it refuses to
+reuse that directory. Journal paths are relative to it, for example:
+
+```sh
+openportd --verify-run report.json.d/days/000001.jsonl
+openportd --verify-run report.json.d/attempts/000001.jsonl
+```
+
+Attempt journals record each input transition. Older single-input journals still
+load and verify. Recordings and custom scenario definitions must remain available
+and unchanged for verification. The report's `journals` list also includes kept
+prefixes interrupted by cancellation. SIGINT/SIGTERM or API cancellation checks
+between replay batches and jobs; an in-progress scenario generation finishes first.
+Completed results remain in a labelled partial report. Unfinished days are null;
+unfinished attempts are excluded from aggregate statistics. Input or storage errors
+produce a failed report rather than zero-return days.
+
+No new volatility-history inputs, prices or settlements are invented. A playbook
+needing unavailable history will not enter. Open positions at EOF are reported,
+not forcibly closed at fabricated prices. Attempt liquidation can also remain
+incomplete at its final batch if quotes lack executable liquidity. Reusing a small
+set of generated scenarios says nothing about future market performance.
+The CLI uses default analytics and an empty dividend calendar. API runs use the
+server's startup analytics and configured dividends, without later provider
+updates. Both are recorded in the report; neither path fetches additional history.
+
+### API and saved runs
+
+| Route | Contract |
+| --- | --- |
+| `POST /api/backtests` | Start `{playbook:"ID@VERSION",plan:"eod-50k",days:[…]}` or `{playbook,plan,scenarios:N,seed:"S"}`; optional `scenario` and `workers`; returns 202 |
+| `GET /api/backtests` | Saved run summaries and the active ID |
+| `GET /api/backtests/{id}` | Progress and the completed or partial report |
+| `DELETE /api/backtests/{id}` | Request cancellation; `DELETE /api/backtests` cancels the active run |
+
+Only one batch job runs at a time per server; another start returns 409. Mutations
+need `replay` scope (or `admin`); reads follow the existing `read` token policy.
+API recording paths are confined to the configured recording directory, including
+symlink checks. Writes are disabled with paper trading or server writes disabled.
+Reports, journals and progress files live in `backtests/ID/` beside the main paper
+journal. The response's `directory` resolves its relative journal paths. Saved
+reports remain readable after restart; unfinished runs are marked `interrupted`
+and do not resume automatically. The terminal shows saved reports and progress
+without switching the active trading account.

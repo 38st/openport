@@ -1,3 +1,4 @@
+import type { BacktestListing, BacktestState, BacktestStart } from "./backtest-types"
 import type { Playbook, PlaybooksResponse, PassOdds } from "./playbook-types"
 import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
@@ -50,6 +51,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 
 /** On the replay every route is the replay's: /api/X becomes /api/replay/X. Replay controls stay put. */
 function routed(path: string): string {
+  if (path === "/api/backtests" || path.startsWith("/api/backtests/")) return path
   if (path === "/api/replay" || path.startsWith("/api/replay/")) return path
   const source = dataSource.get()
   if (source.startsWith("history:")) return path.replace(/^\/api\//, `/api/replay/history/${encodeURIComponent(source.slice(8))}/`)
@@ -92,6 +94,12 @@ function scoped(path: string): string {
 }
 
 export const api = {
+  backtests: (signal?: AbortSignal) => get<BacktestListing>("/api/backtests", signal),
+  backtest: (id: string, signal?: AbortSignal) => get<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, signal),
+  startBacktest: (body: BacktestStart, mode: WriteMode) => write<BacktestState>("/api/backtests", "POST", mode, body),
+  cancelBacktest: (id: string, mode: WriteMode) => write<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, "DELETE", mode),
+  backtestPlans: (signal?: AbortSignal) => request<PlansResponse>("/api/plans", { signal, headers: readHeaders() }),
+  backtestPlaybooks: (signal?: AbortSignal) => request<PlaybooksResponse>("/api/playbooks", { signal, headers: readHeaders() }),
   playbooks: (signal?: AbortSignal) => get<PlaybooksResponse>(scoped("/api/playbooks"), signal),
   savePlaybook: (definition: Playbook, mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks${definition.version ? `/${encodeURIComponent(definition.id)}` : ""}`), definition.version ? "PUT" : "POST", mode, definition),
   deletePlaybook: (id: string, version: number, mode: WriteMode) => write<PlaybooksResponse>(scoped(`/api/playbooks/${encodeURIComponent(id)}?version=${version}`), "DELETE", mode),

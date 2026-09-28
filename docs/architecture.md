@@ -94,6 +94,17 @@ The trading evaluation functions are shared by the reducer and the historical
 pass-odds bootstrap. The bootstrap owns its explicit seed and never changes account
 state or supplies a wall clock to the reducer.
 
+## Batch backtests
+
+`server/backtest.cpp` drives the same Desk and ReplayBatches without Engine or
+HTTP. A bounded pool runs fresh daily accounts. A second, ordered pass carries an
+account across input files until its evaluation passes or fails. Source transitions
+clear file-local instrument IDs and analytics while preserving account and candle
+history; they enter run provenance for verification. Reports retain input order,
+exact-money results and relative journal names, with no wall-clock measurements.
+`BacktestHost` owns one cancellable job and persists reports beside the paper
+journal. [Inputs, attempt rules and limitations](playbooks.md#batch-backtests).
+
 ## Reproducible runs
 
 `Desk` has no threads, event queue, wall clock or HTTP. Events retain their market
@@ -237,10 +248,10 @@ changes; it has no orders or journal writes.
 
 ## Tests
 
-815 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
+825 GoogleTest cases cover pricing against reference values, the parity fit and SVI,
 provider parsing, the queue, recording and replay, the simulator's rules, journal
-recovery and tampering, the calendar and the HTTP API; 481 Vitest cases cover the
-terminal, and 55 pytest cases the Python client and MCP server. CI builds with GCC 13
+recovery and tampering, the calendar and the HTTP API; 489 Vitest cases cover the
+terminal, and 56 pytest cases the Python client and MCP server. CI builds with GCC 13
 on Ubuntu and Apple Clang on macOS, both with warnings as errors, smoke-tests the
 Docker image and validates its responses against the OpenAPI contract.
 

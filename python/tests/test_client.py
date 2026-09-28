@@ -194,3 +194,16 @@ def test_last_hour_example_waits_for_replay_preparation(stub, monkeypatch):
     polls = 0
     with pytest.raises(TimeoutError, match="preparing"):
         wait(client, timeout=0)
+
+
+def test_backtest_calls_use_global_routes_even_from_replay_and_history(stub):
+    for client in (Client(stub.url), Client(stub.url).for_replay(), Client(stub.url, history="old-run")):
+        client.list_backtests()
+        client.start_backtest("morning@2", "eod-50k", scenarios=3, seed="18446744073709551610")
+        assert stub.requests[-1][1] == "/api/backtests"
+        assert stub.requests[-1][3]["seed"] == "18446744073709551610"
+        client.get_backtest("000001")
+        client.cancel_backtest("000001")
+        assert [(row[0], row[1]) for row in stub.requests[-4:]] == [
+            ("GET", "/api/backtests"), ("POST", "/api/backtests"),
+            ("GET", "/api/backtests/000001"), ("DELETE", "/api/backtests/000001")]

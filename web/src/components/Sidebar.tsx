@@ -10,11 +10,12 @@ import { AccountSwitcher } from "./AccountSwitcher"
 import { Badge, Meter, toneOf, toneText } from "./ui"
 
 export const viewLabels: Record<View, string> = {
-  brief: "Brief", dashboard: "Dashboard", chain: "Trade", positions: "Positions", orders: "Orders", journal: "Journal",
+  backtest: "Backtest", brief: "Brief", dashboard: "Dashboard", chain: "Trade", positions: "Positions", orders: "Orders", journal: "Journal",
   playbooks: "Playbooks", rules: "Rules", payouts: "Payouts", smile: "Volatility", exposure: "Exposure", replay: "Replay", engine: "Status",
 }
 
 const icons: Partial<Record<View, ReactNode>> = {
+  backtest: <path d="M4 20V4m0 16h16M8 16v-5m5 5V7m5 9V4" />,
   brief: <path d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5" />,
   dashboard: <path d="M4 13h6V4H4zm10 7h6v-9h-6zM4 20h6v-4H4zm10-11h6V4h-6z" />,
   chain: <path d="M4 18V6m0 12h16M8 14l3-3 3 2 5-6" />,
@@ -139,6 +140,7 @@ export function Sidebar({ view, onView, open, onClose }: { view: View; onView: (
           <div className="space-y-0.5">
             <div className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-faint">System</div>
             {link("replay")}
+            {trading && link("backtest")}
             {link("engine")}
           </div>
         </nav>

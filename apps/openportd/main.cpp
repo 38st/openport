@@ -40,6 +40,7 @@
 #include "openport/providers/massive.hpp"
 #include "openport/providers/options.hpp"
 #include "openport/server/api.hpp"
+#include "openport/server/backtest.hpp"
 #include "openport/server/engine.hpp"
 #include "openport/server/plans.hpp"
 #include "openport/server/replay_host.hpp"
@@ -104,6 +105,8 @@ int usage(const char* error = nullptr) {
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
       "       openportd --verify-run JOURNAL\n"
+      "       openportd --backtest PLAYBOOK[@VERSION] --plan PLAN (--days FILE | --recordings DIR | --scenarios N --seed S) --out REPORT.json\n"
+      "                 [--playbooks FILE] [--paper-journal PATH] [--scenario-dir DIR] [--workers 1..16]\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --repair-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
@@ -536,6 +539,9 @@ int run(int argc, char** argv) {
   else if (const auto* home = std::getenv("HOME"))
     replay_options.recordings = std::filesystem::path(home) / ".openport/recordings";
   server::ReplayHost replays(replay_options);
+  server::BacktestHost backtests({settings.paper_journal.parent_path() / "backtests", replay_options.recordings,
+      settings.scenario_dir, engine_options.analytics, engine_options.dividends,
+      settings.paper_enabled && engine_options.write_mode != "disabled"});
   // Dividends from Massive reach the live engine and replays started after them.
   std::unique_ptr<providers::MassiveDividends> dividends;
   if (settings.massive_dividends) {
@@ -567,7 +573,8 @@ int run(int argc, char** argv) {
   }
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
-      [&engine, &replays](const server::ApiRequest& request, server::ApiCompletion complete) {
+      [&engine, &replays, &backtests](const server::ApiRequest& request, server::ApiCompletion complete) {
+        if (backtests.handle(request, engine, complete)) return;
         if (replays.handle(request, complete)) return;
         server::handle_api_async(request, engine, std::move(complete));
       }, settings.allowed_origins, settings.write_token, settings.allowed_hosts, settings.tokens, settings.require_token);
@@ -637,6 +644,68 @@ int run(int argc, char** argv) {
   return 0;
 }
 
+namespace {
+int backtest_cli(int argc, char** argv) {
+  using nlohmann::json;
+  std::map<std::string, std::string> args;
+  for (int index = 1; index < argc; ++index) {
+    const std::string key = argv[index];
+    if (key != "--backtest" && key != "--plan" && key != "--days" && key != "--recordings" &&
+        key != "--scenarios" && key != "--seed" && key != "--out" && key != "--playbooks" &&
+        key != "--paper-journal" && key != "--scenario-dir" && key != "--workers")
+      throw std::invalid_argument("Unknown backtest option: " + key);
+    if (++index == argc || !args.emplace(key, argv[index]).second) throw std::invalid_argument("Missing or repeated option: " + key);
+  }
+  if (!args.contains("--plan") || !args.contains("--out") || args.at("--out").empty())
+    throw std::invalid_argument("Backtests require --plan and --out");
+  if (args.contains("--days") + args.contains("--recordings") + args.contains("--scenarios") != 1)
+    throw std::invalid_argument("Choose --days, --recordings or --scenarios");
+  const auto read = [](const std::filesystem::path& file) {
+    std::ifstream input(file);
+    if (!input) throw std::invalid_argument("Cannot read " + file.string());
+    return json::parse(input);
+  };
+  std::filesystem::path catalogue;
+  if (args.contains("--playbooks")) catalogue = args.at("--playbooks");
+  else if (args.contains("--paper-journal")) catalogue = std::filesystem::path(args.at("--paper-journal")).parent_path() / "playbooks.json";
+  else if (const auto* home = std::getenv("HOME")) catalogue = std::filesystem::path(home) / ".openport/playbooks.json";
+  else throw std::invalid_argument("Supply --playbooks FILE");
+  json body{{"playbook", args.at("--backtest")}, {"plan", args.at("--plan")}};
+  if (!server::find_plan(args.at("--plan"))) body["plan"] = read(args.at("--plan"));
+  if (args.contains("--workers")) body["workers"] = json::parse(args.at("--workers"));
+  std::filesystem::path base;
+  if (args.contains("--days")) {
+    body["days"] = read(args.at("--days"));
+    base = std::filesystem::absolute(args.at("--days")).parent_path();
+  } else if (args.contains("--recordings")) {
+    base = std::filesystem::absolute(args.at("--recordings"));
+    std::vector<std::pair<md::Timestamp, std::string>> files;
+    for (const auto& entry : std::filesystem::directory_iterator(base)) {
+      if (!entry.is_regular_file() || entry.path().extension() != ".oprec") continue;
+      md::RecordingReader reader(entry.path());
+      files.emplace_back(reader.header().started, entry.path().filename().string());
+    }
+    std::sort(files.begin(), files.end());
+    body["days"] = json::array();
+    for (const auto& [time, file] : files) { (void)time; body["days"].push_back({{"file", file}}); }
+  } else {
+    body["scenarios"] = json::parse(args.at("--scenarios"));
+    if (!args.contains("--seed")) throw std::invalid_argument("--scenarios requires --seed");
+    body["seed"] = args.at("--seed");
+  }
+  if (args.contains("--seed") && !args.contains("--scenarios")) throw std::invalid_argument("Use per-day seeds in --days");
+  const auto request = server::parse_backtest(body, read(catalogue),
+      providers::load_scenarios(args.contains("--scenario-dir") ? std::filesystem::path(args.at("--scenario-dir")) : std::filesystem::path{}), base, false);
+  const auto output = std::filesystem::absolute(args.at("--out"));
+  std::signal(SIGINT, on_signal);
+  std::signal(SIGTERM, on_signal);
+  const auto report = server::run_backtest(request, output.string() + ".d", g_stop);
+  server::write_backtest_report(output, report);
+  std::fprintf(stdout, "%s\nReport: %s\n", std::string(server::kBacktestLabel).c_str(), output.c_str());
+  return report.at("status") == "completed" ? 0 : report.at("status") == "cancelled" ? 130 : 1;
+}
+}
+
 int main(int argc, char** argv) {
   if (argc == 3 && std::string_view(argv[1]) == "--verify-run") {
     const auto result = openport::server::verify_run(argv[2]);
@@ -644,6 +713,8 @@ int main(int argc, char** argv) {
     return result.matched ? 0 : 1;
   }
   try {
+    for (int index = 1; index < argc; ++index)
+      if (std::string_view(argv[index]) == "--backtest") return backtest_cli(argc, argv);
     return run(argc, argv);
   } catch (const std::exception& error) {
     std::fprintf(stderr, "openportd: %s\n", error.what());

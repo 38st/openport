@@ -77,6 +77,12 @@ TEST(EquityStore, EachFillGetsItsExactMarkedEquityAndAtomicLegsShareAMark) {
   EXPECT_EQ(samples[1].equity, m("99978.70"));
   EXPECT_EQ(samples[1].equity, s.snapshot()->equity);
   EXPECT_EQ(samples[0].floor, m("99000"));
+  const auto with_open = fill_equity_samples(s, *before, true);
+  ASSERT_EQ(with_open.size(), 3U);
+  EXPECT_EQ(with_open[0].equity, m("100000"));
+  EXPECT_EQ(with_open[0].fill, 0U);
+  EXPECT_EQ(with_open[1].equity, samples[0].equity);
+  EXPECT_EQ(with_open[2].equity, samples[1].equity);
   test::ScriptedMarket wing; wing.contract.strike = 5010; wing.time = f.time; wing.seed(s, "2", "2.20");
   auto combo = f.market("combo"); combo.symbol.clear(); combo.legs = {{f.symbol(), trading::Side::Buy, 1}, {wing.symbol(), trading::Side::Sell, 1}};
   const auto prior = s.snapshot(); s.submit(combo, f.time);
@@ -84,6 +90,25 @@ TEST(EquityStore, EachFillGetsItsExactMarkedEquityAndAtomicLegsShareAMark) {
   ASSERT_EQ(legs.size(), 2U);
   EXPECT_EQ(legs[0].equity, legs[1].equity);
   EXPECT_EQ(legs[1].equity, s.snapshot()->equity);
+}
+TEST(EquityStore, PreFillObservationPreservesAHighBeforeTheSameQuoteClosesThePosition) {
+  test::ScriptedMarket market;
+  trading::SessionConfig config;
+  config.limits.aggregate = {1e9, 1e9}; config.limits.per_underlying = {1e9, 1e9};
+  config.limits.price_band_absolute = m("10");
+  trading::TradingSession session(config, market.time);
+  market.seed(session);
+  ASSERT_TRUE(session.submit(market.market("entry"), market.time).decision.ok());
+  auto exit = market.limit("exit", 1, "7"); exit.side = trading::Side::Sell;
+  ASSERT_TRUE(session.submit(exit, market.time).decision.ok());
+  const auto before = session.snapshot();
+  market.next(); session.on_quotes({market.quote("7", "7.20", 10)}, {market.valuation()}, market.time);
+  const auto samples = fill_equity_samples(session, *before, true);
+  ASSERT_EQ(samples.size(), 2U);
+  EXPECT_EQ(samples[0].equity, m("100289.35"));
+  EXPECT_EQ(samples[1].equity, m("100278.70"));
+  EXPECT_EQ(samples[0].fill, 0U);
+  EXPECT_NE(samples[1].fill, 0U);
 }
 TEST(EquityStore, ShareChangesAreSampledAndEightColumnHistoryStillLoads) {
   Directory dir; const auto file = dir.path / "history.csv";

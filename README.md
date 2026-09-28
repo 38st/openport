@@ -30,7 +30,7 @@ terminal. Your API keys, your data and your trades stay on your machine.
   differences of 0.012 (SPX), 0.030 (QQQ) and 0.028 (SPY) out of the money.
 - **A prop-firm-style simulator**: orders fill against the quotes the feed displays,
   under evaluation rules, with a hash-chained journal that survives restarts.
-- **815 C++, 481 web and 55 Python tests**, built in CI with GCC 13 on Ubuntu and
+- **825 C++, 489 web and 56 Python tests**, built in CI with GCC 13 on Ubuntu and
   Apple Clang on macOS, warnings as errors.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
@@ -119,6 +119,10 @@ with generated prices labelled as simulated on every page:
   compares adherence and expectancy, and the Journal filters by playbook. Dashboard
   and playbook pass odds are labelled estimates from past results, not predictions.
   [Rules and limits](docs/playbooks.md).
+- **Batch backtests**: run a pinned playbook over recorded, imported or seeded
+  scenario days, with independent daily results and carried-account evaluation
+  attempts. The CLI, API and Backtest page keep reports and verifiable journals.
+  Results are simulated trading, not predictions or investment advice.
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market.
 - **Replay**: record every session and trade any recorded day again beside the live
@@ -303,6 +307,7 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account; plan, cash and fee seed a new journal only. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
+| `--backtest PLAYBOOK[@VERSION]`, `--days FILE`, `--recordings DIR`, `--scenarios N --seed S`, `--out REPORT.json` | Headless batch backtest under `--plan`; choose one day source. `--workers 1..16` defaults to 4; `--playbooks FILE` overrides the saved catalogue. [Inputs and reports](docs/playbooks.md#batch-backtests) |
 | `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe backfills prices and volatility-index proxies ([price history](docs/runtime.md#price-history)) |
@@ -418,6 +423,7 @@ these routes, so anything it does can be scripted:
 | `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to floor and projected breach risk |
 | `GET/POST /api/playbooks`, `GET/PUT/DELETE /api/playbooks/{id}` | Versioned definitions, archive, account stages and adherence/expectancy reports; `?version=N` reads an old version |
 | `PUT /api/playbooks/{id}/mode`, `POST /api/playbooks/staged/{stage}/send`, `/dismiss` | Enable staging or replay-only auto; send or dismiss a current stage |
+| `GET/POST/DELETE /api/backtests`, `GET/DELETE /api/backtests/{id}` | Start one batch job, watch progress, read kept reports or cancel; mutations need replay scope |
 | `GET /api/account/pass-odds?days=N&samples=M&playbook=ID&seed=S` | Seeded estimate from historical equity days, not a prediction; needs ten days with intraday extremes |
 | `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | Shared server leg selection for terminal templates and playbooks |
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
@@ -478,7 +484,8 @@ is set; loopback writes without a configured legacy token remain open unless tha
 flag is set. The existing `OPENPORT_WRITE_TOKEN`, `--write-token TOKEN` and
 `--write-token-file PATH` token grants `admin` and requires authentication for writes.
 Named tokens from `--token-file FILE` grant `read`, `trade:ACCOUNT`, `trade:*`,
-`replay` or `admin`. `admin` includes account creation, limits, guardrails, resets,
+`replay` or `admin`. `replay` permits replay controls and backtest starts and
+cancellation. `admin` includes account creation, limits, guardrails, resets,
 the kill switch, playbook definitions and history deletion. Writes always check the token they carry;
 without `--require-token`, reads ignore one that matches nothing. The server prints
 only the link for a token it keeps in a file, as the Docker image does, and never
@@ -519,6 +526,8 @@ version in `CMakeLists.txt` at the current commit, or refreshes its files when t
 exists; GitHub tags the commit when you publish the draft.
 
 ## Roadmap
+
+- [x] Headless playbook batch backtests, independent days and carried-account evaluation attempts, API and terminal reports
 
 - [x] Versioned playbooks, staged orders, replay auto mode, adherence and historical pass-odds estimates
 - [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors

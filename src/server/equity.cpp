@@ -38,7 +38,7 @@ EquitySample parse(std::string text) {
   return sample;
 }
 }
-std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session, const trading::TradingSnapshot& before) {
+std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session, const trading::TradingSnapshot& before, bool include_pre_fill) {
   const auto after = session.snapshot();
   if (!after->valuation_complete || after->journal_failed || after->evaluation.attempt != before.evaluation.attempt) return {};
   const auto first = before.recent_fills.size();
@@ -72,6 +72,18 @@ std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& ses
   };
   ratchet();
   std::vector<EquitySample> result;
+  // Optional observation for headless drawdown measurement: a quote can mark a
+  // new high and trigger an exit in the same transaction. Preserve that mark
+  // before subtracting the committed fills' spread and fees.
+  if (include_pre_fill && first < after->recent_fills.size()) {
+    EquitySample sample;
+    sample.time = after->recent_fills[first].time;
+    sample.attempt = after->evaluation.attempt;
+    sample.equity = equity;
+    sample.peak = peak;
+    if (rules.max_drawdown > Money{}) sample.floor = floor;
+    result.push_back(sample);
+  }
   for (auto i = first; i < after->recent_fills.size();) {
     auto end = i + 1;
     const auto& fill = after->recent_fills[i];

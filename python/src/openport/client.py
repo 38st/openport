@@ -220,6 +220,18 @@ class Client:
     def close_stock(self, symbol: str, shares: int | None = None) -> Portfolio:
         return self._request("POST", "/stocks/close", {"symbol": symbol, **({"shares": shares} if shares is not None else {})}, scoped=True)
 
+    def list_backtests(self) -> JSON:
+        return self._request("GET", "/backtests", control=True)
+
+    def start_backtest(self, playbook: str, plan: str | JSON, **settings) -> JSON:
+        return self._request("POST", "/backtests", {"playbook": playbook, "plan": plan, **settings}, control=True)
+
+    def get_backtest(self, run_id: str) -> JSON:
+        return self._request("GET", "/backtests/" + quote(run_id, safe=""), control=True)
+
+    def cancel_backtest(self, run_id: str) -> JSON:
+        return self._request("DELETE", "/backtests/" + quote(run_id, safe=""), control=True)
+
     def list_replays(self) -> ReplayListing:
         return self._request("GET", "/replay", control=True)
 

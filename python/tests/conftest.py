@@ -70,6 +70,12 @@ class Stub:
             status, code = self.failures.pop(0)
             return status, {"error": {"code": code, "message": "synthetic rejection", "actual": None, "limit": None, "scope": None}}
         path = urlsplit(target).path
+        if path == "/api/backtests":
+            if method == "GET":
+                return 200, shaped("BacktestListing", runs=[], active=None)
+            return 202, shaped("BacktestState", id="000001", report=None)
+        if path == "/api/backtests/000001":
+            return 200, shaped("BacktestState", id="000001", report=None)
         if path == "/api/replay":
             if method == "GET":
                 return 200, shaped("ReplayListing", replay=self.replay, history=self.history,

@@ -128,40 +128,46 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     const auto& input = start.at("input");
     const CalendarScope calendar;
     md::set_scheduled_days(start.value("calendar", std::vector<md::ScheduledDay>{}));
-    if (input.at("version") != 1) throw std::runtime_error("Unsupported run driver version");
-    TemporaryInput generated;
-    std::filesystem::path file;
-    if (input.at("kind") == "recording") {
-      file = input.at("file").get<std::string>();
-      if (hash_file(file) != input.at("sha256").get<std::string>() ||
-          std::filesystem::file_size(file) != input.at("size").get<std::uintmax_t>())
-        throw std::runtime_error("Recording input changed: " + file.string());
-    } else if (input.at("kind") == "scenario") {
-      providers::Scenario scenario;
-      if (input.at("builtin").get<bool>()) {
-        bool found = false;
-        for (const auto& candidate : providers::builtin_scenarios()) {
-          if (candidate.id != input.at("id").get<std::string>()) continue;
-          scenario = candidate;
-          found = true;
-          break;
+    std::unique_ptr<TemporaryInput> generated_input;
+    const auto open_input = [&](const json& identity) {
+      if (identity.at("version") != 1) throw std::runtime_error("Unsupported run driver version");
+      auto generated = std::make_unique<TemporaryInput>();
+      std::filesystem::path file;
+      if (identity.at("kind") == "recording") {
+        file = identity.at("file").get<std::string>();
+        if (hash_file(file) != identity.at("sha256").get<std::string>() ||
+            std::filesystem::file_size(file) != identity.at("size").get<std::uintmax_t>())
+          throw std::runtime_error("Recording input changed: " + file.string());
+      } else if (identity.at("kind") == "scenario") {
+        providers::Scenario scenario;
+        if (identity.at("builtin").get<bool>()) {
+          bool found = false;
+          for (const auto& candidate : providers::builtin_scenarios()) {
+            if (candidate.id != identity.at("id").get<std::string>()) continue;
+            scenario = candidate;
+            found = true;
+            break;
+          }
+          if (!found) throw std::runtime_error("Missing built-in scenario: " + identity.at("id").get<std::string>());
+        } else {
+          file = identity.at("file").get<std::string>();
+          if (!std::filesystem::is_regular_file(file)) throw std::runtime_error("Missing scenario input: " + file.string());
+          scenario = providers::read_scenario(file);
         }
-        if (!found) throw std::runtime_error("Missing built-in scenario: " + input.at("id").get<std::string>());
-      } else {
-        file = input.at("file").get<std::string>();
-        if (!std::filesystem::is_regular_file(file)) throw std::runtime_error("Missing scenario input: " + file.string());
-        scenario = providers::read_scenario(file);
-      }
-      if (hash_text(scenario.source) != input.at("sha256").get<std::string>())
-        throw std::runtime_error("Scenario input changed: " + scenario.id);
-      if (scenario.generator != input.at("generator").get<decltype(scenario.generator)>()) throw std::runtime_error("Scenario generator version changed");
-      file = generated.file();
-      providers::write_scenario_recording(file, scenario, input.at("date").get<md::Date>(), input.at("seed").get<std::uint64_t>());
-    } else throw std::runtime_error("Unknown run input kind");
+        if (hash_text(scenario.source) != identity.at("sha256").get<std::string>())
+          throw std::runtime_error("Scenario input changed: " + scenario.id);
+        if (scenario.generator != identity.at("generator").get<decltype(scenario.generator)>()) throw std::runtime_error("Scenario generator version changed");
+        file = generated->file();
+        providers::write_scenario_recording(file, scenario, identity.at("date").get<md::Date>(), identity.at("seed").get<std::uint64_t>());
+      } else throw std::runtime_error("Unknown run input kind");
+      auto next_reader = std::make_unique<md::RecordingReader>(file);
+      generated_input = std::move(generated);
+      return next_reader;
+    };
     const auto restored = trading::TradingSession::recover(expected);
-    md::RecordingReader reader(file);
+    auto reader = open_input(input);
     const md::Subscription subscription{start.at("symbols").get<std::vector<std::string>>(), 0, 0};
-    providers::ReplayBatches batches(reader, subscription);
+    auto batches = std::make_unique<providers::ReplayBatches>(*reader, subscription);
     auto comparison = std::make_shared<ComparisonJournal>(expected);
     Desk::Options options;
     options.replay = true;
@@ -173,16 +179,21 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     options.paper = json::parse(expected.records.front().payload).at("state").at("config").get<trading::SessionConfig>();
     options.analytics = start.at("analytics").get<analytics::AnalyticsOptions>();
     options.dividends = start.at("dividends").get<std::vector<trading::Dividend>>();
-    Desk desk("replay (" + reader.header().provider + ")", reader.header().capabilities, subscription, options);
+    Desk desk("replay (" + reader->header().provider + ")", reader->header().capabilities, subscription, options);
     desk.start_trading();
     for (std::size_t index = 1; index < inputs.size() && comparison->error.empty(); ++index) {
       const auto& operation = inputs[index];
       if (operation.at("kind") == "boundary") {
-        auto batch = batches.next();
+        auto batch = batches->next();
         if (!batch || batch->events.size() != operation.at("events").get<std::size_t>() ||
             batch->received != operation.at("driver_time").get<md::Timestamp>())
           throw std::runtime_error("Input boundary differs at operation " + std::to_string(index));
         desk.replay_batch(batch->events, batch->received, batch->time);
+      } else if (operation.at("kind") == "source") {
+        batches.reset();  // It reads through the reader replaced next.
+        reader = open_input(operation.at("input"));
+        batches = std::make_unique<providers::ReplayBatches>(*reader, subscription);
+        desk.replay_source(operation.at("input").dump(), reader->header());
       } else if (operation.at("kind") == "command") {
         desk.command(operation.at("command").get<TradingCommand>(), [](TradingReply) {},
                      operation.at("time").get<md::Timestamp>(), operation.at("driver_time").get<md::Timestamp>());
