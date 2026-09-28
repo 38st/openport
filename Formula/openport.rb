@@ -1,9 +1,9 @@
 class Openport < Formula
   desc "Options analytics and paper-trading simulator"
   homepage "https://github.com/38st/openport"
-  url "https://github.com/38st/openport/releases/download/v0.3.0/openport-0.3.0-darwin-arm64.tar.gz"
-  version "0.3.0"
-  sha256 "4363defdd46dee7386e03037dcb217ed572f7d83e9bc67ea0e53b6795a010d22"
+  url "https://github.com/38st/openport/releases/download/v0.3.1/openport-0.3.1-darwin-arm64.tar.gz"
+  version "0.3.1"
+  sha256 "217cb8a18a7e5ed96826b12913e9c53b050c02f745332f1ade656920db0d1285"
   license "MIT"
 
   depends_on :macos
