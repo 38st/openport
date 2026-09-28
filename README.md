@@ -160,6 +160,8 @@ with generated prices labelled as simulated on every page:
 - **Broker data**: Tradier snapshot polling and tastytrade DXLink streams, for
   traders whose brokerage account includes real-time option data; credentials stay
   in the environment and neither adapter can place orders.
+- **Install**: Homebrew on Apple Silicon, Docker Compose, release archives or source.
+  Optional browser update notices are off by default.
 - Light and dark themes, keyboard shortcuts (number keys follow the sidebar: Brief
   is 7 with a paper account, 2 on analytics-only servers; arrows step expiries on Trade).
 
@@ -230,6 +232,23 @@ the simulation's limits.
 
 ## Quick start
 
+On an Apple Silicon Mac, with Homebrew:
+
+```bash
+brew tap 38st/openport https://github.com/38st/openport
+brew install openport
+brew services start openport
+```
+
+Open the `http://localhost:8080/#token=…` link in
+`$(brew --prefix)/var/log/openport.log`. If it has not appeared yet, append the
+contents of `$(brew --prefix)/var/openport/write-token` to
+`http://localhost:8080/#token=`. The service keeps accounts and chart history under
+`$(brew --prefix)/var/openport`; logs are in `var/log/openport.log` and
+`var/log/openport.error.log`. The formula installs the self-contained macOS archive.
+Its 0.3.0 checksum must be filled in after publishing, as described under
+[Development](#development). For Intel Macs and Linux, use Docker or the source build.
+
 With Docker (Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed), from the
 published image for amd64 and arm64:
 
@@ -247,6 +266,20 @@ pass its key and arguments:
 ```bash
 docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e DATABENTO_API_KEY ghcr.io/38st/openport --provider databento --symbols SPX,QQQ
 ```
+
+Or use [docker-compose.yml](docker-compose.yml) from this checkout:
+
+```bash
+docker compose up -d
+docker compose logs openport
+```
+
+Open the token link in the logs. Compose uses the published image, the same named
+`openport` volume and port 8080 on loopback only. It restarts unless stopped and
+checks `/api/status` for health. Provider credentials and a provider command are
+commented in the file. To update, run `docker compose pull && docker compose up -d`.
+`docker compose down` keeps the volume; adding `--volumes` deletes its data.
+Stop an existing Docker or Homebrew instance before using the same port or accounts.
 
 `docker build -t openport .` builds the same image from a checkout. Each
 [release](https://github.com/38st/openport/releases) also has archives for Linux
@@ -333,6 +366,16 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 Every value is range-checked; `openportd --help` lists every flag, and the
 [runtime notes](docs/runtime.md) cover the details.
 
+| Terminal setting | Default | Controls |
+| --- | --- | --- |
+| Status → Updates → Check for updates | Off | Browser update checks, saved in this browser |
+
+Update checks are opt-in and off by default. When on, the web terminal itself, not
+the server, asks `https://api.github.com/repos/38st/openport/releases/latest` at most
+once a day. It compares that release with the running version from `GET /api/status`,
+and shows a small dismissible notice with a link to the release when it is newer.
+Nothing else is sent. A network failure stays silent.
+
 ## How the numbers are made
 
 - **Time to expiry** runs from the data's own market time, not the wall clock, to the
@@ -415,7 +458,7 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 
 | Route | Returns |
 | --- | --- |
-| `GET /api/status` | Provider, market and per-underlying sessions, feed health, engine counters |
+| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health, engine counters |
 | `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX, coverage and `last_trade` / `auto_close` UTC ISO times |
 | `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks, early-exercise premium and `volume` (session contracts or null); coverage includes `volume` |
 | `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
@@ -538,10 +581,25 @@ is published unless you pass `--publish`, which creates a draft GitHub release f
 version in `CMakeLists.txt` at the current commit, or refreshes its files when the draft
 exists; GitHub tags the commit when you publish the draft.
 
+After publishing the release and its `SHA256SUMS`, update the Homebrew formula:
+
+```bash
+tools/update_formula.sh 0.3.0
+```
+
+The script reads the checksum for `openport-0.3.0-darwin-arm64.tar.gz` and updates
+the formula's URL, version and SHA-256 together. Review and commit
+`Formula/openport.rb` to the default branch so the tap receives it. Do this after
+the final archives and checksums are published. The initial formula has an explicit
+checksum placeholder and cannot install until this step is done. For an offline
+check, pass a saved file as the second argument; `python3 tools/update_formula_test.py`
+tests parsing with fixture checksums. Users update with
+`brew update && brew upgrade openport`, then `brew services restart openport`.
+
 ## Roadmap
 
 - [x] Headless playbook batch backtests, independent days and carried-account evaluation attempts, API and terminal reports
-
+- [x] Homebrew formula, Docker Compose and opt-in browser update notices
 - [x] Versioned playbooks, staged orders, replay auto mode, adherence and historical pass-odds estimates
 - [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors
 

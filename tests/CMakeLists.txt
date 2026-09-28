@@ -18,6 +18,7 @@ target_link_libraries(openport_tests PRIVATE openport::options GTest::gtest_main
 # Unit tests also reach private helpers under src/.
 target_include_directories(openport_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(openport_tests PRIVATE
+  OPENPORT_VERSION="${PROJECT_VERSION}"
   OPENPORT_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 if(OPENPORT_BUILD_PROVIDERS)

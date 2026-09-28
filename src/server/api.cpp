@@ -311,6 +311,7 @@ json status_json(const MetricsSource& source) {
   const EngineStatus s = source.status();
   const auto now = source.wall_time();
   return {
+      {"version", OPENPORT_VERSION},
       {"trading", trading_status_json(s.trading)},
       {"accounts", account_ticks_json(s)},
       {"series", series_status_json(source)},

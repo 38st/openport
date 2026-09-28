@@ -13,6 +13,8 @@
 # a draft GitHub release for vVERSION at this commit with gh, or refreshes the draft's
 # files, notes and commit when one exists. GitHub creates the tag when you publish the
 # draft, so a draft can wait for more commits without tagging the wrong one.
+# After publishing the final archives and SHA256SUMS, run tools/update_formula.sh VERSION
+# and commit Formula/openport.rb to the default branch to update the Homebrew tap.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

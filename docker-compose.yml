@@ -1,0 +1,36 @@
+services:
+  openport:
+    image: ghcr.io/38st/openport:latest
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - openport:/var/lib/openport
+    restart: unless-stopped
+    # Select a provider when enabling its credentials, for example:
+    # command: ["--provider", "databento", "--symbols", "SPX,SPY,QQQ"]
+    # environment:
+    #   DATABENTO_API_KEY: ${DATABENTO_API_KEY}
+    #   MASSIVE_API_KEY: ${MASSIVE_API_KEY}
+    #   TRADIER_ACCESS_TOKEN: ${TRADIER_ACCESS_TOKEN}
+    #   TASTYTRADE_CLIENT_SECRET: ${TASTYTRADE_CLIENT_SECRET}
+    #   TASTYTRADE_REFRESH_TOKEN: ${TASTYTRADE_REFRESH_TOKEN}
+    #   TASTYTRADE_CLIENT_ID: ${TASTYTRADE_CLIENT_ID} # optional
+    healthcheck:
+      # The published Ubuntu image includes Bash, but no curl or wget.
+      test:
+        - CMD
+        - bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/8080;
+          printf 'GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+          IFS= read -r status <&3;
+          [[ "$$status" == HTTP/1.[01]\ 200\ * ]]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  openport:
+    name: openport

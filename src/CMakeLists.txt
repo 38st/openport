@@ -152,6 +152,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/web_server.cpp
   )
   add_library(openport::server ALIAS openport_server)
+  target_compile_definitions(openport_server PRIVATE OPENPORT_VERSION="${PROJECT_VERSION}")
   # Replays run the replay provider beside the live feed.
   target_link_libraries(openport_server PUBLIC openport::recording openport::trading openport::providers)
   target_link_libraries(openport_server

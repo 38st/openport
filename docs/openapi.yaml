@@ -4087,6 +4087,10 @@
       "Status": {
         "type": "object",
         "properties": {
+          "version": {
+            "type": "string",
+            "description": "Running openportd release version; absent on older servers."
+          },
           "trading": {
             "anyOf": [
               {

@@ -45,6 +45,56 @@ written only once the main journal has opened; replays and `--no-paper` keep the
 memory. A read or write failure appears in `circuit_breaker.error` and the daemon log,
 and everything else carries on.
 
+## Homebrew and Docker Compose
+
+`Formula/openport.rb` installs the self-contained Apple Silicon release archive,
+including `bin/`, `share/openport/web` and documentation. It needs no source build.
+Use Docker on Intel Macs and Linux. The README has the installation commands and
+the release step that fills in the formula's checksum.
+
+`brew services start openport` binds to `127.0.0.1:8080`. The service explicitly puts
+the paper journal, other accounts, replay journals, candles and volatility history
+under Homebrew's `var/openport`. It keeps its write token at `var/openport/write-token`
+and stdout/stderr at `var/log/openport.log` and `var/log/openport.error.log`.
+Open the printed `http://localhost:8080/#token=…` link to save the write token in that
+browser tab. If stdout is buffered, append the token file's contents to
+`http://localhost:8080/#token=` yourself. Protect both logs and token files.
+The service does not record the feed by default; the usual recording flags apply
+when running the daemon yourself.
+
+`docker compose up -d` uses `ghcr.io/38st/openport:latest`, publishes port 8080 only
+on `127.0.0.1`, and keeps data in the named `openport` volume at `/var/lib/openport`.
+`docker compose logs openport` shows the token link. Provider environment variables
+and an example provider command are commented in `docker-compose.yml`. The restart
+policy is `unless-stopped`. The healthcheck sends a local HTTP GET to `/api/status`
+and requires HTTP 200; it checks server availability, not market-data freshness.
+Bash's TCP support is used because the published image has no curl or wget.
+
+Update with `docker compose pull && docker compose up -d`. Stopping with
+`docker compose down` preserves the volume. `docker compose down --volumes` deletes
+it. Stop other instances before sharing the volume or port.
+
+## Update notices
+
+Enable **Check for updates** under **Status → Updates** in the terminal. The setting
+is saved in browser storage, separately from server configuration and journals.
+
+Update checks are opt-in and off by default. When on, the web terminal itself, not
+the server, asks `https://api.github.com/repos/38st/openport/releases/latest` at most
+once a day. It compares that release with the running version from `GET /api/status`,
+and shows a small dismissible notice with a link to the release when it is newer.
+Nothing else is sent. A network failure stays silent.
+
+The request has no application credentials, referrer, running version, market data
+or account data. Attempts, including failures, are cached for 24 hours across tabs
+and reloads at the same browser origin. Clearing browser storage clears that cache
+and turns checks off. The browser must support persistent storage and Web Locks;
+otherwise checks are skipped. Localhost and HTTPS support the secure browser context
+needed for locks. Leaving the terminal open permits another check once the day expires.
+Dismissal hides that release, including after reload; a later release can appear.
+No update is installed automatically. Older servers without `status.version` are
+supported and cause no release request.
+
 ## Command-line validation
 
 `openportd` defaults to Cboe delayed data for SPX, SPY, QQQ, IWM and DIA, as does

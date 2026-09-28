@@ -8,6 +8,7 @@ import { WriteAccess } from "./components/TradingControls"
 import { Header } from "./components/Header"
 import { DemoPrompt } from "./components/DemoPrompt"
 import { CircuitBreakerBanner } from "./components/CircuitBreakerBanner"
+import { UpdateNotice } from "./components/UpdateNotice"
 import { ReplayBanner } from "./components/ReplayBanner"
 import { Welcome, welcome } from "./components/Welcome"
 import { Sidebar, viewLabels } from "./components/Sidebar"
@@ -104,6 +105,7 @@ export function App() {
         <DemoPrompt onNavigate={(next) => navigate({ view: next })} />
         <Header symbol={symbol} onSymbol={(s) => navigate({ symbol: s, expiry: null })} onMenu={() => setMenu(true)} />
         <CircuitBreakerBanner />
+        <UpdateNotice />
         <main className="min-w-0 flex-1 p-3 lg:p-5">{content}</main>
         <AlertWatcher />
         <Toasts />

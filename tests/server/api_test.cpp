@@ -106,6 +106,11 @@ TEST(Api, StatusDescribesProviderFeedAndUnderlyings) {
   EXPECT_DOUBLE_EQ(status["underlyings"][0]["spot"].get<double>(), 5000.0);
 }
 
+TEST(Api, StatusIncludesRunningVersionBeforeMarketDataArrives) {
+  CandleSource source;
+  EXPECT_EQ(get(source, "/api/status")["version"], OPENPORT_VERSION);
+}
+
 TEST(Api, TradableUnderlyingFlagUsesContractsAndIsIncludedInTicks) {
   test::SyntheticChain chain;
   auto m = analytics::analyze(chain.book.underlyings().at("SPX"), chain.book, chain.as_of);

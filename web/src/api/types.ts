@@ -98,6 +98,8 @@ export interface CircuitBreaker {
 }
 
 export interface Status {
+  /** Running openportd version; absent on older servers. */
+  version?: string
   series?: { enabled: boolean; directory: string | null; rows_today: number; last_write: string | null; last_error: string | null }
   trading?: TradingStatus | null
   /** Every paper account, the main one first; absent on older servers. */

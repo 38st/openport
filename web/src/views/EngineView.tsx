@@ -1,6 +1,7 @@
 import { marketNow, useLive } from "../api/live"
 import { Panel, FeedBadge } from "../components/ui"
 import { AsOf } from "../components/AsOf"
+import { UpdateSettings } from "../components/UpdateNotice"
 import { clock, count, fixed, price } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { providerLabel } from "../lib/provider"
@@ -28,6 +29,7 @@ export function EngineView() {
 
   return (
     <div className="grid gap-3 lg:grid-cols-2">
+      <UpdateSettings />
       <Panel title="Provider">
         <Row label="Name">{provider.name}</Row>
         <Row label="Data">{providerLabel(provider, feed.state)}</Row>

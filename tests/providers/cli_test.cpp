@@ -184,6 +184,7 @@ Finished run_daemon(const std::string& args) {
 TEST(Cli, DaemonPrintsItsVersion) {
   const auto result = run_daemon("--version");
   EXPECT_EQ(result.status, 0) << result.output;
+  EXPECT_EQ(result.output, std::string("openportd ") + OPENPORT_VERSION + "\n");
   EXPECT_TRUE(std::regex_match(result.output, std::regex(R"(openportd \d+\.\d+\.\d+\n)"))) << result.output;
 }
 
