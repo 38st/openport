@@ -126,7 +126,9 @@ with generated prices labelled as simulated on every page:
   attempts. The CLI, API and Backtest page keep reports and verifiable journals.
   Results are simulated trading, not predictions or investment advice.
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
-  book, each with its own journal, rules and positions on the same market.
+  book, each with its own journal, rules and positions on the same market. Public
+  demo visitors can create private sandbox accounts on simulated prices, removed
+  after 24 hours unused or a server restart.
 - **Replay**: record every session and trade any recorded day again beside the live
   feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
   at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
@@ -223,8 +225,8 @@ shows where the market went next.
 `--plan` picks the main account's first plan; start a new attempt on any plan from the
 Dashboard or Rules page, and add accounts from the account switcher in the sidebar.
 
-Every account survives restarts through an append-only, hash-chained journal: the main
-account at `~/.openport/paper-journal.jsonl` (`--paper-journal`), the others in an
+Ordinary paper accounts survive restarts through an append-only, hash-chained journal:
+the main account at `~/.openport/paper-journal.jsonl` (`--paper-journal`), the others in an
 `accounts` directory beside it. Each record reaches the disk before its transaction is
 published, and carries what the transaction changed, with the whole state every
 thousand records; `openportd --compact-journals` rewrites journals
@@ -313,14 +315,16 @@ Add `--record-dir ~/.openport/recordings` to record each session for the Replay 
 Full chains are large: see [recording](docs/runtime.md#recording-and-replay) before
 recording all day.
 
-## Public watch-only demo
+## Public demo and sandbox accounts
 
 Run `openportd --provider demo --address 0.0.0.0 --write-token-file PATH` with
 `--allowed-host terminal.example.com` for your public name, or set
 `OPENPORT_WRITE_TOKEN` instead of the file. Terminate HTTPS at the reverse proxy.
 Keep the write token private; visitors can watch without it, and the terminal shows
-a watch-only notice with an action to enter a token. Paper trading and Replay
-writes still require the token.
+a watch-only notice with an action to enter a token. Add `--sandboxes 100` to let
+visitors create their own practice accounts and trade the simulated feed. Their
+session tokens work only on their own account. Server settings still need the
+operator's token. Without this option, visitors can only watch.
 
 The demo feed uses only simulated prices. Without `--paper-journal`, it keeps the
 main account at `~/.openport/demo/paper-journal.jsonl`, with accounts and replay
@@ -329,13 +333,26 @@ from live ones, including when you supply a path. With Docker, use a separate vo
 
 ```bash
 docker run --rm -p 127.0.0.1:8080:8080 -v openport-demo:/var/lib/openport \
-  ghcr.io/38st/openport --provider demo --allowed-host terminal.example.com
+  ghcr.io/38st/openport --provider demo --sandboxes 100 \
+    --allowed-origin https://terminal.example.com --allowed-host terminal.example.com
 ```
 
 Put the HTTPS proxy in front of that local port. The image keeps its write token
 in the volume; do not share the token link printed at startup. Arguments after the
 image replace its default provider command. Its explicit journal path is in that
-volume. [Demo feed options](docs/runtime.md#demo-feed).
+volume. Sandbox journals live in a separate `sandboxes` directory beside the demo
+journal. They are deleted after 24 hours without authenticated requests and on
+startup; `--sandbox-idle-seconds N` changes the idle time. Sandbox tokens are returned
+once and saved in the browser tab's session storage, with an in-memory fallback.
+
+On Railway, add `--client-ip-header X-Real-IP` so visitors do not share the proxy's
+creation allowance. Configure both `--allowed-origin` and `--allowed-host` for the
+public names. Trust that header only behind a proxy that overwrites it and prevents
+direct access to the backend. By default, the server uses the connection address
+and ignores forwarding headers. Creation allows 3 accounts per client and 30 total
+per hour, with at most 100 at once in this example; each sandbox allows 60 order
+requests per minute. Full capacity or rate limits return HTTP 429. The normal
+low-disk journal refusal applies. [Runtime details](docs/runtime.md#public-sandboxes).
 
 ## Providers
 
@@ -381,6 +398,9 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
 | `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
 | `--notify-config FILE` | Owner-only JSON file for notification channels and filters; alternatively `OPENPORT_NOTIFY_JSON` or channel environment variables ([setup](docs/runtime.md#external-notifications)) |
+| `--sandboxes N` | Offer up to N visitor accounts; 0 (default) disables them. Requires `--provider demo` and paper trading |
+| `--sandbox-idle-seconds N` | Delete sandboxes after N seconds without authenticated use; default 86400 |
+| `--client-ip-header NAME` | Use this proxy header for sandbox creation limits; unset uses the connection address |
 | `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
 | `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account (demo defaults to `~/.openport/demo/paper-journal.jsonl`); plan, cash and fee seed a new journal only. Rules selects optional fill models for a new attempt. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
 | `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
@@ -491,7 +511,7 @@ provider thread ──events──▶ queue ──▶ engine thread: chain book 
 
 | Route | Returns |
 | --- | --- |
-| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health (including the demo day title), engine counters and notification delivery status (no secrets) |
+| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health (including the demo day title), engine counters, notification delivery status (no secrets), and optional sandbox availability |
 | `POST /api/notifications/test` | Queue a test for `{ "channel": "ID" }`; requires admin |
 | `PUT /api/notifications/channels/ID` | Change a channel's enabled state, event filters and floor distance for this process; requires admin |
 | `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX, coverage and `last_trade` / `auto_close` UTC ISO times |
@@ -525,7 +545,8 @@ these routes, so anything it does can be scripted:
 | `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |
 | `PUT /api/risk/limits`, `PUT /api/risk/guardrails`, `POST /api/risk/kill` | Tighten rules now or queue looser values for rollover; set personal guardrails; trip or reset the kill switch |
 | `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt; optional `fill_model` selects `as_displayed` or `conservative` |
-| `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one, with optional `fill_model`; every route above takes `?account=ID` for one other than the main account |
+| `POST /api/sandboxes` | Create a private demo practice account and return its token once; unauthenticated when enabled, 404 when off, 429 at capacity or a creation rate limit |
+| `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one, with optional `fill_model`; account routes take `?account=ID` for one other than the main account |
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`; control or stop. `/api/replay/X` mirrors `/api/X` |
 | `PUT /api/replay {"until":"HH:MM[:SS]"}` | Advance through a New York session time (or ISO timestamp), then pause; responds after analytics and trading settle, with `settled_through` |
 | `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, portfolio, trades or fills; delete its journal |
@@ -544,6 +565,11 @@ curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{
 Sending the same order again with the same `client_order_id` is safe: it returns the
 first answer instead of placing a second order. [Paper trading](docs/paper-trading.md)
 documents every field, rule and reason code.
+
+Sandbox demos also offer `POST /api/sandboxes` without a token. It returns
+`{account, token, idle_seconds, simulated: true}` once; it returns 404 when disabled
+and 429 at capacity or a creation rate limit. `GET /api/status` includes
+`sandboxes: {enabled: true, idle_seconds}` when offered.
 
 ## Scripting and agents
 
@@ -578,7 +604,8 @@ Named tokens from `--token-file FILE` grant `read`, `trade:ACCOUNT`, `trade:*`,
 `replay` or `admin`. `replay` permits replay controls and backtest starts and
 cancellation. `admin` includes account creation, limits, guardrails, resets,
 the kill switch, playbook definitions and history deletion. Writes always check the token they carry;
-without `--require-token`, reads ignore one that matches nothing. The server prints
+without `--require-token`, reads ignore one that matches nothing, except expired
+sandbox credentials when sandboxes are offered. The server prints
 only the link for a token it keeps in a file, as the Docker image does, and never
 prints named tokens. The token file is read at startup; protect it with owner-only
 permissions and restart to rotate tokens. Send Bearer credentials over
@@ -637,6 +664,7 @@ tests parsing with fixture checksums. Users update with
 - [x] Homebrew formula, Docker Compose and opt-in browser update notices
 - [x] External notifications through Discord, Telegram, ntfy and generic webhooks
 - [x] Versioned playbooks, staged orders, replay auto mode, adherence and historical pass-odds estimates
+- [x] Private visitor sandbox accounts on public simulated demos, with idle expiry and rate limits
 - [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors
 
 - [x] Plan-locked limits, personal guardrails, order previews and size to floor, breach

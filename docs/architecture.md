@@ -69,6 +69,11 @@ flowchart LR
 - **API clients** use the checked OpenAPI contract. The Python client and MCP
   server call the same routes as the terminal. HTTP scope checks run before
   enqueueing; the authenticated actor travels with each command into the journal.
+- **Visitor sandboxes** are ordinary Desk accounts on the demo feed with ephemeral
+  scoped credentials. A mutex protects capacity reservations and rate limits.
+  Expiry uses a separate injectable monotonic clock; the engine thread deletes
+  expired accounts and files. HTTP and WebSocket account visibility follows the
+  authenticated identity. No new reducer state or journal fields are required.
 - **External notifications** observe live account publications and feed health.
   A bounded queue hands selected events to one HTTP worker; retries and rate limits
   use its own clock. Replay engines never attach the observer. No notification

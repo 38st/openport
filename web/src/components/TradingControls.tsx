@@ -1,5 +1,7 @@
-import { useState } from "react"
-import { ApiError } from "../api/client"
+import { useRef, useState } from "react"
+import { api, ApiError } from "../api/client"
+import { activeAccount } from "../lib/active-account"
+import type { Status } from "../api/types"
 import type { TradingStatus } from "../api/trading-types"
 import { fixed } from "../lib/format"
 import { useWriteToken, writeToken } from "../lib/write-token"
@@ -43,11 +45,35 @@ export function writeBlocked(trading: TradingStatus, token: string) {
 }
 
 /** One notice in the terminal shell, shared by all trading panels. */
-export function WatchOnlyNotice({ trading }: { trading?: TradingStatus | null }) {
+export function WatchOnlyNotice({ trading, sandboxes, onCreated }: {
+  trading?: TradingStatus | null; sandboxes?: Status["sandboxes"]; onCreated?: (account: string) => void
+}) {
   const token = useWriteToken()
+  const busy = useRef(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<unknown>()
+  const [storageWarning, setStorageWarning] = useState(false)
+  async function create() {
+    if (busy.current) return
+    busy.current = true
+    setPending(true)
+    setError(undefined)
+    try {
+      const result = await api.createSandbox()
+      activeAccount.set(result.account)
+      setStorageWarning(!writeToken.set(result.token, result.account))
+      onCreated?.(result.account)
+    } catch (failure) { setError(failure) }
+    finally { busy.current = false; setPending(false) }
+  }
+  if (token && writeToken.sandboxAccount() && storageWarning) return <p role="status" className="border-b border-border px-4 py-2 text-xs text-warn">Session storage unavailable; sandbox token kept in memory until this page closes.</p>
   if (trading?.write !== "token" || token) return null
   return <div role="status" aria-label="Watch only" className="flex flex-wrap items-center gap-3 border-b border-border bg-raised px-4 py-2 text-sm text-muted">
-    <span>Watch only. Trading on this server needs its write token.</span>
+    <span>{sandboxes?.enabled ? "Watch only. Try trading on simulated prices in your own sandbox account." : "Watch only. Trading on this server needs its write token."}</span>
+    {sandboxes?.enabled && <button type="button" className="trade-button" disabled={pending} onClick={() => void create()}>
+      {pending ? "Creating sandbox…" : "Try trading with a sandbox account"}
+    </button>}
+    <TradingError error={error} />
     <WriteAccess trading={trading} />
   </div>
 }

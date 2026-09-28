@@ -7,6 +7,11 @@
 
 namespace openport::server {
 
+struct ApiAccess {
+  bool admin = false;
+  std::string sandbox;
+};
+
 struct ApiRequest {
   ApiRequest(std::string method_value = "GET", std::string target_value = {}, std::string body_value = {})
       : method(std::move(method_value)), target(std::move(target_value)), body(std::move(body_value)) {}
@@ -18,6 +23,8 @@ struct ApiRequest {
   std::string host;
   std::string authorization;
   std::string actor = "unknown";  ///< Set by transport authentication, never request JSON.
+  ApiAccess access;
+  std::string client_ip;  ///< Connection peer, or the explicitly configured proxy header.
   bool ambiguous_headers = false;
 };
 
@@ -116,6 +123,6 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
 
 /// The small message pushed to every WebSocket client each second, so the UI knows
 /// when data changed without polling everything.
-[[nodiscard]] std::string tick_message(const MetricsSource& source);
+[[nodiscard]] std::string tick_message(const MetricsSource& source, const ApiAccess& access = {});
 
 }  // namespace openport::server

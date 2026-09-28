@@ -3480,6 +3480,69 @@
           }
         }
       }
+    },
+    "/api/sandboxes": {
+      "post": {
+        "summary": "Create a visitor sandbox on simulated demo prices",
+        "description": "Unauthenticated only when --sandboxes is enabled. Returns the secret once. Accounts and tokens expire after idle time and are removed at startup. Host, Origin, capacity and rate checks apply.",
+        "security": [
+          {}
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Sandbox created; save the bearer token in session storage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "account",
+                    "token",
+                    "idle_seconds",
+                    "simulated"
+                  ],
+                  "properties": {
+                    "account": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "type": "string",
+                      "description": "One-time bearer secret; at least 128 random bits"
+                    },
+                    "idle_seconds": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "simulated": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Sandboxes are disabled"
+          },
+          "429": {
+            "description": "Capacity or creation rate limit reached"
+          },
+          "503": {
+            "description": "Trading storage or command inbox unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4038,6 +4101,11 @@
           },
           "trading": {
             "$ref": "#/components/schemas/TradingStatus"
+          },
+          "sandbox_idle_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Present only for a visible sandbox account; idle lifetime in seconds."
           }
         },
         "required": [
@@ -4249,6 +4317,23 @@
           },
           "notifications": {
             "$ref": "#/components/schemas/NotificationStatus"
+          },
+          "sandboxes": {
+            "type": "object",
+            "required": [
+              "enabled",
+              "idle_seconds"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "idle_seconds": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "description": "Present when visitor sandboxes are offered."
           }
         },
         "required": [

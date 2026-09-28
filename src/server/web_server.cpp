@@ -1,4 +1,5 @@
 #include "openport/server/web_server.hpp"
+#include "openport/server/sandboxes.hpp"
 
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/executor_work_guard.hpp>
@@ -239,13 +240,14 @@ std::optional<std::string> websocket_authorization(std::string_view bearer, std:
 }
 
 std::string write_mode(const WritePolicy& policy) {
-  if (!policy.token.empty() || !policy.tokens.empty() || policy.require_token) return "token";
+  if (!policy.token.empty() || !policy.tokens.empty() || policy.require_token || policy.sandboxes) return "token";
   boost::system::error_code error;
   const auto address = boost::asio::ip::make_address(policy.address, error);
   return !error && address.is_loopback() ? "open" : "disabled";
 }
 
-std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy, std::string* actor) {
+std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy, std::string* actor, ApiAccess* access) {
+  if (access) *access = {};
   if (!request.target.starts_with("/api/") && request.target != "/ws") return {};
   const bool read = request.method == "GET";
   if (!read && request.method != "POST" && request.method != "PUT" && request.method != "DELETE") return {};
@@ -253,11 +255,13 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
           request.origin ? std::optional<std::string_view>(*request.origin) : std::nullopt,
           request.host, policy.allowed_origins)))
     return api_error(403, "ORIGIN_REJECTED", "Origin or security headers are ambiguous or not allowed");
+  const bool create_sandbox = request.method == "POST" && request.target.substr(0, request.target.find('?')) == "/api/sandboxes";
+  if (create_sandbox && !policy.sandboxes) return api_error(404, "NOT_FOUND", "Sandboxes are not offered");
   boost::system::error_code address_error;
   const auto address = boost::asio::ip::make_address(policy.address, address_error);
   const bool loopback = !address_error && address.is_loopback();
   std::vector<std::string> scopes;
-  std::string name;
+  std::string name, sandbox;
   if (!request.authorization.empty()) {
     constexpr std::string_view prefix = "Bearer ";
     const auto matches = [&](const std::string& secret) {
@@ -273,11 +277,21 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
     for (const auto& token : policy.tokens) {
       if (matches(token.secret)) { name = token.name; scopes = token.scopes; }
     }
+    if (name.empty() && policy.sandboxes && request.authorization.starts_with(prefix)) {
+      if (const auto account = policy.sandboxes->authenticate(std::string_view(request.authorization).substr(prefix.size()))) {
+        sandbox = *account;
+        const NamedToken token{sandbox, {"read", "trade:" + sandbox}, {}};
+        name = token.name;
+        scopes = token.scopes;
+      } else if (request.authorization.starts_with("Bearer sandbox_")) {
+        return api_error(403, "SANDBOX_EXPIRED", "This sandbox has expired. Create a new sandbox account.");
+      }
+    }
     // Reads are public unless --require-token, so a stale token saved in a browser tab
     // cannot hide the market data; writes still reject it.
     if (name.empty() && (!read || policy.require_token))
       return api_error(403, "WRITE_TOKEN_REQUIRED", "A valid bearer token is required");
-  } else if (!policy.require_token && (read || (loopback && policy.token.empty()))) {
+  } else if (create_sandbox || (!policy.require_token && (read || (loopback && policy.token.empty() && !policy.sandboxes)))) {
     name = "loopback";
     scopes = {"admin"};
   } else {
@@ -298,6 +312,17 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
     if (amp == std::string_view::npos) break;
     query.remove_prefix(amp + 1);
   }
+  if (!sandbox.empty()) {
+    const bool market_read = read && (path == "/ws" || path == "/api/status" || path == "/api/accounts" ||
+        path == "/api/plans" || path == "/api/strategy-template" || path.starts_with("/api/underlyings/"));
+    const bool account_read = read && (path == "/api/account" || path == "/api/account/equity" ||
+        path == "/api/account/pass-odds" || path == "/api/portfolio" || path == "/api/orders" ||
+        path == "/api/fills" || path == "/api/risk" || path == "/api/trades" ||
+        path == "/api/trades.csv" || path == "/api/fills.csv" || path == "/api/playbooks");
+    if ((!market_read && account != sandbox) || (read && !market_read && !account_read) ||
+        (!read && path.starts_with("/api/playbooks")))
+      return api_error(403, "SCOPE_REQUIRED", "Sandbox tokens may access only their own account and the demo market");
+  }
   const bool replay = path.starts_with("/api/replay/");
   if (replay) path.remove_prefix(11); // leaves /orders, /risk, ...
   else if (path.starts_with("/api/")) path.remove_prefix(4);
@@ -305,12 +330,18 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
       path.starts_with("/orders/") || path == "/positions/close" || path == "/positions/exercise" || path == "/stocks/close" ||
       path.starts_with("/playbooks/staged/") ||
       ((path.starts_with("/trades/") || path.starts_with("/days/")) && path.ends_with("/note"));
-  const bool permitted = has("admin") || (read ? has("read") || !policy.require_token :
+  const bool permitted = (create_sandbox && sandbox.empty()) || has("admin") || (read ? has("read") || !policy.require_token :
       ((path == "/replay" || path == "/backtests" || path.starts_with("/backtests/")) ? has("replay") :
        trade && (replay ? has("replay") : has("trade:*") || has("trade:" + account))));
   if (!permitted) return api_error(403, "SCOPE_REQUIRED", "Token does not permit this operation");
+  if (access) *access = {has("admin") && !request.authorization.empty(), sandbox};
   if (actor) *actor = name;
+  const bool sandbox_account = !sandbox.empty() || (has("admin") && !request.authorization.empty() &&
+      policy.sandboxes && policy.sandboxes->active(account, true));
   if (read) return {};
+  if (sandbox_account && (path == "/orders" || (path.starts_with("/orders/") && path != "/orders/cancel")) &&
+      request.method != "DELETE" && !policy.sandboxes->allow_order(account))
+    return api_error(429, "SANDBOX_ORDER_RATE", "Too many sandbox order requests. Try again in a minute.");
   if (request.method == "DELETE") {
     if (!request.body.empty()) return api_error(400, "INVALID_REQUEST", "DELETE must have no body");
   } else {
@@ -420,8 +451,8 @@ class Hub {
 
 class WsSession : public Session, public std::enable_shared_from_this<WsSession> {
  public:
-  WsSession(tcp::socket&& socket, Hub& hub, std::unique_ptr<WebSocketSlots::Lease> slot)
-      : ws_(std::move(socket)), hub_(hub), slot_(std::move(slot)) {
+  WsSession(tcp::socket&& socket, Hub& hub, std::unique_ptr<WebSocketSlots::Lease> slot, ApiAccess access, std::shared_ptr<Sandboxes> sandboxes)
+      : ws_(std::move(socket)), hub_(hub), slot_(std::move(slot)), access_(std::move(access)), sandboxes_(std::move(sandboxes)) {
     ws_.read_message_max(kWebSocketMessageMax);
   }
 
@@ -454,8 +485,14 @@ class WsSession : public Session, public std::enable_shared_from_this<WsSession>
   void send(std::shared_ptr<const std::string> message) {
     asio::post(ws_.get_executor(), [self = shared_from_this(), message = std::move(message)] {
       if (!self->open_) return;
+      if (self->sandboxes_ && !self->access_.sandbox.empty()) {
+        if (!self->sandboxes_->active(self->access_.sandbox)) { (void)self->stop(); return; }
+        if (message->find("\"replay_tick\"") != std::string::npos) return;
+      }
       const bool idle = self->queue_.empty();
-      self->queue_.push(std::move(message));
+      if (self->sandboxes_)
+        self->queue_.push(std::make_shared<const std::string>(sandbox_tick(*message, self->access_)));
+      else self->queue_.push(std::move(message));
       if (idle) self->write_next();
     });
   }
@@ -502,6 +539,8 @@ class WsSession : public Session, public std::enable_shared_from_this<WsSession>
   Hub& hub_;
   std::unique_ptr<WebSocketSlots::Lease> slot_;
   TickQueue queue_;
+  ApiAccess access_;
+  std::shared_ptr<Sandboxes> sandboxes_;
   bool stopped_ = false;
   bool open_ = false;
 };
@@ -602,7 +641,7 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
         auth.authorization = authorization.value_or("");
         auth.ambiguous_headers = !authorization || request.count(http::field::authorization) > 1 ||
                                  request.count(http::field::sec_websocket_protocol) > 1;
-        if (auto rejection = check_api_write(auth, shared_.write_policy))
+        if (auto rejection = check_api_write(auth, shared_.write_policy, nullptr, &auth.access))
           return reject_upgrade(request, http::status::forbidden, rejection->body);
         auto slot = shared_.slots.acquire();
         if (!slot)
@@ -610,7 +649,7 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
                                 "WebSocket session limit reached");
         stream_.expires_never();
         auto session =
-            std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot));
+            std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot), std::move(auth.access), shared_.write_policy.sandboxes);
         // During shutdown an upgrade must not escape the registry's close barrier.
         if (shared_.sessions.add(session)) session->accept(std::move(request));
       }
@@ -654,7 +693,15 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     if (request.count(http::field::origin)) api.origin = std::string(request[http::field::origin]);
     api.ambiguous_headers = request.count(http::field::origin) > 1 || request.count(http::field::host) != 1 ||
                             request.count(http::field::authorization) > 1 || request.count(http::field::content_type) > 1;
-    if (auto rejection = check_api_write(api, shared_.write_policy, &api.actor))
+    if (shared_.write_policy.sandboxes) {
+      const auto& header = shared_.write_policy.client_ip_header;
+      beast::error_code peer_error;
+      const auto peer = stream_.socket().remote_endpoint(peer_error);
+      api.client_ip = sandbox_client_ip(peer_error ? "unknown" : peer.address().to_string(), header,
+          header.empty() ? std::string_view{} : std::string_view(request[header]),
+          !header.empty() && request.count(header) > 1);
+    }
+    if (auto rejection = check_api_write(api, shared_.write_policy, &api.actor, &api.access))
       return send_api(std::move(*rejection), request.version(), request.keep_alive());
     completion_gate_ = std::make_shared<CompletionGate>();
     awaiting_ = shared_from_this();
@@ -811,7 +858,8 @@ struct WebServer::Impl {
 
 WebServer::WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
                      AsyncApiHandler api, std::vector<std::string> allowed_origins, std::string write_token,
-                     std::vector<std::string> allowed_hosts, std::vector<NamedToken> tokens, bool require_token)
+                     std::vector<std::string> allowed_hosts, std::vector<NamedToken> tokens, bool require_token,
+                     std::shared_ptr<Sandboxes> sandboxes, std::string client_ip_header)
     : impl_(std::make_unique<Impl>()) {
   impl_->shared.web_root = std::move(web_root);
   impl_->shared.api = std::move(api);
@@ -822,7 +870,7 @@ WebServer::WebServer(std::string address, unsigned short port, std::filesystem::
     if (host_name(host).empty()) throw std::invalid_argument("invalid allowed host: " + host);
   }
   impl_->shared.allowed_hosts = std::move(allowed_hosts);
-  impl_->shared.write_policy = {address, std::move(write_token), allowed_origins, std::move(tokens), require_token};
+  impl_->shared.write_policy = {address, std::move(write_token), allowed_origins, std::move(tokens), require_token, std::move(sandboxes), std::move(client_ip_header)};
   impl_->shared.allowed_origins = std::move(allowed_origins);
   impl_->address = std::move(address);
   impl_->requested_port = port;

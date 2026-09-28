@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
+import { isSandboxToken, useWriteToken } from "../lib/write-token"
 import { useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -11,7 +12,8 @@ import { TradingError } from "./TradingControls"
 /** The server's demo market, offered while nothing on the live feed can be traded. */
 export function useDemoOffer() {
   const live = useLive()
-  const idle = live.source === "live" && nothingTrades(live.underlyings)
+  const sandbox = isSandboxToken(useWriteToken())
+  const idle = !sandbox && live.source === "live" && nothingTrades(live.underlyings)
   const listing = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), enabled: idle, staleTime: 30_000 })
   const controls = useReplayControls()
   const demo = listing.data?.demo

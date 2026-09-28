@@ -632,6 +632,67 @@ is the next trading date after the latest recovered market time's trading date
 across the main and named accounts. Without recovered market time, the first day
 remains the last trading date before startup's New York date.
 
+## Public sandboxes
+
+Only `--provider demo` may offer visitor accounts. `--sandboxes N` enables up to N
+accounts at once; absent or 0 leaves the existing server behaviour unchanged.
+Other providers and `--no-paper` are startup errors when N is positive.
+
+For a public demo behind Railway's HTTPS proxy, for example:
+
+```bash
+openportd --provider demo --address 0.0.0.0 --sandboxes 100 \
+  --write-token-file /var/lib/openport/write-token \
+  --paper-journal /var/lib/openport/demo/paper-journal.jsonl \
+  --allowed-origin https://terminal.example.com \
+  --allowed-host terminal.example.com --client-ip-header X-Real-IP
+```
+
+Keep the operator token private. Railway supplies `X-Real-IP` and
+`X-Forwarded-For`; select `X-Real-IP`, a single IP address. The configured header
+must be overwritten by the trusted proxy, and the backend must not accept direct
+public connections. No header is trusted by default. Missing, invalid, duplicate
+or comma-separated values fall back to the connection address. IP literals are
+normalized, including IPv6. Host and Origin checks still apply to creation.
+
+`POST /api/sandboxes` accepts an empty JSON object without authentication and
+returns HTTP 201 with `{account, token, idle_seconds, simulated: true}`. The account
+uses the practice plan and its usual default cash. The random 128-bit bearer
+secret is returned once, never logged or written to a URL. Only a digest stays in
+memory. The terminal saves the token in session storage, falls back to memory
+when storage is unavailable, and switches to that account. A refused sandbox
+token is cleared so the visitor can create another. Operator token entry remains.
+
+Creation permits 3 accounts per client and 30 globally in a rolling hour.
+Pending creations count toward capacity. At capacity or a creation rate limit,
+the server returns HTTP 429 with a reason. Each account permits 60 order requests
+per rolling minute, including previews and modifications. Cancels and flatten
+remain available at the order cap. Limits use an independent monotonic clock;
+they never advance the trading reducer's market time.
+
+Sandbox tokens use `read` and `trade:ACCOUNT` scopes, with reads restricted to the
+account and the simulated market. They permit orders, previews, cancels, flatten,
+exercise, stock closure, notes and tags. They cannot change limits, guardrails,
+kill switches, plans, playbook definitions or notification settings, create normal
+accounts, reset accounts, run replays or backtests, or access another account.
+Public API reads, account listings and WebSocket ticks omit sandboxes. Only their
+own token or an authenticated admin sees them. Sandbox trading does not send
+external notifications.
+
+Accounts expire after 24 hours without authenticated requests. Set
+`--sandbox-idle-seconds N` to change that interval. Keeping the terminal open and
+polling counts as use; feed updates and outgoing ticks do not. The engine removes
+the account, its credential and its entire directory under `sandboxes/` beside the
+demo journal. The normal 64 MiB free-space journal refusal also applies to these
+accounts. Capacity is returned after successful file removal; failed removal is
+retried. Startup removes leftover sandbox files while holding the main journal's
+writer lock. Sandboxes and their tokens do not survive restart. Main accounts,
+named accounts and replay files are kept.
+
+`GET /api/status` advertises `sandboxes: {enabled: true, idle_seconds}` while the
+feature is on. With it off, that field is absent and creation returns HTTP 404.
+Use a separate journal and volume for the simulated demo, as described above.
+
 ## Price history
 
 The chart on Trade reads `GET /api/underlyings/{symbol}/candles` from two sources:

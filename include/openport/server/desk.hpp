@@ -3,6 +3,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -17,12 +18,14 @@
 namespace openport::server {
 class Playbooks;
 class SeriesStore;
+class Sandboxes;
 
 /// Single-owner market-to-account kernel. The caller supplies both clocks and
 /// drain boundaries; this class has no threads, queue, HTTP or clock reads.
 class Desk {
  public:
   struct Options {
+    std::shared_ptr<Sandboxes> sandboxes;
     std::string initial_actor = "system";
     std::string initial_playbooks;  ///< Replay provenance snapshot; empty loads the journal sibling.
     std::shared_ptr<SeriesStore> series;
@@ -51,6 +54,7 @@ class Desk {
 
   Desk(std::string provider, md::Capabilities capabilities, md::Subscription subscription, Options options);
   void start_trading();
+  void expire_sandboxes(const std::vector<std::string>& expired);
   void halt() { stopping_ = true; }
   void stop() { halt(); flush_journals(); accounts_.clear(); }
   /// Owner-thread durability barrier. A failed sync disables that account.
@@ -120,6 +124,7 @@ class Desk {
   std::map<std::string, std::shared_ptr<const analytics::UnderlyingMetrics>> metrics_;
   // Initialized/recovered by start_trading(), then owned by the caller.
   std::vector<PaperAccount> accounts_;  // the main account first
+  std::set<std::string> sandbox_ids_;
   std::map<std::string, std::string> settlement_source_;
   /// Each underlying's first print at or after a date's regular close, and its
   /// last one before it, for the last week of dates.

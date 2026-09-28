@@ -44,6 +44,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/series_test.cpp
     server/equity_test.cpp
     server/web_policy_test.cpp
+    server/sandboxes_test.cpp
     server/engine_test.cpp
     server/notifications_test.cpp
     server/playbooks_test.cpp

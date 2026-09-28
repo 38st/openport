@@ -5,7 +5,7 @@ import { useLive } from "../api/live"
 import { usePlans } from "../api/trading"
 import type { TradingStatus } from "../api/trading-types"
 import { offeredPlans } from "../lib/payouts"
-import { useWriteToken } from "../lib/write-token"
+import { isSandboxToken, useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { Badge } from "./ui"
 import { planFacts } from "./ResetDialog"
@@ -17,7 +17,9 @@ import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
  */
 export function AccountSwitcher() {
   const { accounts, account, switchAccount, trading, source, switchSource } = useLive()
-  const history = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), staleTime: 5_000 })
+  const sandbox = isSandboxToken(useWriteToken())
+  const idle = accounts.find((item) => item.id === account)?.sandbox_idle_seconds
+  const history = useQuery({ enabled: !sandbox, queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), staleTime: 5_000 })
   const [creating, setCreating] = useState(false)
   if (!trading || !accounts.length) return null
   return (
@@ -33,9 +35,10 @@ export function AccountSwitcher() {
         {accounts.map((a) => (
           <option key={a.id} value={a.id}>{source.startsWith("history:") ? "Live main account" : a.name}{source.startsWith("history:") ? "" : a.trading.plan ? ` · ${a.trading.plan}` : ""}{a.trading.enabled ? "" : " (unavailable)"}</option>
         ))}
-        {(history.data?.history ?? []).map((run) => <option key={run.id} value={`history:${run.id}`}>Replay · {run.file} · {run.demo ? "simulated" : "recording"} · {run.result}</option>)}
-        {source === "live" && <option value="+new">New account…</option>}
+        {(!sandbox ? history.data?.history ?? [] : []).map((run) => <option key={run.id} value={`history:${run.id}`}>Replay · {run.file} · {run.demo ? "simulated" : "recording"} · {run.result}</option>)}
+        {source === "live" && !sandbox && <option value="+new">New account…</option>}
       </select>
+      {!!idle && <p className="text-[11px] text-muted">Sandbox · removed after {idle % 3600 === 0 ? `${idle / 3600} h` : `${idle} s`} unused</p>}
       {source !== "live" && <Badge tone="neutral">replay{source.startsWith("history:") ? " · read-only" : ""}</Badge>}
       {creating && <NewAccountDialog trading={trading} onClose={() => setCreating(false)}
         onCreated={(id) => { setCreating(false); switchAccount(id) }} />}

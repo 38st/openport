@@ -3,7 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api } from "./client"
 import { connectLive, type Connection } from "./connection"
 import { activeAccount, MAIN_ACCOUNT, useActiveAccount } from "../lib/active-account"
-import { useWriteToken } from "../lib/write-token"
+import { isSandboxToken, useWriteToken, writeToken } from "../lib/write-token"
 import { dataSource, useDataSource, type DataSource } from "../lib/data-source"
 import type { AccountBrief, ReplayState, Status, Tick, UnderlyingSnapshot, UnderlyingStatus } from "./types"
 
@@ -71,6 +71,7 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
 export function LiveProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const token = useWriteToken()
+  const sandbox = isSandboxToken(token) ? writeToken.sandboxAccount() : ""
   const [tick, setTick] = useState<Tick | null>(null)
   const [replayTick, setReplayTick] = useState<Tick | null>(null)
   const replaySeen = useRef(0)
@@ -82,6 +83,8 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const scheme = window.location.protocol === "https:" ? "wss" : "ws"
+    setTick(null)
+    setReplayTick(null)
     return connectLive(`${scheme}://${window.location.host}/ws`, queryClient, setTick, (next) => {
       setConnection(next)
       setAccountScope((scope) => scope + 1)
@@ -93,10 +96,10 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { void queryClient.invalidateQueries() }, [queryClient, token])
 
-  const history = useQuery({ queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), refetchInterval: 10_000 })
+  const history = useQuery({ enabled: !isSandboxToken(token), queryKey: ["replay-listing"], queryFn: ({ signal }) => api.replay(signal), refetchInterval: 10_000 })
   const archived = source.startsWith("history:") ? history.data?.history?.find((run) => run.id === source.slice(8)) : undefined
   const status = useQuery({
-    queryKey: ["status", source],
+    queryKey: ["status", source, sandbox || (token ? "authenticated" : "public")],
     queryFn: ({ signal }) => api.status(signal),
     refetchInterval: connection === "open" ? 10_000 : 2_000,
   })
@@ -133,8 +136,17 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   // Fall back to the main account when the active one is gone (or the server keeps only one).
   const known = tick?.accounts ?? (source === "live" ? status.data?.accounts ?? (status.data ? [] : undefined) : undefined)
   useEffect(() => {
-    if (source === "live" && known && account !== MAIN_ACCOUNT && !known.some((a) => a.id === account)) switchAccount(MAIN_ACCOUNT)
-  }, [source, known, account, switchAccount])
+    if (!isSandboxToken(token) && source === "live" && known && account !== MAIN_ACCOUNT && !known.some((a) => a.id === account)) switchAccount(MAIN_ACCOUNT)
+  }, [source, known, account, switchAccount, token])
+  useEffect(() => {
+    if (!sandbox) return
+    if (source !== "live") switchSource("live")
+    if (sandbox !== account) switchAccount(sandbox)
+    if (source === "live" && status.data && !status.isFetching && !status.data.sandboxes?.enabled) {
+      activeAccount.set(MAIN_ACCOUNT)
+      writeToken.set("")
+    }
+  }, [sandbox, status.data, status.isFetching, account, switchAccount, source, switchSource])
   const value = useMemo<Live>(
     () => liveState(status.data, source === "replay" ? replayTick : source === "live" ? tick : null, connection, accountScope,
       source !== "live" ? MAIN_ACCOUNT : account, switchAccount, source, source.startsWith("history:") ? archived ?? null : replayTick?.replay ?? null, switchSource),

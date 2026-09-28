@@ -75,7 +75,7 @@ export interface MarketSession {
 }
 
 /** One paper account, as status and ticks list them. */
-export interface AccountBrief { id: string; name: string; trading: TradingStatus }
+export interface AccountBrief { id: string; name: string; trading: TradingStatus; sandbox_idle_seconds?: number }
 
 export interface MarketHalt {
   level: number
@@ -98,6 +98,7 @@ export interface CircuitBreaker {
 }
 
 export interface Status {
+  sandboxes?: { enabled: boolean; idle_seconds: number }
   /** Running openportd version; absent on older servers. */
   version?: string
   notifications?: NotificationStatus

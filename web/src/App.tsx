@@ -106,7 +106,11 @@ export function App() {
         <Header symbol={symbol} onSymbol={(s) => navigate({ symbol: s, expiry: null })} onMenu={() => setMenu(true)} />
         <CircuitBreakerBanner />
         <UpdateNotice />
-        <WatchOnlyNotice trading={live.trading} />
+        <WatchOnlyNotice trading={live.trading} sandboxes={live.status?.sandboxes} onCreated={(id) => {
+          live.switchSource("live")
+          live.switchAccount(id)
+          void queryClient.invalidateQueries()
+        }} />
         <main className="min-w-0 flex-1 p-3 lg:p-5">{content}</main>
         <AlertWatcher />
         <Toasts />

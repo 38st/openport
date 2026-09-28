@@ -49,6 +49,7 @@
 #include "openport/server/replay_host.hpp"
 #include "openport/server/run.hpp"
 #include "openport/server/web_server.hpp"
+#include "openport/server/sandboxes.hpp"
 #include "openport/server/web_policy.hpp"
 #include "openport/trading/journal.hpp"
 
@@ -92,6 +93,8 @@ struct Settings {
   std::filesystem::path notify_config;
   std::vector<server::NamedToken> tokens;
   bool require_token = false;
+  server::Sandboxes::Options sandboxes;
+  std::string client_ip_header;
   int threads = 2;
   double rate = 0.04;
   std::vector<std::string> allowed_origins;
@@ -108,6 +111,7 @@ int usage(const char* error = nullptr) {
       "                 [--allowed-host NAME]... [--token-file FILE] [--require-token]\n"
       "                 [--notify-config FILE]\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
+      "                 [--sandboxes N] [--sandbox-idle-seconds N] [--client-ip-header NAME]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
       "       openportd --verify-run JOURNAL\n"
@@ -359,6 +363,15 @@ int run(int argc, char** argv) {
     const std::string value = argv[++i];
     if (arg == "--provider") {
       settings.provider.name = value;
+    } else if (arg == "--sandboxes") {
+      settings.sandboxes.capacity = static_cast<std::size_t>(providers::parse_integer(value, "--sandboxes"));
+    } else if (arg == "--sandbox-idle-seconds") {
+      settings.sandboxes.idle = std::chrono::seconds(providers::parse_integer(value, "--sandbox-idle-seconds", 1));
+    } else if (arg == "--client-ip-header") {
+      if (value.empty() || !std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
+          })) return usage("--client-ip-header takes a header name");
+      settings.client_ip_header = value;
     } else if (arg == "--symbols") {
       settings.subscription.underlyings = split(value);
       settings.explicit_symbols = true;
@@ -450,6 +463,8 @@ int run(int argc, char** argv) {
     }
   }
   const bool demo = settings.provider.name == providers::kDemoProvider;
+  if (settings.sandboxes.capacity && !demo) return usage("--sandboxes requires --provider demo");
+  if (settings.sandboxes.capacity && !settings.paper_enabled) return usage("--sandboxes requires paper trading");
   const bool offline = demo || settings.provider.name == "replay";
   if (settings.paper_journal.empty()) {
     if (const auto* home = std::getenv("HOME"))
@@ -545,6 +560,7 @@ int run(int argc, char** argv) {
   engine_options.paper_enabled = settings.paper_enabled;
   engine_options.paper_journal = settings.paper_journal;
   engine_options.paper_accounts = paper_accounts;
+  if (settings.sandboxes.capacity) engine_options.sandboxes = std::make_shared<server::Sandboxes>(settings.sandboxes);
   // Rules and cash seed new journals only; recovery restores the recorded configuration.
   settings.paper.rules = settings.plan->rules;
   settings.paper.initial_cash = settings.paper_cash.value_or(settings.plan->initial_cash);
@@ -552,7 +568,7 @@ int run(int argc, char** argv) {
   engine_options.paper = settings.paper;
   engine_options.dividends = settings.dividends;
   engine_options.events = settings.events;
-  engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins, settings.tokens, settings.require_token});
+  engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins, settings.tokens, settings.require_token, engine_options.sandboxes, settings.client_ip_header});
   server::Engine engine(*provider, settings.subscription, engine_options);
   engine.start();
   std::unique_ptr<providers::CboeChartHistory> history;
@@ -643,7 +659,7 @@ int run(int argc, char** argv) {
         if (backtests.handle(request, engine, complete)) return;
         if (replays.handle(request, complete)) return;
         server::handle_api_async(request, engine, std::move(complete));
-      }, settings.allowed_origins, settings.write_token, settings.allowed_hosts, settings.tokens, settings.require_token);
+      }, settings.allowed_origins, settings.write_token, settings.allowed_hosts, settings.tokens, settings.require_token, engine_options.sandboxes, settings.client_ip_header);
   web.start(settings.threads);
 
   std::string symbols;
@@ -674,7 +690,7 @@ int run(int argc, char** argv) {
   };
   while (!g_stop) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
-    web.broadcast(server::tick_message(engine));
+    web.broadcast(server::tick_message(engine, {true, {}}));
     if (auto tick = replays.tick(); !tick.empty()) web.broadcast(tick);
     report(engine.recording_error(), recording_error);
     report(engine.status().circuit_breaker.error, breaker_error);

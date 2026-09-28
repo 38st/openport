@@ -28,15 +28,17 @@ class WebServer {
   /// localhost and the allowed origins' hosts (see host_allowed).
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
             AsyncApiHandler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {},
-            std::vector<std::string> allowed_hosts = {}, std::vector<NamedToken> tokens = {}, bool require_token = false);
+            std::vector<std::string> allowed_hosts = {}, std::vector<NamedToken> tokens = {}, bool require_token = false,
+            std::shared_ptr<Sandboxes> sandboxes = {}, std::string client_ip_header = {});
   template <class Handler> requires std::is_invocable_r_v<ApiResponse, Handler, const ApiRequest&>
   WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
             Handler api, std::vector<std::string> allowed_origins = {}, std::string write_token = {},
-            std::vector<std::string> allowed_hosts = {}, std::vector<NamedToken> tokens = {}, bool require_token = false)
+            std::vector<std::string> allowed_hosts = {}, std::vector<NamedToken> tokens = {}, bool require_token = false,
+            std::shared_ptr<Sandboxes> sandboxes = {}, std::string client_ip_header = {})
       : WebServer(std::move(address), port, std::move(web_root),
                   AsyncApiHandler([api = std::move(api)](const ApiRequest& request, ApiCompletion complete) {
                     complete(api(request));
-                  }), std::move(allowed_origins), std::move(write_token), std::move(allowed_hosts), std::move(tokens), require_token) {}
+                  }), std::move(allowed_origins), std::move(write_token), std::move(allowed_hosts), std::move(tokens), require_token, std::move(sandboxes), std::move(client_ip_header)) {}
 
   ~WebServer();
   WebServer(const WebServer&) = delete;

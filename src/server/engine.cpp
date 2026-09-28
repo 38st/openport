@@ -1,4 +1,5 @@
 #include "openport/server/engine.hpp"
+#include "openport/server/sandboxes.hpp"
 #include "openport/server/run.hpp"
 #include "openport/providers/demo_feed.hpp"
 #include "openport/providers/demo.hpp"
@@ -10,6 +11,8 @@
 namespace openport::server {
 namespace {
 Engine::Options driver_options(md::Provider& provider, Engine::Options options) {
+  if (options.sandboxes && (provider.name() != "demo" || !options.paper_enabled || options.paper_journal.empty()))
+    throw std::invalid_argument("Sandboxes require --provider demo and a paper journal");
   if (auto* replay = dynamic_cast<providers::ReplayProvider*>(&provider)) {
     options.replay = true;
     options.paper_accounts.clear();
@@ -292,6 +295,7 @@ void Engine::run() {
       const std::lock_guard lock(sync_mutex_);
       synchronized.swap(synchronizations_);
     }
+    if (options_.sandboxes) desk_.expire_sandboxes(options_.sandboxes->expired());
     batch.clear();
     queue_.drain(batch, std::chrono::milliseconds(synchronized.empty() ? 50 : 0));
     std::deque<PendingCommand> commands;

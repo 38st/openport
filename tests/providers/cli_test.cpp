@@ -405,3 +405,12 @@ TEST(Cli, SeriesBackfillIsOfflineUsesSiblingDirectoryAndRejectsDemoAndBadFlags) 
   EXPECT_FALSE(std::filesystem::exists(target));
 }
 }  // namespace
+
+TEST(Cli, SandboxesRequireDemoAndPaperTrading) {
+  rejects("openportd", "--sandboxes 1", "--sandboxes requires --provider demo");
+  rejects("openportd", "--provider replay --sandboxes 1", "--sandboxes requires --provider demo");
+  rejects("openportd", "--provider demo --sandboxes 1 --no-paper", "--sandboxes requires paper trading");
+  rejects("openportd", "--provider demo --sandboxes -1", "--sandboxes");
+  rejects("openportd", "--provider demo --sandbox-idle-seconds 0", "--sandbox-idle-seconds");
+  rejects("openportd", "--provider demo --client-ip-header 'X Real IP'", "--client-ip-header");
+}

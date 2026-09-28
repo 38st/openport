@@ -1,4 +1,5 @@
 #include "openport/server/api.hpp"
+#include "openport/server/sandboxes.hpp"
 #include "metric_cache.hpp"
 #include "series_api.hpp"
 
@@ -665,6 +666,7 @@ ApiResponse candles_response(const MetricsSource& source, const std::string& sym
 
 ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   if (request.method != "GET") return error(405, "only GET is supported");
+  if (auto rejection = sandbox_visibility(request, source)) return *rejection;
   if (auto response = playbook_read(request, source)) return *response;
   if (auto response = paper_read(request, source)) return *response;
   const std::string_view target = request.target;
@@ -683,7 +685,11 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
     return error(400, "window must be a finite number in [0, 1]");
   }
 
-  if (path == "/api/status") return ok(status_json(source));
+  if (path == "/api/status") {
+    auto status = status_json(source);
+    if (source.sandboxes()) status["sandboxes"] = {{"enabled", true}, {"idle_seconds", source.sandboxes()->idle().count()}};
+    return {200, sandbox_tick(status.dump(), request.access)};
+  }
 
   constexpr std::string_view prefix = "/api/underlyings/";
   if (!path.starts_with(prefix)) return error(404, "unknown endpoint");
@@ -724,10 +730,10 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   return error(404, "unknown view " + std::string(view));
 }
 
-std::string tick_message(const MetricsSource& source) {
+std::string tick_message(const MetricsSource& source, const ApiAccess& access) {
   const EngineStatus s = source.status();
   const auto now = source.wall_time();
-  return json{{"type", "tick"},
+  return sandbox_tick(json{{"type", "tick"},
               {"trading", trading_status_json(s.trading)},
               {"accounts", account_ticks_json(s)},
               {"circuit_breaker", circuit_breaker_json(s.circuit_breaker)},
@@ -743,7 +749,7 @@ std::string tick_message(const MetricsSource& source) {
                 {"overloaded", s.overloaded},
                 {"contracts", s.contracts},
                 {"nonstandard_contracts", s.nonstandard_contracts}}}}
-      .dump();
+      .dump(), access);
 }
 
 }  // namespace openport::server

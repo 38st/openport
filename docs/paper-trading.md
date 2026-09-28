@@ -1634,6 +1634,18 @@ reads and CSV downloads. Browser WebSockets use the `openport` subprotocol plus
 never go in a URL query. Use HTTPS at your reverse proxy for remote credentials
 and configure its public Origin with `--allowed-origin` when it rewrites Host.
 
+### Visitor sandboxes
+
+With `--provider demo --sandboxes N`, `POST /api/sandboxes` creates an isolated
+practice account without the operator's token. Its temporary token has `read`
+and `trade:ACCOUNT` scopes, restricted to that account and the simulated market.
+Other clients cannot list or read it; authenticated admins can. It cannot use
+admin routes, playbook actions, replays or backtests. The response returns the
+secret once. Sandbox tokens, accounts and files expire after 24 hours unused and
+are removed on restart. An expired sandbox token returns 403 `SANDBOX_EXPIRED`.
+The reducer and journal schema are unchanged. See [runtime](runtime.md#public-sandboxes)
+for proxy headers, limits, storage and configuration.
+
 ### Actors
 
 Each new journal transaction includes `actor` in its hash-protected payload: a

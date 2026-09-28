@@ -101,11 +101,12 @@ struct AccountStatus {
   std::string id;
   std::string name;
   TradingStatus trading;
+  std::int64_t sandbox_idle_seconds = 0;
 };
 
 struct TradingCommand {
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
-                    Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook };
+                    Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox };
   Kind kind = Kind::Submit;
   std::string actor = "unknown";
   trading::OrderRequest order;

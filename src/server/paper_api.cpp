@@ -1,4 +1,5 @@
 #include "paper_json.hpp"
+#include "openport/server/sandboxes.hpp"
 #include "playbook_api.hpp"
 #include "paper_csv.hpp"
 
@@ -621,6 +622,7 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       body["tags"] = a == s.annotations.end() ? json::array() : json(a->second.tags);
       break;
     }
+    case TradingCommand::Kind::CreateSandbox:
     case TradingCommand::Kind::CreateAccount:
       status = 201;
       body = {{"account", {{"id", reply.account}, {"name", command.name},
@@ -1058,19 +1060,23 @@ json trading_status_json(const TradingStatus& status) {
           {"initial_cash", status.initial_cash.str()},
           {"plan", nullable(status.plan)}, {"evaluation", nullable(status.evaluation)}};
 }
-json accounts_json(const MetricsSource& source) {
+json accounts_json(const MetricsSource& source, const ApiAccess& access) {
   json list = json::array();
   for (const auto& account : source.status().accounts) {
+    if (!sandbox_visible(account, access)) continue;
     const auto view = source.trading_view(account.id);
     list.push_back({{"id", account.id}, {"name", account.name}, {"trading", trading_status_json(account.trading)},
                     {"equity", view && view->snapshot ? json(view->snapshot->equity.str()) : json(nullptr)}});
+    if (account.sandbox_idle_seconds) list.back()["sandbox_idle_seconds"] = account.sandbox_idle_seconds;
   }
   return list;
 }
 json account_ticks_json(const EngineStatus& status) {
   json list = json::array();
-  for (const auto& account : status.accounts)
+  for (const auto& account : status.accounts) {
     list.push_back({{"id", account.id}, {"name", account.name}, {"trading", trading_status_json(account.trading)}});
+    if (account.sandbox_idle_seconds) list.back()["sandbox_idle_seconds"] = account.sandbox_idle_seconds;
+  }
   return list;
 }
 
@@ -1149,7 +1155,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   if (since && until && *since > *until) valid_query = false;
   if (!valid_query) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   if (path == "/api/plans") return ApiResponse{200, plans_json().dump()};
-  if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source)}}.dump()};
+  if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source, request.access)}}.dump()};
   if (!known_account(source, account)) return api_error(404, "UNKNOWN_ACCOUNT", "No paper account " + account);
   const auto view = source.trading_view(account);
   if (!view || !view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "Paper trading is disabled or unavailable");
@@ -1196,6 +1202,12 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
 }
 
 void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete) {
+  if (request.method == "POST" && request.target.substr(0, request.target.find('?')) == "/api/sandboxes") {
+    if (source.sandboxes()) source.sandboxes()->create(request, source, std::move(complete));
+    else complete(api_error(404, "NOT_FOUND", "Sandboxes are not offered"));
+    return;
+  }
+  if (auto rejection = sandbox_visibility(request, source)) { complete(std::move(*rejection)); return; }
   if (request.method == "GET") { complete(handle_api(request, source)); return; }
   if (request.target.starts_with("/api/notifications/")) {
     if (!source.notifications()) { complete(api_error(503, "NOTIFICATIONS_UNAVAILABLE", "Notifications are unavailable on this source")); return; }

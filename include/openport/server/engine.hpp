@@ -72,6 +72,7 @@ class MetricsSource {
       const std::string& symbol) const = 0;
   [[nodiscard]] virtual EngineStatus status() const = 0;
   [[nodiscard]] virtual Notifications* notifications() const { return nullptr; }
+  [[nodiscard]] virtual Sandboxes* sandboxes() const { return nullptr; }
   [[nodiscard]] virtual md::Timestamp wall_time() const { return md::now(); }
   /// The main account's publication.
   [[nodiscard]] virtual std::shared_ptr<const TradingView> trading_view() const { return {}; }
@@ -134,6 +135,7 @@ class Engine final : public MetricsSource {
       const std::string& symbol) const override;
   [[nodiscard]] EngineStatus status() const override;
   [[nodiscard]] Notifications* notifications() const override { return options_.notifications.get(); }
+  [[nodiscard]] Sandboxes* sandboxes() const override { return options_.sandboxes.get(); }
   [[nodiscard]] md::Timestamp wall_time() const override { return options_.clock(); }
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view() const override;
   [[nodiscard]] std::shared_ptr<const TradingView> trading_view(std::string_view account) const override;

@@ -29,11 +29,14 @@ struct WritePolicy {
   std::vector<std::string> allowed_origins;
   std::vector<NamedToken> tokens = {};
   bool require_token = false;
+  std::shared_ptr<Sandboxes> sandboxes = {};
+  std::string client_ip_header = {};
 };
 [[nodiscard]] std::string write_mode(const WritePolicy& policy);
 /// API reads and writes share authentication; optional actor is trusted transport context.
 [[nodiscard]] std::optional<ApiResponse> check_api_write(const ApiRequest& request,
-                                                        const WritePolicy& policy, std::string* actor = nullptr);
+                                                        const WritePolicy& policy, std::string* actor = nullptr,
+                                                        ApiAccess* access = nullptr);
 
 /// Browser sockets cannot set Authorization; use openport plus a hex token subprotocol.
 [[nodiscard]] std::optional<std::string> websocket_authorization(std::string_view bearer, std::string_view protocols);

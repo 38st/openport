@@ -1,5 +1,7 @@
 #include "openport/server/desk.hpp"
+#include "openport/server/sandboxes.hpp"
 #include "openport/server/playbooks.hpp"
+#include "openport/server/plans.hpp"
 
 #include "openport/pricing/black.hpp"
 #include "run_json.hpp"
@@ -360,6 +362,10 @@ void Desk::start_trading() {
   };
   accounts_.push_back({std::string(kMainAccount), "Main", nullptr, {}, nullptr, {}, {}});
   open(accounts_.back(), options_.paper_journal, true);
+  if (options_.sandboxes) {
+    if (!accounts_.back().session) throw std::runtime_error("Sandbox startup requires the main journal writer lock");
+    std::filesystem::remove_all(options_.paper_journal.parent_path() / "sandboxes");
+  }
   std::error_code ec;
   if (!options_.paper_accounts.empty() && std::filesystem::is_directory(options_.paper_accounts, ec)) {
     std::vector<std::filesystem::path> files;
@@ -401,28 +407,51 @@ void Desk::start_trading() {
   publish_trading();
 }
 
+void Desk::expire_sandboxes(const std::vector<std::string>& expired) {
+  if (!options_.sandboxes) return;
+  if (expired.empty()) return;
+  for (const auto& id : expired) {
+    if (sandbox_ids_.erase(id)) {
+      std::erase_if(accounts_, [&](const auto& account) { return account.id == id; });
+      trading_views_.erase(id);
+      playbook_publications_.erase(id);
+    }
+    std::error_code error;
+    std::filesystem::remove_all(options_.paper_journal.parent_path() / "sandboxes" / id, error);
+    if (!error) options_.sandboxes->removed(id);
+  }
+  publish_trading();
+}
+
 void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
-  if (!options_.paper_enabled || options_.paper_accounts.empty() || stopping_) {
+  const bool sandbox = c.kind == TradingCommand::Kind::CreateSandbox;
+  if (!options_.paper_enabled || (sandbox ? !options_.sandboxes : options_.paper_accounts.empty()) || stopping_) {
     reply.error_code = "TRADING_UNAVAILABLE";
     reply.decision.message = "This server keeps a single paper account";
     return;
   }
   auto base = slug(c.name);
   if (base.empty() || base == kMainAccount) base = "account";
-  auto id = base;
+  auto id = sandbox ? c.account : base;
+  if (sandbox && (!account_id(id) || find_account(id))) {
+    reply.error_code = "SANDBOX_UNAVAILABLE";
+    reply.decision.message = "Sandbox account id is unavailable";
+    return;
+  }
   for (int n = 2; find_account(id); ++n) id = base + "-" + std::to_string(n);
-  PaperAccount account{id, c.name, nullptr, {}, nullptr, {}, {}};
+  PaperAccount account{id, sandbox ? "Sandbox" : c.name, nullptr, {}, nullptr, {}, {}};
+  const auto directory = sandbox ? options_.paper_journal.parent_path() / "sandboxes" / id : options_.paper_accounts;
   try {
-    auto config = options_.paper;
-    config.rules = c.rules;
-    config.initial_cash = c.initial_cash;
-    const auto file = options_.paper_accounts / (id + ".jsonl");
+    auto config = sandbox ? trading::SessionConfig{} : options_.paper;
+    config.rules = sandbox ? find_plan("practice")->rules : c.rules;
+    config.initial_cash = sandbox ? find_plan("practice")->initial_cash : c.initial_cash;
+    const auto file = directory / (id + ".jsonl");
     auto [journal, recovery] = open_journal(file, journal_options(options_));
     if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists at " + file.string());
     {
-      const auto named = options_.paper_accounts / (id + ".name");
+      const auto named = directory / (id + ".name");
       std::ofstream out(named, std::ios::trunc);
-      out << c.name << '\n';
+      out << account.name << '\n';
       out.flush();
       if (!out) throw TradingError(Reason::JOURNAL_IO, "Cannot write " + named.string());
     }
@@ -431,12 +460,15 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
     account.session->set_actor("system");
     account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
   } catch (const TradingError& error) {
+    if (sandbox) { std::error_code ignored; std::filesystem::remove_all(directory, ignored); }
     reply.decision = {error.code(), error.what(), {}, {}, {}};
     return;
   } catch (const std::exception& error) {
+    if (sandbox) { std::error_code ignored; std::filesystem::remove_all(directory, ignored); }
     reply.decision = {Reason::JOURNAL_IO, error.what(), {}, {}, {}};
     return;
   }
+  if (sandbox) sandbox_ids_.insert(id);
   accounts_.push_back(std::move(account));
   publish_trading();
   reply.account = id;
@@ -554,7 +586,8 @@ void Desk::publish_trading() {
         status.evaluation = names[static_cast<int>(view->snapshot->evaluation.status)];
       }
     }
-    statuses.push_back({account.id, account.name, std::move(status)});
+    statuses.push_back({account.id, account.name, std::move(status),
+        sandbox_ids_.contains(account.id) ? options_.sandboxes->idle().count() : 0});
     if (view && publication_sink_) {
       // Delivery observers cannot invalidate an already committed transaction.
       try { publication_sink_(account.id, *view); } catch (...) {}
@@ -927,7 +960,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
   TradingReply reply;
   const auto& c = pending.command;
   auto* account = c.kind == TradingCommand::Kind::CreateAccount ? nullptr : find_account(c.account);
-  if (c.kind == TradingCommand::Kind::CreateAccount) {
+  if (c.kind == TradingCommand::Kind::CreateAccount || c.kind == TradingCommand::Kind::CreateSandbox) {
     create_account(c, reply);
     if (!reply.account.empty()) account = find_account(reply.account);
   } else if (!account) {
@@ -1079,6 +1112,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           else result = session.trade_stock(c.symbol, held < 0 ? shares : -shares, market_time_);
           break;
         }
+        case TradingCommand::Kind::CreateSandbox:
         case TradingCommand::Kind::CreateAccount: break;  // handled above
       }
       if (reply.error_code.empty()) reply.decision = result.decision;

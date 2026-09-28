@@ -7,7 +7,7 @@ import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, Rep
 import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
-import { writeToken } from "../lib/write-token"
+import { isSandboxToken, writeToken } from "../lib/write-token"
 
 /** What a replay plays: a recording in the recordings directory, or the demo market. */
 export type ReplaySource = { file: string } | { demo: true | string }
@@ -45,7 +45,16 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
   const response = await fetch(path, init)
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null)
-    throw mapApiError(response.status, body, `${response.status} ${response.statusText}`)
+    const error = mapApiError(response.status, body, `${response.status} ${response.statusText}`)
+    const sent = new Headers(init.headers).get("Authorization")
+    const token = writeToken.get()
+    if (isSandboxToken(token) && sent === `Bearer ${token}` && response.status === 403 &&
+        (error.code === "SANDBOX_EXPIRED" || error.code === "WRITE_TOKEN_REQUIRED")) {
+      activeAccount.set(MAIN_ACCOUNT)
+      dataSource.set("live")
+      writeToken.set("")
+    }
+    throw error
   }
   return (await response.json()) as T
 }
@@ -95,6 +104,9 @@ function scoped(path: string): string {
 }
 
 export const api = {
+  createSandbox: () => request<{ account: string; token: string; idle_seconds: number; simulated: true }>("/api/sandboxes", {
+    method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: "{}",
+  }),
   backtests: (signal?: AbortSignal) => get<BacktestListing>("/api/backtests", signal),
   backtest: (id: string, signal?: AbortSignal) => get<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, signal),
   startBacktest: (body: BacktestStart, mode: WriteMode) => write<BacktestState>("/api/backtests", "POST", mode, body),
