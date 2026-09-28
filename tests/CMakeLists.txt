@@ -33,6 +33,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/cli_test.cpp
     providers/massive_test.cpp
     providers/thetadata_test.cpp
+    providers/history_test.cpp
     providers/tradier_test.cpp
     providers/tastytrade_test.cpp
     providers/dxlink_test.cpp
@@ -53,7 +54,7 @@ if(OPENPORT_BUILD_PROVIDERS)
   target_link_libraries(openport_tests PRIVATE openport::providers openport::server
                         nlohmann_json::nlohmann_json)
   if(OPENPORT_WITH_DATABENTO)
-    target_sources(openport_tests PRIVATE providers/databento_test.cpp)
+    target_sources(openport_tests PRIVATE providers/databento_test.cpp providers/databento_history_test.cpp)
   endif()
 else()
   target_link_libraries(openport_tests PRIVATE openport::core)

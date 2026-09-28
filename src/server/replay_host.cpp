@@ -31,7 +31,7 @@ bool plain_name(std::string_view name) {
 }
 
 json header_json(const md::RecordingHeader& header) {
-  return {{"provider", header.provider}, {"simulated", providers::simulated_provider(header.provider)}, {"symbols", header.subscription.underlyings},
+  return {{"provider", header.provider}, {"imported", header.imported}, {"simulated", providers::simulated_provider(header.provider)}, {"symbols", header.subscription.underlyings},
           {"started", header.started > 0 ? json(md::format_timestamp(header.started)) : json(nullptr)},
           {"delay_seconds", header.capabilities.delay.count()}};
 }

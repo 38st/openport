@@ -37,6 +37,7 @@
 #include "openport/analytics/volatility_history.hpp"
 #include "openport/providers/cboe.hpp"
 #include "openport/providers/factory.hpp"
+#include "openport/providers/history.hpp"
 #include "openport/providers/massive.hpp"
 #include "openport/providers/options.hpp"
 #include "openport/server/api.hpp"
@@ -107,6 +108,8 @@ int usage(const char* error = nullptr) {
       "       openportd --verify-run JOURNAL\n"
       "       openportd --backtest PLAYBOOK[@VERSION] --plan PLAN (--days FILE | --recordings DIR | --scenarios N --seed S) --out REPORT.json\n"
       "                 [--playbooks FILE] [--paper-journal PATH] [--scenario-dir DIR] [--workers 1..16]\n"
+      "       openportd --import-day databento|thetadata --date YYYY-MM-DD --symbols SPX,SPY\n"
+      "                 [--expiries N] [--window F] [--out DIR] (default ./recordings)\n"
       "       openportd --compact-journals [--paper-journal PATH]\n"
       "       openportd --repair-journals [--paper-journal PATH]\n"
       "       openportd --version\n\n"
@@ -284,6 +287,41 @@ std::string load_write_token(const std::filesystem::path& path) {
 }
 
 }  // namespace
+
+int import_command(int argc, char** argv) {
+  using namespace openport;
+  providers::ImportDay request;
+  bool has_date = false;
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (i + 1 == argc) return usage("missing value for import option");
+    const std::string value = argv[++i];
+    if (arg == "--import-day") request.provider = value;
+    else if (arg == "--date") { request.date = providers::import_date(value); has_date = true; }
+    else if (arg == "--symbols") request.subscription.underlyings = split(value);
+    else if (arg == "--expiries") request.subscription.max_expiries = providers::parse_integer(value, "--expiries");
+    else if (arg == "--window") request.subscription.strike_window = providers::parse_fraction(value, "--window");
+    else if (arg == "--out") request.output = value;
+    else return usage("unknown import option");
+  }
+  if (!has_date) return usage("--import-day requires --date YYYY-MM-DD");
+  const auto today = md::new_york_time(md::now()).date;
+  (void)providers::history_windows(request, today);
+  auto source = providers::make_history_source(request.provider);
+  std::fprintf(stderr, "Importing %s %s; data stays in %s\n", request.provider.c_str(), md::format_date(request.date).c_str(), request.output.c_str());
+  try {
+    const auto path = providers::import_day(request, *source, today,
+        [](std::size_t completed, std::size_t total, std::uint64_t events) {
+          if (completed == 1 || completed % 20 == 0 || completed == total)
+            std::fprintf(stderr, "import: %zu/%zu windows, %llu events\n", completed, total, static_cast<unsigned long long>(events));
+        });
+    std::printf("Imported %s\n", path.c_str());
+    return 0;
+  } catch (const std::exception& error) {
+    std::fprintf(stderr, "openportd: %s\n", error.what());
+    return 1;
+  }
+}
 
 int run(int argc, char** argv) {
   Settings settings;
@@ -715,6 +753,8 @@ int main(int argc, char** argv) {
   try {
     for (int index = 1; index < argc; ++index)
       if (std::string_view(argv[index]) == "--backtest") return backtest_cli(argc, argv);
+    for (int i = 1; i < argc; ++i)
+      if (std::string_view(argv[i]) == "--import-day") return import_command(argc, argv);
     return run(argc, argv);
   } catch (const std::exception& error) {
     std::fprintf(stderr, "openportd: %s\n", error.what());

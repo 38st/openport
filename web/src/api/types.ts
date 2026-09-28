@@ -295,6 +295,7 @@ export interface Surface {
 
 /** The replay running beside the live feed: its recording, speed and clock. */
 export interface ReplayState {
+  imported?: boolean
   id?: string
   scenario?: string | null
   seed?: string | null
@@ -319,6 +320,7 @@ export interface ReplayState {
   time: string | null
 }
 export interface ReplayRecording {
+  imported?: boolean
   simulated?: boolean
   file: string
   bytes: number

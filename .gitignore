@@ -17,6 +17,8 @@ __pycache__/
 # Runtime data (journals, audit logs, downloaded market data)
 /var/
 /data/downloads/
+*.oprec
+/recordings/
 
 # Editors and OS
 .DS_Store

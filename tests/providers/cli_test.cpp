@@ -27,8 +27,9 @@ std::string isolated_home() {
   return "HOME='" + home + "' ";
 }
 
-void rejects(const std::string& application, const std::string& args, const std::string& reason) {
-  const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/" + application + "\" " +
+void rejects(const std::string& application, const std::string& args, const std::string& reason,
+             const std::string& environment = "") {
+  const auto command = environment + isolated_home() + "\"" + OPENPORT_APPS_DIR + "/" + application + "\" " +
                        args + " 2>&1";
   FILE* pipe = popen(command.c_str(), "r");
   ASSERT_NE(pipe, nullptr);
@@ -39,6 +40,18 @@ void rejects(const std::string& application, const std::string& args, const std:
   ASSERT_TRUE(WIFEXITED(status)) << output;
   EXPECT_EQ(WEXITSTATUS(status), 2) << output;
   EXPECT_NE(output.find(reason), std::string::npos) << output;
+}
+
+TEST(Cli, ImportValidatesDatesSymbolsCredentialsAndFlagsWithoutStartingTheDaemon) {
+  rejects("openportd", "--import-day databento --date 2026-09-22 --symbols SPX", "DATABENTO_API_KEY", "DATABENTO_API_KEY='' ");
+  rejects("openportd", "--import-day thetadata --symbols SPX", "requires --date");
+  rejects("openportd", "--import-day thetadata --date 2026-09-22", "select 1..32 symbols");
+  rejects("openportd", "--import-day thetadata --date 2026-02-30 --symbols SPX", "invalid --date");
+  rejects("openportd", "--import-day thetadata --date 2099-01-02 --symbols SPX", "future");
+  rejects("openportd", "--import-day thetadata --date 2026-07-03 --symbols SPX", "holiday");
+  rejects("openportd", "--import-day cboe --date 2026-09-22 --symbols SPX", "provider must be");
+  rejects("openportd", "--import-day databento --date 2026-09-22 --symbols SPX --api-key fake", "unknown import option");
+  rejects("openportd", "--import-day databento --date 2026-09-22 --symbols SPX --option key=fake", "unknown import option");
 }
 
 TEST(Cli, DaemonRejectsMalformedRangesUnknownFlagsAndStartupFailures) {

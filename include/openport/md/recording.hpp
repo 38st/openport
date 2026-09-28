@@ -18,6 +18,7 @@ struct RecordingHeader {
   Capabilities capabilities;
   Subscription subscription;
   Timestamp started = 0;
+  bool imported = false;
 };
 
 struct RecordedEvent {

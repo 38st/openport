@@ -178,6 +178,7 @@ TEST(ReplayHost, ListsStartsTradesControlsAndStopsARecordedSession) {
   ASSERT_EQ(listing["recordings"].size(), 1);
   EXPECT_EQ(listing["recordings"][0]["file"], "synthetic.oprec");
   EXPECT_EQ(listing["recordings"][0]["provider"], "synthetic-engine");
+  EXPECT_EQ(listing["recordings"][0]["imported"], false);
   EXPECT_EQ(listing["recordings"][0]["symbols"], json::array({"SPX"}));
   EXPECT_TRUE(listing["replay"].is_null());
   EXPECT_EQ(call(host, "GET", "/api/replay/status").status, 404);
@@ -682,6 +683,35 @@ TEST(ReplayHost, OlderJournalRecordsNeedNoReplayFieldsAndStillCompactAndRepair) 
   EXPECT_GT(repaired.bytes_cut, 0U);
   EXPECT_EQ(trading::TradingSession::recover(trading::FileJournal::read(journal.string())).snapshot_json(), expected);
   EXPECT_EQ(call(host, "GET", "/api/replay/history/older/fills").status, 200);
+}
+
+TEST(ReplayHost, ImportedHeaderIsListedAndRetainedInActiveReplay) {
+  using namespace openport;
+  using nlohmann::json;
+  test::RecordingFile file;
+  auto header = test::recording_header();
+  header.provider = "thetadata";
+  header.imported = true;
+  header.started = md::new_york_to_utc({2026, 9, 22}, 9, 30);
+  header.subscription = {{"SPY"}};
+  header.capabilities.delay = std::chrono::seconds(0);
+  header.capabilities.poll_interval = std::chrono::seconds(0);
+  test::record_events(file.path,
+      {md::ContractDefinition{0, *md::parse_osi("SPY260923C00500000")},
+       md::OptionQuote{0, header.started, 5, 5.2, 10, 10}}, header,
+      {.clock = [&] { return header.started; }});
+  server::Engine::Options base;
+  base.paper_enabled = false;
+  server::ReplayHost host({file.directory, base, false});
+  auto listing = json::parse(call(host, "GET", "/api/replay").body);
+  ASSERT_EQ(listing["recordings"].size(), 1U);
+  EXPECT_EQ(listing["recordings"][0]["imported"], true);
+  EXPECT_EQ(listing["recordings"][0]["provider"], "thetadata");
+  EXPECT_EQ(listing["recordings"][0]["simulated"], false);
+  const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","speed":0})");
+  ASSERT_EQ(started.status, 201) << started.body;
+  EXPECT_EQ(json::parse(started.body)["replay"]["imported"], true);
+  host.stop();
 }
 
 }  // namespace

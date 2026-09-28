@@ -66,7 +66,7 @@ function Controls({ replay }: { replay: ReplayState }) {
 
 /** What is playing: the demo's simulated day, or a recording from a provider. */
 export function replayTitle(replay: ReplayState) {
-  return replay.demo ? `${replay.file}${replay.seed ? ` · seed ${replay.seed}` : ""} · simulated prices, not market data` : `${replay.file} · ${replay.provider} · ${replay.symbols.join(", ")}`
+  return replay.demo ? `${replay.file}${replay.seed ? ` · seed ${replay.seed}` : ""} · simulated prices, not market data` : `${replay.file} · ${replay.provider}${replay.imported ? " · imported" : ""} · ${replay.symbols.join(", ")}`
 }
 
 /**
@@ -170,7 +170,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
             <tbody className="[&_td]:px-2 [&_td]:py-2 [&_tr]:border-t [&_tr]:border-border/40">
               {recordings.map((recording: ReplayRecording) => <tr key={recording.file}>
                 <td className="font-medium">{recording.file}{recording.error && <div className="text-[10px] text-warn">{recording.error}</div>}</td>
-                <td>{recording.provider ?? "—"}{recording.simulated ? " · simulated" : " · recording"}</td>
+                <td>{recording.provider ?? "—"}{recording.simulated ? " · simulated" : recording.imported ? " · imported" : " · recording"}</td>
                 <td>{recording.symbols?.join(", ") ?? "—"}</td>
                 <td>{recording.started ? replayClock(recording.started) : "—"}</td>
                 <td>{size(recording.bytes)}</td>

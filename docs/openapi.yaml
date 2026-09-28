@@ -5079,6 +5079,10 @@
       "ReplayState": {
         "type": "object",
         "properties": {
+          "imported": {
+            "type": "boolean",
+            "description": "Historical provider import; absent on older servers."
+          },
           "id": {
             "type": "string"
           },
@@ -5200,6 +5204,10 @@
       "ReplayRecording": {
         "type": "object",
         "properties": {
+          "imported": {
+            "type": "boolean",
+            "description": "Historical provider import; false for older recording headers."
+          },
           "simulated": {
             "type": "boolean"
           },

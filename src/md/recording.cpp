@@ -19,7 +19,7 @@
 namespace openport::md {
 namespace {
 constexpr std::array<char, 8> kMagic{'O', 'P', 'R', 'E', 'C', '\r', '\n', '\0'};
-constexpr std::uint32_t kVersion = 2;
+constexpr std::uint32_t kVersion = 3;
 constexpr std::size_t kMaxRecord = 1024 * 1024;
 using Bytes = std::vector<char>;
 static_assert(std::variant_size_v<Event> == 10, "update the recording codec for new event types");
@@ -129,16 +129,17 @@ Bytes encode_header(const RecordingHeader& h) {
   e.number<std::int32_t>(h.subscription.max_expiries);
   e.number(h.subscription.strike_window);
   e.number(h.started);
+  if (h.imported) e.byte(h.imported);
   if (data.size() > kMaxRecord) invalid("header exceeds 1 MiB limit");
   Bytes prefix(kMagic.begin(), kMagic.end());
   Encoder p(prefix);
-  p.number(kVersion);
+  p.number(h.imported ? kVersion : std::uint32_t{2});
   p.number(static_cast<std::uint32_t>(data.size()));
   prefix.insert(prefix.end(), data.begin(), data.end());
   return prefix;
 }
 
-RecordingHeader decode_header(std::span<const char> data) {
+RecordingHeader decode_header(std::span<const char> data, std::uint32_t version) {
   Decoder d(data);
   RecordingHeader h;
   h.provider = d.string();
@@ -158,6 +159,7 @@ RecordingHeader decode_header(std::span<const char> data) {
   h.subscription.max_expiries = d.number<std::int32_t>();
   h.subscription.strike_window = d.number<double>();
   h.started = d.number<Timestamp>();
+  if (version >= 3) h.imported = d.byte(1);
   d.finish();
   return h;
 }
@@ -477,13 +479,13 @@ struct RecordingReader::Impl {
     if (!std::equal(kMagic.begin(), kMagic.end(), prefix.begin())) invalid("invalid magic");
     Decoder d(std::span<const char>(prefix).subspan(8));
     version = d.number<std::uint32_t>();
-    if (version != 1 && version != kVersion) invalid("unsupported format version " + std::to_string(version));
+    if (version < 1 || version > kVersion) invalid("unsupported format version " + std::to_string(version));
     const auto length = d.number<std::uint32_t>();
     if (length > kMaxRecord) invalid("header exceeds 1 MiB limit");
     Bytes data(length);
     file.read(data.data(), length);
     if (file.gcount() != static_cast<std::streamsize>(length)) invalid("truncated header");
-    header = decode_header(data);
+    header = decode_header(data, version);
     body = file.tellg();
     if (!context) invalid("cannot allocate zstd decoder");
     check_zstd(ZSTD_DCtx_setParameter(context.get(), ZSTD_d_windowLogMax, 24));

@@ -28,6 +28,7 @@ const recordings: ReplayListing = { directory: "/home/trader/.openport/recording
   { file: replay.file, bytes: 48_300_000, provider: "cboe", symbols: ["SPX", "SPY"], started: replay.started, delay_seconds: 900 },
   { file: "broken.oprec", bytes: 10, error: "recording truncated" },
   { file: "generated.oprec", bytes: 100, provider: "demo", simulated: true },
+  { file: "databento-2026-09-22-imported.oprec", bytes: 100, provider: "databento", imported: true },
 ] }
 beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "open")))
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks(); vi.unstubAllGlobals(); dataSource.set("live"); activeAccount.set(MAIN_ACCOUNT) })
@@ -79,6 +80,7 @@ describe("the replay page", () => {
     expect(html).toContain("48.3 MB")
     expect(html).toContain("demo · simulated")
     expect(html).toContain("cboe · recording")
+    expect(html).toContain("databento · imported")
     expect(html).toContain("Tue, Sep 22, 09:30:00 ET")
     expect(html).toContain("recording truncated")
     expect(html).toContain(`aria-label="Replay ${replay.file}"`)
@@ -89,6 +91,13 @@ describe("the replay page", () => {
   it("explains how to record when there is nothing to replay", () => {
     const html = render(<ReplayView />, { ...recordings, recordings: [] })
     expect(html).toContain("--record-dir /home/trader/.openport/recordings")
+  })
+
+  it("labels an active historical import with its source provider", () => {
+    const imported = { ...replay, provider: "thetadata", imported: true }
+    const html = render(<ReplayView />, { ...recordings, replay: imported })
+    expect(html).toContain("thetadata · imported · SPX, SPY")
+    expect(html).not.toContain("simulated prices, not market data")
   })
 
   it("controls a running replay and offers to trade it", () => {

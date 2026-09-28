@@ -121,8 +121,8 @@ TEST(Recording, RejectsBadMagicVersionAndMalformedOrTruncatedHeader) {
   bytes[0] = '!';
   rejects(bytes, "magic");
   bytes = original;
-  bytes[8] = 3;
-  rejects(bytes, "version 3");
+  bytes[8] = 4;
+  rejects(bytes, "version 4");
   rejects(original.substr(0, 8), "truncated header");
   rejects(original.substr(0, 20), "truncated header");
   bytes = original;

@@ -1,0 +1,25 @@
+{
+  "definitions": [
+    {"instrument_id":42,"raw_symbol":"SPXW  260923C05000000"},
+    {"instrument_id":43,"raw_symbol":"SPXW  260923P05000000"},
+    {"instrument_id":44,"raw_symbol":"SPX   261016C05000000"},
+    {"instrument_id":45,"raw_symbol":"SPXW  260923C06000000"}
+  ],
+  "cbbo-1s": [
+    {"instrument_id":42,"ts_recv":"2026-09-22T00:15:00Z","bid_px":5000000000,"ask_px":5200000000,"bid_sz":9,"ask_sz":10},
+    {"instrument_id":43,"ts_recv":"2026-09-22T00:15:00Z","bid_px":4800000000,"ask_px":5000000000,"bid_sz":7,"ask_sz":8},
+    {"instrument_id":44,"ts_recv":"2026-09-22T00:15:00Z","bid_px":4800000000,"ask_px":5000000000,"bid_sz":7,"ask_sz":8},
+    {"instrument_id":45,"ts_recv":"2026-09-22T00:15:00Z","bid_px":100000000,"ask_px":200000000,"bid_sz":1,"ask_sz":2},
+    {"instrument_id":42,"ts_recv":"2026-09-22T00:15:15Z","bid_px":5200000000,"ask_px":5400000000,"bid_sz":9,"ask_sz":10}
+  ],
+  "trades": [
+    {"instrument_id":42,"ts_event":"2026-09-22T00:15:01.125Z","price":5100000000,"size":3},
+    {"instrument_id":42,"ts_event":"2026-09-22T00:15:14.999999999Z","ts_recv":"2026-09-22T00:15:15.000000100Z","price":5300000000,"size":2},
+    {"instrument_id":42,"ts_event":"2026-09-22T00:15:00.5Z","ts_recv":"2026-09-22T00:15:30.1Z","price":5100000000,"size":1},
+    {"instrument_id":42,"ts_event":"2026-09-22T00:15:00.7Z","ts_recv":"2026-09-22T00:15:01.5Z","price":5100000000,"size":1}
+  ],
+  "statistics": [
+    {"instrument_id":42,"ts_event":"2026-09-22T00:14:00Z","quantity":1200},
+    {"instrument_id":42,"ts_event":"2026-09-21T10:30:00Z","ts_recv":"2026-09-22T00:14:10Z","quantity":1100}
+  ]
+}

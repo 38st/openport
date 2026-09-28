@@ -204,6 +204,86 @@ per leg, and state that fills are simulated against displayed quotes and sizes o
 
 ## Recording and replay
 
+### Importing a historical day
+
+```sh
+openportd --import-day databento --date 2026-09-22 --symbols SPX,SPY \
+  --expiries 2 --window 0.10 --out ./recordings
+openportd --import-day thetadata --date 2026-09-22 --symbols SPY \
+  --expiries 2 --window 0.10 --out ./recordings
+```
+
+Import reads one completed trading date, writes a `.oprec`, and exits without
+starting a feed, HTTP server or paper account. `--out` defaults to `./recordings`.
+Point the server's `--record-dir` at the same directory. Replay lists the source
+provider and `imported`; replay runs use the usual journals and `--verify-run`.
+Databento reads `DATABENTO_API_KEY`. ThetaData uses the logged-in Theta Terminal
+v3 at `http://127.0.0.1:25503`, just as the live adapter does. There are no key flags.
+Historical access needs the provider's entitlement; Databento requests can incur
+usage charges. These importers follow the documented APIs, are tested against
+saved response shapes with generated values, and have not yet been run live with a key.
+
+The calendar rejects holidays, weekends, today and future dates before making
+requests. Dates before 2022 are refused because the built-in holiday calendar is
+incomplete there. Product sessions use `md::trading_session`, including GTH assigned
+to the requested trading date over a holiday, regular hours, early closes and curb.
+Coverage depends on the provider and subscription. A root without overnight data
+has no invented overnight quotes. Calendar overrides are not fetched during import.
+Databento imports require 2023-03-28 or later, when OPRA's one-second CBBO history
+became available; the older minute-sampled dataset is not used.
+
+The importers merge fifteen-second windows in original capture-time order when
+available, otherwise in event-time order, preserving source order at equal times.
+A contract's definition precedes its first event.
+Quotes keep their provider clock; daily OI keeps its original observation time.
+Databento trades keep `ts_event` and use `ts_recv` for ordering, including late prints
+within a window and across windows. OI is withheld until both its observation and
+capture times have been reached. Receipt times are the monotonic market-time watermark, at least the current window's
+start, not download time. Cumulative volume keeps a monotonic market clock when a
+late trade's event time goes backwards. Historical
+quotes are an event stream, with replay's fixed market-second batches; imports do
+not claim that tick history was a complete live polling snapshot.
+
+Zero expiry and window limits mean unrestricted, as for live feeds. Nearest expiry
+dates are selected across all roots, keeping AM and PM contracts distinct. The
+shared chain filter uses the reported underlying price at each market timestamp, or an inferred
+near-expiry parity forward when the provider supplies no underlying. A previously
+admitted contract continues receiving updates when prices move outside the window.
+A nonzero window with neither a price nor a parity estimate admits no new contracts.
+Selection never uses a later price from the same download window.
+Historical Databento filters are local; its parent queries still fetch whole chains.
+
+Databento imports OPRA definitions, one-second consolidated BBO, trades and OI
+statistics through the linked Historical C++ client. The preceding business date's
+OI initializes the overnight session until a newer observation arrives. OPRA supplies no underlying
+prices or vendor Greeks here. ThetaData uses expiration and strike lists, historical
+one-second option quotes, tick trades and daily OI, plus index prices or stock quotes
+on their own timestamps. Missing OI remains missing. Session volume sums reported
+trades; it is not invented from quote sizes. Neither importer supplies official
+underlying closes or vendor Greeks.
+
+Requests are serial, with at least 100 ms between starts. ThetaData retries HTTP
+429 at most three times, honouring integer `Retry-After` values up to 60 seconds;
+longer or malformed values stop the import. Other errors stop it. Databento streams
+responses through SDK callbacks and does not retry a failed billable request.
+The merger caps a window at one million events and the chain at 500,000 contracts.
+Databento pending OI is capped at one million observations. ThetaData responses are
+capped at 32 MiB and 250,000 rows after the HTTP client's bounded download. Exceeding
+a cap fails explicitly; reduce symbols or, for ThetaData, expiries and retry. Memory grows with the
+chain and one window, not a day's quotes. ThetaData requests each selected expiry
+separately, so unrestricted chains can take many requests. Progress reports completed
+windows and written events. Disk space must accommodate the full recording.
+
+The file is private (mode 0600) and published under
+`PROVIDER-YYYY-MM-DD-imported.oprec` only after every requested symbol has quotes
+and the clean end is written. Existing files are never overwritten. Errors remove
+the temporary import; a process crash can leave a hidden `.import-*` directory,
+which can be removed after that importer has stopped. No partial import is listed
+in Replay. All data stays on the user's machine. Never bundle, commit or upload
+provider responses or recordings. Provider licensing still applies.
+
+### Recording a live feed
+
 Record any provider before the engine's coalescing queue:
 
 ```sh
@@ -255,7 +335,9 @@ loops; malformed data produces `Error`. Neither the daemon nor its web terminal
 exits automatically at replay EOF. The probe retains its readiness/timeout rules
 and stops waiting at EOF if it has not become ready.
 
-**Format v2.** Writers use version 2; readers accept versions 1 and 2. Version 2
+**Format v3.** Imported recordings use version 3; live writers still use version 2.
+Readers accept versions 1, 2 and 3. Version 3 appends one `u8` boolean, `imported`,
+to the header. Older headers default it to false. Event tags are unchanged. Version 2
 adds tag 9 for option volume. The header and tags 0–8 are unchanged, so v1 files
 play as before, with volume unknown.
 
@@ -266,7 +348,7 @@ NaN payloads, infinities, subnormals and signed zero. There is no native struct
 padding, locale-dependent text, or lossy numeric conversion.
 
 The uncompressed prefix is eight magic bytes `OPREC\r\n\0`, a `u32` version
-(currently 2), and a `u32` header-payload length. The payload, in order, is:
+(2 for live recordings, 3 for imports), and a `u32` header-payload length. The payload, in order, is:
 
 | Field | Encoding |
 | --- | --- |
@@ -276,6 +358,7 @@ The uncompressed prefix is eight magic bytes `OPREC\r\n\0`, a `u32` version
 | Quotes, trades, open interest, vendor Greeks, history | Five `u8` booleans |
 | Subscription | `u32` symbol count, then strings, `i32` max expiries, binary64 strike window |
 | Start wall time | `i64` Unix nanoseconds |
+| Imported (v3 only) | `u8` boolean; imported start time is the first scheduled session's market time |
 
 The rest is concatenated independent zstd frames (level 1, content checksum).
 Their decompressed contents are a stream of `u32` record-payload lengths followed
@@ -294,7 +377,7 @@ prices/sizes/Greeks are binary64, and strings use the encoding above.
 | 6 | Provider status | ts; state (`u8`: Connecting=0, Live=1, Delayed=2, Stale=3, Error=4, Stopped=5); message; underlying |
 | 7 | Underlying official close | symbol; ts; trading year, month, day (three `i32`); price |
 | 8 | Snapshot complete | underlying; ts |
-| 9 | Option volume (v2 only) | id, ts, cumulative contracts |
+| 9 | Option volume (v2 and later) | id, ts, cumulative contracts |
 
 A zero record length is the clean-end marker, written only after all publishers
 stop and all accepted events drain. It must finish the final frame; bytes after
@@ -371,6 +454,8 @@ adapter is disabled; no additional Docker packages are required.
 (`history`). A replay runs beside the live feed with its own engine, account and
 chart history. The terminal routes `/api/X` to `/api/replay/X` while showing it;
 “Back to live” returns to the live accounts, which keep running meanwhile.
+Recording entries and active replay state expose `imported`, false for older
+recordings. Imported days appear beside live recordings with their provider name.
 
 `POST /api/replay` starts `{file: NAME}` or `{scenario: ID}`; `demo: ID` and
 `demo: true` remain accepted. Optional fields are `plan` (default `practice`),

@@ -108,6 +108,8 @@ if(OPENPORT_BUILD_PROVIDERS)
     providers/cboe.cpp
     providers/massive.cpp
     providers/thetadata.cpp
+    providers/history.cpp
+    providers/theta_history.cpp
     providers/tradier.cpp
     providers/tastytrade.cpp
     providers/dxlink.cpp
@@ -119,7 +121,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     PRIVATE simdjson::simdjson openport::options)
 
   if(OPENPORT_WITH_DATABENTO)
-    target_sources(openport_providers PRIVATE providers/databento.cpp)
+    target_sources(openport_providers PRIVATE providers/databento.cpp providers/databento_history.cpp)
     target_link_libraries(openport_providers PUBLIC databento::databento)
     target_compile_definitions(openport_providers PUBLIC OPENPORT_WITH_DATABENTO)
   endif()

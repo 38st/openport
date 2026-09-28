@@ -135,6 +135,10 @@ with generated prices labelled as simulated on every page:
   - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
     Step to a market time with `PUT /api/replay {"until":"10:30"}`; check a saved run
     with `openportd --verify-run JOURNAL`.
+- **Historical days**: import a past trading date from Databento or your local
+  Theta Terminal into a private recording, then trade it in Replay. Imported days
+  show their provider and an imported label. The importers follow the documented
+  APIs and have saved-response tests; they have not yet been run live with a key.
 - **Demo market**: when markets are closed or the feed has stalled, the terminal offers
   fourteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
   gaps, volatility changes and overnight sessions. Each run chooses a fresh seed, or
@@ -310,6 +314,8 @@ To add a feed, see [writing a provider adapter](docs/providers.md).
 | `--backtest PLAYBOOK[@VERSION]`, `--days FILE`, `--recordings DIR`, `--scenarios N --seed S`, `--out REPORT.json` | Headless batch backtest under `--plan`; choose one day source. `--workers 1..16` defaults to 4; `--playbooks FILE` overrides the saved catalogue. [Inputs and reports](docs/playbooks.md#batch-backtests) |
 | `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
 | `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
+| `--import-day databento\|thetadata --date YYYY-MM-DD --symbols SPX,SPY` | Import a completed past trading day and exit; accepts `--expiries N` and `--window F` |
+| `--out DIR` | Import destination, default `./recordings`; select this directory with `--record-dir` to list its days in Replay |
 | `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe backfills prices and volatility-index proxies ([price history](docs/runtime.md#price-history)) |
 | `--series-dir DIR`, `--no-series` | Local minute volatility history; defaults to `series` beside the candle directory, or disables collection ([storage](docs/runtime.md#volatility-series-storage)) |
 | `--backfill-series FILE...`, `--force` | Build metric history offline from recordings and exit; keep existing minutes unless forced; refuse demo recordings |
@@ -538,6 +544,7 @@ exists; GitHub tags the commit when you publish the draft.
       solver, Cox-Ross-Rubinstein and Leisen-Reimer trees
 - [x] Providers: Cboe, Databento, Massive, ThetaData, Tradier and tastytrade, with
       record and replay of any feed; broker adapters await live-account validation
+- [x] Local Databento and ThetaData historical-day imports; live-key validation pending
 - [x] Chain liquidity: session volume, spread percentages and ticket warnings
 - [x] Chain analytics: parity forwards, IV and Greeks, SVI surfaces, GEX and VEX, and
       de-Americanised IV for equity options

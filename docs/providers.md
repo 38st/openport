@@ -151,6 +151,50 @@ rate timers use operational time, independently of market-event clocks. See
 [runtime limitations](runtime.md#broker-market-data) for unverified units and the
 consequences for paper fills.
 
+## Historical day imports
+
+Historical imports use `HistorySource` in
+[`history.hpp`](../include/openport/providers/history.hpp), separate from the live
+provider threads. `openportd --import-day` validates the trading date before opening
+a transport. The common writer filters chains, orders bounded time windows, assigns
+dense IDs and writes through `RecordingSink`. It publishes the final file only after
+successful completion. The recording's imported flag defaults to false for older files.
+
+`databento_history.cpp` calls the vendored client's `TimeseriesGetRange` for
+`OPRA.PILLAR`, using parent symbology for every option root. Definitions and daily
+statistics are read first for each UTC date, with the preceding business date's OI
+as the initial baseline. OI is released only when its observation and capture times are reached.
+Vendor IDs are rebuilt on a UTC date change; recording IDs are
+retained by OSI symbol. This also covers holiday GTH spanning several UTC dates.
+CBBO uses the same `ts_recv` and fixed-price conversion as `DatabentoMapper`;
+trades keep `ts_event` while `ts_recv` orders their delivery, including late prints.
+`HistorySource::receipt_time` supplies the original capture clock during publication;
+sources without it use event time. The callback is injectable for saved SDK record tests.
+No other dataset or underlying price is assumed.
+
+`theta_history.cpp` uses Theta Terminal v3 NDJSON: `/option/list/expirations`,
+`/option/list/strikes`, `/option/list/contracts/quote`, `/option/history/quote`, `/option/history/trade`,
+`/option/history/open_interest`, `/index/history/price` and `/stock/history/quote`.
+It uses date and time ranges, expiration, strike and right selectors, and `1s`
+quote/price intervals. New York timestamps and optional fields are checked before
+publication. Its HTTP client and rate wait are injectable; failures do not print
+response bodies. There is no historical IV request or invented underlying last price.
+The expiration and strike lists have no date parameter; the date-specific contracts
+list restricts them to series that were quoted on the imported sessions' dates.
+
+API references: [Databento ranges and limits](https://databento.com/docs/api-reference-historical/basics),
+[Databento instrument identifiers](https://databento.com/docs/standards-and-conventions/common-fields-enums-types),
+[ThetaData historical quotes](https://thetadata.net/docs/operations/option_history_quote.html),
+[ThetaData historical contracts](https://thetadata.net/docs/operations/option_list_contracts.html)
+and [ThetaData concurrency](https://thetadata.net/docs/Articles/Data-And-Requests/Concurrent-Requests.html).
+
+The importers follow the documented Historical and Theta Terminal APIs, are tested
+against saved response shapes in `tests/data/history`, and have not yet been run
+live with a key. Fixtures contain generated values, not licensed market data.
+Provider data stays on the user's machine; never bundle, commit or upload it.
+See [historical import operation](runtime.md#importing-a-historical-day) for
+credentials, request limits, filtering, session coverage and failure handling.
+
 ## Test without the network
 
 Use saved, hand-written response shapes with generated values. Do not commit a
