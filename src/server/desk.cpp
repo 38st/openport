@@ -851,7 +851,9 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
       // a restart before they expire (16:15 for ETF options) still uses it. When
       // none has come half an hour into the market's evening, the last print
       // before the close stands in, if it came in the close's last five minutes.
-      for (const auto& p : session.snapshot()->positions) {
+      // Hold the snapshot: record_close publishes a new one and frees this one.
+      const auto marked = session.snapshot();
+      for (const auto& p : marked->positions) {
         const auto& contract = p.position.contract;
         if (contract.settlement != md::Settlement::PM) continue;
         // The provider's official close wins over any print, revisions included,
@@ -878,7 +880,9 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
       }
       // A PM contract settles on its expiry date's closing print once it expires:
       // at the close, or a quarter hour later for ETF options that trade until 16:15.
-      for (const auto& p : session.snapshot()->positions) {
+      // Hold the snapshot: settle publishes a new one and frees this one.
+      const auto expiring = session.snapshot();
+      for (const auto& p : expiring->positions) {
         const auto& contract = p.position.contract;
         if (contract.settlement != md::Settlement::PM || market_time_ < contract.expiry_time()) continue;
         const auto print = session.closing_print(contract.underlying, contract.expiry);
