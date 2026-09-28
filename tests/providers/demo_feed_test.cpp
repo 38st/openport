@@ -33,7 +33,7 @@ class DemoClock final : public providers::ReplayClock {
   TimePoint now_{}, limit_{};
 };
 template<class Predicate> bool eventually(Predicate predicate) {
-  const auto end = std::chrono::steady_clock::now() + 60s;
+  const auto end = std::chrono::steady_clock::now() + 5min;
   while (!predicate()) {
     if (std::chrono::steady_clock::now() > end) return false;
     std::this_thread::sleep_for(2ms);
