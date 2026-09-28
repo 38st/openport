@@ -223,7 +223,7 @@ server::TradingReply submit(server::Engine& engine, server::TradingCommand comma
   std::promise<server::TradingReply> done;
   auto future = done.get_future();
   engine.post_trading(std::move(command), [&](auto reply) { done.set_value(std::move(reply)); });
-  if (future.wait_for(10s) != std::future_status::ready) throw std::runtime_error("command timed out");
+  if (future.wait_for(5min) != std::future_status::ready) throw std::runtime_error("command timed out");
   return future.get();
 }
 

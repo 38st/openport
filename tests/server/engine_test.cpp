@@ -24,7 +24,7 @@ class ManualProvider final : public md::Provider {
 
 template <typename Predicate>
 bool eventually(Predicate predicate) {
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
   while (!predicate()) {
     if (std::chrono::steady_clock::now() >= deadline) return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));

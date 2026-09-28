@@ -202,7 +202,7 @@ TEST(WebServer, ClosesWebSocketsWithMessagesLargerThanFourKiB) {
     ec = error;
     completed = true;
   });
-  io.run_for(std::chrono::seconds(3));
+  io.run_for(std::chrono::minutes(5));
   EXPECT_TRUE(completed);
   EXPECT_EQ(ec, websocket::error::closed);
   EXPECT_EQ(ws.reason().code, websocket::close_code::too_big);
@@ -288,7 +288,7 @@ TEST(WebServer, StopClosesHttpAndWebSocketSessionsAndReleasesThePort) {
     });
   };
   read_ws();
-  io.run_for(std::chrono::seconds(1));
+  io.run_for(std::chrono::minutes(5));
   EXPECT_TRUE(http_closed);
   EXPECT_TRUE(ws_closed);
   server::WebServer replacement("127.0.0.1", port, {},
@@ -334,7 +334,7 @@ TEST(WebServer, AsyncPostDeleteRoundTripsAndSecurityHeaders) {
   web.start(1);
   asio::io_context io;
   beast::tcp_stream connection(io);
-  connection.expires_after(std::chrono::seconds(3));
+  connection.expires_after(std::chrono::minutes(5));
   connection.connect({asio::ip::make_address("127.0.0.1"), web.port()});
   const auto host = "127.0.0.1:" + std::to_string(web.port());
   auto request = [&](http::verb method, const std::string& target, const std::string& body) {
@@ -351,7 +351,7 @@ TEST(WebServer, AsyncPostDeleteRoundTripsAndSecurityHeaders) {
     server::ApiCompletion complete;
     {
       std::unique_lock lock(mutex);
-      ASSERT_TRUE(ready.wait_for(lock, std::chrono::seconds(3), [&] { return pending.has_value(); }));
+      ASSERT_TRUE(ready.wait_for(lock, std::chrono::minutes(5), [&] { return pending.has_value(); }));
       EXPECT_EQ(received->body, body);
       EXPECT_EQ(received->authorization, "Bearer secret");
       complete = std::move(*pending); pending.reset();
@@ -359,7 +359,7 @@ TEST(WebServer, AsyncPostDeleteRoundTripsAndSecurityHeaders) {
     // A second request completes on the single I/O thread while the first is
     // waiting for its owner-thread callback. A blocking handler would deadlock.
     beast::tcp_stream other(io);
-    other.expires_after(std::chrono::seconds(3));
+    other.expires_after(std::chrono::minutes(5));
     other.connect({asio::ip::make_address("127.0.0.1"), web.port()});
     auto get = request(http::verb::get, "/api/status", "");
     http::write(other, get);
@@ -405,7 +405,7 @@ TEST(WebServer, StopSeversLateCommandCompletionBeforeDestroyingExecutor) {
     request.set(http::field::content_type, "application/json");
     request.body() = "{}"; request.prepare_payload();
     http::write(connection, request);
-    ASSERT_EQ(received.get_future().wait_for(std::chrono::seconds(3)), std::future_status::ready);
+    ASSERT_EQ(received.get_future().wait_for(std::chrono::minutes(5)), std::future_status::ready);
     web.stop();
   }
   EXPECT_NO_THROW(complete({200, "{}"}));

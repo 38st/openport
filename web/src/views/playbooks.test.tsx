@@ -10,6 +10,7 @@ import { PassOddsCard, StagedOrders } from "../components/Playbooks"
 import { trades, status } from "../test/trading-fixtures"
 import { JournalView } from "./JournalView"
 import { newPlaybook, PlaybooksView } from "./PlaybooksView"
+import { renderTimeout, waitForRender } from "../test/render"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../charts/useSize", () => ({ useSize: () => [{ current: null }, { width: 700, height: 200 }] }))
@@ -33,21 +34,22 @@ beforeEach(() => {
   vi.spyOn(api, "stagedAction").mockImplementation(async () => { const value = { ...catalogue(), staged: [] }; vi.mocked(api.playbooks).mockResolvedValue(value); return value })
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
-async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) }) }
-async function render(node: ReactNode) { await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>)); await flush() }
+async function render(node: ReactNode) { await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>)) }
 function button(text: string) { const found = [...host.querySelectorAll("button")].find((item) => item.textContent === text); if (!found) throw new Error(`Missing ${text}`); return found }
-async function click(text: string) { await act(async () => button(text).click()); await flush() }
+async function click(text: string) { await act(async () => button(text).click()) }
 async function value(selector: string, text: string) {
   const field = host.querySelector(selector) as HTMLTextAreaElement | HTMLSelectElement
   const prototype = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLSelectElement.prototype
   await act(async () => { Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(field, text); field.dispatchEvent(new Event(field instanceof HTMLTextAreaElement ? "input" : "change", { bubbles: true })) })
 }
-describe("Playbooks page and staged actions", () => {
+describe("Playbooks page and staged actions", { timeout: renderTimeout }, () => {
   it("shows saved versions, safe live modes and followed-versus-deviated statistics", async () => {
     await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))
     expect(host.textContent).toContain("Morning put spread · v1")
     expect(host.querySelector<HTMLOptionElement>('option[value="auto"]')?.disabled).toBe(true)
     await click("Stats and versions")
+    await waitForRender(() => expect(host.textContent).toContain("at least 10 completed days"))
     for (const text of ["Followed rules", "Deviated", "Expectancy", "80.0%", "Saved versions", "Estimate from past results, not a prediction", "at least 10 completed days"]) expect(host.textContent).toContain(text)
     expect(api.passOdds).toHaveBeenCalledWith(20, 1000, "put-spread", expect.any(AbortSignal))
   })
@@ -57,6 +59,7 @@ describe("Playbooks page and staged actions", () => {
     saved.staged = []
     vi.mocked(api.playbooks).mockResolvedValue(saved)
     await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))
     expect(host.querySelector('select[aria-label="Mode for Morning put spread"]')).toBeNull()
     await click("Morning put spread · archived stats and versions")
     expect(host.textContent).toContain("Saved versions")
@@ -65,6 +68,7 @@ describe("Playbooks page and staged actions", () => {
   })
   it("saves an edited version and displays JSON errors without losing the editor", async () => {
     await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))
     await click("Edit Morning put spread")
     await value('textarea[aria-label="Playbook definition"]', "{")
     await click("Save version")
@@ -78,27 +82,31 @@ describe("Playbooks page and staged actions", () => {
   })
   it("stages on the selected account without sending when its mode changes", async () => {
     await render(<PlaybooksView />)
+    await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))
     await value('select[aria-label="Mode for Morning put spread"]', "stage")
     expect(api.playbookMode).toHaveBeenCalledWith("put-spread", "stage", "open")
     expect(api.stagedAction).not.toHaveBeenCalled()
   })
   it.each(["send", "dismiss"] as const)("%s uses the server stage token and removes the stage after refresh", async (action) => {
     await render(<StagedOrders />)
+    await waitForRender(() => expect(host.textContent).toContain("Simulated orders"))
     expect(host.textContent).toContain("Simulated orders")
     expect(host.textContent).toContain("playbook:put-spread@v1")
     await click(`${action === "send" ? "Send" : "Dismiss"} Morning put spread`)
     expect(api.stagedAction).toHaveBeenCalledWith("stage-1", action, "open")
-    expect(host.textContent).not.toContain("Staged playbook orders")
+    await waitForRender(() => expect(host.textContent).not.toContain("Staged playbook orders"))
   })
   it("explains stale-stage refusal and keeps the order unsent", async () => {
     vi.mocked(api.stagedAction).mockRejectedValue(new Error("Staged order expired or changed; refresh playbooks"))
     await render(<StagedOrders />)
+    await waitForRender(() => expect(host.textContent).toContain("Simulated orders"))
     await click("Send Morning put spread")
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("expired or changed")
   })
   it("shows pass, fail, neither, history count and seed as estimates", async () => {
     vi.mocked(api.passOdds).mockResolvedValue({ pass: .25, fail: .1, neither: .65, median_days_to_pass: 9, historical_days: 15, seed: "81723", days: 20, samples: 1000, label: "Estimate from past results, not a prediction", history_basis: "Account equity days", path_assumption: "Observed extrema only", simulated: true })
     await render(<PassOddsCard />)
+    await waitForRender(() => expect(host.textContent).toContain("15 historical days"))
     for (const text of ["25.0%", "10.0%", "65.0%", "Median days to pass: 9", "15 historical days", "seed 81723", "not a prediction"]) expect(host.textContent).toContain(text)
   })
   it("filters Journal across all versions of a playbook while retaining other filters", async () => {
@@ -110,7 +118,7 @@ describe("Playbooks page and staged actions", () => {
     vi.spyOn(api, "orders").mockResolvedValue({ account_version: "17", orders: [] })
     vi.spyOn(api, "fills").mockResolvedValue({ account_version: "17", fills: [] })
     await render(<JournalView />)
-    expect(host.textContent).toContain("3 closed trades")
+    await waitForRender(() => expect(host.textContent).toContain("3 closed trades"))
     await value('select[aria-label="Playbook"]', "put-spread")
     expect(host.textContent).toContain("2 closed trades")
     await value('select[aria-label="Tag"]', "playbook:put-spread@v1")

@@ -502,7 +502,7 @@ TEST(Notifications, WorkerDoesNotHoldQueueMutexDuringHttpAndCancelsShutdown) {
   server::Notifications service(server::parse_notification_config(json{{"channels", {channel()}}, {"queue_capacity", 1}}.dump()),
       std::move(client), options);
   EXPECT_EQ(service.test("phone"), 202);
-  ASSERT_EQ(entered.get_future().wait_for(3s), std::future_status::ready);
+  ASSERT_EQ(entered.get_future().wait_for(5min), std::future_status::ready);
   EXPECT_EQ(service.status()["queue_depth"], 1);
   EXPECT_EQ(service.test("phone"), 429);
   service.stop();

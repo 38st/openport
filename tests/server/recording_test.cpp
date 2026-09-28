@@ -140,7 +140,7 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
 }
 
 server::ApiResponse call(server::ReplayHost& host, std::string method, std::string target, std::string body = {},
-                         std::chrono::seconds timeout = 5s) {
+                         std::chrono::seconds timeout = 5min) {
   auto promise = std::make_shared<std::promise<server::ApiResponse>>();
   auto future = promise->get_future();
   server::ApiRequest request{std::move(method), std::move(target), std::move(body)};

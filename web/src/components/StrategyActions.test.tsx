@@ -11,6 +11,7 @@ import { closingPlan, strategyGroups } from "../lib/positions"
 import { account, order, portfolio, quote, selection, status, trading } from "../test/trading-fixtures"
 import { RollDialog, SpreadExitsDialog } from "./StrategyActions"
 import { StrategyTicket } from "./StrategyTicket"
+import { renderTimeout, waitForRender } from "../test/render"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../api/trading", async (original) => ({ ...await original<typeof import("../api/trading")>(), useRefreshTrading: () => vi.fn() }))
@@ -44,7 +45,6 @@ afterEach(async () => {
 })
 async function render(node: ReactNode) {
   await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>))
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
 }
 async function click(text: string) {
   const button = [...host.querySelectorAll("button")].find((b) => b.textContent === text || b.getAttribute("aria-label") === text)
@@ -77,20 +77,21 @@ it("sends GTC and template tags with a percentage target and combo stop", async 
     time_in_force: "gtc", tags: ["put-credit-10d-5w"], note: "Template",
     bracket: { take_profit: { limit_price: "1.00" }, stop_loss: { trigger: { source: "combo", direction: "at_or_above", level: "4.00" } } },
   }), trading.write)
-})
+}, renderTimeout)
 
 it("sets exits on the held closing legs under the reduce-only latch", async () => {
   await render(<SpreadExitsDialog group={spread} trading={{ ...trading, kill_latched: true }} onClose={() => {}} />)
   await setField("Stop source", "underlying")
   await setField("Stop direction", "at_or_below")
   await setField("Stop level", "6800")
+  await waitForRender(() => expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Set exits")?.disabled).toBe(false))
   await click("Set exits")
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({
     legs: closingPlan(spread).legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })),
     quantity: 2, exits_only: true, type: "limit", time_in_force: "gtc", limit_price: "1.00",
     bracket: { take_profit: { limit_price: "1.00" }, stop_loss: { trigger: { source: "underlying", direction: "at_or_below", level: "6800" } } },
   }), trading.write)
-})
+}, renderTimeout)
 
 it("changes a signed combo stop and cancels the held OCO exits", async () => {
   const legs = closingPlan(spread).legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio }))
@@ -101,6 +102,7 @@ it("changes a signed combo stop and cancels the held OCO exits", async () => {
   vi.spyOn(api, "modifyOrder").mockResolvedValue({ account_version: "18", order: stop, fills: [] })
   vi.spyOn(api, "cancelOrder").mockResolvedValue({ account_version: "19", order: stop })
   await render(<SpreadExitsDialog group={spread} trading={trading} onClose={() => {}} />)
+  await waitForRender(() => expect(host.textContent).toContain("Cancel exits"))
   await click("Change")
   await setField("Trigger level", "-0.20")
   await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
@@ -108,7 +110,7 @@ it("changes a signed combo stop and cancels the held OCO exits", async () => {
   await click("Cancel exits")
   expect(api.cancelOrder).toHaveBeenCalledWith("6", trading.write)
   expect(api.cancelOrder).toHaveBeenCalledWith("7", trading.write)
-})
+}, renderTimeout)
 
 it("rolls the call side of a condor with new strikes as one four-leg order", async () => {
   const later = { ...selection.expiry, id: "2026-10-23PM", expiry: "2026-10-23" }
@@ -122,6 +124,7 @@ it("rolls the call side of a condor with new strikes as one four-leg order", asy
     expiry: id === later.id ? later : { ...selection.expiry, id: group.expiry }, spot: 7000, strikes: rows(id === later.id),
   }) as Chain)
   await render(<RollDialog group={group} trading={trading} onClose={() => {}} />)
+  await waitForRender(() => expect(host.querySelector("form")).not.toBeNull())
   await setField("Roll side", "call")
   await setField("New call strike (sell)", "7120")
   await setField("New call strike (buy)", "7130")
@@ -131,7 +134,7 @@ it("rolls the call side of a condor with new strikes as one four-leg order", asy
     { symbol: positions[2]!.symbol, side: "buy", ratio: 1 }, { symbol: positions[3]!.symbol, side: "sell", ratio: 1 },
     { symbol: "SPXW  261023C07120000", side: "sell", ratio: 1 }, { symbol: "SPXW  261023C07130000", side: "buy", ratio: 1 },
   ])
-})
+}, renderTimeout)
 
 it("warns for the thin leg and shows per-leg market quantities and displayed sides", async () => {
   const legs = spread.legs.map(({ leg }, index) => ({ ...leg, side: index === 0 ? "sell" as const : "buy" as const,
@@ -141,7 +144,7 @@ it("warns for the thin leg and shows per-leg market quantities and displayed sid
   expect(host.textContent).toContain(`${legs[1]!.strike} put: Thin liquidity`)
   expect(host.textContent).toContain("Volume 12 · OI 34")
   const submit = host.querySelector<HTMLButtonElement>('[aria-label="Submit strategy order"]')!
-  expect(submit.disabled).toBe(false)
+  await waitForRender(() => expect(submit.disabled).toBe(false))
   await setField("Quantity (units)", "3")
   await click("Market")
   expect(host.textContent).toContain("3 contracts against displayed bid size 3")
@@ -149,4 +152,4 @@ it("warns for the thin leg and shows per-leg market quantities and displayed sid
   expect(host.textContent).toContain("Fills are simulated against the displayed quote and size only.")
   await click("Submit strategy order")
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ type: "market", quantity: 3 }), trading.write)
-})
+}, renderTimeout)

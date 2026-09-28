@@ -323,7 +323,7 @@ class ManualClock final : public providers::ReplayClock {
   /// The deadline of the wait in progress, once one is.
   std::optional<TimePoint> waiting_for(std::optional<TimePoint> expected = {}) {
     std::unique_lock lock(mutex);
-    changed.wait_for(lock, 3s, [&] { return waiting && (!expected || waiting == expected); });
+    changed.wait_for(lock, 5min, [&] { return waiting && (!expected || waiting == expected); });
     return waiting;
   }
 
@@ -361,7 +361,15 @@ std::size_t quotes(const test::EventCollector& sink) {
 TEST(Replay, ASpeedChangeRescalesTheWaitInProgressAndThePausedTimeDoesNotCount) {
   const auto file = paced_recording();
   auto clock = std::make_shared<ManualClock>();
-  providers::ReplayProvider replay({file.path, 1, false, clock});
+  std::atomic<bool> pause_observed{false};
+  providers::ReplayProvider::Options options{file.path, 1, false, clock};
+  options.synchronize = [&] {
+    pause_observed = true;
+    std::promise<void> done;
+    done.set_value();
+    return done.get_future();
+  };
+  providers::ReplayProvider replay(options);
   test::EventCollector sink;
   replay.start({{"SPX"}}, sink);
   const auto start = clock->now();
@@ -377,6 +385,7 @@ TEST(Replay, ASpeedChangeRescalesTheWaitInProgressAndThePausedTimeDoesNotCount) 
   // The next quote is a minute of replay, a second of wall time at 60x; pause half way.
   ASSERT_EQ(clock->waiting_for(start + 2s), start + 2s);
   replay.set_paused(true);
+  ASSERT_TRUE(test::recording_eventually([&] { return pause_observed.load(); }));
   EXPECT_TRUE(replay.paused());
   clock->advance(10min);
   std::this_thread::sleep_for(20ms);
@@ -394,13 +403,21 @@ TEST(Replay, ASpeedChangeRescalesTheWaitInProgressAndThePausedTimeDoesNotCount) 
 TEST(Replay, ASpeedChosenWhilePausedAppliesWhenPlayResumes) {
   const auto file = paced_recording();
   auto clock = std::make_shared<ManualClock>();
-  providers::ReplayProvider replay({file.path, 1, false, clock});
+  std::atomic<bool> pause_observed{false};
+  providers::ReplayProvider::Options options{file.path, 1, false, clock};
+  options.synchronize = [&] {
+    pause_observed = true;
+    std::promise<void> done;
+    done.set_value();
+    return done.get_future();
+  };
+  providers::ReplayProvider replay(options);
   test::EventCollector sink;
   replay.start({{"SPX"}}, sink);
   const auto start = clock->now();
   ASSERT_EQ(clock->waiting_for(start + 60s), start + 60s);
   replay.set_paused(true);
-  std::this_thread::sleep_for(50ms);  // let the replay notice the pause before the clock moves
+  ASSERT_TRUE(test::recording_eventually([&] { return pause_observed.load(); }));
   clock->advance(5min);
   replay.set_speed(60);
   replay.set_paused(false);

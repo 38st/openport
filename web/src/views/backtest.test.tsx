@@ -10,6 +10,7 @@ import { plans, status } from "../test/trading-fixtures"
 import { newPlaybook } from "./PlaybooksView"
 import { BacktestView, BacktestReportView, backtestHistogram } from "./BacktestView"
 import { dataSource } from "../lib/data-source"
+import { renderTimeout, waitForRender } from "../test/render"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../charts/useSize", () => ({ useSize: () => [{ current: null }, { width: 700, height: 200 }] }))
@@ -38,17 +39,22 @@ beforeEach(() => {
   vi.spyOn(api, "cancelBacktest").mockResolvedValue({ ...state, status: "cancelling" })
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); vi.restoreAllMocks(); vi.unstubAllGlobals(); dataSource.set("live") })
-async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) }) }
-async function render(node = <BacktestView />) { await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>)); await flush() }
+async function render(node = <BacktestView />) {
+  await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>))
+  if (node.type === BacktestView) await waitForRender(() => {
+    expect(host.querySelector('option[value="test@1"]')).not.toBeNull()
+    expect(host.querySelector('option[value="intraday-100k"]')).not.toBeNull()
+  })
+}
 function button(text: string) { const found = [...host.querySelectorAll("button")].find((item) => item.textContent === text); if (!found) throw new Error(`Missing ${text}`); return found }
-async function click(text: string) { await act(async () => button(text).click()); await flush() }
+async function click(text: string) { await act(async () => button(text).click()) }
 async function field(labelText: string, text: string) {
   const labelElement = [...host.querySelectorAll("label")].find((item) => item.firstChild?.textContent === labelText)!
   const fieldElement = labelElement.querySelector("input,select,textarea")!
   const prototype = fieldElement instanceof HTMLSelectElement ? HTMLSelectElement.prototype : fieldElement instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
   await act(async () => { Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(fieldElement, text); fieldElement.dispatchEvent(new Event(fieldElement instanceof HTMLSelectElement ? "change" : "input", { bubbles: true })) })
 }
-describe("Backtest page", () => {
+describe("Backtest page", { timeout: renderTimeout }, () => {
   it("pins the selected version and preserves the entire seed string", async () => {
     await render(); await field("Starting seed", "18446744073709551610"); await field("Day count", "2"); await field("Evaluation plan", "intraday-100k"); await click("Start backtest")
     expect(api.startBacktest).toHaveBeenCalledWith({ playbook: "test@1", plan: "intraday-100k", scenarios: 2, seed: "18446744073709551610" }, "open")
@@ -61,13 +67,14 @@ describe("Backtest page", () => {
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, trading: { ...status.trading!, write: "disabled", reason: "REPLAY_READ_ONLY" } }, null, "open"))
     vi.mocked(api.replay).mockResolvedValue({ directory: "recordings", recordings: [], replay: null, demos: [], write: "open" })
     vi.mocked(api.backtests).mockResolvedValue({ active: state.id, runs: [state], label })
-    await render(); await flush()
-    expect(host.textContent).toContain("1 / 4 day runs")
+    await render()
+    await waitForRender(() => expect(host.textContent).toContain("1 / 4 day runs"))
     expect(button("Start backtest").disabled).toBe(true)
     await click("Cancel backtest"); expect(api.cancelBacktest).toHaveBeenCalledWith("000001", "open")
   })
   it("sorts chosen recordings chronologically and submits a mixed manifest", async () => {
     await render(); await field("Days", "recordings")
+    await waitForRender(() => expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(2))
     for (const checkbox of host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')) await act(async () => checkbox.click())
     await click("Start backtest")
     expect(api.startBacktest).toHaveBeenLastCalledWith(expect.objectContaining({ days: [{ file: "first.oprec" }, { file: "second.oprec" }] }), "open")

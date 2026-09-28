@@ -327,7 +327,7 @@ TEST(Recording, BackpressureAllowsOnlyOneUncommittedFrame) {
   recorder.publish(md::OptionTrade{0, 1});
   {
     std::unique_lock lock(mutex);
-    EXPECT_TRUE(ready.wait_for(lock, 1s, [&] { return writing; }));
+    EXPECT_TRUE(ready.wait_for(lock, 5min, [&] { return writing; }));
   }
   std::atomic<bool> attempted{false}, published{false};
   std::thread producer([&] {

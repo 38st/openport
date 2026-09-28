@@ -1,6 +1,6 @@
 import { templateServer } from "../test/template-server"
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -8,6 +8,7 @@ import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import type { Chain, Surface } from "../api/types"
 import { templateChain as chain, farTemplateChain as far } from "../test/template-fixtures"
+import { renderTimeout, waitForRender } from "../test/render"
 import { account, order, portfolio, status, summary } from "../test/trading-fixtures"
 import { ChainView } from "../views/ChainView"
 
@@ -70,16 +71,27 @@ async function field(label: string, value: string) {
     input.dispatchEvent(new Event(input instanceof HTMLInputElement ? "input" : "change", { bubbles: true }))
   })
 }
-async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) }) }
-async function openTemplates() { await render(); await click("Strategy"); await click("Templates"); await flush() }
+async function readyToReview() { await waitForRender(() => expect(button("Review in ticket").disabled).toBe(false)) }
+async function review() {
+  await readyToReview()
+  await click("Review in ticket")
+  await waitForRender(() => expect(host.querySelector('[aria-label="Submit strategy order"]')).not.toBeNull())
+}
+async function openTemplates() { await render(); await click("Strategy"); await click("Templates"); await readyToReview() }
+async function settledSurface(count: number, state: "success" | "error") {
+  await waitForRender(() => expect(client.getQueryState(["surface", "SPX", count, 0, 1])?.status).toBe(state))
+  // Fallback text also appears while loading. Deliver the settled query's
+  // notifications before checking that the ticket still uses the chain smile.
+  await act(async () => { await new Promise<void>((resolve) => notifyManager.schedule(resolve)) })
+}
 
-describe("strategy template review", { timeout: 20_000 }, () => {
+describe("strategy template review", { timeout: renderTimeout }, () => {
   it("shows picked legs, risk, net, POP, source, actual width and tag before sending", async () => {
     await openTemplates()
     expect(host.textContent).toContain("Sell 1 × 90 put")
     expect(host.textContent).toContain("Buy 1 × 85 put")
-    await click("Review in ticket")
-    await flush()
+    await review()
+    await waitForRender(() => expect(host.textContent).toContain("from the fitted smile"))
     for (const text of ["Bull put spread", "90 P", "85 P", "Net mid", "credit", "Max loss", "Probability of profit · risk-neutral", "from the fitted smile", "put-credit-15d-5w", "Width: 5 points"]) expect(host.textContent).toContain(text)
     expect(api.surface).toHaveBeenCalledWith("SPX", 1, 0, expect.any(AbortSignal))
     expect(api.submitOrder).not.toHaveBeenCalled()
@@ -102,8 +114,8 @@ describe("strategy template review", { timeout: 20_000 }, () => {
   ])("reviews a %s with its risk and tag", async (kind, label, tag) => {
     await openTemplates()
     await field("Template", kind!)
-    await flush()
-    await click("Review in ticket")
+    await review()
+    await waitForRender(() => expect(host.textContent).toContain("Probability of profit · risk-neutral"))
     for (const text of [label!, tag!, "Max loss", "Probability of profit · risk-neutral", "Width:"]) expect(host.textContent).toContain(text)
     if (kind === "butterfly") expect(host.querySelector('button[aria-label="Fewer 100 call per unit"]')?.parentElement?.textContent).toContain("2")
     expect(api.submitOrder).not.toHaveBeenCalled()
@@ -114,7 +126,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
     } })
     await openTemplates()
     expect(host.textContent).toContain("Demo market · simulated prices")
-    await click("Review in ticket")
+    await review()
     expect(host.textContent).toContain("Demo market · simulated prices")
     await click("Close Strategy order")
     await click("Single")
@@ -124,7 +136,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
   })
   it("clears the template tag when the trader changes a resulting leg", async () => {
     await openTemplates()
-    await click("Review in ticket")
+    await review()
     expect(host.textContent).toContain("put-credit-15d-5w")
     await click("Sell 90 put: switch side")
     expect(host.textContent).not.toContain("Template tag:")
@@ -132,7 +144,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
   it("saves and recalls parameters by name without submitting an order", async () => {
     await openTemplates()
     await field("Delta (absolute, 0–100)", "10")
-    await flush()
+    await readyToReview()
     await field("Preset name", "0DTE put spread 10Δ 5 wide")
     await click("Save preset")
     expect(host.textContent).toContain("Preset saved in this browser")
@@ -145,8 +157,7 @@ describe("strategy template review", { timeout: 20_000 }, () => {
   it("explains unavailable wings and disables review", async () => {
     await openTemplates()
     await field("Width (points)", "50")
-    await flush()
-    expect(host.textContent).toContain("put wing at 40: outside the loaded strike range 70–130")
+    await waitForRender(() => expect(host.textContent).toContain("put wing at 40: outside the loaded strike range 70–130"))
     expect(button("Review in ticket").disabled).toBe(true)
     expect(api.submitOrder).not.toHaveBeenCalled()
   })
@@ -159,9 +170,9 @@ describe("strategy template review", { timeout: 20_000 }, () => {
     expect(host.textContent).toContain(`Load the far chain (${far.expiry.id})`)
     expect(api.chain).toHaveBeenCalledWith("SPX", far.expiry.id, 0, expect.any(AbortSignal))
     await act(async () => resolveFar(far))
-    await flush()
+    await readyToReview()
     expect(button("Review in ticket").disabled).toBe(false)
-    await click("Review in ticket")
+    await review()
     expect(host.textContent).toContain("Calendar spread")
     expect(host.textContent).toContain("Oct 16 / Nov 20")
     expect(host.textContent).toContain("Estimated P&L at the Oct 16 expiry")
@@ -173,7 +184,8 @@ describe("strategy template review", { timeout: 20_000 }, () => {
     await act(async () => root.render(<QueryClientProvider client={client}><ChainView symbol="SPX" expiry={far.expiry.id} onExpiry={() => {}} /></QueryClientProvider>))
     const ask = [...host.querySelectorAll("button")].find((b) => b.getAttribute("aria-label")?.startsWith("buy 100 call at ask"))!
     await act(async () => ask.click())
-    await flush()
+    await settledSurface(2, "success")
+    await waitForRender(() => expect(host.textContent).toContain("from the chain's smile"))
     expect(api.surface).toHaveBeenCalledWith("SPX", 2, 0, expect.any(AbortSignal))
     // A fit for the earlier expiry is never used for the later ticket.
     expect(host.textContent).toContain("from the chain's smile")
@@ -182,24 +194,23 @@ describe("strategy template review", { timeout: 20_000 }, () => {
     vi.mocked(api.chain).mockRejectedValue(new Error("Expiry unavailable"))
     await openTemplates()
     await field("Template", "diagonal")
-    await flush()
-    expect(host.textContent).toContain("Far chain unavailable: Error: Expiry unavailable")
+    await waitForRender(() => expect(host.textContent).toContain("Far chain unavailable: Error: Expiry unavailable"))
     expect(button("Review in ticket").disabled).toBe(true)
   })
   it("uses the fitted smile for a single-leg ticket as well", async () => {
     await render()
     const ask = [...host.querySelectorAll("button")].find((b) => b.getAttribute("aria-label")?.startsWith("buy 100 call at ask"))!
     await act(async () => ask.click())
-    await flush()
+    await waitForRender(() => expect(host.textContent).toContain("from the fitted smile"))
     expect(host.textContent).toContain("Probability of profit · risk-neutral")
     expect(host.textContent).toContain("from the fitted smile")
   })
   it("keeps the chain smile when the surface is unavailable", async () => {
     vi.mocked(api.surface).mockRejectedValue(new Error("No surface"))
     await openTemplates()
-    await click("Review in ticket")
-    await flush()
-    expect(host.textContent).toContain("from the chain's smile")
+    await review()
+    await settledSurface(1, "error")
+    await waitForRender(() => expect(host.textContent).toContain("from the chain's smile"))
     expect(host.textContent).not.toContain("from the fitted smile")
   })
 })

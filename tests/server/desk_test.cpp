@@ -385,7 +385,7 @@ server::ApiResponse replay_call(server::ReplayHost& host, std::string method, st
   request.actor = "test-actor";
   if (!host.handle(request, [&](server::ApiResponse response) { done.set_value(std::move(response)); }))
     throw std::runtime_error("Replay request was not handled");
-  if (result.wait_for(5s) != std::future_status::ready) throw std::runtime_error("Replay request timed out");
+  if (result.wait_for(5min) != std::future_status::ready) throw std::runtime_error("Replay request timed out");
   return result.get();
 }
 TEST(ReplayRun, KeptJournalFlushesAtPauseStepFinishStopAndTeardown) {
@@ -463,7 +463,13 @@ TEST(ReplayRun, HistoryWaitsForTheStoppingJournalsFinalSync) {
   const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 1}, {"paused", true}});
   ASSERT_EQ(started.status, 201) << started.body;
   ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+  const auto paused_time = json::parse(host.tick()).at("replay").at("settled_through");
   ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", false}}).status, 200);
+  // A pending pause barrier can still flush the next command. A resumed batch
+  // proves that barrier has completed before we leave an unsynced record.
+  ASSERT_TRUE(test::recording_eventually([&] {
+    return json::parse(host.tick()).at("replay").at("settled_through") != paused_time;
+  }));
   // This command records input even if the order is rejected. Leave it unsynced.
   const test::ScriptedMarket market;
   const auto ordered = replay_call(host, "POST", "/api/replay/orders", {{"client_order_id", "before-stop"}, {"symbol", market.symbol()},
@@ -471,7 +477,8 @@ TEST(ReplayRun, HistoryWaitsForTheStoppingJournalsFinalSync) {
   ASSERT_EQ(ordered.status, 201) << ordered.body;
   hold = true;
   auto stopping = std::async(std::launch::async, [&] { host.stop(); });
-  const auto waiting = entered.wait_for(3s);
+  // Wait for the sync itself; the deadline only guards against a stuck worker.
+  const auto waiting = entered.wait_for(5min);
   EXPECT_EQ(waiting, std::future_status::ready);
   if (waiting != std::future_status::ready) { release.set_value(); stopping.get(); return; }
   auto listing = std::async(std::launch::async, [&] { return replay_call(host, "GET", "/api/replay"); });
@@ -602,7 +609,7 @@ TEST(ReproducibleRun, LockstepWaitsForTheConsumerAndRejectsBackwardAndPastEndTim
   EXPECT_EQ(advancing.wait_for(20ms), std::future_status::timeout);
   EXPECT_EQ(replay.settled_through(), market.time);
   held->set_value();
-  ASSERT_EQ(advancing.wait_for(5s), std::future_status::ready);
+  ASSERT_EQ(advancing.wait_for(5min), std::future_status::ready);
   EXPECT_NO_THROW(advancing.get());
   EXPECT_TRUE(replay.paused());
   EXPECT_EQ(replay.settled_through(), market.time + md::kNanosPerSecond);

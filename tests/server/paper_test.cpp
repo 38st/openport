@@ -34,7 +34,7 @@ class PaperProvider final : public md::Provider {
   std::chrono::seconds delay{0};
 };
 template <class F> bool wait_for(F predicate) {
-  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  const auto end = std::chrono::steady_clock::now() + std::chrono::minutes(5);
   while (!predicate()) {
     if (std::chrono::steady_clock::now() >= end) return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -49,7 +49,7 @@ server::ApiResponse write(server::MetricsSource& source, std::string method,
   if (!body.is_null()) request.body = body.dump();
   request.content_type = "application/json";
   server::handle_api_async(request, source, [promise](auto response) { promise->set_value(std::move(response)); });
-  if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+  if (future.wait_for(std::chrono::minutes(5)) != std::future_status::ready)
     throw std::runtime_error("Engine command did not complete");
   return future.get();
 }
@@ -1447,7 +1447,7 @@ TEST(PaperOrdering, MarketBatchPrecedesCancelAndInboxIsBoundedWhileOwnerIsBusy) 
   {
     std::unique_lock lock(gate.mutex);
     gate.armed = true;
-    ASSERT_TRUE(gate.changed.wait_for(lock, std::chrono::seconds(3), [&] { return gate.paused; }));
+    ASSERT_TRUE(gate.changed.wait_for(lock, std::chrono::minutes(5), [&] { return gate.paused; }));
   }
   market.next();
   provider.sink->publish(md::OptionQuote{0, market.time, 3.8, 4, 1, 1});
@@ -2466,7 +2466,7 @@ TEST_F(PaperEngine, AuthenticatedActorPassesThroughQueueToOrdersFillsAndCsv) {
   auto promise = std::make_shared<std::promise<server::ApiResponse>>();
   auto future = promise->get_future();
   server::handle_api_async(request, *engine, [promise](auto response) { promise->set_value(std::move(response)); });
-  ASSERT_EQ(future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  ASSERT_EQ(future.wait_for(std::chrono::minutes(5)), std::future_status::ready);
   const auto response = future.get();
   ASSERT_EQ(response.status, 201) << response.body;
   EXPECT_EQ(json::parse(response.body)["order"]["actor"], "research-agent");

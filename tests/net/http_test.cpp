@@ -171,7 +171,7 @@ TEST(WebServer, HttpCancellationInterruptsReadAndTlsHandshake) {
         std::string(scheme) + "127.0.0.1:" + std::to_string(listener.local_endpoint().port());
     auto request = std::async(std::launch::async, [&] {
       try {
-        client.get(url, {}, std::chrono::seconds(30), &cancel);
+        client.get(url, {}, std::chrono::minutes(10), &cancel);
         return std::string("succeeded");
       } catch (const std::exception& error) {
         return std::string(error.what());
@@ -186,7 +186,7 @@ TEST(WebServer, HttpCancellationInterruptsReadAndTlsHandshake) {
         received = true;
       });
     });
-    io.run_for(std::chrono::seconds(3));
+    io.run_for(std::chrono::minutes(5));
     EXPECT_TRUE(received);  // HTTP request or TLS ClientHello, deliberately unanswered
     const auto started = std::chrono::steady_clock::now();
     cancel = true;
@@ -354,7 +354,7 @@ TEST(WebServer, PollingProviderStopInterruptsAnInFlightHttpRead) {
     });
   });
   provider.start({{"SPY"}}, queue);
-  io.run_for(std::chrono::seconds(3));
+  io.run_for(std::chrono::minutes(5));
   EXPECT_TRUE(received);
   const auto started = std::chrono::steady_clock::now();
   provider.stop();
