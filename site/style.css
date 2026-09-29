@@ -59,7 +59,7 @@ nav a { display: inline-block; padding-block: 0.5rem; }
 .site-header nav { font-size: 0.875rem; }
 .site-header nav a { color: var(--muted); text-decoration: none; }
 .site-header nav a:hover { color: var(--foreground); }
-.hero { padding-block: clamp(3rem, 7vw, 6rem) 3rem; max-width: 900px; }
+.hero { padding-block: clamp(1.5rem, 3vw, 2rem) 3rem; max-width: 900px; }
 .eyebrow { color: var(--accent); font: 500 0.75rem/1.5 var(--font-mono); letter-spacing: 0.07em; text-transform: uppercase; margin-bottom: 1rem; }
 h1 { font-size: clamp(2.5rem, 5.5vw, 4.5rem); font-weight: 550; letter-spacing: -0.045em; line-height: 1.08; text-wrap: balance; }
 .lede { max-width: 710px; margin-top: 1.5rem; font-size: clamp(1.05rem, 2vw, 1.25rem); line-height: 1.65; }
