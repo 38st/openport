@@ -12,12 +12,19 @@ zlib, zstd and Node 22+. Other dependencies are fetched and pinned by checksum.
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOPENPORT_WERROR=ON
 cmake --build build -j
 (cd build && ctest -j 8)                 # C++ tests
+./build/bench/openport_bench             # pricing benchmarks
 cd web && npm ci && npx tsc -p tsconfig.json && npx vitest run && npm run build
 ```
 
 `cd web && npm run dev` serves the terminal on :5173 against an `openportd` on :8080.
-CI runs the same checks on every push and pull request, with GCC on Ubuntu, Apple
-Clang on macOS and a Docker smoke test, all with warnings as errors.
+
+CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
+Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, again under AddressSanitizer
+and UndefinedBehaviorSanitizer with GCC 13, the web checks, the Python client and a
+Docker smoke test. The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON`
+links OpenSSL and zstd statically, and CI checks it needs only macOS's own libraries.
+Changes only to `site/`, `docs/` (other than `docs/openapi.yaml`, which the tests
+read) or top-level Markdown files skip CI.
 
 ## Python and API contract
 
@@ -67,7 +74,8 @@ generated or hand-written quotes, and the demo market generates its prices.
 
 The GitHub Pages site is plain HTML and CSS in `site/`, with no build step. The
 Pages workflow copies `docs/screenshots/` into its artifact; do not commit another
-copy of those images. Keep claims and measurements consistent with the README.
+copy of those images. Keep claims and measurements consistent with the README and
+[how the numbers are made](docs/methods.md).
 Check phone widths, both colour schemes and reduced motion after changes.
 
 In the repository's Pages settings, select GitHub Actions as the source. Pushes
@@ -75,6 +83,31 @@ to `main` affecting the site, screenshots or `.github/workflows/pages.yml` then
 deploy it, and the workflow can also be run by hand; until Pages is enabled the
 workflow skips the deployment with a notice. Link previews use
 `site/social-preview.png` (1280×640).
+
+## Releasing
+
+Publishing a GitHub release builds the image for amd64 and arm64 and pushes it to
+`ghcr.io/38st/openport`, and attaches a Linux archive for each architecture.
+`tools/release.sh` builds a release on your own machine: it checks and tests the web
+terminal and the engine, packages this machine's build and a Linux build from the Docker
+image with checksums and release notes into `dist/`, and smoke-tests the image. Nothing
+is published unless you pass `--publish`, which creates a draft GitHub release for the
+version in `CMakeLists.txt` at the current commit, or refreshes its files when the draft
+exists; GitHub tags the commit when you publish the draft.
+
+After publishing the release and its `SHA256SUMS`, update the Homebrew formula:
+
+```bash
+tools/update_formula.sh VERSION
+```
+
+The script reads the checksum for `openport-VERSION-darwin-arm64.tar.gz` and updates
+the formula's URL, version and SHA-256 together. Review and commit
+`Formula/openport.rb` to the default branch so the tap receives it. Do this after
+the final archives and checksums are published. For an offline check, pass a saved
+file as the second argument; `python3 tools/update_formula_test.py` tests parsing
+with fixture checksums. Users update with `brew update && brew upgrade openport`,
+then `brew services restart openport`.
 
 ## Licence
 

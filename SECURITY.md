@@ -28,6 +28,6 @@ journals and any market-data API keys it is given. For example:
 - an API key leaking into logs, responses or recordings
 
 By design, reads need no credentials, and writes are open to anyone who can reach a
-loopback bind (see [Security](README.md#security) in the README). Running it on a
+loopback bind (see [Security](docs/configuration.md#security) in the configuration notes). Running it on a
 public address without `--write-token`, HTTPS and an authenticating proxy is not a
 supported setup.

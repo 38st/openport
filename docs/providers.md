@@ -132,9 +132,10 @@ remains the shutdown exception documented in [runtime](runtime.md).
 
 ## Existing vendor mappings
 
-These are implementation maps, not live certification. As the README states,
-Databento, Massive, ThetaData, Tradier and tastytrade have sample-response tests
-but have not yet been run live with credentials.
+These are implementation maps, not live certification. As the
+[configuration notes](configuration.md#providers) state, Databento, Massive,
+ThetaData, Tradier and tastytrade have sample-response tests but have not yet been
+run live with credentials.
 
 | Adapter | Mapping and code to read |
 | --- | --- |
@@ -289,7 +290,8 @@ Keep recordings private and check the vendor's terms before sharing. See
 
 - [ ] Register the factory name, validated options, build sources and tests.
 - [ ] Document required plan, key environment variable, defaults and supported
-  filters in the README's Providers and Configuration sections and runtime notes.
+  filters in the README's provider table, [configuration](configuration.md)'s
+  Providers and flags, and the runtime notes.
 - [ ] Check definitions before data, stable IDs, contract conventions, price and
   size units, missing values, timestamps and delayed/real-time entitlement.
 - [ ] Test multiple underlyings, unchanged snapshots, disappearing contracts,

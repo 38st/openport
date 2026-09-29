@@ -15,6 +15,10 @@ One C++20 binary runs the feed, the analytics engine, the simulator and the web
 terminal. Your data and trades stay on your machine unless you enable external
 notifications, which send the selected paper trading events to your channels.
 
+**[Watch the demo on openport.markets](https://openport.markets/#demo)**: ten seconds
+from the SPX chart to an order ticket on a simulated day. Or start it locally in one
+command with the [quick start](#quick-start).
+
 ![The Trade page: SPX five-minute candles and the option chain on Cboe's delayed data](docs/screenshots/trade-dark.png)
 
 | Volatility (light theme) | Exposure |
@@ -37,7 +41,7 @@ notifications, which send the selected paper trading events to your channels.
 
 Timings are medians on an Apple M2 Max: the IV solve from `openport_bench`, and the SPX
 pass (over 23 passes) and the Cboe comparison on live data during the session, all on
-2026-09-24.
+2026-09-24. [How the numbers are made](docs/methods.md).
 
 No market open, or no data? The **demo market** plays simulated trading days you can
 trade: fourteen scenarios in SPX, SPY and QQQ options, from a reversal or a selloff to
@@ -48,195 +52,22 @@ with generated prices labelled as simulated on every page:
 
 ## What you get
 
-### Market analytics
+- **Analytics**: the chain with bid/mid/ask IV, Greeks, volume and liquidity; SVI
+  smiles and term structure; model-free IV, skew, realized volatility and IV rank;
+  gamma and vanna exposure with the gamma flip and walls.
+- **Evaluations**: a profit target and a trailing drawdown floor decide pass or fail,
+  with buying-power rules, personal guardrails, a reduce-only kill switch and breach
+  estimates.
+- **Orders and strategies**: day and GTC limits, brackets, and up to four legs picked
+  on the chain or built from templates, with probability of profit, OCO exits and rolls.
+- **Journal**: a P&L calendar, reports by tag and hold time, and a review of every
+  trade with its context, excursions and R-multiple.
+- **Replay and backtests**: trade any recorded or imported day again at up to 300×,
+  and run versioned playbooks over many days.
+- **Scripting and alerts**: an OpenAPI contract, a Python client and an MCP server;
+  alerts in the terminal and to Discord, Telegram, ntfy or a webhook.
 
-- **Chain**: bid, ask and mid with bid/mid/ask IV, delta, gamma, vega, theta, vanna and
-  open interest and the session's volume per strike, with each side's spread and a
-  liquidity cue, centred on the money, with the provider's own IV alongside where it
-  publishes one. SPX (AM-settled) and SPXW (PM-settled) expiring on the same day stay
-  separate. Missing quotes, volume and open interest show as missing, never as zero,
-  with coverage counts per expiry. The chain opens on the nearest expiry before its
-  auto-close and counts down to it on the market-data clock.
-- **Smile and term structure**: out-of-the-money smile per expiry with its SVI fit and
-  arbitrage checks, and the ATM term structure on a square-root-of-time axis, with each
-  expiry's forward and rate and where it came from.
-- **Volatility metrics**: model-free IV and ATM term structures, delta risk reversals
-  and butterflies, realized volatility and cones, the variance risk premium, and
-  implied session moves with optional event labels. Local minute and close history
-  adds IV rank and percentile, labelled index proxies, and ex-post variance risk
-  premium for SPX (SPY by proxy). Values use current market time;
-  missing, truncated and proxy estimates are marked. [Definitions](docs/volatility.md).
-- **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
-  call and put walls.
-
-### Trading terminal
-
-- **Brief**: prior-session and observed overnight levels, implied moves and bands,
-  volatility changes, positioning and supplied events for the selected underlying,
-  beside the account's floor room, loss allowance, guardrails and open positions.
-  Plan before the open and review after the close on market time, including replay.
-  Key levels can be drawn on Trade's chart, with the choice saved in the browser.
-- **Trade**: the chain with an order ticket docked beside it, and a candle chart of the
-  underlying (one-minute to daily, backfilled from Cboe's free history) showing your
-  strikes, armed triggers and the selected expiry's expected move.
-- **Orders**: day and GTC limits, market orders, orders that wait for a price level,
-  and brackets whose stop-loss and take-profit cancel each other. GTC orders wait
-  outside the regular session and last until the contract's last trade or auto-close.
-  Working orders change in place: size, limit or trigger level. Entry notes and tags
-  follow the trades into the Journal. Tickets warn on thin liquidity without blocking;
-  market orders show the displayed size they take against.
-- **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
-  and diagonals) picked on the chain, or built from a template such as a 10-wide put
-  spread at 15 delta or a condor one expected move out, with presets saved in the
-  browser. Legs fill together at a net debit or credit. The ticket shows the P&L at
-  expiry and today, the expected move, and the probability of profit from the smile's
-  risk-neutral distribution, skew included. A held strategy is one row with its net
-  P&L and Greeks, closed or rolled to a later expiry in one order. Spreads take OCO
-  exits on entry or while held, with stops on the closing net or the underlying, and
-  a condor or iron butterfly can roll its put or call vertical as one four-leg order.
-- **Evaluations**: a profit target and a trailing drawdown floor (intraday or end of day)
-  decide pass or fail, with buy-only, defined-risk and buying-power rules and auto-close
-  before expiry. Limits tighten immediately; looser evaluation limits wait for the
-  next trading day. Personal soft floors, trade limits, cooldowns and profit locks
-  keep the account reduce-only when reached.
-  The Dashboard charts minute and fill equity against the target and floor, and the Journal keeps a P&L
-  calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
-  per contract or per strategy, with shares from exercise and assignment as trades of
-  their own. Each trade's review shows the market and the account at entry and exit,
-  how far it went against you and in your favour (MAE and MFE), what you gave back and
-  its R-multiple, on the underlying's chart. Trades take notes and tags, each day a
-  plan and a review, and trades and fills download as CSV. A new attempt keeps the
-  history.
-- **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
-  (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
-  a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
-  keep working while opening orders are cancelled. Positions close together as one
-  order, or flatten an underlying or the whole account in one step. Server order
-  previews show buying power, maximum loss and a size that uses at most half the
-  floor room. Breach risk shows the spot moves that could reach the floor and
-  labelled model estimates of touching it before the close.
-- **Playbooks**: versioned setups with entry windows and conditions, shared strategy
-  templates, preview sizing and spread exits. Trade, Brief and Dashboard stage orders
-  for review; replays and scenarios can send them automatically. The Playbooks page
-  compares adherence and expectancy, and the Journal filters by playbook. Dashboard
-  and playbook pass odds are labelled estimates from past results, not predictions.
-  [Rules and limits](docs/playbooks.md).
-- **Batch backtests**: run a pinned playbook over recorded, imported or seeded
-  scenario days, with independent daily results and carried-account evaluation
-  attempts. The CLI, API and Backtest page keep reports and verifiable journals.
-  Results are simulated trading, not predictions or investment advice.
-- **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
-  book, each with its own journal, rules and positions on the same market. Public
-  demo visitors can create private sandbox accounts on simulated prices, removed
-  after 24 hours unused or a server restart.
-- **Replay**: record every session and trade any recorded day again beside the live
-  feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
-  at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
-  Finished runs open read-only in Journal and Dashboard. Replay journals sync to disk
-  every 250 ms rather than every record, so a power cut can lose their last quarter
-  second.
-
-  - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
-    Step to a market time with `PUT /api/replay {"until":"10:30"}`; check a saved run
-    with `openportd --verify-run JOURNAL`.
-- **Historical days**: import a past trading date from Databento or your local
-  Theta Terminal into a private recording, then trade it in Replay. Imported days
-  show their provider and an imported label. The importers follow the documented
-  APIs and have saved-response tests; they have not yet been run live with a key.
-- **Demo market**: when markets are closed or the feed has stalled, the terminal offers
-  fourteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
-  gaps, volatility changes and overnight sessions. Each run chooses a fresh seed, or
-  repeats one you supply. Add your own JSON files with `--scenario-dir`; generated
-  prices stay labelled simulated. `--provider demo` rotates regular scenarios as
-  the server's own feed without network services. [Scenario format](docs/scenarios.md).
-- **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
-  the terminal and as browser notifications with an optional chime while it is open;
-  assignments, exercises at expiry and dividends are always announced. Floor room,
-  daily loss, guardrails, pending limits and a nearby profit target also raise alerts,
-  once per threshold per account and trading day.
-- **External notifications**: send fills, rejected orders, floor warnings, rule trips,
-  assignments, exercises, ready playbooks and stalled feeds to Discord, Telegram,
-  ntfy or a webhook. Each channel has filters and a test button in Alerts settings.
-  Delivery runs separately from trading; replays and drills never send.
-
-### Operations
-
-- **Status**: feed health per underlying, trading sessions, queue and analytics timing,
-  and the local volatility history store.
-- **Scripting and agents**: a checked OpenAPI contract, a standard-library Python
-  client and an MCP server, with scoped tokens and journal actor attribution.
-- **Broker data**: Tradier snapshot polling and tastytrade DXLink streams, for
-  traders whose brokerage account includes real-time option data; credentials stay
-  in the environment and neither adapter can place orders.
-- **Install**: Homebrew on Apple Silicon, Docker Compose, release archives or source.
-  Optional browser update notices are off by default.
-- Light and dark themes, keyboard shortcuts (number keys follow the sidebar: Brief
-  is 7 with a paper account, 2 on analytics-only servers; arrows step expiries on Trade).
-
-## Paper trading
-
-The engine simulates orders on European cash-settled index options (SPX, XSP, NDX,
-RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single stocks)
-against displayed quotes: market and marketable orders take the far side up to the
-displayed size by default, with optional per-plan slippage of 0–10 ticks. Single-leg limits cap
-the fill price; multi-leg orders wait if the slipped net exceeds their limit.
-Rules offers **As displayed** (the existing defaults) or **Conservative** for a new
-account attempt: 1 second of market-time latency, 1 slippage tick and 1 extra tick
-for each additional displayed-size block. Custom rules set latency up to 60 seconds
-and impact up to 10 ticks per block. With impact, limits wait when the full price
-or net exceeds them. This is simulated depth. Neither model knows queue position,
-hidden liquidity, or whether the market would have traded at all; a delayed feed
-still gives hindsight. Resting limits fill when a later quote crosses them, and every fill
-pays a per-contract fee. Positions are marked at the mid, and risk limits on dollar
-delta, vega, order size, price bands and daily loss are checked before and at every
-fill. Every product trades in its regular session (09:30 to 16:15 ET for index
-options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
-(20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. The
-market-wide circuit breakers halt trading when the S&P 500 falls 7%, 13% or 20%, with
-a banner saying when trading resumes, and Cboe's published holiday schedule is read daily, so a closure it announces applies at
-once. American equity
-and ETF options deliver shares when exercised early or held into expiry a cent in the
-money. A short one that trades below its exercise value at the close, or a call worth
-less over it than a dividend going ex, can be assigned overnight, in part and at
-random as real assignments are; the shares are marked, risked and closed at the
-underlying's price.
-Dividends are paid on them from a file you give the server (`--dividends FILE`), or
-from Massive's API with a key from any of its stocks plans (`--dividends massive`),
-whichever provider supplies the quotes.
-
-Buying power follows each order's real margin: a naked short holds the usual
-20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals
-hold only what they can lose. An order that would use buying power must fit within it;
-anything that frees buying power (closing, buying back a short, buying protection) is
-always allowed, even when the account is short of it.
-Custom plans can instead select portfolio margin, as Cboe's and FINRA's rules set it:
-each underlying holds its largest loss across a price scan (−8% to +6% for index
-products, ±15% for stocks and ETFs), at least $37.50 a contract, and buying power is
-equity less that, so long options and shares count as collateral. Presets use strategy
-margin and As displayed fills unless Conservative is selected; the
-[paper-trading guide](docs/paper-trading.md#account-rules-and-evaluations) has the details.
-
-Plans set an account's rules: `practice` (the default: buying power only),
-`intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new high) or
-`eod-25k|50k|100k` (any strategy, 12% target, 6% drawdown trailing each close). Touching
-the floor fails the attempt and closes every position; reaching the target passes it.
-On the default 15-minute delayed feed a pass is practice, not proof: any real-time chart
-shows where the market went next.
-`--plan` picks the main account's first plan; start a new attempt on any plan from the
-Dashboard or Rules page, and add accounts from the account switcher in the sidebar.
-
-Ordinary paper accounts survive restarts through an append-only, hash-chained journal:
-the main account at `~/.openport/paper-journal.jsonl` (`--paper-journal`), the others in an
-`accounts` directory beside it. Each record reaches the disk before its transaction is
-published, and carries what the transaction changed, with the whole state every
-thousand records; `openportd --compact-journals` rewrites journals
-from older builds that way, keeping each original as `.bak`, and `--repair-journals`
-cuts off a last line a full disk tore. `--no-paper` turns trading off. The engine also
-models the funded phase that follows a pass (`funded-*` plans with a locking floor and
-payouts). This is a simulator that funds no one, so the web terminal hides those plans
-and the Payouts page; set `showFundedAccounts` in `web/src/lib/features.ts` to offer
-them. [Paper trading](docs/paper-trading.md) documents every rule, the HTTP contract and
-the simulation's limits.
+The [full feature list](docs/features.md) has every rule, order type and report.
 
 ## Quick start
 
@@ -248,53 +79,21 @@ brew install openport
 brew services start openport
 ```
 
-Open the `http://localhost:8080/#token=…` link in
-`$(brew --prefix)/var/log/openport.log`. If it has not appeared yet, append the
-contents of `$(brew --prefix)/var/openport/write-token` to
-`http://localhost:8080/#token=`. The service keeps accounts and chart history under
-`$(brew --prefix)/var/openport`; logs are in `var/log/openport.log` and
-`var/log/openport.error.log`. The formula installs the self-contained macOS archive.
-Its 0.3.0 checksum must be filled in after publishing, as described under
-[Development](#development). For Intel Macs and Linux, use Docker or the source build.
+Then open the `http://localhost:8080/#token=…` link in
+`$(brew --prefix)/var/log/openport.log`.
 
-With Docker (Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed), from the
-published image for amd64 and arm64:
+Anywhere with Docker (Cboe delayed SPX, SPY, QQQ, IWM and DIA, no key needed):
 
 ```bash
 docker run --rm --name openport -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport
 ```
 
-Then open the link it prints, `http://localhost:8080/#token=…`. Inside the container the
-server listens on every interface, so it takes orders only with a write token; it keeps
-one in the volume, and the link saves it in that browser tab. The `openport` volume also
-keeps your accounts and chart history between runs. When nothing is trading, the
-terminal offers the demo market, which needs no data at all. To use your own provider,
-pass its key and arguments:
-
-```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport -e DATABENTO_API_KEY ghcr.io/38st/openport --provider databento --symbols SPX,QQQ
-```
-
-Or use [docker-compose.yml](docker-compose.yml) from this checkout:
-
-```bash
-docker compose up -d
-docker compose logs openport
-```
-
-Open the token link in the logs. Compose uses the published image, the same named
-`openport` volume and port 8080 on loopback only. It restarts unless stopped and
-checks `/api/status` for health. Provider credentials and a provider command are
-commented in the file. To update, run `docker compose pull && docker compose up -d`.
-`docker compose down` keeps the volume; adding `--volumes` deletes its data.
-Stop an existing Docker or Homebrew instance before using the same port or accounts.
-
-`docker build -t openport .` builds the same image from a checkout. Each
-[release](https://github.com/38st/openport/releases) also has archives for Linux
-(amd64 and arm64) and macOS (Apple Silicon).
+Then open the link it prints. The `openport` volume keeps your accounts and chart
+history between runs, and when nothing is trading the terminal offers the demo market.
+[docker-compose.yml](docker-compose.yml) runs the same image as a service.
 
 From source (CMake 3.25+, a C++20 compiler, Boost 1.83+, OpenSSL 3, zlib, zstd and
-Node 22+; everything else is fetched and pinned by checksum):
+Node 22+):
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -303,418 +102,43 @@ cmake --build build -j
 ./build/apps/openportd --symbols SPX,SPY,QQQ,IWM,DIA --web-root web/dist
 ```
 
-To install it, `cmake --install build --component openport --prefix ~/.local` puts
-`openportd` in `bin/` and the terminal in `share/openport/web`, where it finds it on
-its own. The scenario library is compiled into the binary and needs no installed
-files. A release archive has the same layout: unpack it and run `bin/openportd` (Linux
-needs OpenSSL 3, zlib and zstd; the macOS archive, for Apple silicon, needs nothing
-installed). `openportd --version` prints the version. The terminal opens with a short
-welcome the first time; the footer's welcome link shows it again.
-
-Add `--record-dir ~/.openport/recordings` to record each session for the Replay page.
-Full chains are large: see [recording](docs/runtime.md#recording-and-replay) before
-recording all day.
-
-## Public demo and sandbox accounts
-
-Run `openportd --provider demo --address 0.0.0.0 --write-token-file PATH` with
-`--allowed-host terminal.example.com` for your public name, or set
-`OPENPORT_WRITE_TOKEN` instead of the file. Terminate HTTPS at the reverse proxy.
-Keep the write token private; visitors can watch without it, and the terminal shows
-a watch-only notice with an action to enter a token. Add `--sandboxes 100` to let
-visitors create their own practice accounts and trade the simulated feed. Their
-session tokens work only on their own account. Server settings still need the
-operator's token. Without this option, visitors can only watch.
-
-The demo feed uses only simulated prices. Without `--paper-journal`, it keeps the
-main account at `~/.openport/demo/paper-journal.jsonl`, with accounts and replay
-history beside it. Journals do not identify their feed: keep demo journals separate
-from live ones, including when you supply a path. With Docker, use a separate volume:
-
-```bash
-docker run --rm -p 127.0.0.1:8080:8080 -v openport-demo:/var/lib/openport \
-  ghcr.io/38st/openport --provider demo --sandboxes 100 \
-    --allowed-origin https://terminal.example.com --allowed-host terminal.example.com
-```
-
-Put the HTTPS proxy in front of that local port. The image keeps its write token
-in the volume; do not share the token link printed at startup. Arguments after the
-image replace its default provider command. Its explicit journal path is in that
-volume. Sandbox journals live in a separate `sandboxes` directory beside the demo
-journal. They are deleted after 24 hours without authenticated requests and on
-startup; `--sandbox-idle-seconds N` changes the idle time. Sandbox tokens are returned
-once and saved in the browser tab's session storage, with an in-memory fallback.
-
-On Railway, add `--client-ip-header X-Real-IP` so visitors do not share the proxy's
-creation allowance. Configure both `--allowed-origin` and `--allowed-host` for the
-public names. Trust that header only behind a proxy that overwrites it and prevents
-direct access to the backend. By default, the server uses the connection address
-and ignores forwarding headers. Creation allows 3 accounts per client and 30 total
-per hour, with at most 100 at once in this example; each sandbox allows 60 order
-requests per minute. Full capacity or rate limits return HTTP 429. The normal
-low-disk journal refusal applies. [Runtime details](docs/runtime.md#public-sandboxes).
+[Installation](docs/install.md) covers your own provider, Compose, release archives,
+recording and hosting a public demo.
 
 ## Providers
 
 | Provider | `--provider` | Data | Key |
 | --- | --- | --- | --- |
-| Cboe delayed | `cboe` (default) | 15-minute delayed chain snapshots for US index and equity options, with session volume, open interest and Cboe's Greeks, polled every 15 s from Cboe's data files, or about once a minute from its quote pages when the files fall behind | none |
-| Databento | `databento` | Real-time OPRA consolidated quotes (`cbbo-1s` or `cmbp-1`), trades and open interest, streamed | `DATABENTO_API_KEY` |
-| Massive | `massive` | Option chain snapshots, real-time or delayed depending on your plan, polled every 5 s | `MASSIVE_API_KEY` |
-| ThetaData | `thetadata` | Snapshots from your local Theta Terminal (v3), polled every 2 s | Theta Terminal login |
-| Tradier | `tradier` | Option chain snapshots and underlying prices; production options are real-time, index timing is unconfirmed. Sandbox is 15-minute delayed. Polling follows the request budget. Not yet run live with an account; reports welcome | `TRADIER_ACCESS_TOKEN` |
-| tastytrade | `tastytrade` | Production DXLink option quotes, open interest, delta/gamma and underlying prices. Not yet run live with an account; reports welcome | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN`; optional `TASTYTRADE_CLIENT_ID` |
-| Demo | `demo` | Simulated SPX, SPY and QQQ regular sessions, rotating on successive trading dates; `--option days=trend,chop --option speed=60` | none |
-| Replay | `replay` | A recording played back as the whole feed, at 1×, 10×, 60× or full speed (`--option file=PATH --option speed=10`) | none |
+| Cboe delayed | `cboe` (default) | 15-minute delayed index and equity option chains | none |
+| Databento | `databento` | Real-time OPRA quotes, trades and open interest | `DATABENTO_API_KEY` |
+| Massive | `massive` | Real-time or delayed chain snapshots, by plan | `MASSIVE_API_KEY` |
+| ThetaData | `thetadata` | Snapshots from your local Theta Terminal | Theta Terminal login |
+| Tradier | `tradier` | Chain snapshots, real-time in production, delayed in its sandbox | `TRADIER_ACCESS_TOKEN` |
+| tastytrade | `tastytrade` | DXLink quotes from a funded brokerage account | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN` |
+| Demo | `demo` | Simulated SPX, SPY and QQQ days | none |
+| Replay | `replay` | A recording played back as the feed | none |
 
-Databento, Massive and ThetaData follow their documented APIs and are tested against
-sample responses, but have not yet been run live with a key. If you have one, an
-[issue](https://github.com/38st/openport/issues) saying how it went is welcome.
+Every provider but Cboe, Demo and Replay is tested against sample responses and has
+not yet been run live with a key; an [issue](https://github.com/38st/openport/issues)
+saying how it went is welcome. The broker adapters read market data only.
+[Configuration](docs/configuration.md) has each provider's details and every flag.
 
-Tradier and tastytrade adapters read market data only. They never send broker
-orders or read accounts. Credentials come from environment variables, never flags.
-tastytrade requires a funded production account; its sandbox has no market data.
-Tradier option sizes are read as contracts and DXLink times as milliseconds, each with
-an option to override; IV and Greek scalings the brokers' documents leave unclear stay
-missing rather than guessed.
-See [broker operation and limitations](docs/runtime.md#broker-market-data) before
-using either feed for paper trading.
+## Documentation
 
-Providers deliver very different things: Databento sends raw exchange quotes with no
-Greeks and no underlying price, while others ship their own Greeks. OpenPort normalises
-all of them into the same contracts, quotes, volume and open interest, then computes
-everything itself, so the numbers mean the same thing whichever provider you use.
+- [Features](docs/features.md): everything the terminal and simulator do
+- [Installation](docs/install.md): Homebrew, Docker, Compose, source and public demos
+- [Configuration](docs/configuration.md): providers, flags, update checks and security
+- [Paper trading](docs/paper-trading.md): orders, fills, rules, the journal and reason codes
+- [Playbooks](docs/playbooks.md): setups, staged orders, pass odds and batch backtests
+- [How the numbers are made](docs/methods.md): forwards, IV, Greeks, exposure, accuracy
+  and performance, with [volatility metrics](docs/volatility.md), [SVI](docs/svi.md)
+  and [American analytics](docs/american-analytics.md)
+- [API and scripting](docs/api.md): routes, the Python client and the MCP server
+- [Architecture](docs/architecture.md), [runtime notes](docs/runtime.md),
+  [scenarios](docs/scenarios.md) and [writing a provider adapter](docs/providers.md)
 
-To add a feed, see [writing a provider adapter](docs/providers.md).
-
-## Configuration
-
-| Flags | Controls |
-| --- | --- |
-| `--provider NAME`, `--poll-seconds N`, `--option KEY=VALUE` | The market-data provider and its settings, such as `quotes=cmbp-1` for Databento or `sandbox=true` for Tradier; Tradier validates poll intervals against its request budget |
-| `--provider demo --option days=ID,ID,... --option speed=N` | Built-in regular scenarios in the given order; default all regular scenarios at 1×, supported speeds 1, 2, 5, 10, 30, 60, 120, 300. Symbols default to their coverage. Network services are off; candles stay in memory unless `--candle-dir` is given |
-| `--symbols SPX,SPY,QQQ,IWM,DIA`, `--expiries N`, `--window F` | The underlyings (default SPX, SPY, QQQ, IWM and DIA), the nearest N expiries and strikes within ±F of spot |
-| `--rate R` | The rate assumed when no index curve is available |
-| `--address`, `--port`, `--web-root`, `--allowed-origin`, `--allowed-host`, `--write-token`, `--write-token-file` | The web server and who may write (see [Security](#security)) |
-| `--token-file FILE` | Named tokens: one `NAME SCOPES SECRET` per line, with comma-separated scopes and `#` comments |
-| `--notify-config FILE` | Owner-only JSON file for notification channels and filters; alternatively `OPENPORT_NOTIFY_JSON` or channel environment variables ([setup](docs/runtime.md#external-notifications)) |
-| `--sandboxes N` | Offer up to N visitor accounts; 0 (default) disables them. Requires `--provider demo` and paper trading |
-| `--sandbox-idle-seconds N` | Delete sandboxes after N seconds without authenticated use; default 86400 |
-| `--client-ip-header NAME` | Use this proxy header for sandbox creation limits; unset uses the connection address |
-| `--require-token` | Require a token for API reads, WebSocket ticks and writes, including loopback; static terminal files remain public |
-| `--paper-journal PATH`, `--plan ID`, `--paper-cash`, `--paper-fee`, `--no-paper` | The main paper account (demo defaults to `~/.openport/demo/paper-journal.jsonl`); plan, cash and fee seed a new journal only. Rules selects optional fill models for a new attempt. Equity history is kept beside each journal as `.equity.csv`; playbook definitions and modes are in `playbooks.json` beside the main journal |
-| `--scenario-dir DIR` | User JSON scenarios, listed after built-ins and overriding matching ids ([format](docs/scenarios.md)) |
-| `--backtest PLAYBOOK[@VERSION]`, `--days FILE`, `--recordings DIR`, `--scenarios N --seed S`, `--out REPORT.json` | Headless batch backtest under `--plan`; choose one day source. `--workers 1..16` defaults to 4; `--playbooks FILE` overrides the saved catalogue. [Inputs and reports](docs/playbooks.md#batch-backtests) |
-| `--verify-run JOURNAL` | Reproduce a saved replay or scenario from its recorded input and commands; exit 0 on matching transaction hashes and final equity, 1 otherwise |
-| `--record FILE`, `--record-dir DIR` | Recording the feed to a file, or each run into a directory the Replay page reads |
-| `--import-day databento\|thetadata --date YYYY-MM-DD --symbols SPX,SPY` | Import a completed past trading day and exit; accepts `--expiries N` and `--window F` |
-| `--out DIR` | Import destination, default `./recordings`; select this directory with `--record-dir` to list its days in Replay |
-| `--candle-dir DIR`, `--no-history` | Where chart history is kept, and whether Cboe backfills prices and volatility-index proxies ([price history](docs/runtime.md#price-history)) |
-| `--series-dir DIR`, `--no-series` | Local minute volatility history; defaults to `series` beside the candle directory, or disables collection ([storage](docs/runtime.md#volatility-series-storage)) |
-| `--backfill-series FILE...`, `--force` | Build metric history offline from recordings and exit; keep existing minutes unless forced; refuse demo recordings |
-| `--dividends FILE\|massive` | Known cash dividends for held shares and American analytics: `SYMBOL,YYYY-MM-DD,AMOUNT` lines, the ex-date and dollars a share, taken from the fund's own schedule; or `massive` to read them from Massive's API every six hours with `MASSIVE_API_KEY` |
-| `--events FILE` | Supplied `YYYY-MM-DD,Label` lines for the implied-session-move table; no event dates are bundled ([volatility](docs/volatility.md)) |
-| `--no-cboe-holidays` | Don't read Cboe's published holiday schedule, which lets a special closure it announces apply without a new build ([calendar](docs/runtime.md#product-sessions-and-cboe-clocks)) |
-
-Every value is range-checked; `openportd --help` lists every flag, and the
-[runtime notes](docs/runtime.md) cover the details.
-
-| Terminal setting | Default | Controls |
-| --- | --- | --- |
-| Status → Updates → Check for updates | Off | Browser update checks, saved in this browser |
-
-Update checks are opt-in and off by default. When on, the web terminal itself, not
-the server, asks `https://api.github.com/repos/38st/openport/releases/latest` at most
-once a day. It compares that release with the running version from `GET /api/status`,
-and shows a small dismissible notice with a link to the release when it is newer.
-Nothing else is sent. A network failure stays silent.
-
-## How the numbers are made
-
-- **Time to expiry** runs from the data's own market time, not the wall clock, to the
-  settlement instant: 09:30 ET for AM-settled, 16:00 ET for PM-settled, 13:00 ET on
-  early-close days, from a holiday and early-close calendar. Each product knows its
-  sessions, including Cboe's overnight session for SPX, XSP, VIX and RUT options, so a
-  delayed snapshot taken after the close keeps the closing time while one taken
-  overnight uses the overnight quotes' time. An underlying is analysed once its first
-  price arrives, so a delayed or replayed feed is never valued at the wall clock.
-- **Spot** is the provider's underlying price while it is current. When there is none
-  (Databento) or it is more than 30 minutes behind the options (the SPX index is frozen
-  overnight while its options trade), spot is inferred from put-call parity and shown
-  with ≈.
-- **Forward and discount factor** come from a weighted put-call parity fit over the
-  strikes nearest the money, per expiry, with capped weights and median-based outlier
-  rejection so one bad quote cannot move it. No dividend or borrow assumptions are
-  needed. Expiries under 30 days borrow the median rate of the longer ones: over a few
-  days the discount factor is within a basis point of 1, so bid/ask noise swamps the
-  slope.
-- **Implied volatility** is Black-76 on that forward: Newton's method in log-price space
-  from a Corrado-Miller initial guess, with a bisection safeguard. About 0.4 µs and 5.4
-  iterations per option. Each strike's smile IV comes from its out-of-the-money side,
-  and both sides' Greeks use it.
-- **SVI surfaces** fit each expiry's OTM total variance with deterministic, constrained
-  quasi-explicit calibration and capped bid/ask IV weights. Fits run lazily in the
-  API, cached per analytics snapshot; butterfly and calendar grid violations remain
-  visible alongside market points. [Model, checks and timings](docs/svi.md).
-- **Model-free IV and realized volatility** are computed lazily from the same snapshot
-  and stored candles. Model-free IV uses OTM quote mids and our parity forward and
-  discount, with known American exercise premiums removed. It is not Cboe's VIX.
-  `openport-probe --compare-mfiv` compares SPX against published index minute bars;
-  measured differences will be added here after a live session.
-  [Metric definitions and comparison procedure](docs/volatility.md).
-- **American-style** equity and ETF options cannot fit a rate from their own parity:
-  early exercise makes puts worth more at higher strikes, which reads as rates between
-  -3% and +2% for SPY and QQQ. They take the zero-rate curve fitted on a European index
-  (SPX when subscribed) or the flat `--rate`. Each option's early-exercise premium,
-  American minus European value on the same Leisen-Reimer tree, is removed before the
-  forward and IVs are fitted; displayed quotes stay as quoted.
-  Known cash dividends from `--dividends` are escrowed: the tree starts at spot minus
-  their present value, and exercise adds back the value of payments still to come.
-  Ex-dates take effect at midnight New York time; only those after market time and
-  before settlement enter each expiry. Residual continuous carry preserves its
-  first-pass parity forward. Without eligible cash, the existing continuous-yield
-  method is unchanged. Summary expiries report the cash amounts used in `dividends`.
-  [Accuracy and cost](docs/american-analytics.md).
-- **Greeks**: delta and gamma with respect to spot, vega per vol point, and theta per
-  calendar day with the forward held fixed, which is how Cboe quotes it. For American
-  options they are European Greeks at the de-Americanised IV, accurate out of the money.
-- **Exposure** uses the common open-interest convention: dealers are assumed long the
-  calls and short the puts customers hold. That is a modelling convention, not knowledge
-  of anyone's positions. GEX per strike is gamma × OI × multiplier × S² × 1%, dollars of
-  hedging per 1% move; VEX is vanna × OI × multiplier × S per vol point. Exposure uses at
-  least half a day to expiry so the local gamma of an option minutes from expiry does not
-  drown out everything else. The gamma flip is where total GEX changes sign, found by
-  bisection over the same positions as the total.
-
-Checked against Cboe's own published IVs on 2026-09-24 during the session: across every
-expiry, the median difference on out-of-the-money options within 10% of the forward is
-0.012 vol points for SPX, 0.030 for QQQ and 0.028 for SPY. Theta matches Cboe's to a
-median 0.9% for SPX, and 2% to 3% for QQQ and SPY, whose Greeks here are European ones
-at the de-Americanised IV.
-
-## Performance
-
-On an Apple M2 Max, a full analytics pass over the SPX chain (30,182 options across 63
-expiries) takes about 40 ms, and SPY with de-Americanisation (13,028 options across 33
-expiries) about 29 ms. The engine recomputes at most once a second, and only for
-underlyings whose data, rate curve or cash-dividend schedule changed; each pass
-publishes an immutable snapshot, so HTTP readers never block the feed. While the
-engine is busy, the queue from the providers keeps only the latest quote per contract.
-
-```
-provider thread ──events──▶ queue ──▶ engine thread: chain book ──▶ analytics
-                                                                        │
-                        web terminal ◀── JSON API + WebSocket ticks ◀── immutable snapshot
-```
-
-## API
-
-| Route | Returns |
-| --- | --- |
-| `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health (including the demo day title), engine counters, notification delivery status (no secrets), and optional sandbox availability |
-| `POST /api/notifications/test` | Queue a test for `{ "channel": "ID" }`; requires admin |
-| `PUT /api/notifications/channels/ID` | Change a channel's enabled state, event filters and floor distance for this process; requires admin |
-| `GET /api/underlyings/{symbol}/summary` | Spot and its source, expiries with forward, rate and its source, ATM IV, GEX, VEX, coverage and `last_trade` / `auto_close` UTC ISO times |
-| `GET /api/underlyings/{symbol}/chain?expiry={id}` | Every strike with both sides' quotes, IV, Greeks, early-exercise premium and `volume` (session contracts or null); coverage includes `volume` |
-| `GET /api/underlyings/{symbol}/exposure?expiries=8` | GEX and VEX by strike and expiry, flip and walls |
-| `GET /api/underlyings/{symbol}/surface?expiries=12` | Smile points per expiry |
-| `GET /api/underlyings/{symbol}/volatility` | Current model-free IV, ATM/skew, realized vol, cones, implied moves, IV rank/percentile and ex-ante/ex-post VRP, with sources and history counts |
-| `GET /api/underlyings/{symbol}/series?fields=mfiv30,atm30,rr25&from=&to=&interval=1d` | Selected metric history at `1m` or `1d`; bounded date ranges, null gaps and per-value sources ([fields and limits](docs/volatility.md#series-api)) |
-| `GET /api/underlyings/{symbol}/candles?interval=5m` | OHLC bars at 1m, 5m, 15m, 30m, 1h or 1d, oldest first |
-| `WS /ws` | A small tick each second with versions, so clients refetch only what changed |
-
-Expiry ids are the date plus settlement, for example `2026-10-16AM`.
-
-With paper trading on, the same API is the account. The web terminal uses exactly
-these routes, so anything it does can be scripted:
-
-| Route | Does |
-| --- | --- |
-| `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders and fills with actors, risk and breach estimates, rules and progress, and its round trips |
-| `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to floor and projected breach risk |
-| `GET/POST /api/playbooks`, `GET/PUT/DELETE /api/playbooks/{id}` | Versioned definitions, archive, account stages and adherence/expectancy reports; `?version=N` reads an old version |
-| `PUT /api/playbooks/{id}/mode`, `POST /api/playbooks/staged/{stage}/send`, `/dismiss` | Enable staging or replay-only auto; send or dismiss a current stage |
-| `GET/POST/DELETE /api/backtests`, `GET/DELETE /api/backtests/{id}` | Start one batch job, watch progress, read kept reports or cancel; mutations need replay scope |
-| `GET /api/account/pass-odds?days=N&samples=M&playbook=ID&seed=S` | Seeded estimate from historical equity days, not a prediction; needs ten days with intraday extremes |
-| `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | Shared server leg selection for terminal templates and playbooks |
-| `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
-| `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
-| `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
-| `GET /api/trades.csv`, `/api/fills.csv` | Trades or fills, with context and excursions, filtered by account and New York `from`/`to` dates |
-| `PUT /api/days/{YYYY-MM-DD}/note` | The account's plan and review for a day; returned in `/api/trades` as `day_notes` |
-| `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |
-| `PUT /api/risk/limits`, `PUT /api/risk/guardrails`, `POST /api/risk/kill` | Tighten rules now or queue looser values for rollover; set personal guardrails; trip or reset the kill switch |
-| `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt; optional `fill_model` selects `as_displayed` or `conservative` |
-| `POST /api/sandboxes` | Create a private demo practice account and return its token once; unauthenticated when enabled, 404 when off, 429 at capacity or a creation rate limit |
-| `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one, with optional `fill_model`; account routes take `?account=ID` for one other than the main account |
-| `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`; control or stop. `/api/replay/X` mirrors `/api/X` |
-| `PUT /api/replay {"until":"HH:MM[:SS]"}` | Advance through a New York session time (or ISO timestamp), then pause; responds after analytics and trading settle, with `settled_through` |
-| `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, portfolio, trades or fills; delete its journal |
-
-This calendar buys the later put and sells the nearer one at a net debit of at most
-6.60:
-
-```bash
-curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{
-  "client_order_id": "calendar-1", "type": "limit", "quantity": 1,
-  "limit_price": "6.60", "time_in_force": "day",
-  "legs": [{"symbol": "SPXW  260925P07700000", "side": "buy"},
-           {"symbol": "SPXW  260923P07700000", "side": "sell"}]}'
-```
-
-Sending the same order again with the same `client_order_id` is safe: it returns the
-first answer instead of placing a second order. [Paper trading](docs/paper-trading.md)
-documents every field, rule and reason code.
-
-Sandbox demos also offer `POST /api/sandboxes` without a token. It returns
-`{account, token, idle_seconds, simulated: true}` once; it returns 404 when disabled
-and 429 at capacity or a creation rate limit. `GET /api/status` includes
-`sandboxes: {enabled: true, idle_seconds}` when offered.
-
-## Scripting and agents
-
-The [OpenAPI 3.1 contract](docs/openapi.yaml) describes the terminal API, including
-replay mirrors, errors and nullable data. CI validates responses from a running
-container with `tools/contract_test.py`, including an order preview and a resting
-limit placed and cancelled in an isolated simulated replay.
-
-The [Python package](python/README.md) has no runtime dependencies. `Client` reads
-analytics and accounts, places paper orders and steps replays on market time.
-Orders get a client ID; bounded HTTP 503 retries reuse it. Optional extras provide
-pandas frames, WebSocket ticks and an MCP server using the official 2.x SDK.
-
-The MCP server gives agents the same paper API. Every tool reports market time,
-the provider and its delay, and whether prices are simulated. Writes require
-`OPENPORT_WRITE_TOKEN` and an account name. Orders carry an `agent:NAME` tag;
-authenticated token names are recorded as actors on journal transactions, orders
-and fills. Older journal entries show `unknown`.
-
-Use `--token-file FILE` to give each script its own token. For example, a line
-`research read,trade:practice,replay SECRET` permits reads, trading the practice
-account and replay controls. Add `--require-token` to protect reads and loopback
-writes as well. See [Python setup and examples](python/README.md).
-
-## Security
-
-openportd binds to 127.0.0.1 by default. Reads are public unless `--require-token`
-is set; loopback writes without a configured legacy token remain open unless that
-flag is set. The existing `OPENPORT_WRITE_TOKEN`, `--write-token TOKEN` and
-`--write-token-file PATH` token grants `admin` and requires authentication for writes.
-Named tokens from `--token-file FILE` grant `read`, `trade:ACCOUNT`, `trade:*`,
-`replay` or `admin`. `replay` permits replay controls and backtest starts and
-cancellation. `admin` includes account creation, limits, guardrails, resets,
-the kill switch, playbook definitions and history deletion. Writes always check the token they carry;
-without `--require-token`, reads ignore one that matches nothing, except expired
-sandbox credentials when sandboxes are offered. The server prints
-only the link for a token it keeps in a file, as the Docker image does, and never
-prints named tokens. The token file is read at startup; protect it with owner-only
-permissions and restart to rotate tokens. Send Bearer credentials over
-HTTPS behind a reverse proxy for remote access. Static
-files are confined to the web root, and WebSocket upgrades must come from the same
-origin; behind a proxy that rewrites the Host header, list your public origin with
-`--allowed-origin`. Every request must address the server by an IP address, `localhost`,
-the host of an allowed origin, or a name given with `--allowed-host` (such as a proxy's
-upstream name), so a web page cannot reach it through DNS rebinding. Check your data
-provider's terms before sharing an instance with anyone else.
-
-## Development
-
-```bash
-./build/tests/openport_tests        # C++ unit tests
-./build/bench/openport_bench        # pricing benchmarks
-cd web && npm run dev               # Vite on :5173, proxying /api and /ws to :8080
-cd web && npx vitest run            # web unit tests
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for pull requests, and [SECURITY.md](SECURITY.md)
-to report a vulnerability privately.
-
-CI runs on every push and pull request: the C++ suite with GCC 13 on Ubuntu 24.04 and
-Apple Clang on macOS, both with `-DOPENPORT_WERROR=ON`, again under AddressSanitizer
-and UndefinedBehaviorSanitizer with GCC 13, the web checks and a Docker smoke test.
-The macOS build is the release archive's: `-DOPENPORT_STATIC_DEPS=ON` links OpenSSL
-and zstd statically, and CI checks it needs only macOS's own libraries.
-Publishing a GitHub release builds the image for amd64 and arm64 and pushes it to
-`ghcr.io/38st/openport`, and attaches a Linux archive for each architecture.
-`tools/release.sh` builds a release on your own machine: it checks and tests the web
-terminal and the engine, packages this machine's build and a Linux build from the Docker
-image with checksums and release notes into `dist/`, and smoke-tests the image. Nothing
-is published unless you pass `--publish`, which creates a draft GitHub release for the
-version in `CMakeLists.txt` at the current commit, or refreshes its files when the draft
-exists; GitHub tags the commit when you publish the draft.
-
-After publishing the release and its `SHA256SUMS`, update the Homebrew formula:
-
-```bash
-tools/update_formula.sh 0.3.0
-```
-
-The script reads the checksum for `openport-0.3.0-darwin-arm64.tar.gz` and updates
-the formula's URL, version and SHA-256 together. Review and commit
-`Formula/openport.rb` to the default branch so the tap receives it. Do this after
-the final archives and checksums are published. The initial formula has an explicit
-checksum placeholder and cannot install until this step is done. For an offline
-check, pass a saved file as the second argument; `python3 tools/update_formula_test.py`
-tests parsing with fixture checksums. Users update with
-`brew update && brew upgrade openport`, then `brew services restart openport`.
-
-## Roadmap
-
-- [x] Headless playbook batch backtests, independent days and carried-account evaluation attempts, API and terminal reports
-- [x] Homebrew formula, Docker Compose and opt-in browser update notices
-- [x] External notifications through Discord, Telegram, ntfy and generic webhooks
-- [x] Versioned playbooks, staged orders, replay auto mode, adherence and historical pass-odds estimates
-- [x] Private visitor sandbox accounts on public simulated demos, with idle expiry and rate limits
-- [x] Checked OpenAPI contract, Python client and MCP tools, scoped tokens and actors
-
-- [x] Plan-locked limits, personal guardrails, order previews and size to floor, breach
-      estimates, intraday equity history and rule alerts
-- [x] Pricing core: Black-76 and Black-Scholes-Merton with full Greeks, safeguarded IV
-      solver, Cox-Ross-Rubinstein and Leisen-Reimer trees
-- [x] Providers: Cboe, Databento, Massive, ThetaData, Tradier and tastytrade, with
-      record and replay of any feed; broker adapters await live-account validation
-- [x] Local Databento and ThetaData historical-day imports; live-key validation pending
-- [x] Chain liquidity: session volume, spread percentages and ticket warnings
-- [x] Chain analytics: parity forwards, IV and Greeks, SVI surfaces, GEX and VEX, and
-      de-Americanised IV for equity options
-- [x] Paper trading against live quotes: risk limits, scenarios, index and American
-      equity and ETF options
-- [x] Evaluation simulator: profit targets, trailing drawdowns, resets and a trade
-      journal, with the funded phase and payouts in the engine
-- [x] Strategies: multi-leg orders with spread-aware buying power, held strategies as
-      positions, rolls, risk graph, probability of profit with skew, and templates
-- [x] Terminal: underlying chart, order changes in place, flatten, multiple named
-      accounts and trading recorded days in replay
-- [x] Paper trading in Cboe's overnight and curb sessions
-- [x] GTC limit orders, order notes and tags, spread brackets and held-spread exits
-- [x] Roll the put or call side of a four-leg strategy
-- [x] Trade notes and tags, with reports by tag, and price and fill alerts
-- [x] Fill context, trade and strategy excursions, CSV export and day plans and reviews
-- [x] P&L attribution by delta, gamma, vega and theta
-- [x] Stock positions from early exercise and from exercise and assignment at expiry
-- [x] Expiry hours as the exchanges run them: ETF options to 16:15, auto-close five
-      minutes before each contract's last trade, with the chain staying on 0DTE until then
-- [x] Demo market: simulated days to trade in Replay or rotate as an offline server feed
-- [x] Scenario library: simulated drills with fresh or repeatable seeds, start times and
-      replay journals that are kept
-- [x] Deterministic replay batches, verifiable run journals and synchronous market-time stepping
-- [x] Shares in the journal, and early assignment of shorts trading below exercise value
-- [x] Partial, random early assignment, and dividend risk on short calls
-- [x] Market-wide circuit breakers, with a banner and kept across restarts, and Cboe's
-      holiday schedule read daily
-- [x] Dividends from Massive's API
-- [x] PM settlement on the provider's official close, revisions included
-- [x] Cboe's delayed feed from its quote pages when its data files fall behind
-- [x] Dividends from a file you supply
-- [x] Optional market-time fill latency and simulated size impact, with As displayed and Conservative presets
-- [x] Optional slippage, and portfolio margin as Cboe's and FINRA's rules set it
-- [x] Known cash dividends in the American exercise model
-- [x] IWM and DIA by default, with stocks and ETFs marked at their regular close
-      outside the session
-- [x] Cboe's delayed data from its new host, following redirects if it moves again
-- [x] Current model-free IV, ATM/skew, realized volatility, cones and implied session moves
-- [x] Local volatility history, IV rank and percentile, labelled index proxies and ex-post VRP
-- [x] Morning brief with market levels, account allowance, day notes and chart overlays
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull requests, and
+[SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 
