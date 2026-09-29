@@ -1,9 +1,23 @@
 name: CI
 
+# Changes only to the site, the docs or top-level Markdown skip the build. The
+# OpenAPI contract stays in: the web, Python and Docker contract tests read it.
 on:
   push:
     branches: [main]
+    paths:
+      - '**'
+      - '!site/**'
+      - '!docs/**'
+      - 'docs/openapi.yaml'
+      - '!*.md'
   pull_request:
+    paths:
+      - '**'
+      - '!site/**'
+      - '!docs/**'
+      - 'docs/openapi.yaml'
+      - '!*.md'
   workflow_dispatch:
 
 permissions:
