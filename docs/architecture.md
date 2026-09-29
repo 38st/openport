@@ -266,7 +266,7 @@ Docker image and validates its responses against the OpenAPI contract.
 
 ## Further reading
 
-- [How the numbers are made](../README.md#how-the-numbers-are-made)
+- [How the numbers are made](methods.md)
 - [Paper trading](paper-trading.md): orders, fills, rules, the journal and the API
 - [Runtime](runtime.md): providers, sessions, recording and replay, the demo market
 - [SVI](svi.md), [American analytics](american-analytics.md) and [Volatility metrics](volatility.md)

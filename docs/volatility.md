@@ -231,8 +231,8 @@ ends the run early. `nan` in probe statistics means no usable matched samples.
 Tests use small synthetic JSON in the intraday and historical shapes, synthetic
 option chains, exact minute-alignment cases and hand-computed statistics. No real
 Cboe data files are committed. A live accuracy comparison has not been measured
-for this feature. The README will carry measured numbers from a live session;
-no accuracy claim is inferred from the synthetic tests.
+for this feature. [How the numbers are made](methods.md) will carry measured
+numbers from a live session; no accuracy claim is inferred from the synthetic tests.
 
 
 ## Local history
@@ -373,7 +373,8 @@ IV and risk-reversal changes require the exact prior session's daily series row.
 older row or index proxy fills a gap. Sample time is shown because a daily row can be
 the last observed minute rather than a closing quote. Replays and demo runs have no
 local series store, so these changes normally remain unavailable there. Ratios above
-one mark backwardation. Exposure keeps the README's open-interest convention caveat.
+one mark backwardation. Exposure keeps the open-interest convention caveat in
+[how the numbers are made](methods.md).
 
 The browser can remember a toggle to draw Brief levels on Trade's candle chart. It
 uses the same level lines and edge markers as strikes and triggers. Coincident Brief

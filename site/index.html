@@ -72,7 +72,7 @@
         <pre id="install-command" aria-label="Docker quick start" tabindex="0"><code>docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport</code></pre>
         <p id="copy-status" class="copy-status" role="status" aria-live="polite"></p>
         <p>Open the link it prints, <code>http://localhost:8080/#token=…</code>. The volume keeps your accounts and chart history between runs. When nothing is trading, choose the demo market’s simulated prices.</p>
-        <a href="https://github.com/38st/openport/blob/main/README.md#quick-start">Use your provider, a release archive or a source build <span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/38st/openport/blob/main/docs/install.md">Use your provider, a release archive or a source build <span aria-hidden="true">↗</span></a>
       </div>
     </section>
 
@@ -102,7 +102,7 @@
         <p class="measurement-note">Timings are medians on an Apple M2 Max on 2026-09-24: the IV solve from <code>openport_bench</code>, and the SPX pass over 23 passes on live data during the session. SVI fits run separately, on demand in the API.</p>
         <p>Against Cboe’s published IVs on 2026-09-24 during the session, median differences were <strong>0.012 vol points for SPX, 0.030 for QQQ and 0.028 for SPY</strong>, across every expiry on out-of-the-money options within 10% of the forward.</p>
         <p>Exposure assumes dealers are long calls and short puts: a modelling convention, not knowledge of anyone’s positions.</p>
-        <a href="https://github.com/38st/openport/blob/main/README.md#how-the-numbers-are-made">Methods, assumptions and measurements <span aria-hidden="true">↗</span></a>
+        <a href="https://github.com/38st/openport/blob/main/docs/methods.md">Methods, assumptions and measurements <span aria-hidden="true">↗</span></a>
       </div>
     </section>
 

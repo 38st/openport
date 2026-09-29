@@ -49,8 +49,9 @@ and everything else carries on.
 
 `Formula/openport.rb` installs the self-contained Apple Silicon release archive,
 including `bin/`, `share/openport/web` and documentation. It needs no source build.
-Use Docker on Intel Macs and Linux. The README has the installation commands and
-the release step that fills in the formula's checksum.
+Use Docker on Intel Macs and Linux. [Installation](install.md) has the commands, and
+[CONTRIBUTING](../CONTRIBUTING.md#releasing) the release step that fills in the
+formula's checksum.
 
 `brew services start openport` binds to `127.0.0.1:8080`. The service explicitly puts
 the paper journal, other accounts, replay journals, candles and volatility history
