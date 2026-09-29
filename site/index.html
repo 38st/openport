@@ -21,6 +21,7 @@
   <meta name="twitter:image:alt" content="OpenPort options analytics and simulated trading terminal">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230a0a0a'/%3E%3Cpath d='M22 17H16V47H22M42 17H48V47H42' fill='none' stroke='%232cc76f' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%232cc76f'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
+  <script src="site.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -35,22 +36,29 @@
 
   <main id="main" class="wrap">
     <section class="hero" aria-labelledby="headline">
-      <p class="eyebrow">Self-hosted · C++20 · MIT</p>
+      <p class="eyebrow"><span>Open source</span> · <span>Runs locally</span> · <span>Simulated trading</span></p>
       <h1 id="headline">The open-source options trading simulator</h1>
       <p class="lede">Practise prop-style evaluations on real option chains, from Cboe’s free delayed data or your own provider, with analytics you can check.</p>
       <div class="actions">
-        <a class="button primary" href="#quick-start">Try it in one command <span aria-hidden="true">↓</span></a>
-        <a class="button" href="https://github.com/38st/openport">Read the source <span aria-hidden="true">↗</span></a>
+        <a class="button primary" href="#quick-start">Install OpenPort <span aria-hidden="true">↓</span></a>
+        <a class="button" href="#demo">Watch demo <span aria-hidden="true">▷</span></a>
       </div>
       <p class="hero-note">Your API keys, your data and your trades stay on your machine.</p>
     </section>
 
-    <figure class="demo">
-      <details open>
-        <summary><span>Demo market <span class="badge">Simulated prices</span></span><span class="demo-control">Show / hide animation</span></summary>
-        <img src="screenshots/demo-market.gif" width="1200" height="750" fetchpriority="high" alt="The demo market’s five simulated days, then SPX and QQQ options trading a simulated day at 120 times real time.">
-      </details>
-      <figcaption>Generated days to trade when the market is closed. A reversal, a trend, a chop, a selloff and an overnight session. Collapse the demo to hide the animation.</figcaption>
+    <figure id="demo" class="demo" tabindex="-1" aria-labelledby="demo-title" aria-describedby="demo-caption">
+      <div class="demo-frame">
+        <div class="demo-heading"><span id="demo-title">From chart to order ticket <span class="badge">Simulated prices</span></span><span class="demo-meta">10 seconds · No audio</span></div>
+        <video class="demo-desktop" controls playsinline preload="none" width="1160" height="840" poster="media/trading-desktop.jpg" aria-label="Desktop demo: SPX chart, option chain and simulated order ticket" aria-describedby="demo-caption">
+          <source src="media/trading-desktop.mp4" type="video/mp4">
+          <a href="media/trading-desktop.mp4">Watch the desktop demo</a>
+        </video>
+        <video class="demo-mobile" controls playsinline preload="none" width="540" height="800" poster="media/trading-mobile.jpg" aria-label="Mobile demo: SPX chart, then a simulated limit-order ticket" aria-describedby="demo-caption">
+          <source src="media/trading-mobile.mp4" type="video/mp4">
+          <a href="media/trading-mobile.mp4">Watch the mobile demo</a>
+        </video>
+      </div>
+      <figcaption id="demo-caption">Follow SPX candles and open a limit-order ticket in a generated trading day. Prices, volume and trading are simulated. Press play to watch, or use the player’s fullscreen control for a closer look.</figcaption>
     </figure>
 
     <section id="quick-start" class="quick-start" aria-labelledby="quick-start-title">
@@ -60,7 +68,9 @@
         <p>With Docker installed, start Cboe’s free 15-minute delayed feed for SPX, SPY, QQQ, IWM and DIA. No key needed.</p>
       </div>
       <div class="command">
-        <pre aria-label="Docker quick start"><code>docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport</code></pre>
+        <div class="command-bar"><span>Docker quick start</span><button class="button copy-command" type="button" aria-controls="install-command" hidden>Copy command</button></div>
+        <pre id="install-command" aria-label="Docker quick start" tabindex="0"><code>docker run --rm -p 127.0.0.1:8080:8080 -v openport:/var/lib/openport ghcr.io/38st/openport</code></pre>
+        <p id="copy-status" class="copy-status" role="status" aria-live="polite"></p>
         <p>Open the link it prints, <code>http://localhost:8080/#token=…</code>. The volume keeps your accounts and chart history between runs. When nothing is trading, choose the demo market’s simulated prices.</p>
         <a href="https://github.com/38st/openport/blob/main/README.md#quick-start">Use your provider, a release archive or a source build <span aria-hidden="true">↗</span></a>
       </div>

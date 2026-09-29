@@ -61,29 +61,38 @@ nav a { display: inline-block; padding-block: 0.5rem; }
 .site-header nav a:hover { color: var(--foreground); }
 .hero { padding-block: clamp(1.5rem, 3vw, 2rem) 3rem; max-width: 900px; }
 .eyebrow { color: var(--accent); font: 500 0.75rem/1.5 var(--font-mono); letter-spacing: 0.07em; text-transform: uppercase; margin-bottom: 1rem; }
+.hero .eyebrow span { white-space: nowrap; }
 h1 { font-size: clamp(2.5rem, 5.5vw, 4.5rem); font-weight: 550; letter-spacing: -0.045em; line-height: 1.08; text-wrap: balance; }
 .lede { max-width: 710px; margin-top: 1.5rem; font-size: clamp(1.05rem, 2vw, 1.25rem); line-height: 1.65; }
 .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
 .button { display: inline-flex; align-items: center; justify-content: center; gap: 1rem; padding: 0.75rem 1.1rem; border: 1px solid var(--border); border-radius: 0.375rem; color: var(--foreground); background: var(--panel); font-size: 0.875rem; font-weight: 600; text-decoration: none; }
 .button:hover { border-color: var(--accent); }
+button.button { font-family: inherit; cursor: pointer; }
+.button:active { transform: translateY(1px); }
 .primary { background: var(--accent); border-color: var(--accent); color: var(--background); }
 .hero-note { font-size: 0.8rem; margin-top: 1.25rem; }
-.demo details { overflow: hidden; background: var(--panel); border: 1px solid var(--border); border-radius: 0.625rem; }
-.demo summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.9rem 1.1rem; cursor: pointer; font-size: 0.875rem; }
-.demo summary::marker { content: ""; }
-.demo summary::-webkit-details-marker { display: none; }
-.demo summary:focus-visible { outline-offset: -5px; }
-.demo details[open] summary { border-bottom: 1px solid var(--border); }
-.badge { display: inline-block; color: var(--chart-2); margin-left: 0.6rem; font: 0.7rem/1.5 var(--font-mono); }
-.demo-control { color: var(--muted); font-size: 0.75rem; text-decoration: underline; text-underline-offset: 0.2em; }
+.demo-frame { overflow: hidden; background: var(--panel); border: 1px solid var(--border); border-radius: 0.625rem; }
+.demo-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
+.demo-heading > span:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.6rem; }
+.demo video { display: block; width: 100%; height: auto; background: #0a0a0a; }
+.demo video:focus-visible { outline-offset: -5px; }
+.demo video.demo-mobile { display: none; }
+.demo video:fullscreen { height: 100%; object-fit: contain; }
+.demo-meta { color: var(--muted); font-size: 0.75rem; }
+.badge { display: inline-block; color: var(--chart-2); font: 0.7rem/1.5 var(--font-mono); }
 figcaption { margin-top: 0.8rem; color: var(--muted); font-size: 0.8rem; line-height: 1.6; }
 .quick-start { display: grid; grid-template-columns: 1fr 1.6fr; gap: 3rem; padding-block: 4.5rem; scroll-margin-top: 1rem; }
 h2 { font-size: clamp(1.5rem, 2.5vw, 2rem); letter-spacing: -0.025em; font-weight: 550; line-height: 1.25; }
 .quick-start h2 + p { margin-top: 1rem; font-size: 0.9rem; }
 .command { min-width: 0; }
+.command-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; color: var(--muted); font: 0.75rem/1.5 var(--font-mono); }
+.copy-command { min-width: 8.5rem; min-height: 44px; padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+.copy-command[hidden] { display: none; }
 pre { margin: 0 0 1rem; padding: 1.25rem; border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 0.375rem; background: var(--panel); white-space: pre-wrap; overflow-wrap: anywhere; font: 0.9rem/1.8 var(--font-mono); }
 pre code { font-size: inherit; }
 .command p { font-size: 0.8rem; margin-bottom: 0.75rem; }
+.command .copy-status:empty { display: none; }
+.command .copy-status { color: var(--accent); }
 .command a, .feature-body > a { font-size: 0.875rem; }
 .feature { display: grid; grid-template-columns: 1fr 1.6fr; gap: 3rem; padding-block: 3.5rem; border-top: 1px solid var(--border); }
 .feature-heading h2 { max-width: 280px; }
@@ -114,11 +123,12 @@ pre code { font-size: inherit; }
   .quick-start, .feature { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; padding-block: 2.5rem; }
   .feature-heading h2 { max-width: none; }
   .screenshot-grid { grid-template-columns: minmax(0, 1fr); }
-  .demo summary { padding-inline: 0.75rem; }
+  .demo-heading { padding-inline: 0.75rem; }
+  .demo video.demo-desktop { display: none; }
+  .demo video.demo-mobile { display: block; }
   .metrics { gap: 1rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .demo details img { display: none; }
-  .demo details[open]::after { content: "Animated demo hidden by your reduced-motion preference. Still screenshots are below."; display: block; padding: 1.25rem; color: var(--muted); font-size: 0.875rem; }
+  .button:active { transform: none; }
 }
