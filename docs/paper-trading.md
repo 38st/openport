@@ -1055,7 +1055,10 @@ markers. Missing candle history is shown as unavailable. The candles route retur
 the latest 5,000 bars, so older trades may have partial or no coverage. Strategy
 closing prices are signed net premiums per unit; return divides leg net P&L by
 the absolute net entry premium, or is null at zero premium. List filters select
-known or unknown planned risk and positive give-back.
+known or unknown planned risk and positive give-back. The weekday and month reports
+group closed trades by the trading date they closed on, so a close in Sunday
+evening's overnight session counts toward Monday; the calendar keeps the New York
+date.
 
 ## Trade notes and tags
 
