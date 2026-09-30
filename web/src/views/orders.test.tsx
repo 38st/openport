@@ -152,6 +152,36 @@ describe("closing positions", () => {
       .toContain("No position needed closing.")
   })
 
+  it("says which longs it left covering a short", () => {
+    const put = { ...portfolio.positions[0]!, type: "put" as const }
+    const long: Position = { ...put, symbol: "SPXW  261016P06950000", strike: 6950, quantity: 5 }
+    const shortPut: Position = { ...put, symbol: "SPXW  261016P06960000", strike: 6960, quantity: -5 }
+    const buyBack: Order = { ...order, id: "20", symbol: shortPut.symbol, side: "buy", type: "market", time_in_force: "ioc", limit_price: null,
+      quantity: 5, filled_quantity: 2, remaining_quantity: 0, average_fill_price: "5.10", status: "cancelled",
+      reason: { code: "IOC_REMAINDER", message: "IOC exhausted available displayed liquidity" } }
+    const done = { account_version: "18", cancelled_orders: [], fills: [], stock_fills: [], kept_stocks: [] }
+    // Two shorts bought back free two longs; the other three still cover shorts.
+    const partial = render(<FlattenOutcome done={{ ...done, orders: [buyBack, { ...buyBack, id: "21", symbol: long.symbol, side: "sell", quantity: 2,
+      filled_quantity: 2, status: "filled", reason: null }] }} closing={[shortPut, long]} />)
+    expect(partial).toContain("3 SPX Oct 16 6950P stay open: they cover a short that is still held or being bought back.")
+    // With fill latency the buy-back waits for a later quote, so no long sells yet.
+    const waiting = render(<FlattenOutcome done={{ ...done, orders: [{ ...buyBack, status: "working", filled_quantity: 0, reason: null }] }}
+      closing={[shortPut, long]} />)
+    expect(waiting).toContain("5 SPX Oct 16 6950P stay open")
+    // A long closed in full leaves nothing to report.
+    expect(render(<FlattenOutcome done={{ ...done, orders: [{ ...buyBack, id: "21", symbol: long.symbol, side: "sell", status: "filled" }] }}
+      closing={[long]} />)).not.toContain("stay open")
+  })
+
+  it("leaves an underlying whose orders are refused alone", () => {
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!,
+      paper: { accepting: false, reason: "FEED_STALLED", message: "SPX quotes are 5m behind the market; the feed appears to have stalled" } }] }, null, "open"))
+    const html = render(<FlattenDialog positions={[portfolio.positions[0]!]} orders={[order, stop]} trading={trading} onClose={() => {}} />)
+    expect(html).toContain("the feed appears to have stalled. Its positions and orders stay as they are.")
+    expect(html).not.toContain("cancelled first")
+    expect(html).toMatch(/disabled="">Close 1 position<\/button>/)
+  })
+
   it("waits for the regular session, since it sends market orders", () => {
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!,
       session: { name: "global", open: true, note: "overnight session" } }] }, null, "open"))
