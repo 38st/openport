@@ -504,6 +504,11 @@ TEST(Playbooks, FloorShareAndFixedSizesUseTheNormalPreviewAndLiveSendPath) {
   providers::ReplayBatches batches(reader, reader.header().subscription);
   const auto first = batches.next(); ASSERT_TRUE(first);
   desk.replay_batch(first->events, first->received, first->time);
+  // A template request without its expiry names it, as the other refusals do.
+  DeskSource source(desk);
+  const auto undated = api(source, "GET", "/api/strategy-template?symbol=SPX&template=%7B%22kind%22%3A%22iron-butterfly%22%2C%22width%22%3A5%7D");
+  EXPECT_EQ(undated.status, 400);
+  EXPECT_EQ(json::parse(undated.body).at("error").at("message"), "expiry is required");
   auto setup = fixture.setup(); setup["sizing"] = {{"floor_share", .8}};
   ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", setup}}, desk.market_time()).decision.ok());
   auto reply = command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "stage"}}, desk.market_time());
