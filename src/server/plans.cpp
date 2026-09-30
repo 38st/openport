@@ -74,5 +74,17 @@ const PlanPreset* find_plan(std::string_view id) {
   const auto it = std::find_if(plans.begin(), plans.end(), [&](const auto& plan) { return plan.id == id; });
   return it == plans.end() ? nullptr : &*it;
 }
+const PlanPreset* find_plan_named(std::string_view name) {
+  const auto& plans = plan_presets();
+  const auto it = std::find_if(plans.begin(), plans.end(), [&](const auto& plan) { return plan.name == name; });
+  return it == plans.end() ? nullptr : &*it;
+}
+bool follows_plan(const PlanPreset& plan, Money initial_cash, const AccountRules& rules) {
+  auto execution = rules;
+  execution.slippage_ticks = plan.rules.slippage_ticks;
+  execution.fill_latency_ms = plan.rules.fill_latency_ms;
+  execution.impact_ticks = plan.rules.impact_ticks;
+  return initial_cash == plan.initial_cash && execution == plan.rules;
+}
 
 }  // namespace openport::server

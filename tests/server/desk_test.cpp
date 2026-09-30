@@ -243,6 +243,41 @@ TEST(DeskEquity, ARolloverLiquidationIsStoredUnderTheRatchetedFloor) {
   EXPECT_EQ(liquidation->tomorrow_floor, liquidation->floor);
 }
 
+TEST(DeskEquity, OnlyAPassOfThePresetItselfUnlocksItsFundedPlan) {
+  // B36: custom rules that only borrowed the name "Intraday 25K" unlocked funded-intraday-25k.
+  const auto* evaluation = server::find_plan("intraday-25k");
+  const auto* funded = server::find_plan("funded-intraday-25k");
+  ASSERT_TRUE(evaluation && funded);
+  for (const bool preset : {false, true}) {
+    trading::SessionConfig paper;
+    paper.initial_cash = preset ? evaluation->initial_cash : Money::parse("1000000");
+    paper.rules = evaluation->rules;
+    if (!preset) paper.rules.profit_target = Money::parse("1");
+    EquityDesk f(paper);
+    f.quotes(md::new_york_to_utc({2026, 9, 22}, 10, 0), 4.00, 4.20);
+    f.buy(1);
+    f.quotes(md::new_york_to_utc({2026, 9, 22}, 10, 0) + 15 * md::kNanosPerSecond, preset ? 29.40 : 5.20, preset ? 29.60 : 5.40);
+    ASSERT_EQ(f.snapshot()->evaluation.status, trading::EvaluationStatus::Passed);
+    server::TradingCommand reset;
+    reset.kind = server::TradingCommand::Kind::ResetAccount;
+    reset.initial_cash = funded->initial_cash;
+    reset.rules = funded->rules;
+    reset.reason = "funded";
+    reset.required_pass = evaluation->name;
+    const auto reply = command(*f.desk, reset, f.market.time, f.market.time);
+    EXPECT_EQ(reply.decision.ok(), preset) << reply.decision.message;
+    if (!preset) EXPECT_EQ(reply.decision.code, trading::Reason::PLAN_LOCKED);
+  }
+  // The fill model's execution settings are not part of the plan.
+  auto conservative = evaluation->rules;
+  conservative.fill_latency_ms = 1000; conservative.slippage_ticks = 1; conservative.impact_ticks = 1;
+  EXPECT_TRUE(server::follows_plan(*evaluation, evaluation->initial_cash, conservative));
+  EXPECT_FALSE(server::follows_plan(*evaluation, Money::parse("1000000"), evaluation->rules));
+  auto looser = evaluation->rules;
+  looser.max_drawdown = Money::parse("5000");
+  EXPECT_FALSE(server::follows_plan(*evaluation, evaluation->initial_cash, looser));
+}
+
 void write_stream(const std::filesystem::path& file, bool snapshots) {
   test::ScriptedMarket market;
   auto header = test::recording_header();

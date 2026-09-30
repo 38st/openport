@@ -70,7 +70,9 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const r = data.rules
   const profit = e.profit
   const target = r.profit_target
-  const targetProgress = target ? ratio(profit, target) : null
+  // A pass liquidates at the bid, so equity can end just below the target it reached.
+  const reached = e.status === "passed"
+  const targetProgress = target ? (reached ? 1 : ratio(profit, target)) : null
   // The high-water mark the floor follows: end-of-day plans take it from closes.
   const peakLabel = r.drawdown_mode === "end_of_day" ? "Peak close" : "Peak"
   const floorRange = e.floor != null ? subtractMoney(e.peak, e.floor) : null
@@ -138,7 +140,8 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             detail={payout.eligible ? `Available now · ${formatMoney(payout.trader_share)} to you` : `Qualifying days · ${formatMoney(payout.qualifying_profit, 0)}+ net each`}
             meter={{ value: payout.qualifying_days / payout.required_days, tone: "positive", label: "Qualifying days toward the next payout" }} />
           : <Tile label="Profit target" value={target ? formatMoney(e.target_equity) : "None"}
-            detail={target ? `${formatMoney(e.target_remaining)} to go · ${Math.max(0, (targetProgress ?? 0) * 100).toFixed(1)}%` : "Practice has no target"}
+            detail={!target ? "Practice has no target" : reached ? `Reached at ${formatMoney(e.decided_equity)}`
+              : `${formatMoney(e.target_remaining)} to go · ${Math.max(0, (targetProgress ?? 0) * 100).toFixed(1)}%`}
             meter={target ? { value: targetProgress, tone: "positive", label: "Progress to profit target" } : undefined} />}
           <Tile label="Equity" value={formatMoney(e.equity)} detail={`${peakLabel} ${formatMoney(e.peak)} · today ${signedMoney(today)}`} />
           <Tile label="Drawdown floor" value={e.floor != null ? formatMoney(e.floor) : "None"}
@@ -172,7 +175,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-accent">Progress</h3>
             <ul className="space-y-1.5 text-sm">
               <Check ok={toneOf(profit) !== "negative"} label="Current P&L" value={signedMoney(profit)} tone={toneOf(profit)} />
-              {target && <Check ok={e.status === "passed"} label="Remaining to target" value={formatMoney(e.target_remaining)} />}
+              {target && <Check ok={reached} label="Remaining to target" value={reached ? "Reached" : formatMoney(e.target_remaining)} />}
               {payout && <Check ok={payout.qualifying_days >= payout.required_days} label="Qualifying days this cycle" value={`${payout.qualifying_days} of ${payout.required_days}`} />}
               {payout && <Check ok={payout.eligible} label={payout.eligible ? "Payout available now" : "Next payout, once eligible"} value={`up to ${formatMoney(payout.maximum)}`} />}
               {e.floor != null && <Check ok={e.status !== "failed"} label="Drawdown left" value={formatMoney(e.drawdown_buffer)} />}
