@@ -435,6 +435,35 @@ TEST(TradingPreview, SizeCanRestoreBuyingPowerWhenAPartialCloseLeavesADeficit) {
   EXPECT_GE(*sized.buying_power_after, Money{});
   EXPECT_FALSE(*sized.breaches_floor);
 }
+TEST(TradingPreview, ImpactBlocksPriceTheProjectionAndTheSize) {
+  // An ask of 1.05 for 8 contracts; each further block of 8 costs one tick (0.05) more.
+  ScriptedMarket f; auto c = config();
+  c.initial_cash = m("100000"); c.rules.max_drawdown = m("6000"); c.rules.impact_ticks = 1;
+  TradingSession s(c, f.time); f.seed(s, "1.00", "1.05", 8);
+  // 26 contracts cost 8 x 105 + 8 x 110 + 8 x 115 + 2 x 120 + 26 x 0.65 = 2,896.90;
+  // 27 would cost 3,017.55, more than half the 6,000 room.
+  EXPECT_EQ(s.preview(f.market("size"), f.time).max_units, 26);
+  const auto sized = s.preview(f.market("26", 26), f.time);
+  EXPECT_EQ(sized.max_loss, m("2896.90"));
+  EXPECT_EQ(sized.buying_power_required, m("2896.90"));
+  EXPECT_EQ(sized.buying_power_after, m("100000") - m("2896.90"));
+  // The fill walks the same blocks.
+  ASSERT_TRUE(s.submit(f.market("26", 26), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->account.cash, m("100000") - m("2896.90"));
+}
+TEST(TradingBuyingPower, AMarketOrderOnAOneSidedBookReservesTheSideItWouldTake) {
+  ScriptedMarket f; auto c = config(); c.initial_cash = m("100000");
+  TradingSession s(c, f.time); f.seed(s);
+  auto armed = f.market("armed");
+  armed.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrAbove, m("50")};
+  ASSERT_TRUE(s.submit(armed, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("420.65"));
+  // Nobody bids now, and the ask is 0.10: the buy still reserves that ask.
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, std::nullopt, m("0.10"), 0, 27}}, {f.valuation()}, f.time);
+  EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Armed);
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("10.65"));
+}
 TEST(TradingBreach, SolvesUpAndDownWithReflectionAndKeepsMissingInputsAbsent) {
   const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
   for (const Quantity shares : {100, -100}) {
