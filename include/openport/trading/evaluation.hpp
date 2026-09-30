@@ -177,11 +177,12 @@ struct MarginLeg {
 /// the same underlying that expire with them or later, as verticals: a put long
 /// below or a call long above its short costs the width, one at or beyond it
 /// nothing, and no pair costs more than naked; unpaired shorts are naked at their
-/// buy-back value plus naked_requirement. Positions that expire together may
-/// instead need their worst loss at expiry, when that is bounded (no net short
-/// calls). Each underlying needs the least of pairing across expiries and
-/// taking each expiry on its own (the lesser of its verticals and worst loss).
-/// Longs need nothing: their premium is paid in full.
+/// buy-back value plus naked_requirement. The pairing holds the least in total,
+/// and pairs whose shorts expire together hold at most their combined worst loss
+/// then. Positions that expire together may instead need their worst loss at
+/// expiry, when that is bounded (no net short calls). Each underlying needs the
+/// least of pairing across expiries and taking each expiry on its own (the lesser
+/// of its verticals and worst loss). Longs need nothing: their premium is paid in full.
 [[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs);
 /// Portfolio margin (Cboe Rule 12.4, FINRA Rule 4210(g)): per underlying, the
 /// largest Black-76 loss over 11 evenly spaced price shocks, -8% to +6% for index

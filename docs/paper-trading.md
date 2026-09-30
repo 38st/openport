@@ -868,11 +868,15 @@ with the strike standing in for a missing spot. `margin_requirement` nets spread
 short pairs with a long of the same type on the same underlying that expires with it or
 later, as a vertical: a put long below or a call long above its short costs the width,
 one at or beyond it nothing, no pair costs more than naked, and unpaired shorts are
-naked. The most exposed shorts take the most protective longs first. Positions that
-expire together may instead need their worst loss at that expiry, when no net short
-calls make it unbounded. Each underlying needs the least of pairing across expiries and
-taking each expiry on its own (the lesser of its verticals and worst loss). So a credit
-spread holds its width, an iron condor one wing, a long butterfly nothing, a calendar
+naked. Shorts and longs pair to hold the least in total (a minimum-cost assignment), so
+one short never takes the long that another short needed, across expiries or on equal
+strikes. Pairs whose shorts expire together hold at most their combined worst loss at
+that expiry, a later long counting at its intrinsic value then, so an iron condor's two
+wings are not both held. Positions that expire together may instead need their worst
+loss at that expiry, when no net short calls make it unbounded. Each underlying needs
+the lesser of pairing across expiries and taking each expiry on its own (the lesser of
+its verticals and worst loss). So a credit spread holds its width, an iron condor its
+wider wing (a calendar beside it adds nothing), a long butterfly nothing, a calendar
 nothing beyond its debit, a diagonal the strike difference when its long is further out
 of the money, and a short strangle both naked requirements. A long that expires before
 its short does not cover it. (European puts can trade below intrinsic value before
