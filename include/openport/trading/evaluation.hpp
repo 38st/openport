@@ -138,6 +138,9 @@ struct DividendPayment {
   Quantity shares = 0;  ///< Signed shares held into the ex-date.
   Money amount;         ///< per_share * shares: negative when short shares pay it.
   Timestamp time = 0;
+  /// Stock fills recorded before the payment, for ordering; empty on payments
+  /// recorded before it was kept.
+  std::optional<std::uint64_t> after_stock_fill;
 };
 
 /// One change in the shares an account holds, so trade history can follow them.

@@ -90,6 +90,36 @@ TEST(TradingDividends, SharesHeldIntoTheExDateReceiveItAndItJoinsTheirRoundTrip)
   EXPECT_EQ(trips[0].gross, m("-180"));  // bought at 520, sold at 519.10
 }
 
+TEST(TradingDividends, SharesSoldAtTheRolloversOwnMarketTimeKeepItInTheirRoundTrip) {
+  // B42: the round trip took the dividend only after the fills before its time, so a
+  // sale at the rollover's own market time closed the trip first and lost it.
+  Held f;
+  TradingSession s(roomy(), f.time);
+  ASSERT_TRUE(s.define(f.call, f.time).decision.ok());
+  f.quote(s, 520);
+  ASSERT_TRUE(s.submit({"calls", f.call.osi_symbol(), Side::Buy, OrderType::Market, TimeInForce::Ioc, 2, {}, {}, {}, {}}, f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(f.call.osi_symbol(), 2, f.time).decision.ok());  // 200 SPY at 520
+  f.time = md::new_york_to_utc({2026, 12, 17}, 16, 0);
+  f.quote(s, 521);
+  // The ex-date's first batch rolls over at 09:30, and the shares are sold at 09:30.
+  f.time = md::new_york_to_utc({2026, 12, 18}, 9, 30);
+  ASSERT_TRUE(s.roll_day(f.time, {{"SPY", {2026, 12, 18}, m("1.90")}}).decision.ok());
+  f.quote(s, 519.10);
+  ASSERT_TRUE(s.trade_stock("SPY", -200, f.time).decision.ok());
+  const auto snap = s.snapshot();
+  ASSERT_EQ(snap->dividends.size(), 1U);
+  EXPECT_EQ(snap->dividends[0].time, snap->stock_fills.back().time);
+  const auto trips = share_lifecycles(snap->stock_fills, snap->dividends);
+  ASSERT_EQ(trips.size(), 1U);
+  EXPECT_TRUE(trips[0].closed);
+  EXPECT_EQ(trips[0].dividends, m("380"));
+  EXPECT_EQ(trips[0].gross, m("-180"));
+  // A payment recorded before the count was kept comes before a trade at its time.
+  auto legacy = snap->dividends;
+  legacy.mut(0).after_stock_fill.reset();
+  EXPECT_EQ(share_lifecycles(snap->stock_fills, legacy)[0].dividends, m("380"));
+}
+
 TEST(TradingDividends, ShortSharesPayIt) {
   Held f;
   TradingSession s(roomy(), f.time);

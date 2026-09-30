@@ -125,7 +125,10 @@ across an ex-date still pays it), after the night's assignments: shares held int
 ex-date receive `per_share * shares` in cash and realised P&L, and short shares pay
 it, once per symbol and date. Each is a `DividendPayment` in
 `TradingSnapshot::dividends`, today's P&L by Greek counts it as other, and the share
-round trip holding the shares adds it to its net. Without a file, shares held through
+round trip holding the shares adds it to its net. The payment keeps the number of
+stock fills before it (`after_stock_fill`), so the round trip takes it even when the
+shares are sold at the rollover's own market time; a payment recorded before that
+comes after the night's assignments and deliveries at its time and before any trade. Without a file, shares held through
 an ex-date lose the dividend in price without the cash. Evaluation plans close
 positions five minutes before their last trade, so expiry delivery only reaches
 accounts without an expiry cutoff. Greeks and

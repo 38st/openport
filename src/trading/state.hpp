@@ -153,7 +153,16 @@ inline void from_json(const Json& j, Evaluation& e) {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AttemptSummary, attempt, plan, started, ended, starting_balance, final_equity, status, decision, first_order, first_fill)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Closure, symbol, quantity, price, time, kind, after_fill)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StockFill, id, symbol, shares, price, time, source, option)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DividendPayment, symbol, ex_date, per_share, shares, amount, time)
+inline void to_json(Json& j, const DividendPayment& d) {
+  j = Json{{"symbol", d.symbol}, {"ex_date", d.ex_date}, {"per_share", d.per_share}, {"shares", d.shares},
+           {"amount", d.amount}, {"time", d.time}};
+  if (d.after_stock_fill) j["after_stock_fill"] = *d.after_stock_fill;
+}
+inline void from_json(const Json& j, DividendPayment& d) {
+  j.at("symbol").get_to(d.symbol); j.at("ex_date").get_to(d.ex_date); j.at("per_share").get_to(d.per_share);
+  j.at("shares").get_to(d.shares); j.at("amount").get_to(d.amount); j.at("time").get_to(d.time);
+  added_field(j, "after_stock_fill", d.after_stock_fill);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ClosingPrint, price, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Annotation, note, tags, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(BuyingPower, available, reserved, short_requirement)
