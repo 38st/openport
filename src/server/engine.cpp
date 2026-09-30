@@ -11,15 +11,17 @@
 namespace openport::server {
 namespace {
 Engine::Options driver_options(md::Provider& provider, Engine::Options options) {
-  if (options.sandboxes && (provider.name() != "demo" || !options.paper_enabled || options.paper_journal.empty()))
-    throw std::invalid_argument("Sandboxes require --provider demo and a paper journal");
   if (auto* replay = dynamic_cast<providers::ReplayProvider*>(&provider)) {
     options.replay = true;
+    // Named accounts and visitor sandboxes belong to the live feed, never a replay's copy of its options.
     options.paper_accounts.clear();
+    options.sandboxes.reset();
     if (options.run_input.empty()) options.run_input = recording_input(replay->file());
     options.candles = std::make_shared<CandleStore>();
     options.clock = [replay] { return replay->time(); };
   }
+  if (options.sandboxes && (provider.name() != "demo" || !options.paper_enabled || options.paper_journal.empty()))
+    throw std::invalid_argument("Sandboxes require --provider demo and a paper journal");
   if (auto* demo = dynamic_cast<providers::DemoProvider*>(&provider))
     options.clock = [demo] { return demo->time(); };
   if (options.replay || provider.name().starts_with("replay") || provider.name() == "demo") options.series.reset();

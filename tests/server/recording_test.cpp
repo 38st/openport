@@ -13,6 +13,7 @@
 #include "openport/providers/replay.hpp"
 #include "openport/server/engine.hpp"
 #include "openport/server/replay_host.hpp"
+#include "openport/server/sandboxes.hpp"
 
 namespace {
 using namespace openport;
@@ -519,6 +520,27 @@ TEST(ReplayHost, DrillsReachTheEngineBeforeTradingAndKeepTheirJournalsAcrossRest
   ASSERT_EQ(practice.size(), 1U);
   EXPECT_EQ(practice[0]["plan"], "Practice");
   EXPECT_FALSE(practice[0].contains("error")) << practice;
+}
+
+TEST(ReplayHost, AServerOfferingSandboxesStillStartsReplaysWithoutThem) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  server::Sandboxes::Options limits;
+  limits.capacity = 2;
+  base.sandboxes = std::make_shared<server::Sandboxes>(limits);
+  server::ReplayHost host({file.directory, base, false});
+  const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","paused":true})");
+  ASSERT_EQ(started.status, 201) << started.body;
+  // Visitor sandboxes belong to the live demo: the replay neither advertises nor creates them.
+  const auto status = call(host, "GET", "/api/replay/status");
+  ASSERT_EQ(status.status, 200) << status.body;
+  EXPECT_FALSE(json::parse(status.body).contains("sandboxes"));
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(call(host, "GET", "/api/replay").body)["replay"]["fast_forwarding"].get<bool>(); }));
+  EXPECT_EQ(call(host, "POST", "/api/replay/sandboxes", "{}").status, 404);
+  host.stop();
 }
 
 TEST(ReplayHost, PaperDisabledAndReadOnlyNeverCreateReplayJournals) {
