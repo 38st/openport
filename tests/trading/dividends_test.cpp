@@ -209,7 +209,7 @@ TEST(TradingDividends, OptionsExpiringOnTheNewDaySettleInsteadOfBeingAssigned) {
   ASSERT_FALSE(snap->closures.empty());
   for (const auto& closure : snap->closures) EXPECT_EQ(closure.symbol, f.call.osi_symbol());
   for (const auto& p : snap->positions)
-    if (p.position.contract.expiry == expiring_call.expiry) EXPECT_EQ(p.position.quantity, -10);
+    if (p.position.contract.expiry == expiring_call.expiry) { EXPECT_EQ(p.position.quantity, -10); }
 }
 
 }  // namespace
