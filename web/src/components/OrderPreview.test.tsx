@@ -60,6 +60,16 @@ describe("order preview", () => {
     expect(changes.textContent).toContain("Vega+10.00")
     expect(host.textContent).toContain("the change in Greeks")
   })
+  it("names the soft floor when an account has only that, and shows no levels without a floor", async () => {
+    const underlyings = [{ underlying: "SPX", spot: 6000, complete: true, close_sigma: 0.01, down: null, up: { points: 30, percent: 0.5, touch_probability: 0.2 } }]
+    const soft = { ...preview, breach: { ...preview.breach, room: null, soft_room: "468.70", underlyings } }
+    await act(async () => root.render(<OrderPreviewPanel preview={{ data: soft, error: null, loading: false }} onSize={() => {}} />))
+    expect(host.textContent).toContain("Up to soft floor: 30.00 points")
+    const none = { ...preview, breach: { ...preview.breach, room: null, soft_room: null, underlyings } }
+    await act(async () => root.render(<OrderPreviewPanel preview={{ data: none, error: null, loading: false }} onSize={() => {}} />))
+    expect(host.textContent).toContain("No plan or soft floor")
+    expect(host.textContent).not.toContain("Up to")
+  })
   it("labels scenario estimates and prevents zero-unit sizing", async () => {
     const result = { ...preview, max_loss_basis: "scenario_grid" as const, max_units: 0 }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: result, error: null, loading: false }} onSize={() => {}} />))

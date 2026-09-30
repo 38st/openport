@@ -1219,7 +1219,14 @@ TEST(PaperRecovery, RestartRestoresIdenticalPortfolioRiskAndLiquidityBudget) {
     server::Engine engine(provider, {{"SPX"}}, options); engine.start();
     ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
     EXPECT_EQ(server::handle_api({"GET", "/api/portfolio"}, engine).body, portfolio);
-    EXPECT_EQ(server::handle_api({"GET", "/api/risk"}, engine).body, risk);
+    // Breach lists the held underlyings with the market's close sigma, which is
+    // analytics the restarted engine recomputes, not recovered account state.
+    const auto account_risk = [](const std::string& body) {
+      auto value = json::parse(body);
+      for (auto& item : value["breach"]["underlyings"]) item.erase("close_sigma");
+      return value;
+    };
+    EXPECT_EQ(account_risk(server::handle_api({"GET", "/api/risk"}, engine).body), account_risk(risk));
     const auto status = read(engine, "/api/status")["trading"];
     EXPECT_EQ(status["fee_per_contract"], "0.65");
     EXPECT_EQ(status["initial_cash"], "100000.00");

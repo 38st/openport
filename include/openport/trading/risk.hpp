@@ -82,6 +82,8 @@ struct BreachRisk {
   bool complete = true;
   std::vector<UnderlyingBreach> underlyings;
 };
+/// Every held underlying, with levels where equity reaches the plan floor, or the
+/// soft floor on an account without one; with neither floor there are no levels.
 /// One underlying moves at a time, today's vol and remaining option life held
 /// fixed. Search to -99.75% / +1000%, then bisect the first crossing. Missing
 /// ATM vol leaves the driftless log-return reflection estimate absent.

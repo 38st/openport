@@ -513,6 +513,27 @@ TEST(TradingBreach, SolvesUpAndDownWithReflectionAndKeepsMissingInputsAbsent) {
     EXPECT_FALSE(missing.underlyings.front().up);
   }
 }
+TEST(TradingBreach, WithoutAPlanFloorLevelsReachTheSoftFloor) {
+  ScriptedMarket f; auto c = config(); c.rules.max_drawdown = {};
+  TradingSession s(c, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long", 2), f.time).decision.ok());
+  // Held underlyings are listed without a floor, with nothing to reach.
+  auto risk = s.breach({{"SPX", 0.0004}});
+  EXPECT_FALSE(risk.room); EXPECT_FALSE(risk.soft_room);
+  ASSERT_EQ(risk.underlyings.size(), 1U);
+  EXPECT_TRUE(risk.underlyings[0].complete);
+  EXPECT_EQ(risk.underlyings[0].spot, 5000);
+  EXPECT_FALSE(risk.underlyings[0].down); EXPECT_FALSE(risk.underlyings[0].up);
+  // A soft floor 278.70 below equity: the long calls reach it on a fall.
+  Guardrails g; g.soft_floor = m("9700"); s.set_guardrails(g, f.time);
+  risk = s.breach({{"SPX", 0.0004}});
+  EXPECT_FALSE(risk.room);
+  EXPECT_EQ(risk.soft_room, m("278.70"));
+  ASSERT_EQ(risk.underlyings.size(), 1U);
+  ASSERT_TRUE(risk.underlyings[0].down);
+  EXPECT_LT(risk.underlyings[0].down->percent, 0);
+  EXPECT_FALSE(risk.underlyings[0].up);
+}
 TEST(TradingBreach, StaleMarksNeverProduceAccountBreachLevelsFromFreshGreeks) {
   ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s);
   s.submit(f.market("long"), f.time);
