@@ -48,4 +48,11 @@ describe("rule alerts", () => {
       evaluation: { ...account.evaluation, marked: true, valuation_complete: false, drawdown_buffer: "1", target_remaining: "1" },
     }, { ...risk, daily_loss: "10000" })).toEqual([])
   })
+  it("stays quiet about the target once the attempt is decided", () => {
+    // B37: a passed attempt has nothing left to go, even when it sold below the target.
+    for (const remaining of ["0.00", "1.30"])
+      expect(ruleAlerts({ ...account, rules: { ...account.rules, profit_target: "1000" },
+        evaluation: { ...account.evaluation, status: "passed", marked: true, valuation_complete: true, target_remaining: remaining },
+      }, risk).map((alert) => alert.id)).not.toContain("target-near")
+  })
 })

@@ -77,6 +77,15 @@ describe("simulator pages", () => {
     expect(practice).toContain("No evaluation running")
     expect(practice).toContain("Start an evaluation")
   })
+  it("shows a passed attempt's target as reached although the liquidation sold below it", () => {
+    // B37: liquidation sells at the bid, so equity can end just under the target that passed.
+    const passed = render(<DashboardView />, { ...account, evaluation: { ...account.evaluation, status: "passed",
+      decided_at: "2026-09-23T15:00:00Z", decided_equity: "110001.30", equity: "109998.70", profit: "9998.70", target_remaining: "1.30",
+      decision: "Equity $110001.30 reached the profit target $110000.00" } })
+    expect(passed).toContain("Reached at $110,001.30")
+    expect(passed).not.toContain("to go")
+    expect(passed).not.toContain("$1.30")
+  })
   it("names an end-of-day peak for the closes it follows", () => {
     // B50: the peak is the high-water mark the floor follows, which end-of-day plans take from closes.
     const eod = render(<DashboardView />, { ...account, rules: { ...account.rules, drawdown_mode: "end_of_day" } })

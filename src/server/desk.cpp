@@ -1096,13 +1096,16 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           }
           break;
         }
-        case TradingCommand::Kind::ResetAccount:
-          if (!c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed ||
-                                           session.config().rules.plan != c.required_pass))
+        case TradingCommand::Kind::ResetAccount: {
+          // Only a pass of the preset itself unlocks: its balance and rules, not its name.
+          const auto* evaluation = c.required_pass.empty() ? nullptr : find_plan_named(c.required_pass);
+          if (!c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed || !evaluation ||
+                                           !follows_plan(*evaluation, before->evaluation.starting_balance, session.config().rules)))
             result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + " evaluation to start this funded account",
                                {}, {}, {}};
           else result = session.reset_account(c.initial_cash, c.rules, c.reason, market_time_);
           break;
+        }
         case TradingCommand::Kind::Payout: result = session.request_payout(c.amount, market_time_); break;
         case TradingCommand::Kind::DayNote:
           result = session.annotate_day(c.day, c.plan, c.review, market_time_);

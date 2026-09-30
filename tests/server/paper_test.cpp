@@ -4,6 +4,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <future>
+#include <limits>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <sstream>
@@ -2097,6 +2098,16 @@ TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
     expect_error(reset(rules), 400, "INVALID_REQUEST");
   }
   rules["slippage_ticks"] = 10;
+  // B59: an out-of-range cutoff is a rule the API understood, not a malformed request.
+  for (const auto& value : {json(86'400), json(-1), json(std::numeric_limits<std::int64_t>::max()), json(std::numeric_limits<std::int64_t>::min())}) {
+    rules["expiry_cutoff_seconds"] = value;
+    expect_error(reset(rules), 422, "INVALID_RULES");
+  }
+  rules["expiry_cutoff_seconds"] = 1.5;
+  expect_error(reset(rules), 400, "INVALID_REQUEST");
+  rules["expiry_cutoff_seconds"] = 86'399;
+  ASSERT_EQ(reset(rules).status, 200);
+  rules["expiry_cutoff_seconds"] = 0;
   for (const auto& value : {json("other"), json(1), json(nullptr)}) {
     rules["margin"] = value;
     expect_error(reset(rules), 400, "INVALID_REQUEST");
@@ -2155,6 +2166,12 @@ TEST_F(PaperEngine, FillPresetsPreservePlanRulesAndValidateCustomSettings) {
                    value.is_number_integer() ? "INVALID_RULES" : "INVALID_REQUEST");
     }
   }
+  // B36: a new account's custom rules cannot borrow a preset's name either.
+  auto named = rules;
+  named["plan"] = "Practice";
+  expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Borrowed"}, {"initial_cash", "10000"}, {"rules", named}}), 422, "INVALID_RULES");
+  const auto same = write(*engine, "POST", "/api/accounts", {{"name", "Same rules"}, {"initial_cash", "100000"}, {"rules", named}});
+  EXPECT_EQ(same.status, 201) << same.body;  // the preset's own balance and rules may keep its name
   rules["fill_latency_ms"] = 60'000;
   rules["impact_ticks"] = 10;
   const auto custom = write(*engine, "POST", "/api/account/reset",
@@ -2211,13 +2228,29 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   expect_error(write(*engine, "POST", "/api/account/payout", {{"amount", "10.00"}, {"to", "bank"}}), 400, "INVALID_REQUEST");
   expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "skip"}}), 422, "PLAN_LOCKED");
 
-  // Pass an evaluation named like the preset, then the funded plan unlocks.
-  const json rules{{"plan", "Intraday 25K"}, {"profit_target", "5.00"}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
+  // Custom rules cannot borrow a preset's name (B36): a pass under them is not a pass of it.
+  const json rules{{"plan", "Custom"}, {"profit_target", "5.00"}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
                    {"buy_only", false}, {"buying_power", false}, {"expiry_cutoff_seconds", 0}};
+  json named = rules;
+  named["plan"] = "Intraday 25K";
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", named}, {"reason", "eval"}}), 422, "INVALID_RULES");
   ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", rules}, {"reason", "eval"}}).status, 200);
-  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "custom", "4.20")).status, 201);
   quote("4.40", "4.60");
   ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["evaluation"]["status"] == "passed"; }));
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "custom"}}), 422, "PLAN_LOCKED");
+
+  // Pass the preset itself, then the funded plan unlocks.
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "intraday-25k"}, {"reason", "eval"}}).status, 200);
+  quote("4.00", "4.20");
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
+  quote("29.15", "29.35");
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["evaluation"]["status"] == "passed"; }));
+  // B37: the pass at 27,504.35 liquidated at the bid, below the target; nothing remains to go.
+  const auto passed = read(*engine, "/api/account")["evaluation"];
+  EXPECT_EQ(passed["decided_equity"], "27504.35");
+  EXPECT_EQ(passed["equity"], "27493.70");
+  EXPECT_EQ(passed["target_remaining"], "0.00");
   const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "funded"}});
   ASSERT_EQ(reset.status, 200) << reset.body;
   const auto account = json::parse(reset.body);
@@ -2228,7 +2261,8 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   EXPECT_EQ(account["evaluation"]["floor_locked"], false);
   EXPECT_EQ(account["evaluation"]["qualifying_days"], 0);
   EXPECT_TRUE(account["evaluation"]["payouts"].empty());
-  EXPECT_EQ(account["attempts"][1]["status"], "passed");
+  EXPECT_EQ(account["attempts"][2]["status"], "passed");
+  EXPECT_EQ(account["attempts"][2]["plan"], "Intraday 25K");
   const auto payout = account["payout"];
   EXPECT_EQ(payout["eligible"], false);
   EXPECT_EQ(payout["blocked"]["code"], "PAYOUT_NOT_ELIGIBLE");

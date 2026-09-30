@@ -321,7 +321,9 @@ json account_json(const TradingView& view) {
               {"floor", floor ? json(e.floor.str()) : json(nullptr)},
               {"drawdown_buffer", floor ? json((s.equity - e.floor).str()) : json(nullptr)},
               {"target_equity", target ? json(target_equity.str()) : json(nullptr)},
-              {"target_remaining", target ? json(std::max(Money{}, target_equity - s.equity).str()) : json(nullptr)},
+              // Liquidating a pass at the bid can leave equity just under the target it reached.
+              {"target_remaining", target ? json((e.status == EvaluationStatus::Passed ? Money{}
+                                                 : std::max(Money{}, target_equity - s.equity)).str()) : json(nullptr)},
               {"decided_at", decided ? json(md::format_timestamp(e.decided_at)) : json(nullptr)},
               {"decided_equity", decided ? json(e.decided_equity.str()) : json(nullptr)},
               {"decision", nullable(e.decision)},
@@ -771,11 +773,18 @@ AccountRules parse_rules(const json& j) {
     rules.margin = margin == "portfolio" ? MarginMode::Portfolio : MarginMode::Strategy;
   }
   rules.buying_power = boolean_field(j, "buying_power");
-  const auto cutoff = integer_field(j, "expiry_cutoff_seconds");
-  if (cutoff < 0 || cutoff >= 86'400) throw std::invalid_argument("expiry_cutoff_seconds must be in [0, 86400)");
-  rules.expiry_cutoff = cutoff * md::kNanosPerSecond;
+  // Out of range is a rule error (INVALID_RULES from validate_rules), not a malformed
+  // request; saturate first so the conversion to nanoseconds cannot overflow.
+  rules.expiry_cutoff = std::clamp<std::int64_t>(integer_field(j, "expiry_cutoff_seconds"), -1, 86'400) * md::kNanosPerSecond;
   validate_rules(rules);
   return rules;
+}
+/// A preset's name belongs to its own balance and rules, so an attempt recorded under
+/// it (and the funded plan it unlocks) is that preset's; the fill model may differ.
+void check_plan_name(Money initial_cash, const AccountRules& rules) {
+  if (const auto* preset = find_plan_named(rules.plan); preset && !follows_plan(*preset, initial_cash, rules))
+    throw TradingError(Reason::INVALID_RULES, "\"" + rules.plan + "\" is a preset's name: reset with plan " + preset->id +
+                       ", or give these rules another name");
 }
 /// Presets override only execution settings; all evaluation rules stay intact.
 void fill_model(const json& body, AccountRules& rules) {
@@ -918,6 +927,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       command.rules = parse_rules(body.at("rules"));
       if (command.rules.phase == Phase::Funded)
         throw std::invalid_argument("A funded account starts from an account that passed its evaluation");
+      check_plan_name(command.initial_cash, command.rules);
     }
     fill_model(body, command.rules);
     return command;
@@ -1025,6 +1035,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       command.initial_cash = decimal_field(body, "initial_cash");
       if (command.initial_cash <= Money{}) throw std::invalid_argument("initial_cash must be positive");
       command.rules = parse_rules(body.at("rules"));
+      check_plan_name(command.initial_cash, command.rules);
     }
     fill_model(body, command.rules);
   } else if (path == "/api/account/payout") {

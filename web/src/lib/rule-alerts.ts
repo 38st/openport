@@ -23,7 +23,7 @@ export function ruleAlerts(account: Account, risk: Risk): RuleAlert[] {
   if (risk.pending_applied_day === e.day)
     result.push({ id: "pending-applied", title: "Pending limits applied", body: "Your pending limits and guardrails are now in effect." })
   const target = Number(account.rules.profit_target), remaining = Number(e.target_remaining)
-  if (e.valuation_complete && target > 0 && e.target_remaining != null && remaining >= 0 && remaining <= target * 0.1)
+  if (e.status === "active" && e.valuation_complete && target > 0 && e.target_remaining != null && remaining > 0 && remaining <= target * 0.1)
     result.push({ id: "target-near", title: "Profit target within 10%", body: `${formatMoney(e.target_remaining)} remains to the profit target.` })
   return result
 }

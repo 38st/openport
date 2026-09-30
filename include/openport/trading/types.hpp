@@ -320,6 +320,7 @@ struct PayoutRules {
   std::int64_t split_percent = 80;       ///< Trader's share of each payout.
   Money minimum;
   std::vector<Money> caps;  ///< Per payout number; the last repeats; empty is uncapped.
+  bool operator==(const PayoutRules&) const = default;
 };
 
 /// Evaluation-account rules. The defaults describe an unrestricted paper
@@ -343,6 +344,7 @@ struct AccountRules {
   Money lock_balance;         ///< Once the floor reaches it, the floor stops trailing; zero disables.
   PayoutRules payouts;        ///< Funded phase only.
   [[nodiscard]] bool evaluation() const { return profit_target > Money{} || max_drawdown > Money{}; }
+  bool operator==(const AccountRules&) const = default;
 };
 
 struct SessionConfig {
