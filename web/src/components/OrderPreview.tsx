@@ -25,6 +25,9 @@ export function useOrderPreview(order: NewOrder | null, trading: TradingStatus) 
   return { data: signature === ready && order ? query.data : undefined, error: signature === ready ? query.error : null,
     loading: order != null && (signature !== ready || query.isFetching) }
 }
+// exposure_change is the order's change to the book's Greeks, not the book after it.
+const greekChanges = [["dollar_delta", "Dollar delta"], ["dollar_gamma_1pct", "Dollar gamma per 1%"], ["vega", "Vega"], ["theta", "Theta"]] as const
+function signed(value: number) { return `${value > 0 ? "+" : ""}${value.toFixed(2)}` }
 export function OrderPreviewPanel({ preview, onSize, disabled = false }: {
   preview: { data?: OrderPreview; error: unknown; loading: boolean }; onSize: (size: number) => void; disabled?: boolean
 }) {
@@ -44,10 +47,13 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false }: {
         </dl>
         {p.decision !== "ok" && <p role="status" className="text-warn">{p.decision}: {p.reason?.message}</p>}
         {(p.breaches_floor || p.breaches_soft_floor) && <p role="alert" className="font-medium text-danger">This order could breach {p.breaches_floor ? "the plan floor" : "your soft floor"}.</p>}
-        <details><summary className="cursor-pointer text-muted">After this order · breach risk and Greeks</summary>
+        <details><summary className="cursor-pointer text-muted">After this order · breach risk, and the change in Greeks</summary>
           <BreachPanel breach={p.breach} />
-          {p.exposure_change && <dl className="mt-2 grid grid-cols-2 gap-1 tabular">{Object.entries(p.exposure_change).map(([key, value]) =>
-            <div key={key}><dt className="text-muted">{key.replaceAll("_", " ")}</dt><dd>{value.toFixed(2)}</dd></div>)}</dl>}
+          {p.exposure_change && <section aria-label="Change in Greeks" className="mt-2">
+            <p className="text-muted">Change from this order</p>
+            <dl className="mt-1 grid grid-cols-2 gap-1 tabular">{greekChanges.map(([key, label]) =>
+              <div key={key}><dt className="text-muted">{label}</dt><dd>{signed(p.exposure_change![key])}</dd></div>)}</dl>
+          </section>}
         </details>
         <p className="text-faint">Full-size projection including fees. Size uses buying power, limits and 50% of the nearer floor's room. Scenario losses are model estimates.</p>
       </>}
