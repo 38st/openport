@@ -165,6 +165,47 @@ TEST(TradingFloor, ProfitLockLeavesPositionsAndExitsWorkingUntilNextDay) {
   roll(s, f);
   EXPECT_FALSE(s.snapshot()->risk.kill_latched);
 }
+TEST(TradingFloor, GuardrailCancelsCarryTheCodeNewOrdersAreRefusedWith) {
+  // B35: a latch cancelled working opening orders with KILL_SWITCH, a switch the trader
+  // never used, while it refused new ones with its own code.
+  for (const bool trade_limit : {false, true}) {
+    ScriptedMarket f; auto c = config();
+    if (trade_limit) c.guardrails.max_opening_trades = 1; else c.guardrails.profit_lock = m("20");
+    TradingSession s(c, f.time); f.seed(s);
+    ASSERT_TRUE(s.submit(f.limit("rest", 1, "3.50"), f.time).decision.ok());
+    s.submit(f.market("entry"), f.time);
+    if (!trade_limit) update(s, f, "4.50", "4.70");
+    const auto cancelled = s.snapshot()->recent_orders[0];
+    ASSERT_EQ(cancelled.status, OrderStatus::Cancelled);
+    const auto refused = s.submit(f.market("again"), f.time).decision;
+    EXPECT_EQ(refused.code, trade_limit ? Reason::TRADE_LIMIT : Reason::PROFIT_LOCK);
+    EXPECT_EQ(cancelled.reason.code, refused.code);
+    EXPECT_EQ(cancelled.reason.message, refused.message);
+  }
+  // The trader's own trip still cancels with KILL_SWITCH.
+  ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("rest", 1, "3.50"), f.time).decision.ok());
+  ASSERT_TRUE(s.trip_kill("stop for the day", f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders[0].reason.code, Reason::KILL_SWITCH);
+}
+TEST(TradingFloor, APlanDecisionLabelsItsLiquidationEvenWhenTheSoftFloorLatchesWithIt) {
+  // D23: a soft floor that latched in the batch that failed the plan labelled the
+  // plan's liquidation system:soft_floor:N.
+  ScriptedMarket f; auto c = config(); c.guardrails.soft_floor = m("9500");
+  TradingSession s(c, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("entry", 5), f.time).decision.ok());
+  update(s, f, "2.00", "2.20");
+  auto snapshot = s.snapshot();
+  EXPECT_EQ(snapshot->evaluation.status, EvaluationStatus::Failed);
+  EXPECT_EQ(snapshot->risk.kill_reason, "SOFT_FLOOR");
+  EXPECT_TRUE(snapshot->recent_orders.back().request.client_order_id.starts_with("system:drawdown:"));
+  EXPECT_TRUE(snapshot->positions.empty());
+  // While the attempt is active, the soft floor's own label remains.
+  ScriptedMarket g; auto soft = config(); soft.guardrails.soft_floor = m("9990");
+  TradingSession t(soft, g.time); g.seed(t);
+  t.submit(g.market("entry"), g.time);
+  EXPECT_TRUE(t.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:soft_floor:"));
+}
 TEST(TradingFloor, CooldownAfterStopUsesOnlyMarketTimeAndAllowsCloses) {
   ScriptedMarket f; auto c = config(); c.guardrails.cooldown_minutes = 5;
   TradingSession s(c, f.time); f.seed(s);

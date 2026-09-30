@@ -14,22 +14,31 @@ Money evaluation_floor(const AccountRules& rules, Money peak, bool& locked) {
   return peak - rules.max_drawdown;
 }
 EvaluationStatus evaluate_equity(Evaluation& evaluation, const AccountRules& rules, Money equity) {
-  if (!rules.evaluation() || evaluation.status != EvaluationStatus::Active) return evaluation.status;
+  if (evaluation.status != EvaluationStatus::Active) return evaluation.status;
+  // An account without rules keeps its high-water mark too; only rules decide.
   if (rules.drawdown_mode == DrawdownMode::Intraday && equity > evaluation.peak) {
     evaluation.peak = equity;
     evaluation.floor = evaluation_floor(rules, evaluation.peak, evaluation.floor_locked);
   }
+  if (!rules.evaluation()) return EvaluationStatus::Active;
   if (rules.max_drawdown > Money{} && equity <= evaluation.floor) return EvaluationStatus::Failed;
   if (rules.profit_target > Money{} && equity >= evaluation.starting_balance + rules.profit_target)
     return EvaluationStatus::Passed;
   return EvaluationStatus::Active;
 }
 void evaluation_rollover(Evaluation& evaluation, const AccountRules& rules) {
-  if (rules.evaluation() && evaluation.status == EvaluationStatus::Active &&
-      rules.drawdown_mode == DrawdownMode::EndOfDay && evaluation.day_close_equity > evaluation.peak) {
+  if (evaluation.status == EvaluationStatus::Active && rules.drawdown_mode == DrawdownMode::EndOfDay &&
+      evaluation.day_close_equity > evaluation.peak) {
     evaluation.peak = evaluation.day_close_equity;
     evaluation.floor = evaluation_floor(rules, evaluation.peak, evaluation.floor_locked);
   }
+}
+Money evaluation_tomorrow_floor(const Evaluation& evaluation, const AccountRules& rules, Money equity) {
+  if (evaluation.status != EvaluationStatus::Active || rules.drawdown_mode != DrawdownMode::EndOfDay ||
+      equity <= evaluation.peak)
+    return evaluation.floor;
+  bool locked = evaluation.floor_locked;
+  return evaluation_floor(rules, equity, locked);
 }
 PassOdds pass_odds(const Evaluation& current, const AccountRules& rules, Money equity,
     const std::vector<EvaluationDay>& history, int days, int samples, std::uint64_t seed) {

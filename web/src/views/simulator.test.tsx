@@ -77,6 +77,15 @@ describe("simulator pages", () => {
     expect(practice).toContain("No evaluation running")
     expect(practice).toContain("Start an evaluation")
   })
+  it("names an end-of-day peak for the closes it follows", () => {
+    // B50: the peak is the high-water mark the floor follows, which end-of-day plans take from closes.
+    const eod = render(<DashboardView />, { ...account, rules: { ...account.rules, drawdown_mode: "end_of_day" } })
+    expect(eod).toContain("Peak close $100,300.00")
+    expect(eod).toContain("Peak closing equity")
+    const intraday = render(<DashboardView />, { ...account, rules: { ...account.rules, drawdown_mode: "intraday" } })
+    expect(intraday).toContain("Peak $100,300.00")
+    expect(intraday).toContain("Peak equity")
+  })
   it("renders journal statistics, the month calendar, reports and history", () => {
     const html = render(<JournalView />)
     for (const text of ["Journal", "2 closed trades · attempt 2", "+$167.20", "50.0%", "1 of 2 decided", "2.65", "+$268.50", "−$101.30",

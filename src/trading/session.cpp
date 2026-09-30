@@ -709,6 +709,12 @@ Reason guardrail_reason(const State& s) {
   if (!s.guardrails.latched.empty()) return s.guardrails.latched.front();
   return s.time < s.guardrails.cooldown_until ? Reason::COOLDOWN : Reason::NONE;
 }
+/// Why the kill latch stops an opening order: an active personal guardrail's own code,
+/// otherwise the switch. Orders it refuses and orders it cancels give the same reason.
+Decision kill_decision(const State& s) {
+  const auto personal = guardrail_reason(s);
+  return failure(personal != Reason::NONE ? personal : Reason::KILL_SWITCH, s.kill_reason);
+}
 void trip(State& s, const std::string& reason, Events& events) {
   if (!s.kill || (s.guardrails.owns_kill && s.kill_reason != reason)) {
     s.kill = true;
@@ -721,7 +727,7 @@ void trip(State& s, const std::string& reason, Events& events) {
   const auto cancel_unless_closing = [&](OrderId id, bool include_working) {
     const auto& o = s.orders[id - 1];
     if (o.open() && !o.system && o.role == OrderRole::Normal && !closing_only(s, o, include_working))
-      cancel_order(s.orders.mut(id - 1), failure(Reason::KILL_SWITCH, s.kill_reason), events);
+      cancel_order(s.orders.mut(id - 1), kill_decision(s), events);
   };
   const auto ids = open_ids(s);
   for (const auto id : ids) cancel_unless_closing(id, false);
@@ -834,10 +840,7 @@ Decision open_orders_risk_check(const State& s, const Order& o) {
                  "the order that sells its long, or that opens the short, first, or trade the spread as one order");
 }
 Decision account_check(const State& s, bool reducing = false) {
-  if (s.kill && !reducing) {
-    const auto personal = guardrail_reason(s);
-    return failure(personal != Reason::NONE ? personal : Reason::KILL_SWITCH, s.kill_reason);
-  }
+  if (s.kill && !reducing) return kill_decision(s);
   if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
     return failure(Reason::EVALUATION_CLOSED, std::string("The evaluation has ") +
         (s.evaluation.status == EvaluationStatus::Passed ? "passed" : "failed") +
@@ -1481,7 +1484,8 @@ void observe_equity(State& s, Events& events) {
         decide(s, outcome, *equity, "Equity " + dollars(*equity) + " reached the profit target " + dollars(target), events);
       }
     }
-    if (rules.max_drawdown > Money{} && (!e.closest_floor || *equity - e.floor < *e.closest_floor)) {
+    // Like the attempt itself, its closest approach starts at the first real market time.
+    if (rules.max_drawdown > Money{} && e.started > 0 && (!e.closest_floor || *equity - e.floor < *e.closest_floor)) {
       e.closest_floor = *equity - e.floor;
       e.closest_floor_at = s.time;
     }
@@ -1498,7 +1502,8 @@ void monitor_rules(State& s, Events& events) {
   const auto& rules = s.config.rules;
   const auto& e = s.evaluation;
   const bool soft = std::find(s.guardrails.latched.begin(), s.guardrails.latched.end(), Reason::SOFT_FLOOR) != s.guardrails.latched.end();
-  if (soft || (rules.evaluation() && e.status != EvaluationStatus::Active)) {
+  const bool decided = rules.evaluation() && e.status != EvaluationStatus::Active;
+  if (soft || decided) {
     std::vector<std::pair<std::string, Quantity>> stocks;
     for (const auto& [symbol, stock] : s.ledger.stocks()) stocks.emplace_back(symbol, stock.shares);
     for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Rule, events);
@@ -1506,8 +1511,9 @@ void monitor_rules(State& s, Events& events) {
   std::vector<std::string> symbols;
   for (const auto& [symbol, position] : s.ledger.positions()) symbols.push_back(symbol);
   for (const auto& symbol : symbols) {
-    if (soft || (rules.evaluation() && e.status != EvaluationStatus::Active)) {
-      flatten(s, symbol, soft ? "soft_floor" : e.status == EvaluationStatus::Passed ? "target" : "drawdown", events);
+    if (soft || decided) {
+      // The plan's decision names the liquidation, even when the soft floor latched with it.
+      flatten(s, symbol, !decided ? "soft_floor" : e.status == EvaluationStatus::Passed ? "target" : "drawdown", events);
       continue;
     }
     // The cutoff counts back from the last trade: 15:55 for SPXW, 16:10 for SPY,
