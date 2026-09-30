@@ -2754,7 +2754,7 @@ void pay_dividends(State& s, const std::vector<Dividend>& dividends, Events& eve
     const Money amount = d.per_share * shares;
     s.ledger.receive_dividend(d.symbol, amount);
     s.explained[d.symbol].other += amount.dollars();
-    s.dividends.push_back({d.symbol, d.ex_date, d.per_share, shares, amount, s.time});
+    s.dividends.push_back({d.symbol, d.ex_date, d.per_share, shares, amount, s.time, s.stock_fills.size()});
     event(events, "dividend", Json{{"symbol", d.symbol}, {"ex_date", d.ex_date}, {"per_share", d.per_share},
                                    {"shares", shares}, {"amount", amount}});
   }
