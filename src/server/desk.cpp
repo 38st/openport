@@ -105,6 +105,8 @@ Valuation valuation_for(const std::string& symbol, const md::OptionContract& con
 }
 /// Opens a journal for writing, making each directory created on the way durable:
 /// an existing file is locked, then read for recovery; otherwise a new one is created.
+/// An empty journal, as a create that failed before its first record leaves, holds
+/// no transaction, so it opens as a new one too.
 std::pair<std::shared_ptr<Journal>, std::optional<JournalRecovery>> open_journal(
     const std::filesystem::path& file, const FileJournal::Options& options) {
   const auto parent = std::filesystem::absolute(file).parent_path();
@@ -116,7 +118,9 @@ std::pair<std::shared_ptr<Journal>, std::optional<JournalRecovery>> open_journal
   if (std::filesystem::exists(file)) {
     // Lock before reading, then recover the same verified head held by the writer.
     std::shared_ptr<Journal> journal = FileJournal::resume(file.string(), options);
-    return {journal, FileJournal::read(file.string())};
+    auto recovery = FileJournal::read(file.string());
+    if (recovery.records.empty()) return {journal, std::nullopt};
+    return {journal, std::move(recovery)};
   }
   std::shared_ptr<Journal> journal = FileJournal::create(file.string(), options);
   sync_directory(parent);
@@ -367,6 +371,7 @@ Desk::PaperAccount* Desk::find_account(std::string_view id) {
 void Desk::start_trading() {
   if (!options_.paper_enabled) return;
   // Each account opens on its own: one that fails reports why and the rest trade.
+  // False: a named account's journal was empty, so it held no account, and is removed.
   const auto open = [&](PaperAccount& account, const std::filesystem::path& file, bool seed) {
     try {
       std::shared_ptr<Journal> journal = file.empty() ? options_.paper_sink : nullptr;
@@ -378,7 +383,15 @@ void Desk::start_trading() {
         throw TradingError(Reason::JOURNAL_CORRUPT, "A reproducible run needs a new journal; select an unused --paper-journal path");
       if (recovery) account.session = std::make_unique<TradingSession>(TradingSession::recover(*recovery, journal));
       else if (seed) account.session = std::make_unique<TradingSession>(options_.paper, 0, journal, options_.initial_actor);
-      else throw TradingError(Reason::JOURNAL_CORRUPT, "The account journal is empty");
+      else {
+        // Its create stopped before the first record. Removing the file while its
+        // lock is held leaves nothing another writer could be using.
+        std::filesystem::remove(file);
+        std::error_code ignored;
+        const auto named = std::filesystem::path(file).replace_extension(".name");
+        if (std::filesystem::is_regular_file(named, ignored)) std::filesystem::remove(named, ignored);
+        return false;
+      }
       if (!file.empty()) account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
       account.session->set_actor("system");
       account.sampled_snapshot = account.session->snapshot();
@@ -387,6 +400,7 @@ void Desk::start_trading() {
     } catch (const std::exception& error) {
       account.failure = std::string("JOURNAL_IO: ") + error.what();
     }
+    return true;
   };
   accounts_.push_back({std::string(kMainAccount), "Main", nullptr, {}, nullptr, {}, {}});
   open(accounts_.back(), options_.paper_journal, true);
@@ -404,8 +418,7 @@ void Desk::start_trading() {
       PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}, nullptr, {}, {}};
       std::ifstream named(std::filesystem::path(file).replace_extension(".name"));
       if (std::string name; named && std::getline(named, name) && valid_account_name(name)) account.name = name;
-      open(account, file, false);
-      accounts_.push_back(std::move(account));
+      if (open(account, file, false)) accounts_.push_back(std::move(account));
     }
   }
   for (const auto& account : accounts_) {
@@ -470,16 +483,26 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
   for (int n = 2; find_account(id); ++n) id = base + "-" + std::to_string(n);
   PaperAccount account{id, sandbox ? "Sandbox" : c.name, nullptr, {}, nullptr, {}, {}};
   const auto directory = sandbox ? options_.paper_journal.parent_path() / "sandboxes" / id : options_.paper_accounts;
+  const auto file = directory / (id + ".jsonl");
+  const auto named = directory / (id + ".name");
+  std::shared_ptr<Journal> created;  // the new journal, locked until a failed create removes it
+  // A failed create leaves nothing behind: no transaction of the account committed.
+  const auto discard = [&] {
+    std::error_code ignored;
+    if (sandbox) std::filesystem::remove_all(directory, ignored);
+    if (sandbox || !created) return;
+    std::filesystem::remove(file, ignored);
+    if (std::filesystem::is_regular_file(named, ignored)) std::filesystem::remove(named, ignored);
+  };
   try {
     // Every new journal takes the operator's fee (--paper-fee); a sandbox always uses the practice plan.
     auto config = options_.paper;
     config.rules = sandbox ? find_plan("practice")->rules : c.rules;
     config.initial_cash = sandbox ? find_plan("practice")->initial_cash : c.initial_cash;
-    const auto file = directory / (id + ".jsonl");
     auto [journal, recovery] = open_journal(file, journal_options(options_));
     if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists at " + file.string());
+    created = journal;
     {
-      const auto named = directory / (id + ".name");
       std::ofstream out(named, std::ios::trunc);
       out << account.name << '\n';
       out.flush();
@@ -490,11 +513,11 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
     account.session->set_actor("system");
     account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
   } catch (const TradingError& error) {
-    if (sandbox) { std::error_code ignored; std::filesystem::remove_all(directory, ignored); }
+    discard();
     reply.decision = {error.code(), error.what(), {}, {}, {}};
     return;
   } catch (const std::exception& error) {
-    if (sandbox) { std::error_code ignored; std::filesystem::remove_all(directory, ignored); }
+    discard();
     reply.decision = {Reason::JOURNAL_IO, error.what(), {}, {}, {}};
     return;
   }

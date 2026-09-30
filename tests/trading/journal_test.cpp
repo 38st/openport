@@ -450,6 +450,36 @@ TEST(TradingJournal, RepairCutsATornFinalLineAfterKeepingTheOriginal) {
   EXPECT_EQ(file.read(), good);
   std::filesystem::remove(repaired.backup);
 }
+TEST(TradingJournal, ATornFirstRecordRepairsToAnEmptyJournalThatStartsAfresh) {
+  TemporaryJournal file;
+  // A new journal whose first record the disk tore, or refused, holds no transaction.
+  const std::string torn = "{\"hash\":\"0f";
+  file.write(torn);
+  EXPECT_THROW(FileJournal::resume(file.path), TradingError);
+  const auto repaired = FileJournal::repair(file.path);
+  EXPECT_EQ(repaired.bytes_cut, torn.size());
+  EXPECT_TRUE(repaired.empty);
+  ASSERT_FALSE(repaired.backup.empty());
+  std::ifstream backup(repaired.backup, std::ios::binary);
+  std::ostringstream kept;
+  kept << backup.rdbuf();
+  EXPECT_EQ(kept.str(), torn);
+  EXPECT_EQ(file.read(), "");
+  const auto again = FileJournal::repair(file.path);
+  EXPECT_EQ(again.bytes_cut, 0U);
+  EXPECT_TRUE(again.empty);
+  // It resumes as a new journal: the account's first record is its first.
+  test::ScriptedMarket f;
+  {
+    auto resumed = FileJournal::resume(file.path);
+    EXPECT_EQ(resumed->sequence(), 0U);
+    TradingSession s({}, f.time, resumed);
+    f.seed(s);
+  }
+  EXPECT_FALSE(FileJournal::repair(file.path).empty);
+  EXPECT_EQ(FileJournal::read(file.path).records.front().type, "session_start");
+  std::filesystem::remove(repaired.backup);
+}
 TEST(TradingJournal, RepairLeavesDamageBeforeTheLastLineAndLiveJournalsAlone) {
   TemporaryJournal file;
   test::ScriptedMarket f;

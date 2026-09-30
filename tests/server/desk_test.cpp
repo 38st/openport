@@ -1,6 +1,7 @@
 #include "support/contract_capture.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <fstream>
 #include <functional>
 #include <future>
@@ -1278,6 +1279,27 @@ TEST(ReplayRun, ContractFixture) {
 }  // namespace
 
 namespace {
+TEST(ReplayRun, ARunWhoseFirstRecordFailsLeavesNoHistoryEntry) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.write_mode = "open";
+  std::atomic<bool> fail = true;
+  options.journal_io.sync = [&](int) { return !fail; };
+  server::ReplayHost host({file.directory, options, false});
+  auto response = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"paused", true}});
+  EXPECT_EQ(response.status, 422) << response.body;
+  EXPECT_NE(response.body.find("JOURNAL_IO"), std::string::npos) << response.body;
+  EXPECT_TRUE(json::parse(replay_call(host, "GET", "/api/replay").body).at("history").empty());
+  EXPECT_TRUE(std::filesystem::is_empty(file.directory / "replays"));
+  fail = false;
+  response = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"paused", true}});
+  ASSERT_EQ(response.status, 201) << response.body;
+  replay_call(host, "DELETE", "/api/replay");
+  EXPECT_EQ(json::parse(replay_call(host, "GET", "/api/replay").body).at("history").size(), 1U);
+}
+
 TEST(ReplayRun, CommandActorDefaultsForOlderInputs) {
   server::TradingCommand command;
   command.actor = "agent";

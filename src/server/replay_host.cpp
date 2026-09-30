@@ -372,6 +372,13 @@ class ReplayHost::History {
     std::error_code ec;
     return std::filesystem::is_regular_file(path, ec) ? path : std::filesystem::path{};
   }
+  /// Removes what create and a run that failed to start left, so it lists no entry.
+  void discard(const std::string& id) const {
+    if (!writable_) return;
+    std::error_code ignored;
+    for (const auto* suffix : {".jsonl", ".json", ".playbooks.json", ".jsonl.equity.csv"})
+      std::filesystem::remove(directory_ / (id + suffix), ignored);
+  }
   std::shared_ptr<ArchivedReplay> open(const std::string& id) const {
     const auto path = journal(id);
     if (path.empty()) throw UnknownRun(id);
@@ -742,21 +749,29 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         }
       }
       engine.paper_journal = history_->create(*session, engine.paper);
-      engine.replay = true;
-      engine.initial_actor = request.actor;
-      engine.run_input = demo ? scenario_input(*day, date, seed) : recording_input(path);
-      engine.paper_accounts.clear();
-      engine.paper_sink.reset();
-      engine.record_file.clear();
-      engine.candles = std::make_shared<CandleStore>();
-      // The replay's clock is the recording's: sessions and feed checks see that day.
-      auto* provider = session->provider.get();
-      engine.clock = [provider] { return provider->time(); };
-      const auto& header = provider->header();
-      session->engine = std::make_unique<Engine>(*provider, md::Subscription{header.subscription.underlyings, 0, 0.0}, engine);
-      session->engine->start();
-      if (engine.paper_enabled && !session->engine->status().trading.enabled)
-        throw std::runtime_error(session->engine->status().trading.reason);
+      try {
+        engine.replay = true;
+        engine.initial_actor = request.actor;
+        engine.run_input = demo ? scenario_input(*day, date, seed) : recording_input(path);
+        engine.paper_accounts.clear();
+        engine.paper_sink.reset();
+        engine.record_file.clear();
+        engine.candles = std::make_shared<CandleStore>();
+        // The replay's clock is the recording's: sessions and feed checks see that day.
+        auto* provider = session->provider.get();
+        engine.clock = [provider] { return provider->time(); };
+        const auto& header = provider->header();
+        session->engine = std::make_unique<Engine>(*provider, md::Subscription{header.subscription.underlyings, 0, 0.0}, engine);
+        session->engine->start();
+        if (engine.paper_enabled && !session->engine->status().trading.enabled)
+          throw std::runtime_error(session->engine->status().trading.reason);
+      } catch (...) {
+        // A run that could not start, such as one whose first record a full disk
+        // refused, leaves no history entry.
+        if (session->engine) session->engine->stop();
+        history_->discard(session->id);
+        throw;
+      }
       std::shared_ptr<Session> old;
       {
         const std::lock_guard lock(mutex_);
