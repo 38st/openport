@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <mutex>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <thread>
 #include "openport/providers/replay_batches.hpp"
@@ -74,6 +75,24 @@ struct Measurements {
     }
   }
 };
+/// What blocked each playbook and underlying's entries: the last reason an evaluation
+/// gave inside the entry window, or outside it when the window never opened. The
+/// reasons at the end of the input only say that the window has closed.
+struct EntryReasons {
+  json reasons = json::object();
+  std::string published;
+  std::set<std::string> inside;
+  void observe(const TradingView& view) {
+    if (view.playbooks_json.empty() || view.playbooks_json == published) return;
+    published = view.playbooks_json;
+    const auto publication = json::parse(published);
+    for (const auto& [key, reason] : publication.at("reasons").items()) {
+      const bool open = reason != kOutsideEntryWindow;
+      if (open) inside.insert(key);
+      if (open || !inside.contains(key)) reasons[key] = reason;
+    }
+  }
+};
 struct TemporaryRecording {
   std::filesystem::path file;
   ~TemporaryRecording() {
@@ -108,7 +127,7 @@ Desk::Options options_for(const BacktestRequest& request, const Prepared& input,
   return options;
 }
 json result_for(Desk& desk, const BacktestRequest& request, const std::filesystem::path& directory,
-    const std::string& journal, const Measurements& measurements) {
+    const std::string& journal, const Measurements& measurements, const EntryReasons& entries) {
   desk.flush_journals();
   check_desk(desk);
   const auto view = desk.trading_view();
@@ -148,7 +167,7 @@ json result_for(Desk& desk, const BacktestRequest& request, const std::filesyste
       {"min_floor_distance", distance ? json(distance->str()) : json(nullptr)}, {"outcome", outcome(snapshot.evaluation.status)},
       {"decision", snapshot.evaluation.decision}, {"rule_trips", trips}, {"trades", stats.at("trades")},
       {"fills", fills}, {"stock_fills", stock_fills}, {"stock_trades", stock_trades}, {"adherence", stats.at("all").at("adherence")},
-      {"entry_reasons", json::parse(view->playbooks_json).at("reasons")},
+      {"entry_reasons", entries.reasons},
       {"open_positions", snapshot.positions.size() + snapshot.stocks.size()}, {"journal", journal}, {"journal_head", recovery.head}};
 }
 json distribution(std::vector<Money> values) {
@@ -338,7 +357,8 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
     ++completed;
     if (progress) progress(completed, phase);
   };
-  const auto consume = [&](Desk& desk, const Prepared& input, const BacktestDay& day, bool attempt, const md::Subscription& subscription) {
+  const auto consume = [&](Desk& desk, const Prepared& input, const BacktestDay& day, bool attempt, const md::Subscription& subscription,
+      EntryReasons& entries) {
     md::RecordingReader reader(input.file);
     providers::ReplayBatches batches(reader, subscription);
     std::size_t count = 0;
@@ -347,6 +367,7 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
       if (md::trading_date(batch->time) != day.date) throw std::invalid_argument("Each recording must contain exactly one trading day");
       desk.replay_batch(batch->events, batch->received, batch->time);
       check_desk(desk);
+      entries.observe(*desk.trading_view());
       ++count;
       if (attempt && desk.trading_view()->snapshot->evaluation.status != trading::EvaluationStatus::Active) break;
     }
@@ -371,8 +392,9 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
                 options_for(request, prepared[index], directory / journal, measurements));
             desk.start_trading();
             check_desk(desk);
-            consume(desk, prepared[index], request.days[index], false, reader.header().subscription);
-            auto result = result_for(desk, request, directory, journal, measurements);
+            EntryReasons entries;
+            consume(desk, prepared[index], request.days[index], false, reader.header().subscription, entries);
+            auto result = result_for(desk, request, directory, journal, measurements, entries);
             result["date"] = md::format_date(request.days[index].date);
             result["input"] = json::parse(prepared[index].identity);
             if (result["input"].contains("seed")) result["input"]["seed"] = std::to_string(request.days[index].seed);
@@ -406,6 +428,7 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
         const auto first = index;
         const auto journal = "attempts/" + numbered(attempt_index++) + ".jsonl";
         Measurements measurements{request.config.initial_cash, {}, {}};
+        EntryReasons entries;
         prepared[index] = prepare(request.days[index], directory, index);
         const TemporaryRecording generated{request.days[index].scenario ? prepared[index].file : std::filesystem::path{}};
         md::RecordingReader reader(prepared[index].file);
@@ -421,12 +444,12 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
             desk.replay_source(prepared[index].identity, next_reader.header());
           }
           const TemporaryRecording day_generated{request.days[index].scenario ? prepared[index].file : std::filesystem::path{}};
-          consume(desk, prepared[index], request.days[index], true, subscription);
+          consume(desk, prepared[index], request.days[index], true, subscription, entries);
           ++index;
           advance("attempts");
           if (desk.trading_view()->snapshot->evaluation.status != trading::EvaluationStatus::Active) break;
         }
-        auto result = result_for(desk, request, directory, journal, measurements);
+        auto result = result_for(desk, request, directory, journal, measurements, entries);
         result["first_day"] = first;
         result["last_day"] = index - 1;
         result["days"] = index - first;

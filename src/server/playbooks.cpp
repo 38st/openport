@@ -307,7 +307,9 @@ Playbooks::Json Playbooks::change(const Json& command, std::string_view account,
     const auto stage_id = command.at("staged").get<std::string>();
     auto& list = staged_[std::string(account)];
     if (!list.is_array()) list = json::array();
-    for (const auto& stage : list) if (stage.at("id") == stage_id) dismissed_[stage.at("key").get<std::string>()] = md::new_york_time(stage.at("time").get<md::Timestamp>()).date;
+    for (const auto& stage : list)
+      if (stage.at("id") == stage_id)
+        suppressed_[stage.at("key").get<std::string>()] = {md::new_york_time(stage.at("time").get<md::Timestamp>()).date, "Dismissed or sent for this day"};
     std::erase_if(list.get_ref<json::array_t&>(), [&](const auto& stage) { return stage.at("id") == stage_id; });
     ++revision_;
     return publication(account, replay);
@@ -433,9 +435,10 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
       const auto stage_key = key(account, id, symbol);
       auto& reason = reasons_[account][id + ":" + symbol];
       try {
-        if (!playbook_window(definition, now)) invalid("Outside entry window");
+        if (!playbook_window(definition, now)) invalid(std::string(kOutsideEntryWindow));
         if (now >= playbook_deadline(definition, now)) invalid("Past the management deadline");
-        if (dismissed_.contains(stage_key) && dismissed_.at(stage_key) == md::new_york_time(now).date) invalid("Dismissed or sent for this day");
+        if (const auto found = suppressed_.find(stage_key); found != suppressed_.end() && found->second.first == md::new_york_time(now).date)
+          invalid(found->second.second);
         if (!guardrails_allow(definition, *current, now)) invalid("Playbook entry limit or loss cooldown");
         if (!metrics.contains(symbol)) invalid("Waiting for underlying data");
         const auto& underlying = *metrics.at(symbol);
@@ -507,8 +510,10 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
           if (reply.view) { updated = reply.view; current = updated.get(); }
           if (!reply.decision.ok() || !reply.error_code.empty()) reason = reply.decision.message;
           else reason = "Automatic order sent";
-          // Failed automatic attempts do not flood the journal on every update.
-          if (!reply.decision.ok() || !reply.error_code.empty()) dismissed_[stage_key] = md::new_york_time(now).date;
+          // Failed automatic attempts do not flood the journal on every update; the
+          // refusal stays the setup's reason for the rest of the day.
+          if (!reply.decision.ok() || !reply.error_code.empty())
+            suppressed_[stage_key] = {md::new_york_time(now).date, "Automatic entry refused for this day: " + reply.decision.message};
         } else staged_[account].push_back(std::move(stage));
       } catch (const std::exception& error) { reason = error.what(); }
     }

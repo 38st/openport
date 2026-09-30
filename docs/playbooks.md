@@ -136,7 +136,8 @@ not silently share a position.
 **Auto mode is refused on live-feed accounts, including practice accounts.** Only
 replay and scenario accounts can send entries and time-stop closures automatically.
 A rejected automatic entry is suppressed for that day to avoid repeated rejected
-orders. Successful entries remain subject to entry limits, overlap and cooldown.
+orders; its refusal stays the setup's reason for the rest of that day. Successful
+entries remain subject to entry limits, overlap and cooldown.
 Live time stops are written management rules; the trader must close the position.
 
 ReplayHost copies the live definitions, with modes off, into an isolated run.
@@ -322,7 +323,9 @@ an evaluation failure unless the reducer's evaluation rules fail the account.
 Each daily result includes marked P&L, maximum observed peak-to-later-trough equity
 drawdown, the smallest observed equity-minus-floor distance, rule trips, strategy
 trades, option and share fills, share round trips, adherence, entry-blocking reasons,
-mark quality and open positions.
+mark quality and open positions. Entry-blocking reasons give, per setup and
+underlying, the last reason an evaluation gave inside the entry window, such as
+missing floor room; a day whose window never opened says `Outside entry window`.
 Drawdown includes the starting balance, pre-fill marks reconstructed from committed
 option executions, and committed fill observations. Missing
 final marks make P&L null; the last-mark estimate is separate. Floor distance is
