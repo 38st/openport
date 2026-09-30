@@ -224,6 +224,62 @@ TEST(TradingOrders, AClosingOrderTheIntegrationRefusesIsRecordedAndTheRestStillC
   EXPECT_EQ(s.snapshot()->recent_orders.size(), before + 2);
 }
 
+Quantity held(const TradingSession& s, const std::string& symbol) {
+  for (const auto& p : s.snapshot()->positions) if (p.position.contract.osi_symbol() == symbol) return p.position.quantity;
+  return 0;
+}
+
+TEST(TradingOrders, AFlattenSellsOnlyTheLongsTheShortsLeftNoLongerNeed) {
+  // Five bull put spreads; the short put's ask then shows 2 contracts. Custom
+  // rules without buying power or defined risk would allow a naked short.
+  for (const auto latency : {std::int64_t{0}, std::int64_t{1000}}) {
+    ScriptedMarket f;
+    f.contract = *md::parse_osi("SPXW261022P05000000");
+    auto lower = beside(f, "SPXW261022P04990000");
+    AccountRules rules;
+    rules.fill_latency_ms = latency;
+    TradingSession s(roomy(rules), f.time);
+    seed(s, f, "4.00", "4.20");
+    seed(s, lower, "3.00", "3.20");
+    const auto next = [&](Quantity short_ask_size) {
+      f.next(); lower.next();
+      s.on_quotes({f.quote("4.00", "4.20", short_ask_size), lower.quote("3.00", "3.20")}, {f.valuation(), lower.valuation()}, f.time);
+    };
+    ASSERT_TRUE(s.submit(f.market("short", 5, Side::Sell), f.time).decision.ok());
+    ASSERT_TRUE(s.submit(lower.market("long", 5), f.time).decision.ok());
+    if (latency) next(10);
+    ASSERT_EQ(held(s, f.symbol()), -5);
+    ASSERT_EQ(held(s, lower.symbol()), 5);
+    next(2);
+    ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
+    if (!latency) {
+      // Two shorts bought back free two longs; the three spreads left stay covered.
+      EXPECT_EQ(held(s, f.symbol()), -3);
+      EXPECT_EQ(held(s, lower.symbol()), 3);
+      const auto& sale = s.snapshot()->recent_orders.back();
+      EXPECT_EQ(sale.request.symbol, lower.symbol());
+      EXPECT_EQ(sale.request.quantity, 2);
+      EXPECT_EQ(sale.status, OrderStatus::Filled);
+    } else {
+      // The buy-back waits for a later quote, so every long still covers a short
+      // held now: none is sold, and the shorts are never left naked.
+      EXPECT_EQ(s.snapshot()->recent_orders.back().request.symbol, f.symbol());
+      next(2);
+      EXPECT_EQ(held(s, f.symbol()), -3);
+      EXPECT_EQ(held(s, lower.symbol()), 5);
+      // Flattening again buys back the other three and sells the two longs already free.
+      ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
+      next(10);
+      EXPECT_EQ(held(s, f.symbol()), 0);
+      EXPECT_EQ(held(s, lower.symbol()), 3);
+      // With no short left, the next flatten sells the rest.
+      ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
+      next(10);
+      EXPECT_TRUE(s.snapshot()->positions.empty());
+    }
+  }
+}
+
 TEST(TradingOrders, AFlattenNeverTakesAClientIdTheTraderAlreadyUsed) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

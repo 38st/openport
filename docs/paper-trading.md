@@ -523,7 +523,11 @@ submit again to change DAY/GTC. The engine applies a new order's feed gate
 only one underlying's. `close_positions` flattens the account or one underlying: it
 cancels the open orders in scope, then closes each unexpired position in scope with
 a market IOC order under the account's fill model, short positions first so buying one back
-never uncovers another leg. These are the trader's own orders (client IDs
+never uncovers another leg. Each long then sells only as far as the shorts still held
+leave it free (`naked_shorts`, as for `defined_risk`): when a buy-back fills only in part,
+the long that covers the rest stays, and with fill latency, whose buy-backs wait for a
+later quote, a long that covers a short sells in a later flatten, once the short is
+gone. These are the trader's own orders (client IDs
 `openport-close-{version}-{n}`, numbered past any client ID the account has already
 used) and take the normal checks; one the rules refuse is
 recorded as rejected with its reason and the others still go. Expired positions wait
