@@ -352,9 +352,13 @@ underlying's data has moved the clock to. So fill latency waits for that
 underlying's next snapshot: a QQQ poll cannot release an SPX order on the SPX quote it
 was sent against. Only once that time falls `max_quote_age` behind the market time
 does the quote follow the clock, which keeps it current until its own feed stalls.
-Fills record the quote time they used. Replays and backtests apply every underlying's
-snapshot of one market time together (see [reproducible runs](architecture.md#reproducible-runs)),
-so triggers, fills, plan rules and equity samples never see an instant half applied.
+Fills record the quote time they used. Replays, backtests and the demo market apply
+every underlying's snapshot of one market time together (see
+[reproducible runs](architecture.md#reproducible-runs)), so triggers, fills, plan
+rules, playbooks and equity samples never see an instant half applied. A live polling
+feed's underlyings arrive apart and each is applied as it comes, so there a rule
+decided between two polls, such as the expiry cutoff or an intraday floor, values the
+underlying still waiting at its last snapshot.
 
 **Circuit breakers** halt the whole market as the exchanges' market-wide rule does
 (NYSE Rule 7.12, which the options exchanges follow), measured on the S&P 500 (SPX, or
