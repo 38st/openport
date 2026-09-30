@@ -80,11 +80,13 @@ json market_json(md::Timestamp ts) {
            session.next_open ? json(md::format_timestamp(*session.next_open)) : json(nullptr)}};
 }
 
-json expiry_json(const SliceMetrics& slice) {
+json expiry_json(const UnderlyingMetrics& m, const SliceMetrics& slice) {
   const double rate = -std::log(slice.forward.discount) / slice.years;
+  // Only OEX and XEO slices name their root; the rest take the underlying's clock,
+  // so ETF options keep their 16:15 last trade.
   md::OptionContract contract;
   contract.root = slice.root;
-  contract.underlying = md::conventions_for_root(slice.root).underlying;
+  contract.underlying = slice.root.empty() ? m.symbol : md::conventions_for_root(slice.root).underlying;
   contract.expiry = slice.expiry;
   contract.settlement = settlement_of(slice) == "AM" ? md::Settlement::AM : md::Settlement::PM;
   const auto last_trade = contract.last_trade_time();
@@ -352,7 +354,7 @@ json status_json(const MetricsSource& source) {
 
 json summary_json(const UnderlyingMetrics& m) {
   json expiries = json::array();
-  for (const SliceMetrics& slice : m.slices) expiries.push_back(expiry_json(slice));
+  for (const SliceMetrics& slice : m.slices) expiries.push_back(expiry_json(m, slice));
   return {{"symbol", m.symbol},
           {"spot", price(m.spot)},
           {"spot_source", spot_source_json(m)},
@@ -381,7 +383,7 @@ json chain_json(const UnderlyingMetrics& m, const SliceMetrics& slice, double wi
           {"spot_source", spot_source_json(m)},
           {"as_of", md::format_timestamp(m.as_of)},
           {"version", m.version},
-          {"expiry", expiry_json(slice)},
+          {"expiry", expiry_json(m, slice)},
           {"strikes", strikes}};
 }
 
