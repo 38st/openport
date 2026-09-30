@@ -83,6 +83,42 @@ TEST(TradingRisk, PendingOrdersReserveWorstSubsetWithoutNettingOppositeSides) {
   EXPECT_EQ(reject.limit, 600'000);
   EXPECT_NEAR(s.snapshot()->risk.aggregate.delta_utilisation, 5.0 / 6, 1e-12);
 }
+TEST(TradingRisk, ABookOverItsDeltaLimitStillClosesHedgesAndTradesOtherUnderlyings) {
+  // Three calls at delta 0.5 are 750,000 dollar delta; the SPX limit then tightens to 300,000.
+  ScriptedMarket f;
+  ScriptedMarket put = f;
+  put.contract = *md::parse_osi("SPXW261022P05000000");
+  ScriptedMarket xsp = f;
+  xsp.contract = *md::parse_osi("XSP261022C00500000");
+  TradingSession s({}, f.time);
+  f.seed(s); xsp.seed(s);
+  s.define(put.contract, f.time);
+  s.on_quotes({put.quote()}, {put.valuation(-0.5)}, f.time);
+  ASSERT_TRUE(s.submit(f.market("open", 3), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("target", 1, "4.50", Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("add", 1, "3.90"), f.time).decision.ok());
+  auto limits = Limits{};
+  limits.per_underlying.dollar_delta = 300'000;
+  s.set_limits(limits, f.time);
+  // The resting buy would raise SPX's delta and is cancelled; the resting close stays.
+  EXPECT_EQ(s.snapshot()->recent_orders[2].reason.code, Reason::RISK_CHANGED);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Working);
+  // A close fills although the position alone is over the limit.
+  ASSERT_TRUE(s.submit(f.market("close", 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->positions[0].position.quantity, 2);
+  // So do an order on another underlying inside its own limits, and a hedge.
+  EXPECT_TRUE(s.submit(xsp.market("other"), f.time).decision.ok());
+  EXPECT_TRUE(s.submit(put.market("hedge"), f.time).decision.ok());
+  // Adding to the position still refuses.
+  const auto more = s.submit(f.limit("more", 1, "4.20"), f.time).decision;
+  EXPECT_EQ(more.code, Reason::DELTA_LIMIT);
+  EXPECT_EQ(more.scope, "SPX");
+  // The resting take-profit fills when it becomes marketable, with the book over the limit again.
+  f.next();
+  s.on_quotes({f.quote("4.60", "4.80")}, {f.valuation(0.9)}, f.time);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].filled_notional, m("4.60"));
+}
 TEST(TradingRisk, AggregateAndUnderlyingVegaLimitsHaveIndependentChecks) {
   ScriptedMarket a;
   ScriptedMarket b;

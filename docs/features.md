@@ -145,7 +145,8 @@ hidden liquidity, or whether the market would have traded at all; a delayed feed
 still gives hindsight. Resting limits fill when a later quote crosses them, and every fill
 pays a per-contract fee. Positions are marked at the mid, and risk limits on dollar
 delta, vega, order size, price bands and daily loss are checked before and at every
-fill. Every product trades in its regular session (09:30 to 16:15 ET for index
+fill. A book the market has pushed over its delta or vega limit can still be closed or
+hedged: only orders that would add to the excess are refused. Every product trades in its regular session (09:30 to 16:15 ET for index
 options), and SPX, XSP, VIX and RUT options also trade in Cboe's overnight session
 (20:15 to 09:25 ET) and the 16:15 to 17:00 curb, with limit orders only. The
 market-wide circuit breakers halt trading when the S&P 500 falls 7%, 13% or 20%, with

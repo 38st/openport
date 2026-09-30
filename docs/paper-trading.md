@@ -635,6 +635,14 @@ otherwise common defaults) and the aggregate. Zero limits are allowed; positive
 exposure against zero reports the largest finite double utilisation and rejects.
 Overflowing analytical exposures mark risk incomplete and block trading.
 
+An order is refused only when, with it pending, a bucket's reserved risk exceeds its
+limit **and** exceeds that bucket's reserved risk without the order. An order that
+cannot raise any bucket's reserved risk is accepted, and fills, even while the held
+book is already over a limit, whether the market or a tighter limit put it there: a
+close, a hedge no larger than the position, or an order on another underlying that
+fits that underlying's and the aggregate's limits. Orders that add to an over-limit
+side still reject.
+
 Pre-trade checks require a supported registered unexpired contract, an open session that takes the order,
 valid order/tick, max order quantity, valid fresh quote, price band, complete marks
 and valuations, daily-loss allowance and exposure reservations. The kill latch and
@@ -655,7 +663,9 @@ preserving the underlying reason in its message and actual/limit/scope. A data g
 batch brings an order's quote before the rest of the portfolio's after a stall, the
 order keeps working and a later batch fills it once the data is complete.
 Noncrossed resting orders wait; invalid quotes supply no fills.
-Limit changes increment a revision and recheck working orders. During an evaluation
+Limit changes increment a revision and recheck working orders by the same rule, so a
+working close survives a tighter limit while orders that would add to the excess are
+cancelled with `RISK_CHANGED`. During an evaluation
 or funded attempt, each tighter field applies immediately; each looser field waits
 for the next trading-day rollover. The complete desired limits are journaled as
 `pending_limits`. A later edit replaces the pending request but cannot loosen a
@@ -1335,7 +1345,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `INVALID_ORDER`, `DUPLICATE_CLIENT_ID`, `INVALID_TICK` | Malformed order, a key reused with other terms, invalid price increment |
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |
-| `DELTA_LIMIT`, `VEGA_LIMIT` | Worst reachable exposure exceeds underlying/aggregate limit |
+| `DELTA_LIMIT`, `VEGA_LIMIT` | The order raises worst reachable exposure above an underlying/aggregate limit |
 | `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; opening orders and manual latch resets are refused while closing orders and exits remain available |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
