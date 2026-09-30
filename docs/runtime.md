@@ -556,10 +556,11 @@ time on the session date, then pauses. An ISO timestamp with a UTC offset also w
 For overnight sessions, evening times refer to the preceding calendar date. `until`
 is the only field in that control request. Streams require a whole-second target;
 a fractional ISO target is rejected rather than reporting an unsettled partial batch.
-It cannot move backwards. A target past
-EOF returns an error. The response waits for every complete input boundary through
-the target, analytics, trading and publication, and includes `settled_through` both
-at the top level and in replay state. A market time's snapshots are applied as one
+It cannot move backwards. A target past the recording's last batch returns 400
+before anything plays, naming where the recording ends, so the replay, its working
+orders and its evaluation stay where they were. The response waits for every
+complete input boundary through the target, analytics, trading and publication, and
+includes `settled_through` both at the top level and in replay state. A market time's snapshots are applied as one
 complete batch.
 
 ```sh
