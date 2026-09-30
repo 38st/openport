@@ -98,10 +98,13 @@ the better price, so it never asks less than its percent; stop triggers take any
 `close_by` is required and must be at or after the window end. Without
 `max_hold_days`, it is the entry day's deadline. With that optional 1–365 calendar
 day allowance, it is that later day's deadline, moved back to the previous business
-day if necessary. It is capped at the day's regular close. A time stop submits a
-reducing IOC on the first market update at or after the deadline; it cancels the
-entry and its working exits first. Incomplete liquidity or stale quotes can delay
-closure, which then fails the time-stop adherence rule.
+day if necessary. It is capped at the day's regular close. At the first market
+update at or after the deadline, a time stop cancels the entry and its working exits
+and submits a reducing market IOC. It checks the close through the normal preview
+first: while the checks would refuse it, for example because a leg has no bid or
+its quotes are stale, it records no order and checks again at each update,
+submitting once the close can be accepted. The delayed closure then fails the
+time-stop adherence rule.
 
 Guardrails allow 1–1,000 entries per day and a loss cooldown of 0–525,600 market
 minutes. Entries include filled and working opening orders across versions of the

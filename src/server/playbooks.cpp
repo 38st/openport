@@ -364,7 +364,12 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
     const Preview& preview, const Send& send, const Cancel& cancel) {
   const TradingView* current = &view;
   std::shared_ptr<const TradingView> updated;
-  ++revision_;
+  // An automatic order publishes the account mid-evaluation, caching this
+  // publication by revision; the new stages and reasons need a revision of their own.
+  struct Revise {
+    std::uint64_t& revision;
+    ~Revise() { ++revision; }
+  } revise{revision_};
   staged_[account] = json::array();
   reasons_[account] = json::object();
   const auto modes = catalogue_.at("modes").value(account, json::object());

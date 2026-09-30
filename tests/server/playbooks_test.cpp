@@ -644,4 +644,100 @@ TEST(Playbooks, AutomaticEntryLimitIsSharedAcrossUnderlyingsWithinOneUpdate) {
   EXPECT_EQ(desk.trading_view()->snapshot->recent_orders.front().request.tags.front(), "playbook:morning@v1");
   EXPECT_EQ(json::parse(reply.playbook_result).at("reasons").at("morning:SPY"), "Playbook entry limit or loss cooldown");
 }
+TEST(Playbooks, AnAutomaticOrderLeavesItsEvaluationPublished) {
+  // B43: an automatic order publishes the account mid-evaluation. That publication,
+  // cached by revision, hid the evaluation's own reasons and stages.
+  ScenarioFixture fixture;
+  md::RecordingReader reader(fixture.file.path);
+  server::Desk::Options options; options.replay = true;
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading(); providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto first = batches.next(); ASSERT_TRUE(first); desk.replay_batch(first->events, first->received, first->time);
+  ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", fixture.setup()}}, desk.market_time()).decision.ok());
+  auto calls = fixture.setup(); calls["id"] = "staged"; calls["structure"]["template"]["type"] = "call";
+  ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", calls}}, desk.market_time()).decision.ok());
+  ASSERT_TRUE(command(desk, {{"action", "mode"}, {"id", "staged"}, {"mode", "stage"}}, desk.market_time()).decision.ok());
+  const auto reply = command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, desk.market_time());
+  ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+  ASSERT_EQ(desk.trading_view()->snapshot->recent_orders.size(), 1U) << reply.playbook_result;
+  const auto published = json::parse(desk.trading_view()->playbooks_json);
+  EXPECT_EQ(published.at("reasons").at("morning:SPX"), "Automatic order sent") << published.dump();
+  EXPECT_EQ(published.at("reasons").at("staged:SPX"), "Ready");
+  ASSERT_EQ(published.at("staged").size(), 1U);
+  EXPECT_EQ(published.at("staged"), json::parse(reply.playbook_result).at("staged"));
+}
+/// A 0DTE SPX put spread's day, one snapshot a minute from 09:30. The 4995 wing has no
+/// bid from 09:32 until `bid_back` minutes after the open.
+std::filesystem::path no_bid_wing_day(const std::filesystem::path& directory, int bid_back) {
+  const md::Date date{2026, 9, 16};
+  const auto path = directory / "no-bid-wing.oprec";
+  auto contract = *md::parse_osi("SPXW  260916P05000000");
+  auto lower = contract; lower.strike = 4995;
+  md::RecordingHeader header;
+  header.provider = "simulated test";
+  header.subscription.underlyings = {"SPX"};
+  header.started = md::new_york_to_utc(date, 9, 30);
+  header.capabilities.poll_interval = std::chrono::seconds(60);
+  md::Timestamp time = header.started;
+  md::RecordingSink::Options recording;
+  recording.clock = [&] { return time; };
+  test::DiscardEvents discard;
+  md::RecordingSink sink(path, header, discard, recording);
+  sink.publish(md::ContractDefinition{0, contract});
+  sink.publish(md::ContractDefinition{1, lower});
+  for (int minute = 0; minute <= bid_back + 1; ++minute) {
+    time = header.started + minute * md::kNanosPerMinute;
+    const bool bid = minute < 2 || minute >= bid_back;
+    sink.publish(md::UnderlyingQuote{"SPX", time, 5000, 5000, 5000});
+    sink.publish(md::OptionQuote{0, time, 10, 10.1, 20, 20});
+    sink.publish(md::OptionQuote{1, time, bid ? 8.0 : 0.0, 8.1, bid ? 20.0 : 0.0, 20});
+    sink.publish(md::SnapshotComplete{"SPX", time});
+  }
+  sink.close();
+  return path;
+}
+TEST(Playbooks, ATimeStopWaitsForLiquidityWithoutJournalingRejections) {
+  // B44: while a wing had no bid, the time stop's combo close was submitted and
+  // rejected at every update, piling up rejected orders in the journal.
+  test::RecordingFile file;
+  const auto recording = no_bid_wing_day(file.directory, 6);
+  auto setup = definition();
+  setup["window"]["end"] = "09:31";
+  setup["structure"]["template"]["target"] = {{"mode", "strike"}, {"value", 5000}};
+  setup["structure"]["expiry"]["max"] = 1;
+  setup["management"] = {{"close_by", "09:32"}, {"take_profit_percent", 50}};
+  server::Playbooks store;
+  store.change({{"action", "create"}, {"definition", setup}}, "main", true);
+  store.change({{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, "main", true);
+  md::RecordingReader reader(recording);
+  server::Desk::Options options; options.replay = true;
+  options.initial_playbooks = store.catalogue().dump();
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("replay (test)", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading();
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto count = [&](auto predicate) {
+    const auto orders = desk.trading_view()->snapshot->recent_orders.to_vector();
+    return std::count_if(orders.begin(), orders.end(), predicate);
+  };
+  const auto closes = [](const trading::Order& order) { return order.request.client_order_id.starts_with("pb-close:"); };
+  while (const auto batch = batches.next()) {
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    ASSERT_TRUE(desk.trading_status().enabled) << desk.trading_status().reason;
+    if (desk.market_time() < md::new_york_to_utc({2026, 9, 16}, 9, 36)) EXPECT_EQ(count(closes), 0);
+  }
+  const auto view = desk.trading_view();
+  EXPECT_EQ(count([](const trading::Order& order) { return order.status == trading::OrderStatus::Rejected; }), 0);
+  ASSERT_EQ(count(closes), 1);
+  // The exits were cancelled once, at the deadline, and the close filled when the wing was bid.
+  for (const auto& order : view->snapshot->recent_orders) {
+    if (order.parent) { EXPECT_EQ(order.status, trading::OrderStatus::Cancelled); }
+    if (closes(order)) {
+      EXPECT_EQ(order.status, trading::OrderStatus::Filled);
+      EXPECT_EQ(order.accepted_at, md::new_york_to_utc({2026, 9, 16}, 9, 36));
+    }
+  }
+  EXPECT_TRUE(view->snapshot->positions.empty());
+}
 }  // namespace
