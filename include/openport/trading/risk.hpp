@@ -40,6 +40,11 @@ struct RiskSnapshot {
     const Valuations& valuations, const Limits& limits, Timestamp now,
     const std::map<std::string, double>& stock_prices = {});
 [[nodiscard]] Decision check_exposure(const RiskSnapshot& risk);
+/// One order's check: `risk` with the order among the pending ones, `without`
+/// the same book without it. A bucket over its limit refuses the order only when
+/// the order raises that bucket's worst reachable exposure, so a book already
+/// over a limit can still close, hedge and trade other underlyings.
+[[nodiscard]] Decision check_exposure(const RiskSnapshot& risk, const RiskSnapshot& without);
 
 struct ScenarioCell {
   double spot_percent = 0;

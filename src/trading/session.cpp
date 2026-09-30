@@ -841,6 +841,17 @@ Decision open_orders_risk_check(const State& s, const Order& o) {
   return failure(Reason::DEFINED_RISK, "With your open orders filled, this would leave a short option uncovered: cancel "
                  "the order that sells its long, or that opens the short, first, or trade the spread as one order");
 }
+/// Exposure limits guard what pending orders could add: an order is refused only
+/// when it raises a bucket's worst reachable exposure above its limit, so a book
+/// that is already over a limit can still close, hedge and trade elsewhere.
+Decision exposure_check(const State& s, const Order& o, const Measures& snapshot) {
+  if (!snapshot.risk.complete) return check_exposure(snapshot.risk);
+  std::vector<Order> working;
+  for (const auto id : open_ids(s))
+    if (const auto& other = s.orders[id - 1]; other.id != o.id && !shadowed(s, other)) working.push_back(other);
+  const auto without = portfolio_risk(s.ledger, working, s.contracts, s.valuations, s.config.limits, s.time, snapshot.stock_prices);
+  return check_exposure(snapshot.risk, without);
+}
 Decision account_check(const State& s, bool reducing = false) {
   if (s.kill && !reducing) return kill_decision(s);
   if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
@@ -943,7 +954,7 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
-  if (const auto d = check_exposure(snapshot.risk); !d.ok()) return d;
+  if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
     const auto power = buying_power(s, o.id);
     if (power.focus_uses && power.total.available < Money{})
@@ -1006,7 +1017,7 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
-  if (const auto d = check_exposure(snapshot.risk); !d.ok()) return d;
+  if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
     // Orders that free buying power are always allowed; fills recheck against
     // the projected ledger instead.

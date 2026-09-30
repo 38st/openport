@@ -50,12 +50,16 @@ void finish(RiskBucket& b) {
   b.delta_utilisation = utilisation(worst(b.reachable.delta_low, b.reachable.delta_high), b.limits.dollar_delta);
   b.vega_utilisation = utilisation(worst(b.reachable.vega_low, b.reachable.vega_high), b.limits.vega);
 }
-Decision check_bucket(const RiskBucket& b, const std::string& scope) {
+/// A bucket over a limit fails, unless `before` (the bucket without the order
+/// being checked) was at least as far over it on that factor.
+Decision check_bucket(const RiskBucket& b, const std::string& scope, const RiskBucket* before = nullptr) {
   const double delta = worst(b.reachable.delta_low, b.reachable.delta_high);
   const double vega = worst(b.reachable.vega_low, b.reachable.vega_high);
-  if (delta > b.limits.dollar_delta)
+  const bool delta_raised = !before || delta > worst(before->reachable.delta_low, before->reachable.delta_high);
+  const bool vega_raised = !before || vega > worst(before->reachable.vega_low, before->reachable.vega_high);
+  if (delta > b.limits.dollar_delta && delta_raised)
     return {Reason::DELTA_LIMIT, "Worst reachable absolute dollar delta exceeds limit", delta, b.limits.dollar_delta, scope};
-  if (vega > b.limits.vega)
+  if (vega > b.limits.vega && vega_raised)
     return {Reason::VEGA_LIMIT, "Worst reachable absolute vega per point exceeds limit", vega, b.limits.vega, scope};
   return {};
 }
@@ -135,6 +139,17 @@ Decision check_exposure(const RiskSnapshot& risk) {
     if (!result.ok()) return result;
   }
   return check_bucket(risk.aggregate, "aggregate");
+}
+Decision check_exposure(const RiskSnapshot& risk, const RiskSnapshot& without) {
+  if (!risk.complete) return check_exposure(risk);
+  // An underlying the order alone trades had no exposure without it.
+  const RiskBucket empty;
+  for (const auto& [name, bucket] : risk.underlyings) {
+    const auto before = without.underlyings.find(name);
+    auto result = check_bucket(bucket, name, before == without.underlyings.end() ? &empty : &before->second);
+    if (!result.ok()) return result;
+  }
+  return check_bucket(risk.aggregate, "aggregate", &without.aggregate);
 }
 void validate_scenarios(const ScenarioConfig& c) {
   bool valid = !c.spot_percent.empty() && !c.vol_points.empty() &&
