@@ -134,6 +134,12 @@ struct UnknownRun : std::runtime_error {
   explicit UnknownRun(const std::string& id) : std::runtime_error("No saved replay run " + id) {}
 };
 
+/// A plan's id from its display name, for runs whose metadata sidecar is missing.
+std::string plan_id(const std::string& name) {
+  for (const auto& plan : plan_presets()) if (plan.name == name) return plan.id;
+  return name;
+}
+
 }  // namespace
 
 /// A small cache of generated (scenario, date, seed) recordings.
@@ -342,6 +348,23 @@ class ReplayHost::History {
     if (!metadata) throw std::runtime_error("Cannot write replay metadata for " + session.id);
     return path;
   }
+  /// Rewrites a retired run's metadata with its final playback state, which then
+  /// reads finished. A crash leaves the start state that create wrote.
+  void finish(const Session& session) const {
+    if (!writable_ || !session.durable || session.id.empty()) return;
+    const auto file = directory_ / (session.id + ".json");
+    const auto staged = directory_ / (session.id + ".json.tmp");
+    std::error_code ec;
+    if (!std::filesystem::exists(file, ec)) return;
+    {
+      std::ofstream metadata(staged);
+      metadata << session.state().dump() << '\n';
+      metadata.close();
+      if (!metadata) { std::filesystem::remove(staged, ec); return; }
+    }
+    std::filesystem::rename(staged, file, ec);
+    if (ec) std::filesystem::remove(staged, ec);
+  }
   /// A saved run's journal, or empty when there is none by that id.
   std::filesystem::path journal(const std::string& id) const {
     if (directory_.empty() || !plain_name(id)) return {};
@@ -375,15 +398,31 @@ class ReplayHost::History {
     std::sort(files.begin(), files.end(), std::greater<>());
     for (const auto& file : files) {
       const auto id = file.stem().string();
-      if (active && active->id == id && !active->provider->finished()) continue;
+      const bool current = active && active->id == id;
+      if (current && !active->provider->finished()) continue;
       json item{{"id", id}, {"file", id}, {"demo", false}, {"result", "open"}, {"pnl", nullptr}};
+      bool finalized = current;
       try {
-        std::ifstream metadata(std::filesystem::path(file).replace_extension(".json"));
-        if (metadata) item.update(json::parse(metadata));
-        item.update(active && active->id == id ? summarize(active->engine->trading_view()) : summary(id, file));
+        if (current) {
+          item.update(active->state());
+        } else {
+          std::ifstream metadata(std::filesystem::path(file).replace_extension(".json"));
+          if (metadata) item.update(json::parse(metadata));
+          finalized = item.value("finished", false);
+        }
+        item.update(current ? summarize(active->engine->trading_view()) : summary(id, file));
       } catch (const std::exception& error) {
         if (!std::filesystem::exists(file, ec)) continue;  // deleted while listing
         item["error"] = error.what();
+      }
+      if (!item.contains("plan") && item.contains("plan_name")) item["plan"] = plan_id(item.at("plan_name").get<std::string>());
+      // Metadata a crash left still holds the start state: the run is over, and it
+      // settled through its last journaled time.
+      if (!finalized && item.contains("fast_forwarding")) {
+        item["fast_forwarding"] = false;
+        item["progress"] = 1.0;
+        item["paused"] = true;
+        item["settled_through"] = item.value("time", json(nullptr));
       }
       item["finished"] = true;
       item["read_only"] = true;
@@ -415,7 +454,7 @@ class ReplayHost::History {
     const auto result = view->snapshot->evaluation.status;
     return {{"result", result == trading::EvaluationStatus::Passed ? "pass" : result == trading::EvaluationStatus::Failed ? "fail" : "open"},
             {"pnl", (view->snapshot->equity - view->config.initial_cash).str()},
-            {"valuation_complete", view->snapshot->valuation_complete}, {"plan", view->config.rules.plan},
+            {"valuation_complete", view->snapshot->valuation_complete}, {"plan_name", view->config.rules.plan},
             {"time", md::format_timestamp(view->snapshot->time)}};
   }
   std::shared_ptr<ArchivedReplay> recover(const std::filesystem::path& path) const {
@@ -490,7 +529,10 @@ void ReplayHost::stop_session() {
   }
   // Drain callbacks while this thread still owns the session; its last reference
   // must not be released by a completion running on the engine thread.
-  if (old) old->engine->stop();
+  if (old) {
+    old->engine->stop();
+    history_->finish(*old);
+  }
   old.reset();
 }
 
@@ -720,7 +762,10 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         const std::lock_guard lock(mutex_);
         old = std::exchange(session_, session);
       }
-      if (old) old->engine->stop();
+      if (old) {
+        old->engine->stop();
+        history_->finish(*old);
+      }
       old.reset();
       complete(ok({{"replay", session->state()}}, 201));
     } else if (request.method == "PUT") {

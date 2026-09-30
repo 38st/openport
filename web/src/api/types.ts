@@ -360,6 +360,8 @@ export interface ReplayRecording {
 export interface ReplayDemo { goal?: string; session?: "regular" | "overnight"; date?: string; seed?: string; generator?: number; id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string }
 export interface ReplayHistory extends ReplayState {
   id: string
+  /** The plan's display name; plan is its id. Absent from older servers. */
+  plan_name?: string
   result: "pass" | "fail" | "open"
   pnl: string | null
   valuation_complete?: boolean
