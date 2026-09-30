@@ -141,6 +141,25 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
   same_analytics(*expected, *replayed.metrics("SPX"));
 }
 
+// U4: uptime is wall time since the engine started, not time on the market clock a
+// replay or the demo keeps (which put it at 107,099 s right after launch).
+TEST(Engine, UptimeCountsWallTimeWhateverClockTheMarketKeeps) {
+  using nlohmann::json;
+  SyntheticProvider provider;
+  server::Engine::Options options;
+  options.paper_enabled = false;
+  options.clock = [] { return md::new_york_to_utc({2020, 1, 2}, 9, 30); };
+  const auto launched = std::chrono::steady_clock::now();
+  std::atomic<int> seconds{0};
+  options.monotonic_clock = [&] { return launched + std::chrono::seconds(seconds.load()); };
+  server::Engine engine(provider, {{"SPX"}}, options);
+  EXPECT_EQ(json::parse(server::handle_api({"GET", "/api/status"}, engine).body)["engine"]["uptime_seconds"], 0);
+  engine.start();
+  seconds = 90;
+  EXPECT_EQ(json::parse(server::handle_api({"GET", "/api/status"}, engine).body)["engine"]["uptime_seconds"], 90);
+  engine.stop();
+}
+
 server::ApiResponse call(server::ReplayHost& host, std::string method, std::string target, std::string body = {},
                          std::chrono::seconds timeout = 5min) {
   auto promise = std::make_shared<std::promise<server::ApiResponse>>();
