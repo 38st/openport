@@ -256,9 +256,13 @@ json portfolio_json(const TradingView& view) {
         {"market_value", money(p.market_value)}, {"unrealised", money(p.unrealised)},
         {"realised", position.realised.str()}, {"fees", position.fees.str()}, {"fresh", p.fresh},
         {"awaiting_settlement", p.awaiting_settlement},
-        // How an expired position settles: on the recorded closing print, or by a value entered by hand.
+        // How an expired position settles: on the closing print, recorded or still awaited
+        // (with the last print before the close as the fallback) for half an hour after the
+        // close, or by a value entered by hand once no automatic source remains.
         {"settle_by", !p.awaiting_settlement ? json(nullptr)
-            : c.settlement == md::Settlement::PM && s.closing_prints.contains(c.underlying + " " + md::format_date(c.expiry))
+            : c.settlement == md::Settlement::PM &&
+              (s.closing_prints.contains(c.underlying + " " + md::format_date(c.expiry)) ||
+               s.time < md::new_york_to_utc(c.expiry, md::regular_close_hour(c.expiry), 0) + kLastPrintWait)
                 ? json("closing_print") : json("manual")},
         {"greeks", position_greeks(p, view)},
         {"attribution", s.attributions.contains(c.osi_symbol()) ? attribution_json(s.attributions.at(c.osi_symbol())) : json(nullptr)}});

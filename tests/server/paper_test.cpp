@@ -1753,8 +1753,18 @@ TEST(PaperRecovery, WithoutAClosingPrintPMPositionsSettleByHand) {
     const auto view = engine.trading_view();
     return !view->snapshot->positions.empty() && view->snapshot->positions[0].awaiting_settlement;
   }));
+  // For half an hour after the close it waits for the closing print or the last print
+  // before the close, and can still settle by itself.
+  EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["settle_by"], "closing_print");
+  // Its last print, at 10:00, is too old to stand in for the close, so from 16:30 it
+  // settles by hand, even long after.
+  const auto deadline = market.contract.expiry_time() + 30 * md::kNanosPerMinute;
+  provider.sink->publish(md::OptionQuote{1, deadline - md::kNanosPerSecond, 8, 8.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == deadline - md::kNanosPerSecond; }));
+  EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["settle_by"], "closing_print");
+  provider.sink->publish(md::OptionQuote{1, deadline, 8, 8.2, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == deadline; }));
   EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["settle_by"], "manual");
-  // Its last print, at 10:00, is too old to stand in for the close, even long after it.
   const auto evening = market.contract.expiry_time() + 45 * md::kNanosPerMinute;
   provider.sink->publish(md::OptionQuote{1, evening, 8, 8.2, 1, 1});
   ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == evening; }));

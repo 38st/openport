@@ -50,9 +50,8 @@ void sync_directory(const std::filesystem::path& path) {
   if (!synced) throw TradingError(Reason::JOURNAL_IO, "Cannot sync journal directory");
 }
 
-/// How long after the close a missing closing print is waited for, and how close
-/// to the close the last print before it must be to settle on instead.
-constexpr md::Timestamp kLastPrintWait = 30 * md::kNanosPerMinute;
+/// How close to the close the last print before it must be to settle on instead of
+/// a closing print that has not come within kLastPrintWait.
 constexpr md::Timestamp kLastPrintAge = 5 * md::kNanosPerMinute;
 md::Date new_york_date(md::Timestamp time) {
   auto date = md::date_from_days(time / md::kNanosPerDay);

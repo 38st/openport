@@ -58,6 +58,11 @@ struct CircuitBreakerStatus {
     md::Timestamp market_time, md::Timestamp wall_time, std::chrono::seconds delay,
     md::Timestamp max_quote_age, const std::vector<MarketHalt>& halts = {});
 
+/// How long after the regular close an expired PM position waits for its closing
+/// print before the last print before the close may stand in; past it, a position
+/// with neither settles by hand.
+inline constexpr md::Timestamp kLastPrintWait = 30 * md::kNanosPerMinute;
+
 struct TradingStatus {
   bool enabled = false;
   std::string reason = "PAPER_DISABLED";
