@@ -63,7 +63,8 @@ midnight. The normal product session and feed-freshness checks still apply.
 | `dte: {min,max}` | Inclusive ACT/365 calendar days to the selected expiry's settlement |
 
 A missing input fails its condition. Prior close uses the preceding business day's
-official close, or its stored daily close. Day open requires the 09:30 minute,
+official close (in a scenario replay or backtest, the previous close the generated
+day opens with), or its stored daily close. Day open requires the 09:30 minute,
 not the first later observation of a partially recorded day. No missing opening
 price, IV history, realized volatility or expiry is synthesized. Volatility
 conditions use the existing finite-strip and proxy estimates, with the limitations
