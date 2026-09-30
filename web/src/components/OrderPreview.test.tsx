@@ -51,6 +51,15 @@ describe("order preview", () => {
     expect(host.textContent).not.toContain("$9,499.00")
     expect(host.querySelector("button")!.disabled).toBe(true)
   })
+  it("labels the Greeks as the order's change, not the book after it", async () => {
+    const result = { ...preview, exposure_change: { dollar_delta: -69965.38, dollar_gamma_1pct: 1, vega: 10, theta: -5 } }
+    await act(async () => root.render(<OrderPreviewPanel preview={{ data: result, error: null, loading: false }} onSize={() => {}} />))
+    const changes = host.querySelector('[aria-label="Change in Greeks"]')!
+    expect(changes.textContent).toContain("Change from this order")
+    expect(changes.textContent).toContain("Dollar delta-69965.38")
+    expect(changes.textContent).toContain("Vega+10.00")
+    expect(host.textContent).toContain("the change in Greeks")
+  })
   it("labels scenario estimates and prevents zero-unit sizing", async () => {
     const result = { ...preview, max_loss_basis: "scenario_grid" as const, max_units: 0 }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: result, error: null, loading: false }} onSize={() => {}} />))
