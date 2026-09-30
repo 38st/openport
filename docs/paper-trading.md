@@ -766,11 +766,16 @@ orders use their limit debit or credit.
 Fees are included. Identical client-ID retries return their original decision with no
 additional buying power or Greek change; loss projection and sizing are unavailable.
 
-A bounded same-expiry payoff has an exact maximum loss at zero or a strike; a net
-short call tail is unbounded. Other orders use the worst loss of the projected account
-on its configured spot × volatility grid, labelled `scenario_grid`. This finite grid
-is not a bound on all possible losses. The exact `expiry_payoff` value describes the
-order's own payoff, while the scenario value describes the account after the order.
+For an order that opens every leg, a bounded same-expiry payoff has an exact maximum
+loss at zero or a strike; a net short call tail is unbounded. Other orders use the worst
+loss of the projected account on its configured spot × volatility grid, labelled
+`scenario_grid`: among them every order that reduces a holding, such as a close, a roll
+or a sale of more than is held, so selling held longs is never priced as writing new
+shorts, and a close's loss is its cost against the marks plus whatever the account still
+holds could lose. This finite grid is not a bound on all possible losses. The exact
+`expiry_payoff` value describes the order's own payoff, while the scenario value
+describes the account after the order. A bracket entry's projected account includes its
+exit pair, so `buying_power.after` holds the exits' fee reservation as the account will.
 `max_units` fits buying power, pre-trade limits and the requested share of current
 room above the nearer plan or soft floor. Touching a floor never fits. The share is
 rounded down to millionths for fixed-point sizing. The preview is a current projection,

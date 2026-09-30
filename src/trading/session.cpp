@@ -560,6 +560,38 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
   out.total.available = s.ledger.account().cash - margin.held - reserved;
   return out;
 }
+struct ProjectedFill {
+  Money premium;  ///< Paid, negative when received.
+  Money fees;
+};
+/// Fill `units` of `request` into `after` (a copy of `before`) now: every leg at
+/// market through impact blocks, as a real fill would walk them, and a limit
+/// order at its limit's debit or credit instead, never an impossible fill at
+/// today's far sides. This also keeps size-to-floor conservative at limits.
+ProjectedFill project_fill(State& after, const State& before, const OrderRequest& request, Quantity units) {
+  auto legs = request.legs;
+  if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
+  ProjectedFill result;
+  for (const auto& leg : legs) {
+    const auto quantity = signed_contracts(leg, units);
+    auto fee = before.config.fee_per_contract * magnitude(quantity);
+    result.fees = result.fees + fee;
+    for (const auto& [price, n] : market_slices(before, leg.symbol, leg.side, magnitude(quantity))) {
+      const auto contracts = quantity < 0 ? -n : n;
+      result.premium = result.premium + (price * 100) * contracts;
+      after.ledger.fill(before.contracts.at(leg.symbol), contracts, price, fee);
+      fee = {};
+    }
+  }
+  if (request.limit_price) {
+    const auto limit_premium = (*request.limit_price * 100) * units * (legs.size() == 1 && request.side == Side::Sell ? -1 : 1);
+    auto account = after.ledger.account();
+    account.cash = account.cash + result.premium - limit_premium;
+    after.ledger = Ledger::restore(account, after.ledger.positions(), after.ledger.stocks());
+    result.premium = limit_premium;
+  }
+  return result;
+}
 /// The personal soft floor now: an absolute level, or a share of the plan's
 /// drawdown above its floor, whichever is higher.
 std::optional<Money> soft_floor_of(const State& s) {
@@ -1663,29 +1695,14 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
         !before.contracts.contains(leg.symbol) || !quote_check(before, leg.symbol).ok()) return projection;
   const auto power = buying_power(after, candidate.id);
   result.buying_power_required = power.focus_reservation;
-  after.orders.mut_back().status = OrderStatus::Filled;
-  // Every leg fills at market, through impact blocks as a real fill would walk them.
-  Money premium, fees;
-  for (const auto& leg : legs) {
-    const auto quantity = signed_contracts(leg, request.quantity);
-    auto fee = before.config.fee_per_contract * magnitude(quantity);
-    fees = fees + fee;
-    for (const auto& [price, n] : market_slices(before, leg.symbol, leg.side, magnitude(quantity))) {
-      const auto contracts = quantity < 0 ? -n : n;
-      premium = premium + (price * 100) * contracts;
-      after.ledger.fill(before.contracts.at(leg.symbol), contracts, price, fee);
-      fee = {};
-    }
-  }
-  // For a resting limit, project its limit debit/credit, not an impossible fill
-  // at today's far sides. This also makes size-to-floor conservative at limits.
-  if (request.limit_price) {
-    const auto limit_premium = (*request.limit_price * 100) * request.quantity *
-        (legs.size() == 1 && request.side == Side::Sell ? -1 : 1);
-    auto account = after.ledger.account();
-    account.cash = account.cash + premium - limit_premium;
-    after.ledger = Ledger::restore(account, after.ledger.positions(), after.ledger.stocks());
-    premium = limit_premium;
+  auto& filled = after.orders.mut_back();
+  filled.status = OrderStatus::Filled;
+  filled.filled_quantity = request.quantity;
+  const auto [premium, fees] = project_fill(after, before, request, request.quantity);
+  // A filled bracket entry leaves its exits working, and they reserve their fees.
+  if (request.bracket && !request.exits_only) {
+    Events ignored;
+    attach_exits(after, candidate.id, ignored);
   }
   const auto projected = snapshot_of(after);
   result.buying_power_after = projected.buying_power.available;
@@ -1696,7 +1713,14 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
                                       b.vega - a.vega, b.theta - a.theta};
   }
   if (!snapshot.valuation_complete || !projected.valuation_complete) return projection;
-  result.max_loss = expiry_loss(before, request, premium, fees);
+  // The order's own expiry payoff describes an order that opens every leg. One
+  // that reduces a holding is measured on the account after it: selling held
+  // longs is not writing new shorts.
+  const bool reduces = std::any_of(legs.begin(), legs.end(), [&](const Leg& leg) {
+    const auto q = held(before, leg.symbol);
+    return q != 0 && (q > 0) != (leg.side == Side::Buy);
+  });
+  if (!reduces) result.max_loss = expiry_loss(before, request, premium, fees);
   if (result.max_loss) {
     result.max_loss_basis = "expiry_payoff";
   } else if (projected.scenarios.complete) {
