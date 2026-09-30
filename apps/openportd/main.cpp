@@ -101,10 +101,12 @@ struct Settings {
   std::vector<std::string> allowed_hosts;
 };
 
+/// Without an error this is --help's answer: it goes to stdout and exits 0.
 int usage(const char* error = nullptr) {
+  auto* out = error ? stderr : stdout;
   if (error) std::fprintf(stderr, "openportd: %s\n\n", error);
   std::fprintf(
-      stderr,
+      out,
       "usage: openportd [--provider NAME] [--symbols SPX,SPY,QQQ,IWM,DIA] [--address ADDR] [--port N]\n"
       "                 [--scenario-dir DIR] [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
@@ -114,6 +116,8 @@ int usage(const char* error = nullptr) {
       "                 [--sandboxes N] [--sandbox-idle-seconds N] [--client-ip-header NAME]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
       "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
+      "                 [--series-dir DIR] [--no-series]\n"
+      "       openportd --backfill-series FILE... [--force] [--series-dir DIR]\n"
       "       openportd --verify-run JOURNAL\n"
       "       openportd --backtest PLAYBOOK[@VERSION] --plan PLAN (--days FILE | --recordings DIR | --scenarios N --seed S) --out REPORT.json\n"
       "                 [--playbooks FILE] [--paper-journal PATH] [--scenario-dir DIR] [--workers 1..16]\n"
@@ -164,13 +168,13 @@ int usage(const char* error = nullptr) {
       "      symbols default to the selected days; journal defaults to ~/.openport/demo/paper-journal.jsonl\n"
       "providers:");
   for (auto name : providers::provider_names()) {
-    std::fprintf(stderr, " %.*s", static_cast<int>(name.size()), name.data());
+    std::fprintf(out, " %.*s", static_cast<int>(name.size()), name.data());
   }
-  std::fprintf(stderr,
+  std::fprintf(out,
                "\nkeys are read from the environment: DATABENTO_API_KEY, MASSIVE_API_KEY,\n"
                "TRADIER_ACCESS_TOKEN, TASTYTRADE_CLIENT_SECRET, TASTYTRADE_REFRESH_TOKEN,\n"
                "and optionally TASTYTRADE_CLIENT_ID. No broker credential flags.\n");
-  return 2;
+  return error ? 2 : 0;
 }
 
 std::vector<std::string> split(const std::string& list) {
