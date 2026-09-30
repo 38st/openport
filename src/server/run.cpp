@@ -81,9 +81,15 @@ class ComparisonJournal final : public trading::Journal {
     // representation for hashing. The choice is the whole run's: every record of an
     // attributed run stays byte-exact, so one whose actor was removed differs.
     if (!attributed_) omit_actors(recorded);
+    if (sequence_ == expected_.records.size()) {
+      // The journal ends here, part way through an operation: a crash cut off the rest.
+      // Throwing stops the account, which keeps the journal's last state.
+      cut = true;
+      throw std::runtime_error("The journal ends part way through an operation");
+    }
     json line{{"seq", sequence_ + 1}, {"time", time}, {"type", type}, {"payload", std::move(recorded)}, {"prev_hash", head_}};
     const auto hash = hash_text(line.dump());
-    if (sequence_ >= expected_.records.size() || expected_.records[sequence_].hash != hash) {
+    if (expected_.records[sequence_].hash != hash) {
       error = "First differing transaction " + std::to_string(sequence_ + 1) + " (" + std::string(type) + ")";
       throw std::runtime_error(error);
     }
@@ -93,6 +99,7 @@ class ComparisonJournal final : public trading::Journal {
   std::uint64_t sequence() const override { return sequence_; }
   std::string head() const override { return head_; }
   std::string error;
+  bool cut = false;
  private:
   const trading::JournalRecovery& expected_;
   bool attributed_;
@@ -170,10 +177,11 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     const auto restored = trading::TradingSession::recover(expected);
     auto reader = open_input(input);
     const md::Subscription subscription{start.at("symbols").get<std::vector<std::string>>(), 0, 0};
-    // Driver 2 batches each market instant whole, and driver 3 also rolls the day over on
-    // the closing marks before a new date's quotes. Older runs replay as they were recorded.
+    // Driver 2 batches each market instant whole, driver 3 also rolls the day over on the
+    // closing marks before a new date's quotes, and driver 4 also records each command's
+    // input before its transactions. Older runs replay as they were recorded.
     const auto driver = start.value("driver", 1);
-    if (driver < 1 || driver > 3) throw std::runtime_error("Unsupported run driver version");
+    if (driver < 1 || driver > 4) throw std::runtime_error("Unsupported run driver version");
     const bool instants = driver >= 2;
     auto batches = std::make_unique<providers::ReplayBatches>(*reader, subscription, instants);
     // Every build that writes a driver version also attributes every record, so only a
@@ -184,6 +192,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     options.replay = true;
     options.instant_batches = instants;
     options.closing_rollover = driver >= 3;
+    options.inputs_first = driver >= 4;
     options.candles = std::make_shared<CandleStore>();
     options.run_input = input.dump();
     if (start.contains("playbooks") && !start.at("playbooks").is_null()) options.initial_playbooks = start.at("playbooks").dump();
@@ -194,7 +203,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     options.dividends = start.at("dividends").get<std::vector<trading::Dividend>>();
     Desk desk("replay (" + reader->header().provider + ")", reader->header().capabilities, subscription, options);
     desk.start_trading();
-    for (std::size_t index = 1; index < inputs.size() && comparison->error.empty(); ++index) {
+    for (std::size_t index = 1; index < inputs.size() && comparison->error.empty() && !comparison->cut; ++index) {
       const auto& operation = inputs[index];
       if (operation.at("kind") == "boundary") {
         auto batch = batches->next();
@@ -214,18 +223,26 @@ RunVerification verify_run(const std::filesystem::path& journal) {
         desk.set_dividends(operation.at("dividends").get<std::vector<trading::Dividend>>());
       } else throw std::runtime_error("Unknown recorded run operation");
     }
+    // A batch's transactions precede its boundary input. When a crash cut that input
+    // off, the recording's next batch must reproduce the transactions after the last one.
+    if (comparison->error.empty() && !comparison->cut && comparison->sequence() < expected.records.size()) {
+      if (const auto batch = batches->next()) desk.replay_batch(batch->events, batch->received, batch->time);
+    }
     if (!comparison->error.empty()) throw std::runtime_error(comparison->error);
     if (comparison->sequence() != expected.records.size())
-      throw std::runtime_error("First differing transaction " + std::to_string(comparison->sequence() + 1) + " (missing output)");
+      throw std::runtime_error("First differing transaction " + std::to_string(comparison->sequence() + 1) + " (" +
+                               expected.records[comparison->sequence()].type + ", after the last recorded input)");
     const auto view = desk.trading_view();
     if (!view || view->snapshot->equity != restored.snapshot()->equity || comparison->head() != expected.head)
       throw std::runtime_error("Final equity or head hash differs");
     result.matched = true;
+    result.cut = comparison->cut;
     result.transactions = comparison->sequence();
     result.head = comparison->head();
     result.equity = view->snapshot->equity;
     result.message = "Verified " + std::to_string(result.transactions) + " transactions; equity " +
-        std::to_string(result.equity.micros()) + " micro-dollars; head " + result.head;
+        std::to_string(result.equity.micros()) + " micro-dollars; head " + result.head +
+        (result.cut ? "; the journal ends part way through its last operation, as a crash leaves it" : "");
   } catch (const std::exception& error) { result.message = error.what(); }
   return result;
 }

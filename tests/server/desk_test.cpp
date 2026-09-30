@@ -677,7 +677,7 @@ TEST(ReproducibleRun, RunsRecordedBeforeInstantBatchesStillVerify) {
       desk.stop();
     }
     // Driver 3 batches instants too.
-    EXPECT_EQ(read_file(journal).find("\"driver\":3") != std::string::npos, instants);
+    EXPECT_EQ(read_file(journal).find("\"driver\":4") != std::string::npos, instants);
     const auto verified = server::verify_run(journal);
     EXPECT_TRUE(verified.matched) << verified.message;
   }
@@ -752,6 +752,7 @@ TEST(Rollover, TheFinishedDayClosesOnItsClosingMarksBeforeTheNextDaysQuotes) {
     const auto journal = feed.file.directory / (closing ? "driver-3.jsonl" : "driver-2.jsonl");
     server::Desk::Options options;
     options.closing_rollover = closing;
+    options.inputs_first = false;  // driver 3 itself
     options.run_input = server::recording_input(feed.file.path);
     options.paper_journal = journal;
     const auto snapshot = feed.run(options);
@@ -1223,6 +1224,119 @@ TEST(ReproducibleRun, ConservativeFillsHaveIdenticalBytesAndPassCliVerification)
     const auto cli = std::string(OPENPORT_APPS_DIR) + "/openportd --verify-run " + journal.string() +
                      " > " + (file.directory / "verify-fills.txt").string() + " 2>&1";
     EXPECT_EQ(std::system(cli.c_str()), 0) << read_file(file.directory / "verify-fills.txt");
+  }
+}
+
+/// A run of write_stream's recording that buys, rests an order, cancels it and flattens.
+void trade_the_stream(server::Desk& desk, providers::ReplayBatches& batches) {
+  const test::ScriptedMarket market;
+  trading::OrderId resting = 0;
+  while (const auto batch = batches.next()) {
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    const auto second = (desk.market_time() - market.time) / md::kNanosPerSecond;
+    server::TradingCommand request;
+    request.actor = "agent";
+    if (second == 3) request.order = market.market("buy");
+    else if (second == 5) request.order = market.limit("rest", 1, "103.00", trading::Side::Sell);
+    else if (second == 8) {
+      request.kind = server::TradingCommand::Kind::Cancel;
+      request.order_id = resting;
+    } else if (second == 10) request.kind = server::TradingCommand::Kind::ClosePositions;
+    else continue;
+    const auto reply = command(desk, request, desk.market_time(), batch->received);
+    EXPECT_TRUE(reply.decision.ok()) << reply.decision.message;
+    if (second == 5) resting = reply.order_id.value_or(0);
+  }
+}
+/// Writes the first `count` lines of `journal` beside it, as a crash after that record leaves it.
+std::filesystem::path first_records(const std::filesystem::path& journal, std::size_t count) {
+  std::istringstream lines(read_file(journal));
+  const auto cut = journal.parent_path() / ("cut-" + std::to_string(count) + ".jsonl");
+  std::ofstream out(cut, std::ios::binary | std::ios::trunc);
+  std::string line;
+  for (std::size_t n = 0; n < count && std::getline(lines, line); ++n) out << line << '\n';
+  return cut;
+}
+
+TEST(ReproducibleRun, EveryRecordAJournalCanEndAtVerifies) {
+  // Each input and each transaction is its own append, so a crash can end the journal
+  // after any record: between a batch's transactions and its boundary input, or between
+  // a command's input and its transactions. Each such journal verifies through its end.
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  const auto journal = file.directory / "run.jsonl";
+  {
+    md::RecordingReader reader(file.path);
+    server::Desk::Options options;
+    options.run_input = server::recording_input(file.path);
+    options.replay = true;
+    options.paper_journal = journal;
+    server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
+    desk.start_trading();
+    providers::ReplayBatches batches(reader, reader.header().subscription);
+    trade_the_stream(desk, batches);
+    ASSERT_EQ(desk.trading_view()->snapshot->recent_orders.size(), 3U);
+  }
+  const auto records = trading::FileJournal::read(journal.string()).records;
+  ASSERT_GT(records.size(), 20U);
+  // The start input is the second record; before it the journal is no run yet.
+  for (std::size_t count = 2; count <= records.size(); ++count) {
+    const auto verified = server::verify_run(first_records(journal, count));
+    EXPECT_TRUE(verified.matched) << count << " records ending with " << records[count - 1].type << ": " << verified.message;
+    EXPECT_EQ(verified.transactions, count);
+    EXPECT_EQ(verified.head, records[count - 1].hash);
+  }
+}
+
+TEST(ReproducibleRun, OlderDriversVerifyACutJournalWhereTheRecordingExplainsIt) {
+  // Drivers before 4 recorded a command's input after its transactions: a journal cut
+  // between them cannot say what the command was. Cut between a batch's transactions
+  // and its boundary input, the recording's next batch reproduces them.
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  for (const int driver : {1, 2, 3}) {
+    SCOPED_TRACE("driver " + std::to_string(driver));
+    const auto journal = file.directory / ("driver-" + std::to_string(driver) + ".jsonl");
+    {
+      md::RecordingReader reader(file.path);
+      server::Desk::Options options;
+      options.run_input = server::recording_input(file.path);
+      options.replay = true;
+      options.instant_batches = driver >= 2;
+      options.closing_rollover = driver >= 3;
+      options.inputs_first = false;
+      options.paper_journal = journal;
+      server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
+      desk.start_trading();
+      providers::ReplayBatches batches(reader, reader.header().subscription, driver >= 2);
+      trade_the_stream(desk, batches);
+    }
+    const auto text = read_file(journal);
+    EXPECT_EQ(text.find("\"driver\":"), driver == 1 ? std::string::npos : text.find("\"driver\":" + std::to_string(driver)));
+    const auto records = trading::FileJournal::read(journal.string()).records;
+    std::size_t refused = 0, cut = 0;
+    for (std::size_t count = 2; count <= records.size(); ++count) {
+      // The input that follows the last record kept, and what it was.
+      std::string next;
+      for (auto i = count; i < records.size() && next.empty(); ++i)
+        if (records[i].type == "run_input")
+          next = json::parse(records[i].payload).at("events").at(0).at("payload").at("kind").get<std::string>();
+      std::size_t inputs = count;  // records through the last input kept
+      while (records[inputs - 1].type != "run_input") --inputs;
+      const bool explained = inputs == count || next != "command";
+      const auto verified = server::verify_run(first_records(journal, count));
+      EXPECT_EQ(verified.matched, explained) << count << ": " << verified.message;
+      if (!explained) {
+        ++refused;
+        EXPECT_NE(verified.message.find("First differing transaction " + std::to_string(inputs + 1) + " ("), std::string::npos)
+            << verified.message;
+      } else if (verified.cut) {
+        ++cut;
+        EXPECT_NE(verified.message.find("part way through its last operation"), std::string::npos) << verified.message;
+      }
+    }
+    EXPECT_GT(refused, 0U);
+    EXPECT_GT(cut, 0U);
   }
 }
 

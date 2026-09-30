@@ -17,8 +17,10 @@ struct RunVerification {
   std::string head;
   trading::Money equity;
   std::string message;
+  bool cut = false;  ///< The journal ends part way through its last operation, as a crash leaves it.
 };
-/// Opens input read-only and regenerates the complete recorded prefix in memory.
+/// Opens input read-only and regenerates the complete recorded prefix in memory,
+/// including one a crash cut off part way through an operation.
 /// Offline only: temporarily restores the recorded process calendar.
 /// Missing/changed input is reported separately from a transaction mismatch.
 [[nodiscard]] RunVerification verify_run(const std::filesystem::path& journal);
