@@ -32,6 +32,11 @@ class Desk {
     std::string run_input;  ///< Canonical provenance JSON; empty for legacy/live desks.
     bool paper_enabled = true;
     bool replay = false;  ///< Publish the replay market clock and keep halt state isolated.
+    /// Driver 2, recorded in a run's start input: the driver applies every underlying's
+    /// snapshot of one market time as one batch, and each underlying's quotes are offered
+    /// at the market time its own snapshot arrived. False reproduces older runs, whose
+    /// driver batched each snapshot alone and offered every vouched quote at the latest time.
+    bool instant_batches = true;
     std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;
@@ -147,6 +152,9 @@ class Desk {
   std::map<std::string, std::uint64_t> observations_;
   /// Each underlying's latest md::SnapshotComplete time, from snapshot providers.
   std::map<std::string, md::Timestamp> snapshots_;
+  /// The market time each underlying's latest complete snapshot arrived at. It vouches
+  /// for that underlying's quotes as of then; another underlying's data cannot refresh them.
+  std::map<std::string, md::Timestamp> vouched_at_;
 
   std::map<std::string, std::uint64_t> analysed_versions_;
   std::uint64_t analysed_dividends_version_ = 0;

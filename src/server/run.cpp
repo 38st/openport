@@ -167,10 +167,15 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     const auto restored = trading::TradingSession::recover(expected);
     auto reader = open_input(input);
     const md::Subscription subscription{start.at("symbols").get<std::vector<std::string>>(), 0, 0};
-    auto batches = std::make_unique<providers::ReplayBatches>(*reader, subscription);
+    // Driver 2 batches each market instant whole. Runs without it replay as they were recorded.
+    const auto driver = start.value("driver", 1);
+    if (driver != 1 && driver != 2) throw std::runtime_error("Unsupported run driver version");
+    const bool instants = driver == 2;
+    auto batches = std::make_unique<providers::ReplayBatches>(*reader, subscription, instants);
     auto comparison = std::make_shared<ComparisonJournal>(expected);
     Desk::Options options;
     options.replay = true;
+    options.instant_batches = instants;
     options.candles = std::make_shared<CandleStore>();
     options.run_input = input.dump();
     if (start.contains("playbooks") && !start.at("playbooks").is_null()) options.initial_playbooks = start.at("playbooks").dump();
@@ -192,7 +197,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
       } else if (operation.at("kind") == "source") {
         batches.reset();  // It reads through the reader replaced next.
         reader = open_input(operation.at("input"));
-        batches = std::make_unique<providers::ReplayBatches>(*reader, subscription);
+        batches = std::make_unique<providers::ReplayBatches>(*reader, subscription, instants);
         desk.replay_source(operation.at("input").dump(), reader->header());
       } else if (operation.at("kind") == "command") {
         desk.command(operation.at("command").get<TradingCommand>(), [](TradingReply) {},

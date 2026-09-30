@@ -468,8 +468,9 @@ bytes/event on shutdown. Counters include accepted but not durable events if
 storage failed.
 
 Trading replays bypass the engine's latest-value queue. The replay driver applies
-complete snapshots, or fixed one-second market-time batches for streams and old
-recordings without snapshot markers. Analytics and trading settle at each boundary.
+each market time's complete snapshots, every underlying's together, or fixed
+one-second market-time batches for streams and old recordings without snapshot
+markers. Analytics and trading settle at each boundary.
 Speed changes, fast-forward and consumer scheduling cannot change those batches.
 Live feeds and the probe retain their throughput-oriented coalescing queues.
 Replay stop interrupts pacing and consumer waits; it cannot interrupt a blocked OS
@@ -558,7 +559,8 @@ a fractional ISO target is rejected rather than reporting an unsettled partial b
 It cannot move backwards. A target past
 EOF returns an error. The response waits for every complete input boundary through
 the target, analytics, trading and publication, and includes `settled_through` both
-at the top level and in replay state. A snapshot is applied as one complete batch.
+at the top level and in replay state. A market time's snapshots are applied as one
+complete batch.
 
 ```sh
 curl -X PUT http://localhost:8080/api/replay \

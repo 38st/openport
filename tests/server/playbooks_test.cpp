@@ -200,12 +200,14 @@ TEST(PassOdds, SeedIsRepeatableAndOlderMissingExtremaAreNotInvented) {
 struct ScenarioFixture {
   test::RecordingFile file;
   providers::Scenario scenario;
-  explicit ScenarioFixture(bool multiple_symbols = false) {
+  explicit ScenarioFixture(bool multiple_symbols = false)
+      : ScenarioFixture(multiple_symbols ? std::vector<std::string>{"SPX", "SPY"} : std::vector<std::string>{"SPX"}) {}
+  explicit ScenarioFixture(const std::vector<std::string>& symbols) {
     const auto path = file.directory / "playbook-scenario.json";
     { std::ofstream out(path); out << R"({"id":"playbook-test","title":"Playbook test","description":"Simulated test day","symbols":["SPX"],"session":"regular","date":"2026-11-27","seed":81723,"generator":1,"drift":[[1,0.001]],"volatility":0.12,"iv_shift":0,"spot_vol":-2})"; }
-    if (multiple_symbols) {
+    if (symbols != std::vector<std::string>{"SPX"}) {
       std::ifstream input(path); auto document = json::parse(input); input.close();
-      document["symbols"] = {"SPX", "SPY"};
+      document["symbols"] = symbols;
       std::ofstream output(path); output << document.dump();
     }
     scenario = providers::read_scenario(path);
@@ -352,6 +354,54 @@ TEST(Playbooks, ScenarioAutoEntriesAndTimeStopsReproduceJournalAndVerification) 
     desk.stop();
     const auto verified = server::verify_run(journal);
     EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+/// Each contract's quote in a recording as of `time`: its latest quote then.
+std::map<std::string, std::pair<Money, Money>> quotes_at(const std::filesystem::path& file, md::Timestamp time) {
+  md::RecordingReader reader(file);
+  std::map<md::InstrumentId, std::string> symbols;
+  std::map<std::string, std::pair<Money, Money>> quotes;
+  while (const auto record = reader.next()) {
+    if (const auto* definition = std::get_if<md::ContractDefinition>(&record->event))
+      symbols[definition->id] = definition->contract.osi_symbol();
+    else if (const auto* quote = std::get_if<md::OptionQuote>(&record->event); quote && quote->ts <= time)
+      quotes[symbols.at(quote->id)] = {Money::from_double(quote->bid), Money::from_double(quote->ask)};
+  }
+  return quotes;
+}
+TEST(Playbooks, AutomaticEntriesTradeTheBookOfTheirOwnMarketInstant) {
+  // B46: a replay writes QQQ's snapshot of each market time before SPX's. QQQ's
+  // analytics at 09:45:00 started the playbook, whose SPX entry traded SPX's 09:44:45
+  // book, stamped 09:45:00. Backtests replay days the same way.
+  ScenarioFixture fixture(std::vector<std::string>{"QQQ", "SPX", "SPY"});
+  auto setup = fixture.setup();
+  setup["window"] = {{"start", "09:45"}, {"end", "10:00"}, {"weekdays", {1, 2, 3, 4, 5}}};
+  setup["management"] = {{"close_by", "10:30"}};
+  server::Playbooks store;
+  store.change({{"action", "create"}, {"definition", setup}}, "main", true);
+  store.change({{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, "main", true);
+  md::RecordingReader reader(fixture.file.path);
+  server::Desk::Options options; options.replay = true;
+  options.initial_playbooks = store.catalogue().dump();
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading();
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto entry = md::new_york_to_utc(fixture.scenario.date, 9, 45);
+  while (const auto batch = batches.next()) {
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    if (desk.market_time() >= entry) break;
+  }
+  const auto view = desk.trading_view();
+  ASSERT_TRUE(desk.trading_status().enabled) << desk.trading_status().reason;
+  const auto fills = view->snapshot->recent_fills.to_vector();
+  ASSERT_EQ(fills.size(), 2U) << view->playbooks_json;
+  const auto book = quotes_at(fixture.file.path, entry);
+  for (const auto& fill : fills) {
+    EXPECT_EQ(fill.time, entry);
+    EXPECT_EQ(fill.quote_time, entry);
+    const auto& [bid, ask] = book.at(fill.symbol);
+    EXPECT_EQ(fill.price, fill.side == trading::Side::Buy ? ask : bid) << fill.symbol;
   }
 }
 TEST(Playbooks, ExpectancyAndRuleSplitsUseWholeStrategies) {

@@ -1,4 +1,5 @@
 #include "support/contract_capture.hpp"
+#include <array>
 #include <fstream>
 #include <future>
 #include <sstream>
@@ -229,6 +230,275 @@ TEST(ReplayBatches, SubsecondStreamQuotesSettleOnTheFixedMarketSecond) {
   EXPECT_NO_THROW(replay.until(market.time + md::kNanosPerSecond / 2));
   EXPECT_EQ(replay.settled_through(), market.time + md::kNanosPerSecond / 2);
   replay.stop();
+}
+
+/// A snapshot feed that polls QQQ, SPX and SPY in turn at each 15-second market time,
+/// in the order the demo market writes them: every underlying's price, then each
+/// underlying's one option quote and SnapshotComplete. SPX's option is 0.20 wide, the
+/// ETFs' 0.02.
+struct PolledInstants {
+  test::RecordingFile file;
+  std::array<md::OptionContract, 3> contracts{*md::parse_osi("QQQ261022C00450000"),
+      *md::parse_osi("SPXW261022C05000000"), *md::parse_osi("SPY261022P00500000")};
+  md::Subscription subscription{{"QQQ", "SPX", "SPY"}, 0, 0};
+  md::Timestamp open = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  md::Timestamp at(std::size_t instant) const {
+    return open + static_cast<md::Timestamp>(instant) * 15 * md::kNanosPerSecond;
+  }
+  std::string symbol(std::size_t underlying) const { return contracts[underlying].osi_symbol(); }
+  /// Each row is one market time's QQQ, SPX and SPY asks.
+  void write(const std::vector<std::array<double, 3>>& asks) const {
+    auto header = test::recording_header();
+    header.started = open;
+    header.subscription = subscription;
+    header.capabilities.delay = 0s;
+    md::Timestamp receipt = open;
+    md::RecordingSink::Options options;
+    options.clock = [&] { return receipt; };
+    test::DiscardEvents discard;
+    md::RecordingSink sink(file.path, header, discard, options);
+    for (std::size_t u = 0; u < 3; ++u) sink.publish(md::ContractDefinition{static_cast<md::InstrumentId>(u), contracts[u]});
+    constexpr std::array<double, 3> spot{450, 5000, 500};
+    for (std::size_t i = 0; i < asks.size(); ++i) {
+      receipt = at(i);
+      for (std::size_t u = 0; u < 3; ++u) sink.publish(md::UnderlyingQuote{subscription.underlyings[u], at(i), spot[u], spot[u], spot[u]});
+      for (std::size_t u = 0; u < 3; ++u) {
+        receipt = at(i) + static_cast<md::Timestamp>(u) * md::kNanosPerSecond / 1000;
+        const double spread = u == 1 ? .2 : .02;
+        sink.publish(md::OptionQuote{static_cast<md::InstrumentId>(u), at(i), asks[i][u] - spread, asks[i][u], 20, 20});
+        sink.publish(md::SnapshotComplete{subscription.underlyings[u], at(i)});
+      }
+    }
+    sink.close();
+  }
+  server::Desk desk(server::Desk::Options options) const {
+    options.analytics.fallback_rate = 0;  // one call per chain has no put to imply a rate from
+    md::RecordingReader reader(file.path);
+    return server::Desk("replay (synthetic)", reader.header().capabilities, subscription, std::move(options));
+  }
+};
+server::TradingReply order(server::Desk& desk, const std::string& symbol, trading::Side side, trading::Quantity quantity,
+                           md::Timestamp time) {
+  server::TradingCommand request;
+  request.order = {symbol + (side == trading::Side::Buy ? ":buy" : ":sell"), symbol, side, trading::OrderType::Market,
+                   trading::TimeInForce::Ioc, quantity, {}, {}, {}, {}};
+  return command(desk, request, time, time);
+}
+
+TEST(ReplayBatches, EveryUnderlyingsSnapshotOfOneMarketTimeIsOneBatch) {
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 2.12}, {4.22, 12.20, 2.22}});
+  for (const bool instants : {true, false}) {
+    md::RecordingReader reader(feed.file.path);
+    providers::ReplayBatches batches(reader, feed.subscription, instants);
+    std::vector<providers::ReplayBatch> all;
+    while (auto batch = batches.next()) all.push_back(std::move(*batch));
+    // Runs recorded before driver 2 batched each underlying's snapshot alone.
+    ASSERT_EQ(all.size(), instants ? 3U : 9U);
+    for (std::size_t i = 0; i < all.size(); ++i) {
+      const auto instant = instants ? i : i / 3;
+      EXPECT_EQ(all[i].time, feed.at(instant));
+      const auto completes = std::count_if(all[i].events.begin(), all[i].events.end(),
+          [](const md::Event& event) { return std::holds_alternative<md::SnapshotComplete>(event); });
+      EXPECT_EQ(completes, instants ? 3 : 1);
+      EXPECT_TRUE(std::holds_alternative<md::SnapshotComplete>(all[i].events.back()));
+    }
+    // The batch settles at the last snapshot's receipt, as it did before.
+    EXPECT_EQ(all.back().received, feed.at(2) + 2 * md::kNanosPerSecond / 1000);
+  }
+  // A snapshot of a later market time that changed nothing is not folded into the one before.
+  auto header = test::recording_header();
+  header.subscription = feed.subscription;
+  const auto unchanged = feed.file.directory / "unchanged.oprec";
+  test::record_events(unchanged, {md::ContractDefinition{0, feed.contracts[1]},
+      md::UnderlyingQuote{"SPX", feed.at(0), 5000, 5000, 5000}, md::OptionQuote{0, feed.at(0), 10, 10.2, 20, 20},
+      md::SnapshotComplete{"SPX", feed.at(0)}, md::SnapshotComplete{"SPY", feed.at(0)},
+      md::SnapshotComplete{"SPX", feed.at(1)}}, header);
+  md::RecordingReader reader(unchanged);
+  providers::ReplayBatches batches(reader, feed.subscription);
+  const auto first = batches.next();
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->events.size(), 5U);
+  const auto second = batches.next();
+  ASSERT_TRUE(second);
+  EXPECT_EQ(second->events.size(), 1U);
+  EXPECT_FALSE(batches.next());
+}
+
+TEST(MarketInstants, LatencyFillsOnTheNextInstantsQuoteNotOneAnotherUnderlyingReoffered) {
+  // B01: QQQ's snapshot of 10:00:15 comes first. Applied alone, it re-offered SPX's
+  // 10:00 quote at 10:00:15, which released the delayed order at the price it was sent at.
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 2.12}});
+  server::Desk::Options options;
+  options.replay = true;
+  options.paper.rules.fill_latency_ms = 1000;
+  auto desk = feed.desk(options);
+  desk.start_trading();
+  md::RecordingReader reader(feed.file.path);
+  providers::ReplayBatches batches(reader, feed.subscription);
+  auto batch = batches.next();
+  for (; batch && batch->time == feed.at(0); batch = batches.next())
+    desk.replay_batch(batch->events, batch->received, batch->time);
+  const auto reply = order(desk, feed.symbol(1), trading::Side::Buy, 1, feed.at(0));
+  ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+  EXPECT_TRUE(reply.view->snapshot->recent_fills.empty());
+  for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+  const auto& fills = desk.trading_view()->snapshot->recent_fills;
+  ASSERT_EQ(fills.size(), 1U);
+  EXPECT_EQ(fills.front().price, Money::parse("11.20"));
+  EXPECT_EQ(fills.front().quote_time, feed.at(1));
+}
+
+TEST(MarketInstants, AnotherUnderlyingsLivePollKeepsAQuoteCurrentButDoesNotMakeItNew) {
+  // A live polling feed delivers each underlying's snapshot on its own, as ReplayBatches
+  // without instants cuts the recording. QQQ's newer poll moves the market clock, but
+  // SPX's quote was supplied before the order, so the order's latency waits for SPX's.
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 2.12}});
+  server::Desk::Options options;
+  options.paper.rules.fill_latency_ms = 1000;
+  auto desk = feed.desk(options);
+  desk.start_trading();
+  md::RecordingReader reader(feed.file.path);
+  providers::ReplayBatches polls(reader, feed.subscription, false);
+  const auto poll = [&] {
+    const auto batch = polls.next();
+    ASSERT_TRUE(batch);
+    desk.replay_batch(batch->events, batch->received, batch->time);
+  };
+  for (int underlying = 0; underlying < 3; ++underlying) poll();
+  const auto reply = order(desk, feed.symbol(1), trading::Side::Buy, 1, feed.at(0));
+  ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+  poll();  // QQQ at 10:00:15
+  EXPECT_EQ(desk.market_time(), feed.at(1));
+  EXPECT_TRUE(desk.trading_view()->snapshot->recent_fills.empty());
+  EXPECT_TRUE(desk.trading_view()->snapshot->valuation_complete);
+  poll();  // SPX at 10:00:15
+  const auto& fills = desk.trading_view()->snapshot->recent_fills;
+  ASSERT_EQ(fills.size(), 1U);
+  EXPECT_EQ(fills.front().price, Money::parse("11.20"));
+  EXPECT_EQ(fills.front().quote_time, feed.at(1));
+}
+
+TEST(MarketInstants, TheExpiryCutoffClosesOnTheCutoffInstantsBook) {
+  // B02: the 15:55:00 auto-close ran on QQQ's 15:55:00 snapshot and sold into SPX's
+  // 15:54:45 bid.
+  PolledInstants feed;
+  feed.contracts[1] = *md::parse_osi("SPXW260922C05000000");
+  feed.open = md::new_york_to_utc({2026, 9, 22}, 15, 54) + 45 * md::kNanosPerSecond;
+  feed.write({{4.02, 3.20, 2.02}, {4.12, 2.60, 2.12}});
+  server::Desk::Options options;
+  options.replay = true;
+  options.paper.rules.expiry_cutoff = 300 * md::kNanosPerSecond;
+  auto desk = feed.desk(options);
+  desk.start_trading();
+  md::RecordingReader reader(feed.file.path);
+  providers::ReplayBatches batches(reader, feed.subscription);
+  auto batch = batches.next();
+  for (; batch && batch->time == feed.at(0); batch = batches.next())
+    desk.replay_batch(batch->events, batch->received, batch->time);
+  ASSERT_TRUE(order(desk, feed.symbol(1), trading::Side::Buy, 2, feed.at(0)).decision.ok());
+  for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+  const auto view = desk.trading_view();
+  EXPECT_TRUE(view->snapshot->positions.empty());
+  const auto& fills = view->snapshot->recent_fills;
+  ASSERT_EQ(fills.size(), 2U);
+  EXPECT_EQ(fills.back().side, trading::Side::Sell);
+  EXPECT_EQ(fills.back().price, Money::parse("2.40"));
+  EXPECT_EQ(fills.back().time, feed.at(1));
+  EXPECT_EQ(fills.back().quote_time, feed.at(1));
+}
+
+TEST(MarketInstants, TrailingDrawdownIsDecidedOnWholeInstants) {
+  // B03: long an SPX call and SPY puts. At 10:00:15 SPX gains 100.00 and the puts lose
+  // 120.00: equity falls. SPX's snapshot applied before SPY's showed a gain that never
+  // existed, and the intraday peak and floor ratcheted on it.
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 1.90}});
+  server::Desk::Options options;
+  options.replay = true;
+  options.paper.initial_cash = Money::parse("25000");
+  options.paper.rules.max_drawdown = Money::parse("1250");
+  options.paper.rules.drawdown_mode = trading::DrawdownMode::Intraday;
+  auto desk = feed.desk(options);
+  desk.start_trading();
+  md::RecordingReader reader(feed.file.path);
+  providers::ReplayBatches batches(reader, feed.subscription);
+  auto batch = batches.next();
+  for (; batch && batch->time == feed.at(0); batch = batches.next())
+    desk.replay_batch(batch->events, batch->received, batch->time);
+  ASSERT_TRUE(order(desk, feed.symbol(1), trading::Side::Buy, 1, feed.at(0)).decision.ok());
+  ASSERT_TRUE(order(desk, feed.symbol(2), trading::Side::Buy, 10, feed.at(0)).decision.ok());
+  const auto before = desk.trading_view()->snapshot->equity;
+  for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+  const auto snapshot = desk.trading_view()->snapshot;
+  EXPECT_EQ(snapshot->equity, before - Money::parse("20"));
+  EXPECT_EQ(snapshot->evaluation.peak, Money::parse("25000"));
+  EXPECT_EQ(snapshot->evaluation.floor, Money::parse("23750"));
+}
+
+TEST(MarketInstants, AMinutesFirstEquitySampleHoldsThatInstantsEquity) {
+  // B21: QQQ's 10:01:00 snapshot sampled the account before SPX's arrived, and the
+  // minute's first sample is the one the equity history keeps.
+  PolledInstants feed;
+  feed.open = md::new_york_to_utc({2026, 9, 22}, 10, 0) + 45 * md::kNanosPerSecond;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 12.20, 2.12}});
+  std::vector<server::EquitySample> samples;
+  server::Desk::Options options;
+  options.replay = true;
+  options.equity_sample = [&](std::string_view, const server::EquitySample& sample) { samples.push_back(sample); };
+  auto desk = feed.desk(options);
+  desk.start_trading();
+  md::RecordingReader reader(feed.file.path);
+  providers::ReplayBatches batches(reader, feed.subscription);
+  auto batch = batches.next();
+  for (; batch && batch->time == feed.at(0); batch = batches.next())
+    desk.replay_batch(batch->events, batch->received, batch->time);
+  ASSERT_TRUE(order(desk, feed.symbol(1), trading::Side::Buy, 1, feed.at(0)).decision.ok());
+  for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+  const auto equity = desk.trading_view()->snapshot->equity;
+  std::size_t minute = 0;
+  for (const auto& sample : samples) {
+    if (sample.time != feed.at(1) || sample.fill || sample.stock_fill) continue;
+    EXPECT_EQ(sample.equity, equity);
+    ++minute;
+  }
+  EXPECT_GT(minute, 0U);
+}
+
+TEST(ReproducibleRun, RunsRecordedBeforeInstantBatchesStillVerify) {
+  // Driver 2 changes fills, so a run records it; one without it replays with the
+  // per-snapshot batches and re-offered quotes it was recorded with.
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 2.12}});
+  for (const bool instants : {false, true}) {
+    const auto journal = feed.file.directory / (instants ? "driver-2.jsonl" : "driver-1.jsonl");
+    {
+      server::Desk::Options options;
+      options.replay = true;
+      options.instant_batches = instants;
+      options.run_input = server::recording_input(feed.file.path);
+      options.paper_journal = journal;
+      options.paper.rules.fill_latency_ms = 1000;
+      auto desk = feed.desk(options);
+      desk.start_trading();
+      md::RecordingReader reader(feed.file.path);
+      providers::ReplayBatches batches(reader, feed.subscription, instants);
+      auto batch = batches.next();
+      for (; batch && batch->time == feed.at(0); batch = batches.next())
+        desk.replay_batch(batch->events, batch->received, batch->time);
+      ASSERT_TRUE(order(desk, feed.symbol(1), trading::Side::Buy, 1, feed.at(0)).decision.ok());
+      for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+      const auto& fills = desk.trading_view()->snapshot->recent_fills;
+      ASSERT_EQ(fills.size(), 1U);
+      EXPECT_EQ(fills.front().price, Money::parse(instants ? "11.20" : "10.20"));
+      desk.stop();
+    }
+    EXPECT_EQ(read_file(journal).find("\"driver\":2") != std::string::npos, instants);
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
 }
 
 class ImmediateClock final : public providers::ReplayClock {
