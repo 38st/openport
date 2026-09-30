@@ -141,6 +141,42 @@ TEST(TradingOrders, BracketExitsChangeTheirLevelOrPriceButNotTheirSize) {
   EXPECT_EQ(order(s, 3).status, OrderStatus::Cancelled);
 }
 
+TEST(TradingOrders, ARetryOfAChangedOrderStillGetsTheOrderAsItNowStands) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-retry-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(directory);
+  std::filesystem::create_directories(directory);
+  const auto path = (directory / "journal.jsonl").string();
+  ScriptedMarket f;
+  std::string expected;
+  {
+    TradingSession s(roomy(), f.time, FileJournal::create(path));
+    f.seed(s);
+    const auto request = f.limit("rest", 2, "3.90");
+    ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+    const auto untouched = s.snapshot_json();
+    ASSERT_TRUE(s.modify(1, price("4.00"), f.time).decision.ok());
+    ASSERT_TRUE(s.modify(1, size(3), f.time).decision.ok());
+    // The retry of the original submission records nothing and answers with the changed order.
+    const auto version = s.snapshot()->account_version;
+    const auto retry = s.submit(request, f.time);
+    EXPECT_TRUE(retry.decision.ok());
+    EXPECT_TRUE(retry.replayed);
+    EXPECT_EQ(retry.order_id, 1u);
+    EXPECT_EQ(retry.account_version, version);
+    EXPECT_EQ(s.snapshot()->recent_orders.size(), 1u);
+    EXPECT_EQ(s.preview(request, f.time).decision.code, Reason::NONE);
+    // Other terms, the changed ones included, still conflict.
+    EXPECT_EQ(s.submit(f.limit("rest", 3, "4.00"), f.time).decision.code, Reason::DUPLICATE_CLIENT_ID);
+    // An order never changed keeps its journal bytes.
+    EXPECT_EQ(untouched.find("submitted"), std::string::npos);
+    expected = s.snapshot_json();
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  EXPECT_TRUE(recovered.submit(f.limit("rest", 2, "3.90"), f.time).replayed);
+  std::filesystem::remove_all(directory);
+}
+
 TEST(TradingOrders, CancelAllTakesEveryOpenOrderOrOneUnderlyings) {
   ScriptedMarket f;
   const auto xsp = beside(f, "XSP261022C00500000");
