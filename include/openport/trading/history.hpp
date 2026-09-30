@@ -31,6 +31,9 @@ struct Lifecycle {
   std::optional<FillContext> entry_context;
   std::optional<FillContext> exit_context;
   std::uint64_t first_fill = 0;     ///< ID of the opening fill, for attempt filtering.
+  OrderId entry_order = 0;          ///< The opening fill's order.
+  Quantity entry_contracts = 0;     ///< Contracts that order opened in this round trip.
+  Money entry_notional;             ///< Their opening price * contracts, per unit.
 };
 
 /// One round trip in an underlying's shares, from flat to flat, or still open.

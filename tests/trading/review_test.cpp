@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <gtest/gtest.h>
 
@@ -108,6 +109,36 @@ TEST(TradeReview, BracketRiskUsesEntryStopAndScalesWithOpeningContracts) {
   EXPECT_EQ(s.snapshot()->trade_reviews.at("1").planned_risk, dollars("240"));
   ASSERT_TRUE(s.submit(f.market("trim", 1, Side::Sell), f.time).decision.ok());
   EXPECT_EQ(s.snapshot()->trade_reviews.at("1").planned_risk, dollars("240"));
+}
+
+TEST(TradeReview, AddsKeepTheEntrysRiskPerContractWhereverTheyFill) {
+  ScriptedMarket f;
+  TradingSession s({}, f.time); f.seed(s);
+  auto order = f.market("stop");
+  order.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, dollars("3.00")}, {}}, {}};
+  ASSERT_TRUE(s.submit(order, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->trade_reviews.at("1").planned_risk, dollars("120"));
+  // The stop moves to 1.00, which does not rewrite the plan, and the price falls
+  // below the entry's stop: adds there still risk 1.20 a contract each.
+  const auto opened = s.snapshot();
+  const auto stop = std::find_if(opened->open_orders.begin(), opened->open_orders.end(),
+                                 [](const Order& o) { return o.role == OrderRole::StopLoss; });
+  ASSERT_NE(stop, opened->open_orders.end());
+  OrderChange lower; lower.trigger_level = dollars("1.00");
+  ASSERT_TRUE(s.modify(stop->id, lower, f.time).decision.ok());
+  mark(s, f, "1.90", "2.10");
+  ASSERT_TRUE(s.submit(f.market("add below the stop"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->trade_reviews.at("1").planned_risk, dollars("240"));
+  mark(s, f, "1.10", "1.30");
+  ASSERT_TRUE(s.submit(f.market("deeper add"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->trade_reviews.at("1").planned_risk, dollars("360"));
+  mark(s, f, "5.90", "6.10");
+  ASSERT_TRUE(s.submit(f.market("add above the entry"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->trade_reviews.at("1").planned_risk, dollars("480"));
+  ASSERT_TRUE(s.submit(f.market("close", 4, Side::Sell), f.time).decision.ok());
+  const auto review = s.snapshot()->trade_reviews.at("1");
+  EXPECT_TRUE(review.finished);
+  EXPECT_EQ(review.planned_risk, dollars("480"));
 }
 
 TEST(TradeReview, StrategySamplesCombinedPnlAndExactDefinedRisk) {

@@ -44,10 +44,13 @@ std::optional<Money> stop_risk(const Lifecycle& life, const Order& order) {
   if (!order.request.bracket || !order.request.bracket->stop_loss) return {};
   const auto& stop = order.request.bracket->stop_loss->trigger;
   // An underlying level does not specify the option's execution price.
-  if (!stop || stop->source != TriggerSource::Option) return {};
+  if (!stop || stop->source != TriggerSource::Option || life.entry_contracts <= 0) return {};
+  // The entry's distance to its stop, per contract, for every contract opened:
+  // an add, wherever it fills, keeps the plan's risk per contract.
+  const Money entry = life.entry_notional.prorate(life.opened_contracts, life.entry_contracts);
   const Money difference = life.direction > 0
-      ? life.open_notional - stop->level * life.opened_contracts
-      : stop->level * life.opened_contracts - life.open_notional;
+      ? entry - stop->level * life.opened_contracts
+      : stop->level * life.opened_contracts - entry;
   const Money risk = difference * life.contract.multiplier;
   return risk > Money{} ? std::optional(risk) : std::nullopt;
 }
