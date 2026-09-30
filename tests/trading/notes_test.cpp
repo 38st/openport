@@ -88,5 +88,33 @@ TEST(TradingNotes, OrderMetadataUsesTradeValidationAndClosingFillsDoNotAnnotate)
   EXPECT_EQ(s.snapshot()->annotations.at("1").note, "first");
 }
 
+TEST(TradingNotes, ACrlfLineBreakIsANewlineAndAControlCharacterIsNamedAsOne) {
+  ScriptedMarket f;
+  TradingSession s({}, f.time);
+  f.seed(s);
+  auto r = f.market("open");
+  r.note = "setup A\r\nrisk 1R";
+  ASSERT_TRUE(s.submit(r, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->annotations.at("1").note, "setup A\nrisk 1R");
+  ASSERT_TRUE(s.annotate(1, "Entry plan\r\nexit at 6.00\rdone\r\n", {}, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->annotations.at("1").note, "Entry plan\nexit at 6.00\ndone");
+  ASSERT_TRUE(s.annotate_day({2026, 9, 22}, "Plan\r\nwait for 10:00", "Review\r\n", f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->day_notes.at("2026-09-22").plan, "Plan\nwait for 10:00");
+  EXPECT_EQ(s.snapshot()->day_notes.at("2026-09-22").review, "Review");
+  // 1,000 CRLF breaks are 1,000 bytes of newlines.
+  std::string lines;
+  for (int i = 0; i < 1000; ++i) lines += "x\r\n";
+  ASSERT_TRUE(s.annotate(1, lines, {}, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->annotations.at("1").note.size(), 1999U);
+  try {
+    (void)s.annotate(1, "bell\a", {}, f.time);
+    ADD_FAILURE() << "expected INVALID_NOTE";
+  } catch (const TradingError& error) {
+    EXPECT_EQ(error.code(), Reason::INVALID_NOTE);
+    EXPECT_NE(std::string(error.what()).find("control characters"), std::string::npos) << error.what();
+  }
+  expect_invalid(s, "", {"line\rbreak"}, f.time);
+}
+
 }  // namespace
 }  // namespace openport::trading

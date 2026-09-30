@@ -1065,9 +1065,11 @@ template catalog yet. Older journal orders default to empty tags and notes.
 named by the fill that opened it (the trades view's `id`); `annotate_shares` does the
 same for a share round trip, named by its opening stock fill and kept under `s` and
 that ID, so the two never collide. The note is trimmed and at
-most 2,000 bytes of UTF-8 text, keeping newlines and tabs; up to eight tags of 1 to 32
+most 2,000 bytes of UTF-8 text, keeping newlines and tabs (a CRLF or lone CR line break
+is kept as a newline, and counts as one byte); up to eight tags of 1 to 32
 bytes without commas or control characters are trimmed, lowercased and kept once
-each. Text past these limits throws `INVALID_NOTE`; a fill that opens no trade returns
+each. Text past these limits throws `INVALID_NOTE`, whose message says whether the
+length or a control character is at fault; a fill that opens no trade returns
 `UNKNOWN_TRADE`. An empty note without tags clears them. Notes are journaled
 (`trade_annotated`) like any command, so they recover with the account and stay with
 its history across attempts, and they are allowed whatever the account's state or

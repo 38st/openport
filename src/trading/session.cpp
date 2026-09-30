@@ -1783,10 +1783,20 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   return {{}, id, 0};
 }
 /// Trims a note and its tags, and lowercases the tags: text without control
-/// characters (a note may keep newlines and tabs), a note of at most 2,000 bytes,
-/// at most eight distinct tags of 1 to 32 bytes without commas.
+/// characters (a note may keep newlines and tabs, with a CRLF or lone CR line
+/// break kept as a newline), a note of at most 2,000 bytes, at most eight distinct
+/// tags of 1 to 32 bytes without commas.
 Annotation clean_annotation(std::string note, const std::vector<std::string>& tags) {
   const auto invalid = [](std::string message) { throw TradingError(Reason::INVALID_NOTE, std::move(message)); };
+  const auto newlines = [](std::string text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+      if (text[i] != '\r') out.push_back(text[i]);
+      else if (i + 1 == text.size() || text[i + 1] != '\n') out.push_back('\n');
+    }
+    return out;
+  };
   const auto trim = [](std::string text) {
     const auto first = text.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return std::string{};
@@ -1798,8 +1808,9 @@ Annotation clean_annotation(std::string note, const std::vector<std::string>& ta
     });
   };
   Annotation a;
-  a.note = trim(std::move(note));
-  if (a.note.size() > 2000 || !text(a.note, true)) invalid("A note is at most 2,000 bytes of text");
+  a.note = trim(newlines(std::move(note)));
+  if (a.note.size() > 2000) invalid("A note is at most 2,000 bytes of text");
+  if (!text(a.note, true)) invalid("A note is text: no control characters other than newlines and tabs");
   for (const auto& tag : tags) {
     auto clean = trim(tag);
     for (auto& c : clean) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
