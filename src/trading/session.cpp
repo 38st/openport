@@ -2610,7 +2610,7 @@ void assign_early(State& s, const std::vector<Dividend>& dividends, Events& even
   std::vector<std::string> shorts;
   for (const auto& [symbol, position] : s.ledger.positions()) {
     const auto& c = s.contracts.at(symbol);
-    if (position.quantity < 0 && physical(c) && s.time < c.expiry_time()) shorts.push_back(symbol);
+    if (position.quantity < 0 && physical(c) && c.expiry > s.day) shorts.push_back(symbol);
   }
   for (const auto& symbol : shorts) {
     const auto contract = s.contracts.at(symbol);

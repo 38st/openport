@@ -2,6 +2,7 @@
 
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 
 #include "openport/trading/dividends.hpp"
 #include "openport/trading/history.hpp"
@@ -38,9 +39,10 @@ TEST(TradingDividends, ReadsAFileOfExDatesAndAmounts) {
   EXPECT_TRUE(dividends_due(all, {2026, 12, 18}, {2026, 12, 18}).empty());
 }
 
-/// SPY shares through an exercise, then SPY's own price in every batch.
+/// SPY shares through an exercise, then SPY's own price in every batch. The call
+/// expires after the 2026-12-18 ex-date, so it can be assigned the night before.
 struct Held {
-  md::OptionContract call = *md::parse_osi("SPY261218C00500000");
+  md::OptionContract call = *md::parse_osi("SPY270115C00500000");
   md::Timestamp time = md::new_york_to_utc({2026, 12, 17}, 10, 0);
   std::uint64_t observation = 0;
   void quote(TradingSession& s, double spot) {
@@ -141,6 +143,43 @@ TEST(TradingDividends, CallsWithLessTimeValueThanTheDividendAreAssignedBeforeIt)
   EXPECT_LT(assigned, 10);
   ASSERT_EQ(snap->dividends.size(), 1U);
   EXPECT_EQ(snap->dividends[0].shares, -100 * assigned);
+}
+
+TEST(TradingDividends, OptionsExpiringOnTheNewDaySettleInsteadOfBeingAssigned) {
+  // Ten each of a call worth less than the dividend's time value and a put below its
+  // exercise value, expiring on the ex-date, and the same call expiring after it.
+  const auto expiring_call = *md::parse_osi("SPY261218C00500000");
+  const auto expiring_put = *md::parse_osi("SPY261218P00540000");
+  Held f;
+  TradingSession s(roomy(), f.time);
+  for (const auto& c : {f.call, expiring_call, expiring_put}) ASSERT_TRUE(s.define(c, f.time).decision.ok());
+  const auto quote = [&](md::Timestamp time) {
+    std::vector<QuoteObservation> quotes;
+    std::vector<Valuation> valuations;
+    const std::vector<std::tuple<md::OptionContract, const char*, const char*>> books{
+        {f.call, "20.00", "20.20"}, {expiring_call, "20.00", "20.20"}, {expiring_put, "19.80", "19.90"}};
+    for (const auto& [c, bid, ask] : books) {
+      quotes.push_back({c.osi_symbol(), ++f.observation, time, m(bid), m(ask), 10, 10});
+      valuations.push_back({c.osi_symbol(), time, 0.9, 0.01, 0.2, -0.05, 520, 520, 0.99,
+                            md::years_between(time, c.expiry_time()), 0.2, true});
+    }
+    s.on_quotes(quotes, valuations, time, {{"SPY", time, m("520")}});
+  };
+  quote(f.time);
+  for (const auto& c : {f.call, expiring_call, expiring_put})
+    ASSERT_TRUE(s.submit({"sold " + c.osi_symbol(), c.osi_symbol(), Side::Sell, OrderType::Market, TimeInForce::Ioc, 10,
+                          {}, {}, {}, {}}, f.time).decision.ok());
+  f.time = md::new_york_to_utc({2026, 12, 17}, 16, 14, 30);
+  quote(f.time);
+  const auto night = md::new_york_to_utc({2026, 12, 17}, 18, 0);
+  s.on_quotes({}, {}, night);
+  ASSERT_TRUE(s.roll_day(night, {{"SPY", {2026, 12, 18}, m("1.90")}}).decision.ok());
+  const auto snap = s.snapshot();
+  // Only the later call is assigned; the options expiring on 2026-12-18 settle at its close.
+  ASSERT_FALSE(snap->closures.empty());
+  for (const auto& closure : snap->closures) EXPECT_EQ(closure.symbol, f.call.osi_symbol());
+  for (const auto& p : snap->positions)
+    if (p.position.contract.expiry == expiring_call.expiry) EXPECT_EQ(p.position.quantity, -10);
 }
 
 }  // namespace
