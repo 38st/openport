@@ -41,6 +41,41 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
   if (!result) throw std::runtime_error("Desk did not complete command");
   return *result;
 }
+TEST(Desk, NamedAccountsListInIdOrderBeforeAndAfterARestart) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  server::Desk::Options options;
+  options.analytics.fallback_rate = 0;
+  options.paper_journal = file.directory / "paper-journal.jsonl";
+  options.paper_accounts = file.directory / "accounts";
+  const auto ids = [](const server::Desk& desk) {
+    std::vector<std::string> result;
+    for (const auto& account : desk.accounts()) result.push_back(account.id);
+    return result;
+  };
+  // "swing-50k-2.jsonl" sorts before "swing-50k.jsonl"; an account created later can sort earlier.
+  const std::vector<std::string> expected{"main", "alpha", "swing-50k", "swing-50k-2"};
+  {
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    for (const auto* name : {"Swing 50k", "Swing 50k", "Alpha"}) {
+      server::TradingCommand create;
+      create.kind = server::TradingCommand::Kind::CreateAccount;
+      create.name = name;
+      create.rules = server::find_plan("practice")->rules;
+      create.initial_cash = server::find_plan("practice")->initial_cash;
+      const auto reply = command(desk, create, market.time, market.time);
+      ASSERT_FALSE(reply.account.empty()) << reply.decision.message;
+    }
+    EXPECT_EQ(ids(desk), expected);
+    desk.stop();
+  }
+  server::Desk restarted("test", {}, {{"SPX"}}, options);
+  restarted.start_trading();
+  EXPECT_EQ(ids(restarted), expected);
+  restarted.stop();
+}
+
 TEST(Desk, OnlyExplicitReplayJournalsBatchSyncs) {
   for (const bool replay : {false, true}) {
     test::RecordingFile file;

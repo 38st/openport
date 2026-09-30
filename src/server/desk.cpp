@@ -136,6 +136,11 @@ bool account_id(std::string_view id) {
          std::all_of(id.begin(), id.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; }) &&
          id.find("--") == std::string_view::npos;
 }
+/// Named accounts list in ID order: "swing-50k" before "swing-50k-2", although the
+/// latter's file name sorts first ('-' before '.').
+bool by_account_id(const std::filesystem::path& a, const std::filesystem::path& b) {
+  return a.stem().string() < b.stem().string();
+}
 std::string slug(std::string_view name) {
   std::string id;
   for (const char c : name) {
@@ -315,7 +320,7 @@ std::vector<JournalCompaction> compact_paper_journals(const std::filesystem::pat
     std::vector<std::filesystem::path> files;
     for (const auto& entry : std::filesystem::directory_iterator(accounts, ec))
       if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string())) files.push_back(entry.path());
-    std::sort(files.begin(), files.end());
+    std::sort(files.begin(), files.end(), by_account_id);
     for (const auto& file : files) results.push_back(compact_journal(file));
   }
   if (!journal.empty()) {
@@ -370,7 +375,7 @@ void Desk::start_trading() {
     std::vector<std::filesystem::path> files;
     for (const auto& entry : std::filesystem::directory_iterator(options_.paper_accounts, ec))
       if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string())) files.push_back(entry.path());
-    std::sort(files.begin(), files.end());
+    std::sort(files.begin(), files.end(), by_account_id);
     for (const auto& file : files) {
       PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}, nullptr, {}, {}};
       std::ifstream named(std::filesystem::path(file).replace_extension(".name"));
@@ -469,7 +474,10 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
     return;
   }
   if (sandbox) sandbox_ids_.insert(id);
-  accounts_.push_back(std::move(account));
+  // After main, in ID order, as a restart recovers them.
+  const auto position = std::upper_bound(accounts_.empty() ? accounts_.end() : accounts_.begin() + 1, accounts_.end(), id,
+      [](const std::string& value, const PaperAccount& other) { return value < other.id; });
+  accounts_.insert(position, std::move(account));
   publish_trading();
   reply.account = id;
 }

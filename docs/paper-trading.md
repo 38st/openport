@@ -1370,7 +1370,9 @@ reports `PAPER_DISABLED` in status.
 
 The journal at `--paper-journal` is the **main** account. More named accounts live
 in an `accounts` directory beside it, one journal each (`accounts/<id>.jsonl`, the
-display name in `accounts/<id>.name`), recovered at startup in ID order. Every
+display name in `accounts/<id>.name`). Accounts list after main in ID order
+(`swing-50k` before `swing-50k-2`), both when created and when recovered at startup,
+so a restart keeps the list as it was. Every
 account trades the same market at once: each receives the quotes and valuations for
 its own positions, open orders and commands, marks, fills, settles, rolls its day
 and applies its rules whichever account the terminal shows. An account whose
