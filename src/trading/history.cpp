@@ -31,6 +31,7 @@ void LifecycleBuilder::start(const Fill& fill, const md::OptionContract& contrac
   life.direction = signed_quantity > 0 ? 1 : -1;
   life.opened = fill.time;
   life.first_fill = fill.id;
+  life.entry_order = fill.order_id;
   life.entry_context = fill.context;
   open[fill.symbol] = std::move(entry);
 }
@@ -59,6 +60,10 @@ void LifecycleBuilder::fill(const Fill& fill, const Contracts& contracts) {
     life->quantity = held + signed_quantity;
     life->opened_contracts += fill.quantity;
     life->open_notional = life->open_notional + fill.price * fill.quantity;
+    if (fill.order_id == life->entry_order) {
+      life->entry_contracts += fill.quantity;
+      life->entry_notional = life->entry_notional + fill.price * fill.quantity;
+    }
   } else {
     life->exit_context = fill.context;
     const auto closing = std::min(magnitude(held), fill.quantity);
@@ -81,6 +86,8 @@ void LifecycleBuilder::fill(const Fill& fill, const Contracts& contracts) {
       life->quantity = signed_quantity > 0 ? remainder : -remainder;
       life->opened_contracts += remainder;
       life->open_notional = life->open_notional + fill.price * remainder;
+      life->entry_contracts += remainder;
+      life->entry_notional = life->entry_notional + fill.price * remainder;
     }
   }
   life->basis = it->second.ledger.positions().contains(fill.symbol)

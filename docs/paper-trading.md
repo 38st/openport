@@ -1027,14 +1027,15 @@ The JSON `review` contains positive dollar `mae` and `mfe`, bounded below by zer
 `spot` (null when unavailable). Closed trades report `give_back = max(0, mfe - net)`
 and `r_multiple = net / planned_risk`; `heat = mae / planned_risk`. Planned risk
 excludes fees. A single-contract round trip uses its entry bracket's option-price
-stop distance times the opening quantity and multiplier. Later changes to the
-exit do not rewrite that plan. A strategy uses its opening debit or credit and the
-minimum payoff at all strikes and zero, if every leg settles at the same instant
-and the call payoff is bounded below. Risk grows with opening quantities, and is
-not reduced by partial closes. Risk, heat and R are null without a positive,
-measurable planned risk, including underlying-price stops, unbounded structures
-and calendars or diagonals. The option legs of a strategy carry its
-`strategy_id` and combined `strategy_review` separately from their own reviews.
+stop distance from the entry order's average fill price, times every contract
+opened and the multiplier: an add keeps the entry's risk per contract wherever it
+fills, even past the stop. Later changes to the exit do not rewrite that plan. A
+strategy uses its opening debit or credit and the minimum payoff at all strikes and
+zero, if every leg settles at the same instant and the call payoff is bounded below.
+Risk grows with opening quantities, and is not reduced by partial closes. Risk, heat
+and R are null without a positive, measurable planned risk, including underlying-price
+stops, unbounded structures and calendars or diagonals. The option legs of a strategy
+carry its `strategy_id` and combined `strategy_review` separately from their own reviews.
 
 Strategy review follows the Journal's grouping by the order that opened each
 contract round trip. It requires all that order's legs to start round trips;
