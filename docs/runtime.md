@@ -589,6 +589,13 @@ regenerates the scenario, repeats its boundaries and commands, and checks every
 transaction hash, final equity and head hash. Exit 0 means a match. Exit 1 names the
 first differing transaction, or reports a damaged journal or missing/changed input.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
+So does a run a crash cut off, whichever record its journal ends at: each input and
+each transaction is its own append, and new runs record a command's input before the
+transactions it causes. When the journal ends after a batch's transactions but before
+the boundary input that follows them, the recording's next batch must reproduce them.
+The report then adds that the journal ends part way through its last operation. Runs
+recorded before this recorded a command's input after its transactions, so one cut
+between them names the first transaction no recorded input explains.
 
 The journal carries recording name, absolute path, byte size and SHA-256, or scenario
 id, source hash, generator version, date and seed. Built-ins are checked against the

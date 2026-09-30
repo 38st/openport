@@ -442,7 +442,7 @@ void Desk::start_trading() {
   if (!options_.run_input.empty()) {
     nlohmann::json start{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
         {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
-    if (options_.instant_batches) start["driver"] = options_.closing_rollover ? 3 : 2;
+    if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? 4 : 3;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
   }
@@ -1044,9 +1044,14 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
 }
 
 void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time) {
+  apply_command(pending, market_time, driver_time, false);
+}
+void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time, bool input_recorded) {
   market_time_ = std::max(market_time_, market_time);
   TradingReply reply;
   const auto& c = pending.command;
+  // Driver 4 records the command before its first transaction.
+  if (!input_recorded && inputs_first() && recorded_input(c)) record_command(c, driver_time);
   auto* account = c.kind == TradingCommand::Kind::CreateAccount ? nullptr : find_account(c.account);
   if (c.kind == TradingCommand::Kind::CreateAccount || c.kind == TradingCommand::Kind::CreateSandbox) {
     create_account(c, reply);
@@ -1238,8 +1243,8 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
     reply.account = account->id;
     reply.view = trading_view(account->id);
   }
-  if (!playbook_running_ && !options_.run_input.empty() && c.kind != TradingCommand::Kind::Preview) {
-    record_input(nlohmann::json{{"kind", "command"}, {"command", c}, {"time", market_time_}, {"driver_time", driver_time}}.dump(), c.actor);
+  if (recorded_input(c)) {
+    if (!inputs_first()) record_command(c, driver_time);
     publish_trading();
     if (account) {
       reply.view = trading_view(account->id);
@@ -1325,21 +1330,33 @@ void Desk::apply_analytics(std::shared_ptr<const analytics::UnderlyingMetrics> r
   metrics_[symbol] = std::move(result);
   ++analytics_generation_;
 }
-void Desk::record_input(const std::string& input, const std::string& actor) {
+void Desk::record_input(const std::string& input, const std::string& actor, bool at_account_time) {
   if (options_.run_input.empty()) return;
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
     account.session->set_actor(actor);
-    try { account.session->record_input(input, market_time_); }
+    // At the account's own time the record moves no clock, so no time rule runs
+    // before the transactions that follow it.
+    try { account.session->record_input(input, at_account_time ? account.session->snapshot()->time : market_time_); }
     catch (const std::exception& error) { account.failure = error.what(); }
     account.session->set_actor("system");
   }
 }
+bool Desk::recorded_input(const TradingCommand& command) const {
+  return !playbook_running_ && !options_.run_input.empty() && command.kind != TradingCommand::Kind::Preview;
+}
+void Desk::record_command(const TradingCommand& c, md::Timestamp driver_time) {
+  record_input(nlohmann::json{{"kind", "command"}, {"command", c}, {"time", market_time_}, {"driver_time", driver_time}}.dump(),
+               c.actor, inputs_first());
+}
 void Desk::command(TradingCommand command, TradingCompletion completion, md::Timestamp time, md::Timestamp driver_time) {
   market_time_ = std::max(market_time_, time);
   std::deque<PendingCommand> commands{{0, std::move(command), std::move(completion)}};
+  // Driver 4: the input comes before the command's quotes and its own transaction.
+  const bool recorded = inputs_first() && recorded_input(commands.front().command);
+  if (recorded) record_command(commands.front().command, driver_time);
   if (commands.front().command.kind != TradingCommand::Kind::Preview) update_trading({}, commands, driver_time);
-  apply_command(commands.front(), market_time_, driver_time);
+  apply_command(commands.front(), market_time_, driver_time, recorded);
 }
 bool Desk::refresh_analytics() {
   bool recomputed = false;

@@ -42,6 +42,11 @@ class Desk {
     /// marks before that batch's quotes. False reproduces older runs, which rolled over
     /// after them, so the finished day's P&L by Greek took the overnight move.
     bool closing_rollover = true;
+    /// Driver 4, which builds on driver 3 and applies only with it: a command's run input
+    /// is recorded before the transactions it causes, at each account's own time so that
+    /// it moves no clock, and a journal a crash cut off between them still verifies.
+    /// False reproduces older runs, which recorded it after them.
+    bool inputs_first = true;
     std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;
@@ -110,7 +115,15 @@ class Desk {
   void create_account(const TradingCommand& command, TradingReply& reply);
   void observe_trading(const md::Event& event);
   void publish_trading();
-  void record_input(const std::string& input, const std::string& actor = "system");
+  void record_input(const std::string& input, const std::string& actor = "system", bool at_account_time = false);
+  /// Whether a reproducible run records `command` as an input: every one a trader sends but a preview.
+  [[nodiscard]] bool recorded_input(const TradingCommand& command) const;
+  void record_command(const TradingCommand& command, md::Timestamp driver_time);
+  [[nodiscard]] bool inputs_first() const {
+    return options_.instant_batches && options_.closing_rollover && options_.inputs_first;
+  }
+  /// `input_recorded`: Desk::command recorded it already, before the quotes it takes.
+  void apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time, bool input_recorded);
   void sample_equity(PaperAccount& account);
   void evaluate_playbooks(md::Timestamp driver_time);
   void playbook_command(const TradingCommand& command, TradingReply& reply, md::Timestamp driver_time);
