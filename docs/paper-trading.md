@@ -1379,7 +1379,8 @@ and applies its rules whichever account the terminal shows. An account whose
 journal cannot open, or fails later, reports why in its status and refuses writes;
 the others carry on.
 
-`POST /api/accounts` takes a `name` (1 to 64 printable characters) and either a
+`POST /api/accounts` takes a `name` (1 to 64 characters, counted as Unicode code
+points, none of them a control character) and either a
 preset `plan` or `initial_cash` and complete `rules`, and returns 201 with the new
 account's `id`, a slug of the name made unique (`swing-50k`, `swing-50k-2`). Funded
 plans are refused: they start by resetting an account that passed the evaluation.

@@ -141,6 +141,30 @@ bool account_id(std::string_view id) {
 bool by_account_id(const std::filesystem::path& a, const std::filesystem::path& b) {
   return a.stem().string() < b.stem().string();
 }
+}  // namespace
+
+bool valid_account_name(std::string_view name) {
+  std::size_t characters = 0;
+  for (std::size_t i = 0; i < name.size(); ++characters) {
+    const auto lead = static_cast<unsigned char>(name[i]);
+    const std::size_t length = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : (lead >> 3) == 0x1E ? 4 : 0;
+    if (!length || i + length > name.size()) return false;
+    std::uint32_t code = length == 1 ? lead : lead & (0x7Fu >> length);
+    for (std::size_t k = 1; k < length; ++k) {
+      const auto next = static_cast<unsigned char>(name[i + k]);
+      if ((next & 0xC0) != 0x80) return false;
+      code = code << 6 | (next & 0x3Fu);
+    }
+    // Overlong forms, surrogates and values past U+10FFFF are not UTF-8.
+    if ((length == 2 && code < 0x80) || (length == 3 && code < 0x800) || (length == 4 && (code < 0x10000 || code > 0x10FFFF)) ||
+        (code >= 0xD800 && code <= 0xDFFF) || code < 0x20 || (code >= 0x7F && code <= 0x9F))
+      return false;
+    i += length;
+  }
+  return characters >= 1 && characters <= 64;
+}
+
+namespace {
 std::string slug(std::string_view name) {
   std::string id;
   for (const char c : name) {
@@ -379,7 +403,7 @@ void Desk::start_trading() {
     for (const auto& file : files) {
       PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}, nullptr, {}, {}};
       std::ifstream named(std::filesystem::path(file).replace_extension(".name"));
-      if (std::string name; named && std::getline(named, name) && !name.empty() && name.size() <= 64) account.name = name;
+      if (std::string name; named && std::getline(named, name) && valid_account_name(name)) account.name = name;
       open(account, file, false);
       accounts_.push_back(std::move(account));
     }

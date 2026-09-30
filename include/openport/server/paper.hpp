@@ -100,6 +100,9 @@ struct TradingView {
 
 /// The main account keeps the original journal; others are named alongside it.
 inline constexpr std::string_view kMainAccount = "main";
+/// Account display names: 1 to 64 characters (Unicode code points) of UTF-8 text,
+/// none of them a control character (U+0000-U+001F, U+007F-U+009F).
+[[nodiscard]] bool valid_account_name(std::string_view name);
 
 /// One paper account's standing, for the account list and ticks.
 struct AccountStatus {
