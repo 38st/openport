@@ -429,6 +429,61 @@ TEST(Replay, ASpeedChosenWhilePausedAppliesWhenPlayResumes) {
   replay.stop();
 }
 
+/// A streamed quote every 15 seconds of market and receipt time, from 10:00:00.
+test::RecordingFile quarter_minute_recording(int quotes) {
+  test::RecordingFile file;
+  const auto open = md::new_york_to_utc({2026, 9, 16}, 10, 0);
+  std::vector<md::Event> events = {md::ContractDefinition{0, *md::parse_osi("SPXW261022C05000000")}};
+  for (int i = 0; i < quotes; ++i)
+    events.push_back(md::OptionQuote{0, open + i * 15 * md::kNanosPerSecond, 100, 101, 10, 10});
+  md::RecordingSink::Options recording;
+  std::size_t index = 0;
+  recording.clock = [&] {
+    const auto quote = index == 0 ? 0 : static_cast<int>(index) - 1;
+    ++index;
+    return open + quote * 15 * md::kNanosPerSecond;
+  };
+  auto header = test::recording_header();
+  header.started = open;
+  test::record_events(file.path, events, header, recording);
+  return file;
+}
+
+providers::ReplayProvider::Driver immediate_driver() {
+  return [](providers::ReplayBatch) {
+    std::promise<void> done;
+    done.set_value();
+    return done.get_future();
+  };
+}
+
+// B34: a lockstep step plays unpaced, so resuming at 1x waits one receipt gap, not
+// one more gap for every step taken while paused.
+TEST(Replay, ResumingAfterLockstepStepsWaitsOneGap) {
+  const auto file = quarter_minute_recording(8);
+  const auto open = md::new_york_to_utc({2026, 9, 16}, 10, 0);
+  auto clock = std::make_shared<ManualClock>();
+  providers::ReplayProvider::Options options{file.path, 1, false, clock};
+  options.paused = true;
+  providers::ReplayProvider replay(options);
+  replay.set_driver(immediate_driver());
+  test::DiscardEvents discard;
+  replay.start({{"SPX"}}, discard);
+  ASSERT_TRUE(test::recording_eventually([&] { return !replay.fast_forwarding(); }));
+  for (int step = 1; step <= 3; ++step) {
+    clock->advance(1s);
+    ASSERT_NO_THROW(replay.until(open + step * 15 * md::kNanosPerSecond));
+    EXPECT_EQ(replay.settled_through(), open + step * 15 * md::kNanosPerSecond);
+  }
+  clock->advance(1s);
+  const auto resumed = clock->now();
+  replay.set_paused(false);
+  const auto waiting = clock->waiting_for();
+  ASSERT_TRUE(waiting.has_value());
+  EXPECT_EQ(*waiting - resumed, std::chrono::duration_cast<ManualClock::TimePoint::duration>(15s));
+  replay.stop();
+}
+
 TEST(Replay, SkipCutsAnOvernightGapShortAndTheEndIsReported) {
   const auto file = paced_recording();
   auto clock = std::make_shared<ManualClock>();

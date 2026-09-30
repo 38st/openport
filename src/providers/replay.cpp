@@ -299,7 +299,10 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
           market_time_ = step_target_;
           settled_ = step_target_;
           paused_ = true;
-          paused_at_ = options_.clock->now().time_since_epoch().count();
+          // The step played its batches unpaced: the next gap counts from here, not
+          // from a deadline measured before it, or each step would add a stale gap.
+          deadline = options_.clock->now();
+          paused_at_ = deadline.time_since_epoch().count();
           seeking_ = false;
           step_pending_ = false;
           control_.notify_all();
