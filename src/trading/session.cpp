@@ -2376,11 +2376,17 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
     }
     // Shorts first: buying one back never uncovers another leg.
     std::stable_partition(closing.begin(), closing.end(), [](const auto& p) { return p.second < 0; });
+    // A client ID the trader already used stays theirs: take the next free number.
     const auto prefix = "openport-close-" + std::to_string(s.version + 1) + "-";
     std::size_t count = 0;
+    const auto client_id = [&] {
+      auto id = prefix + std::to_string(++count);
+      while (s.clients.contains(id)) id = prefix + std::to_string(++count);
+      return id;
+    };
     for (const auto& [symbol, quantity] : closing) {
       OrderRequest request;
-      request.client_order_id = prefix + std::to_string(++count);
+      request.client_order_id = client_id();
       request.symbol = symbol;
       request.side = quantity > 0 ? Side::Sell : Side::Buy;
       request.type = OrderType::Market;

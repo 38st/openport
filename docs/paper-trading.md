@@ -516,7 +516,8 @@ only one underlying's. `close_positions` flattens the account or one underlying:
 cancels the open orders in scope, then closes each unexpired position in scope with
 a market IOC order under the account's fill model, short positions first so buying one back
 never uncovers another leg. These are the trader's own orders (client IDs
-`openport-close-{version}-{n}`) and take the normal checks; one the rules refuse is
+`openport-close-{version}-{n}`, numbered past any client ID the account has already
+used) and take the normal checks; one the rules refuse is
 recorded as rejected with its reason and the others still go. Expired positions wait
 for settlement.
 

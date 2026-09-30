@@ -224,6 +224,23 @@ TEST(TradingOrders, AClosingOrderTheIntegrationRefusesIsRecordedAndTheRestStillC
   EXPECT_EQ(s.snapshot()->recent_orders.size(), before + 2);
 }
 
+TEST(TradingOrders, AFlattenNeverTakesAClientIdTheTraderAlreadyUsed) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 1), f.time).decision.ok());
+  // The trader's resting sell takes the ID the next flatten would generate first.
+  const auto taken = "openport-close-" + std::to_string(s.snapshot()->account_version + 2) + "-1";
+  ASSERT_TRUE(s.submit(f.limit(taken, 1, "4.40", Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
+  EXPECT_EQ(order(s, 2).reason.code, Reason::USER_CANCEL);
+  const auto& close = s.snapshot()->recent_orders.back();
+  EXPECT_EQ(close.status, OrderStatus::Filled) << close.reason.message;
+  EXPECT_NE(close.request.client_order_id, taken);
+  EXPECT_EQ(close.request.client_order_id.rfind("openport-close-", 0), 0u);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 TEST(TradingOrders, ChangesAndFlattensRecoverFromTheJournal) {
   std::string pattern = (std::filesystem::temp_directory_path() / "openport-orders-XXXXXX").string();
   ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
