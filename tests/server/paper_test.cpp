@@ -945,6 +945,40 @@ TEST(PaperAccounts, NamedAccountsTradeApartAndRecoverFromTheirOwnJournals) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(PaperAccounts, AccountNamesCountCharactersNotBytes) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-names-" + std::to_string(md::now()));
+  auto options = paper_options();
+  options.paper_journal = directory / "paper-journal.jsonl";
+  options.paper_accounts = directory / "accounts";
+  std::string accented;
+  for (int i = 0; i < 64; ++i) accented += "\u00e9";  // 64 characters, 128 bytes
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    const auto created = write(engine, "POST", "/api/accounts", {{"name", accented}, {"plan", "practice"}});
+    ASSERT_EQ(created.status, 201) << created.body;
+    EXPECT_EQ(write(engine, "POST", "/api/accounts", {{"name", std::string(64, 'n')}, {"plan", "practice"}}).status, 201);
+    EXPECT_EQ(write(engine, "POST", "/api/accounts", {{"name", "\U0001F4C8 Swing"}, {"plan", "practice"}}).status, 201);
+    for (const auto& name : {accented + "\u00e9", std::string(65, 'n'), std::string("tab\there"), std::string("next\u0085line"), std::string()}) {
+      const auto refused = write(engine, "POST", "/api/accounts", {{"name", name}, {"plan", "practice"}});
+      EXPECT_EQ(refused.status, 400) << name;
+      EXPECT_NE(refused.body.find("1 to 64 characters"), std::string::npos) << refused.body;
+    }
+    engine.stop();
+  }
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPX"}}, options);
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto accounts = read(engine, "/api/accounts")["accounts"];
+  ASSERT_EQ(accounts.size(), 4U);
+  EXPECT_TRUE(std::any_of(accounts.begin(), accounts.end(), [&](const auto& account) { return account["name"] == accented; })) << accounts;
+  engine.stop();
+  std::filesystem::remove_all(directory);
+}
+
 TEST(PaperAccounts, AServerWithoutAnAccountsDirectoryKeepsOneAccount) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());

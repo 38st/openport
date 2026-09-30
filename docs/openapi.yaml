@@ -10412,7 +10412,10 @@
                 "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
               },
               "name": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Display name: 1 to 64 characters (Unicode code points), none of them a control character."
               }
             },
             "required": [

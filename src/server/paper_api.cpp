@@ -908,9 +908,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model"});
     command.kind = TradingCommand::Kind::CreateAccount;
     command.name = string_field(body, "name");
-    if (command.name.empty() || command.name.size() > 64 ||
-        std::any_of(command.name.begin(), command.name.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }))
-      throw std::invalid_argument("name must be 1 to 64 printable characters");
+    if (!valid_account_name(command.name))
+      throw std::invalid_argument("name must be 1 to 64 characters, none of them a control character");
     if (body.contains("plan")) {
       if (body.contains("initial_cash") || body.contains("rules")) throw std::invalid_argument("plan excludes initial_cash and rules");
       const auto* plan = find_plan(string_field(body, "plan"));
