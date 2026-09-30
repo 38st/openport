@@ -1720,8 +1720,11 @@ are conflicts, not automatic replays. Errors always have this shape:
 {"error":{"code":"DELTA_LIMIT","message":"...","actual":1250000,"limit":1000000,"scope":"SPX"}}
 ```
 
-Unused `actual`, `limit` and `scope` are null. Rejected writes still consume their
-client ID; GET orders shows their resulting rejection reason.
+Unused `actual`, `limit` and `scope` are null. `scope` names an underlying or
+`aggregate`: a check on one contract, such as `PRICE_BAND`, reports that contract's
+underlying, while the journaled decision keeps the contract's OSI symbol, as the
+order itself does. Rejected writes still consume their client ID; GET orders shows
+their resulting rejection reason.
 
 ### Write protection
 
