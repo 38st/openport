@@ -1,7 +1,9 @@
 #include "support/recording.hpp"
 
 #include <condition_variable>
+#include <fstream>
 #include <set>
+#include <sys/wait.h>
 
 #include "openport/providers/demo_feed.hpp"
 #include "openport/providers/factory.hpp"
@@ -46,6 +48,48 @@ providers::DemoProvider::Options settings(std::shared_ptr<DemoClock> clock = {})
   options.started = md::new_york_to_utc({2026, 9, 19}, 12, 0);
   options.clock = std::move(clock);
   return options;
+}
+
+// U5: a SIGKILLed server's generated days are removed at the next start, but only
+// once the process that made them is gone.
+TEST(DemoFeed, OrphanedTemporaryDirectoriesOfStoppedProcessesAreRemoved) {
+  const pid_t child = ::fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) ::_exit(0);
+  int status = 0;
+  ASSERT_EQ(::waitpid(child, &status, 0), child);  // reaped: that id names no process now
+  const auto temporary = std::filesystem::temp_directory_path();
+  const auto dead = std::to_string(child), alive = std::to_string(::getpid());
+  const std::vector<std::filesystem::path> orphans = {temporary / ("openport-feed-" + dead + "-a1B2c3"),
+                                                      temporary / ("openport-demo-" + dead + "-4")};
+  const std::vector<std::filesystem::path> kept = {temporary / ("openport-feed-" + alive + "-x9Y8z7"),
+                                                   temporary / ("openport-demo-" + alive + "-9"),
+                                                   temporary / "openport-demo-1-1",  // launchd or init: running
+                                                   temporary / ("openport-feedback-" + dead + "-1")};
+  for (const auto& directory : orphans) {
+    std::filesystem::create_directories(directory);
+    std::ofstream(directory / "2026-09-16.oprec") << "day";
+  }
+  for (const auto& directory : kept) std::filesystem::create_directories(directory);
+  EXPECT_GE(providers::remove_orphaned_demo_directories(), orphans.size());
+  for (const auto& directory : orphans) EXPECT_FALSE(std::filesystem::exists(directory)) << directory;
+  for (const auto& directory : kept) {
+    EXPECT_TRUE(std::filesystem::exists(directory)) << directory;
+    std::filesystem::remove_all(directory);
+  }
+}
+
+// A demo feed's own directory carries its process id, so that sweep can find it.
+TEST(DemoFeed, ItsTemporaryDirectoryNamesItsProcess) {
+  providers::DemoProvider provider(settings(std::make_shared<DemoClock>()));
+  test::EventCollector sink;
+  provider.start({{"SPX"}}, sink);
+  EXPECT_TRUE(provider.directory().filename().string().starts_with("openport-feed-" + std::to_string(::getpid()) + "-"))
+      << provider.directory();
+  (void)providers::remove_orphaned_demo_directories();
+  EXPECT_TRUE(std::filesystem::exists(provider.directory())) << "a running process keeps its directory";
+  provider.stop();
+  EXPECT_FALSE(std::filesystem::exists(provider.directory()));
 }
 
 TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
