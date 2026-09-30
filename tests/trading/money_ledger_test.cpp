@@ -1,6 +1,7 @@
 #include <limits>
 #include <gtest/gtest.h>
 
+#include "openport/trading/history.hpp"
 #include "openport/trading/ledger.hpp"
 #include "support/scripted_market.hpp"
 
@@ -62,6 +63,57 @@ TEST(TradingLedger, OpenAddReduceCloseReverseFeesReconcileExactly) {
   EXPECT_EQ(ledger.account().fees, m("6.50"));
   EXPECT_EQ(ledger.account().cash, m("11093.50"));
   reconcile();
+}
+TEST(TradingLedger, AReversalStartsTheExcessWithOnlyItsShareOfTheFee) {
+  const test::ScriptedMarket market;
+  Ledger ledger(m("10000"));
+  ledger.fill(market.contract, 1, m("2.80"), m("0.65"));
+  ledger.fill(market.contract, 1, m("3.00"), m("0.65"));
+  ledger.fill(market.contract, -1, m("3.20"), m("0.65"));
+  EXPECT_EQ(ledger.positions().at(market.symbol()).realised, m("30"));
+  EXPECT_EQ(ledger.positions().at(market.symbol()).fees, m("1.95"));
+  // Selling 3 against the 1 held closes that round trip and opens a short of 2:
+  // the short has realised nothing and pays 2/3 of the fill's fee.
+  ledger.fill(market.contract, -3, m("3.40"), m("1.95"));
+  const auto& short_position = ledger.positions().at(market.symbol());
+  EXPECT_EQ(short_position.quantity, -2);
+  EXPECT_EQ(short_position.basis, m("-680"));
+  EXPECT_EQ(short_position.realised, m("0"));
+  EXPECT_EQ(short_position.fees, m("1.30"));
+  EXPECT_EQ(ledger.account().realised, m("80"));  // 30 + (3.40 - 2.90) * 100
+  EXPECT_EQ(ledger.account().fees, m("3.90"));
+  ledger.fill(market.contract, 1, m("3.10"), m("0.65"));
+  EXPECT_EQ(ledger.positions().at(market.symbol()).realised, m("30"));
+  EXPECT_EQ(ledger.positions().at(market.symbol()).fees, m("1.95"));
+  // Shares split the same way.
+  ledger.trade_stock("SPY", 100, m("500"), m("1"));
+  ledger.trade_stock("SPY", -300, m("503"), m("3"));
+  EXPECT_EQ(ledger.stocks().at("SPY").shares, -200);
+  EXPECT_EQ(ledger.stocks().at("SPY").realised, m("0"));
+  EXPECT_EQ(ledger.stocks().at("SPY").fees, m("2"));
+  EXPECT_EQ(ledger.account().realised, m("410"));  // 80 + 30 + 300
+}
+TEST(TradingLedger, AReversedPositionDescribesItsOwnRoundTripAsTheTradesViewDoes) {
+  test::ScriptedMarket f;
+  TradingSession s({}, f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long", 1), f.time).decision.ok());
+  f.next();
+  s.on_quotes({f.quote("4.60", "4.80")}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.market("reverse", 2, Side::Sell), f.time).decision.ok());
+  const auto snapshot = s.snapshot();
+  ASSERT_EQ(snapshot->positions.size(), 1U);
+  const auto& position = snapshot->positions.front().position;
+  EXPECT_EQ(position.quantity, -1);
+  EXPECT_EQ(position.basis, m("-460"));
+  EXPECT_EQ(position.realised, m("0"));
+  EXPECT_EQ(position.fees, m("0.65"));
+  EXPECT_EQ(snapshot->account.realised, m("40"));
+  EXPECT_EQ(snapshot->account.fees, m("1.95"));
+  const auto trips = lifecycles(snapshot->recent_fills, {}, s.contracts());
+  ASSERT_EQ(trips.size(), 2U);
+  EXPECT_EQ(trips.back().gross, position.realised);
+  EXPECT_EQ(trips.back().fees, position.fees);
 }
 TEST(TradingLedger, RoundingResidueShortAddsAndStrongOverflowGuarantee) {
   const test::ScriptedMarket market;

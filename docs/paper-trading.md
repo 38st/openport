@@ -535,7 +535,9 @@ and keep the rounding residue in the remaining position. Gross realised P&L is
 signed close proceeds minus allocated signed basis. A final close releases the
 entire residue. A reversal closes first and opens the excess at the fill price.
 Closed positions disappear; cumulative realised P&L and fees remain in the account.
-Position realised/fees describe the current open lifecycle.
+Position realised/fees describe the current open lifecycle: after a reversal, the new
+position has realised nothing and carries the excess's share of the reversing fill's
+fee, as the trades view splits it.
 
 ```text
 market value = q * M * mark

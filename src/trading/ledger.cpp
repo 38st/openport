@@ -36,6 +36,20 @@ Money trade(Quantity& quantity, Money& basis, Quantity units, Money unit) {
   quantity = total_q;
   return realised;
 }
+/// Add a fill's realised P&L and fee to the lifecycle a holding describes. A
+/// reversal ends that lifecycle and opens the excess as a new one, which starts
+/// with nothing realised and the excess's share of the fee, as the trades view
+/// splits it.
+void book(Money& lifecycle_realised, Money& lifecycle_fees, Quantity old_q, Quantity new_q, Quantity units,
+          Money realised, Money fee) {
+  if (old_q != 0 && new_q != 0 && (old_q > 0) != (new_q > 0)) {
+    lifecycle_realised = Money{};
+    lifecycle_fees = fee - fee.prorate(magnitude(old_q), magnitude(units));
+    return;
+  }
+  lifecycle_realised = lifecycle_realised + realised;
+  lifecycle_fees = lifecycle_fees + fee;
+}
 }  // namespace
 void Ledger::fill(const md::OptionContract& contract, Quantity signed_quantity, Money price, Money fee) {
   const auto decision = eligible(contract);
@@ -46,9 +60,9 @@ void Ledger::fill(const md::OptionContract& contract, Quantity signed_quantity, 
   const auto it = positions_.find(symbol);
   Position next = it == positions_.end() ? Position{contract, 0, {}, {}, {}} : it->second;
   const Money cash = account_.cash - (price * 100) * signed_quantity - fee;
+  const auto held = next.quantity;
   const Money realised = trade(next.quantity, next.basis, signed_quantity, price * 100);
-  next.realised = next.realised + realised;
-  next.fees = next.fees + fee;
+  book(next.realised, next.fees, held, next.quantity, signed_quantity, realised, fee);
   const Account account{cash, account_.realised + realised, account_.fees + fee};
   if (next.quantity == 0) positions_.erase(symbol);
   else positions_.insert_or_assign(symbol, std::move(next));
@@ -60,9 +74,9 @@ void Ledger::trade_stock(const std::string& symbol, Quantity signed_shares, Mone
   const auto it = stocks_.find(symbol);
   StockPosition next = it == stocks_.end() ? StockPosition{symbol, 0, {}, {}, {}} : it->second;
   const Money cash = account_.cash - price * signed_shares - fee;
+  const auto held = next.shares;
   const Money realised = trade(next.shares, next.basis, signed_shares, price);
-  next.realised = next.realised + realised;
-  next.fees = next.fees + fee;
+  book(next.realised, next.fees, held, next.shares, signed_shares, realised, fee);
   const Account account{cash, account_.realised + realised, account_.fees + fee};
   if (next.shares == 0) stocks_.erase(symbol);
   else stocks_.insert_or_assign(symbol, std::move(next));
