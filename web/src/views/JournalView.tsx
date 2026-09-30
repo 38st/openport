@@ -266,7 +266,7 @@ export function StrategyRow({ group, expanded, onToggle }: { group: TradeGroup; 
     <td className="px-2 py-2 text-muted">{group.closed ? short.format(Date.parse(group.closed)) : "open"}</td>
     <td className="px-2 py-2">{formatDuration(held)}</td>
     <td className="px-2 py-2">{order.average_fill_price ? netLabel(order.average_fill_price) : "—"}</td>
-    <td className="px-2 py-2">{result.close == null ? "—" : formatMoney(result.close.toFixed(6))}</td>
+    <td className="px-2 py-2">{result.close == null ? "—" : netLabel(result.close.toFixed(6))}</td>
     <td className={`px-2 py-2 ${toneText[toneOf(value)]}`}>
       {value == null ? "—" : group.status === "open" ? <span title="Realised P&L and fees plus remaining unrealised">{usd(value)}</span> : usd(value)}
     </td>
