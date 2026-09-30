@@ -1,6 +1,8 @@
 #include "support/contract_capture.hpp"
+#include <algorithm>
 #include <array>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <sstream>
 #include <gtest/gtest.h>
@@ -1005,45 +1007,54 @@ TEST(ReplayRun, CommandActorDefaultsForOlderInputs) {
   EXPECT_EQ(recorded.get<server::TradingCommand>().actor, "unknown");
 }
 
+/// A run with one order an agent placed, recorded with or without driver 2's instants.
+std::filesystem::path attributed_run(const test::RecordingFile& file, bool instants) {
+  const auto journal = file.directory / (instants ? "run.jsonl" : "run-driver-1.jsonl");
+  const test::ScriptedMarket market;
+  md::RecordingReader reader(file.path);
+  server::Desk::Options options;
+  options.run_input = server::recording_input(file.path);
+  options.replay = true;
+  options.instant_batches = instants;
+  options.paper_journal = journal;
+  server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading();
+  providers::ReplayBatches batches(reader, reader.header().subscription, instants);
+  while (const auto batch = batches.next()) {
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    if (desk.market_time() == market.time + 4 * md::kNanosPerSecond) {
+      server::TradingCommand order;
+      order.actor = "agent";
+      order.order = market.market("older-order");
+      EXPECT_TRUE(command(desk, order, desk.market_time(), batch->received).decision.ok());
+    }
+  }
+  return journal;
+}
+/// Copies `journal` with a new hash chain, removing every actor from the records `strip` picks.
+std::filesystem::path without_actors(const std::filesystem::path& journal, const std::string& name,
+                                     const std::function<bool(const trading::JournalRecord&)>& strip) {
+  const std::function<void(json&)> erase = [&](json& value) {
+    if (value.is_object()) value.erase("actor");
+    if (value.is_structured()) {
+      for (auto& child : value) erase(child);
+    }
+  };
+  const auto copy = journal.parent_path() / name;
+  auto output = trading::FileJournal::create(copy.string());
+  for (const auto& record : trading::FileJournal::read(journal.string()).records) {
+    auto payload = json::parse(record.payload);
+    if (strip(record)) erase(payload);
+    output->append(record.time, record.type, payload.dump());
+  }
+  return copy;
+}
+
 TEST(ReplayRun, JournalsWithoutActorsStillVerifyTheirOriginalHashes) {
   test::RecordingFile file;
   write_stream(file.path, true);
-  const auto journal = file.directory / "run.jsonl";
-  const test::ScriptedMarket market;
-  {
-    md::RecordingReader reader(file.path);
-    server::Desk::Options options;
-    options.run_input = server::recording_input(file.path);
-    options.replay = true;
-    options.paper_journal = journal;
-    server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
-    desk.start_trading();
-    providers::ReplayBatches batches(reader, reader.header().subscription);
-    while (const auto batch = batches.next()) {
-      desk.replay_batch(batch->events, batch->received, batch->time);
-      if (desk.market_time() == market.time + 4 * md::kNanosPerSecond) {
-        server::TradingCommand order;
-        order.actor = "agent";
-        order.order = market.market("older-order");
-        ASSERT_TRUE(command(desk, order, desk.market_time(), batch->received).decision.ok());
-      }
-    }
-  }
-  const auto older = file.directory / "older.jsonl";
-  const std::function<void(json&)> strip = [&](json& value) {
-    if (value.is_object()) value.erase("actor");
-    if (value.is_structured()) {
-      for (auto& child : value) strip(child);
-    }
-  };
-  {
-    auto output = trading::FileJournal::create(older.string());
-    for (const auto& record : trading::FileJournal::read(journal.string()).records) {
-      auto payload = json::parse(record.payload);
-      strip(payload);
-      output->append(record.time, record.type, payload.dump());
-    }
-  }
+  // Builds before actors wrote no driver version.
+  const auto older = without_actors(attributed_run(file, false), "older.jsonl", [](const auto&) { return true; });
   const auto recovery = trading::FileJournal::read(older.string());
   const auto restored = trading::TradingSession::recover(recovery);
   ASSERT_FALSE(restored.snapshot()->recent_fills.empty());
@@ -1051,5 +1062,36 @@ TEST(ReplayRun, JournalsWithoutActorsStillVerifyTheirOriginalHashes) {
   const auto verified = server::verify_run(older);
   EXPECT_TRUE(verified.matched) << verified.message;
   EXPECT_EQ(verified.head, recovery.head);
+}
+
+TEST(ReplayRun, AnActorRemovedFromOneRecordIsADifference) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  const auto journal = attributed_run(file, true);
+  ASSERT_TRUE(server::verify_run(journal).matched);
+  const auto records = trading::FileJournal::read(journal.string()).records;
+  const auto submit = std::find_if(records.begin(), records.end(), [](const auto& r) { return r.type == "submit"; });
+  ASSERT_NE(submit, records.end());
+  ASSERT_EQ(submit->actor, "agent");
+  // Who placed the order cannot be erased from the order's record, nor from the
+  // command's run input, the other record that names it.
+  const auto order = without_actors(journal, "order.jsonl", [&](const auto& r) { return r.seq == submit->seq; });
+  auto verified = server::verify_run(order);
+  EXPECT_FALSE(verified.matched);
+  EXPECT_NE(verified.message.find("First differing transaction " + std::to_string(submit->seq) + " (submit)"),
+            std::string::npos) << verified.message;
+  const auto input = std::find_if(records.begin(), records.end(), [](const auto& r) {
+    return r.type == "run_input" && r.actor == "agent";
+  });
+  ASSERT_NE(input, records.end());
+  const auto command = without_actors(journal, "command.jsonl", [&](const auto& r) { return r.seq == input->seq; });
+  verified = server::verify_run(command);
+  EXPECT_FALSE(verified.matched);
+  EXPECT_NE(verified.message.find("First differing transaction " + std::to_string(std::min(input->seq, submit->seq))),
+            std::string::npos) << verified.message;
+  // Nor from every record of a run whose driver version postdates actors.
+  verified = server::verify_run(without_actors(journal, "all.jsonl", [](const auto&) { return true; }));
+  EXPECT_FALSE(verified.matched);
+  EXPECT_NE(verified.message.find("First differing transaction 1 (session_start)"), std::string::npos) << verified.message;
 }
 }  // namespace

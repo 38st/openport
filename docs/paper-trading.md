@@ -1677,7 +1677,10 @@ the order's originating actor. Rule liquidation orders have actor `system`.
 `GET /api/orders`, `GET /api/fills` and fills CSV expose actors; the Orders page and
 trade review show them in small text. Earlier journals and orders default to
 `unknown`; compaction preserves existing actor fields. Replay verification omits
-the new fields when reproducing hashes from a run recorded before actors existed.
+the new fields when reproducing hashes from a run recorded before actors existed:
+one whose first record has no actor and whose start input names no driver version.
+That choice holds for the whole run, so a record whose actor was removed from an
+attributed run is a differing transaction.
 
 The [OpenAPI contract](openapi.yaml) describes response schemas, write bodies and
 account selection. The [Python and MCP clients](../python/README.md) use these
