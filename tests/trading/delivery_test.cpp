@@ -472,6 +472,30 @@ TEST(TradingDelivery, ShortsTheMarketValuesBelowTheirExerciseArePartlyAssignedOv
   for (std::size_t i = 0; i < snap->closures.size(); ++i) EXPECT_EQ(again->closures[i].quantity, snap->closures[i].quantity);
 }
 
+TEST(TradingDelivery, TheNightsAssignmentsAreDecidedOnTheClosingMarksAndPrice) {
+  // D11: the rollover ran on the new day's opening quotes, so the night's assignments
+  // followed the next morning's prices. Rolled over before those quotes arrive, it decides
+  // on the close: the put under its exercise value then is assigned at the stock's close.
+  const auto deep = *md::parse_osi("SPY261022P00600000");  // 90 in the money at 510
+  const auto near = *md::parse_osi("SPY261022P00515000");  // 5 in the money, with time value left
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  for (const auto& c : {deep, near}) f.define(s, c);
+  f.quote(s, deep, "89.80", "90.20");
+  f.quote(s, near, "7.00", "7.20");
+  ASSERT_TRUE(s.submit(f.market("deep", deep, 10, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("near", near, 10, Side::Sell), f.time).decision.ok());
+  f.time = md::new_york_to_utc({2026, 9, 22}, 16, 14, 30);
+  f.quote(s, deep, "89.60", "89.90");
+  f.quote(s, near, "7.00", "7.20");
+  ASSERT_TRUE(s.roll_day(md::new_york_to_utc({2026, 9, 23}, 9, 30)).decision.ok());
+  const auto snap = s.snapshot();
+  ASSERT_FALSE(snap->closures.empty());
+  for (const auto& c : snap->closures) EXPECT_EQ(c.symbol, deep.osi_symbol());
+  ASSERT_FALSE(snap->stock_fills.empty());
+  for (const auto& fill : snap->stock_fills) EXPECT_EQ(fill.price, m("510"));
+}
+
 TEST(TradingDelivery, TheStocksCloseMarksSharesWhileTheOptionsTradeOnAndOvernight) {
   // Cboe prints SPY's close at 16:00 while its options quote until 16:15.
   const auto call = *md::parse_osi("SPY261022C00500000");

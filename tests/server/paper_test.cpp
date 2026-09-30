@@ -1389,7 +1389,7 @@ TEST(PaperWritePolicy, ProtectsEveryWriteAndLeavesReadsOpen) {
 }  // namespace
 
 namespace {
-TEST_F(PaperEngine, DailyLossTripsBeforeCrossingOrdersAndRolloverWaitsForMarks) {
+TEST_F(PaperEngine, DailyLossTripsBeforeCrossingOrdersAndTheNextDayStartsFromTheClose) {
   seed();
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "position", "4.20")).status, 201);
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "rest", "4.00")).status, 201);
@@ -1400,10 +1400,13 @@ TEST_F(PaperEngine, DailyLossTripsBeforeCrossingOrdersAndRolloverWaitsForMarks) 
   ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->risk.kill_latched; }));
   EXPECT_EQ(engine->trading_view()->snapshot->recent_fills.size(), 1);
   EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "cancelled");
+  // The next day's first batch rolls over on the closing marks, before its own option
+  // quotes make the account's marks fresh again.
   market.time += md::kNanosPerDay;
   provider.sink->publish(md::UnderlyingQuote{"SPX", market.time, 5000, 5000, 5000});
   ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->time == market.time; }));
-  EXPECT_EQ(read(*engine, "/api/portfolio")["start_of_day_equity"], "100000.00");
+  EXPECT_EQ(read(*engine, "/api/portfolio")["start_of_day_equity"], "99969.35");
+  EXPECT_FALSE(engine->trading_view()->snapshot->valuation_complete);
   quote("3.80", "4.00");
   ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->valuation_complete; }));
   const auto portfolio = read(*engine, "/api/portfolio");

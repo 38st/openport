@@ -37,6 +37,11 @@ class Desk {
     /// at the market time its own snapshot arrived. False reproduces older runs, whose
     /// driver batched each snapshot alone and offered every vouched quote at the latest time.
     bool instant_batches = true;
+    /// Driver 3, which builds on driver 2 and applies only with instant_batches: a new
+    /// trading date's first batch rolls each account over on the finished day's closing
+    /// marks before that batch's quotes. False reproduces older runs, which rolled over
+    /// after them, so the finished day's P&L by Greek took the overnight move.
+    bool closing_rollover = true;
     std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;

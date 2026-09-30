@@ -103,6 +103,29 @@ TEST(TradingAttribution, EachDayKeepsItsOwnAndTheNextStartsFromTheClose) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(TradingAttribution, TheRolloverClosesTheDayOnItsMarksAndTheOvernightMoveIsTheNewDays) {
+  // B28: the rollover ran on the new day's opening quotes, so the finished day's parts
+  // took the overnight move and the new baseline started after it.
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
+  tick(s, f, "4.50", "4.70", 5008, 0.2);
+  const auto close = s.snapshot()->equity;
+  // The new day's first batch rolls it over before its quotes arrive, whose marks it
+  // cannot yet call fresh.
+  f.time = md::new_york_to_utc({2026, 9, 23}, 9, 30);
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  const auto& day = s.snapshot()->evaluation.days.back();
+  EXPECT_EQ(day.close_equity, close);
+  EXPECT_NEAR(day.attribution.total(), (day.close_equity - day.open_equity).dollars(), 1e-6);
+  EXPECT_EQ(s.snapshot()->start_of_day_equity, close);
+  // The gap lands in the new day, from the close.
+  tick(s, f, "3.50", "3.70", 4980, 0.22, 0);
+  EXPECT_NEAR(day_pnl(s), 2 * 100 * (3.60 - 4.60), 1e-6);
+  EXPECT_NEAR(s.snapshot()->attribution.total(), day_pnl(s), 1e-6);
+}
+
 TEST(TradingAttribution, WithoutValuationsItIsAllOther) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

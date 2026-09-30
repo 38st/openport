@@ -160,17 +160,19 @@ Quantity shares_held(const State& s, const std::string& symbol) {
   const auto it = s.ledger.stocks().find(symbol);
   return it == s.ledger.stocks().end() ? 0 : it->second.shares;
 }
-/// The underlying's price if fresh: within max_quote_age of the market time
-/// while the stock market is open, or of its last close while it is not (the
-/// 16:00 close stays current while the options trade on to 16:15, and overnight).
-std::optional<Money> stock_price(const State& s, const std::string& symbol) {
+/// The underlying's price if fresh at `at`: within max_quote_age of it while the
+/// stock market is open, or of its last close while it is not (the 16:00 close
+/// stays current while the options trade on to 16:15, and overnight).
+std::optional<Money> stock_price(const State& s, const std::string& symbol, Timestamp at) {
   const auto it = s.stock_marks.find(symbol);
-  if (it == s.stock_marks.end() || it->second.time > s.time) return std::nullopt;
-  const auto session = md::stock_session(s.time);
-  const auto observed = session.open || session.market_time == md::kInvalidTimestamp ? s.time : std::min(s.time, session.market_time);
+  if (it == s.stock_marks.end() || it->second.time > at) return std::nullopt;
+  const auto session = md::stock_session(at);
+  const auto observed = session.open || session.market_time == md::kInvalidTimestamp ? at : std::min(at, session.market_time);
   if (observed - it->second.time > s.config.limits.max_quote_age) return std::nullopt;
   return it->second.price;
 }
+/// The underlying's price if fresh at the market time.
+std::optional<Money> stock_price(const State& s, const std::string& symbol) { return stock_price(s, symbol, s.time); }
 /// Shares' stretches are all delta: the price's move times the shares.
 Attribution explain_stock(const detail::Reference& r, Money value) {
   Attribution a;
@@ -2590,11 +2592,11 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
   });
 }
 namespace {
-/// Overnight, short American equity and ETF options that the market values below
-/// their exercise value are assigned: a holder then does better exercising than
-/// selling, as with a deep put or a call before its dividend. Each is assigned in
-/// full, bought back at intrinsic value, and delivers shares at the underlying's
-/// price, together the strike. Options that expire today settle instead.
+/// Overnight, short American equity and ETF options that the market valued below
+/// their exercise value at the close are assigned: a holder then does better
+/// exercising than selling, as with a deep put or a call before its dividend. Each
+/// assigned contract is bought back at intrinsic value and delivers shares at the
+/// underlying's close, together the strike. Options that expire today settle instead.
 /// splitmix64, so a replay draws the same assignments on every platform.
 std::uint64_t mix(std::uint64_t x) {
   x += 0x9e3779b97f4a7c15ULL;
@@ -2612,7 +2614,9 @@ Quantity assigned_contracts(const State& s, const std::string& symbol, Quantity 
   for (Quantity i = 0; i < contracts; ++i) assigned += static_cast<Quantity>((seed = mix(seed)) >> 63);
   return assigned;
 }
-void assign_early(State& s, const std::vector<Dividend>& dividends, Events& events) {
+/// `closing` is when the finished day's marks were last published: the marks and
+/// the underlying's price decide as they stood then.
+void assign_early(State& s, const std::vector<Dividend>& dividends, Timestamp closing, Events& events) {
   std::vector<std::string> shorts;
   for (const auto& [symbol, position] : s.ledger.positions()) {
     const auto& c = s.contracts.at(symbol);
@@ -2621,7 +2625,7 @@ void assign_early(State& s, const std::vector<Dividend>& dividends, Events& even
   for (const auto& symbol : shorts) {
     const auto contract = s.contracts.at(symbol);
     const auto mark = s.marks.find(symbol);
-    const auto price = stock_price(s, contract.underlying);
+    const auto price = stock_price(s, contract.underlying, closing);
     if (mark == s.marks.end() || !price) continue;
     const Money strike = Money::from_double(contract.strike);
     const bool call = contract.type == pricing::OptionType::Call;
@@ -2687,11 +2691,16 @@ std::optional<ClosingPrint> TradingSession::closing_print(const std::string& und
   return it == prints.end() ? std::nullopt : std::optional(it->second);
 }
 CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividend>& dividends) {
+  // The finished day closes on the marks it last published, before a new day's
+  // quotes replace them: its close, P&L by Greek and the night's assignments come
+  // from them, and the move from them to the new day's first quotes is the new day's.
+  const auto closing = impl_->snapshot;
+  const auto closing_time = impl_->state.time;
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
     const auto day = md::trading_date(time);
     if (day <= s.day) return CommandResult{failure(Reason::INVALID_TIME, "Rollover requires a later trading date"), {}, 0};
     monitor_loss(s, events);
-    const auto snapshot = snapshot_of(s);
+    const auto& snapshot = *closing;
     if (!snapshot.valuation_complete) return CommandResult{failure(Reason::STALE_QUOTE, "Rollover requires complete marked equity"), {}, 0};
     // Close the finished day. An end-of-day floor ratchets only here, from the
     // last fully marked equity observed on that date; breaches are still checked
@@ -2741,7 +2750,7 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
     event(events, "day_rollover", Json{{"day", day}, {"equity", s.start_equity}});
     // Assignments arrive overnight, so the new day takes them, and then the
     // ex-date's dividends pay the shares held into it.
-    assign_early(s, dividends, events);
+    assign_early(s, dividends, closing_time, events);
     pay_dividends(s, dividends, events);
     return CommandResult{};
   });

@@ -150,11 +150,13 @@ still recover. A replay needs a fresh journal. Verification reproduces the recor
 prefix, including an intentionally stopped run, without starting Engine or HTTP.
 It compares every transaction hash, final equity and the head hash.
 
-The start input records `"driver": 2`: batches of whole market instants, with each
-underlying's quotes offered at the market time its own snapshot arrived. A run
-recorded without it verifies with the driver it was made with, one batch per
-snapshot and every current quote offered at the latest market time, so its fills and
-hashes reproduce exactly.
+The start input records `"driver": 3`: batches of whole market instants, with each
+underlying's quotes offered at the market time its own snapshot arrived, and a new
+trading date's first batch rolling each account over on the finished day's closing
+marks before that batch's quotes. A run recorded with `"driver": 2` rolled over after
+them; one recorded without a driver batched each snapshot alone and offered every
+current quote at the latest market time. Each verifies with the driver it was made
+with, so its fills and hashes reproduce exactly.
 
 Replay, drill and scenario journals write each line at once but sync it to disk at
 most every 250 ms, and at pause, stop, finish and teardown, so a kept run is synced
