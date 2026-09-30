@@ -410,8 +410,8 @@ A **bracket** `{stop_loss, take_profit}` on an entry creates exits as the entry 
 Each exit takes exactly one of a trigger (a stop: market IOC when reached) or a limit
 price (a resting take-profit). Exits take the opposite side and are sized to the entry's
 filled quantity; later entry fills grow them. Client IDs are the entry's with `:stop` or
-`:target`. The two exits are linked: the first fill of one cancels the other with
-`OCO_FILLED`. If the entry still has an unfilled remainder, the exit fill cancels
+`:target`. A stop already reached when the entry fills fires at once. The two exits are
+linked: the first fill of one cancels the other with `OCO_FILLED`. If the entry still has an unfilled remainder, the exit fill cancels
 it with the same reason so it cannot reopen after protection has fired. Exits never exceed the position they protect: they shrink when it shrinks
 and are cancelled with `POSITION_CLOSED` once it is flat, so they never open a
 position. Because they only reduce risk, they execute like system orders, without the
