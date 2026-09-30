@@ -888,6 +888,17 @@ Quantity uncovered(const State& s, const std::vector<std::pair<std::string, Quan
     if (q != 0) legs.push_back({s.contracts.at(symbol), q, {}, std::nullopt});
   return naked_shorts(legs);
 }
+/// Contracts of a held long that can be sold without leaving more shorts uncovered.
+Quantity free_long(const State& s, const std::string& symbol) {
+  const auto base = uncovered(s, {});
+  Quantity low = 0, high = std::max<Quantity>(held(s, symbol), 0);
+  // Uncovered shorts only grow as more of the long is sold.
+  while (low < high) {
+    const auto middle = low + (high - low) / 2 + (high - low) % 2;
+    if (uncovered(s, {{symbol, -middle}}) <= base) low = middle; else high = middle - 1;
+  }
+  return low;
+}
 /// A defined-risk plan refuses an order that would leave more shorts uncovered.
 Decision defined_risk_check(const State& s, const std::vector<std::pair<std::string, Quantity>>& order,
                             std::string_view message = "This plan allows defined risk only: cover each short option with a "
@@ -2473,7 +2484,9 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       if (position.quantity != 0 && in_scope(contract.underlying) && s.time < contract.expiry_time())
         closing.emplace_back(symbol, position.quantity);
     }
-    // Shorts first: buying one back never uncovers another leg.
+    // Shorts first, and each long sized when its turn comes: it sells only as far
+    // as the shorts still held leave it free, so a buy-back that fills in part, or
+    // waits for fill latency, never leaves a short uncovered.
     std::stable_partition(closing.begin(), closing.end(), [](const auto& p) { return p.second < 0; });
     // A client ID the trader already used stays theirs: take the next free number.
     const auto prefix = "openport-close-" + std::to_string(s.version + 1) + "-";
@@ -2484,13 +2497,15 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       return id;
     };
     for (const auto& [symbol, quantity] : closing) {
+      const auto size = quantity < 0 ? magnitude(quantity) : free_long(s, symbol);
+      if (size == 0) continue;
       OrderRequest request;
       request.client_order_id = client_id();
       request.symbol = symbol;
       request.side = quantity > 0 ? Side::Sell : Side::Buy;
       request.type = OrderType::Market;
       request.tif = TimeInForce::Ioc;
-      request.quantity = magnitude(quantity);
+      request.quantity = size;
       const auto gate = rejections.find(s.contracts.at(symbol).underlying);
       place(s, std::move(request), time, gate == rejections.end() ? Decision{} : gate->second, events);
     }
