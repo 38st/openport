@@ -7315,6 +7315,7 @@
       },
       "Attribution": {
         "type": "object",
+        "description": "P&L by Greek in dollars, to the cent. Each part is rounded down or up so the parts add up to total exactly.",
         "properties": {
           "delta": {
             "type": "number"

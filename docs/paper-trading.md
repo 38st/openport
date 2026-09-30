@@ -582,7 +582,9 @@ fill ends the stretch at the mark and starts one at the new size; the spread pai
 against the mark and the fee are `costs`. Settlement ends the last stretch at
 intrinsic value, at expiry, with the settlement as the underlying's price and the
 volatility unchanged. So the parts add up to the day's P&L exactly (up to floating
-point): equity less the day's baseline. Rollover records the finished day's parts in
+point): equity less the day's baseline. The HTTP API gives the parts and the total to
+the cent, and still adds up exactly: each part is rounded down or up, the parts that
+rounding down cuts most taking the cents it leaves over (largest remainder). Rollover records the finished day's parts in
 its `EvaluationDay` and starts every stretch again from the closing marks; a reset
 starts afresh. Stretches and finished parts are state, journaled and recovered; a
 position held from before an upgrade joins at its next fill or rollover. The parts
