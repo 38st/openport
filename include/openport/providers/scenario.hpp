@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "openport/md/contract.hpp"
 #include "openport/md/time.hpp"
 
 namespace openport::providers {
@@ -45,7 +46,17 @@ struct Scenario {
 [[nodiscard]] md::Timestamp scenario_close(const Scenario& scenario, md::Date date);
 /// Overnight HH:MM >= 20:15 belongs to the evening before the trading date.
 [[nodiscard]] md::Timestamp scenario_time(std::string_view time, md::Date date, bool overnight);
+/// The generator's output revision. Revision 1 lists five expiries a chain: the date,
+/// the next two business days, the Friday after and next month's third Friday.
+/// Revision 2 also lists every series an earlier date listed until its last trade, at
+/// least as wide as then, and opens with each underlying's previous close. The contracts
+/// both list keep their identifiers, quotes and sizes. Runs record the revision; one
+/// recorded without it regenerates revision 1.
+inline constexpr int kScenarioRevision = 2;
+/// The option contracts a scenario lists on `date`, in the order it defines them.
+[[nodiscard]] std::vector<md::OptionContract> scenario_chain(const Scenario& scenario, md::Date date,
+                                                             int revision = kScenarioRevision);
 void write_scenario_recording(const std::filesystem::path& path, const Scenario& scenario,
-                              md::Date date, std::uint64_t seed);
+                              md::Date date, std::uint64_t seed, int revision = kScenarioRevision);
 
 }  // namespace openport::providers

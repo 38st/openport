@@ -148,6 +148,9 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
       bool first_batch = true;
       const auto title = "demo: " + days_[index].title + " · simulated prices";
       replay->set_driver([&, title](ReplayBatch batch) {
+        // A day's recording opens with the previous close its scenario starts from; the
+        // feed keeps the close the day before it actually printed.
+        std::erase_if(batch.events, [](const md::Event& event) { return std::holds_alternative<md::UnderlyingClose>(event); });
         for (auto& event : batch.events) {
           std::visit([&](auto& value) {
             using T = std::decay_t<decltype(value)>;

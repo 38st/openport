@@ -46,8 +46,8 @@ struct DemoOptions {
 
 /// Writes the day as a recording that ReplayProvider plays, under the provider name
 /// "demo". Regular days run in 15-second snapshots from the 09:30 ET open to 16:15,
-/// when the last SPY and QQQ options stop trading, with five expiries a chain from
-/// 0DTE to next month and open interest; the index follows the day's script and
+/// when the last SPY and QQQ options stop trading, with expiries from 0DTE to next
+/// month and open interest; the index follows the day's script and
 /// implied volatility rises as it falls. The overnight day is SPX options alone in
 /// Cboe's global trading hours, 20:15 to 09:25 ET, in 60-second snapshots, with the
 /// index frozen at its close. Throws if `path` exists or the date does not trade.

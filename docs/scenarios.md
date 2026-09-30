@@ -61,6 +61,16 @@ before `date` to 09:25 on `date`. Their cash index stays at the preceding busine
 day's close; options follow the simulated latent level and analytics infers spot
 from parity. Prices begin around SPX 6000, SPY 6000/10.02 and QQQ 480.
 
+Each chain lists the date's own expiries (the date, the next two business days, the
+Friday after and next month's third Friday, AM-settled for SPX) and every series an
+earlier date listed until its last trade, as wide as it was then: a position opened
+on one day, as the demo feed carries them from day to day, keeps its quotes until it
+expires. The recording opens with each underlying's previous close, dated the
+preceding business day at those opening levels (before any gap), so market-wide
+circuit breakers measure a fall from it. Generator revision 2 added both; the
+contracts revision 1 listed keep their identifiers, quotes and sizes, and a run
+recorded before revisions regenerates revision 1.
+
 The five original scenarios keep their original prices, sizes and relative order
 of existing events for the same date and seed. Their old segment moves have been
 converted to cumulative waypoints. Tests pin fingerprints of the old events.
@@ -123,8 +133,8 @@ Generated recordings are cached by scenario, date and seed in a private temporar
 directory, with four completed entries retained. Old entries are removed first;
 readers already playing an evicted file keep their open descriptor. The directory
 is removed on clean shutdown. The recording header has no extensible metadata, so
-scenario id, source hash, generator version and seed are recorded in the account
-journal. Replay state and the JSON sidecar also retain the display metadata.
+scenario id, source hash, generator version and revision, date and seed are recorded
+in the account journal. Replay state and the JSON sidecar also retain the display metadata.
 
 `start_at` also works with `file: NAME` for a recorded feed. It uses New York wall
 time on the recording's session date, determined from its first receipt. Evening

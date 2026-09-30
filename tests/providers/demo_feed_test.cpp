@@ -171,6 +171,9 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
       } else if (const auto* spot = std::get_if<md::UnderlyingQuote>(&event)) {
         const auto date = md::new_york_time(spot->ts).date;
         if (dates.empty() || dates.back() != date) { dates.push_back(date); opens.push_back(spot->last); }
+      } else if (std::holds_alternative<md::UnderlyingClose>(event)) {
+        // The feed keeps the close each day printed, not the one its scenario starts from.
+        ADD_FAILURE() << "a scenario's previous close reached the feed";
       }
     }
     std::promise<void> done; done.set_value(); return done.get_future();

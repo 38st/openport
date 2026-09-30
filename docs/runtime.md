@@ -530,7 +530,8 @@ five original days, gaps, crushes, pins and reversals. All are simulations, neve
 historical reconstructions. Status keeps `provider.simulated`; the terminal shows
 the scenario and seed with the simulated label. Generated recordings are cached by
 scenario, date and seed, with four completed entries retained. Generation uses
-fixed version 1; unsupported versions are rejected.
+fixed version 1, at output revision 2 (see [scenarios](scenarios.md)); unsupported
+versions are rejected.
 
 Each run's account journal is retained in `replays/` beside `--paper-journal`, on
 the chosen plan or practice. EOF and stopped runs are read-only in the terminal's
@@ -627,7 +628,9 @@ to a minute. Seeds are FNV-1a of `id|YYYY-MM-DD`, independent of speed and wall 
 The same scenario and date reproduce prices on the same build and platform.
 Sessions have 15-second snapshots and jump directly from the last snapshot to the
 next open. Normal expiry, settlement, auto-close and the 17:00 ET trading-date
-rollover apply. Scenario opening levels can gap from the preceding close.
+rollover apply. A series stays listed until its last trade, so positions carry from
+day to day. Scenario opening levels can gap from the preceding close; the feed keeps
+the close each day actually printed rather than the one a scenario starts from.
 
 The existing generator writes each day in a private temporary directory. Replay
 pacing consumes complete snapshots; the next day generates concurrently. Played

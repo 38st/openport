@@ -2,6 +2,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <cmath>
 #include <filesystem>
@@ -59,6 +60,7 @@ TEST(DemoMarket, SimulatesADayOfSpxSpyAndQqqChainsOnTheirOwnTicks) {
   std::map<md::InstrumentId, md::OptionContract> contracts;
   std::map<std::string, std::set<std::string>> expiries;
   std::map<std::string, md::Timestamp> last_print;
+  std::map<std::string, md::UnderlyingClose> previous;
   md::Timestamp first = 0, last = 0;
   double low = 1e9, spx_close = 0;
   std::size_t quotes = 0, retired = 0, zero_bids = 0, open_interest = 0;
@@ -72,6 +74,9 @@ TEST(DemoMarket, SimulatesADayOfSpxSpyAndQqqChainsOnTheirOwnTicks) {
     } else if (const auto* oi = std::get_if<md::OpenInterest>(&event->event)) {
       EXPECT_GT(oi->contracts, 0);
       ++open_interest;
+    } else if (const auto* close = std::get_if<md::UnderlyingClose>(&event->event)) {
+      EXPECT_EQ(last_print.count(close->symbol), 0U);  // before the day's first print
+      previous[close->symbol] = *close;
     } else if (const auto* u = std::get_if<md::UnderlyingQuote>(&event->event)) {
       last_print[u->symbol] = u->ts;
       if (u->symbol == "SPX") {
@@ -105,10 +110,17 @@ TEST(DemoMarket, SimulatesADayOfSpxSpyAndQqqChainsOnTheirOwnTicks) {
   EXPECT_EQ(first, opening);
   EXPECT_EQ(last, md::new_york_to_utc(day, 16, 15));
   EXPECT_EQ(expiries["SPXW"], (std::set<std::string>{"2026-09-16", "2026-09-17", "2026-09-18", "2026-09-25"}));
-  EXPECT_EQ(expiries["SPX"], (std::set<std::string>{"2026-10-16"}));
+  // September's AM monthly, listed through August, trades until the day before its third Friday.
+  EXPECT_EQ(expiries["SPX"], (std::set<std::string>{"2026-09-18", "2026-10-16"}));
   EXPECT_EQ(expiries["SPY"], (std::set<std::string>{"2026-09-16", "2026-09-17", "2026-09-18", "2026-09-25", "2026-10-16"}));
   EXPECT_EQ(expiries["QQQ"], expiries["SPY"]);
   EXPECT_EQ(open_interest, contracts.size());
+  // Each underlying's previous close, the level the day starts from.
+  ASSERT_EQ(previous.size(), 3U);
+  for (const auto& [symbol, price] : std::map<std::string, double>{{"SPX", 6000}, {"SPY", 598.80}, {"QQQ", 480}}) {
+    EXPECT_EQ(previous[symbol].date, (md::Date{2026, 9, 15})) << symbol;
+    EXPECT_DOUBLE_EQ(previous[symbol].price, price) << symbol;
+  }
   // The index prints until the close and SPY trades on to 16:15.
   EXPECT_EQ(last_print["SPX"], closing);
   EXPECT_EQ(last_print["SPY"], md::new_york_to_utc(day, 16, 15));
@@ -234,10 +246,89 @@ TEST(DemoMarket, LegacyRecordingsAreUnchanged) {
     const auto day = std::find_if(scenarios.begin(), scenarios.end(), [&](const auto& s) { return s.id == id; });
     ASSERT_NE(day, scenarios.end());
     const auto path = temporary("legacy");
-    providers::write_scenario_recording(path, *day, day->date, day->seed);
+    providers::write_scenario_recording(path, *day, day->date, day->seed, 1);
     EXPECT_EQ(recording_hash(path), hash) << id;
     std::filesystem::remove(path);
   }
+}
+
+TEST(DemoMarket, AHeldSeriesStaysListedUntilItsLastTrade) {
+  // B11: the chain listed next month's third Friday only, so on the first of a month a
+  // held monthly stopped being quoted two weeks before its last trade.
+  const auto& scenarios = providers::builtin_scenarios();
+  const auto day = std::find_if(scenarios.begin(), scenarios.end(), [](const auto& s) { return s.id == "quiet-grind"; });
+  ASSERT_NE(day, scenarios.end());
+  const auto dropped = [&](int revision) {
+    std::size_t missing = 0;
+    auto previous = providers::scenario_chain(*day, {2026, 7, 31}, revision);
+    for (md::Date date{2026, 8, 3}; date <= md::Date{2027, 3, 31};
+         date = md::trading_date(md::new_york_to_utc(date, 18, 0))) {
+      auto chain = providers::scenario_chain(*day, date, revision);
+      std::set<std::string> listed;
+      for (const auto& c : chain) listed.insert(c.osi_symbol());
+      for (const auto& c : previous)
+        if (c.last_trade_time() >= md::new_york_to_utc(date, 9, 30) && !listed.contains(c.osi_symbol())) {
+          EXPECT_EQ(revision, 1) << c.osi_symbol() << " is gone on " << md::format_date(date);
+          ++missing;
+        }
+      previous = std::move(chain);
+    }
+    return missing;
+  };
+  EXPECT_GT(dropped(1), 0U);
+  EXPECT_EQ(dropped(2), 0U);
+  // The one from the report: October's monthly on 2026-10-01, and it is gone once expired.
+  const auto listed = [&](md::Date date, std::string_view symbol) {
+    const auto chain = providers::scenario_chain(*day, date);
+    return std::any_of(chain.begin(), chain.end(), [&](const auto& c) { return c.osi_symbol() == symbol; });
+  };
+  const auto monthly = md::parse_osi("SPX261016C06000000")->osi_symbol();
+  EXPECT_TRUE(listed({2026, 10, 1}, monthly));
+  EXPECT_TRUE(listed({2026, 10, 15}, monthly));
+  EXPECT_FALSE(listed({2026, 10, 16}, monthly));
+  // Revision 2 lists revision 1's chain first, in its order.
+  const auto first = providers::scenario_chain(*day, {2026, 10, 1}, 1);
+  const auto second = providers::scenario_chain(*day, {2026, 10, 1});
+  ASSERT_GT(second.size(), first.size());
+  for (std::size_t i = 0; i < first.size(); ++i) EXPECT_EQ(second[i].osi_symbol(), first[i].osi_symbol());
+  EXPECT_THROW((void)providers::scenario_chain(*day, {2026, 10, 1}, 3), std::invalid_argument);
+}
+
+TEST(DemoMarket, RevisionTwoKeepsEveryQuoteOfTheFirstAndAddsTheRest) {
+  const auto& scenarios = providers::builtin_scenarios();
+  const auto day = std::find_if(scenarios.begin(), scenarios.end(), [](const auto& s) { return s.id == "quiet-grind"; });
+  ASSERT_NE(day, scenarios.end());
+  struct Read {
+    std::map<md::InstrumentId, std::string> symbols;
+    std::map<std::string, std::vector<std::array<double, 5>>> quotes;
+    std::size_t closes = 0;
+  };
+  const auto read = [&](int revision) {
+    const auto path = temporary("revision-" + std::to_string(revision));
+    providers::write_scenario_recording(path, *day, {2026, 10, 1}, day->seed, revision);
+    md::RecordingReader reader(path);
+    Read out;
+    while (const auto event = reader.next()) {
+      if (const auto* d = std::get_if<md::ContractDefinition>(&event->event)) out.symbols[d->id] = d->contract.osi_symbol();
+      if (std::holds_alternative<md::UnderlyingClose>(event->event)) ++out.closes;
+      if (const auto* q = std::get_if<md::OptionQuote>(&event->event))
+        out.quotes[out.symbols.at(q->id)].push_back({static_cast<double>(q->ts), q->bid, q->ask, q->bid_size, q->ask_size});
+    }
+    std::filesystem::remove(path);
+    return out;
+  };
+  const auto first = read(1);
+  const auto second = read(2);
+  EXPECT_EQ(first.closes, 0U);
+  EXPECT_EQ(second.closes, 3U);
+  for (const auto& [id, symbol] : first.symbols) {
+    EXPECT_EQ(second.symbols.at(id), symbol);
+    EXPECT_EQ(second.quotes.at(symbol), first.quotes.at(symbol)) << symbol;
+  }
+  const auto monthly = md::parse_osi("SPX261016C06000000")->osi_symbol();
+  EXPECT_FALSE(first.quotes.contains(monthly));
+  ASSERT_TRUE(second.quotes.contains(monthly));
+  EXPECT_GT(second.quotes.at(monthly).size(), 1000U);
 }
 
 TEST(DemoMarket, SimulatedVolumeRisesAndFavoursNearMoneyAndFrontExpiry) {

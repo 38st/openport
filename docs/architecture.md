@@ -142,7 +142,8 @@ speed and fast-forward change waits only. Snapshot boundaries remain atomic.
 
 Each new run journals its source identity, SHA-256, session start, initial plan and
 configuration, analytics settings, dividends and calendar overrides. Scenario
-identity includes exact source bytes' hash, generator version, date and seed;
+identity includes exact source bytes' hash, generator version and output revision,
+date and seed;
 recording identity includes its absolute path, name, size and content hash. Boundary
 records and commands carry explicit market and receipt clocks. These are ordinary
 hash-chained `run_input` transactions; existing state schemas and older journals

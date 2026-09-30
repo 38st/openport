@@ -369,7 +369,8 @@ underlying still waiting at its last snapshot.
 **Circuit breakers** halt the whole market as the exchanges' market-wide rule does
 (NYSE Rule 7.12, which the options exchanges follow), measured on the S&P 500 (SPX, or
 SPY when SPX is not subscribed) against its previous close: Cboe's published
-previous-day close (`md::UnderlyingClose`), or the closing print the engine saw. In the
+previous-day close (`md::UnderlyingClose`), a generated scenario's previous close, or
+the closing print the engine saw. In the
 regular session a fall of 7% (level 1) or 13% (level 2) halts trading for 15 minutes,
 each once a day and only until 35 minutes before the close (15:25 ET, 12:25 on an
 early-close day); a fall of 20% (level 3) halts it for the rest of the day. While a halt
