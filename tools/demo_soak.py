@@ -2,127 +2,217 @@
 """Soak test: hold an SPX iron condor with far wings through a demo-market day and
 check, every few seconds, that the account can still trade.
 
-    tools/demo_soak.py URL [SPEED] [PLAN]
+    tools/demo_soak.py URL [SPEED] [PLAN] [--seed SEED]
 
 URL is an openportd to test, such as one started for it with
 `openportd --port 8094 --no-history --paper-journal /tmp/soak/paper.jsonl`. The soak
 replaces any replay running there and trades only the replay's own in-memory account.
-SPEED is the replay's speed (default 120) and PLAN its plan (default practice).
+SPEED is the replay's speed (default 120), PLAN its plan (default practice) and SEED
+the demo day's seed (default: one the server picks). The report prints the seed, so
+a run can be repeated.
 
-Each probe places a non-marketable limit buy of the short put, a leg that keeps a
-two-sided quote, and cancels it, so it asks whether the account can trade at all.
-The report counts refused probes by code and portfolio snapshots with incomplete marks;
-a healthy build refuses only by the account's own risk rules.
+Each probe pauses the replay, places a limit buy of the short put inside the price
+band and under the ask, cancels it and resumes, so it asks whether the account can
+trade at all without trading. A probe that fills all the same is reported and sold
+back, keeping the condor whole. The report counts refused probes by code, probe fills
+and portfolio snapshots with incomplete marks; a healthy build refuses only by the
+account's own risk rules and fills no probe. The exit status is 1 when a probe filled.
 """
+import argparse
 import json
+import math
 import sys
 import time
 import urllib.error
 import urllib.request
 
-BASE = sys.argv[1]
-SPEED = int(sys.argv[2]) if len(sys.argv) > 2 else 120
-PLAN = sys.argv[3] if len(sys.argv) > 3 else "practice"
 
+class Client:
+    def __init__(self, base):
+        self.base = base.rstrip("/")
 
-def call(method, path, body=None):
-    data = None if body is None else json.dumps(body).encode()
-    request = urllib.request.Request(BASE + path, data=data, method=method,
-                                     headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return response.status, json.loads(response.read() or b"null")
-    except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read() or b"null")
+    def call(self, method, path, body=None):
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(self.base + path, data=data, method=method,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.status, json.loads(response.read() or b"null")
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read() or b"null")
 
 
 def code(body):
     return (body or {}).get("error", {}).get("code") if isinstance(body, dict) else None
 
 
-# A fresh replay of the default demo day under the End-of-day 50K plan.
-call("DELETE", "/api/replay")
-status, body = call("POST", "/api/replay", {"demo": "reversal", "speed": 30, "plan": PLAN})
-assert status in (200, 201), (status, body)
-while True:
-    _, st = call("GET", "/api/replay/status")
-    spx = next((u for u in st["underlyings"] if u["symbol"] == "SPX"), None)
-    if spx and spx["options"] > 0 and spx["paper"]["accepting"]:
-        break
-    time.sleep(0.5)
-
-# The condor: the second expiry, shorts near 10 delta, wings near 3 delta.
-_, summary = call("GET", "/api/replay/underlyings/SPX/summary")
-expiries = [e["id"] for e in summary["expiries"]]
-expiry = expiries[1] if len(expiries) > 1 else expiries[0]
-_, chain = call("GET", f"/api/replay/underlyings/SPX/chain?expiry={expiry}")
-rows = chain["strikes"]
+def spx_tick(cents):
+    """SPX options trade in nickels under $3 and dimes from $3."""
+    return 5 if cents < 300 else 10
 
 
-def pick(kind, target):
-    best = None
-    for row in rows:
-        leg = row.get(kind)
-        if not leg or leg.get("delta") is None or not leg.get("ask"):
-            continue
-        distance = abs(abs(leg["delta"]) - target)
-        if best is None or distance < best[0]:
-            best = (distance, leg)
-    return best[1]
+def probe_price(bid, ask, band_absolute=0.50, band_relative=0.20):
+    """A buy limit that cannot trade against this quote and passes the price band:
+    the highest tick at or under the bid, and under the ask, no further from the mid
+    than the band allows. None when the band leaves no such price."""
+    bid_cents, ask_cents = round(bid * 100), round(ask * 100)
+    if bid_cents <= 0 or ask_cents <= bid_cents:
+        return None
+    mid = (bid_cents + ask_cents) / 2
+    lowest = math.ceil(mid - max(band_absolute * 100, band_relative * mid) - 1e-9)
+    price = bid_cents - bid_cents % spx_tick(bid_cents)
+    while price < lowest:
+        # A wide quote's bid can sit outside the band: bid at the band's edge instead.
+        price += spx_tick(price) - price % spx_tick(price)
+    if price <= 0 or price >= ask_cents:
+        return None
+    return price / 100
 
 
-legs = {"short put": pick("put", 0.10), "long put": pick("put", 0.03),
-        "short call": pick("call", 0.10), "long call": pick("call", 0.03)}
-print("expiry", expiry)
-for name, leg in legs.items():
-    print(f"  {name:10s} {leg['symbol']}  bid {leg['bid']} ask {leg['ask']}  delta {leg['delta']:.3f}")
-for name, side in (("long put", "buy"), ("long call", "buy"), ("short put", "sell"), ("short call", "sell")):
-    status, body = call("POST", "/api/replay/orders", {
-        "client_order_id": f"condor-{name.replace(' ', '-')}", "symbol": legs[name]["symbol"], "side": side,
-        "type": "market", "quantity": 1, "time_in_force": "ioc"})
-    print(f"  {side} {name}: {status} {body.get('order', {}).get('status') if status < 300 else body}")
+def probe(client, number, symbol, bid, ask, limits):
+    """One probe while the replay is paused: "ok", "skipped", "finished", ("refused",
+    code) or ("filled", contracts, restored)."""
+    price = probe_price(bid, ask, float(limits.get("price_band_absolute", 0.5)),
+                        float(limits.get("price_band_relative", 0.2)))
+    if price is None:
+        return "skipped"
+    status, body = client.call("POST", "/api/replay/orders", {
+        "client_order_id": f"probe-{number}", "symbol": symbol, "side": "buy", "type": "limit",
+        "quantity": 1, "limit_price": f"{price:.2f}", "time_in_force": "day"})
+    if status != 201:
+        # The day can end between reading the replay and sending the probe.
+        return "finished" if code(body) == "REPLAY_READ_ONLY" else ("refused", code(body))
+    order = body["order"]
+    if order["status"] in ("working", "partially_filled"):
+        _, cancelled = client.call("DELETE", f"/api/replay/orders/{order['id']}")
+        order = (cancelled or {}).get("order", order) if isinstance(cancelled, dict) else order
+    filled = int(order.get("filled_quantity") or 0)
+    if not filled:
+        return "ok"
+    # Sell back what the probe bought, so the condor's short put stays short.
+    status, body = client.call("POST", "/api/replay/orders", {
+        "client_order_id": f"restore-{number}", "symbol": symbol, "side": "sell", "type": "market",
+        "quantity": filled, "time_in_force": "ioc"})
+    restored = int(body.get("order", {}).get("filled_quantity") or 0) if status == 201 else 0
+    return ("filled", filled, restored)
 
-# Play the rest of the day, probing as it goes.
-call("PUT", "/api/replay", {"speed": SPEED})
-probe = legs["short put"]["symbol"]
-probes, refused, incomplete, samples = 0, {}, 0, 0
-worst_age = 0.0
-last_time = None
-while True:
-    _, replay = call("GET", "/api/replay")
-    state = replay["replay"]
-    _, portfolio = call("GET", "/api/replay/portfolio")
-    samples += 1
-    if not portfolio.get("valuation_complete", True):
-        incomplete += 1
-        if incomplete <= 3 or incomplete % 40 == 0:
-            stale = [(pos["symbol"].split()[-1], pos.get("fresh"), pos.get("mark_age_seconds"), pos.get("awaiting_settlement"))
-                     for pos in portfolio.get("positions", []) if not pos.get("fresh")]
-            print("  incomplete at", portfolio.get("time"), "flags", portfolio.get("quality_flags"), "stale", stale,
-                  "stocks", [(st.get("symbol"), st.get("fresh")) for st in portfolio.get("stocks", [])])
-    for position in portfolio.get("positions", []):
-        worst_age = max(worst_age, position.get("mark_age_seconds") or 0)
-    _, chain = call("GET", f"/api/replay/underlyings/SPX/chain?expiry={expiry}")
-    bid = next((row["put"]["bid"] for row in chain.get("strikes", [])
-                if row.get("put", {}).get("symbol") == probe), None)
-    if bid and bid > 0:
-        probes += 1
-        status, body = call("POST", "/api/replay/orders", {
-            "client_order_id": f"probe-{probes}", "symbol": probe, "side": "buy", "type": "limit",
-            "quantity": 1, "limit_price": f"{bid:.2f}", "time_in_force": "day"})
-        if status == 201:
-            order = body["order"]
-            if order["status"] in ("working", "partially_filled"):
-                call("DELETE", f"/api/replay/orders/{order['id']}")
-        else:
-            refused[code(body)] = refused.get(code(body), 0) + 1
-    last_time = portfolio.get("time")
-    if state.get("finished"):
-        break
-    time.sleep(1.0)
 
-_, portfolio = call("GET", "/api/replay/portfolio")
-print("ended at", last_time)
-print("positions held:", len(portfolio.get("positions", [])), "| equity", portfolio.get("equity"))
-print(f"probes {probes}, refused {sum(refused.values())} {refused}")
-print(f"portfolio samples {samples}, with incomplete marks {incomplete}, oldest mark {worst_age:.0f} s")
+def soak(client, speed=120, plan="practice", seed=None, out=print, pause=1.0):
+    """Run the soak and return its summary."""
+    client.call("DELETE", "/api/replay")
+    start = {"demo": "reversal", "speed": 30, "plan": plan}
+    if seed is not None:
+        start["seed"] = str(seed)
+    status, body = client.call("POST", "/api/replay", start)
+    assert status in (200, 201), (status, body)
+    out("demo day", body["replay"].get("scenario"), "seed", body["replay"].get("seed"), "plan", plan, "speed", speed)
+    while True:
+        _, st = client.call("GET", "/api/replay/status")
+        spx = next((u for u in st["underlyings"] if u["symbol"] == "SPX"), None)
+        if spx and spx["options"] > 0 and spx["paper"]["accepting"]:
+            break
+        time.sleep(0.5)
+
+    # The condor: the second expiry, shorts near 10 delta, wings near 3 delta.
+    _, summary = client.call("GET", "/api/replay/underlyings/SPX/summary")
+    expiries = [e["id"] for e in summary["expiries"]]
+    expiry = expiries[1] if len(expiries) > 1 else expiries[0]
+    _, chain = client.call("GET", f"/api/replay/underlyings/SPX/chain?expiry={expiry}")
+    rows = chain["strikes"]
+
+    def pick(kind, target):
+        best = None
+        for row in rows:
+            leg = row.get(kind)
+            if not leg or leg.get("delta") is None or not leg.get("ask"):
+                continue
+            distance = abs(abs(leg["delta"]) - target)
+            if best is None or distance < best[0]:
+                best = (distance, leg)
+        return best[1]
+
+    legs = {"short put": pick("put", 0.10), "long put": pick("put", 0.03),
+            "short call": pick("call", 0.10), "long call": pick("call", 0.03)}
+    out("expiry", expiry)
+    for name, leg in legs.items():
+        out(f"  {name:10s} {leg['symbol']}  bid {leg['bid']} ask {leg['ask']}  delta {leg['delta']:.3f}")
+    for name, side in (("long put", "buy"), ("long call", "buy"), ("short put", "sell"), ("short call", "sell")):
+        status, body = client.call("POST", "/api/replay/orders", {
+            "client_order_id": f"condor-{name.replace(' ', '-')}", "symbol": legs[name]["symbol"], "side": side,
+            "type": "market", "quantity": 1, "time_in_force": "ioc"})
+        out(f"  {side} {name}: {status} {body.get('order', {}).get('status') if status < 300 else body}")
+    _, risk = client.call("GET", "/api/replay/risk")
+    limits = (risk or {}).get("limits") or {}
+
+    # Play the rest of the day, probing as it goes.
+    status, body = client.call("PUT", "/api/replay", {"speed": speed})
+    assert status == 200, (status, body)
+    symbol = legs["short put"]["symbol"]
+    result = {"probes": 0, "skipped": 0, "refused": {}, "probe_fills": 0, "restored": 0,
+              "incomplete": 0, "samples": 0, "worst_age": 0.0, "ended": None}
+    while True:
+        # Paused, the book cannot move between reading the quote and the probe.
+        client.call("PUT", "/api/replay", {"paused": True})
+        _, replay = client.call("GET", "/api/replay")
+        state = replay["replay"]
+        _, portfolio = client.call("GET", "/api/replay/portfolio")
+        result["samples"] += 1
+        if not portfolio.get("valuation_complete", True):
+            result["incomplete"] += 1
+            if result["incomplete"] <= 3 or result["incomplete"] % 40 == 0:
+                stale = [(pos["symbol"].split()[-1], pos.get("fresh"), pos.get("mark_age_seconds"), pos.get("awaiting_settlement"))
+                         for pos in portfolio.get("positions", []) if not pos.get("fresh")]
+                out("  incomplete at", portfolio.get("time"), "flags", portfolio.get("quality_flags"), "stale", stale,
+                    "stocks", [(st.get("symbol"), st.get("fresh")) for st in portfolio.get("stocks", [])])
+        for position in portfolio.get("positions", []):
+            result["worst_age"] = max(result["worst_age"], position.get("mark_age_seconds") or 0)
+        result["ended"] = portfolio.get("time")
+        if state.get("finished"):
+            break
+        _, chain = client.call("GET", f"/api/replay/underlyings/SPX/chain?expiry={expiry}")
+        quote = next((row["put"] for row in chain.get("strikes", [])
+                      if (row.get("put") or {}).get("symbol") == symbol), None)
+        if quote and quote.get("bid") and quote.get("ask"):
+            outcome = probe(client, result["probes"] + 1, symbol, quote["bid"], quote["ask"], limits)
+            if outcome == "finished":
+                break
+            if outcome == "skipped":
+                result["skipped"] += 1
+            else:
+                result["probes"] += 1
+            if isinstance(outcome, tuple) and outcome[0] == "refused":
+                result["refused"][outcome[1]] = result["refused"].get(outcome[1], 0) + 1
+            if isinstance(outcome, tuple) and outcome[0] == "filled":
+                result["probe_fills"] += outcome[1]
+                result["restored"] += outcome[2]
+                out(f"  probe-{result['probes']} filled {outcome[1]} at", portfolio.get("time"), f"(sold back {outcome[2]})")
+        client.call("PUT", "/api/replay", {"paused": False})
+        time.sleep(pause)
+
+    _, portfolio = client.call("GET", "/api/replay/portfolio")
+    held = {position["symbol"]: position["quantity"] for position in portfolio.get("positions", [])}
+    result["positions"] = len(held)
+    result["condor_intact"] = all(held.get(legs[name]["symbol"]) == (-1 if name.startswith("short") else 1) for name in legs)
+    out("ended at", result["ended"])
+    out("positions held:", result["positions"], "| condor intact:", "yes" if result["condor_intact"] else "no",
+        "| equity", portfolio.get("equity"))
+    out(f"probes {result['probes']}, refused {sum(result['refused'].values())} {result['refused']}, "
+        f"filled {result['probe_fills']} (sold back {result['restored']}), skipped {result['skipped']}")
+    out(f"portfolio samples {result['samples']}, with incomplete marks {result['incomplete']}, "
+        f"oldest mark {result['worst_age']:.0f} s")
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Soak an openportd demo replay with a held condor.")
+    parser.add_argument("url")
+    parser.add_argument("speed", nargs="?", type=int, default=120)
+    parser.add_argument("plan", nargs="?", default="practice")
+    parser.add_argument("--seed", type=int, help="demo day seed; the server picks one when omitted")
+    args = parser.parse_args(argv)
+    result = soak(Client(args.url), args.speed, args.plan, args.seed)
+    return 1 if result["probe_fills"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
