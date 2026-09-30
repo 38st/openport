@@ -63,6 +63,7 @@ ReplayProvider::ReplayProvider(Options options)
     throw std::invalid_argument("replay: speed must be max, 1, 2, 5, 10, 30, 60, 120 or 300");
   if (!options_.clock) options_.clock = std::make_shared<SystemReplayClock>();
   seeking_ = options_.start_at > 0 || options_.paused;
+  preparing_ = seeking_.load();
   if (options_.start_at == 0 && options_.paused) options_.start_at = reader_.header().started;
   set_paused(options_.paused);
 }
@@ -194,6 +195,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
           }
           if (*previous >= options_.start_at) {
             seeking_ = false;
+            preparing_ = false;
             if (paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
           }
           deadline = options_.clock->now();
@@ -233,6 +235,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
       if (seeking_.load()) {
         if (!synchronize()) break;
         seeking_ = false;
+        preparing_ = false;
       }
       if (!reader_.diagnostic().empty()) {
         sink.publish(md::ProviderStatus{md::now(), md::FeedState::Stopped,
@@ -252,6 +255,7 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
         md::ProviderStatus{md::now(), md::FeedState::Error, name_ + ": " + error.what(), ""});
   }
   if (!stopping_.load()) (void)synchronize();
+  preparing_ = false;
   finished_ = true;
 }
 
@@ -285,6 +289,9 @@ md::Timestamp ReplayProvider::end_time() {
 
 void ReplayProvider::until(md::Timestamp target) {
   if (!driver_) throw std::invalid_argument("Lockstep requires a deterministic consumer");
+  if (stepping_.exchange(true)) throw std::invalid_argument("Another lockstep advance is in progress");
+  // stepping() holds from here until this returns, the end's first lookup included.
+  struct Stepped { std::atomic<bool>& stepping; ~Stepped() { stepping = false; } } stepped{stepping_};
   // Refuse a target past EOF before playing anything: an error leaves the run where it was.
   if (const auto end = end_time(); target > end)
     throw std::invalid_argument("until exceeds the recording's end at " + md::format_timestamp(end) + "; the replay did not move");
@@ -292,7 +299,6 @@ void ReplayProvider::until(md::Timestamp target) {
   if (target <= 0) throw std::invalid_argument("until must be a positive market timestamp");
   if (target % md::kNanosPerSecond != 0 && !snapshot_batches_.load())
     throw std::invalid_argument("Streaming replays settle at whole market seconds; until must name a whole second");
-  if (step_pending_) throw std::invalid_argument("Another lockstep advance is in progress");
   if (target < std::max(market_time_.load(), in_flight_time_)) throw std::invalid_argument("until must not precede the current market time");
   if (finished_.load() || stopping_.load()) throw std::invalid_argument("Replay has finished");
   step_target_ = target;
@@ -315,7 +321,6 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
     auto deadline = options_.clock->now();
     md::Timestamp previous = 0;
     std::uint64_t remainder = 0;
-    bool preparing = seeking_.load();
     while (!stopping_.load() && next) {
       {
         std::unique_lock lock(control_mutex_);
@@ -337,7 +342,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       }
       const int measured = speed_.load();
       if (previous > 0 && !seeking_.load()) deadline = advance(deadline, previous, next->received, measured, remainder);
-      if (!preparing && !pace(deadline, measured)) break;
+      if (!preparing_.load() && !pace(deadline, measured)) break;
       if (stopping_.load()) break;
       // An until request may have interrupted the wait before this future batch.
       {
@@ -355,10 +360,10 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       settled_ = through;
       previous = receipt;
       next = batches.next();
-      if (preparing && receipt >= options_.start_at && (!next || next->received > receipt)) {
+      if (preparing_.load() && receipt >= options_.start_at && (!next || next->received > receipt)) {
         if (paused_.load() && !synchronize()) break;
-        preparing = false;
         seeking_ = false;
+        preparing_ = false;
         deadline = options_.clock->now();
         if (paused_.load()) paused_at_ = deadline.time_since_epoch().count();
       }
@@ -376,6 +381,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
     if (step_pending_) paused_ = true;
     step_pending_ = false;
     seeking_ = false;
+    preparing_ = false;
     finished_ = true;
   }
   control_.notify_all();

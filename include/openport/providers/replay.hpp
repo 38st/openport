@@ -74,7 +74,10 @@ class ReplayProvider final : public md::Provider {
   [[nodiscard]] bool paused() const noexcept { return paused_.load(); }
   /// The replay's clock: the recorded receipt time of the latest event published, 0 before the first.
   [[nodiscard]] md::Timestamp time() const noexcept { return time_.load(); }
-  [[nodiscard]] bool fast_forwarding() const noexcept { return seeking_.load(); }
+  /// Preparing the start state: playing unpaced up to start_at before trading opens.
+  [[nodiscard]] bool fast_forwarding() const noexcept { return preparing_.load(); }
+  /// A lockstep advance (until) is under way: checking its target or playing to it.
+  [[nodiscard]] bool stepping() const noexcept { return stepping_.load(); }
   [[nodiscard]] bool finished() const noexcept { return finished_.load(); }
   [[nodiscard]] const md::RecordingHeader& header() const { return reader_.header(); }
 
@@ -101,7 +104,9 @@ class ReplayProvider final : public md::Provider {
   std::atomic<bool> skip_{false};
   std::atomic<md::Timestamp> time_{0};
   std::atomic<bool> finished_{false};
+  /// Playing unpaced: preparing the start state or stepping.
   std::atomic<bool> seeking_{false};
+  std::atomic<bool> preparing_{false};
   std::mutex control_mutex_;
   std::condition_variable control_;
   bool started_ = false;
@@ -111,7 +116,8 @@ class ReplayProvider final : public md::Provider {
   std::atomic<md::Timestamp> market_time_{0};
   md::Timestamp in_flight_time_ = 0;  // control_mutex_
   md::Timestamp step_target_ = 0;  // control_mutex_
-  bool step_pending_ = false;
+  bool step_pending_ = false;  // control_mutex_
+  std::atomic<bool> stepping_{false};
   std::string playback_error_;
   md::Subscription subscription_;
   std::mutex end_mutex_;

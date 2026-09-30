@@ -1122,6 +1122,66 @@ TEST(ReplayRun, HistoryWaitsForTheStoppingJournalsFinalSync) {
   EXPECT_EQ(json::parse(response.body).at("history").size(), 1U);
 }
 
+// B17 and D16: a step runs on the host's control thread, so neither its caller nor a
+// listing waits for it; a write meanwhile is refused as REPLAY_STEPPING, not as a
+// start state being prepared.
+TEST(ReplayRun, AStepHoldsNoCallerAndRefusesWritesUntilItSettles) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  const test::ScriptedMarket market;
+  std::promise<void> syncing, release;
+  auto entered = syncing.get_future();
+  const auto released = release.get_future().share();
+  std::atomic<bool> hold{false};
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
+  options.journal_io.sync = [&](int) {
+    if (hold.exchange(false)) { syncing.set_value(); released.wait(); }
+    return true;
+  };
+  server::ReplayHost host({file.directory, options, false});
+  ASSERT_EQ(replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"paused", true}, {"speed", 0}}).status, 201);
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+  const json order{{"client_order_id", "during"}, {"symbol", market.symbol()}, {"side", "buy"}, {"type", "market"},
+                   {"quantity", 1}, {"time_in_force", "ioc"}};
+  // The step's settling barrier syncs the journal, which this test holds.
+  hold = true;
+  std::promise<server::ApiResponse> stepped;
+  auto step = stepped.get_future();
+  server::ApiRequest request{"PUT", "/api/replay", json{{"until", md::format_timestamp(market.time + 8 * md::kNanosPerSecond)}}.dump()};
+  request.content_type = "application/json";
+  auto handled = std::async(std::launch::async, [&] {
+    return host.handle(request, [&](server::ApiResponse response) { stepped.set_value(std::move(response)); });
+  });
+  ASSERT_EQ(entered.wait_for(5min), std::future_status::ready);
+  const bool returned = handled.wait_for(0s) == std::future_status::ready;
+  EXPECT_TRUE(returned) << "the step held the thread that asked for it";
+  auto listing = std::async(std::launch::async, [&] { return replay_call(host, "GET", "/api/replay"); });
+  const bool listed = listing.wait_for(60s) == std::future_status::ready;
+  EXPECT_TRUE(listed) << "a listing waited for the step";
+  if (!returned || !listed) {
+    release.set_value();
+    return;
+  }
+  const auto state = json::parse(listing.get().body).at("replay");
+  EXPECT_EQ(state.at("stepping"), true);
+  EXPECT_EQ(state.at("fast_forwarding"), false);
+  const auto refused = replay_call(host, "POST", "/api/replay/orders", order);
+  EXPECT_EQ(refused.status, 409) << refused.body;
+  EXPECT_EQ(json::parse(refused.body).at("error").at("code"), "REPLAY_STEPPING");
+  EXPECT_EQ(step.wait_for(0s), std::future_status::timeout);
+  release.set_value();
+  ASSERT_EQ(step.wait_for(5min), std::future_status::ready);
+  const auto settled = step.get();
+  ASSERT_EQ(settled.status, 200) << settled.body;
+  EXPECT_EQ(json::parse(settled.body).at("replay").at("stepping"), false);
+  EXPECT_EQ(json::parse(settled.body).at("settled_through"), md::format_timestamp(market.time + 8 * md::kNanosPerSecond));
+  EXPECT_TRUE(handled.get());
+  EXPECT_EQ(replay_call(host, "POST", "/api/replay/orders", order).status, 201);
+  host.stop();
+}
+
 TEST(ReplayRun, StandaloneEngineFlushesBeforePublishingFinished) {
   test::RecordingFile file;
   write_stream(file.path, true);
