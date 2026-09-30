@@ -27,6 +27,8 @@ constexpr double kRate = 0.04;
 constexpr double kDividend = 0.013;
 constexpr double kOpen = 6000.0;     // SPX at the open
 constexpr double kSpyRatio = 10.02;  // index points per SPY dollar
+constexpr double kQqqOpen = 480.0;
+constexpr double kQqqBeta = 1.25;  // QQQ's moves against SPX's
 
 /// splitmix64 with Box-Muller: the same draws on every standard library, which
 /// <random>'s distributions do not promise.
@@ -93,6 +95,68 @@ std::vector<md::OptionContract> list(const Series& series, double center) {
     }
   }
   return contracts;
+}
+
+/// The series a date lists: the date, the next two business days and the Friday after
+/// (SPXW, SPY and QQQ), and next month's third Friday (AM-settled for SPX).
+std::vector<Series> listed_on(md::Date date) {
+  const auto d1 = next_business_day(date);
+  const auto d2 = next_business_day(d1);
+  const auto weekly = expiry_on(friday_from(md::date_from_days(md::days_since_epoch(d2) + 1)));
+  const md::Date month{date.month == 12 ? date.year + 1 : date.year, date.month == 12 ? 1 : date.month + 1, 1};
+  const auto monthly = expiry_on(md::date_from_days(md::days_since_epoch(friday_from(month)) + 14));
+  std::vector<Series> out;
+  for (const auto& expiry : {date, d1, d2}) {
+    out.push_back({"SPXW", expiry, 5, 0.03, false});
+    out.push_back({"SPY", expiry, 1, 0.03, false});
+    out.push_back({"QQQ", expiry, 1, 0.03, false});
+  }
+  out.push_back({"SPXW", weekly, 5, 0.04, false});
+  out.push_back({"SPY", weekly, 1, 0.04, false});
+  out.push_back({"QQQ", weekly, 1, 0.04, false});
+  out.push_back({"SPX", monthly, 10, 0.06, true});
+  out.push_back({"SPY", monthly, 1, 0.06, true});
+  out.push_back({"QQQ", monthly, 1, 0.06, true});
+  return out;
+}
+
+/// One contract of a day's chain, with what its open interest follows.
+struct Listing {
+  md::OptionContract contract;
+  bool monthly = false;
+  double center = 0;  ///< the underlying's open, around which strikes are listed
+};
+std::vector<Listing> listings(const Scenario& script, md::Date date, int revision) {
+  if (revision < 1 || revision > kScenarioRevision) throw std::invalid_argument("Unsupported scenario revision");
+  auto series = listed_on(date);
+  if (revision >= 2) {
+    // Every series an earlier date listed that still trades, as wide as it ever was,
+    // after the date's own: a position opened on an earlier day keeps its quotes. A
+    // series lists at most seven weeks ahead; AM-settled SPX stops the day before.
+    std::map<std::pair<std::string, md::Date>, Series> earlier;
+    const auto first = md::days_since_epoch(date) - 56;
+    for (auto day = md::previous_business_day(date); md::days_since_epoch(day) >= first; day = md::previous_business_day(day)) {
+      for (const auto& s : listed_on(day)) {
+        if (s.root == "SPX" ? s.expiry <= date : s.expiry < date) continue;
+        const auto [it, added] = earlier.try_emplace({s.root, s.expiry}, s);
+        if (added) continue;
+        it->second.window = std::max(it->second.window, s.window);
+        it->second.monthly = it->second.monthly || s.monthly;
+      }
+    }
+    for (const auto& [key, s] : earlier) series.push_back(s);
+  }
+  std::vector<Listing> out;
+  std::set<std::string> defined;
+  for (const auto& s : series) {
+    const bool index = s.root == "SPX" || s.root == "SPXW";
+    const auto symbol = index ? "SPX" : s.root;
+    if (std::find(script.symbols.begin(), script.symbols.end(), symbol) == script.symbols.end()) continue;
+    const double center = index ? kOpen : s.root == "SPY" ? kOpen / kSpyRatio : kQqqOpen;
+    for (auto& contract : list(s, center))
+      if (defined.insert(contract.osi_symbol()).second) out.push_back({std::move(contract), s.monthly, center});
+  }
+  return out;
 }
 
 /// At-the-money implied volatility: a little higher for the shortest expiries and
@@ -181,9 +245,6 @@ Window window_for(const Scenario& script, md::Date date) {
   return {md::new_york_to_utc(date, 9, 30), md::new_york_to_utc(date, hour, 0), md::new_york_to_utc(date, hour, 15), kStep};
 }
 
-constexpr double kQqqOpen = 480.0;
-constexpr double kQqqBeta = 1.25;  // QQQ's moves against SPX's
-
 }  // namespace
 
 bool simulated_provider(std::string_view name) noexcept {
@@ -213,7 +274,14 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
   write_scenario_recording(path, script, options.date.value_or(script.date), options.seed != 0 ? options.seed : script.seed);
 }
 
-void write_scenario_recording(const std::filesystem::path& path, const Scenario& script, md::Date date, std::uint64_t seed) {
+std::vector<md::OptionContract> scenario_chain(const Scenario& script, md::Date date, int revision) {
+  std::vector<md::OptionContract> out;
+  for (auto& listing : listings(script, date, revision)) out.push_back(std::move(listing.contract));
+  return out;
+}
+
+void write_scenario_recording(const std::filesystem::path& path, const Scenario& script, md::Date date, std::uint64_t seed,
+                              int revision) {
   if (script.generator != 1) throw std::invalid_argument("scenario.generator: only version 1 is supported");
   if (!md::valid_date(date) || !business_day(date)) throw std::invalid_argument("The demo day must be a trading day");
   const auto w = window_for(script, date);
@@ -223,33 +291,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
     if (at < w.first || at >= w.close) throw std::invalid_argument("scenario.events.at: outside this date's session");
   }
 
-  // Five expiries a chain: today, the next two business days, the Friday after,
-  // and next month's third Friday (AM-settled for SPX).
-  const auto d1 = next_business_day(date);
-  const auto d2 = next_business_day(d1);
-  const auto weekly = expiry_on(friday_from(md::date_from_days(md::days_since_epoch(d2) + 1)));
-  const md::Date month{date.month == 12 ? date.year + 1 : date.year, date.month == 12 ? 1 : date.month + 1, 1};
-  const auto monthly = expiry_on(md::date_from_days(md::days_since_epoch(friday_from(month)) + 14));
-  const double spy_open = kOpen / kSpyRatio;
-  std::vector<std::pair<Series, double>> series;
-  const auto add = [&](const std::string& root, md::Date expiry, double step, double window, bool is_monthly) {
-    const bool index = root == "SPX" || root == "SPXW";
-    const auto symbol = index ? "SPX" : root;
-    if (std::find(script.symbols.begin(), script.symbols.end(), symbol) == script.symbols.end()) return;
-    series.push_back({{root, expiry, step, window, is_monthly}, index ? kOpen : root == "SPY" ? spy_open : kQqqOpen});
-  };
-  for (const auto& expiry : {date, d1, d2}) {
-    add("SPXW", expiry, 5, 0.03, false);
-    add("SPY", expiry, 1, 0.03, false);
-    add("QQQ", expiry, 1, 0.03, false);
-  }
-  add("SPXW", weekly, 5, 0.04, false);
-  add("SPY", weekly, 1, 0.04, false);
-  add("QQQ", weekly, 1, 0.04, false);
-  add("SPX", monthly, 10, 0.06, true);
-  add("SPY", monthly, 1, 0.06, true);
-  add("QQQ", monthly, 1, 0.06, true);
-
+  const auto contracts = listings(script, date, revision);
   md::RecordingHeader header;
   header.provider = std::string(kDemoProvider);
   header.capabilities.poll_interval = std::chrono::seconds(w.step / md::kNanosPerSecond);
@@ -264,20 +306,24 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
 
   SnapshotPublisher publisher;
   std::map<std::string, std::vector<Listed>> chains;
-  for (const auto& [s, center] : series) {
-    for (auto& contract : list(s, center)) {
-      Listed listed;
-      listed.id = publisher.define(contract.osi_symbol(), contract, sink);
-      listed.contract = std::move(contract);
-      listed.expiry = listed.contract.expiry_time();
-      const double days = md::years_between(w.first, listed.expiry) * 365;
-      publisher.open_interest(listed.id, w.first, open_interest(listed.contract, s.monthly, center, days, seed, listed.id), sink);
-      chains[listed.contract.underlying].push_back(std::move(listed));
-    }
+  for (const auto& [contract, monthly, center] : contracts) {
+    Listed listed;
+    listed.id = publisher.define(contract.osi_symbol(), contract, sink);
+    listed.contract = contract;
+    listed.expiry = listed.contract.expiry_time();
+    const double days = md::years_between(w.first, listed.expiry) * 365;
+    publisher.open_interest(listed.id, w.first, open_interest(listed.contract, monthly, center, days, seed, listed.id), sink);
+    chains[listed.contract.underlying].push_back(std::move(listed));
   }
   // Overnight the index keeps its last close, printed once; its options follow futures.
   if (script.overnight)
     sink.publish(md::UnderlyingQuote{"SPX", md::new_york_to_utc(md::previous_business_day(date), 16, 0), 0, 0, kOpen});
+  // Each underlying's previous close, the level its gap and path start from, which
+  // market-wide circuit breakers measure a fall against.
+  if (revision >= 2)
+    for (const auto& symbol : script.symbols)
+      sink.publish(md::UnderlyingClose{symbol, w.first, md::previous_business_day(date),
+                                       symbol == "SPX" ? kOpen : symbol == "SPY" ? cents(kOpen / kSpyRatio) : kQqqOpen});
 
   const double session = static_cast<double>(w.close - w.first);
   const double hours = script.overnight ? 13.0 : 6.5;

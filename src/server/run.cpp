@@ -118,7 +118,8 @@ std::string recording_input(const std::filesystem::path& file) {
 std::string scenario_input(const providers::Scenario& scenario, md::Date date, std::uint64_t seed) {
   return json{{"version", 1}, {"kind", "scenario"}, {"id", scenario.id}, {"file", scenario.source_file.string()},
       {"builtin", scenario.builtin}, {"sha256", hash_text(scenario.source)}, {"generator", scenario.generator},
-      {"seed", seed}, {"date", date}, {"started", providers::scenario_open(scenario, date)}}.dump();
+      {"revision", providers::kScenarioRevision}, {"seed", seed}, {"date", date},
+      {"started", providers::scenario_open(scenario, date)}}.dump();
 }
 RunVerification verify_run(const std::filesystem::path& journal) {
   RunVerification result;
@@ -167,8 +168,12 @@ RunVerification verify_run(const std::filesystem::path& journal) {
         if (hash_text(scenario.source) != identity.at("sha256").get<std::string>())
           throw std::runtime_error("Scenario input changed: " + scenario.id);
         if (scenario.generator != identity.at("generator").get<decltype(scenario.generator)>()) throw std::runtime_error("Scenario generator version changed");
+        // Runs from before revisions regenerate the first revision's chain.
+        const auto revision = identity.value("revision", 1);
+        if (revision < 1 || revision > providers::kScenarioRevision) throw std::runtime_error("Unsupported scenario revision");
         file = generated->file();
-        providers::write_scenario_recording(file, scenario, identity.at("date").get<md::Date>(), identity.at("seed").get<std::uint64_t>());
+        providers::write_scenario_recording(file, scenario, identity.at("date").get<md::Date>(), identity.at("seed").get<std::uint64_t>(),
+                                            revision);
       } else throw std::runtime_error("Unknown run input kind");
       auto next_reader = std::make_unique<md::RecordingReader>(file);
       generated_input = std::move(generated);

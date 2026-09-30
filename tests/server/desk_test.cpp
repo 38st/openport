@@ -929,6 +929,86 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
   EXPECT_NE(changed.message.find("Scenario input changed"), std::string::npos) << changed.message;
 }
 
+TEST(ReproducibleRun, ScenarioRunsFromBeforeRevisionsRegenerateTheFirstRevision) {
+  test::RecordingFile file;
+  const auto source = file.directory / "golden.json";
+  {
+    std::ofstream out(source);
+    out << R"({"id":"golden","title":"Golden day","description":"Simulated test day","symbols":["SPX"],"session":"regular","date":"2026-11-27","seed":81723,"generator":1,"drift":[[1,0.001]],"volatility":0.12,"iv_shift":0,"spot_vol":-2})";
+  }
+  const auto scenario = providers::read_scenario(source);
+  for (const int revision : {1, 2}) {
+    SCOPED_TRACE(revision);
+    const auto recording = file.directory / ("revision-" + std::to_string(revision) + ".oprec");
+    providers::write_scenario_recording(recording, scenario, scenario.date, scenario.seed, revision);
+    // A run recorded before revisions names none.
+    auto identity = json::parse(server::scenario_input(scenario, scenario.date, scenario.seed));
+    EXPECT_EQ(identity.at("revision"), providers::kScenarioRevision);
+    if (revision == 1) identity.erase("revision");
+    const auto journal = file.directory / ("run-" + std::to_string(revision) + ".jsonl");
+    {
+      md::RecordingReader reader(recording);
+      server::Desk::Options options;
+      options.replay = true;
+      options.run_input = identity.dump();
+      options.paper_journal = journal;
+      server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+      desk.start_trading();
+      providers::ReplayBatches batches(reader, reader.header().subscription);
+      const auto open = providers::scenario_open(scenario, scenario.date);
+      while (const auto batch = batches.next()) {
+        if (batch->time > open + 5 * md::kNanosPerMinute) break;
+        desk.replay_batch(batch->events, batch->received, batch->time);
+        scripted_orders(desk, open, batch->received);
+      }
+      desk.stop();
+    }
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+
+TEST(ScenarioReplay, CircuitBreakersMeasureTheFallFromTheScenariosPreviousClose) {
+  // D12: a scenario had no previous close, so a crash never halted anything.
+  test::RecordingFile file;
+  const auto source = file.directory / "crash.json";
+  {
+    std::ofstream out(source);
+    out << R"({"id":"crash","title":"Crash","description":"A gap down and a slide.","symbols":["SPX"],"session":"regular","date":"2026-09-16","seed":1,"generator":1,"drift":[[1,-0.2]],"volatility":0,"iv_shift":0,"spot_vol":0,"events":[{"type":"gap","move":-0.1}]})";
+  }
+  const auto scenario = providers::read_scenario(source);
+  for (const int revision : {1, 2}) {
+    SCOPED_TRACE(revision);
+    const auto recording = file.directory / ("crash-" + std::to_string(revision) + ".oprec");
+    providers::write_scenario_recording(recording, scenario, scenario.date, scenario.seed, revision);
+    md::RecordingReader reader(recording);
+    server::Desk::Options options;
+    options.replay = true;
+    server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+    desk.start_trading();
+    providers::ReplayBatches batches(reader, reader.header().subscription);
+    const auto open = providers::scenario_open(scenario, scenario.date);
+    while (const auto batch = batches.next()) {
+      if (batch->time > open + 10 * md::kNanosPerMinute) break;
+      desk.replay_batch(batch->events, batch->received, batch->time);
+    }
+    const auto& breaker = desk.breaker();
+    if (revision == 1) {
+      EXPECT_FALSE(breaker.previous_close);
+      EXPECT_TRUE(breaker.halts.empty());
+      continue;
+    }
+    // Opening 9.5% under the 6000 close trips level 1 at the open.
+    ASSERT_TRUE(breaker.previous_close);
+    EXPECT_EQ(breaker.previous_close->date, (md::Date{2026, 9, 15}));
+    EXPECT_DOUBLE_EQ(breaker.previous_close->price, 6000);
+    ASSERT_FALSE(breaker.halts.empty());
+    EXPECT_EQ(breaker.halts.front().level, 1);
+    EXPECT_EQ(breaker.halts.front().start, open);
+    EXPECT_TRUE(breaker.active);
+  }
+}
+
 server::ApiResponse replay_call(server::ReplayHost& host, std::string method, std::string target, json body = {}) {
   std::promise<server::ApiResponse> done;
   auto result = done.get_future();
