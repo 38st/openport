@@ -149,11 +149,15 @@ records retain the existing hash chain and schema; repair and compaction command
 include these journals. Runs from a prior process are treated as finished, including
 ones interrupted by a crash. Recovery errors are shown in history.
 
-`GET /api/replay` includes a `history` array with pass, fail or open, the plan and
-P&L (last marked equity less initial cash). Missing marks are flagged. An open
-result means the evaluation is undecided, or the run was practice. It does not
-mean that playback is still running. Stopping a run does not liquidate positions;
-its final marked positions remain in the journal.
+`GET /api/replay` includes a `history` array with pass, fail or open, the plan's
+id (`plan`) and name (`plan_name`) and P&L (last marked equity less initial cash).
+Missing marks are flagged. An open result means the evaluation is undecided, or
+the run was practice. It does not mean that playback is still running. Each entry
+carries the run's final playback state: stopping or replacing a run rewrites its
+sidecar, so `fast_forwarding` is false and `settled_through` is where it stopped. A
+run a crash interrupted reports `progress` 1, paused, and its last journaled time as
+`settled_through`. Stopping a run does not liquidate positions; its final marked
+positions remain in the journal.
 
 The terminal opens finished runs read-only in Journal and Dashboard, with replay
 and simulated/recording labels. The account switcher also lists them. Their routes

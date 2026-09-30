@@ -24,7 +24,7 @@ const replay: ReplayState = { id: "run-1", file: "Demo market: Selloff", demo: t
   delay_seconds: 0, speed: 60, paused: true, finished: false, time: "2026-09-16T19:00:00Z" }
 const listing: ReplayListing = { write: "open", directory: "", recordings: [], replay: null,
   demos: [{ id: "selloff", title: "Selloff", description: "A simulated decline.", goal: "Keep risk contained.", symbols: ["SPX"], provider: "demo", started: "2026-09-16T13:30:00Z" }],
-  history: [{ ...replay, id: "saved-run", finished: true, result: "fail", pnl: "-123.450000", read_only: true }] }
+  history: [{ ...replay, id: "saved-run", plan_name: "Intraday 25K", finished: true, result: "fail", pnl: "-123.450000", read_only: true }] }
 beforeEach(() => {
   writeToken.set("")
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
@@ -88,6 +88,7 @@ it("shows history result and P&L, opens both views read-only, and confirms delet
   expect(host.textContent).toContain("fail")
   expect(host.textContent).toContain("123.45")
   expect(host.textContent).toContain("simulated · seed 18446744073709551615")
+  expect(host.textContent).toContain("2026-09-16 · 15:00 · Intraday 25K")
   await click("Open journal")
   expect(switchSource).toHaveBeenCalledWith("history:saved-run")
   expect(navigate).toHaveBeenCalledWith("journal")

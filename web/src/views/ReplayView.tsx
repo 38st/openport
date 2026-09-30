@@ -191,7 +191,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
         {listing.data.history.map((run) => <div key={run.id} className="flex flex-wrap items-center gap-3 rounded-md border border-border p-3 text-xs">
           <span className="font-medium">{run.file}</span><Badge tone="neutral">replay</Badge>
           <span>{run.demo ? "simulated" : "recording"}{run.seed ? ` · seed ${run.seed}` : ""}</span>
-          <span>{run.date} · {run.start_at || "open"} · {run.plan}</span>
+          <span>{run.date} · {run.start_at || "open"} · {run.plan_name ?? run.plan}</span>
           <Badge tone={run.result === "pass" ? "positive" : run.result === "fail" ? "warn" : "neutral"}>{run.result}</Badge>
           <span>P&amp;L {run.pnl === null ? "—" : formatMoney(run.pnl)}{run.valuation_complete === false ? " (incomplete marks)" : ""}</span>
           {run.error && <span className="text-warn">{run.error}</span>}

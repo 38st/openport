@@ -501,7 +501,8 @@ TEST(ReplayHost, DrillsReachTheEngineBeforeTradingAndKeepTheirJournalsAcrossRest
     ASSERT_EQ(history.size(), 1U) << history;
     EXPECT_FALSE(history[0].contains("error")) << history;
     EXPECT_EQ(history[0]["result"], "open");
-    EXPECT_EQ(history[0]["plan"], "Intraday 25K");
+    EXPECT_EQ(history[0]["plan"], "intraday-25k");
+    EXPECT_EQ(history[0]["plan_name"], "Intraday 25K");
     EXPECT_TRUE(history[0]["pnl"].is_string());
     EXPECT_FALSE(std::filesystem::exists(base.paper_journal));
     EXPECT_EQ(call(host, "POST", "/api/replay/history/" + id + "/orders", order.dump()).status, 403);
@@ -519,7 +520,8 @@ TEST(ReplayHost, DrillsReachTheEngineBeforeTradingAndKeepTheirJournalsAcrossRest
   restarted.stop();
   const auto practice = json::parse(call(restarted, "GET", "/api/replay").body)["history"];
   ASSERT_EQ(practice.size(), 1U);
-  EXPECT_EQ(practice[0]["plan"], "Practice");
+  EXPECT_EQ(practice[0]["plan"], "practice");
+  EXPECT_EQ(practice[0]["plan_name"], "Practice");
   EXPECT_FALSE(practice[0].contains("error")) << practice;
 }
 
@@ -609,6 +611,44 @@ TEST(ReplayHost, HistoryDeletesDamagedRunsWithTheirSidecarsAndAnswersUnknownIds)
   host.stop();
 }
 
+// B53: a finished run's entry reports its final playback state and the plan's id,
+// also when a crash left the metadata written at start.
+TEST(ReplayHost, FinishedRunsListTheirFinalPlaybackStateAndPlanId) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  server::ReplayHost host({file.directory, base, false});
+  const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","start_at":"15:50","paused":true,"speed":0,"plan":"intraday-25k"})");
+  ASSERT_EQ(started.status, 201) << started.body;
+  const auto start_state = json::parse(started.body)["replay"];
+  EXPECT_TRUE(start_state["fast_forwarding"]);
+  const std::string id = start_state["id"];
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"15:55"})").status, 200);
+  const auto check = [&](const json& entry) {
+    EXPECT_EQ(entry["finished"], true) << entry;
+    EXPECT_EQ(entry["read_only"], true);
+    EXPECT_EQ(entry["fast_forwarding"], false);
+    EXPECT_EQ(entry["progress"], 1.0);
+    EXPECT_EQ(entry["paused"], true);
+    EXPECT_EQ(entry["settled_through"], "2026-09-16T19:55:00.000Z");
+    EXPECT_EQ(entry["plan"], "intraday-25k");
+    EXPECT_EQ(entry["plan_name"], "Intraday 25K");
+  };
+  host.stop();
+  auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(history.size(), 1U);
+  check(history[0]);
+  // A crash leaves the metadata create wrote at the start.
+  { std::ofstream out(file.directory / "replays" / (id + ".json"), std::ios::trunc); out << start_state.dump() << '\n'; }
+  server::ReplayHost restarted({file.directory, base, false});
+  history = json::parse(call(restarted, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(history.size(), 1U);
+  check(history[0]);
+}
+
 TEST(ReplayHost, PaperDisabledAndReadOnlyNeverCreateReplayJournals) {
   test::RecordingFile file;
   drill_recording(file.path);
@@ -689,7 +729,9 @@ TEST(ReplayHost, SavedRunSummariesOutliveTheFullAccountCache) {
     EXPECT_EQ(item["result"], "open");
     EXPECT_EQ(item["pnl"], "0.00");
     EXPECT_TRUE(item["valuation_complete"]);
-    EXPECT_EQ(item["plan"], "Practice");
+    // Without a metadata sidecar the plan's id comes from its recorded name.
+    EXPECT_EQ(item["plan"], "practice");
+    EXPECT_EQ(item["plan_name"], "Practice");
     EXPECT_EQ(item["time"], md::format_timestamp(market.time));
   }
   EXPECT_EQ(host.history_recoveries(), 20U);

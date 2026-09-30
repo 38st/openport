@@ -5515,6 +5515,10 @@
           "plan": {
             "type": "string"
           },
+          "plan_name": {
+            "type": "string",
+            "description": "The plan's display name, as its journal records it; plan is its id."
+          },
           "durable": {
             "type": "boolean"
           },
