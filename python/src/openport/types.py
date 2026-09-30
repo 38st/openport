@@ -190,3 +190,5 @@ class CancelAllResult(TypedDict):
 class FlattenResult(CancelAllResult):
     orders: list[Order]
     fills: list[Fill]
+    stock_fills: list[JSON]
+    kept_stocks: list[JSON]

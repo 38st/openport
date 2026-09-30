@@ -1547,6 +1547,13 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   if (s.config.rules.fill_latency_ms == 0 && s.orders.at(static_cast<std::size_t>(order.id - 1)).open())
     cancel_order(s.orders.mut(order.id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
 }
+/// Why shares cannot trade now: they need the stock market's regular session and
+/// the underlying's fresh price.
+Decision share_close_check(const State& s, const std::string& symbol) {
+  if (!md::market_session(s.time).open) return failure(Reason::SESSION_CLOSED, "Stock trades in the regular session");
+  if (!stock_price(s, symbol)) return failure(Reason::STALE_QUOTE, "Needs a fresh price for " + symbol);
+  return {};
+}
 /// Close shares at the underlying's fresh price in the regular session; without
 /// one they stay, and a rule retries on later transactions.
 void close_shares(State& s, const std::string& symbol, Quantity shares, StockSource source, Events& events) {
@@ -2474,16 +2481,57 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
   return impl_->transact(time, "close_positions", [&](State& s, Events& events) {
     monitor_loss(s, events);
     const auto in_scope = [&](const std::string& name) { return !underlying || name == *underlying; };
-    for (const auto id : open_ids(s))
-      if (const auto& o = s.orders[id - 1]; o.open() && in_scope(underlying_of(s, o)))
-        cancel_order(s.orders.mut(id - 1), failure(Reason::USER_CANCEL, "Cancelled to close positions"), events);
+    // Before anything is cancelled, what in scope could close: the account, the
+    // integration's gate on the underlying and the session a market order (or a
+    // share trade) needs can each refuse a close whatever the price. By
+    // underlying, whether anything in it can close.
+    std::map<std::string, bool> closable;
+    Decision refusal;
+    const auto gate = [&](const std::string& name, Decision decision) {
+      closable[name] |= decision.ok();
+      if (!decision.ok() && refusal.ok()) {
+        refusal = std::move(decision);
+        if (refusal.scope.empty()) refusal.scope = name;
+      }
+    };
+    OrderRequest market;
+    market.type = OrderType::Market;
+    market.tif = TimeInForce::Ioc;
     std::vector<std::pair<std::string, Quantity>> closing;
     // Expired contracts cannot trade; they close at settlement.
     for (const auto& [symbol, position] : s.ledger.positions()) {
       const auto& contract = s.contracts.at(symbol);
-      if (position.quantity != 0 && in_scope(contract.underlying) && s.time < contract.expiry_time())
-        closing.emplace_back(symbol, position.quantity);
+      if (position.quantity == 0 || !in_scope(contract.underlying) || s.time >= contract.expiry_time()) continue;
+      closing.emplace_back(symbol, position.quantity);
+      const auto rejection = rejections.find(contract.underlying);
+      auto decision = account_check(s, true);
+      if (decision.ok() && rejection != rejections.end()) decision = rejection->second;
+      if (decision.ok()) decision = session_check(contract, s.time, market);
+      gate(contract.underlying, std::move(decision));
     }
+    // Shares close at the underlying's fresh price in the regular session.
+    std::vector<std::pair<std::string, Quantity>> stocks;
+    CommandResult result;
+    for (const auto& [symbol, stock] : s.ledger.stocks()) {
+      if (stock.shares == 0 || !in_scope(symbol)) continue;
+      const auto rejection = rejections.find(symbol);
+      auto decision = account_check(s, true);
+      if (decision.ok() && rejection != rejections.end()) decision = rejection->second;
+      if (decision.ok()) decision = share_close_check(s, symbol);
+      if (decision.ok()) stocks.emplace_back(symbol, stock.shares);
+      else result.kept_stocks.emplace(symbol, decision);
+      gate(symbol, std::move(decision));
+    }
+    // Nothing in scope can close: refused, with nothing cancelled or recorded.
+    if (!closable.empty() && std::none_of(closable.begin(), closable.end(), [](const auto& c) { return c.second; }))
+      return CommandResult{refusal, {}, 0};
+    // An underlying where nothing can close keeps its orders, exits included.
+    for (const auto id : open_ids(s))
+      if (const auto& o = s.orders[id - 1]; o.open() && in_scope(underlying_of(s, o))) {
+        const auto it = closable.find(underlying_of(s, o));
+        if (it == closable.end() || it->second)
+          cancel_order(s.orders.mut(id - 1), failure(Reason::USER_CANCEL, "Cancelled to close positions"), events);
+      }
     // Shorts first, and each long sized when its turn comes: it sells only as far
     // as the shorts still held leave it free, so a buy-back that fills in part, or
     // waits for fill latency, never leaves a short uncovered.
@@ -2496,8 +2544,10 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       while (s.clients.contains(id)) id = prefix + std::to_string(++count);
       return id;
     };
+    // A refused close is still recorded, rejected with its reason.
     for (const auto& [symbol, quantity] : closing) {
-      const auto size = quantity < 0 ? magnitude(quantity) : free_long(s, symbol);
+      const auto& name = s.contracts.at(symbol).underlying;
+      const auto size = quantity < 0 || !closable.at(name) ? magnitude(quantity) : free_long(s, symbol);
       if (size == 0) continue;
       OrderRequest request;
       request.client_order_id = client_id();
@@ -2506,16 +2556,11 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       request.type = OrderType::Market;
       request.tif = TimeInForce::Ioc;
       request.quantity = size;
-      const auto gate = rejections.find(s.contracts.at(symbol).underlying);
-      place(s, std::move(request), time, gate == rejections.end() ? Decision{} : gate->second, events);
+      const auto rejection = rejections.find(name);
+      place(s, std::move(request), time, rejection == rejections.end() ? Decision{} : rejection->second, events);
     }
-    // Shares close at the underlying's fresh price in the regular session.
-    std::vector<std::pair<std::string, Quantity>> stocks;
-    if (account_check(s, true).ok())
-      for (const auto& [symbol, stock] : s.ledger.stocks())
-        if (in_scope(symbol) && !rejections.contains(symbol)) stocks.emplace_back(symbol, stock.shares);
     for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Trade, events);
-    return CommandResult{};
+    return result;
   });
 }
 CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quotes,
@@ -3041,9 +3086,8 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
     if (!reduces)
       return CommandResult{failure(Reason::INVALID_ORDER, "Stock trades only reduce the shares exercise and assignment delivered"), {}, 0};
     if (const auto d = account_check(s, true); !d.ok()) return CommandResult{d, {}, 0};
-    if (!md::market_session(s.time).open) return CommandResult{failure(Reason::SESSION_CLOSED, "Stock trades in the regular session"), {}, 0};
+    if (const auto d = share_close_check(s, symbol); !d.ok()) return CommandResult{d, {}, 0};
     const auto price = stock_price(s, symbol);
-    if (!price) return CommandResult{failure(Reason::STALE_QUOTE, "Needs a fresh price for " + symbol), {}, 0};
     const auto realised_before = s.ledger.account().realised;
     trade_shares(s, symbol, signed_shares, *price, StockSource::Trade);
     if (s.config.guardrails.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -s.config.guardrails.cooldown_loss)

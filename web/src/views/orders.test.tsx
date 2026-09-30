@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import type { Order, Position, StockHolding } from "../api/trading-types"
-import { CancelAllDialog, EditOrderDialog, FlattenDialog } from "../components/OrderActions"
+import { CancelAllDialog, EditOrderDialog, FlattenDialog, FlattenOutcome } from "../components/OrderActions"
 import { ExerciseDialog } from "../components/StockActions"
 import { account, fill, order, portfolio, risk, status, trading } from "../test/trading-fixtures"
 import { OrdersView } from "./OrdersView"
@@ -134,6 +134,22 @@ describe("closing positions", () => {
     expect(html).toContain("200 SPY shares")
     expect(html).toContain("Sell at the price")
     expect(html).toContain("Close 2 positions</button>")
+  })
+
+  it("reports the shares it closed and the shares it left", () => {
+    const closed = render(<FlattenOutcome done={{ account_version: "18", cancelled_orders: [], orders: [], fills: [],
+      stock_fills: [{ id: "3", symbol: "SPY", shares: -100, price: "599.34", time: "2026-09-16T19:50:00.000Z", source: "trade", option: null }],
+      kept_stocks: [] }} />)
+    expect(closed).toContain("Sell 100 SPY shares")
+    expect(closed).toContain("Filled at $599.34")
+    expect(closed).not.toContain("No position needed closing.")
+    const kept = render(<FlattenOutcome done={{ account_version: "18", cancelled_orders: [], orders: [], fills: [], stock_fills: [],
+      kept_stocks: [{ symbol: "SPY", shares: 100, reason: { code: "SESSION_CLOSED", message: "Stock trades in the regular session" } }] }} />)
+    expect(kept).toContain("100 SPY shares stay open: Stock trades in the regular session.")
+    expect(kept).not.toContain("No position needed closing.")
+    // Older servers send neither field.
+    expect(render(<FlattenOutcome done={{ account_version: "18", cancelled_orders: [], orders: [], fills: [] }} />))
+      .toContain("No position needed closing.")
   })
 
   it("waits for the regular session, since it sends market orders", () => {

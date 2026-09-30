@@ -6,7 +6,7 @@ import type { ClosePositionsResponse, Order, Position, StockHolding, TradingStat
 import { contractLabel, orderLabel } from "../lib/journal"
 import { closingAction, editableFields, flattenPlan, isOpen, orderChange, orderDraft, outcome, underlyingsOf } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
-import { extendedSession } from "../lib/trading"
+import { extendedSession, formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
@@ -141,6 +141,37 @@ export function CancelAllDialog({ orders, trading, onClose, onDone }: {
   )
 }
 
+/** What a flatten did: each closing order's outcome, the shares it traded and the shares it left. */
+export function FlattenOutcome({ done }: { done: ClosePositionsResponse }) {
+  const stockFills = done.stock_fills ?? []
+  const kept = done.kept_stocks ?? []
+  return (
+    <>
+      <ul className="space-y-1 text-sm">
+        {done.orders.map((order) => (
+          <li key={order.id} className="flex flex-wrap justify-between gap-2">
+            <span>{order.side === "buy" ? "Buy" : "Sell"} {order.quantity} {orderLabel(order)}</span>
+            <span className={order.status === "filled" ? "text-bullish" : "text-warn"}>{outcome(order)}</span>
+          </li>
+        ))}
+        {stockFills.map((fill) => (
+          <li key={`shares-${fill.id}`} className="flex flex-wrap justify-between gap-2">
+            <span>{fill.shares < 0 ? "Sell" : "Buy back"} {Math.abs(fill.shares)} {fill.symbol} shares</span>
+            <span className="text-bullish">Filled at {formatMoney(fill.price)}</span>
+          </li>
+        ))}
+      </ul>
+      {kept.map((stock) => (
+        <p key={stock.symbol} role="status" className="text-sm text-warn">
+          {Math.abs(stock.shares)} {stock.symbol} shares stay open: {stock.reason.message}.
+        </p>
+      ))}
+      {!done.orders.length && !stockFills.length && !kept.length && <p className="text-sm text-muted">No position needed closing.</p>}
+      <p className="text-xs text-muted">{done.cancelled_orders.length} {done.cancelled_orders.length === 1 ? "order" : "orders"} cancelled first.</p>
+    </>
+  )
+}
+
 /**
  * Flatten: cancel the orders in scope, then close every position in it at market,
  * short positions first. Shows each closing order's outcome afterwards.
@@ -162,16 +193,7 @@ export function FlattenDialog({ positions, stocks = [], orders, trading, initial
     <Dialog title={scope ? `Flatten ${scope}` : "Close all positions"} onClose={onClose}>
       {done ? (
         <div className="space-y-3">
-          <ul className="space-y-1 text-sm">
-            {done.orders.map((order) => (
-              <li key={order.id} className="flex flex-wrap justify-between gap-2">
-                <span>{order.side === "buy" ? "Buy" : "Sell"} {order.quantity} {orderLabel(order)}</span>
-                <span className={order.status === "filled" ? "text-bullish" : "text-warn"}>{outcome(order)}</span>
-              </li>
-            ))}
-          </ul>
-          {!done.orders.length && <p className="text-sm text-muted">No position needed closing.</p>}
-          <p className="text-xs text-muted">{done.cancelled_orders.length} {done.cancelled_orders.length === 1 ? "order" : "orders"} cancelled first.</p>
+          <FlattenOutcome done={done} />
           <button type="button" className="trade-button" onClick={onClose}>Done</button>
         </div>
       ) : (

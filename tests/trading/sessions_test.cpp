@@ -90,13 +90,30 @@ TEST(TradingSessions, OutsideTheRegularSessionOnlyPlainLimitOrdersAreTaken) {
   tick(s, f, at(kTuesday, 18, 0));
   EXPECT_EQ(order(s, 4).reason.code, Reason::DAY_END);
   EXPECT_EQ(s.submit(f.limit("evening", 1, "4.00"), f.time).decision.code, Reason::SESSION_CLOSED);
-  // Flattening sends market orders, so it waits for the regular session too.
+  // Flattening sends market orders, so it waits for the regular session too:
+  // refused, it leaves the position and the exits resting on it alone.
   tick(s, f, at(kTuesday, 21, 0));
-  ASSERT_TRUE(s.submit(f.limit("long", 1, "4.20"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("long", 2, "4.20"), f.time).decision.ok());
   ASSERT_EQ(s.snapshot()->positions.size(), 1);
-  ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
-  EXPECT_EQ(s.snapshot()->recent_orders.back().reason.code, Reason::LIMIT_ONLY);
+  ASSERT_TRUE(s.submit(f.limit("exit", 1, "4.60", Side::Sell, TimeInForce::Gtc), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("tonight", 1, "4.60", Side::Sell), f.time).decision.ok());
+  const auto orders = s.snapshot()->recent_orders.size();
+  const auto refused = s.close_positions(std::nullopt, f.time);
+  EXPECT_EQ(refused.decision.code, Reason::LIMIT_ONLY);
+  EXPECT_EQ(refused.decision.scope, "SPX");
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), orders) << "no closing order is recorded";
+  EXPECT_EQ(s.snapshot()->open_orders.size(), 2);
   EXPECT_EQ(s.snapshot()->positions.size(), 1);
+  EXPECT_EQ(s.close_positions(std::string("SPX"), f.time).decision.code, Reason::LIMIT_ONLY);
+  // Between sessions it is refused SESSION_CLOSED; the GTC exit still waits.
+  tick(s, f, at(kWednesday, 9, 26));
+  EXPECT_EQ(s.close_positions(std::nullopt, f.time).decision.code, Reason::SESSION_CLOSED);
+  EXPECT_EQ(s.snapshot()->open_orders.size(), 1);
+  // In the regular session it cancels the exit and closes the position.
+  tick(s, f, at(kWednesday, 9, 30));
+  ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+  EXPECT_TRUE(s.snapshot()->positions.empty());
 }
 
 TEST(TradingSessions, MultiLegOrdersTakeANetLimitOvernight) {

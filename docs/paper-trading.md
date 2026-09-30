@@ -148,7 +148,8 @@ They count in equity, daily loss and the rules, at their dollar
 delta in risk limits and scenarios, and in the P&L by Greek (all delta). Short shares
 hold 150% of their value in buying power. `trade_stock(symbol, shares, time)` only
 reduces them, at the underlying's fresh price in the regular session and without a
-fee; flattening closes them too, and a decided attempt liquidates them, and a reset
+fee; flattening closes them too while the stock market is open (after its close they
+stay, and the flatten lists them in `kept_stocks`), and a decided attempt liquidates them, and a reset
 drops them at their mark. Every change is a `StockFill` in `TradingSnapshot::stock_fills`,
 with how it came about (`StockSource`: delivery at settlement, early exercise, a trade,
 the rule, a reset) and the delivering option, so the trade history follows the shares
@@ -305,7 +306,8 @@ reject with `LIMIT_ONLY`, and orders between sessions with `SESSION_CLOSED`. A D
 order lasts the session it was accepted in: an overnight order ends at 09:25 with
 `DAY_END` and does not carry into the regular session. Bracket exits, triggered
 orders, GTC limits and the account's own closing orders (liquidation, expiry close) act in the
-regular session only, and flattening sends market orders, so it rejects outside it.
+regular session only, and flattening sends market orders, so outside it the flatten is
+refused (`LIMIT_ONLY` or `SESSION_CLOSED`) and leaves the positions and their orders alone.
 AM-settled series stop trading at the regular close of the business day before their
 expiry, so no curb or overnight session trades them then (`SESSION_CLOSED`); PM
 series trade the overnight session of their expiry date. Contract expiry can be
@@ -531,7 +533,20 @@ gone. These are the trader's own orders (client IDs
 `openport-close-{version}-{n}`, numbered past any client ID the account has already
 used) and take the normal checks; one the rules refuse is
 recorded as rejected with its reason and the others still go. Expired positions wait
-for settlement.
+for settlement. Delivered shares in scope close at the underlying's fresh price in the
+stock market's regular session.
+
+Before it cancels anything, a flatten checks what each close needs whatever the price:
+an attempt still open (`EVALUATION_CLOSED`), the underlying's feed
+(`FEED_STALLED`, `MARKET_HALTED`), and a session that takes market orders (`LIMIT_ONLY`
+in the overnight and curb sessions, `SESSION_CLOSED` between them) or, for shares, the
+stock market's regular session and a fresh price (`SESSION_CLOSED`, `STALE_QUOTE`).
+An underlying where every close is refused keeps its open orders, exits included,
+and its closing orders are recorded as rejected with the reason; shares that cannot
+close stay, listed in the response's `kept_stocks`. When nothing in scope can close
+(every position in the overnight session, or only shares after the 16:00 stock
+close), the flatten itself is refused with the first such reason, its `scope` the
+underlying, and changes nothing.
 
 ## Accounting, marks and equity
 
@@ -1552,7 +1567,9 @@ The web ticket estimates fees using `fee_per_contract`; only older servers witho
 it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
 and `paper.accepting: false` disables ticket submission. In the overnight and curb
 sessions (by `paper.session`) the tickets offer limit orders only, without a condition
-or bracket, and Close all is disabled because flattening sends market orders. For
+or bracket, and Close all is disabled because flattening sends market orders. After a
+flatten, its dialog lists each closing order's outcome, the delivered shares it traded
+and any it left with the reason. For
 older servers without `paper`, they fall back to the session-based notice and
 submission gate.
 Limit prices display cents, with buttons and arrow keys following the root's tier
@@ -1620,7 +1637,7 @@ focus at the top of the ticket.
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
-| `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope and closes its positions at market, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason) and their `fills` |
+| `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope and closes its positions at market, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the delivered shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
 | `GET /api/fills` | Version and fills, newest first, with pre-execution `context` (null on older fills) |
 | `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |
 | `PUT /api/days/{YYYY-MM-DD}/note` | Required `plan` and `review` strings replace the day note; returns version, `day` and `note`. Invalid text returns `INVALID_NOTE` (422); invalid dates return 400 |

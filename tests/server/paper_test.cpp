@@ -396,6 +396,8 @@ TEST_F(PaperEngine, OrdersChangeInPlaceAndPositionsCloseOverHttp) {
   EXPECT_EQ(body["orders"][0]["quantity"], 2);
   EXPECT_EQ(body["orders"][0]["status"], "filled");
   EXPECT_EQ(body["fills"].size(), 1);
+  EXPECT_EQ(body["stock_fills"], json::array());
+  EXPECT_EQ(body["kept_stocks"], json::array());
   EXPECT_TRUE(read(*engine, "/api/portfolio")["positions"].empty());
 }
 
