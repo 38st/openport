@@ -169,6 +169,33 @@ TEST(TradingConditional, BuyOnlyAndBuyingPowerCountTheBracketOnceAndNeverBlockMa
   EXPECT_EQ(s.submit(f.limit("extra", 1, "4.40", Side::Sell), f.time).decision.code, Reason::BUY_ONLY);
 }
 
+TEST(TradingConditional, ABracketStopAlreadyReachedWhenTheEntryFillsFiresAtSubmission) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  // The bid, 4.00, is already at the stop: the stop sells at once, at that bid.
+  ASSERT_TRUE(s.submit(with_bracket(f.market("entry", 2), stop_at("4.10"), target_at("5.00")), f.time).decision.ok());
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 2).triggered_at, f.time);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("4.00"));
+  EXPECT_EQ(order(s, 3).reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  // So does one whose entry a change makes marketable, and one a triggered entry's fill creates.
+  ASSERT_TRUE(s.submit(with_bracket(f.limit("changed", 1, "4.10"), stop_at("4.00"), target_at("5.00")), f.time).decision.ok());
+  EXPECT_EQ(order(s, 4).status, OrderStatus::Working);
+  ASSERT_TRUE(s.modify(4, {{}, m("4.20"), {}}, f.time).decision.ok());
+  EXPECT_EQ(order(s, 5).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 6).reason.code, Reason::OCO_FILLED);
+  auto armed = with_bracket(f.market("armed"), stop_at("4.00"), target_at("5.00"));
+  armed.trigger = trigger(TriggerSource::Underlying, TriggerDirection::AtOrAbove, "4990");
+  ASSERT_TRUE(s.submit(armed, f.time).decision.ok());
+  EXPECT_EQ(order(s, 7).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 8).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 9).reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 TEST(TradingConditional, TriggersWaitForTheRegularSessionAndSurviveRecovery) {
   const auto directory = std::filesystem::temp_directory_path() / ("openport-conditional-" + std::to_string(::getpid()));
   std::filesystem::remove_all(directory);

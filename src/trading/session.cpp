@@ -1829,12 +1829,11 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   }
   if (stored.request.trigger) {
     // Armed until reached, and good until expiry; a level already reached
-    // activates at once.
+    // activates at once, and so does a reached stop of the exits its fills create.
     stored.status = OrderStatus::Armed;
     stored.day_end = multi_leg(stored.request) ? order_expiry(s, stored.request) : contract.expiry_time();
     event(events, "order_accepted", stored);
-    if (regular(contract, s.time) && reached(s, s.orders.at(static_cast<std::size_t>(id - 1))))
-      activate(s, id, events);
+    check_triggers(s, events);
     return CommandResult{{}, id, 0};
   }
   stored.day_end = stored.request.tif == TimeInForce::Gtc ? order_expiry(s, stored.request) : session_end(contract, time);
@@ -1845,6 +1844,8 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   const auto& accepted = s.orders.at(static_cast<std::size_t>(id - 1));
   if (s.config.rules.fill_latency_ms == 0 && accepted.open() && accepted.request.tif == TimeInForce::Ioc)
     cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+  // A bracket stop the entry's fills created may already be reached.
+  check_triggers(s, events);
   return CommandResult{{}, id, 0};
 }
 std::string underlying_of(const State& s, const Order& o) {
@@ -1897,12 +1898,10 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   }
   event(events, "order_modified", order);
   const auto symbols = order_symbols(order.request);
-  if (order.status == OrderStatus::Armed) {
-    if (regular(s.contracts.at(symbols.front()), s.time) && reached(s, order))
-      activate(s, id, events);
-  } else {
-    match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
-  }
+  if (order.status != OrderStatus::Armed) match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
+  // An armed order whose new level is reached activates, as does a reached stop
+  // of the exits a fill just created.
+  check_triggers(s, events);
   return {{}, id, 0};
 }
 /// Trims a note and its tags, and lowercases the tags: text without control
