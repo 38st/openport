@@ -3743,7 +3743,8 @@
             "type": "number"
           },
           "uptime_seconds": {
-            "type": "number"
+            "type": "number",
+            "description": "Wall-clock seconds since this engine started, whatever clock its market data keeps (a replay's or the demo's)."
           }
         },
         "required": [

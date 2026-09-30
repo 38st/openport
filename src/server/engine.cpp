@@ -79,6 +79,7 @@ void Engine::start() {
     {
       const std::lock_guard lock(mutex_);
       status_.started = options_.clock();
+      started_at_ = options_.monotonic_clock();
     }
     if (!options_.record_file.empty()) {
       auto recording = options_.recording;
@@ -154,6 +155,7 @@ std::shared_ptr<const analytics::UnderlyingMetrics> Engine::metrics(const std::s
 EngineStatus Engine::status() const {
   const std::lock_guard lock(mutex_);
   EngineStatus out = status_;
+  if (out.started > 0) out.uptime = options_.monotonic_clock() - started_at_;
   out.capabilities = provider_.capabilities();  // a broker can revise its request-budgeted interval
   const auto queue = queue_.status();
   out.queue_depth = queue.depth;

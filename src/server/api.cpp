@@ -332,7 +332,7 @@ json status_json(const MetricsSource& source) {
         {"overloaded", s.overloaded},
         {"contracts", s.contracts},
         {"nonstandard_contracts", s.nonstandard_contracts},
-        {"uptime_seconds", s.started > 0 ? (md::now() - s.started) / md::kNanosPerSecond : 0}}},
+        {"uptime_seconds", std::chrono::duration_cast<std::chrono::seconds>(s.uptime).count()}}},
   };
 }
 

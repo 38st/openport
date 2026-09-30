@@ -57,7 +57,9 @@ struct EngineStatus {
   double analytics_ms = 0.0;  ///< time the last analytics pass took
   std::size_t contracts = 0;
   std::size_t nonstandard_contracts = 0;
-  md::Timestamp started = 0;
+  md::Timestamp started = 0;  ///< on the engine's clock, a recording's for a replay
+  /// Wall time since the engine started, whatever clock its market data keeps.
+  std::chrono::steady_clock::duration uptime{};
   std::map<std::string, UnderlyingHealth> underlyings;
 };
 
@@ -198,6 +200,7 @@ class Engine final : public MetricsSource {
   std::uint64_t events_ = 0;
   std::uint64_t events_at_last_rate_ = 0;
   std::chrono::steady_clock::time_point last_rate_time_;
+  std::chrono::steady_clock::time_point started_at_{};  // mutex_
 };
 
 }  // namespace openport::server
