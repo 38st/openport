@@ -212,7 +212,8 @@ Unfilled DAY and GTC limits rest; unfilled IOC quantity cancels with `IOC_REMAIN
 fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
 
 Both positive prices and both positive integer sizes are required; crossed,
-one-sided, missing and zero-size books supply **no liquidity**. Locked positive
+one-sided, missing and zero-size books supply **no liquidity**, except to a combo
+exit closing a leg that shows only an ask (see Multi-leg orders). Locked positive
 books are accepted. Displayed size is an independent bid/ask budget per
 (contract, observation), consumed across all paper orders. The same observation
 never refills that budget, including after recovery. Each new observation refreshes
@@ -480,7 +481,13 @@ A target waits until the entire slipped closing net fits its limit.
 
 A stop has `source: "combo"` or `"underlying"`. Combo levels compare the sum of the
 closing legs' displayed asks for buys minus bids for sells, weighted by ratio,
-without slippage. Negative levels are allowed. Underlying levels must be positive
+without slippage. Negative levels are allowed. A leg whose fresh quote shows only an
+ask, as a far option nobody bids for does, counts at that ask when the exit buys it
+back, and at zero when the exit sells it. The exit trades it that way too: it buys
+at the ask within its displayed size, and gives a long away at 0.00, without a size
+limit and with the usual fee. So a worthless wing cannot hold a bracket's or held
+spread's stop or target back; a plain triggered combo, which is not an exit, still
+needs a two-sided quote on every leg. Underlying levels must be positive
 and read the first leg's fresh valuation. On reaching the inclusive direction, the
 stop sends a closing market IOC combo with normal slippage and displayed-size
 limits. A partial stop fill cancels the sibling and its own IOC remainder; the

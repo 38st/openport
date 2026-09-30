@@ -95,6 +95,17 @@ bool marked_now(const State& s, const std::string& symbol) {
   const auto time = it->second.quote.time;
   return time <= s.time && observation_time(s.contracts.at(symbol), s.time) - time <= s.config.limits.max_quote_age;
 }
+/// A combo exit's leg whose fresh quote shows only an ask, as a far option nobody
+/// bids for does. The exit buys such a leg back at that ask and gives it away at
+/// zero when it sells it, rather than wait for a bid that may never come, so a
+/// worthless wing cannot hold a stop or target back.
+bool ask_only(const State& s, const Order& o, const Leg& leg) {
+  const auto it = s.books.find(leg.symbol);
+  return (o.role != OrderRole::Normal || o.request.exits_only) && it != s.books.end() &&
+         !valid_quote(it->second.quote) && marked_now(s, leg.symbol);
+}
+/// An exit's long leg that nobody bids for: sold at zero, without displayed size.
+bool given_away(const State& s, const Order& o, const Leg& leg) { return leg.side == Side::Sell && ask_only(s, o, leg); }
 Decision price_check(const State& s, const QuoteObservation& q, Money price) {
   const auto middle = mid(q);
   const long double difference = std::abs(static_cast<long double>(price.micros()) - static_cast<long double>(middle.micros()));
@@ -330,32 +341,36 @@ struct ExecutionSlice {
   Side side;
   Quantity quantity;
   Money price;
+  bool given = false;  ///< An exit's long leg nobody bids for (given_away).
 };
 /// Impact combos execute one whole unit at a time. A ratio can span depth tiers;
 /// keep those prices separate so both the ledger and the net stay exact.
-std::vector<ExecutionSlice> combo_slices(const State& s, const OrderRequest& r, Quantity units) {
+std::vector<ExecutionSlice> combo_slices(const State& s, const Order& o, Quantity units) {
   std::vector<ExecutionSlice> slices;
-  for (const auto& leg : r.legs) {
-    if (s.config.rules.impact_ticks == 0) {
-      slices.push_back({leg.symbol, leg.side, units * leg.ratio, execution_price(s, leg.symbol, leg.side)});
+  for (const auto& leg : o.request.legs) {
+    if (given_away(s, o, leg)) {
+      slices.push_back({leg.symbol, leg.side, units * leg.ratio, Money{}, true});
+    } else if (s.config.rules.impact_ticks == 0) {
+      slices.push_back({leg.symbol, leg.side, units * leg.ratio, execution_price(s, leg.symbol, leg.side), false});
     } else {
       for (Quantity offset = 0; offset < units * leg.ratio; ++offset) {
         const auto price = execution_price(s, leg.symbol, leg.side, {}, offset);
         if (!slices.empty() && slices.back().symbol == leg.symbol && slices.back().price == price) ++slices.back().quantity;
-        else slices.push_back({leg.symbol, leg.side, 1, price});
+        else slices.push_back({leg.symbol, leg.side, 1, price, false});
       }
     }
   }
   return slices;
 }
 /// A multi-leg order's next executable net debit per unit.
-std::optional<Money> executable_net(const State& s, const OrderRequest& r) {
-  for (const auto& leg : r.legs) {
+std::optional<Money> executable_net(const State& s, const Order& o) {
+  for (const auto& leg : o.request.legs) {
     const auto book = s.books.find(leg.symbol);
-    if (book == s.books.end() || !valid_quote(book->second.quote)) return std::nullopt;
+    if ((book == s.books.end() || !valid_quote(book->second.quote)) && !ask_only(s, o, leg)) return std::nullopt;
   }
   Money net;
-  for (const auto& leg : r.legs) {
+  for (const auto& leg : o.request.legs) {
+    if (given_away(s, o, leg)) continue;
     if (s.config.rules.impact_ticks == 0) {
       const auto price = execution_price(s, leg.symbol, leg.side) * leg.ratio;
       net = leg.side == Side::Buy ? net + price : net - price;
@@ -376,7 +391,9 @@ bool latency_ready(const State& s, const Order& o) {
   const auto delay = s.config.rules.fill_latency_ms * (md::kNanosPerSecond / 1000);
   for (const auto& symbol : order_symbols(o.request)) {
     const auto& quote = s.books.at(symbol).quote;
-    if (quote.time < start || quote.time - start < delay || !quote_check(s, symbol).ok()) return false;
+    const auto leg = std::find_if(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& l) { return l.symbol == symbol; });
+    const bool usable = quote_check(s, symbol).ok() || (leg != o.request.legs.end() && ask_only(s, o, *leg));
+    if (quote.time < start || quote.time - start < delay || !usable) return false;
     if ((persistent(o) || o.system) && !regular(s.contracts.at(symbol), s.time)) return false;
   }
   return true;
@@ -1055,7 +1072,7 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
       return failure(Reason::EXPIRY_CUTOFF, "A leg is inside the pre-expiry cutoff; only closing orders are accepted");
     if (auto d = quote_check(s, leg.symbol); !d.ok()) { d.scope = leg.symbol; return d; }
   }
-  const auto net = *executable_net(s, r);
+  const auto net = *executable_net(s, o);
   Money middle, gross;
   for (const auto& leg : r.legs) {
     const auto value = mid(s.books.at(leg.symbol).quote) * leg.ratio;
@@ -1163,7 +1180,7 @@ Decision system_check(const State& s, const Order& o, bool now) {
       const auto& c = s.contracts.at(leg.symbol);
       if (s.time >= c.last_trade_time()) return failure(Reason::EXPIRED, "An exit leg reached its last trade");
       if (now && !regular(c, s.time)) return failure(Reason::SESSION_CLOSED, "Combo exits wait for the regular session");
-      if (auto d = quote_check(s, leg.symbol); !d.ok()) return d;
+      if (auto d = quote_check(s, leg.symbol); !d.ok() && !ask_only(s, o, leg)) return d;
       legs.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
     }
     return defined_risk_check(s, legs);
@@ -1288,21 +1305,22 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   if (!o.open() || o.status == OrderStatus::Armed || !latency_ready(s, o)) return;
   for (const auto& leg : o.request.legs) {
     if (persistent(o) && !regular(s.contracts.at(leg.symbol), s.time)) return;
-    if (!quote_check(s, leg.symbol).ok()) return;
+    if (!quote_check(s, leg.symbol).ok() && !ask_only(s, o, leg)) return;
     if (incoming != id && s.books.at(leg.symbol).quote.time < o.accepted_at) return;
   }
-  const auto net = executable_net(s, o.request);
+  const auto net = executable_net(s, o);
   if (!net || (o.request.limit_price && *net > *o.request.limit_price)) return;
   const bool exit = o.role != OrderRole::Normal;
   auto decision = exit ? system_check(s, o) : order_check(s, o, true);
   if (data_gap(decision.code)) return;
   Quantity units = s.config.rules.impact_ticks > 0 ? 1 : o.remaining();
   if (s.config.rules.impact_ticks == 0) for (const auto& leg : o.request.legs) {
+    if (given_away(s, o, leg)) continue;
     const auto& book = s.books.at(leg.symbol);
     units = std::min(units, (leg.side == Side::Buy ? book.ask_left : book.bid_left) / leg.ratio);
   }
   if (decision.ok() && units <= 0) return;
-  const auto slices = combo_slices(s, o.request, units);
+  const auto slices = combo_slices(s, o, units);
   if (decision.ok() && !exit) {
     State projected = s;
     for (const auto& slice : slices) {
@@ -1342,7 +1360,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     annotate_opening(s, request, slice.symbol, contracts, events);
     fill_position(s, slice.symbol, contracts, price, fee);
     auto& book = s.books[slice.symbol];
-    consume_depth(slice.side == Side::Buy ? book.ask_left : book.bid_left, size);
+    if (!slice.given) consume_depth(slice.side == Side::Buy ? book.ask_left : book.bid_left, size);
     Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, slice.symbol, slice.side,
               size, price, fee, quote.observation, quote.time, s.time, context, actor};
     s.fills.push_back(fill);
@@ -1486,7 +1504,8 @@ void on_fill(State& s, OrderId id, Events& events) {
   for (const auto& symbol : order_symbols(s.orders.at(static_cast<std::size_t>(id - 1)).request)) sync_exits(s, symbol, events);
 }
 /// Option triggers read the order's executable side from a fresh book; underlying
-/// triggers read spot from a fresh valuation. Missing data never triggers.
+/// triggers read spot from a fresh valuation. Missing data never triggers; an exit's
+/// leg that shows only an ask counts at that ask, or at zero when the exit sells it.
 bool reached(const State& s, const Order& o) {
   const auto& t = *o.request.trigger;
   std::optional<Money> value;
@@ -1499,7 +1518,8 @@ bool reached(const State& s, const Order& o) {
   } else if (t.source == TriggerSource::Combo && multi_leg(o.request)) {
     Money net;
     for (const auto& leg : o.request.legs) {
-      if (!quote_check(s, leg.symbol).ok()) return false;
+      if (given_away(s, o, leg)) continue;
+      if (!quote_check(s, leg.symbol).ok() && !ask_only(s, o, leg)) return false;
       const auto& q = s.books.at(leg.symbol).quote;
       net = net + (leg.side == Side::Buy ? *q.ask : -*q.bid) * leg.ratio;
     }
@@ -2389,7 +2409,7 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
       auto& book = before.books[quote.symbol];
       book.quote = quote;
     } else {
-      before.books[quote.symbol] = {quote, valid_quote(quote) ? quote.bid_size : 0, valid_quote(quote) ? quote.ask_size : 0};
+      before.books[quote.symbol] = {quote, valid_quote(quote) ? quote.bid_size : 0, markable_quote(quote) ? quote.ask_size : 0};
     }
     if (markable_quote(quote)) before.marks[quote.symbol] = {mark_of(quote), quote.time};
   }
@@ -2619,7 +2639,8 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
         continue;
       }
       if (quote.observation <= book.quote.observation || quote.time < book.quote.time) continue;
-      book = {quote, valid_quote(quote) ? quote.bid_size : 0, valid_quote(quote) ? quote.ask_size : 0};
+      // A quote with only an ask offers it to the exits that may buy there (ask_only).
+      book = {quote, valid_quote(quote) ? quote.bid_size : 0, markable_quote(quote) ? quote.ask_size : 0};
       changed.insert(quote.symbol);
       if (markable_quote(quote) && time - quote.time <= s.config.limits.max_quote_age)
         s.marks[quote.symbol] = {mark_of(quote), quote.time};
