@@ -302,7 +302,7 @@ TEST(DeskEquity, OnlyAPassOfThePresetItselfUnlocksItsFundedPlan) {
     reset.required_pass = evaluation->name;
     const auto reply = command(*f.desk, reset, f.market.time, f.market.time);
     EXPECT_EQ(reply.decision.ok(), preset) << reply.decision.message;
-    if (!preset) EXPECT_EQ(reply.decision.code, trading::Reason::PLAN_LOCKED);
+    if (!preset) { EXPECT_EQ(reply.decision.code, trading::Reason::PLAN_LOCKED); }
   }
   // The fill model's execution settings are not part of the plan.
   auto conservative = evaluation->rules;

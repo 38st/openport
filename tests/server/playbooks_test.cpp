@@ -744,7 +744,7 @@ TEST(Playbooks, ATimeStopWaitsForLiquidityWithoutJournalingRejections) {
   while (const auto batch = batches.next()) {
     desk.replay_batch(batch->events, batch->received, batch->time);
     ASSERT_TRUE(desk.trading_status().enabled) << desk.trading_status().reason;
-    if (desk.market_time() < md::new_york_to_utc({2026, 9, 16}, 9, 36)) EXPECT_EQ(count(closes), 0);
+    if (desk.market_time() < md::new_york_to_utc({2026, 9, 16}, 9, 36)) { EXPECT_EQ(count(closes), 0); }
   }
   const auto view = desk.trading_view();
   EXPECT_EQ(count([](const trading::Order& order) { return order.status == trading::OrderStatus::Rejected; }), 0);
@@ -784,9 +784,9 @@ TEST(Playbooks, AdherenceCountsASameSecondLossOnlyIfItClosedBeforeTheEntry) {
     session.on_quotes({first.quote("3.20", "3.40"), second.quote()}, {first.valuation(), second.valuation()}, first.time);
     auto next = second.market("next" + std::to_string(close_first)); next.tags = {"playbook:morning@v1"};
     const auto close = first.market("close" + std::to_string(close_first), 1, trading::Side::Sell);
-    if (close_first) ASSERT_TRUE(session.submit(close, first.time).decision.ok());
+    if (close_first) { ASSERT_TRUE(session.submit(close, first.time).decision.ok()); }
     ASSERT_TRUE(session.submit(next, first.time).decision.ok());
-    if (!close_first) ASSERT_TRUE(session.submit(close, first.time).decision.ok());
+    if (!close_first) { ASSERT_TRUE(session.submit(close, first.time).decision.ok()); }
     const auto trades = report();
     const auto& losing = trades[trades.size() - 2];
     ASSERT_LT(trading::Money::parse(losing.at("net").get<std::string>()), trading::Money{});
