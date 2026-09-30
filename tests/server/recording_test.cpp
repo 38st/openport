@@ -145,19 +145,22 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
 // replay or the demo keeps (which put it at 107,099 s right after launch).
 TEST(Engine, UptimeCountsWallTimeWhateverClockTheMarketKeeps) {
   using nlohmann::json;
-  SyntheticProvider provider;
-  server::Engine::Options options;
-  options.paper_enabled = false;
-  options.clock = [] { return md::new_york_to_utc({2020, 1, 2}, 9, 30); };
-  const auto launched = std::chrono::steady_clock::now();
-  std::atomic<int> seconds{0};
-  options.monotonic_clock = [&] { return launched + std::chrono::seconds(seconds.load()); };
-  server::Engine engine(provider, {{"SPX"}}, options);
-  EXPECT_EQ(json::parse(server::handle_api({"GET", "/api/status"}, engine).body)["engine"]["uptime_seconds"], 0);
-  engine.start();
-  seconds = 90;
-  EXPECT_EQ(json::parse(server::handle_api({"GET", "/api/status"}, engine).body)["engine"]["uptime_seconds"], 90);
-  engine.stop();
+  // A replay's clock reads 0 until its first event is published: uptime counts anyway.
+  for (const md::Timestamp market : {md::new_york_to_utc({2020, 1, 2}, 9, 30), md::Timestamp{0}}) {
+    SyntheticProvider provider;
+    server::Engine::Options options;
+    options.paper_enabled = false;
+    options.clock = [market] { return market; };
+    const auto launched = std::chrono::steady_clock::now();
+    std::atomic<int> seconds{0};
+    options.monotonic_clock = [&] { return launched + std::chrono::seconds(seconds.load()); };
+    server::Engine engine(provider, {{"SPX"}}, options);
+    EXPECT_EQ(json::parse(server::handle_api({"GET", "/api/status"}, engine).body)["engine"]["uptime_seconds"], 0);
+    engine.start();
+    seconds = 90;
+    EXPECT_EQ(json::parse(server::handle_api({"GET", "/api/status"}, engine).body)["engine"]["uptime_seconds"], 90) << market;
+    engine.stop();
+  }
 }
 
 server::ApiResponse call(server::ReplayHost& host, std::string method, std::string target, std::string body = {},

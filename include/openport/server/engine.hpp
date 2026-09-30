@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -200,7 +201,9 @@ class Engine final : public MetricsSource {
   std::uint64_t events_ = 0;
   std::uint64_t events_at_last_rate_ = 0;
   std::chrono::steady_clock::time_point last_rate_time_;
-  std::chrono::steady_clock::time_point started_at_{};  // mutex_
+  /// Set by start(). A replay's clock reads 0 until its first event, so its
+  /// start on that clock cannot say whether the engine is running.
+  std::optional<std::chrono::steady_clock::time_point> started_at_;  // mutex_
 };
 
 }  // namespace openport::server

@@ -155,7 +155,7 @@ std::shared_ptr<const analytics::UnderlyingMetrics> Engine::metrics(const std::s
 EngineStatus Engine::status() const {
   const std::lock_guard lock(mutex_);
   EngineStatus out = status_;
-  if (out.started > 0) out.uptime = options_.monotonic_clock() - started_at_;
+  if (started_at_) out.uptime = options_.monotonic_clock() - *started_at_;
   out.capabilities = provider_.capabilities();  // a broker can revise its request-budgeted interval
   const auto queue = queue_.status();
   out.queue_depth = queue.depth;
