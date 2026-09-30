@@ -61,7 +61,7 @@ TEST(TradingConditional, ArmedEntryActivatesWhenTheUnderlyingCrossesAndReservesU
   request.trigger = trigger(TriggerSource::Underlying, TriggerDirection::AtOrAbove, "5010");
   ASSERT_TRUE(s.submit(request, f.time).decision.ok());
   EXPECT_EQ(order(s, 1).status, OrderStatus::Armed);
-  EXPECT_EQ(order(s, 1).day_end, f.contract.expiry_time());  // good until expiry
+  EXPECT_EQ(order(s, 1).day_end, f.contract.last_trade_time());  // good until expiry
   EXPECT_EQ(s.snapshot()->buying_power.reserved, m("841.30"));  // 2 * 100 * ask 4.20 + fees
   EXPECT_EQ(s.snapshot()->open_orders.size(), 1);
   quote(s, f, "4.00", "4.20", 10, 5009.99);
@@ -194,6 +194,62 @@ TEST(TradingConditional, ABracketStopAlreadyReachedWhenTheEntryFillsFiresAtSubmi
   EXPECT_EQ(order(s, 8).status, OrderStatus::Filled);
   EXPECT_EQ(order(s, 9).reason.code, Reason::OCO_FILLED);
   EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingConditional, ATriggeredDayOrderLastsTheSessionItActivatedIn) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  auto request = f.limit("dip", 1, "3.60");
+  request.trigger = trigger(TriggerSource::Underlying, TriggerDirection::AtOrBelow, "4990");
+  ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+  // Armed, it lasts until the contract's last trade.
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, 1).day_end, f.contract.last_trade_time());
+  // The next day it activates, and then lasts that session, like any DAY order.
+  f.time = md::new_york_to_utc({2026, 9, 23}, 11, 0);
+  quote(s, f, "4.00", "4.20", 10, 4989);
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Working);
+  const auto end = md::new_york_to_utc({2026, 9, 23}, 16, 15);
+  EXPECT_EQ(order(s, 1).day_end, end);
+  s.on_quotes({}, {}, end);
+  EXPECT_EQ(order(s, 1).reason.code, Reason::DAY_END);
+  // A GTC one keeps waiting past the session end.
+  f.time = md::new_york_to_utc({2026, 9, 24}, 11, 0);
+  quote(s, f, "4.00", "4.20", 10, 5000);
+  auto gtc = f.limit("gtc-dip", 1, "3.60", Side::Buy, TimeInForce::Gtc);
+  gtc.trigger = trigger(TriggerSource::Underlying, TriggerDirection::AtOrBelow, "5000");
+  ASSERT_TRUE(s.submit(gtc, f.time).decision.ok());
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Working);
+  EXPECT_EQ(order(s, 2).day_end, f.contract.last_trade_time());
+  s.on_quotes({}, {}, md::new_york_to_utc({2026, 9, 24}, 16, 15));
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Working);
+}
+
+TEST(TradingConditional, ArmedOrdersAndExitsReportTheLastTradeOrAutoCloseAsTheirDeadline) {
+  for (const bool cutoff : {false, true}) {
+    // An AM-settled monthly stops trading at the close the day before it expires.
+    ScriptedMarket f;
+    f.contract = *md::parse_osi("SPX261016C05000000");
+    auto rules = AccountRules{};
+    if (cutoff) rules.expiry_cutoff = 5 * md::kNanosPerMinute;
+    TradingSession s(roomy(rules), f.time);
+    f.seed(s);
+    const auto deadline = md::new_york_to_utc({2026, 10, 15}, 16, cutoff ? 10 : 15);
+    ASSERT_EQ(f.contract.last_trade_time() - rules.expiry_cutoff, deadline);
+    auto armed = f.limit("armed", 1, "3.60");
+    armed.trigger = trigger(TriggerSource::Underlying, TriggerDirection::AtOrBelow, "4900");
+    ASSERT_TRUE(s.submit(armed, f.time).decision.ok());
+    EXPECT_EQ(order(s, 1).day_end, deadline);
+    ASSERT_TRUE(s.submit(with_bracket(f.limit("entry", 1, "4.20"), stop_at("3.00"), target_at("5.00")), f.time).decision.ok());
+    // Both exits last until the deadline, and the take-profit says so: it is good until then.
+    for (const OrderId id : {OrderId{3}, OrderId{4}}) EXPECT_EQ(order(s, id).day_end, deadline);
+    EXPECT_EQ(order(s, 3).request.tif, TimeInForce::Ioc);
+    EXPECT_EQ(order(s, 4).request.tif, TimeInForce::Gtc);
+    s.on_quotes({}, {}, deadline);
+    for (const OrderId id : {OrderId{1}, OrderId{3}, OrderId{4}})
+      EXPECT_EQ(order(s, id).reason.code, cutoff ? Reason::EXPIRY_CUTOFF : Reason::EXPIRED) << id;
+  }
 }
 
 TEST(TradingConditional, TriggersWaitForTheRegularSessionAndSurviveRecovery) {

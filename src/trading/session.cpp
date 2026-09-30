@@ -43,7 +43,6 @@ Decision session_check(const md::OptionContract& c, Timestamp time, const OrderR
                    "no market orders, triggers or brackets");
   return {};
 }
-/// A DAY order lasts the session it was accepted in.
 Timestamp session_end(const md::OptionContract& c, Timestamp time) {
   const auto session = md::trading_session(c.root, time);
   if (!session.open || session.end == md::kInvalidTimestamp)
@@ -57,8 +56,16 @@ Timestamp order_expiry(const State& s, const OrderRequest& r) {
     end = std::min(end, s.contracts.at(symbol).last_trade_time() - s.config.rules.expiry_cutoff);
   return end;
 }
+/// A DAY order lasts the session it was accepted in (a triggered one, the session
+/// it activated in), and no longer than a persistent order would.
+Timestamp day_deadline(const State& s, const OrderRequest& r, Timestamp time) {
+  return std::min(session_end(s.contracts.at(order_symbols(r).front()), time), order_expiry(s, r));
+}
+/// Good until expiry: GTC orders, bracket exits and armed orders. Once triggered,
+/// a DAY order lasts its session like any other.
 bool persistent(const Order& o) {
-  return o.request.tif == TimeInForce::Gtc || o.request.trigger || o.role != OrderRole::Normal;
+  return o.request.tif == TimeInForce::Gtc || o.role != OrderRole::Normal ||
+         (o.request.trigger && (o.status == OrderStatus::Armed || o.request.tif != TimeInForce::Day));
 }
 Annotation clean_annotation(std::string note, const std::vector<std::string>& tags);
 void store_annotation(State& s, const std::string& key, Annotation annotation, Events& events);
@@ -873,13 +880,19 @@ void advance(State& s, Timestamp time, Events& events) {
   if (time < 0 || time < s.time) throw TradingError(Reason::INVALID_TIME, "Market time must be nonnegative and monotone");
   s.time = time;
   refresh_guardrail_latch(s, events);
+  // Every order ends at its earliest leg's last trade; before that, the account's
+  // pre-expiry cutoff ends all but its own closing orders, whatever their time in force.
+  const auto cutoff = s.config.rules.expiry_cutoff;
   for (const auto id : open_ids(s)) {
     const auto& o = s.orders[id - 1];
-    auto expiry = std::numeric_limits<Timestamp>::max();
-    for (const auto& symbol : order_symbols(o.request)) expiry = std::min(expiry, s.contracts.at(symbol).expiry_time());
-    if (persistent(o)) expiry = std::min(expiry, order_expiry(s, o.request));
-    if (time >= expiry) cancel_order(s.orders.mut(id - 1), failure(Reason::EXPIRED, "A contract reached its last trade or auto-close deadline"), events);
-    else if (time >= o.day_end) cancel_order(s.orders.mut(id - 1), failure(Reason::DAY_END, "The order's session ended"), events);
+    auto last = std::numeric_limits<Timestamp>::max();
+    for (const auto& symbol : order_symbols(o.request)) last = std::min(last, s.contracts.at(symbol).last_trade_time());
+    if (time >= last)
+      cancel_order(s.orders.mut(id - 1), failure(Reason::EXPIRED, "A contract reached its last trade"), events);
+    else if (!o.system && cutoff > 0 && time >= last - cutoff)
+      cancel_order(s.orders.mut(id - 1), failure(Reason::EXPIRY_CUTOFF, "A contract reached the account's pre-expiry cutoff"), events);
+    else if (time >= o.day_end)
+      cancel_order(s.orders.mut(id - 1), failure(Reason::DAY_END, "The order's session ended"), events);
   }
 }
 /// Short contracts no long covers, after the account's positions take `extra`
@@ -1401,25 +1414,24 @@ void sync_exits(State& s, const std::string& symbol, Events& events) {
   }
 }
 /// Create a bracket's exits on the entry's first fill and grow them with later
-/// fills. A stop is armed until reached, a limit take-profit rests; both are good
-/// until expiry, sized to the filled quantity, and cancel each other on a fill.
+/// fills. A stop is armed until reached, a limit take-profit (GTC) rests; both are
+/// good until expiry, sized to the filled quantity, and cancel each other on a fill.
 void attach_exits(State& s, OrderId entry_id, Events& events) {
   const auto entry = s.orders.at(static_cast<std::size_t>(entry_id - 1));  // pushes below invalidate references
   const auto& bracket = *entry.request.bracket;
-  const auto expiry = multi_leg(entry.request) ? order_expiry(s, entry.request) : s.contracts.at(entry.request.symbol).expiry_time();
+  const auto expiry = order_expiry(s, entry.request);
   auto make = [&](const ExitSpec& spec, OrderRole role) {
     Order exit;
     exit.actor = entry.actor;
     exit.id = static_cast<OrderId>(s.orders.size() + 1);
     exit.request = {entry.request.client_order_id + (role == OrderRole::StopLoss ? ":stop" : ":target"),
                     entry.request.symbol, entry.request.side == Side::Buy ? Side::Sell : Side::Buy,
-                    spec.trigger ? OrderType::Market : OrderType::Limit, spec.trigger ? TimeInForce::Ioc : TimeInForce::Day,
+                    spec.trigger ? OrderType::Market : OrderType::Limit, spec.trigger ? TimeInForce::Ioc : TimeInForce::Gtc,
                     entry.filled_quantity, spec.limit_price, spec.trigger, {}, {}};
     if (multi_leg(entry.request)) {
       exit.request.side = Side::Buy;
       exit.request.legs = entry.request.legs;
       for (auto& leg : exit.request.legs) leg.side = leg.side == Side::Buy ? Side::Sell : Side::Buy;
-      if (exit.request.type == OrderType::Limit) exit.request.tif = TimeInForce::Gtc;
     }
     exit.role = role;
     exit.parent = entry.id;
@@ -1503,6 +1515,7 @@ void activate(State& s, OrderId id, Events& events) {
     auto& order = s.orders.mut(id - 1);
     order.status = OrderStatus::Working;
     order.triggered_at = s.time;
+    if (order.request.tif == TimeInForce::Day) order.day_end = day_deadline(s, order.request, s.time);
     event(events, "order_triggered", order);
   }
   const auto symbols = order_symbols(s.orders.at(static_cast<std::size_t>(id - 1)).request);
@@ -1794,7 +1807,6 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   }
   const auto id = stored.id;
   const auto symbols = order_symbols(stored.request);
-  const auto& contract = s.contracts.at(symbols.front());
   if (stored.request.exits_only) {
     const auto bracket = *stored.request.bracket;
     stored.role = bracket.take_profit ? OrderRole::TakeProfit : OrderRole::StopLoss;
@@ -1831,12 +1843,12 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
     // Armed until reached, and good until expiry; a level already reached
     // activates at once, and so does a reached stop of the exits its fills create.
     stored.status = OrderStatus::Armed;
-    stored.day_end = multi_leg(stored.request) ? order_expiry(s, stored.request) : contract.expiry_time();
+    stored.day_end = order_expiry(s, stored.request);
     event(events, "order_accepted", stored);
     check_triggers(s, events);
     return CommandResult{{}, id, 0};
   }
-  stored.day_end = stored.request.tif == TimeInForce::Gtc ? order_expiry(s, stored.request) : session_end(contract, time);
+  stored.day_end = stored.request.tif == TimeInForce::Gtc ? order_expiry(s, stored.request) : day_deadline(s, stored.request, time);
   event(events, "order_accepted", stored);
   // Existing better orders share any remaining budget even on command ingress.
   // Matching can append bracket exits, so re-read the order by ID afterwards.

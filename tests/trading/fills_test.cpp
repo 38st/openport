@@ -245,7 +245,7 @@ TEST(TradingFills, LatencyCannotFillAtExpiryOrAutoCloseDeadline) {
     market.seed(session);
     ASSERT_TRUE(session.submit(market.limit("expiry", 1, "4.20", Side::Buy, TimeInForce::Gtc), market.time).decision.ok());
     next(session, market);
-    EXPECT_EQ(order(session).reason.code, Reason::EXPIRED);
+    EXPECT_EQ(order(session).reason.code, cutoff ? Reason::EXPIRY_CUTOFF : Reason::EXPIRED);
     EXPECT_TRUE(session.snapshot()->recent_fills.empty());
   }
 }

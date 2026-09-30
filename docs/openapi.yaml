@@ -9368,7 +9368,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "When the order ends. A DAY order ends with its session (a triggered one, the session it activated in) or at its earliest leg's last trade or the account's auto-close deadline, whichever comes first; GTC orders, armed orders and bracket exits last until that deadline."
           },
           "origin": {
             "anyOf": [

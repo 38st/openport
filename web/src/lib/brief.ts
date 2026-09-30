@@ -142,7 +142,7 @@ export function positionDeadlines(position: Position, cutoff: number, day: strin
 }
 
 
-/** Order session ends can be later than a contract deadline. Show both when known. */
+/** The order's contracts' own deadlines (expiry, last trade, auto-close), shown beside its day_end when known. */
 export function orderDeadlines(order: Order, positions: readonly Position[], summary: Summary | undefined, cutoff: number, day: string | null) {
   const symbols = order.legs?.map(leg => leg.symbol) ?? (order.symbol ? [order.symbol] : [])
   const events: { label: string; time: number }[] = []
