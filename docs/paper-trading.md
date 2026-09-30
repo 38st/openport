@@ -927,7 +927,12 @@ width less its credit, and a closing order only its fees. Single-leg orders see 
 positions less the contracts that earlier orders, in acceptance order, already claim to
 close, so two sells cannot both claim the same long; otherwise each order is measured
 against the held positions alone. Portfolio mode uses the same reservation and
-projected-fill checks with the scan in place of strategy margin. Market orders reserve
+projected-fill checks with the scan in place of strategy margin, and because portfolio
+buying power is taken from equity, the new contracts count at their marks: a buy
+reserves its fees, the scan's change and what it pays above the contracts' marked value;
+a sell, its fees and the scan's change less what it receives above their marked value
+(either part is negative when the price is better than the mark). That is what filling
+the order now would cost the account's buying power. Market orders reserve
 what they would trade at now: the slipped far side, through the impact blocks a fill
 would walk when the account uses impact; the displayed far side, slipped, when only
 that side is quoted; and a buy with no ask at all, its last mark. Limit orders reserve
@@ -1061,7 +1066,11 @@ opposite one at the same price.
 
 Every option fill carries `context`, captured before it changes the account. It
 contains `spot`, `spot_source` (`quote`, `parity`, or null), `iv`, `delta`, `years`
-to expiry, `equity`, `floor_room` and available `buying_power`. The reducer copies
+to expiry, `equity`, `floor_room` and available `buying_power`. Buying power is the
+account's available buying power just before the fill, as the account showed it: the
+filling order is already working then, so its own reservation is deducted (for a market
+order accepted and filled at once, that is about the value after the fill). Equity and
+floor room are the marked account before the order. The reducer copies
 its current valuation; it does not calculate Greeks. Missing or stale analytics
 stay null. A fresh stock price can supply spot when analytics cannot. Expiry time
 is known from the contract even without analytics. Equity uses the account's last
