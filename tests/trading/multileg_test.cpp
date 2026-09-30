@@ -393,6 +393,35 @@ TEST(TradingBuyingPower, BuyingBackALongThatReCoversAWorkingSellIsAllowed) {
   ASSERT_TRUE(s.submit(single("cover-gone", P4890, Side::Sell), f.time).decision.ok());
   EXPECT_EQ(s.submit(single("unrelated", C5100, Side::Buy, "3.20"), f.time).decision.code, Reason::BUYING_POWER);
 }
+TEST(TradingBuyingPower, AFillThatReCoversPartOfAWorkingSellFillsAsItWasAccepted) {
+  Chain f;
+  AccountRules rules;
+  rules.buying_power = true;
+  TradingSession s(config("10000", rules), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  auto longs = single("longs", P4890, Side::Buy);
+  longs.quantity = 2;
+  ASSERT_TRUE(s.submit(longs, f.time).decision.ok());
+  auto sell = single("sell", P4900, Side::Sell, "5.60");
+  sell.quantity = 2;
+  ASSERT_TRUE(s.submit(sell, f.time).decision.ok());
+  auto close = single("close", P4890, Side::Sell);
+  close.quantity = 2;
+  ASSERT_TRUE(s.submit(close, f.time).decision.ok());
+  const auto short_of_power = s.snapshot()->buying_power.available;
+  ASSERT_LT(short_of_power, Money{});
+  // One long back re-covers one of the two working sells: still short of buying
+  // power, but less so than without it. It is accepted, so its fill goes through too.
+  const auto back = s.submit(single("back", P4890, Side::Buy, "4.20"), f.time);
+  ASSERT_TRUE(back.decision.ok()) << back.decision.message;
+  const auto& order = s.snapshot()->recent_orders.back();
+  EXPECT_EQ(order.status, OrderStatus::Filled) << order.reason.message;
+  ASSERT_EQ(s.snapshot()->positions.size(), 1U);
+  EXPECT_EQ(s.snapshot()->positions[0].position.quantity, 1);
+  EXPECT_LT(s.snapshot()->buying_power.available, Money{});
+  EXPECT_GT(s.snapshot()->buying_power.available, short_of_power);
+}
 TEST(TradingBuyingPower, LeggingIntoASpreadReservesOnlyItsWidth) {
   Chain f;
   AccountRules rules;

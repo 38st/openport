@@ -964,9 +964,10 @@ An order or a fill that would reduce free buying power (cash less the positions'
 requirement) must leave available buying power nonnegative, otherwise `BUYING_POWER`
 (`RISK_CHANGED` at a fill). One that frees buying power is always allowed: closing a
 position, buying back a short and buying protection work even when buying power is
-negative. So does an order whose fill would leave more buying power available than
-cancelling it, because it lowers what other working orders reserve: buying back the
-long that a working sell was written against re-covers that sell. A close frees buying
+negative. So does an order, and its fill, that would leave more buying power available
+than cancelling it, because it lowers what other working orders reserve: buying back the
+long that a working sell was written against re-covers that sell, and fills even when
+other working sells leave buying power negative after it. A close frees buying
 power unless the longs it sells cover shorts that stay open. Selling the long leg of a
 spread alone needs enough buying power to carry the short it uncovers, and so does
 closing a whole structure, a long butterfly say, whose longs also cover other shorts
