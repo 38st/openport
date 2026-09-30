@@ -571,8 +571,10 @@ curl -X PUT http://localhost:8080/api/replay \
 Add the configured write token as usual. Commands submitted after the response use
 the paused market time. Stepping through intermediate times adds no account
 transactions; with the same commands at the same times it gives the same journal
-as continuous playback. `start_at` retains its receipt-time semantics for delayed
-recordings; `until` uses market time.
+as continuous playback. A step plays unpaced and leaves the replay paused; resuming
+waits one receipt-time gap from the resume, however many steps came before.
+`start_at` retains its receipt-time semantics for delayed recordings; `until` uses
+market time.
 
 ### Verifying a run
 
