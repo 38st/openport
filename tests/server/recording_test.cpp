@@ -544,6 +544,71 @@ TEST(ReplayHost, AServerOfferingSandboxesStillStartsReplaysWithoutThem) {
   host.stop();
 }
 
+// B52, B32, B54: a delete takes a run's sidecars with it and works on a damaged
+// journal; an unknown id is a 404 that names no file.
+TEST(ReplayHost, HistoryDeletesDamagedRunsWithTheirSidecarsAndAnswersUnknownIds) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  const auto replays = file.directory / "replays";
+  server::ReplayHost host({file.directory, base, false});
+  std::vector<std::string> ids;
+  for (int run = 0; run < 3; ++run) {
+    const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","start_at":"10:00","paused":true,"speed":0})");
+    ASSERT_EQ(started.status, 201) << started.body;
+    ids.push_back(json::parse(started.body)["replay"]["id"]);
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+    ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"10:30"})").status, 200);
+    host.stop();
+  }
+  for (const auto& id : ids) {
+    ASSERT_TRUE(std::filesystem::exists(replays / (id + ".json")));
+    ASSERT_TRUE(std::filesystem::exists(replays / (id + ".jsonl.equity.csv"))) << id;
+  }
+  // An edited record breaks the chain; a torn last line is what a full disk leaves.
+  const auto edited = replays / (ids[1] + ".jsonl");
+  std::string lines;
+  { std::ifstream in(edited); lines.assign(std::istreambuf_iterator<char>(in), {}); }
+  const auto second = lines.find('\n') + 1;
+  lines.replace(lines.find("\"seq\":2", second), 7, "\"seq\":9");
+  { std::ofstream out(edited, std::ios::trunc); out << lines; }
+  { std::ofstream out(replays / (ids[2] + ".jsonl"), std::ios::app); out << "{\"seq\":"; }
+  const auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(history.size(), 3U);
+  EXPECT_EQ(call(host, "GET", "/api/replay/history/" + ids[1]).status, 422);
+  for (const auto& id : ids) {
+    const auto deleted = call(host, "DELETE", "/api/replay/history/" + id);
+    ASSERT_EQ(deleted.status, 200) << deleted.body;
+    for (const auto* suffix : {".jsonl", ".json", ".jsonl.equity.csv", ".playbooks.json"})
+      EXPECT_FALSE(std::filesystem::exists(replays / (id + suffix))) << id << suffix;
+  }
+  EXPECT_TRUE(json::parse(call(host, "GET", "/api/replay").body)["history"].empty());
+  for (const auto* method : {"GET", "DELETE"}) {
+    for (const auto* target : {"/api/replay/history/no-such-run", "/api/replay/history/no-such-run/fills", "/api/replay/history/..",
+                               "/api/replay/history/"}) {
+      const auto response = call(host, method, target);
+      EXPECT_EQ(response.status, 404) << method << ' ' << target << ' ' << response.body;
+      EXPECT_EQ(json::parse(response.body)["error"]["code"], "NOT_FOUND");
+      EXPECT_EQ(response.body.find(file.directory.string()), std::string::npos) << response.body;
+    }
+  }
+  // Another process's running run keeps its files.
+  const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","paused":true})");
+  ASSERT_EQ(started.status, 201) << started.body;
+  const std::string running = json::parse(started.body)["replay"]["id"];
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  server::Engine::Options other = base;
+  server::ReplayHost second_host({file.directory, other, false});
+  const auto refused = call(second_host, "DELETE", "/api/replay/history/" + running);
+  EXPECT_EQ(refused.status, 409) << refused.body;
+  EXPECT_EQ(json::parse(refused.body)["error"]["code"], "REPLAY_RUNNING");
+  EXPECT_EQ(refused.body.find(file.directory.string()), std::string::npos) << refused.body;
+  EXPECT_TRUE(std::filesystem::exists(replays / (running + ".jsonl")));
+  host.stop();
+}
+
 TEST(ReplayHost, PaperDisabledAndReadOnlyNeverCreateReplayJournals) {
   test::RecordingFile file;
   drill_recording(file.path);

@@ -176,6 +176,12 @@ JournalRepair FileJournal::repair(const std::string& path) {
     io("Cannot cut the torn line off " + path + ": " + std::strerror(errno));
   return result;
 }
+void FileJournal::remove(const std::string& path) {
+  const int fd = open_locked(path, false);
+  struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
+  // Nothing is read: removing a damaged journal needs no verified chain.
+  if (::unlink(path.c_str()) != 0) io("Cannot remove journal: " + std::string(std::strerror(errno)));
+}
 void FileJournal::append(Timestamp time, std::string_view type, std::string_view payload) {
   if (failed_) io("Journal is latched failed; recover before trading");
   if (sequence_ == std::numeric_limits<std::uint64_t>::max()) io("Journal sequence exhausted");

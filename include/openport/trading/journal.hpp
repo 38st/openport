@@ -73,6 +73,9 @@ class FileJournal final : public Journal {
   /// It takes the writer's lock, so openportd must be stopped. A journal that verifies
   /// is left alone; damage before the last line throws JOURNAL_CORRUPT, changing nothing.
   static JournalRepair repair(const std::string& path);
+  /// Deletes a journal whatever its contents, torn or edited ones included, under the
+  /// writer's lock: a file another open is writing throws JOURNAL_LOCKED and stays.
+  static void remove(const std::string& path);
   ~FileJournal() override;
   FileJournal(const FileJournal&) = delete;
   FileJournal& operator=(const FileJournal&) = delete;
