@@ -1,5 +1,6 @@
 #pragma once
 
+#include <exception>
 #include <map>
 #include <optional>
 #include <set>
@@ -38,6 +39,8 @@ class ReplayBatches {
   std::map<md::InstrumentId, bool> admitted_;
   std::optional<md::RecordedEvent> pending_;
   std::optional<Part> ahead_;
+  /// A read error met while looking ahead, raised once the batch before it is delivered.
+  std::exception_ptr failure_;
   md::Timestamp time_ = 0;
   bool snapshots_ = false;
   bool instants_ = true;

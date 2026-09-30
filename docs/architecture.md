@@ -126,17 +126,19 @@ The live driver keeps its 50 ms queue drain and latest-quote coalescing. Analyti
 uses the existing steady-clock cadence and refreshes on each batch while accounts
 hold positions or orders. This is the throughput-oriented path.
 
-The replay driver bypasses that queue. `ReplayBatches` reads every selected event
-in file order. Snapshot feeds drain at `SnapshotComplete`, and consecutive snapshots
-of one market time (a recording holds one per underlying, QQQ, SPX then SPY in the
-demo market's) form one batch: a snapshot joins the batch when its
-`SnapshotComplete` names the same time and none of its events is later. So every underlying's quotes for that time are in place before any trigger,
-fill, plan rule, playbook or equity sample runs. Streams, including older
-recordings without snapshot markers, drain at fixed integral market seconds. No
-quotes or trades are discarded. Each batch waits for the Desk and its publications
-before the driver proceeds. Analytics runs at most once per underlying per market
-second, after that underlying's complete snapshot. Playback speed and fast-forward
-change waits only. Snapshot boundaries remain atomic.
+The replay driver bypasses that queue, and so does the demo market's live feed, which
+plays each generated day through it. `ReplayBatches` reads every selected event in
+file order. Snapshot feeds drain at `SnapshotComplete`, and consecutive snapshots of
+one market time (a recording holds one per underlying, QQQ, SPX then SPY in the demo
+market's) form one batch: a snapshot joins the batch when its `SnapshotComplete`
+names the same time and none of its events is later. So every underlying's quotes
+for that time are in place before any trigger, fill, plan rule, playbook or equity
+sample runs. Streams, including older recordings without snapshot markers, drain at
+fixed integral market seconds. No quotes or trades are discarded: a truncated
+recording delivers every complete snapshot before it fails. Each batch waits for the
+Desk and its publications before the driver proceeds. Analytics runs at most once per
+underlying per market second, after that underlying's complete snapshot. Playback
+speed and fast-forward change waits only. Snapshot boundaries remain atomic.
 
 Each new run journals its source identity, SHA-256, session start, initial plan and
 configuration, analytics settings, dividends and calendar overrides. Scenario
