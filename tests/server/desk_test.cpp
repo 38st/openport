@@ -306,23 +306,21 @@ TEST(ReplayBatches, EveryUnderlyingsSnapshotOfOneMarketTimeIsOneBatch) {
     // The batch settles at the last snapshot's receipt, as it did before.
     EXPECT_EQ(all.back().received, feed.at(2) + 2 * md::kNanosPerSecond / 1000);
   }
-  // A snapshot of a later market time that changed nothing is not folded into the one before.
+  // A snapshot that changed nothing moves no clock: its SnapshotComplete's time places it,
+  // with the others of its time and never with an earlier time's.
   auto header = test::recording_header();
   header.subscription = feed.subscription;
   const auto unchanged = feed.file.directory / "unchanged.oprec";
-  test::record_events(unchanged, {md::ContractDefinition{0, feed.contracts[1]},
+  test::record_events(unchanged, {md::ContractDefinition{0, feed.contracts[1]}, md::ContractDefinition{1, feed.contracts[2]},
       md::UnderlyingQuote{"SPX", feed.at(0), 5000, 5000, 5000}, md::OptionQuote{0, feed.at(0), 10, 10.2, 20, 20},
       md::SnapshotComplete{"SPX", feed.at(0)}, md::SnapshotComplete{"SPY", feed.at(0)},
-      md::SnapshotComplete{"SPX", feed.at(1)}}, header);
+      md::SnapshotComplete{"SPX", feed.at(1)}, md::OptionQuote{1, feed.at(1), 2, 2.02, 20, 20},
+      md::SnapshotComplete{"SPY", feed.at(1)}, md::SnapshotComplete{"SPX", feed.at(2)}}, header);
   md::RecordingReader reader(unchanged);
   providers::ReplayBatches batches(reader, feed.subscription);
-  const auto first = batches.next();
-  ASSERT_TRUE(first);
-  EXPECT_EQ(first->events.size(), 5U);
-  const auto second = batches.next();
-  ASSERT_TRUE(second);
-  EXPECT_EQ(second->events.size(), 1U);
-  EXPECT_FALSE(batches.next());
+  std::vector<std::pair<std::size_t, md::Timestamp>> shapes;
+  while (const auto batch = batches.next()) shapes.emplace_back(batch->events.size(), batch->time);
+  EXPECT_EQ(shapes, (std::vector<std::pair<std::size_t, md::Timestamp>>{{6, feed.at(0)}, {3, feed.at(1)}, {1, feed.at(1)}}));
 }
 
 TEST(MarketInstants, LatencyFillsOnTheNextInstantsQuoteNotOneAnotherUnderlyingReoffered) {
