@@ -1412,6 +1412,8 @@ void sync_exits(State& s, const std::string& symbol, Events& events) {
       cancel_order(s.orders.mut(id - 1), failure(Reason::POSITION_CLOSED, "The position this exit protected is closed"), events);
     } else if (o.remaining() > capacity) {
       auto& exit = s.orders.mut(id - 1);
+      // A held spread's exits were submitted; a retry of that submission still finds them.
+      if (exit.request.exits_only && !exit.submitted) exit.submitted = exit.request;
       exit.request.quantity = exit.filled_quantity + capacity;
       event(events, "order_resized", exit);
     }
@@ -1891,6 +1893,7 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
     return {failure(Reason::INVALID_ORDER, "Only armed orders with a trigger have a trigger level"), id, 0};
   if (!rejection.ok()) return {rejection, id, 0};
   const Order before = order;
+  if (!order.submitted) order.submitted = order.request;
   if (change.quantity) order.request.quantity = *change.quantity;
   if (change.limit_price) order.request.limit_price = *change.limit_price;
   if (change.trigger_level) order.request.trigger->level = *change.trigger_level;
@@ -2326,12 +2329,13 @@ CommandResult TradingSession::define(const md::OptionContract& contract, Timesta
 }
 CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decision rejection) {
   // A client retrying an order it may have lost the answer to gets that answer,
-  // not a second order or a duplicate-key rejection; other terms still reject.
+  // not a second order or a duplicate-key rejection, even after the order changed;
+  // other terms still reject.
   if (!impl_->stopped) {
     const auto& state = impl_->state;
     if (const auto named = state.clients.find(request.client_order_id); named != state.clients.end()) {
       const auto& first = state.orders.at(static_cast<std::size_t>(named->second - 1));
-      if (first.request == request)
+      if (first.submission() == request)
         return CommandResult{first.status == OrderStatus::Rejected ? first.reason : Decision{}, first.id, state.version, true};
     }
   }
@@ -2353,7 +2357,7 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
     const auto& state = impl_->state;
     const auto named = state.clients.find(request.client_order_id);
     const auto* first = named == state.clients.end() ? nullptr : &state.orders.at(static_cast<std::size_t>(named->second - 1));
-    if (first && first->request == request) {
+    if (first && first->submission() == request) {
       const auto snapshot = snapshot_of(state);
       OrderPreview retry;
       retry.decision = first->status == OrderStatus::Rejected ? first->reason : Decision{};

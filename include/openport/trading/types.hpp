@@ -139,7 +139,12 @@ struct Order {
   OrderId take_profit = 0;    ///< Bracket entries: their take-profit exit, once created.
   std::string actor = "unknown"; ///< Originating actor; absent in older journals.
   Timestamp triggered_at = 0; ///< When an armed order activated.
+  /// The request as submitted, once a change or resize replaced its terms, so a
+  /// retry of the submission still finds it; absent in older journals.
+  std::optional<OrderRequest> submitted;
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
+  /// The terms a retry must repeat to be answered with this order.
+  [[nodiscard]] const OrderRequest& submission() const { return submitted ? *submitted : request; }
   [[nodiscard]] bool open() const {
     return status == OrderStatus::Working || status == OrderStatus::PartiallyFilled || status == OrderStatus::Armed;
   }

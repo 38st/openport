@@ -48,7 +48,14 @@ inline void from_json(const Json& j, OrderRequest& r) {
   added_field(j, "trigger", r.trigger); added_field(j, "bracket", r.bracket); added_field(j, "legs", r.legs);
   added_field(j, "tags", r.tags); added_field(j, "note", r.note); added_field(j, "exits_only", r.exits_only);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(Order, id, request, status, filled_quantity, filled_notional, accepted_at, day_end, reason, system, role, parent, oco, stop_loss, take_profit, triggered_at, actor)
+inline void to_json(Json& j, const Order& o) {
+  j = Json{{"id", o.id}, {"request", o.request}, {"status", o.status}, {"filled_quantity", o.filled_quantity},
+           {"filled_notional", o.filled_notional}, {"accepted_at", o.accepted_at}, {"day_end", o.day_end},
+           {"reason", o.reason}, {"system", o.system}, {"role", o.role}, {"parent", o.parent}, {"oco", o.oco},
+           {"stop_loss", o.stop_loss}, {"take_profit", o.take_profit}, {"triggered_at", o.triggered_at}, {"actor", o.actor}};
+  // Only a changed order records its submitted terms; every other order keeps its bytes.
+  if (o.submitted) j["submitted"] = *o.submitted;
+}
 inline void from_json(const Json& j, Order& o) {
   j.at("id").get_to(o.id); j.at("request").get_to(o.request); j.at("status").get_to(o.status);
   j.at("filled_quantity").get_to(o.filled_quantity); j.at("filled_notional").get_to(o.filled_notional);
@@ -56,6 +63,7 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "system", o.system); added_field(j, "role", o.role); added_field(j, "parent", o.parent);
   added_field(j, "oco", o.oco); added_field(j, "stop_loss", o.stop_loss); added_field(j, "take_profit", o.take_profit);
   added_field(j, "triggered_at", o.triggered_at); added_field(j, "actor", o.actor);
+  added_field(j, "submitted", o.submitted);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)

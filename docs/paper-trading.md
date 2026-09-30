@@ -185,8 +185,10 @@ specification. Observed fill prices need not themselves be on the limit-order ti
 
 Orders have buy/sell side, a positive integer contract count, a client ID and one
 of market/IOC or limit/DAY/GTC/IOC. Market/DAY or market/GTC, market with a limit, and limit without
-a positive price reject. Client IDs cannot be reused, even after a rejected order;
-HTTP retry/idempotency semantics belong to the integration layer.
+a positive price reject. Client IDs cannot be reused, even after a rejected order.
+Submitting the same terms again under a used client ID is a retry, not a new order: it
+gets the first answer (the order as it now stands, even after a change, or the original
+rejection) and records nothing. Other terms under that ID reject with `DUPLICATE_CLIENT_ID`.
 
 Tickets show liquidity warnings for thin or absent two-sided quotes, including
 spread percentage, session volume and OI, without blocking submission. Strategy
@@ -1665,7 +1667,7 @@ focus at the top of the ticket.
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, or the original rejection) and records nothing, while other terms under that ID reject with 409 `DUPLICATE_CLIENT_ID` |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` and projected `breach` |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
@@ -1725,8 +1727,8 @@ Limits contain `max_order_contracts`, `price_band_absolute`, `price_band_relativ
 Unknown fields, duplicate JSON keys, missing required fields, wrong types and
 noncanonical OSIs return 400 `INVALID_REQUEST`. Business rejections return 422
 and remain recorded as rejected orders; unknown contracts/orders return 404,
-terminal orders/reused client IDs return 409. Retries with a reused client ID
-are conflicts, not automatic replays. Errors always have this shape:
+terminal orders and a client ID reused with other terms return 409; an identical
+retry returns 200 with the order as it now stands. Errors always have this shape:
 
 ```json
 {"error":{"code":"DELTA_LIMIT","message":"...","actual":1250000,"limit":1000000,"scope":"SPX"}}
@@ -1910,5 +1912,5 @@ assignment and delivered shares. The CLI tests compact journals from earlier bui
 Engine and HTTP tests reuse that fixture for resting fills, cancellation, kill/limits,
 JSON errors, write protection, restart recovery, AM/PM settlement, named accounts and
 replays. Socket tests cover asynchronous POST/DELETE responses and shutdown of pending
-commands. External idempotency, a dividend feed, trade-through matching and portfolio
+commands. A dividend feed, trade-through matching and portfolio
 margin remain outside v1.

@@ -441,7 +441,7 @@
             "$ref": "#/components/responses/Error"
           },
           "200": {
-            "description": "Success",
+            "description": "A retry: the client_order_id was already used with these terms, so nothing is recorded and the order is returned as it now stands, also after a change.",
             "content": {
               "application/json": {
                 "schema": {
