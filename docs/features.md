@@ -69,8 +69,9 @@ simulation's limits.
   keep working while opening orders are cancelled. Positions close together as one
   order, or flatten an underlying or the whole account in one step. Server order
   previews show buying power, maximum loss and a size that uses at most half the
-  floor room. Breach risk shows the spot moves that could reach the floor and
-  labelled model estimates of touching it before the close.
+  floor room. Breach risk shows the spot moves that could reach the floor (the
+  personal soft floor on an account without a plan floor) and labelled model
+  estimates of touching it before the close.
 - **Playbooks**: versioned setups with entry windows and conditions, shared strategy
   templates, preview sizing and spread exits. Trade, Brief and Dashboard stage orders
   for review; replays and scenarios can send them automatically. The Playbooks page
