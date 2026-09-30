@@ -12,4 +12,6 @@ nlohmann::json build_template(const nlohmann::json& value, const nlohmann::json&
 std::string template_tag(const nlohmann::json& value);
 void strict_keys(const nlohmann::json& value, std::initializer_list<std::string_view> allowed);
 double bounded_number(const nlohmann::json& value, double low, double high, std::string_view field);
+/// A required member of an object, or a validation error naming `field`.
+const nlohmann::json& required(const nlohmann::json& value, std::string_view key, std::string_view field);
 }

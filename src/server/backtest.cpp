@@ -13,6 +13,7 @@
 #include "openport/server/plans.hpp"
 #include "openport/server/web_policy.hpp"
 #include "run_json.hpp"
+#include "strategy_template.hpp"
 
 namespace openport::server {
 namespace {
@@ -225,9 +226,12 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
   keys(body, {"playbook", "plan", "days", "scenarios", "scenario", "seed", "workers"});
   BacktestRequest result;
   result.workers = bounded(body.value("workers", json(4)), 16, "workers");
-  const auto selector = body.at("playbook").get<std::string>();
+  const auto& named = required(body, "playbook", "playbook");
+  if (!named.is_string()) throw std::invalid_argument("playbook must be ID or ID@VERSION");
+  const auto selector = named.get<std::string>();
   const auto at = selector.find('@');
   result.playbook = selector.substr(0, at);
+  if (!catalogue.at("definitions").contains(result.playbook)) throw std::invalid_argument("Unknown playbook");
   const auto& history = catalogue.at("definitions").at(result.playbook).at("versions");
   std::size_t version = history.size();
   if (at != std::string::npos) {
@@ -242,7 +246,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       {"modes", {{"main", {{result.playbook, "auto"}}}}}};
   const Playbooks validated({}, result.playbooks);
   (void)validated;
-  const auto& plan = body.at("plan");
+  const auto& plan = required(body, "plan", "plan");
   if (plan.is_string()) {
     const auto* preset = find_plan(plan.get<std::string>());
     if (!preset) throw std::invalid_argument("Unknown plan");
@@ -250,9 +254,11 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     result.config.rules = preset->rules;
   } else {
     keys(plan, {"initial_cash", "rules", "fee_per_contract"});
-    result.config.initial_cash = Money::parse(plan.at("initial_cash").get<std::string>());
+    const auto& cash = required(plan, "initial_cash", "plan initial_cash");
+    if (!cash.is_string()) throw std::invalid_argument("plan initial_cash must be a decimal string");
+    result.config.initial_cash = Money::parse(cash.get<std::string>());
     json rules = result.config.rules;
-    if (!plan.at("rules").is_object()) throw std::invalid_argument("rules must be an object");
+    if (!required(plan, "rules", "plan rules").is_object()) throw std::invalid_argument("rules must be an object");
     for (const auto& [key, value] : plan.at("rules").items()) {
       if (!rules.contains(key)) throw std::invalid_argument("Unknown plan rule: " + key);
       if (key == "profit_target" || key == "max_drawdown" || key == "lock_balance") rules[key] = Money::parse(value.get<std::string>()).micros();

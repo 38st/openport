@@ -47,7 +47,8 @@ it and increments it. Unknown fields, invalid types, nonfinite values, duplicate
 symbols or weekdays, and reversed ranges are refused. IDs use 1–15 lowercase
 letters, digits or hyphens. Names allow 100 bytes and descriptions 2,000; neither
 accepts control characters. There may be 100 IDs, 20 underlyings per definition,
-and at most 8 MiB of persisted history. Archived IDs cannot be reused.
+and at most 8 MiB of persisted history. Archived IDs cannot be reused. A refusal
+names the missing or invalid field, for example `management.close_by is required`.
 
 Windows use New York market time, including daylight saving time. Weekdays are
 1–5, Monday–Friday. Start is inclusive and end exclusive; windows cannot cross

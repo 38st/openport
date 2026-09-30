@@ -253,6 +253,17 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
     auto bad = good; bad[key] = value;
     EXPECT_THROW((void)server::parse_backtest(bad, definitions, scenarios, {}), std::exception) << key;
   }
+  for (const auto& [key, message] : std::vector<std::pair<std::string, std::string>>{{"playbook", "playbook is required"}, {"plan", "plan is required"}}) {
+    auto bad = good; bad.erase(key);
+    try { (void)server::parse_backtest(bad, definitions, scenarios, {}); ADD_FAILURE() << key; }
+    catch (const std::invalid_argument& error) { EXPECT_EQ(error.what(), message); }
+  }
+  auto unknown = good; unknown["playbook"] = "missing@1";
+  try { (void)server::parse_backtest(unknown, definitions, scenarios, {}); ADD_FAILURE(); }
+  catch (const std::invalid_argument& error) { EXPECT_STREQ(error.what(), "Unknown playbook"); }
+  auto cashless = good; cashless["plan"] = {{"rules", json::object()}};
+  try { (void)server::parse_backtest(cashless, definitions, scenarios, {}); ADD_FAILURE(); }
+  catch (const std::invalid_argument& error) { EXPECT_STREQ(error.what(), "plan initial_cash is required"); }
   const auto custom = server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "1000"},
       {"rules", {{"profit_target", "100"}, {"max_drawdown", "50"}, {"drawdown_mode", "end_of_day"}}}}}, {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
   EXPECT_EQ(custom.config.rules.max_drawdown, Money::parse("50"));

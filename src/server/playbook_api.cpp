@@ -68,10 +68,11 @@ std::optional<ApiResponse> playbook_read(const ApiRequest& request, const Metric
     const auto parameters = query(request);
     if (path == "/api/strategy-template") {
       strict_keys(parameters, {"symbol", "expiry", "template", "min_strike", "max_strike"});
-      const auto symbol = parameters.at("symbol").get<std::string>();
+      const auto symbol = required(parameters, "symbol", "symbol").get<std::string>();
       const auto metrics = source.metrics(symbol);
       if (!metrics) return api_error(404, "UNKNOWN_UNDERLYING", "No chain for this underlying");
-      const auto value = json::parse(parameters.at("template").get<std::string>());
+      const auto value = json::parse(required(parameters, "template", "template").get<std::string>(), nullptr, false);
+      if (value.is_discarded()) throw std::invalid_argument("template must be URL-encoded JSON");
       validate_template(value);
       json near = nullptr, far = nullptr;
       for (const auto& slice : metrics->slices) {
@@ -81,8 +82,9 @@ std::optional<ApiResponse> playbook_read(const ApiRequest& request, const Metric
       }
       if (near.is_null()) return api_error(404, "UNKNOWN_EXPIRY", "Selected expiry unavailable");
       if (parameters.contains("min_strike") || parameters.contains("max_strike")) {
-        const auto low = json::parse(parameters.at("min_strike").get<std::string>());
-        const auto high = json::parse(parameters.at("max_strike").get<std::string>());
+        if (!parameters.contains("min_strike") || !parameters.contains("max_strike")) throw std::invalid_argument("min_strike and max_strike go together");
+        const auto low = json::parse(parameters.at("min_strike").get<std::string>(), nullptr, false);
+        const auto high = json::parse(parameters.at("max_strike").get<std::string>(), nullptr, false);
         const auto minimum = bounded_number(low, 0, 10000000, "min_strike");
         const auto maximum = bounded_number(high, minimum, 10000000, "max_strike");
         std::erase_if(near["strikes"].get_ref<json::array_t&>(), [&](const auto& row) { return row.at("strike").template get<double>() < minimum || row.at("strike").template get<double>() > maximum; });
@@ -133,7 +135,8 @@ bool playbook_write(const ApiRequest& request, MetricsSource& source, ApiComplet
     strict_keys(parameters, {"account", "version"});
     if (request.method != "DELETE" && parameters.contains("version")) throw std::invalid_argument("version query is only valid when archiving; updates carry version in the definition");
     json command;
-    const auto body = request.body.empty() ? json::object() : json::parse(request.body);
+    const auto body = request.body.empty() ? json::object() : json::parse(request.body, nullptr, false);
+    if (body.is_discarded()) throw std::invalid_argument("Request body must be JSON");
     if (request.method == "POST" && path == "/api/playbooks") command = {{"action", "create"}, {"definition", body}};
     else if (path.starts_with("/api/playbooks/staged/") && request.method == "POST") {
       const auto rest = path.substr(std::string("/api/playbooks/staged/").size());
@@ -145,9 +148,9 @@ bool playbook_write(const ApiRequest& request, MetricsSource& source, ApiComplet
       const auto rest = path.substr(std::min(path.size(), std::string("/api/playbooks/").size()));
       if (request.method == "PUT" && rest.ends_with("/mode")) {
         strict_keys(body, {"mode"});
-        command = {{"action", "mode"}, {"id", rest.substr(0, rest.size() - 5)}, {"mode", body.at("mode")}};
+        command = {{"action", "mode"}, {"id", rest.substr(0, rest.size() - 5)}, {"mode", required(body, "mode", "mode")}};
       } else if (request.method == "PUT") {
-        if (body.at("id") != rest) throw std::invalid_argument("Path and definition IDs must match");
+        if (required(body, "id", "id") != rest) throw std::invalid_argument("Path and definition IDs must match");
         command = {{"action", "update"}, {"definition", body}};
       } else if (request.method == "DELETE") {
         strict_keys(body, {});
