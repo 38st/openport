@@ -8,6 +8,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -61,8 +62,11 @@ class ReplayProvider final : public md::Provider {
   /// The optional barrier settles pending I/O at pauses, steps and EOF.
   void set_driver(Driver driver, std::function<std::future<void>()> barrier = {});
   /// Synchronous lockstep advance; returns only after all complete input through
-  /// the target is settled. Controls and shutdown interrupt the pacing wait.
+  /// the target is settled. Controls and shutdown interrupt the pacing wait. A target
+  /// past the recording's last batch throws before anything plays.
   void until(md::Timestamp target);
+  /// The market time of the recording's last complete batch, read once on first use.
+  [[nodiscard]] md::Timestamp end_time();
   [[nodiscard]] md::Timestamp settled_through() const { return settled_.load(); }
   [[nodiscard]] md::Timestamp market_time() const { return market_time_.load(); }
   [[nodiscard]] const std::filesystem::path& file() const { return options_.file; }
@@ -109,6 +113,9 @@ class ReplayProvider final : public md::Provider {
   md::Timestamp step_target_ = 0;  // control_mutex_
   bool step_pending_ = false;
   std::string playback_error_;
+  md::Subscription subscription_;
+  std::mutex end_mutex_;
+  std::optional<md::Timestamp> end_;  // end_mutex_
 };
 
 }  // namespace openport::providers

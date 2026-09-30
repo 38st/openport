@@ -1165,7 +1165,12 @@ TEST(ReproducibleRun, LockstepWaitsForTheConsumerAndRejectsBackwardAndPastEndTim
   EXPECT_TRUE(replay.paused());
   EXPECT_EQ(replay.settled_through(), market.time + md::kNanosPerSecond);
   EXPECT_THROW(replay.until(market.time), std::invalid_argument);
+  // A target past EOF is refused before anything plays (B05).
   EXPECT_THROW(replay.until(market.time + 20 * md::kNanosPerSecond), std::invalid_argument);
+  EXPECT_EQ(replay.settled_through(), market.time + md::kNanosPerSecond);
+  EXPECT_FALSE(replay.finished());
+  EXPECT_EQ(replay.end_time(), market.time + 12 * md::kNanosPerSecond);
+  EXPECT_NO_THROW(replay.until(market.time + 12 * md::kNanosPerSecond));
   EXPECT_EQ(replay.settled_through(), market.time + 12 * md::kNanosPerSecond);
   replay.stop();
 }

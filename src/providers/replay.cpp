@@ -147,6 +147,7 @@ void ReplayProvider::start(const md::Subscription& subscription, md::EventSink& 
   for (const auto& symbol : subscription.underlyings)
     if (std::find(available.begin(), available.end(), symbol) == available.end())
       throw std::invalid_argument("replay: unknown symbol " + symbol + "; file contains: " + names);
+  subscription_ = subscription;
   thread_ = std::thread([this, subscription, &sink] {
     if (driver_) run_deterministic(subscription, sink);
     else run(subscription, sink);
@@ -260,8 +261,33 @@ void ReplayProvider::set_driver(Driver driver, std::function<std::future<void>()
   driver_ = std::move(driver);
   if (barrier) options_.synchronize = std::move(barrier);
 }
+md::Timestamp ReplayProvider::end_time() {
+  const std::lock_guard lock(end_mutex_);
+  if (end_) return *end_;
+  // A reader of its own batches the file as playback will, without touching playback.
+  md::Timestamp last = 0;
+  try {
+    md::RecordingReader reader(options_.file);
+    ReplayBatches batches(reader, subscription_);
+    while (!stopping_.load()) {
+      const auto batch = batches.next();
+      if (!batch) break;
+      last = batch->time;
+    }
+  } catch (const std::exception&) {
+    // Playback reports a damaged recording where it reaches the damage.
+    last = std::numeric_limits<md::Timestamp>::max();
+  }
+  if (stopping_.load()) return std::numeric_limits<md::Timestamp>::max();
+  end_ = last;
+  return last;
+}
+
 void ReplayProvider::until(md::Timestamp target) {
   if (!driver_) throw std::invalid_argument("Lockstep requires a deterministic consumer");
+  // Refuse a target past EOF before playing anything: an error leaves the run where it was.
+  if (const auto end = end_time(); target > end)
+    throw std::invalid_argument("until exceeds the recording's end at " + md::format_timestamp(end) + "; the replay did not move");
   std::unique_lock lock(control_mutex_);
   if (target <= 0) throw std::invalid_argument("until must be a positive market timestamp");
   if (target % md::kNanosPerSecond != 0 && !snapshot_batches_.load())
@@ -277,7 +303,8 @@ void ReplayProvider::until(md::Timestamp target) {
   lock.lock();
   control_.wait(lock, [&] { return !step_pending_ || finished_.load() || stopping_.load(); });
   if (!playback_error_.empty()) throw std::runtime_error(playback_error_);
-  if (settled_.load() < target) throw std::invalid_argument("until exceeds the recording's end");
+  if (settled_.load() < target)
+    throw std::invalid_argument(stopping_.load() ? "The replay stopped before until" : "until exceeds the recording's end");
 }
 
 void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventSink& sink) {

@@ -484,6 +484,38 @@ TEST(Replay, ResumingAfterLockstepStepsWaitsOneGap) {
   replay.stop();
 }
 
+// B05: a target past EOF is an error that leaves the run where it was, paused and
+// still able to trade and step.
+TEST(Replay, UntilPastTheEndIsRefusedBeforeAnythingPlays) {
+  const auto file = quarter_minute_recording(8);
+  const auto open = md::new_york_to_utc({2026, 9, 16}, 10, 0);
+  std::atomic<md::Timestamp> applied{0};
+  providers::ReplayProvider::Options options{file.path, 1, false, std::make_shared<ManualClock>()};
+  options.paused = true;
+  providers::ReplayProvider replay(options);
+  replay.set_driver([&](providers::ReplayBatch batch) {
+    applied = batch.time;
+    return immediate_driver()(std::move(batch));
+  });
+  test::DiscardEvents discard;
+  replay.start({{"SPX"}}, discard);
+  ASSERT_TRUE(test::recording_eventually([&] { return !replay.fast_forwarding(); }));
+  ASSERT_NO_THROW(replay.until(open + 30 * md::kNanosPerSecond));
+  const auto last = open + 105 * md::kNanosPerSecond;
+  EXPECT_EQ(replay.end_time(), last);
+  EXPECT_THROW(replay.until(last + md::kNanosPerSecond), std::invalid_argument);
+  EXPECT_EQ(replay.settled_through(), open + 30 * md::kNanosPerSecond);
+  EXPECT_EQ(applied.load(), open + 30 * md::kNanosPerSecond);
+  EXPECT_FALSE(replay.finished());
+  EXPECT_TRUE(replay.paused());
+  ASSERT_NO_THROW(replay.until(open + 60 * md::kNanosPerSecond));
+  EXPECT_EQ(applied.load(), open + 60 * md::kNanosPerSecond);
+  ASSERT_NO_THROW(replay.until(last));
+  EXPECT_EQ(replay.settled_through(), last);
+  ASSERT_TRUE(test::recording_eventually([&] { return replay.finished(); }));
+  replay.stop();
+}
+
 TEST(Replay, SkipCutsAnOvernightGapShortAndTheEndIsReported) {
   const auto file = paced_recording();
   auto clock = std::make_shared<ManualClock>();
