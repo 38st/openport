@@ -45,8 +45,12 @@ double bounded_number(const json& value, double low, double high, std::string_vi
     invalid(std::string(field) + " is outside its allowed range");
   return value.get<double>();
 }
+const json& required(const json& value, std::string_view key, std::string_view field) {
+  if (!value.is_object() || !value.contains(key)) invalid(std::string(field) + " is required");
+  return value.at(key);
+}
 void validate_template(const json& value) {
-  const auto kind = choice(value.at("kind"), {"vertical", "condor", "iron-butterfly", "strangle", "straddle", "butterfly", "calendar", "diagonal"}, "template kind");
+  const auto kind = choice(required(value, "kind", "template kind"), {"vertical", "condor", "iron-butterfly", "strangle", "straddle", "butterfly", "calendar", "diagonal"}, "template kind");
   if (kind == "vertical") strict_keys(value, {"kind", "type", "direction", "target", "width"});
   else if (kind == "condor") strict_keys(value, {"kind", "target", "width"});
   else if (kind == "iron-butterfly") strict_keys(value, {"kind", "width"});
@@ -55,26 +59,26 @@ void validate_template(const json& value) {
   else if (kind == "butterfly") strict_keys(value, {"kind", "type", "target", "width"});
   else strict_keys(value, {"kind", "type", "target", "farExpiry", "offset"});
   if (kind == "vertical" || kind == "butterfly" || kind == "calendar" || kind == "diagonal")
-    choice(value.at("type"), {"call", "put"}, "option type");
-  if (kind == "vertical") choice(value.at("direction"), {"credit", "debit"}, "premium direction");
-  if (kind == "strangle" || kind == "straddle") choice(value.at("side"), {"buy", "sell"}, "side");
+    choice(required(value, "type", "option type"), {"call", "put"}, "option type");
+  if (kind == "vertical") choice(required(value, "direction", "premium direction"), {"credit", "debit"}, "premium direction");
+  if (kind == "strangle" || kind == "straddle") choice(required(value, "side", "side"), {"buy", "sell"}, "side");
   if (kind == "vertical" || kind == "condor" || kind == "iron-butterfly" || kind == "butterfly") {
-    if (!finite(value.at("width")) || value.at("width").get<double>() <= 0) invalid("Width must be greater than zero points.");
+    if (!finite(required(value, "width", "width")) || value.at("width").get<double>() <= 0) invalid("Width must be greater than zero points.");
     bounded_number(value.at("width"), 0.000001, 1000000, "width");
   }
-  if (kind == "strangle") bounded_number(value.at("delta"), 0.000001, 99.999999, "delta");
+  if (kind == "strangle") bounded_number(required(value, "delta", "delta"), 0.000001, 99.999999, "delta");
   if (kind == "calendar" || kind == "diagonal") {
-    if (!value.at("farExpiry").is_string() || value.at("farExpiry").get<std::string>().size() < 12) invalid("farExpiry must be an expiry ID");
-    const auto offset = bounded_number(value.at("offset"), -1000000, 1000000, "offset");
+    if (!required(value, "farExpiry", "farExpiry").is_string() || value.at("farExpiry").get<std::string>().size() < 12) invalid("farExpiry must be an expiry ID");
+    const auto offset = bounded_number(required(value, "offset", "offset"), -1000000, 1000000, "offset");
     if (kind == "diagonal" && offset == 0) invalid("Diagonal far-strike offset must be nonzero points.");
   }
   if (kind == "vertical" || kind == "condor" || kind == "butterfly" || kind == "calendar" || kind == "diagonal") {
-    const auto& target = value.at("target");
-    const auto mode = choice(target.at("mode"), {"atm", "delta", "points", "moves", "strike"}, "target mode");
+    const auto& target = required(value, "target", "target");
+    const auto mode = choice(required(target, "mode", "target mode"), {"atm", "delta", "points", "moves", "strike"}, "target mode");
     if (mode == "atm") strict_keys(target, {"mode"});
     else {
       strict_keys(target, {"mode", "value"});
-      if (!finite(target.at("value"))) invalid("Enter a finite strike target.");
+      if (!finite(required(target, "value", "target value"))) invalid("Enter a finite strike target.");
       if (mode == "delta" && !(target.at("value").get<double>() > 0 && target.at("value").get<double>() < 100))
         invalid("Target delta must be between 0 and 100, excluding the endpoints.");
       bounded_number(target.at("value"), -1000000, 1000000, "target value");

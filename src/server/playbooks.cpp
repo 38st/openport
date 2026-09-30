@@ -37,8 +37,8 @@ void integer(const json& value, int low, int high, std::string_view field) {
 }
 void range(const json& value, double low, double high, std::string_view field) {
   strict_keys(value, {"min", "max"});
-  const auto minimum = bounded_number(value.at("min"), low, high, field);
-  if (bounded_number(value.at("max"), low, high, field) < minimum) invalid(std::string(field) + " min must not exceed max");
+  const auto minimum = bounded_number(required(value, "min", std::string(field) + " min"), low, high, field);
+  if (bounded_number(required(value, "max", std::string(field) + " max"), low, high, field) < minimum) invalid(std::string(field) + " min must not exceed max");
 }
 void direction(const json& value) {
   if (value != "above" && value != "below") invalid("direction must be above or below");
@@ -134,13 +134,17 @@ bool guardrails_allow(const json& definition, const TradingView& view, md::Times
 }
 void validate_playbook(const json& definition) {
   strict_keys(definition, {"id", "version", "name", "description", "underlyings", "window", "conditions", "structure", "sizing", "management", "guardrails"});
-  text_field(definition.at("id"), 15, "id");
+  // A missing member is named, as the other refusals name their field.
+  const auto field = [](const json& object, std::string_view key, std::string_view name = {}) -> const json& {
+    return required(object, key, name.empty() ? key : name);
+  };
+  text_field(field(definition, "id"), 15, "id");
   const auto id = definition.at("id").get<std::string>();
   if (std::any_of(id.begin(), id.end(), [](char ch) { return !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-'); })) invalid("id must use lowercase letters, digits or hyphens");
   if (definition.contains("version")) integer(definition.at("version"), 1, 999999, "version");
-  text_field(definition.at("name"), 100, "name");
-  text_field(definition.at("description"), 2000, "description", true);
-  const auto& underlyings = definition.at("underlyings");
+  text_field(field(definition, "name"), 100, "name");
+  text_field(field(definition, "description"), 2000, "description", true);
+  const auto& underlyings = field(definition, "underlyings");
   if (!underlyings.is_array() || underlyings.empty() || underlyings.size() > 20) invalid("underlyings must contain 1–20 symbols");
   std::set<std::string> symbols;
   for (const auto& item : underlyings) {
@@ -148,51 +152,53 @@ void validate_playbook(const json& definition) {
     const auto symbol = item.get<std::string>();
     if (!symbols.insert(symbol).second || std::any_of(symbol.begin(), symbol.end(), [](char ch) { return !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '.'); })) invalid("underlyings must be unique uppercase symbols");
   }
-  const auto& window = definition.at("window");
+  const auto& window = field(definition, "window");
   strict_keys(window, {"start", "end", "weekdays"});
-  if (minute(window.at("start")) >= minute(window.at("end"))) invalid("Entry window start must precede end on the same New York day");
-  const auto& weekdays = window.at("weekdays");
+  if (minute(field(window, "start", "window.start")) >= minute(field(window, "end", "window.end"))) invalid("Entry window start must precede end on the same New York day");
+  const auto& weekdays = field(window, "weekdays", "window.weekdays");
   if (!weekdays.is_array() || weekdays.empty() || weekdays.size() > 5) invalid("weekdays must be a nonempty subset of 1–5 (Monday–Friday)");
   std::set<int> unique;
   for (const auto& day : weekdays) { integer(day, 1, 5, "weekday"); if (!unique.insert(day.get<int>()).second) invalid("Duplicate weekday"); }
-  const auto& conditions = definition.at("conditions");
+  const auto& conditions = field(definition, "conditions");
   strict_keys(conditions, {"price", "iv_rank", "vrp_min", "term_inverted", "dte"});
   if (conditions.contains("price")) {
     const auto& price = conditions.at("price");
     strict_keys(price, {"reference", "direction", "value"});
-    if (price.at("reference") != "level" && price.at("reference") != "prior_close" && price.at("reference") != "day_open") invalid("price reference must be level, prior_close or day_open");
-    direction(price.at("direction"));
-    bounded_number(price.at("value"), price.at("reference") == "level" ? 0.000001 : -1000000, 1000000, "price value");
+    const auto& reference = field(price, "reference", "price reference");
+    if (reference != "level" && reference != "prior_close" && reference != "day_open") invalid("price reference must be level, prior_close or day_open");
+    direction(field(price, "direction", "price direction"));
+    bounded_number(field(price, "value", "price value"), reference == "level" ? 0.000001 : -1000000, 1000000, "price value");
   }
   if (conditions.contains("iv_rank")) range(conditions.at("iv_rank"), -100, 100, "iv_rank");
   if (conditions.contains("vrp_min")) bounded_number(conditions.at("vrp_min"), -1000, 1000, "vrp_min");
   if (conditions.contains("term_inverted") && !conditions.at("term_inverted").is_boolean()) invalid("term_inverted must be boolean");
   if (conditions.contains("dte")) range(conditions.at("dte"), 0, 3650, "dte");
-  const auto& structure = definition.at("structure");
+  const auto& structure = field(definition, "structure");
   strict_keys(structure, {"template", "expiry"});
-  validate_template(structure.at("template"));
-  range(structure.at("expiry"), 0, 3650, "expiry DTE");
-  const auto& sizing = definition.at("sizing");
+  validate_template(field(structure, "template", "structure.template"));
+  range(field(structure, "expiry", "structure.expiry"), 0, 3650, "expiry DTE");
+  const auto& sizing = field(definition, "sizing");
   strict_keys(sizing, {"units", "floor_share"});
   if (sizing.size() != 1) invalid("Sizing requires either units or floor_share");
   if (sizing.contains("units")) integer(sizing.at("units"), 1, 100000, "units");
   else bounded_number(sizing.at("floor_share"), 0.000001, 1, "floor_share");
-  const auto& management = definition.at("management");
+  const auto& management = field(definition, "management");
   strict_keys(management, {"take_profit_percent", "stop_credit_multiple", "stop_underlying", "close_by", "max_hold_days"});
-  if (minute(management.at("close_by")) < minute(window.at("end"))) invalid("close_by must be at or after the entry window end");
+  if (minute(field(management, "close_by", "management.close_by")) < minute(window.at("end"))) invalid("close_by must be at or after the entry window end");
   if (management.contains("take_profit_percent")) bounded_number(management.at("take_profit_percent"), 0.000001, 1000, "take_profit_percent");
   if (management.contains("stop_credit_multiple")) bounded_number(management.at("stop_credit_multiple"), 1.000001, 100, "stop_credit_multiple");
   if (management.contains("stop_underlying")) {
     if (management.contains("stop_credit_multiple")) invalid("Choose one stop rule");
-    strict_keys(management.at("stop_underlying"), {"level", "direction"});
-    bounded_number(management.at("stop_underlying").at("level"), 0.000001, 1000000, "underlying stop level");
-    direction(management.at("stop_underlying").at("direction"));
+    const auto& stop = management.at("stop_underlying");
+    strict_keys(stop, {"level", "direction"});
+    bounded_number(field(stop, "level", "underlying stop level"), 0.000001, 1000000, "underlying stop level");
+    direction(field(stop, "direction", "underlying stop direction"));
   }
   if (management.contains("max_hold_days")) integer(management.at("max_hold_days"), 1, 365, "max_hold_days");
-  const auto& guardrails = definition.at("guardrails");
+  const auto& guardrails = field(definition, "guardrails");
   strict_keys(guardrails, {"max_entries_per_day", "cooldown_minutes"});
-  integer(guardrails.at("max_entries_per_day"), 1, 1000, "max_entries_per_day");
-  integer(guardrails.at("cooldown_minutes"), 0, 525600, "cooldown_minutes");
+  integer(field(guardrails, "max_entries_per_day", "guardrails.max_entries_per_day"), 1, 1000, "max_entries_per_day");
+  integer(field(guardrails, "cooldown_minutes", "guardrails.cooldown_minutes"), 0, 525600, "cooldown_minutes");
 }
 bool playbook_window(const json& definition, md::Timestamp time) {
   const auto date = md::new_york_time(time);
@@ -341,8 +347,9 @@ Playbooks::Json Playbooks::change(const Json& command, std::string_view account,
       if (command.at("version") != definitions.at(id).at("versions").back().at("version")) invalid("Playbook changed; reload before deleting");
       definitions[id]["deleted"] = true;
     } else {
-      const auto mode = command.at("mode").get<std::string>();
-      if (mode != "off" && mode != "stage" && mode != "auto") invalid("Mode must be off, stage or auto");
+      const auto& value = command.at("mode");
+      if (value != "off" && value != "stage" && value != "auto") invalid("Mode must be off, stage or auto");
+      const auto mode = value.get<std::string>();
       if (mode == "auto" && !replay) invalid("Auto mode is only available on replay or scenario accounts; live-feed practice accounts cannot send automatically");
       next["modes"][std::string(account)][id] = mode;
     }

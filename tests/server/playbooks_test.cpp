@@ -44,6 +44,18 @@ TEST(Playbooks, DefinitionValidationRejectsUnknownAndInconsistentFields) {
     auto bad = definition(); bad[json::json_pointer(path)] = value;
     EXPECT_THROW(server::validate_playbook(bad), std::exception) << path;
   }
+  // B62: a missing field is named, not reported as the JSON library's lookup error.
+  for (const auto& [path, message] : std::vector<std::pair<std::string, std::string>>{
+      {"/management/close_by", "management.close_by is required"}, {"/guardrails", "guardrails is required"},
+      {"/window/weekdays", "window.weekdays is required"}, {"/structure/template/kind", "template kind is required"},
+      {"/structure/template/target/value", "target value is required"}, {"/structure/expiry/max", "expiry DTE max is required"},
+      {"/guardrails/cooldown_minutes", "guardrails.cooldown_minutes is required"}, {"/name", "name is required"}}) {
+    auto bad = definition();
+    const json::json_pointer pointer(path);
+    bad.at(pointer.parent_pointer()).erase(pointer.back());
+    try { server::validate_playbook(bad); ADD_FAILURE() << path; }
+    catch (const std::invalid_argument& error) { EXPECT_EQ(error.what(), message) << path; }
+  }
 }
 TEST(Playbooks, EditsVersionAndArchiveRetainsHistoryOnDisk) {
   test::RecordingFile file;
@@ -466,6 +478,13 @@ TEST(PlaybookApi, VersionReadsAndAutoRefusalUseAccountCommandPath) {
   EXPECT_EQ(json::parse(api(source, "GET", "/api/playbooks/morning?version=1").body).at("name"), "Morning spread");
   EXPECT_EQ(json::parse(api(source, "GET", "/api/playbooks/morning").body).at("name"), "Version two");
   EXPECT_EQ(api(source, "PUT", "/api/playbooks/morning/mode", {{"mode", "auto"}}).status, 400);
+  const auto missing = api(source, "PUT", "/api/playbooks/morning/mode", json::object());
+  EXPECT_EQ(missing.status, 400);
+  EXPECT_EQ(json::parse(missing.body).at("error").at("message"), "mode is required");
+  EXPECT_EQ(json::parse(api(source, "PUT", "/api/playbooks/morning/mode", {{"mode", 3}}).body).at("error").at("message"), "Mode must be off, stage or auto");
+  auto unnamed = definition(); unnamed.erase("management");
+  EXPECT_EQ(json::parse(api(source, "POST", "/api/playbooks", unnamed).body).at("error").at("message"), "management is required");
+  EXPECT_EQ(json::parse(api(source, "GET", "/api/strategy-template?template=%7B%7D").body).at("error").at("message"), "symbol is required");
   EXPECT_EQ(api(source, "GET", "/api/playbooks?version=1&version=2").status, 400);
   EXPECT_EQ(api(source, "GET", "/api/playbooks/morning?version=99").status, 404);
   EXPECT_EQ(api(source, "DELETE", "/api/playbooks/morning?version=1").status, 400);
