@@ -1155,7 +1155,8 @@ TEST(ReplayRun, AStepHoldsNoCallerAndRefusesWritesUntilItSettles) {
     return host.handle(request, [&](server::ApiResponse response) { stepped.set_value(std::move(response)); });
   });
   ASSERT_EQ(entered.wait_for(5min), std::future_status::ready);
-  const bool returned = handled.wait_for(0s) == std::future_status::ready;
+  // The step stays held below, so only a caller the step blocks could time out here.
+  const bool returned = handled.wait_for(10s) == std::future_status::ready;
   EXPECT_TRUE(returned) << "the step held the thread that asked for it";
   auto listing = std::async(std::launch::async, [&] { return replay_call(host, "GET", "/api/replay"); });
   const bool listed = listing.wait_for(60s) == std::future_status::ready;
