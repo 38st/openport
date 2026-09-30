@@ -663,7 +663,8 @@ normalized, including IPv6. Host and Origin checks still apply to creation.
 
 `POST /api/sandboxes` accepts an empty JSON object without authentication and
 returns HTTP 201 with `{account, token, idle_seconds, simulated: true}`. The account
-uses the practice plan and its usual default cash. The random 128-bit bearer
+uses the practice plan and its usual default cash, and pays the operator's
+`--paper-fee` like every other new account. The random 128-bit bearer
 secret is returned once, never logged or written to a URL. Only a digest stays in
 memory. The terminal saves the token in session storage, falls back to memory
 when storage is unavailable, and switches to that account. A refused sandbox

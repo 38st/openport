@@ -447,7 +447,8 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
   PaperAccount account{id, sandbox ? "Sandbox" : c.name, nullptr, {}, nullptr, {}, {}};
   const auto directory = sandbox ? options_.paper_journal.parent_path() / "sandboxes" / id : options_.paper_accounts;
   try {
-    auto config = sandbox ? trading::SessionConfig{} : options_.paper;
+    // Every new journal takes the operator's fee (--paper-fee); a sandbox always uses the practice plan.
+    auto config = options_.paper;
     config.rules = sandbox ? find_plan("practice")->rules : c.rules;
     config.initial_cash = sandbox ? find_plan("practice")->initial_cash : c.initial_cash;
     const auto file = directory / (id + ".jsonl");
