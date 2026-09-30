@@ -592,18 +592,23 @@ ProjectedFill project_fill(State& after, const State& before, const OrderRequest
   }
   return result;
 }
-/// Whether filling working order `o` now, in full, would leave more buying power
-/// available than cancelling it: its fill changes what the other working orders
-/// reserve, as a long bought back re-covers a working sell that had become naked.
-bool fill_frees_power(const State& s, const Order& o) {
+/// Whether `after`, the account once working order `o` has filled in part or in
+/// full, leaves more buying power available than cancelling `o`: its fill changes
+/// what the other working orders reserve, as a long bought back re-covers a
+/// working sell that had become naked.
+bool frees_power(const State& s, const Order& o, const State& after) {
   State without = s;
   without.orders.mut(static_cast<std::size_t>(o.id - 1)).status = OrderStatus::Cancelled;
+  return buying_power(after).total.available > buying_power(without).total.available;
+}
+/// Whether filling working order `o` now, in full, would free buying power (frees_power).
+bool fill_frees_power(const State& s, const Order& o) {
   State filled = s;
   auto& order = filled.orders.mut(static_cast<std::size_t>(o.id - 1));
   order.status = OrderStatus::Filled;
   order.filled_quantity = order.request.quantity;
   (void)project_fill(filled, s, o.request, o.remaining());
-  return buying_power(filled).total.available > buying_power(without).total.available;
+  return frees_power(s, o, filled);
 }
 /// The personal soft floor now: an absolute level, or a share of the plan's
 /// drawdown above its floor, whichever is higher.
@@ -1216,10 +1221,11 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
     projected.ledger.fill(s.contracts.at(symbol), signed_quantity, price, fee);
     projected.orders.mut(static_cast<std::size_t>(id - 1)).filled_quantity += quantity;
     if (!closing_only(s, o)) decision = loss_check(projected, measure(projected));
-    // A fill that reduces free buying power must leave it nonnegative.
+    // A fill that reduces free buying power must leave it nonnegative, or leave
+    // more available than cancelling the order, as its acceptance allowed.
     if (decision.ok() && s.config.rules.buying_power && free_power(projected) < free_power(s)) {
       const auto power = buying_power(projected).total;
-      if (power.available < Money{})
+      if (power.available < Money{} && !frees_power(s, o, projected))
         decision = {Reason::BUYING_POWER, "Fill needs more buying power than the account has available",
                     (-power.available).dollars(), 0.0, o.request.symbol};
     }
@@ -1284,7 +1290,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     if (!closing_only(s, o)) decision = loss_check(projected, measure(projected));
     if (decision.ok() && s.config.rules.buying_power && free_power(projected) < free_power(s)) {
       const auto power = buying_power(projected).total;
-      if (power.available < Money{})
+      if (power.available < Money{} && !frees_power(s, o, projected))
         decision = {Reason::BUYING_POWER, "Fill needs more buying power than the account has available",
                     (-power.available).dollars(), 0.0, s.contracts.at(o.request.legs.front().symbol).underlying};
     }
