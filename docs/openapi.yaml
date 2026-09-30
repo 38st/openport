@@ -7964,6 +7964,7 @@
             ]
           },
           "buying_power": {
+            "description": "Available buying power just before the fill, with the filling order's own reservation already deducted, as the account showed it while the order worked.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Money"
