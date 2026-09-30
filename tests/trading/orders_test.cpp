@@ -202,9 +202,15 @@ TEST(TradingOrders, AClosingOrderTheIntegrationRefusesIsRecordedAndTheRestStillC
   seed(s, xsp, "4.00", "4.20", 500);
   ASSERT_TRUE(s.submit(f.market("spx", 2), f.time).decision.ok());
   ASSERT_TRUE(s.submit(xsp.market("xsp", 1), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("spx exit", 2, "4.60", Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(xsp.limit("xsp exit", 1, "4.60", Side::Sell), f.time).decision.ok());
   const auto before = s.snapshot()->recent_orders.size();
-  const auto result = s.close_positions(std::nullopt, f.time, {{"XSP", {Reason::FEED_STALLED, "XSP feed stalled", {}, {}, "XSP"}}});
+  const Decision stalled{Reason::FEED_STALLED, "XSP feed stalled", {}, {}, "XSP"};
+  const auto result = s.close_positions(std::nullopt, f.time, {{"XSP", stalled}});
   ASSERT_TRUE(result.decision.ok());
+  // The refused underlying keeps its exit; the other's is cancelled to close.
+  EXPECT_EQ(order(s, 3).reason.code, Reason::USER_CANCEL);
+  EXPECT_EQ(order(s, 4).status, OrderStatus::Working);
   const auto& orders = s.snapshot()->recent_orders;
   ASSERT_EQ(orders.size(), before + 2);
   for (auto i = before; i < orders.size(); ++i) {
@@ -221,6 +227,12 @@ TEST(TradingOrders, AClosingOrderTheIntegrationRefusesIsRecordedAndTheRestStillC
   EXPECT_EQ(s.snapshot()->positions[0].position.contract.underlying, "XSP");
   // Nothing to close is not an error.
   EXPECT_TRUE(s.close_positions(std::string("SPX"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), before + 2);
+  // When nothing in scope can close, the flatten is refused and changes nothing.
+  const auto refused = s.close_positions(std::nullopt, f.time, {{"XSP", stalled}});
+  EXPECT_EQ(refused.decision.code, Reason::FEED_STALLED);
+  EXPECT_EQ(refused.decision.scope, "XSP");
+  EXPECT_EQ(order(s, 4).status, OrderStatus::Working);
   EXPECT_EQ(s.snapshot()->recent_orders.size(), before + 2);
 }
 

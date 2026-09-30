@@ -555,5 +555,37 @@ TEST(TradingDelivery, SharesTradeInTheRegularSessionAndKeepTheirClose) {
   EXPECT_EQ(s.trade_stock("SPY", -100, f.time).decision.code, Reason::SESSION_CLOSED);
 }
 
+TEST(TradingDelivery, AFlattenAfterTheStockCloseClosesTheOptionsAndSaysWhichSharesStay) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  for (const Quantity calls : {1, 2}) {
+    Spy f;
+    f.spot = 520;
+    TradingSession s(roomy(), f.time);
+    f.define(s, call);
+    f.quote(s, call, "21.00", "21.20");
+    ASSERT_TRUE(s.submit(f.market("calls", call, calls), f.time).decision.ok());
+    ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+    // At 16:05 SPY's options trade on to 16:15, but its shares closed at 16:00.
+    f.time = md::new_york_to_utc({2026, 9, 22}, 16, 5);
+    f.quote(s, call, "21.00", "21.20");
+    const auto fills = s.snapshot()->stock_fills.size();
+    const auto result = s.close_positions(std::nullopt, f.time);
+    if (calls == 1) {
+      // Only shares in scope, and none can trade: the flatten is refused.
+      EXPECT_EQ(result.decision.code, Reason::SESSION_CLOSED);
+      EXPECT_EQ(result.decision.scope, "SPY");
+      EXPECT_TRUE(result.kept_stocks.empty());
+    } else {
+      ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+      EXPECT_TRUE(s.snapshot()->positions.empty());
+      ASSERT_EQ(result.kept_stocks.size(), 1U);
+      EXPECT_EQ(result.kept_stocks.at("SPY").code, Reason::SESSION_CLOSED);
+    }
+    ASSERT_NE(stock(s, "SPY"), nullptr);
+    EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
+    EXPECT_EQ(s.snapshot()->stock_fills.size(), fills);
+  }
+}
+
 }  // namespace
 }  // namespace openport::trading

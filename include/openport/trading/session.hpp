@@ -98,6 +98,8 @@ struct CommandResult {
   /// A retried order, its client_order_id and terms already submitted: the first
   /// answer, with nothing recorded.
   bool replayed = false;
+  /// Delivered shares a flatten could not close, by symbol, and why.
+  std::map<std::string, Decision> kept_stocks = {};
 };
 
 /// Current integration inputs for contracts not yet registered by this account.
@@ -176,11 +178,15 @@ class TradingSession {
   /// then close each unexpired position in scope with a market IOC at the
   /// displayed quotes with the account's slippage, short positions first so a
   /// spread never leaves a naked short: a long sells only as far as the shorts
-  /// still held leave it free. Expired positions wait for their settlement.
-  /// Every closing order takes the checks any order does; one that cannot
-  /// trade is recorded as rejected (with an underlying's entry in `rejections`
-  /// when the integration refuses it) and the others still go. The decision
-  /// is always success: outcomes are on the orders.
+  /// still held leave it free. Delivered shares in scope close at their fresh
+  /// price in the stock market's regular session. Expired positions wait for
+  /// their settlement. Every closing order takes the checks any order does; one
+  /// that cannot trade is recorded as rejected (with an underlying's entry in
+  /// `rejections` when the integration refuses it) and the others still go.
+  /// An underlying where the account, `rejections` or the session refuses every
+  /// close keeps its open orders; shares that cannot close are in `kept_stocks`.
+  /// When nothing in scope can close, the decision is the first such refusal
+  /// (scoped to its underlying) and nothing changes; otherwise it is success.
   CommandResult close_positions(std::optional<std::string> underlying, Timestamp time,
                                 const std::map<std::string, Decision>& rejections = {});
   /// Apply a whole batch before risk/matching. Unknown symbols and future data

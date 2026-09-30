@@ -338,6 +338,28 @@ json account_json(const TradingView& view) {
           {"payout", payout_json(view)},
           {"attempts", attempts}};
 }
+/// How a change in shares came about.
+json share_source(const StockFill& fill) {
+  switch (fill.source) {
+    case StockSource::Exercise: return "early_exercise";
+    case StockSource::Delivery: {
+      // Long calls and short puts buy at expiry; the short side is assigned.
+      const auto option = md::parse_osi(fill.option);
+      const bool call = option && option->type == pricing::OptionType::Call;
+      return (call ? fill.shares < 0 : fill.shares > 0) ? "assignment" : "expiry_exercise";
+    }
+    case StockSource::Assignment: return "assignment";
+    case StockSource::Trade: return "trade";
+    case StockSource::Rule: return "rule";
+    case StockSource::Reset: return "reset";
+  }
+  return nullptr;
+}
+json stock_fill_json(const StockFill& fill) {
+  return {{"id", std::to_string(fill.id)}, {"symbol", fill.symbol}, {"shares", fill.shares},
+          {"price", fill.price.str()}, {"time", md::format_timestamp(fill.time)}, {"source", share_source(fill)},
+          {"option", nullable(fill.option)}};
+}
 json trades_json(const TradingView& view, std::string_view status, bool current_only) {
   const auto& s = *view.snapshot;
   const auto& e = s.evaluation;
@@ -413,21 +435,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
   };
   const auto source = [&](std::uint64_t id) -> json {
     if (id == 0 || id > s.stock_fills.size()) return nullptr;
-    const auto& fill = s.stock_fills[id - 1];
-    switch (fill.source) {
-      case StockSource::Exercise: return "early_exercise";
-      case StockSource::Delivery: {
-        // Long calls and short puts buy at expiry; the short side is assigned.
-        const auto option = md::parse_osi(fill.option);
-        const bool call = option && option->type == pricing::OptionType::Call;
-        return (call ? fill.shares < 0 : fill.shares > 0) ? "assignment" : "expiry_exercise";
-      }
-      case StockSource::Assignment: return "assignment";
-      case StockSource::Trade: return "trade";
-      case StockSource::Rule: return "rule";
-      case StockSource::Reset: return "reset";
-    }
-    return nullptr;
+    return share_source(s.stock_fills[id - 1]);
   };
   const auto option_of = [&](std::uint64_t id) -> json {
     if (id == 0 || id > s.stock_fills.size() || s.stock_fills[id - 1].option.empty()) return nullptr;
@@ -474,10 +482,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
   }
   // Every change in shares and every dividend, oldest first, for the terminal's alerts.
   json stock_fills = json::array();
-  for (const auto& fill : s.stock_fills)
-    stock_fills.push_back({{"id", std::to_string(fill.id)}, {"symbol", fill.symbol}, {"shares", fill.shares},
-        {"price", fill.price.str()}, {"time", md::format_timestamp(fill.time)}, {"source", source(fill.id)},
-        {"option", option_of(fill.id)}});
+  for (const auto& fill : s.stock_fills) stock_fills.push_back(stock_fill_json(fill));
   json dividends = json::array();
   for (const auto& d : s.dividends)
     dividends.push_back({{"symbol", d.symbol}, {"ex_date", md::format_date(d.ex_date)}, {"per_share", d.per_share.str()},
@@ -589,6 +594,14 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
         for (const auto& fill : s.recent_fills)
           if (fill.order_id == id) body["fills"].push_back(fill_json(fill, view));
       }
+      // Delivered shares: those it closed, and those still held that it could not.
+      body["stock_fills"] = json::array();
+      for (auto id : reply.stock_fills) body["stock_fills"].push_back(stock_fill_json(s.stock_fills.at(static_cast<std::size_t>(id - 1))));
+      body["kept_stocks"] = json::array();
+      for (const auto& stock : s.stocks)
+        if (const auto kept = reply.kept_stocks.find(stock.position.symbol); kept != reply.kept_stocks.end())
+          body["kept_stocks"].push_back({{"symbol", stock.position.symbol}, {"shares", stock.position.shares},
+              {"reason", {{"code", to_string(kept->second.code)}, {"message", kept->second.message}}}});
       break;
     }
     case TradingCommand::Kind::Playbook: body = json::parse(reply.playbook_result); break;

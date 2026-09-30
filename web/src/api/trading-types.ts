@@ -507,8 +507,20 @@ export interface AccountListItem { id: string; name: string; trading: TradingSta
 export interface AccountsResponse { accounts: AccountListItem[] }
 export type CreateAccountRequest = { name: string; fill_model?: FillModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
-/** Each closing order with its outcome; a rejected one carries its reason. */
-export interface ClosePositionsResponse extends CancelAllResponse { orders: Order[]; fills: Fill[] }
+/** Delivered shares a flatten could not close, as held after it, and why. */
+export interface KeptStock { symbol: string; shares: number; reason: { code: string; message: string } }
+/**
+ * Each closing order with its outcome; a rejected one carries its reason. The
+ * share fields are absent from older servers.
+ */
+export interface ClosePositionsResponse extends CancelAllResponse {
+  orders: Order[]
+  fills: Fill[]
+  /** Shares it closed. */
+  stock_fills?: StockFill[]
+  /** Shares it could not close. */
+  kept_stocks?: KeptStock[]
+}
 export interface KillResponse { account_version: string; kill: KillState; cancelled_orders: string[] }
 export interface SettlementResponse { account_version: string; position_closed: boolean }
 

@@ -10524,13 +10524,59 @@
             "items": {
               "$ref": "#/components/schemas/Fill"
             }
+          },
+          "stock_fills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StockFill"
+            }
+          },
+          "kept_stocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeptStock"
+            }
           }
         },
         "required": [
           "account_version",
           "cancelled_orders",
           "orders",
-          "fills"
+          "fills",
+          "stock_fills",
+          "kept_stocks"
+        ]
+      },
+      "KeptStock": {
+        "type": "object",
+        "description": "Delivered shares a flatten could not close, as held after it, and why.",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "shares": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ]
+          }
+        },
+        "required": [
+          "symbol",
+          "shares",
+          "reason"
         ]
       },
       "KillResponse": {

@@ -1111,14 +1111,17 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           result = session.cancel_all(c.underlying.empty() ? std::nullopt : std::optional(c.underlying), market_time_);
           break;
         case TradingCommand::Kind::ClosePositions: {
+          // Each underlying in scope with options or delivered shares takes the feed gate.
           std::map<std::string, Decision> rejections;
-          for (const auto& p : before->positions) {
-            const auto& underlying = p.position.contract.underlying;
+          const auto gate = [&](const std::string& underlying) {
             if ((c.underlying.empty() || underlying == c.underlying) && !rejections.contains(underlying))
               if (auto rejection = acceptance(underlying); !rejection.ok()) rejections.emplace(underlying, std::move(rejection));
-          }
+          };
+          for (const auto& p : before->positions) gate(p.position.contract.underlying);
+          for (const auto& stock : before->stocks) gate(stock.position.symbol);
           result = session.close_positions(c.underlying.empty() ? std::nullopt : std::optional(c.underlying),
                                            market_time_, rejections);
+          reply.kept_stocks = result.kept_stocks;
           break;
         }
         case TradingCommand::Kind::Cancel: result = session.cancel(c.order_id, market_time_); break;
@@ -1193,6 +1196,8 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           reply.cancelled_orders.push_back(order.id);
       }
       for (auto i = before->recent_orders.size(); i < orders.size(); ++i) reply.created_orders.push_back(orders[i].id);
+      const auto& stock_fills = session.snapshot()->stock_fills;
+      for (auto i = before->stock_fills.size(); i < stock_fills.size(); ++i) reply.stock_fills.push_back(stock_fills[i].id);
     } catch (const TradingError& error) {
       reply.decision = {error.code(), error.what(), {}, {}, {}};
       if (error.code() == Reason::JOURNAL_IO || error.code() == Reason::JOURNAL_CORRUPT ||
