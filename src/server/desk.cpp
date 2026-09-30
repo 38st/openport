@@ -400,7 +400,7 @@ void Desk::start_trading() {
   if (!options_.run_input.empty()) {
     nlohmann::json start{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
         {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
-    if (options_.instant_batches) start["driver"] = 2;
+    if (options_.instant_batches) start["driver"] = options_.closing_rollover ? 3 : 2;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
   }
@@ -799,10 +799,31 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     const auto latest = snapshots_.find(complete->underlying);
     if (latest != snapshots_.end() && complete->ts >= latest->second) vouched_at_[complete->underlying] = market_time_;
   }
+  // An overnight session belongs to the next trading date, so a day ends when the
+  // last session of the one before (curb) does.
+  const auto day = md::trading_date(market_time_);
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
     auto& session = *account.session;
     try {
+      const auto roll = [&] {
+        if (!batch.empty() && day > session.trading_day() &&
+            md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
+            session.snapshot()->valuation_complete)
+          session.roll_day(market_time_, trading::dividends_due(dividends_, session.trading_day(), day));
+      };
+      // A new trading date's first batch closes the finished day on its own marks
+      // before its quotes replace them, so the overnight move and any fill at the
+      // open belong to the new day. A PM position of the finished day still to
+      // settle settles first, and rolls the day over after the quotes below.
+      if (options_.instant_batches && options_.closing_rollover) {
+        const auto& positions = session.snapshot()->positions;
+        if (std::none_of(positions.begin(), positions.end(), [&](const auto& p) {
+              const auto& contract = p.position.contract;
+              return contract.settlement == md::Settlement::PM && market_time_ >= contract.expiry_time();
+            }))
+          roll();
+      }
       std::set<std::string> symbols;
       for (const auto& p : session.snapshot()->positions) symbols.insert(p.position.contract.osi_symbol());
       for (const auto& order : session.snapshot()->open_orders)
@@ -948,15 +969,9 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         session.settle(contract.osi_symbol(), print->price, market_time_);
         sample_equity(account);
       }
-      // An overnight session belongs to the next trading date, so a day ends
-      // when the last session of the one before (curb) does.
-      const auto day = md::trading_date(market_time_);
-      if (!batch.empty() && day > session.trading_day() &&
-          md::market_session(md::new_york_to_utc(day, 12, 0)).open &&
-          session.snapshot()->valuation_complete)
-        session.roll_day(market_time_, [&] {
-          return trading::dividends_due(dividends_, session.trading_day(), day);
-        }());
+      // Otherwise the day rolls over once the marks are complete: after a settlement,
+      // or on the new quotes when the finished day's marks were incomplete.
+      roll();
     } catch (const TradingError& error) {
       account.failure = std::string(to_string(error.code())) + ": " + error.what();
     } catch (const std::exception& error) {

@@ -640,7 +640,107 @@ TEST(ReproducibleRun, RunsRecordedBeforeInstantBatchesStillVerify) {
       EXPECT_EQ(fills.front().price, Money::parse(instants ? "11.20" : "10.20"));
       desk.stop();
     }
-    EXPECT_EQ(read_file(journal).find("\"driver\":2") != std::string::npos, instants);
+    // Driver 3 batches instants too.
+    EXPECT_EQ(read_file(journal).find("\"driver\":3") != std::string::npos, instants);
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+
+/// SPY's close on 2026-09-22 and its open on 2026-09-23, 4% lower: a call and a deep
+/// put a month out. At the close the put keeps 0.50 of time value; at the open it
+/// trades 0.20 under its exercise value.
+struct Overnight {
+  test::RecordingFile file;
+  md::OptionContract call = *md::parse_osi("SPY261016C00500000");
+  md::OptionContract put = *md::parse_osi("SPY261016P00540000");
+  md::Subscription subscription{{"SPY"}, 0, 0};
+  struct Instant {
+    md::Timestamp time;
+    double spot, call_ask, put_ask;
+  };
+  std::vector<Instant> instants{{md::new_york_to_utc({2026, 9, 22}, 15, 59, 45), 500, 10.20, 40.60},
+                                {md::new_york_to_utc({2026, 9, 22}, 16, 14, 45), 500, 10.20, 40.60},
+                                {md::new_york_to_utc({2026, 9, 23}, 9, 30), 480, 3.20, 59.90},
+                                {md::new_york_to_utc({2026, 9, 23}, 9, 30, 15), 480, 3.20, 59.90}};
+  Overnight() {
+    auto header = test::recording_header();
+    header.started = instants.front().time;
+    header.subscription = subscription;
+    header.capabilities.delay = 0s;
+    md::Timestamp receipt = header.started;
+    md::RecordingSink::Options options;
+    options.clock = [&] { return receipt; };
+    test::DiscardEvents discard;
+    md::RecordingSink sink(file.path, header, discard, options);
+    sink.publish(md::ContractDefinition{0, call});
+    sink.publish(md::ContractDefinition{1, put});
+    for (const auto& instant : instants) {
+      receipt = instant.time;
+      sink.publish(md::UnderlyingQuote{"SPY", instant.time, instant.spot, instant.spot + .01, instant.spot});
+      sink.publish(md::OptionQuote{0, instant.time, instant.call_ask - .2, instant.call_ask, 20, 20});
+      sink.publish(md::OptionQuote{1, instant.time, instant.put_ask - .2, instant.put_ask, 20, 20});
+      sink.publish(md::SnapshotComplete{"SPY", instant.time});
+    }
+    sink.close();
+  }
+  /// Long a call and short ten puts from the first instant on, to the end.
+  std::shared_ptr<const trading::TradingSnapshot> run(server::Desk::Options options) const {
+    options.replay = true;
+    options.analytics.fallback_rate = 0;
+    options.paper.limits.aggregate = {1e12, 1e12};
+    options.paper.limits.per_underlying = {1e12, 1e12};
+    options.paper.limits.max_daily_loss = Money::parse("1000000");
+    md::RecordingReader reader(file.path);
+    server::Desk desk("replay (synthetic)", reader.header().capabilities, subscription, std::move(options));
+    desk.start_trading();
+    providers::ReplayBatches batches(reader, subscription);
+    auto batch = batches.next();
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    EXPECT_TRUE(order(desk, call.osi_symbol(), trading::Side::Buy, 1, instants.front().time).decision.ok());
+    EXPECT_TRUE(order(desk, put.osi_symbol(), trading::Side::Sell, 10, instants.front().time).decision.ok());
+    while ((batch = batches.next())) desk.replay_batch(batch->events, batch->received, batch->time);
+    auto snapshot = desk.trading_view()->snapshot;
+    desk.stop();
+    return snapshot;
+  }
+};
+
+TEST(Rollover, TheFinishedDayClosesOnItsClosingMarksBeforeTheNextDaysQuotes) {
+  // B28 and D11: the first batch of 2026-09-23 was applied before the rollover, so the
+  // finished day's P&L by Greek took the overnight gap and the puts were assigned on
+  // the opening marks. Runs recorded before driver 3 still roll over that way.
+  Overnight feed;
+  for (const bool closing : {true, false}) {
+    SCOPED_TRACE(closing ? "driver 3" : "driver 2");
+    const auto journal = feed.file.directory / (closing ? "driver-3.jsonl" : "driver-2.jsonl");
+    server::Desk::Options options;
+    options.closing_rollover = closing;
+    options.run_input = server::recording_input(feed.file.path);
+    options.paper_journal = journal;
+    const auto snapshot = feed.run(options);
+    const auto& e = snapshot->evaluation;
+    ASSERT_EQ(e.days.size(), 1U);
+    const auto& finished = e.days.front();
+    EXPECT_EQ(finished.day, (md::Date{2026, 9, 22}));
+    const double finished_pnl = (finished.close_equity - finished.open_equity).dollars();
+    const double today_pnl = (snapshot->equity - e.day_open_equity).dollars();
+    if (closing) {
+      // The finished day's parts add up to its close less its open; the gap is the new day's.
+      EXPECT_NEAR(finished.attribution.total(), finished_pnl, 1e-6);
+      EXPECT_EQ(e.day_open_equity, finished.close_equity);
+      EXPECT_NEAR(snapshot->attribution.total(), today_pnl, 1e-6);
+      EXPECT_LT(today_pnl, -10000);
+      // At the close the puts were worth more than their exercise: nobody exercises them.
+      EXPECT_TRUE(snapshot->closures.empty());
+      EXPECT_TRUE(snapshot->stock_fills.empty());
+    } else {
+      EXPECT_LT(finished.attribution.total(), finished_pnl - 10000);
+      EXPECT_LT(e.day_open_equity, finished.close_equity - Money::parse("10000"));
+      EXPECT_FALSE(snapshot->closures.empty());
+    }
+    const auto text = read_file(journal);
+    EXPECT_NE(text.find(closing ? "\"driver\":3" : "\"driver\":2"), std::string::npos);
     const auto verified = server::verify_run(journal);
     EXPECT_TRUE(verified.matched) << verified.message;
   }

@@ -94,17 +94,18 @@ time value left is a cost; it takes the account's checks and, with the
 
 **Early assignment** follows the market rather than a model: at each day rollover
 (`roll_day`, overnight), holders exercise a short American equity or ETF option when
-they do better exercising than holding it. That is when its mark is below its
-intrinsic value at the underlying's fresh price (a deep put whose time value is gone),
-or, for a call, when its time value is less than a dividend going ex on the new day
-(from `--dividends`). The OCC allocates exercises to short positions at random, and
+they did better exercising than holding it at the close, as exercise notices are due
+that evening. That is when its closing mark is below its intrinsic value at the
+underlying's close (a deep put whose time value is gone), or, for a call, when its
+time value is less than a dividend going ex on the new day (from `--dividends`). The OCC allocates exercises to short positions at random, and
 openport cannot know how many holders exercise, so each such contract is assigned
 with even odds, drawn from the account's attempt, the contract and the date: a
 position can be assigned in part, or not that night, and a replay assigns the same
 contracts. Assigned contracts are bought back at intrinsic value
 (`ClosureKind::Assignment`) and deliver 100 shares a contract at the underlying's
-price (`StockSource::Assignment`), together the strike; the new day takes the
-difference from the marks. Options expiring that day settle instead.
+close (`StockSource::Assignment`), together the strike; the new day takes the
+difference from the marks, and the shares' move from the close. Options expiring
+that day settle instead.
 
 **Dividends** come from a file or from Massive. `openportd --dividends FILE` reads
 `SYMBOL,YYYY-MM-DD,AMOUNT` lines (the ex-date and dollars a share; blank lines, `#`
@@ -685,8 +686,11 @@ trading day's baseline permits a reset; rollover alone does not clear a manual o
 daily-loss latch.
 A reset cannot make stale data tradable.
 
-`roll_day` is an explicit command on a later trading date, requiring complete marked
-equity. A trading date (`md::trading_date`) is a business day's New York date until
+`roll_day` is an explicit command on a later trading date. It closes the finished day
+on the marks the account last published, which must be complete: the engine rolls an
+account over on a new trading date's first market batch, before that batch's quotes
+replace them, so the overnight move and fills at the open belong to the new day. A
+trading date (`md::trading_date`) is a business day's New York date until
 17:00 ET, when its last session (curb) ends; after that, and over weekends and
 holidays, it is the next business day, whose overnight session opens that evening. So
 an overnight trade counts toward the day it trades for, and a day's close is the last
@@ -1773,8 +1777,10 @@ records the reference value, canonical definition and integration
 `provider_last_print_before_close` with provider and time, `manual_am_import` or
 `manual_pm_import`. Preserve the official source used for an AM import
 externally when an independent provenance audit is required. The first market
-batch on a later trading date rolls the daily baseline once marks are complete;
-the kill latch survives. All accounting uses effective market time, including
+batch on a later trading date rolls the daily baseline on the finished day's closing
+marks before its own quotes are applied. When a PM position of the finished day is
+still to settle, it settles first, and when the close was not completely marked, the
+day rolls over once the new quotes complete the marks; the kill latch survives. All accounting uses effective market time, including
 delayed feeds, rather than HTTP receipt time.
 
 ## Tests

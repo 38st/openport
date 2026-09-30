@@ -182,6 +182,8 @@ TEST(TradingRisk, DailyLossCancelsBeforeMatchingAndResetImmediatelyRetrips) {
   EXPECT_TRUE(s.submit(f.limit("reduce-after-reset", 1, "1.50", Side::Sell), f.time).decision.ok());
   EXPECT_EQ(s.submit(f.market("still-blocked"), f.time).decision.code, Reason::KILL_SWITCH);
   EXPECT_EQ(s.roll_day(f.time).decision.code, Reason::INVALID_TIME);
+  // The day's marks went stale before it ended, so its close is unknown until new quotes.
+  s.on_quotes({}, {}, f.time + 2 * md::kNanosPerMinute);
   f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
   ++f.observation;
   EXPECT_EQ(s.roll_day(f.time).decision.code, Reason::STALE_QUOTE);

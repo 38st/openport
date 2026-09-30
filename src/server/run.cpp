@@ -170,10 +170,11 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     const auto restored = trading::TradingSession::recover(expected);
     auto reader = open_input(input);
     const md::Subscription subscription{start.at("symbols").get<std::vector<std::string>>(), 0, 0};
-    // Driver 2 batches each market instant whole. Runs without it replay as they were recorded.
+    // Driver 2 batches each market instant whole, and driver 3 also rolls the day over on
+    // the closing marks before a new date's quotes. Older runs replay as they were recorded.
     const auto driver = start.value("driver", 1);
-    if (driver != 1 && driver != 2) throw std::runtime_error("Unsupported run driver version");
-    const bool instants = driver == 2;
+    if (driver < 1 || driver > 3) throw std::runtime_error("Unsupported run driver version");
+    const bool instants = driver >= 2;
     auto batches = std::make_unique<providers::ReplayBatches>(*reader, subscription, instants);
     // Every build that writes a driver version also attributes every record, so only a
     // driver 1 run whose first record has no actor predates actors.
@@ -182,6 +183,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     Desk::Options options;
     options.replay = true;
     options.instant_batches = instants;
+    options.closing_rollover = driver >= 3;
     options.candles = std::make_shared<CandleStore>();
     options.run_input = input.dump();
     if (start.contains("playbooks") && !start.at("playbooks").is_null()) options.initial_playbooks = start.at("playbooks").dump();
