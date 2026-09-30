@@ -67,7 +67,9 @@ simulation's limits.
   (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
   keep working while opening orders are cancelled. Positions close together as one
-  order, or flatten an underlying or the whole account in one step. Server order
+  order, or flatten an underlying or the whole account at market, shorts first; a long
+  that still covers a short (a partial buy-back, or fill latency) sells in a later
+  flatten, so no short is left uncovered. Server order
   previews show buying power, maximum loss and a size that uses at most half the
   floor room. Breach risk shows the spot moves that could reach the floor (the
   personal soft floor on an account without a plan floor) and labelled model
