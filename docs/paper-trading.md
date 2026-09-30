@@ -1395,7 +1395,8 @@ kill_latched, write, fee_per_contract, initial_cash}` and `accounts: [{id, name,
 trading}]` for every account. The fee and original session cash are exact money
 strings (defaults `"0.65"` and `"100000.00"`), taken from the active/recovered session
 configuration; `initial_cash` is not the current balance or daily equity baseline.
-Versions are decimal strings and `write` is `open`, `token`, or `disabled`. Clients refetch
+Versions are decimal strings and `write` is `open`, `token`, or `disabled` (see
+[write protection](#write-protection)). Clients refetch
 portfolio, orders and risk when the version changes. Chain option objects include
 canonical padded `symbol`, whole `bid_size`/`ask_size` (null when unavailable),
 `tradable` and `untradable_reason`, using the core eligibility policy.
@@ -1636,6 +1637,12 @@ drops from the address bar; the Docker image keeps its token in its volume this 
 The terminal's "Enter write token" button saves a token by hand.
 Without a token, only loopback binds allow writes. Non-loopback binds return 403
 `WRITE_DISABLED`.
+
+Status reports the result as `write`: `open` when a write without credentials is
+accepted (a loopback bind with no legacy token, `--require-token` or `--sandboxes`;
+named tokens alone leave it open), `token` when writes need a token, and `disabled`
+when no credential can write (a non-loopback bind without tokens). A token sent to an
+`open` server is still checked and names the actor.
 Named tokens come from `--token-file FILE`, one `NAME SCOPES SECRET` per line.
 Scopes are comma-separated. Blank lines are ignored and `#` starts a comment.
 Malformed lines, duplicate names, secrets or scopes, unknown scopes and reserved
@@ -1656,8 +1663,12 @@ families require `admin` for writes.
 
 Without `--require-token`, reads remain public: any caller reads, and a read ignores
 a token that matches nothing, such as a stale one saved in a browser tab. Loopback
-writes without a configured legacy token remain open, including when a named-token
-file is loaded. With `--require-token`, reads and writes require credentials even on
+writes without credentials remain open, including when a named-token file is loaded,
+unless a legacy token, `--require-token` or `--sandboxes` closes them. Visitor
+sandboxes close them because a public demo often sits behind a reverse proxy on the
+same machine, where every visitor would arrive as a loopback writer; the operator
+then trades with the legacy token (for example from `--write-token-file`) or a named
+one. With `--require-token`, reads and writes require credentials even on
 loopback, and reads need the `read` or `admin` scope; named tokens do not imply
 `read`, so combine it with trade or replay scopes. Startup refuses the flag without
 a configured token. Static terminal files remain public so the

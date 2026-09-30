@@ -2,6 +2,7 @@ import type { Num } from "./types"
 
 /** Accounting values stay decimal strings, including request bodies. */
 export type Money = string
+/** open: writes need no token (one sent is still checked); token: writes need one; disabled: none can write. */
 export type WriteMode = "open" | "token" | "disabled"
 export type EvaluationStatus = "active" | "passed" | "failed"
 export interface TradingStatus {

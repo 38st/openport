@@ -651,7 +651,10 @@ openportd --provider demo --address 0.0.0.0 --sandboxes 100 \
   --allowed-host terminal.example.com --client-ip-header X-Real-IP
 ```
 
-Keep the operator token private. Railway supplies `X-Real-IP` and
+Keep the operator token private. With sandboxes on, writes without credentials
+are refused even on a loopback bind, since a local reverse proxy would make every
+visitor a loopback writer: the operator trades the main account with the write
+token, and status reports `write: "token"`. Railway supplies `X-Real-IP` and
 `X-Forwarded-For`; select `X-Real-IP`, a single IP address. The configured header
 must be overwritten by the trusted proxy, and the backend must not accept direct
 public connections. No header is trusted by default. Missing, invalid, duplicate

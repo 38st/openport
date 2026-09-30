@@ -83,7 +83,8 @@ Nothing else is sent. A network failure stays silent.
 
 openportd binds to 127.0.0.1 by default. Reads are public unless `--require-token`
 is set; loopback writes without a configured legacy token remain open unless that
-flag is set. The existing `OPENPORT_WRITE_TOKEN`, `--write-token TOKEN` and
+flag or `--sandboxes` is set. A public demo with sandboxes often sits behind a local
+reverse proxy, so its operator trades with a write token. The existing `OPENPORT_WRITE_TOKEN`, `--write-token TOKEN` and
 `--write-token-file PATH` token grants `admin` and requires authentication for writes.
 Named tokens from `--token-file FILE` grant `read`, `trade:ACCOUNT`, `trade:*`,
 `replay` or `admin`. `replay` permits replay controls and backtest starts and

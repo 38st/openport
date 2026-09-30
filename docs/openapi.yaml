@@ -7037,6 +7037,7 @@
         "description": "Exact decimal dollars. Never a JSON number."
       },
       "WriteMode": {
+        "description": "open: a write without credentials is accepted (a loopback bind with no legacy token, --require-token or --sandboxes; named tokens alone leave it open), and a token sent anyway is still checked. token: writes need a token. disabled: no credential can write.",
         "anyOf": [
           {
             "const": "open",
