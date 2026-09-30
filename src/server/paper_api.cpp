@@ -4,6 +4,7 @@
 #include "paper_csv.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <limits>
@@ -232,12 +233,6 @@ Money average_price(const Position& position) {
   if (negative) numerator = -numerator;
   const auto rounded = static_cast<std::int64_t>((numerator + denominator / 2) / denominator);
   return Money::from_micros(negative ? -rounded : rounded);
-}
-/// P&L by Greek in dollars, to the cent.
-json attribution_json(const Attribution& a) {
-  const auto cents = [](double x) { return number(std::round(x * 100) / 100); };
-  return {{"delta", cents(a.delta)}, {"gamma", cents(a.gamma)}, {"vega", cents(a.vega)}, {"theta", cents(a.theta)},
-          {"other", cents(a.other)}, {"costs", cents(a.costs)}, {"total", cents(a.total())}};
 }
 json portfolio_json(const TradingView& view) {
   const auto& s = *view.snapshot;
@@ -1045,6 +1040,34 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   return command;
 }
 }  // namespace
+
+/// P&L by Greek in dollars, to the cent. The parts add up to the total exactly:
+/// each is its value rounded down or up, the cents rounding down leaves go to the
+/// parts it cut most (largest remainder, the earlier part on a tie).
+json attribution_json(const trading::Attribution& a) {
+  const std::array<double, 6> parts{a.delta, a.gamma, a.vega, a.theta, a.other, a.costs};
+  std::array<double, 6> dollars{};
+  const double total = std::round(a.total() * 100);
+  if (std::all_of(parts.begin(), parts.end(), [](double x) { return std::isfinite(x); }) && std::isfinite(total)) {
+    std::array<double, 6> remainders{};
+    double left = total;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+      dollars[i] = std::floor(parts[i] * 100);
+      remainders[i] = parts[i] * 100 - dollars[i];
+      left -= dollars[i];
+    }
+    std::array<std::size_t, 6> order{0, 1, 2, 3, 4, 5};
+    std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) { return remainders[x] > remainders[y]; });
+    for (std::size_t k = 0; left >= 1; ++k, --left) ++dollars[order[k % order.size()]];
+    for (std::size_t k = 0; left <= -1; ++k, ++left) --dollars[order[order.size() - 1 - k % order.size()]];
+    for (auto& part : dollars) part /= 100;
+  } else {
+    for (std::size_t i = 0; i < parts.size(); ++i) dollars[i] = std::round(parts[i] * 100) / 100;
+  }
+  return {{"delta", number(dollars[0])}, {"gamma", number(dollars[1])}, {"vega", number(dollars[2])},
+          {"theta", number(dollars[3])}, {"other", number(dollars[4])}, {"costs", number(dollars[5])},
+          {"total", number(total / 100)}};
+}
 
 ApiResponse api_error(int status, std::string code, std::string message, const Decision& evidence) {
   // Some reducer checks identify a single contract. The HTTP contract exposes

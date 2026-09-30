@@ -1,8 +1,11 @@
+#include <cmath>
 #include <gtest/gtest.h>
+#include <random>
 #include <set>
 
 #include "openport/server/api.hpp"
 #include "server/paper_csv.hpp"
+#include "server/paper_json.hpp"
 #include "support/scripted_market.hpp"
 
 namespace {
@@ -131,5 +134,31 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
       "context.spot_source", "context.iv", "context.delta", "context.years", "context.equity", "context.floor_room", "context.buying_power"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
   EXPECT_EQ(server::paper_csv_columns(false).size(), 86U);
+}
+TEST(TradeReviewApi, PnlByGreekPartsAddUpToTheTotalInCents) {
+  const auto cents = [](const json& value) { return std::llround(value.get<double>() * 100); };
+  const char* keys[] = {"delta", "gamma", "vega", "theta", "other", "costs"};
+  const auto check = [&](const trading::Attribution& a) {
+    const auto j = server::attribution_json(a);
+    const double exact[] = {a.delta, a.gamma, a.vega, a.theta, a.other, a.costs};
+    long long sum = 0;
+    for (int i = 0; i < 6; ++i) {
+      sum += cents(j[keys[i]]);
+      EXPECT_LT(std::abs(j[keys[i]].get<double>() - exact[i]), 0.01 + 1e-9) << keys[i];
+    }
+    EXPECT_EQ(sum, cents(j["total"]));
+    EXPECT_EQ(cents(j["total"]), std::llround(a.total() * 100));
+    return j;
+  };
+  // Rounded one by one, these would be 1.00 three times against a total of 3.01.
+  auto j = check({1.004, 1.004, 1.004, 0, 0, 0});
+  EXPECT_EQ(j["delta"], 1.01); EXPECT_EQ(j["gamma"], 1.0); EXPECT_EQ(j["vega"], 1.0); EXPECT_EQ(j["total"], 3.01);
+  j = check({-1.004, -1.004, -1.004, 0, 0, 0});
+  EXPECT_EQ(j["delta"], -1.0); EXPECT_EQ(j["gamma"], -1.0); EXPECT_EQ(j["vega"], -1.01); EXPECT_EQ(j["total"], -3.01);
+  j = check({-313.504, 43.404, -7.044, -18.224, 0.354, -15.65});
+  EXPECT_EQ(j["costs"], -15.65); EXPECT_EQ(j["total"], -310.66);
+  std::mt19937_64 random(7);
+  std::uniform_real_distribution<double> part(-5000, 5000);
+  for (int i = 0; i < 2000; ++i) check({part(random), part(random), part(random), part(random), part(random), part(random)});
 }
 }  // namespace
