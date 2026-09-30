@@ -87,7 +87,8 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       // Automatic submissions are the system's, and carry the playbook's tag.
       // Order::system is reserved for reducer liquidation and must not bypass risk.
       command.actor = "system";
-      if (order.note.starts_with("Playbook automatic time stop")) {
+      const bool time_stop = order.note.starts_with("Playbook automatic time stop");
+      if (time_stop) {
         const auto symbols = trading::order_symbols(order);
         const auto working = account.session->snapshot()->open_orders;
         for (const auto& candidate : working) {
@@ -106,6 +107,21 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       }
       std::deque<PendingCommand> pending{{0, command, [&](TradingReply result) { reply = std::move(result); }}};
       update_trading({}, pending, driver_time);
+      if (time_stop) {
+        // A close the market cannot take yet (a wing nobody bids for, stale quotes, a
+        // halt) records nothing, and the next update tries again, as the reducer's own
+        // closes do; submitting it would journal a rejected order at every update.
+        TradingCommand check = command;
+        check.kind = TradingCommand::Kind::Preview;
+        TradingReply projection;
+        PendingCommand checking{0, check, [&](TradingReply result) { projection = std::move(result); }};
+        apply_command(checking, market_time_, driver_time);
+        if (!projection.preview || !projection.preview->decision.ok()) {
+          reply.decision = projection.preview ? projection.preview->decision : projection.decision;
+          reply.error_code = projection.error_code.empty() ? "PLAYBOOK_TIME_STOP_WAITING" : projection.error_code;
+          return reply;
+        }
+      }
       apply_command(pending.front(), market_time_, driver_time);
       return reply;
     };
