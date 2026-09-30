@@ -1,10 +1,13 @@
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "openport/server/api.hpp"
 #include "openport/providers/scenario.hpp"
@@ -20,9 +23,13 @@ namespace openport::server {
 ///
 ///   GET    /api/replay   recordings, scenarios, history and the replay running
 ///   POST   /api/replay   {file | scenario, speed?, plan?, seed?, start_at?, paused?}
-///   PUT    /api/replay   {speed?, paused?, skip?}: control it
+///   PUT    /api/replay   {speed?, paused?, skip? | until}: control it
 ///   DELETE /api/replay   stop it
 ///   *      /api/replay/X the live route /api/X, on the replay
+///
+/// Starts, controls and history deletes run one at a time on the host's own thread
+/// and complete from there, so a lockstep step or a scenario's generation never
+/// holds an HTTP thread; listings, reads and the mirrored routes answer at once.
 class ReplayHost {
  public:
   struct Options {
@@ -43,6 +50,7 @@ class ReplayHost {
   ReplayHost& operator=(const ReplayHost&) = delete;
 
   /// Handles /api/replay and every /api/replay/... route; false for any other target.
+  /// Changes may complete after this returns, on the host's control thread.
   bool handle(const ApiRequest& request, const ApiCompletion& complete);
   /// The replay's WebSocket message, a tick typed "replay_tick" with the replay's
   /// state, or empty while none runs.
@@ -59,6 +67,10 @@ class ReplayHost {
   class History;
   void stop_session();  // control_mutex_ held
   void control(const ApiRequest& request, const ApiCompletion& complete);
+  void history(const ApiRequest& request, const ApiCompletion& complete);
+  /// Queues a change for the control thread, which runs each under control_mutex_.
+  void enqueue(const ApiRequest& request, const ApiCompletion& complete);
+  void work();
   [[nodiscard]] std::shared_ptr<Session> current() const;
 
   Options options_;
@@ -67,8 +79,20 @@ class ReplayHost {
   std::vector<providers::Scenario> scenarios_;
   std::unique_ptr<History> history_;
   std::mutex control_mutex_;  // serializes controls and history handoffs
+  /// Held while a journal passes between running and history (a start, a stop, a
+  /// delete), so listings and archive reads never see one half written.
+  std::mutex handoff_mutex_;
   mutable std::mutex mutex_;
   std::shared_ptr<Session> session_;
+  struct Job {
+    ApiRequest request;
+    ApiCompletion complete;
+  };
+  std::mutex jobs_mutex_;
+  std::condition_variable jobs_ready_;
+  std::deque<Job> jobs_;  // jobs_mutex_
+  bool closing_ = false;  // jobs_mutex_
+  std::thread worker_;
 };
 
 }  // namespace openport::server

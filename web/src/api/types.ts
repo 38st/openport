@@ -330,7 +330,10 @@ export interface ReplayState {
   start_at?: string
   plan?: string
   durable?: boolean
+  /** Preparing the start state: playing unpaced up to start_at. */
   fast_forwarding?: boolean
+  /** A lockstep step (PUT until) is playing; writes wait for it. Absent from older servers. */
+  stepping?: boolean
   progress?: number
   file: string
   /** The demo market: a simulated day rather than a recording of real quotes. */

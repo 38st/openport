@@ -331,7 +331,8 @@ void Engine::run() {
         } catch (...) { pending.done.set_exception(std::current_exception()); }
       }
       for (const auto& event : batch) update_health(event, received);
-      if (!synchronized.empty() || (replay_ && replay_->paused() && !replay_->fast_forwarding())) desk_.flush_journals();
+      if (!synchronized.empty() || (replay_ && replay_->paused() && !replay_->fast_forwarding() && !replay_->stepping()))
+        desk_.flush_journals();
       publish_desk();
       {
         const std::lock_guard lock(mutex_);

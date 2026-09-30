@@ -110,9 +110,10 @@ std::string slug(std::string_view source) {
   return out.empty() ? "recording" : out;
 }
 
-void replay_gate(json& message, bool seeking, bool finished) {
-  if (!seeking && !finished) return;
-  const auto* reason = seeking ? "REPLAY_FAST_FORWARD" : "REPLAY_READ_ONLY";
+void replay_gate(json& message, const providers::ReplayProvider& provider) {
+  const bool preparing = provider.fast_forwarding(), stepping = provider.stepping(), finished = provider.finished();
+  if (!preparing && !stepping && !finished) return;
+  const auto* reason = preparing ? "REPLAY_FAST_FORWARD" : stepping ? "REPLAY_STEPPING" : "REPLAY_READ_ONLY";
   const auto gate = [&](json& trading) {
     if (trading.is_object() && trading.value("enabled", false)) {
       trading["write"] = "disabled";
@@ -125,7 +126,8 @@ void replay_gate(json& message, bool seeking, bool finished) {
     if (!underlying.contains("paper") || !underlying["paper"].is_object()) continue;
     underlying["paper"]["accepting"] = false;
     underlying["paper"]["reason"] = reason;
-    underlying["paper"]["message"] = seeking ? "Preparing replay start state" : "Finished replay is read-only";
+    underlying["paper"]["message"] = preparing ? "Preparing replay start state" :
+        stepping ? "Advancing to the until time" : "Finished replay is read-only";
   }
 }
 
@@ -256,6 +258,7 @@ struct ReplayHost::Session {
     out["plan"] = plan;
     out["durable"] = durable;
     out["fast_forwarding"] = provider->fast_forwarding();
+    out["stepping"] = provider->stepping();
     out["progress"] = target > provider->header().started ? std::clamp(
         static_cast<double>(time - provider->header().started) / static_cast<double>(target - provider->header().started), 0.0, 1.0) : 1.0;
     out["speed"] = provider->speed();
@@ -427,6 +430,7 @@ class ReplayHost::History {
       // settled through its last journaled time.
       if (!finalized && item.contains("fast_forwarding")) {
         item["fast_forwarding"] = false;
+        if (item.contains("stepping")) item["stepping"] = false;
         item["progress"] = 1.0;
         item["paused"] = true;
         item["settled_through"] = item.value("time", json(nullptr));
@@ -508,8 +512,49 @@ ReplayHost::ReplayHost(Options options)
     : options_(std::move(options)), demos_(std::make_unique<DemoRecordings>()),
       scenarios_(providers::load_scenarios(options_.scenario_dir,
           [](const auto& error) { std::fprintf(stderr, "scenario skipped: %s\n", error.c_str()); })),
-      history_(std::make_unique<History>(options_.engine)) {}
-ReplayHost::~ReplayHost() { stop(); }
+      history_(std::make_unique<History>(options_.engine)) {
+  worker_ = std::thread([this] { work(); });
+}
+ReplayHost::~ReplayHost() {
+  std::deque<Job> left;
+  {
+    const std::lock_guard lock(jobs_mutex_);
+    closing_ = true;
+    left.swap(jobs_);
+  }
+  jobs_ready_.notify_all();
+  if (worker_.joinable()) worker_.join();
+  for (auto& job : left) job.complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
+  stop();
+}
+
+void ReplayHost::enqueue(const ApiRequest& request, const ApiCompletion& complete) {
+  {
+    const std::lock_guard lock(jobs_mutex_);
+    if (!closing_) {
+      jobs_.push_back({request, complete});
+      jobs_ready_.notify_one();
+      return;
+    }
+  }
+  complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
+}
+
+void ReplayHost::work() {
+  while (true) {
+    Job job;
+    {
+      std::unique_lock lock(jobs_mutex_);
+      jobs_ready_.wait(lock, [&] { return closing_ || !jobs_.empty(); });
+      if (closing_) return;
+      job = std::move(jobs_.front());
+      jobs_.pop_front();
+    }
+    const std::lock_guard control_lock(control_mutex_);
+    if (std::string_view(job.request.target).starts_with("/api/replay/history/")) history(job.request, job.complete);
+    else control(job.request, job.complete);
+  }
+}
 
 std::uint64_t ReplayHost::history_recoveries() const { return history_->recoveries(); }
 
@@ -529,6 +574,8 @@ void ReplayHost::stop() {
 }
 
 void ReplayHost::stop_session() {
+  // A retiring journal becomes history only after Engine::stop has flushed it.
+  const std::lock_guard handoff(handoff_mutex_);
   std::shared_ptr<Session> old;
   {
     const std::lock_guard lock(mutex_);
@@ -548,58 +595,34 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
   const std::string_view target = request.target;
   if (!target.starts_with(prefix)) return false;
   const auto rest = target.substr(prefix.size());
-  std::unique_lock control_lock(control_mutex_, std::defer_lock);
-  // A retiring journal becomes history only after Engine::stop has flushed it.
-  if (rest.empty() || rest.starts_with("?") || rest.starts_with("/history/")) control_lock.lock();
-  if (rest.empty() || rest.front() == '?') {
+  if (!rest.empty() && rest.front() != '?' && rest.front() != '/') return false;
+  const bool controls = rest.empty() || rest.front() == '?';
+  const bool saved = rest.starts_with("/history/");
+  // Changes wait their turn on the control thread; a step there never holds this one.
+  if ((controls && request.method != "GET") || (saved && request.method == "DELETE")) {
+    enqueue(request, complete);
+    return true;
+  }
+  if (controls) {
     control(request, complete);
     return true;
   }
-  if (rest.front() != '/') return false;
-  const auto session = current();
-  if (rest.starts_with("/history/")) {
-    try {
-      const auto route = rest.substr(9);
-      const auto slash = route.find('/');
-      const std::string id(route.substr(0, slash));
-      if (session && session->id == id && !session->provider->finished()) {
-        complete(api_error(409, "REPLAY_RUNNING", "Stop the replay before opening or deleting its history"));
-      } else if (history_->journal(id).empty()) {
-        complete(api_error(404, "NOT_FOUND", "No saved replay run " + id));
-      } else if (request.method == "DELETE" && slash == std::string_view::npos) {
-        if (options_.engine.write_mode == "disabled" || !history_->writable()) {
-          complete(api_error(403, "WRITE_DISABLED", "Replay history is read-only"));
-        } else {
-          if (session && session->id == id) { session->engine->stop(); stop_session(); }
-          history_->remove(id);
-          complete(ok({{"deleted", id}}));
-        }
-      } else if (request.method != "GET") {
-        complete(api_error(403, "REPLAY_READ_ONLY", "Finished replay accounts are read-only"));
-      } else {
-        const auto archived = history_->open(id);
-        ApiRequest forwarded = request;
-        forwarded.target = slash == std::string_view::npos ? "/api/account" : "/api" + std::string(route.substr(slash));
-        handle_api_async(forwarded, *archived, [archived, complete](ApiResponse response) { complete(std::move(response)); });
-      }
-    } catch (const UnknownRun& error) {
-      complete(api_error(404, "NOT_FOUND", error.what()));
-    } catch (const trading::TradingError& error) {
-      if (error.code() == trading::Reason::JOURNAL_LOCKED)
-        complete(api_error(409, "REPLAY_RUNNING", "Another openportd is still writing this run"));
-      else complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what()));
-    } catch (const std::filesystem::filesystem_error& error) {
-      // Its what() names absolute paths; the code's message is enough.
-      complete(api_error(422, "REPLAY_HISTORY_FAILED", error.code().message()));
-    } catch (const std::exception& error) { complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what())); }
+  if (saved) {
+    history(request, complete);
     return true;
   }
+  const auto session = current();
   if (!session) {
     complete(api_error(404, "NO_REPLAY", "No replay is running; start one at /api/replay"));
     return true;
   }
   if (request.method != "GET" && session->provider->fast_forwarding()) {
     complete(api_error(409, "REPLAY_FAST_FORWARD", "Wait until the replay reaches start_at before trading"));
+    return true;
+  }
+  // A command during a step would land at whatever market time the step had reached.
+  if (request.method != "GET" && session->provider->stepping()) {
+    complete(api_error(409, "REPLAY_STEPPING", "Wait for the until step to settle; commands after it use the paused market time"));
     return true;
   }
   if (request.method != "GET" && session->provider->finished()) {
@@ -615,12 +638,58 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
   handle_api_async(forwarded, *session->engine, [session, complete, status = rest == "/status"](ApiResponse response) {
     if (status && response.status == 200) {
       auto message = json::parse(response.body);
-      replay_gate(message, session->provider->fast_forwarding(), session->provider->finished());
+      replay_gate(message, *session->provider);
       response.body = message.dump();
     }
     complete(std::move(response));
   });
   return true;
+}
+
+void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complete) {
+  try {
+    const auto route = std::string_view(request.target).substr(std::string_view("/api/replay/history/").size());
+    const auto slash = route.find('/');
+    const std::string id(route.substr(0, slash));
+    auto session = current();
+    if (session && session->id == id && !session->provider->finished()) {
+      complete(api_error(409, "REPLAY_RUNNING", "Stop the replay before opening or deleting its history"));
+      return;
+    }
+    const auto unknown = [&] { complete(api_error(404, "NOT_FOUND", "No saved replay run " + id)); };
+    if (request.method == "DELETE" && slash == std::string_view::npos) {  // on the control thread
+      if (history_->journal(id).empty()) return unknown();
+      if (options_.engine.write_mode == "disabled" || !history_->writable()) {
+        complete(api_error(403, "WRITE_DISABLED", "Replay history is read-only"));
+        return;
+      }
+      if (session && session->id == id) stop_session();
+      session.reset();
+      const std::lock_guard handoff(handoff_mutex_);
+      history_->remove(id);
+      complete(ok({{"deleted", id}}));
+      return;
+    }
+    const std::lock_guard handoff(handoff_mutex_);
+    if (history_->journal(id).empty()) return unknown();
+    if (request.method != "GET") {
+      complete(api_error(403, "REPLAY_READ_ONLY", "Finished replay accounts are read-only"));
+      return;
+    }
+    const auto archived = history_->open(id);
+    ApiRequest forwarded = request;
+    forwarded.target = slash == std::string_view::npos ? "/api/account" : "/api" + std::string(route.substr(slash));
+    handle_api_async(forwarded, *archived, [archived, complete](ApiResponse response) { complete(std::move(response)); });
+  } catch (const UnknownRun& error) {
+    complete(api_error(404, "NOT_FOUND", error.what()));
+  } catch (const trading::TradingError& error) {
+    if (error.code() == trading::Reason::JOURNAL_LOCKED)
+      complete(api_error(409, "REPLAY_RUNNING", "Another openportd is still writing this run"));
+    else complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what()));
+  } catch (const std::filesystem::filesystem_error& error) {
+    // Its what() names absolute paths; the code's message is enough.
+    complete(api_error(422, "REPLAY_HISTORY_FAILED", error.code().message()));
+  } catch (const std::exception& error) { complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what())); }
 }
 
 void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complete) {
@@ -632,6 +701,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
     if (request.method == "GET") {
       // Whoever lists the demo may start it next: have the default day ready.
       if (options_.demo) demos_->prepare(default_scenario(scenarios_));
+      const std::lock_guard handoff(handoff_mutex_);
       const auto session = current();
       complete(ok({{"write", options_.engine.write_mode}, {"directory", options_.recordings.string()}, {"recordings", recordings_json(options_.recordings)},
                    {"demo", options_.demo ? demo_json(default_scenario(scenarios_)) : json(nullptr)},
@@ -748,6 +818,9 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
           engine.initial_playbooks = catalogue.dump();
         }
       }
+      // From its journal's creation until the run it replaces has flushed, both are
+      // between running and history.
+      std::unique_lock handoff(handoff_mutex_);
       engine.paper_journal = history_->create(*session, engine.paper);
       try {
         engine.replay = true;
@@ -781,6 +854,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         old->engine->stop();
         history_->finish(*old);
       }
+      handoff.unlock();
       old.reset();
       complete(ok({{"replay", session->state()}}, 201));
     } else if (request.method == "PUT") {
@@ -840,7 +914,7 @@ std::string ReplayHost::tick() const {
   auto message = json::parse(tick_message(*session->engine));
   message["type"] = "replay_tick";
   message["replay"] = session->state();
-  replay_gate(message, session->provider->fast_forwarding(), session->provider->finished());
+  replay_gate(message, *session->provider);
   return message.dump();
 }
 

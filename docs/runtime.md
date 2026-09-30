@@ -571,7 +571,12 @@ curl -X PUT http://localhost:8080/api/replay \
 ```
 
 Add the configured write token as usual. Commands submitted after the response use
-the paused market time. Stepping through intermediate times adds no account
+the paused market time. While the step plays, replay state reports `stepping: true`
+(`fast_forwarding` stays false: it means the start state is still being prepared),
+and orders and other writes to the replay account return 409 `REPLAY_STEPPING`,
+since they would land at whatever market time the step had reached. Other starts,
+controls and history deletes wait their turn behind the step on the replay host's
+own thread; listings, reads, WebSocket ticks and the live accounts keep answering. Stepping through intermediate times adds no account
 transactions; with the same commands at the same times it gives the same journal
 as continuous playback. A step plays unpaced and leaves the replay paused; resuming
 waits one receipt-time gap from the resume, however many steps came before.

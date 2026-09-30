@@ -5296,7 +5296,12 @@
             "type": "boolean"
           },
           "fast_forwarding": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True while the replay prepares its start state (plays unpaced up to start_at); writes return REPLAY_FAST_FORWARD."
+          },
+          "stepping": {
+            "type": "boolean",
+            "description": "True while a PUT until step plays; writes return REPLAY_STEPPING. Absent from older servers."
           },
           "progress": {
             "type": "number"
@@ -5523,7 +5528,12 @@
             "type": "boolean"
           },
           "fast_forwarding": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True while the replay prepares its start state (plays unpaced up to start_at); writes return REPLAY_FAST_FORWARD."
+          },
+          "stepping": {
+            "type": "boolean",
+            "description": "True while a PUT until step plays; writes return REPLAY_STEPPING. Absent from older servers."
           },
           "progress": {
             "type": "number"

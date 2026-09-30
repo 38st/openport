@@ -41,7 +41,8 @@ export function liveState(status: Status | undefined, tick: Tick | null, connect
   const main = connectedTick?.trading === undefined ? status?.trading : connectedTick.trading
   // Another account's status comes from the account list; older servers have only the main one.
   const trading = account === MAIN_ACCOUNT ? main : accounts.find((a) => a.id === account)?.trading
-  const replayReason = source === "replay" && (replay?.fast_forwarding ? "REPLAY_FAST_FORWARD" : replay?.finished ? "REPLAY_READ_ONLY" : null)
+  const replayReason = source === "replay" && (replay?.fast_forwarding ? "REPLAY_FAST_FORWARD" : replay?.stepping ? "REPLAY_STEPPING"
+    : replay?.finished ? "REPLAY_READ_ONLY" : null)
   const availableTrading = replayReason && trading ? { ...trading, write: "disabled" as const, reason: replayReason } : trading
   return {
     // REST capability is required: old servers must never expose trading UI.

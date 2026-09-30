@@ -117,6 +117,17 @@ it("shows fast-forward progress and repeats the displayed seed", async () => {
   })
 })
 
+it("shows a lockstep step in progress and disables trading until it settles", async () => {
+  const stepping = liveState(status, null, "open", 0, "main", () => {}, "replay", { ...replay, stepping: true }, switchSource)
+  expect(stepping.trading?.write).toBe("disabled")
+  expect(stepping.trading?.reason).toBe("REPLAY_STEPPING")
+  vi.mocked(useLive).mockReturnValue(stepping)
+  await act(async () => root.render(<QueryClientProvider client={client}><ReplayBanner /></QueryClientProvider>))
+  expect(host.textContent).toContain("Stepping…")
+  expect(host.textContent).not.toContain("Resume")
+  expect(host.textContent).not.toContain("Preparing start state")
+})
+
 it("routes archived account reads separately from both the live account and the running replay", async () => {
   const fetcher = vi.fn(async () => new Response("{}", { status: 200 }))
   vi.stubGlobal("fetch", fetcher)

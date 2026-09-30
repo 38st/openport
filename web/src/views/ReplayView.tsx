@@ -56,9 +56,9 @@ function Controls({ replay }: { replay: ReplayState }) {
         <Segmented label="Replay speed" value={replay.speed} onChange={(speed) => void controls.speed(speed)}
           options={replaySpeeds.map((speed) => ({ value: speed, label: speedLabel(speed) }))} />
       </fieldset>
-      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding}
+      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.stepping}
         onClick={() => void controls.pause(!replay.paused)}>{replay.paused ? "Resume" : "Pause"}</button>
-      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.paused}
+      <button type="button" className="trade-button" disabled={controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.stepping || replay.paused}
         title="Play the next event now, skipping a closed market" onClick={() => void controls.skip()}>Skip gap</button>
       <button type="button" className="trade-button" disabled={controls.pending || controls.blocked} onClick={() => void controls.stop()}>Stop</button>
     </div>
@@ -128,6 +128,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
           <span className="text-sm text-muted">{replayTitle(replay)}</span>
           {replay.finished ? <Badge tone="neutral">finished</Badge> : replay.paused ? <Badge tone="warn">paused</Badge> : <Badge tone="positive">{speedLabel(replay.speed)}</Badge>}
         </div>
+        {replay.stepping && <div role="status" className="mb-3 text-sm">Stepping to the requested time; orders wait until it settles.</div>}
         {replay.fast_forwarding && <div role="status" className="mb-3 text-sm">Preparing start state… {Math.round((replay.progress ?? 0) * 100)}%<progress className="ml-2" max={1} value={replay.progress ?? 0} aria-label="Fast-forward progress" /></div>}
         <Controls replay={replay} />
         {replay.demo && replay.scenario && replay.seed && <button type="button" className="trade-button mt-2" disabled={controls.pending || controls.blocked}
