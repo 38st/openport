@@ -1107,39 +1107,43 @@ json account_ticks_json(const EngineStatus& status) {
   return list;
 }
 
-/// Splits "a=1&b=2" into distinct keys; nullopt when a key repeats.
-std::optional<std::map<std::string, std::string>> query_pairs(std::string_view query) {
+std::optional<std::map<std::string, std::string>> query_parameters(std::string_view query, bool plus_is_space) {
+  const auto decode = [plus_is_space](std::string_view text) -> std::optional<std::string> {
+    std::string decoded;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+      if (text[i] != '%') { decoded += plus_is_space && text[i] == '+' ? ' ' : text[i]; continue; }
+      if (i + 2 >= text.size()) return std::nullopt;
+      unsigned int byte = 0;
+      const auto* digits = text.data() + i + 1;
+      const auto [end, error] = std::from_chars(digits, digits + 2, byte, 16);
+      if (error != std::errc{} || end != digits + 2) return std::nullopt;
+      decoded += static_cast<char>(byte);
+      i += 2;
+    }
+    return decoded;
+  };
   std::map<std::string, std::string> pairs;
-  std::size_t start = 0;
-  while (!query.empty() && start <= query.size()) {
-    const auto end = std::min(query.find('&', start), query.size());
-    const auto pair = query.substr(start, end - start);
+  while (!query.empty()) {
+    const auto amp = query.find('&');
+    const auto pair = query.substr(0, amp);
     const auto equals = pair.find('=');
-    if (!pairs.emplace(std::string(pair.substr(0, equals)),
-                       equals == std::string_view::npos ? std::string() : std::string(pair.substr(equals + 1))).second)
-      return std::nullopt;
-    start = end + 1;
+    auto key = decode(pair.substr(0, equals));
+    auto value = decode(equals == std::string_view::npos ? std::string_view{} : pair.substr(equals + 1));
+    if (!key || !value || !pairs.emplace(std::move(*key), std::move(*value)).second) return std::nullopt;
+    if (amp == std::string_view::npos) break;
+    query.remove_prefix(amp + 1);
   }
   return pairs;
 }
 
-std::optional<std::string> decode_bound(std::string_view value) {
-  std::string decoded;
-  const auto hex = [](char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-  };
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    if (value[i] != '%') { decoded += value[i]; continue; }
-    if (i + 2 >= value.size()) return {};
-    const auto high = hex(value[i + 1]), low = hex(value[i + 2]);
-    if (high < 0 || low < 0) return {};
-    decoded += static_cast<char>(16 * high + low);
-    i += 2;
-  }
-  return decoded;
+std::optional<std::string> query_account(std::string_view target) {
+  const auto question = target.find('?');
+  const auto pairs = query_parameters(question == std::string_view::npos ? std::string_view{} : target.substr(question + 1));
+  if (!pairs) return std::nullopt;
+  const auto account = pairs->find("account");
+  if (account == pairs->end()) return std::string(kMainAccount);
+  if (!valid_account(account->second)) return std::nullopt;
+  return account->second;
 }
 
 /// Whether `account` names an account the source publishes (the main one when empty).
@@ -1158,7 +1162,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto query = question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1);
   // Every route takes account=ID; orders take status=open|all; trades take
   // status=open|closed|all and attempt=current|all. Each key at most once.
-  const auto pairs = query_pairs(query);
+  const auto pairs = query_parameters(query);
   const bool csv = path == "/api/trades.csv" || path == "/api/fills.csv";
   // CSV exports filter by New York date; the equity history by instant.
   std::string account, status = "all", attempt = csv ? "all" : "current", from, to;
@@ -1166,8 +1170,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   bool valid_query = pairs.has_value();
   for (const auto& [key, value] : pairs.value_or(std::map<std::string, std::string>{})) {
     if ((key == "from" || key == "to") && path == "/api/account/equity") {
-      const auto decoded = decode_bound(value);
-      const auto parsed = decoded ? md::parse_datetime(*decoded, md::Zone::Utc) : std::nullopt;
+      const auto parsed = md::parse_datetime(value, md::Zone::Utc);
       if (!parsed || *parsed < 0) valid_query = false;
       else if (key == "from") since = parsed; else until = parsed;
     } else if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
@@ -1256,7 +1259,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   // Writes take one query parameter, account=ID; the route is the path alone.
   const auto question = request.target.find('?');
   const std::string path = request.target.substr(0, question);
-  const auto pairs = query_pairs(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
+  const auto pairs = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
   const bool route = (request.method == "POST" && (path == "/api/orders" || path == "/api/orders/preview" ||
       path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/accounts" ||
       path == "/api/positions/exercise" || path == "/api/stocks/close" ||
