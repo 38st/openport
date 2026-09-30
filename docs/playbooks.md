@@ -121,13 +121,18 @@ same-day dismissals are transient; staging does not journal an order, consume
 liquidity or alter account state. After restart the server evaluates again.
 
 Each account chooses `off`, `stage` or `auto` for each ID. New definitions start
-off. The server evaluates enabled playbooks when the analytics update, about once a
-second on a live feed and each market second in a replay, not on every quote. A
-stage holds selected contracts, units, exits and a version tag. It expires when
-conditions or the window end. Its ID stays the same while the same contracts are
-selected; its price, size and exits follow the market. Send re-evaluates, then
-submits the stage's latest order through the normal order path, so a click on a
-moving market still sends. When other contracts are selected, the old ID is refused
+off. The server evaluates enabled playbooks when the analytics update, not on every
+quote. On a live feed they refresh at most once a second when new data has arrived:
+about once a second on a streaming feed, and after each 15-second poll on the Cboe
+and demo feeds. In a replay they update at each complete snapshot, every 15 market
+seconds for demo days and scenarios. A rule that turns on the clock, such as a
+window opening, a cooldown ending or a `close_by` deadline, therefore takes effect
+at the first update at or after that time: a cooldown ending at 10:05:07 allows the
+next entry at 10:05:15, which trades that snapshot's quotes. A stage holds selected
+contracts, units, exits and a version tag. It expires when conditions or the window
+end. Its ID stays the same while the same contracts are selected; its price, size
+and exits follow the market. Send re-evaluates, then submits the stage's latest
+order through the normal order path, so a click on a moving market still sends. When other contracts are selected, the old ID is refused
 and the new stage is shown. Each entry gets a new client order ID, so a repeat send
 cannot duplicate an entry and a later entry is never taken for a retry. Dismiss
 suppresses that setup and underlying for the rest of the New York day. Staging
