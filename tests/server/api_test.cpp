@@ -175,7 +175,7 @@ TEST(Api, ExpiriesReportContractLastTradeAndFiveMinuteAutoClose) {
       analytics::UnderlyingMetrics metrics;
       metrics.symbol = contract.underlying;
       analytics::SliceMetrics slice;
-      slice.root = root;
+      // As the chain book builds them: only OEX and XEO slices name their root.
       slice.expiry = date;
       slice.expiry_time = contract.expiry_time();
       slice.style = contract.style;
