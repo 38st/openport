@@ -1742,7 +1742,9 @@ same routes. All execution remains simulated.
 `--paper-journal PATH` defaults to `$HOME/.openport/paper-journal.jsonl`; containing
 directories are created, and named accounts keep their journals in `accounts/` beside
 it. `--paper-cash` defaults to `100000` and `--paper-fee` to
-`0.65`. These seed new journals; recovery restores the recorded configuration.
+`0.65`. These seed new journals; recovery restores the recorded configuration. The
+fee also seeds every new named account and visitor sandbox, whose cash and rules
+come from their plan.
 Existing files are verified, exclusively locked and resumed. A corrupt, torn, locked
 or unwritable journal disables its account's writes with 503 `TRADING_UNAVAILABLE`
 and a status reason; other accounts carry on. They are never overwritten or silently replaced by an ephemeral

@@ -125,6 +125,19 @@ TEST_F(Sandboxes, CreatesPracticeAccountAndReturnsSecretOnlyOnce) {
     EXPECT_EQ(response.body.find(token(first)), std::string::npos);
   }
 }
+TEST_F(Sandboxes, NewSandboxesChargeTheOperatorsFee) {
+  desk_options.paper.fee_per_contract = trading::Money::parse("1.00");
+  configure();
+  const auto own = create();
+  const auto view = source->trading_view(id(own));
+  ASSERT_TRUE(view);
+  EXPECT_EQ(view->config.fee_per_contract, trading::Money::parse("1.00"));
+  EXPECT_EQ(view->config.initial_cash, server::find_plan("practice")->initial_cash);
+  EXPECT_EQ(view->config.rules.plan, server::find_plan("practice")->rules.plan);
+  // The visitor's own status reports the fee their orders pay.
+  const auto status = json::parse(send(request("GET", "/api/status", token(own))).body);
+  EXPECT_EQ(status["trading"]["fee_per_contract"], "1.00");
+}
 TEST_F(Sandboxes, TradesOnSharedSimulatedFeedWithoutChangingTheMainAccount) {
   const auto& market = source->market;
   source->desk->replay_batch({md::ContractDefinition{0, market.contract},
