@@ -218,7 +218,8 @@ BreachRisk breach_risk(const Ledger& ledger, const Valuations& valuations,
   BreachRisk result;
   if (floor) result.room = equity - *floor;
   if (soft_floor) result.soft_room = equity - *soft_floor;
-  if (!floor) return result;
+  // Levels reach the plan floor, or the soft floor on an account without one.
+  const auto target = floor ? floor : soft_floor;
   std::map<std::string, std::map<std::string, Position>> groups;
   for (const auto& [symbol, position] : ledger.positions()) groups[position.contract.underlying][symbol] = position;
   for (const auto& [symbol, stock] : ledger.stocks()) groups.try_emplace(symbol);
@@ -250,10 +251,10 @@ BreachRisk breach_risk(const Ledger& ledger, const Valuations& valuations,
     };
     item.complete = item.spot > 0 && pnl(0).has_value();
     result.complete &= item.complete;
-    if (item.complete) {
+    if (item.complete && target) {
       const auto solve = [&](bool up) -> std::optional<BreachLevel> {
         double prior = 0;
-        const double room = result.room->dollars();
+        const double room = (equity - *target).dollars();
         double crossing = 0;
         bool found = room <= 0;
         for (double distance = 0.25; !found && distance <= (up ? 1000 : 99.75); distance += distance < 100 ? 0.25 : 1) {

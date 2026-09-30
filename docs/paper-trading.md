@@ -784,7 +784,10 @@ not an execution promise; real orders still take all checks when submitted and f
 `GET /api/risk` and `GET /api/account` expose `breach`: dollar `room` and `soft_room`,
 `complete`, and `underlyings[]`. Each held underlying has `spot`, `close_sigma` (one
 standard deviation of its log price to today's close), `complete`, and optional
-`down`/`up` levels with signed `points`, `percent` and `touch_probability`. One underlying moves at a time while volatility and option
+`down`/`up` levels with signed `points`, `percent` and `touch_probability`. The levels
+are where equity would reach the plan floor, or the personal soft floor on an account
+without one (a practice account, say); with neither floor, held underlyings are listed
+without levels. One underlying moves at a time while volatility and option
 life stay fixed. The scenario solver scans by 0.25% to −99.75% and +100%, then by 1%
 to +1000%, and bisects the first crossing. A missing level means no crossing in that
 scan, not safety outside it or between scan points. Missing valuations leave levels
