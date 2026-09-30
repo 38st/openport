@@ -2565,6 +2565,7 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     end_stretch(s, symbol, intrinsic, at_expiry ? &*at_expiry : nullptr);
     s.ledger.settle(symbol, intrinsic);
     s.settled.insert(symbol);
+    s.settling[symbol] = settlement;
     s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
     sync_exits(s, symbol, events);
     event(events, "settlement", Json{{"symbol", symbol}, {"reference", settlement}, {"intrinsic", intrinsic}});

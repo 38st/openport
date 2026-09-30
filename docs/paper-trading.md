@@ -1024,7 +1024,8 @@ they cannot recover highs or lows between observations. Missing marks are not ze
 
 The JSON `review` contains positive dollar `mae` and `mfe`, bounded below by zero.
 `worst` and `best` retain the actual signed marked `pnl`, UTC `time` and underlying
-`spot` (null when unavailable). Closed trades report `give_back = max(0, mfe - net)`
+`spot` (null when unavailable). A settlement sample's spot is the settlement reference,
+not the expired contract's last valuation. Closed trades report `give_back = max(0, mfe - net)`
 and `r_multiple = net / planned_risk`; `heat = mae / planned_risk`. Planned risk
 excludes fees. A single-contract round trip uses its entry bracket's option-price
 stop distance from the entry order's average fill price, times every contract

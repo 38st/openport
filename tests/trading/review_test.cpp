@@ -141,6 +141,36 @@ TEST(TradeReview, AddsKeepTheEntrysRiskPerContractWhereverTheyFill) {
   EXPECT_EQ(review.planned_risk, dollars("480"));
 }
 
+TEST(TradeReview, ASettledRoundTripsLastSampleCarriesTheSettlementAsItsSpot) {
+  const auto expiry = md::new_york_to_utc({2026, 10, 22}, 15, 59);
+  ScriptedMarket a, b, c; b.contract.strike += 10; c.contract.strike += 20;
+  a.time = b.time = c.time = expiry;
+  TradingSession s({}, a.time); a.seed(s); b.seed(s, "2.00", "2.20"); c.seed(s);
+  ASSERT_TRUE(s.submit(c.market("single"), c.time).decision.ok());
+  OrderRequest vertical; vertical.client_order_id = "vertical"; vertical.type = OrderType::Market; vertical.tif = TimeInForce::Ioc;
+  vertical.quantity = 1; vertical.legs = {{a.symbol(), Side::Buy, 1}, {b.symbol(), Side::Sell, 1}};
+  ASSERT_TRUE(s.submit(vertical, a.time).decision.ok());
+  // The last quotes before the close carry spot 5001; the index settles at 4994,
+  // and the contracts' valuations are still fresh when they settle at 16:00.
+  a.time = b.time = c.time = expiry + 44 * md::kNanosPerSecond;
+  a.next(); b.next(); c.next();
+  auto va = a.valuation(), vb = b.valuation(), vc = c.valuation();
+  va.spot = vb.spot = vc.spot = 5001;
+  s.on_quotes({a.quote("0.90", "1.10"), b.quote("0.40", "0.60"), c.quote("0.90", "1.10")}, {va, vb, vc}, a.time);
+  for (const auto* contract : {&c, &a, &b})
+    ASSERT_TRUE(s.settle(contract->symbol(), dollars("4994"), contract->contract.expiry_time()).decision.ok());
+  const auto single = s.snapshot()->trade_reviews.at("1");
+  EXPECT_TRUE(single.finished);
+  EXPECT_EQ(single.worst->pnl, dollars("-420.65"));
+  EXPECT_EQ(single.worst->time, c.contract.expiry_time());
+  EXPECT_EQ(single.worst->spot, 4994);
+  EXPECT_EQ(single.best->spot, 5000);
+  const auto strategy = s.snapshot()->strategy_reviews.at("2");
+  EXPECT_TRUE(strategy.finished);
+  EXPECT_EQ(strategy.worst->time, a.contract.expiry_time());
+  EXPECT_EQ(strategy.worst->spot, 4994);
+}
+
 TEST(TradeReview, StrategySamplesCombinedPnlAndExactDefinedRisk) {
   ScriptedMarket a, b; b.contract.strike += 10;
   TradingSession s({}, a.time); a.seed(s); b.seed(s, "2.00", "2.20");

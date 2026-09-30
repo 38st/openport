@@ -12,7 +12,16 @@
 
 namespace openport::trading::detail {
 namespace {
+/// The settlement reference of a round trip settled at this instant: its
+/// underlying's price for the last sample, which the contract's last valuation,
+/// from before its expiry, does not give.
+std::optional<double> settled_spot(const State& s, const Lifecycle& life) {
+  if (life.closure != ClosureKind::Settlement || life.closed != s.time) return {};
+  const auto it = s.settling.find(life.symbol);
+  return it == s.settling.end() ? std::nullopt : std::optional(it->second.dollars());
+}
 std::optional<double> spot(const State& s, const Lifecycle& life) {
+  if (const auto settled = settled_spot(s, life)) return settled;
   const auto v = s.valuations.find(life.symbol);
   if (v != s.valuations.end() && valid_valuation(v->second) &&
       s.time - v->second.time <= s.config.limits.max_valuation_age) return v->second.spot;
@@ -113,13 +122,15 @@ void sample_reviews(State& s, const std::vector<const Lifecycle*>& lives, std::i
     review->planned_risk = structure_risk(legs);
     Money total;
     bool complete = true, finished = true;
+    std::optional<double> settled;
     for (const auto* leg : legs) {
       const auto value = pnl(s, *leg);
       if (!value) { complete = false; break; }
       total = total + *value;
       finished = finished && leg->closed.has_value();
+      if (!settled) settled = settled_spot(s, *leg);
     }
-    if (complete) sample(*review, total, s.time, spot(s, *legs.front()), finished);
+    if (complete) sample(*review, total, s.time, settled ? settled : spot(s, *legs.front()), finished);
     if (review->finished) --unfinished;
   }
 }
@@ -227,5 +238,6 @@ void update_reviews(State& s) {
       throw std::logic_error("update_reviews differs from a rebuild from every fill");
     if (r.unfinished != count_unfinished(s)) throw std::logic_error("update_reviews miscounted unfinished reviews");
   }
+  s.settling.clear();
 }
 }  // namespace openport::trading::detail

@@ -273,6 +273,10 @@ struct State {
   SharedMap<std::string, OrderId> clients;
   /// Derived, never journaled: see Reviewing.
   Reviewing reviewing;
+  /// Transient, never journaled: the settlement reference of each contract settled
+  /// by the transaction in progress, the underlying's price for the last review
+  /// sample of the round trip it closed. update_reviews consumes and clears it.
+  std::map<std::string, Money> settling;
 };
 /// The open orders' IDs, in ID order.
 inline std::vector<OrderId> open_ids(const State& s) {
@@ -325,6 +329,7 @@ inline void from_json(const Json& j, State& s) {
   s.clients.clear();
   for (const auto& order : s.orders) s.clients.emplace(order.request.client_order_id, order.id);
   s.reviewing = {};
+  s.settling.clear();
 }
 }  // namespace detail
 }  // namespace openport::trading
