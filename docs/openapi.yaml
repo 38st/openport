@@ -11189,7 +11189,15 @@
             "type": "string"
           },
           "scenario": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "description": "A scenario id from GET /api/replay demos; true plays the default scenario, as demo: true does."
           },
           "demo": {
             "anyOf": [

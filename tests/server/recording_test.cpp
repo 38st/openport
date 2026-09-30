@@ -722,6 +722,11 @@ TEST(ReplayHost, FreshAndExplicitSeedsAndScenarioDrillsUseABoundedCache) {
   ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
   EXPECT_EQ(json::parse(host.tick())["replay"]["time"], "2026-09-16T01:00:00.000Z");
   EXPECT_TRUE(json::parse(host.tick())["replay"]["paused"]);
+  // U3: scenario: true plays the default scenario, as demo: true does.
+  const auto default_day = call(host, "POST", "/api/replay", R"({"scenario":true,"seed":"scenario","paused":true})", 60s);
+  ASSERT_EQ(default_day.status, 201) << default_day.body;
+  EXPECT_EQ(json::parse(default_day.body)["replay"]["scenario"], "reversal");
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"scenario":7})").status, 400);
 }
 
 

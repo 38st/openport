@@ -510,7 +510,8 @@ Recording entries and active replay state expose `imported`, false for older
 recordings. Imported days appear beside live recordings with their provider name.
 
 `POST /api/replay` starts `{file: NAME}` or `{scenario: ID}`; `demo: ID` and
-`demo: true` remain accepted. Optional fields are `plan` (default `practice`),
+`demo: true` remain accepted, and `scenario: true`, like `demo: true`, plays the
+default scenario. Optional fields are `plan` (default `practice`),
 `speed` (0, 1, 2, 5, 10, 30, 60, 120 or 300), `start_at` (`HH:MM` New York) and
 `paused`. Scenarios also accept a trading `date` and `seed`: omit it for a fresh
 seed, use `"scenario"` for the file's seed, or supply a uint64 decimal string.
