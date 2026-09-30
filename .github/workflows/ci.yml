@@ -137,6 +137,8 @@ jobs:
       - run: python -m pytest python/tests
       - name: Formula updater (offline fixtures)
         run: python tools/update_formula_test.py
+      - name: Demo soak tool (scripted replay)
+        run: python tools/demo_soak_test.py
 
   docker:
     name: Docker image
