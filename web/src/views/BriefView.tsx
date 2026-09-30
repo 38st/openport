@@ -214,7 +214,7 @@ export function BriefView({ symbol }: { symbol: string | null }) {
             <div className="border-t border-border pt-2">
               {orders.data ? <><p className="text-muted">{orders.data.orders.length} working orders</p>{orders.data.orders.map(order => {
                 const deadlines = orderDeadlines(order, portfolio.data?.positions ?? [], market.summary.data, account.data?.rules.expiry_cutoff_seconds ?? 0, day)
-                return <div key={order.id} className="mt-1"><div>{order.remaining_quantity} × {orderLabel(order)} · {order.status}</div><div className="text-[11px] text-muted">{order.time_in_force.toUpperCase()} · {order.time_in_force === "day" && order.status !== "armed" ? "session end" : "order deadline"} {order.day_end ? stamp(order.day_end) : "unavailable"}</div>
+                return <div key={order.id} className="mt-1"><div>{order.remaining_quantity} × {orderLabel(order)} · {order.status}</div><div className="text-[11px] text-muted">{order.time_in_force.toUpperCase()} · order deadline {order.day_end ? stamp(order.day_end) : "unavailable"}</div>
                   <div className="text-[11px] text-muted">{deadlines.events.map(event => `${event.label} ${barClock(event.time / 1000)} ET`).join(" · ")}{!deadlines.complete && " · contract deadlines unavailable"}</div></div>
               })}</> : <Missing reason={orders.isError ? "orders request failed" : "orders unavailable"} />}
             </div>

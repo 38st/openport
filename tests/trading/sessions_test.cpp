@@ -284,18 +284,70 @@ TEST(TradingSessions, GtcCanBePlacedOvernightModifiedAndCancelled) {
 
 TEST(TradingSessions, GtcExpiresAtLastTradeOrAutoCloseEvenWithoutAHolding) {
   for (const bool am : {false, true}) {
-    ScriptedMarket f;
-    if (am) f.contract = *md::parse_osi("SPX261022C05000000");
-    auto c = roomy();
-    c.rules.expiry_cutoff = 5 * 60 * md::kNanosPerSecond;
-    TradingSession s(c, f.time);
-    f.seed(s);
-    ASSERT_TRUE(s.submit(f.limit("gtc", 1, "4.10", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
-    const auto end = f.contract.last_trade_time() - c.rules.expiry_cutoff;
-    EXPECT_EQ(order(s, 1).day_end, end);
-    s.on_quotes({}, {}, end);
-    EXPECT_EQ(order(s, 1).reason.code, Reason::EXPIRED);
+    for (const bool cutoff : {false, true}) {
+      ScriptedMarket f;
+      if (am) f.contract = *md::parse_osi("SPX261022C05000000");
+      auto c = roomy();
+      if (cutoff) c.rules.expiry_cutoff = 5 * 60 * md::kNanosPerSecond;
+      TradingSession s(c, f.time);
+      f.seed(s);
+      ASSERT_TRUE(s.submit(f.limit("gtc", 1, "4.10", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
+      const auto end = f.contract.last_trade_time() - c.rules.expiry_cutoff;
+      EXPECT_EQ(order(s, 1).day_end, end);
+      s.on_quotes({}, {}, end - 1);
+      EXPECT_EQ(order(s, 1).status, OrderStatus::Working);
+      s.on_quotes({}, {}, end);
+      // The account's cutoff says so; otherwise the contract stopped trading.
+      EXPECT_EQ(order(s, 1).reason.code, cutoff ? Reason::EXPIRY_CUTOFF : Reason::EXPIRED);
+    }
   }
+}
+
+TEST(TradingSessions, DayOrdersOnAnExpiringContractEndAtItsLastTrade) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW260922C05000000");  // expires today at 16:00
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("day", 1, "4.10"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("gtc", 1, "4.10", Side::Buy, TimeInForce::Gtc), f.time).decision.ok());
+  auto legs = f.limit("combo", 1, "4.10");
+  const auto later = *md::parse_osi("SPXW260923C05000000");
+  ASSERT_TRUE(s.define(later, f.time).decision.ok());
+  s.on_quotes({{later.osi_symbol(), 2, f.time, m("5.00"), m("5.20"), 10, 10}},
+              {{later.osi_symbol(), f.time, 0.5, 0.001, 2.0, -0.1, 5000, 5010, 0.99,
+                md::years_between(f.time, later.expiry_time()), 0.20, true}}, f.time);
+  legs.symbol.clear();
+  legs.limit_price = m("1.00");
+  legs.legs = {{later.osi_symbol(), Side::Buy, 1}, {f.symbol(), Side::Sell, 1}};
+  ASSERT_TRUE(s.submit(legs, f.time).decision.ok());
+  // Each ends at the contract's last trade, 16:00, not at the 16:15 session end.
+  for (const OrderId id : {OrderId{1}, OrderId{2}, OrderId{3}}) EXPECT_EQ(order(s, id).day_end, at(kTuesday, 16, 0)) << id;
+  s.on_quotes({}, {}, at(kTuesday, 16, 0));
+  for (const OrderId id : {OrderId{1}, OrderId{2}, OrderId{3}}) EXPECT_EQ(order(s, id).reason.code, Reason::EXPIRED) << id;
+}
+
+TEST(TradingSessions, EveryOrderOnAContractCancelsAtThePreExpiryCutoff) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW260922C05000000");
+  auto c = roomy();
+  c.rules.expiry_cutoff = 5 * md::kNanosPerMinute;
+  TradingSession s(c, f.time);
+  f.seed(s);
+  auto entry = f.limit("entry", 2, "4.20");
+  entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.00")}, {}}, ExitSpec{{}, m("5.00")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("day-sell", 1, "4.40", Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("gtc-sell", 1, "4.40", Side::Sell, TimeInForce::Gtc), f.time).decision.ok());
+  ScriptedMarket put = f;
+  put.contract = *md::parse_osi("SPXW260922P05000000");
+  put.seed(s);
+  ASSERT_TRUE(s.submit(put.limit("unheld-day", 1, "4.10"), f.time).decision.ok());
+  const auto cutoff = at(kTuesday, 15, 55);
+  for (const OrderId id : {OrderId{2}, OrderId{3}, OrderId{4}, OrderId{5}, OrderId{6}}) EXPECT_EQ(order(s, id).day_end, cutoff) << id;
+  s.on_quotes({}, {}, cutoff);
+  // DAY and GTC orders, bracket exits and orders on contracts not held all give the same reason.
+  for (const OrderId id : {OrderId{2}, OrderId{3}, OrderId{4}, OrderId{5}, OrderId{6}})
+    EXPECT_EQ(order(s, id).reason.code, Reason::EXPIRY_CUTOFF) << id;
 }
 
 TEST(TradingSessions, GtcRechecksRiskOnTheNextDayAndWaitsOutMissingData) {

@@ -304,7 +304,10 @@ them, so they match plain limit orders, single or multi-leg, DAY or IOC. GTC ord
 wait for the regular session. Other nonpersistent orders
 reject with `LIMIT_ONLY`, and orders between sessions with `SESSION_CLOSED`. A DAY
 order lasts the session it was accepted in: an overnight order ends at 09:25 with
-`DAY_END` and does not carry into the regular session. Bracket exits, triggered
+`DAY_END` and does not carry into the regular session. It never outlasts its earliest
+leg's last trade or the account's auto-close deadline either, and its `day_end`
+says when it ends: 16:00 for an SPXW series on its expiry day, whose session runs to
+16:15. Bracket exits, triggered
 orders, GTC limits and the account's own closing orders (liquidation, expiry close) act in the
 regular session only, and flattening sends market orders, so outside it the flatten is
 refused (`LIMIT_ONLY` or `SESSION_CLOSED`) and leaves the positions and their orders alone.
@@ -319,8 +322,9 @@ outside the regular session, even on products with overnight trading. They reser
 risk and buying power on every day they rest, just like working DAY limits. Checks
 run again before a fill and on limit changes: a failed check cancels with
 `RISK_CHANGED`; missing or stale data waits. They cancel with `EXPIRED` at the
-earliest leg's last trade or the account's earlier auto-close deadline, even when
-no position is held. Evaluation decisions and account resets cancel them too.
+earliest leg's last trade, or with `EXPIRY_CUTOFF` at the account's earlier auto-close
+deadline, even when no position is held; their `day_end` is that deadline. Evaluation
+decisions and account resets cancel them too.
 A plain GTC limit can be submitted outside a session if the data and other checks
 permit it; submission does not make it match there. Holidays and
 early closes follow NYSE's rules from 2022 on, and the overnight session runs into
@@ -404,14 +408,18 @@ resting orders match, and at submission, only during the contract's regular sess
 A reached order is activated: entries rerun every pre-trade check, while bracket exits
 need only an executable book. Stale data or a closed session keeps it armed; any other
 failure cancels it with `RISK_CHANGED`. It then trades like any order (market orders
-IOC). Armed orders last until the nearest contract’s last trade or auto-close.
+IOC). Armed orders last until the nearest contract’s last trade or auto-close, which
+their `day_end` reports. Once triggered, a DAY order lasts the session it activated in,
+like any DAY order; a GTC order stays good until that deadline.
 
 A **bracket** `{stop_loss, take_profit}` on an entry creates exits as the entry fills.
 Each exit takes exactly one of a trigger (a stop: market IOC when reached) or a limit
 price (a resting take-profit). Exits take the opposite side and are sized to the entry's
 filled quantity; later entry fills grow them. Client IDs are the entry's with `:stop` or
-`:target`. A stop already reached when the entry fills fires at once. The two exits are
-linked: the first fill of one cancels the other with `OCO_FILLED`. If the entry still has an unfilled remainder, the exit fill cancels
+`:target`. The stop is market IOC and the take-profit a GTC limit; both last, and report
+in `day_end`, until the nearest contract's last trade or auto-close, and a stop already
+reached when the entry fills fires at once. The two exits are linked: the first fill of
+one cancels the other with `OCO_FILLED`. If the entry still has an unfilled remainder, the exit fill cancels
 it with the same reason so it cannot reopen after protection has fired. Exits never exceed the position they protect: they shrink when it shrinks
 and are cancelled with `POSITION_CLOSED` once it is flat, so they never open a
 position. Because they only reduce risk, they execute like system orders, without the
@@ -447,8 +455,8 @@ at submission). Each leg's fill is recorded under the order's ID; `filled_notion
 the average fill are the net per unit. The projected fill is checked for daily loss and,
 when any leg opens contracts, buying power, exactly like a single-leg fill. A working
 multi-leg order counts as one pending exposure (its legs summed), and it is cancelled at
-its earliest leg's expiry or its session end like any DAY order. GTC limits instead
-use the earliest last trade or auto-close deadline.
+its session end or its earliest leg's last trade or auto-close deadline, whichever comes
+first, like any DAY order. GTC limits instead last until that deadline.
 
 A multi-leg **entry bracket** reverses every entry leg, keeping its ratios. Entry
 brackets require opening legs; a roll or close cannot create a bracket on reversed
@@ -863,7 +871,7 @@ side, no buying-power check. All rule money is exact.
 | `fill_latency_ms` | Integer from 0 to 60,000 milliseconds on market time before a quote can execute an order; default 0 |
 | `impact_ticks` | Integer from 0 to 10 extra adverse ticks per additional displayed-size block; 0 keeps the displayed-size cap |
 | `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Plans use strategy margin and As displayed fills by default; custom rules can select portfolio margin |
-| `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), working orders on held contracts cancel with `EXPIRY_CUTOFF`, positions are closed, and only closing orders are accepted |
+| `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), every open order on the contract cancels with `EXPIRY_CUTOFF` (DAY, GTC, armed and bracket exits alike, held or not), positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
 | `lock_balance` | Caps the trailing floor: the floor is the lesser of peak − drawdown and the lock, and once peak − drawdown reaches the lock the floor stays there and stops trailing (zero disables). A lock at or below the starting floor (starting balance − drawdown) therefore fixes the floor at the lock from the start: a static floor, which below the starting floor gives more room than `max_drawdown` alone would |
 | `payouts` | Funded phase: qualifying days, withdrawal share, trader split, minimum and caps (see Funded accounts and payouts) |
@@ -1418,8 +1426,8 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; opening orders and manual latch resets are refused while closing orders and exits remain available |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
-| `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, acceptance-day session end |
-| `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry/last-trade/auto-close boundary, or pending settlement quality flag |
+| `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, the end of a DAY order's session (a triggered one's activation session) |
+| `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry or last-trade boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, triggers or brackets |
 | `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age` (a delayed feed: at least three minutes); message includes the lag behind the wall clock |
 | `REPLAY_FAST_FORWARD` | The replay is preparing its start state; wait before submitting orders or changing playback |
@@ -1433,7 +1441,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `JOURNAL_IO`, `JOURNAL_CORRUPT` | Persistence stop condition or invalid/tampered recovery chain/schema |
 | `JOURNAL_LOCKED` | Journal already owned by another writer; analytics remain available |
 | `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
-| `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules) |
+| `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
 | `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, or a funded phase with a profit target or no qualifying days |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling or remaining entry cancelled by an exit fill, or an exit whose held legs closed |
