@@ -76,7 +76,6 @@ TEST(Cli, DaemonRejectsMalformedRangesUnknownFlagsAndStartupFailures) {
 }
 
 TEST(Cli, DemoRejectsNetworkOptionsUnknownDaysAndUnsupportedSymbols) {
-  rejects("openportd", "--help", "demo: simulated regular sessions");
   rejects("openportd", "--provider demo --option speed=max", "demo speed");
   rejects("openportd", "--provider demo --option days=overnight", "not a regular session");
   rejects("openportd", "--provider demo --symbols IWM", "unsupported symbol");
@@ -122,7 +121,6 @@ TEST(Cli, ProbeRejectsBadValuesUnknownFlagsAndDatabentoFilters) {
 }
 
 TEST(Cli, BrokerNamesHelpSandboxAndCredentialFlagsAreValidatedOffline) {
-  rejects("openportd", "--help", "tradier tastytrade");
   rejects("openport-probe", "--help", "tradier tastytrade");
   rejects("openportd", "--provider tastytrade --option sandbox=true", "funded production");
   rejects("openport-probe", "tastytrade SPX --option sandbox=true", "funded production");
@@ -243,9 +241,28 @@ TEST(Cli, DaemonDefaultsToTheIndexAndFourEtfsAndAllowsAnOverride) {
     EXPECT_EQ(reader.header().subscription.max_expiries, 0);
     EXPECT_DOUBLE_EQ(reader.header().subscription.strike_window, 0);
   }
-  const auto help = run_daemon("--help");
-  EXPECT_EQ(help.status, 2);
-  EXPECT_NE(help.output.find("[--symbols SPX,SPY,QQQ,IWM,DIA]"), std::string::npos) << help.output;
+}
+
+// U2: help is an answer, not an error, and its usage lines name every flag.
+TEST(Cli, DaemonHelpGoesToStdoutAndExitsZero) {
+  for (const auto* flag : {"--help", "-h"}) {
+    const auto command = isolated_home() + "\"" + OPENPORT_APPS_DIR + "/openportd\" " + flag + " 2>/dev/null";
+    FILE* pipe = popen(command.c_str(), "r");
+    ASSERT_NE(pipe, nullptr);
+    std::string output;
+    char buffer[512];
+    while (fgets(buffer, sizeof buffer, pipe)) output += buffer;
+    const auto status = pclose(pipe);
+    ASSERT_TRUE(WIFEXITED(status)) << output;
+    EXPECT_EQ(WEXITSTATUS(status), 0) << output;
+    const auto usage = output.substr(0, output.find("\n\n"));
+    for (const auto* expected : {"[--symbols SPX,SPY,QQQ,IWM,DIA]", "[--series-dir DIR] [--no-series]",
+                                 "--backfill-series FILE... [--force]", "demo: simulated regular sessions", "tradier tastytrade"})
+      EXPECT_NE(output.find(expected), std::string::npos) << expected << '\n' << output;
+    EXPECT_NE(usage.find("--no-series"), std::string::npos) << usage;
+  }
+  // An error still goes to stderr with status 2.
+  rejects("openportd", "--no-such-flag", "usage: openportd");
 }
 
 TEST(Cli, DaemonCompactsJournalsFromEarlierBuildsAndKeepsTheOriginals) {

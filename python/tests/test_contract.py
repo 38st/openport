@@ -89,9 +89,11 @@ def test_cli_token_validation_never_starts_a_provider_or_logs_secrets(tmp_path):
     assert "do-not-print-this-secret" not in result.stderr
     token_file.write_text("agent read,trade:main,replay do-not-print-this-secret\n")
     result = subprocess.run([str(binary), "--token-file", str(token_file), "--require-token", "--help"], env=env, capture_output=True, text=True, timeout=5)
-    assert "usage: openportd" in result.stderr
+    # Help is an answer: stdout and status 0.
+    assert result.returncode == 0
+    assert "usage: openportd" in result.stdout
     assert "unknown option" not in result.stderr
-    assert "do-not-print-this-secret" not in result.stderr
+    assert "do-not-print-this-secret" not in result.stdout + result.stderr
 
 
 def test_archived_run_without_metadata_is_described(stub):
