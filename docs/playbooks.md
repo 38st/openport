@@ -158,6 +158,9 @@ which is reserved for reducer liquidation and would change checks.
 Reports use the current attempt, grouping a strategy once by the order that opened
 its contract round trips. Each trade checks its original version's entry window,
 size cap, specified entry exits, time-stop deadline and entry/cooldown guardrails.
+Guardrails are checked as of the entry's acceptance, as the server checked them: a
+losing strategy closed in the same market second counts only if its closing order
+arrived before the entry.
 A still-open trade's time stop is pending until its deadline. Missing evidence
 cannot establish compliance: unknown sizing fails rather than receiving a pass.
 Staged entries retain the preview sizing evidence in their immutable order note,
