@@ -92,6 +92,39 @@ TEST(TradingMargin, SpreadsNeedTheirWidthAndBoundedGroupsTheirWorstLoss) {
                                 margin(LATER_4900, 1)}), m("1000"));
   EXPECT_EQ(margin_requirement({margin(P4890, 3), margin(C5100, 2)}), Money{});
 }
+TEST(TradingMargin, PairingCoversEveryShortItCanAcrossExpiries) {
+  const auto later = [](std::string_view strike) { return osi("SPXW261023P0" + std::string(strike) + "000"); };
+  const auto latest = [](std::string_view strike) { return osi("SPXW261026P0" + std::string(strike) + "000"); };
+  // A diagonal (short 4900, long 4890 a day later) beside a later debit spread
+  // (long 4900, short 4890 two days later): the debit spread's long must not be
+  // spent on the diagonal's short, which would leave its own short naked.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(later("4890"), 1),
+                                margin(latest("4900"), 1), margin(latest("4890"), -1, "400")}), m("1000"));
+  // Two shorts, each covered: the higher short takes the same-strike long a day
+  // later, because the other short expires after that long and needs the higher one.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(later("4900"), 1),
+                                margin(latest("4890"), -1, "400"), margin(latest("4910"), 1)}), Money{});
+  // Equal strikes: the condor's short put takes its own wing's long, leaving the
+  // later calendar long for the calendar's short.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(P4890, 1), margin(C5100, -1, "300"), margin(C5110, 1),
+                                margin(later("4900"), -1, "450"), margin(latest("4900"), 1)}), m("1000"));
+}
+TEST(TradingMargin, PairsExpiringTogetherHoldTheirCombinedWorstLoss) {
+  // An iron condor with a 10-point put wing and a 20-point call wing holds its wider wing.
+  const std::vector<MarginLeg> condor{margin(P4900, -1, "500"), margin(P4890, 1), margin(C5100, -1, "300"), margin(C5120, 1)};
+  EXPECT_EQ(margin_requirement(condor), m("2000"));
+  // A calendar beside it (short with the condor, long a day later) adds nothing:
+  // its long is worth at least its intrinsic value when the short expires.
+  auto with_calendar = condor;
+  with_calendar.push_back(margin(osi("SPXW261022P04905000"), -1, "520"));
+  with_calendar.push_back(margin(osi("SPXW261023P04905000"), 1));
+  EXPECT_EQ(margin_requirement(with_calendar), m("2000"));
+  // Pairs whose shorts expire on different days can both lose, so they add up.
+  auto two_expiries = condor;
+  two_expiries.push_back(margin(osi("SPXW261023P04900000"), -1, "520"));
+  two_expiries.push_back(margin(osi("SPXW261023P04880000"), 1));
+  EXPECT_EQ(margin_requirement(two_expiries), m("4000"));
+}
 
 TEST(TradingMultiLeg, SlippageAppliesToEveryLegAndWaitsForTheNetLimit) {
   for (const bool credit : {true, false}) {
@@ -312,6 +345,23 @@ TEST(TradingMultiLeg, BuyingPowerNetsSpreadsThatANakedShortCouldNotAfford) {
   EXPECT_EQ(snap->account.cash, m("10393.50"));  // + 5 * 80 - 10 * 0.65
   EXPECT_EQ(snap->buying_power.short_requirement, m("5000"));
   EXPECT_EQ(snap->buying_power.available, m("10393.50") - m("5000") - m("2643.90"));
+}
+TEST(TradingMultiLeg, ADebitSpreadBesideADiagonalNeedsOnlyItsDebit) {
+  // The debit spread's long must not be spent covering the diagonal's short:
+  // held together the book can lose only the diagonal's 10-point width.
+  Chain f;
+  AccountRules rules;
+  rules.buying_power = true;
+  TradingSession s(config("50000", rules), f.time);
+  const auto far_long = osi("SPXW261026P04900000"), far_short = osi("SPXW261026P04890000");
+  f.define(s, {P4900, LATER, far_long, far_short});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {LATER, "5.40", "5.60", -0.28},
+              {far_long, "8.00", "8.20", -0.32}, {far_short, "7.40", "7.60", -0.30}});
+  ASSERT_TRUE(s.submit(combo("diagonal", {leg(P4900, Side::Sell), leg(LATER, Side::Buy)}, 1, "0.60"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("1000"));
+  const auto spread = s.submit(combo("debit", {leg(far_long, Side::Buy), leg(far_short, Side::Sell)}, 1, "0.80"), f.time);
+  ASSERT_TRUE(spread.decision.ok()) << spread.decision.message;
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("1000"));
 }
 
 OrderRequest single(std::string client, const std::string& symbol, Side side, std::optional<std::string_view> limit = {}) {
