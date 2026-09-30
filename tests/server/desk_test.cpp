@@ -325,6 +325,25 @@ TEST(ReplayBatches, EveryUnderlyingsSnapshotOfOneMarketTimeIsOneBatch) {
   EXPECT_EQ(shapes, (std::vector<std::pair<std::size_t, md::Timestamp>>{{6, feed.at(0)}, {3, feed.at(1)}, {1, feed.at(1)}}));
 }
 
+TEST(ReplayBatches, ATruncatedRecordingDeliversItsLastCompleteInstantBeforeFailing) {
+  // A recorder killed before its clean end leaves every complete record readable. Looking
+  // ahead for the rest of an instant meets the truncation, but the last whole instant is
+  // still delivered, and only the next call fails, as without instants.
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 2.12}});
+  std::filesystem::resize_file(feed.file.path, std::filesystem::file_size(feed.file.path) - 1);
+  for (const bool instants : {true, false}) {
+    md::RecordingReader reader(feed.file.path);
+    providers::ReplayBatches batches(reader, feed.subscription, instants);
+    std::vector<md::Timestamp> times;
+    const auto drain = [&] { while (const auto batch = batches.next()) times.push_back(batch->time); };
+    EXPECT_THROW(drain(), std::runtime_error);
+    ASSERT_EQ(times.size(), instants ? 2U : 6U);
+    EXPECT_EQ(times.back(), feed.at(1));
+    EXPECT_THROW((void)batches.next(), std::runtime_error);
+  }
+}
+
 TEST(MarketInstants, LatencyFillsOnTheNextInstantsQuoteNotOneAnotherUnderlyingReoffered) {
   // B01: QQQ's snapshot of 10:00:15 comes first. Applied alone, it re-offered SPX's
   // 10:00 quote at 10:00:15, which released the delayed order at the price it was sent at.

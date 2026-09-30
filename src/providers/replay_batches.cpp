@@ -75,13 +75,17 @@ std::optional<ReplayBatches::Part> ReplayBatches::read() {
   return part;
 }
 std::optional<ReplayBatch> ReplayBatches::next() {
+  if (!ahead_ && failure_) std::rethrow_exception(failure_);
   auto part = ahead_ ? std::exchange(ahead_, {}) : read();
   if (!part) return {};
   // A feed polls its underlyings one after another. The next snapshot belongs to this
   // market instant when its SnapshotComplete names the same time and none of its events
   // is later. A snapshot that changed nothing moves no clock, so its own time counts too.
   while (instants_ && part->complete) {
-    auto following = read();
+    std::optional<Part> following;
+    // A truncated or damaged input still delivers every complete snapshot before the
+    // damage, as it did when each snapshot was its own batch; the next call fails.
+    try { following = read(); } catch (...) { failure_ = std::current_exception(); break; }
     if (!following) break;
     if (following->complete != part->complete || following->batch.time > std::max(part->batch.time, *part->complete)) {
       ahead_ = std::move(following);
