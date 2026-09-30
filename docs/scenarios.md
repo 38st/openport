@@ -159,8 +159,13 @@ The terminal opens finished runs read-only in Journal and Dashboard, with replay
 and simulated/recording labels. The account switcher also lists them. Their routes
 are `/api/replay/history/ID/account`, `/account/equity`, `/portfolio`, `/trades` and
 `/fills`; they do not become live accounts. The equity history is read from the
-`ID.jsonl.equity.csv` beside the journal and never rewritten. `DELETE /api/replay/history/ID` removes the journal and
-metadata; the terminal asks for confirmation. A running run cannot be deleted.
+`ID.jsonl.equity.csv` beside the journal and never rewritten.
+`DELETE /api/replay/history/ID` removes the journal, its metadata, playbooks and
+equity-history sidecars, whether or not the journal still verifies, so an edited or
+torn run can be deleted too; the terminal asks for confirmation. A running run cannot
+be deleted (409 `REPLAY_RUNNING`), including one another openportd is writing. An id
+that names no saved run returns 404 `NOT_FOUND`; a journal that cannot be opened
+returns 422 `REPLAY_HISTORY_FAILED` with the reason.
 The archive contains account history, not a persisted copy of the replay's chart
 or analytics book.
 

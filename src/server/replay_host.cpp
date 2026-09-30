@@ -129,6 +129,11 @@ void replay_gate(json& message, bool seeking, bool finished) {
   }
 }
 
+/// A history id that names no saved run: answered 404, never with a file path.
+struct UnknownRun : std::runtime_error {
+  explicit UnknownRun(const std::string& id) : std::runtime_error("No saved replay run " + id) {}
+};
+
 }  // namespace
 
 /// A small cache of generated (scenario, date, seed) recordings.
@@ -337,11 +342,20 @@ class ReplayHost::History {
     if (!metadata) throw std::runtime_error("Cannot write replay metadata for " + session.id);
     return path;
   }
+  /// A saved run's journal, or empty when there is none by that id.
+  std::filesystem::path journal(const std::string& id) const {
+    if (directory_.empty() || !plain_name(id)) return {};
+    auto path = directory_ / (id + ".jsonl");
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec) ? path : std::filesystem::path{};
+  }
   std::shared_ptr<ArchivedReplay> open(const std::string& id) const {
-    if (directory_.empty() || !plain_name(id)) throw std::invalid_argument("Invalid replay history id");
-    const auto path = directory_ / (id + ".jsonl");
-    const auto modified = std::filesystem::last_write_time(path);
-    const auto bytes = std::filesystem::file_size(path);
+    const auto path = journal(id);
+    if (path.empty()) throw UnknownRun(id);
+    std::error_code ec;
+    const auto modified = std::filesystem::last_write_time(path, ec);
+    const auto bytes = ec ? 0 : std::filesystem::file_size(path, ec);
+    if (ec) throw UnknownRun(id);
     const std::lock_guard lock(cache_mutex_);
     const auto found = cache_.find(id);
     if (found != cache_.end() && found->second.modified == modified && found->second.bytes == bytes) return found->second.account;
@@ -367,7 +381,10 @@ class ReplayHost::History {
         std::ifstream metadata(std::filesystem::path(file).replace_extension(".json"));
         if (metadata) item.update(json::parse(metadata));
         item.update(active && active->id == id ? summarize(active->engine->trading_view()) : summary(id, file));
-      } catch (const std::exception& error) { item["error"] = error.what(); }
+      } catch (const std::exception& error) {
+        if (!std::filesystem::exists(file, ec)) continue;  // deleted while listing
+        item["error"] = error.what();
+      }
       item["finished"] = true;
       item["read_only"] = true;
       out.push_back(std::move(item));
@@ -375,14 +392,15 @@ class ReplayHost::History {
     return out;
   }
   void remove(const std::string& id) const {
-    if (!writable_ || !plain_name(id)) throw std::invalid_argument("Replay history is read-only or id is invalid");
-    // Hold the exclusive writer lock so another process's running replay cannot be deleted.
-    const auto file = directory_ / (id + ".jsonl");
-    const auto writer = trading::FileJournal::resume(file.string());
-    std::filesystem::remove(file);
+    if (!writable_) throw std::invalid_argument("Replay history is read-only");
+    const auto file = journal(id);
+    if (file.empty()) throw UnknownRun(id);
+    // The writer's lock keeps another process's running replay; nothing is verified,
+    // so an edited or torn journal is deleted too.
+    trading::FileJournal::remove(file.string());
     std::error_code ec;
-    std::filesystem::remove(directory_ / (id + ".json"), ec);
-    std::filesystem::remove(directory_ / (id + ".playbooks.json"), ec);
+    for (const char* sidecar : {".json", ".playbooks.json", ".jsonl.equity.csv"})
+      std::filesystem::remove(directory_ / (id + sidecar), ec);
     const std::lock_guard lock(cache_mutex_);
     cache_.erase(id);
     summaries_.erase(id);
@@ -405,8 +423,10 @@ class ReplayHost::History {
     return std::make_shared<ArchivedReplay>(path);
   }
   json summary(const std::string& id, const std::filesystem::path& path) const {
-    const auto modified = std::filesystem::last_write_time(path);
-    const auto bytes = std::filesystem::file_size(path);
+    std::error_code ec;
+    const auto modified = std::filesystem::last_write_time(path, ec);
+    const auto bytes = ec ? 0 : std::filesystem::file_size(path, ec);
+    if (ec) throw UnknownRun(id);
     const std::lock_guard lock(cache_mutex_);
     const auto found = summaries_.find(id);
     if (found != summaries_.end() && found->second.modified == modified && found->second.bytes == bytes) return found->second.value;
@@ -493,9 +513,10 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
       const auto route = rest.substr(9);
       const auto slash = route.find('/');
       const std::string id(route.substr(0, slash));
-      if (!plain_name(id)) throw std::invalid_argument("Invalid replay history id");
       if (session && session->id == id && !session->provider->finished()) {
         complete(api_error(409, "REPLAY_RUNNING", "Stop the replay before opening or deleting its history"));
+      } else if (history_->journal(id).empty()) {
+        complete(api_error(404, "NOT_FOUND", "No saved replay run " + id));
       } else if (request.method == "DELETE" && slash == std::string_view::npos) {
         if (options_.engine.write_mode == "disabled" || !history_->writable()) {
           complete(api_error(403, "WRITE_DISABLED", "Replay history is read-only"));
@@ -512,6 +533,15 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
         forwarded.target = slash == std::string_view::npos ? "/api/account" : "/api" + std::string(route.substr(slash));
         handle_api_async(forwarded, *archived, [archived, complete](ApiResponse response) { complete(std::move(response)); });
       }
+    } catch (const UnknownRun& error) {
+      complete(api_error(404, "NOT_FOUND", error.what()));
+    } catch (const trading::TradingError& error) {
+      if (error.code() == trading::Reason::JOURNAL_LOCKED)
+        complete(api_error(409, "REPLAY_RUNNING", "Another openportd is still writing this run"));
+      else complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what()));
+    } catch (const std::filesystem::filesystem_error& error) {
+      // Its what() names absolute paths; the code's message is enough.
+      complete(api_error(422, "REPLAY_HISTORY_FAILED", error.code().message()));
     } catch (const std::exception& error) { complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what())); }
     return true;
   }

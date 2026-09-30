@@ -2438,7 +2438,7 @@
       ],
       "get": {
         "summary": "GET /api/replay/history/{run_id}",
-        "description": "Read the current publication.",
+        "description": "Read a saved run's account. An unknown id returns 404 NOT_FOUND, a running run 409 REPLAY_RUNNING, and a journal that cannot be opened 422 REPLAY_HISTORY_FAILED.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -2458,7 +2458,7 @@
       },
       "delete": {
         "summary": "DELETE /api/replay/history/{run_id}",
-        "description": "Requires admin.",
+        "description": "Requires admin. Removes the journal and its sidecars, even when the journal no longer verifies. An unknown id returns 404 NOT_FOUND; a running run, including one another openportd writes, 409 REPLAY_RUNNING.",
         "x-scope": "admin",
         "responses": {
           "200": {
