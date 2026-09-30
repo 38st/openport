@@ -130,8 +130,7 @@ The replay driver bypasses that queue. `ReplayBatches` reads every selected even
 in file order. Snapshot feeds drain at `SnapshotComplete`, and consecutive snapshots
 of one market time (a recording holds one per underlying, QQQ, SPX then SPY in the
 demo market's) form one batch: a snapshot joins the batch when its
-`SnapshotComplete` names the same time and none of its events moves the market clock
-past it. So every underlying's quotes for that time are in place before any trigger,
+`SnapshotComplete` names the same time and none of its events is later. So every underlying's quotes for that time are in place before any trigger,
 fill, plan rule, playbook or equity sample runs. Streams, including older
 recordings without snapshot markers, drain at fixed integral market seconds. No
 quotes or trades are discarded. Each batch waits for the Desk and its publications

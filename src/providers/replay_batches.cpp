@@ -78,17 +78,19 @@ std::optional<ReplayBatch> ReplayBatches::next() {
   auto part = ahead_ ? std::exchange(ahead_, {}) : read();
   if (!part) return {};
   // A feed polls its underlyings one after another. The next snapshot belongs to this
-  // market instant when it describes the same time and moves no event's clock past it.
+  // market instant when its SnapshotComplete names the same time and none of its events
+  // is later. A snapshot that changed nothing moves no clock, so its own time counts too.
   while (instants_ && part->complete) {
     auto following = read();
     if (!following) break;
-    if (following->complete != part->complete || following->batch.time != part->batch.time) {
+    if (following->complete != part->complete || following->batch.time > std::max(part->batch.time, *part->complete)) {
       ahead_ = std::move(following);
       break;
     }
     auto& events = part->batch.events;
     events.insert(events.end(), std::make_move_iterator(following->batch.events.begin()),
                   std::make_move_iterator(following->batch.events.end()));
+    part->batch.time = following->batch.time;
     part->batch.received = following->batch.received;
   }
   return std::move(part->batch);
