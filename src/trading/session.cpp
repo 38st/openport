@@ -1015,12 +1015,16 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
         (t->direction == TriggerDirection::AtOrAbove || t->direction == TriggerDirection::AtOrBelow));
   };
   const auto exit_ok = [&](const std::optional<ExitSpec>& e) {
-    return !e || (e->trigger.has_value() != e->limit_price.has_value() && trigger_ok(e->trigger) &&
-        (!e->limit_price || e->limit_price->micros() % tick.micros() == 0));
+    return !e || (e->trigger.has_value() != e->limit_price.has_value() && trigger_ok(e->trigger));
   };
   if (!trigger_ok(r.trigger) || (r.bracket && ((!r.bracket->stop_loss && !r.bracket->take_profit) ||
       !exit_ok(r.bracket->stop_loss) || !exit_ok(r.bracket->take_profit))))
-    return failure(Reason::INVALID_ORDER, "Combo exits need a signed net limit on the leg tick or a combo/underlying trigger");
+    return failure(Reason::INVALID_ORDER, "Combo exits need a signed net limit or a combo/underlying trigger");
+  const auto on_tick = [&](const std::optional<ExitSpec>& e) {
+    return !e || !e->limit_price || e->limit_price->micros() % tick.micros() == 0;
+  };
+  if (r.bracket && (!on_tick(r.bracket->stop_loss) || !on_tick(r.bracket->take_profit)))
+    return failure(Reason::INVALID_TICK, "An exit's net price is not a multiple of the legs' smallest tick");
   if ((r.trigger || r.exits_only) && !closing_only(s, o))
     return failure(Reason::INVALID_ORDER, "Conditional combos and held exits must close held legs in ratio without exceeding them");
   if (r.exits_only) {
@@ -1114,9 +1118,11 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
       !positive(request.trigger) ||
       (bracket && (!exit_ok(bracket->stop_loss) || !exit_ok(bracket->take_profit) || (!bracket->stop_loss && !bracket->take_profit))))
     return failure(Reason::INVALID_ORDER, "Trigger levels and exit prices must be positive; each exit takes either a trigger or a limit price");
-  if (bracket && bracket->take_profit && bracket->take_profit->limit_price &&
-      bracket->take_profit->limit_price->micros() % tick_size(c->second.root, *bracket->take_profit->limit_price).micros() != 0)
-    return failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
+  const auto on_tick = [&](const std::optional<ExitSpec>& e) {
+    return !e || !e->limit_price || e->limit_price->micros() % tick_size(c->second.root, *e->limit_price).micros() == 0;
+  };
+  if (bracket && (!on_tick(bracket->stop_loss) || !on_tick(bracket->take_profit)))
+    return failure(Reason::INVALID_TICK, "An exit's limit price is not a positive multiple of the product tier tick");
   if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
     return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
   if (auto d = defined_risk_check(s, {{request.symbol, request.side == Side::Buy ? o.remaining() : -o.remaining()}}); !d.ok())

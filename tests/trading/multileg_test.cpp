@@ -829,6 +829,21 @@ TEST(TradingMultiLeg, HeldExitsCanBeAttachedOvernightAndWaitForTheRegularSession
   }
 }
 
+TEST(TradingMultiLeg, AnOffTickComboExitPriceIsAnInvalidTick) {
+  Chain f;
+  TradingSession s(config(), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  auto entry = combo("entry", credit_legs(), 1, "-0.80");
+  entry.bracket = Bracket{{}, ExitSpec{{}, m("0.42")}};
+  EXPECT_EQ(s.submit(entry, f.time).decision.code, Reason::INVALID_TICK);
+  ASSERT_TRUE(s.submit(combo("held", credit_legs(), 1, {}), f.time).decision.ok());
+  auto exits = combo("exits", close_legs(), 1, "0.40", TimeInForce::Gtc);
+  exits.bracket = Bracket{ExitSpec{{}, m("2.02")}, ExitSpec{{}, m("0.40")}};
+  exits.exits_only = true;
+  EXPECT_EQ(s.submit(exits, f.time).decision.code, Reason::INVALID_TICK);
+}
+
 TEST(TradingMultiLeg, PlainConditionalCombosMustReduceAndNeverMatchWhileArmed) {
   Chain f;
   TradingSession s(config(), f.time);

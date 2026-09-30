@@ -474,7 +474,8 @@ Take-profit limits use the closing order's signed net: positive for the maximum
 buy-back debit after a credit entry, negative for the minimum credit after a debit
 entry. The ticket expresses this as a percentage of the entry net: 50% buys back
 half a credit, 150% receives one and a half times a debit. Prices snap to the combo
-tick. This fixes a price when submitted; it does not reprice with later entry fills.
+tick; an exit price off it rejects with `INVALID_TICK`, as a single contract's does off
+its tier tick. This fixes a price when submitted; it does not reprice with later entry fills.
 A target waits until the entire slipped closing net fits its limit.
 
 A stop has `source: "combo"` or `"underlying"`. Combo levels compare the sum of the
