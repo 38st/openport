@@ -761,7 +761,8 @@ The response contains `decision` (`ok` or a reason code), `reason`, `buying_powe
 vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
 `breaches_floor`, `breaches_soft_floor`, `max_units` and projected `breach`. Missing
 inputs produce null analytical values. `simulated: true` labels the projection.
-Market orders use slipped far sides; limit orders use their limit debit or credit.
+Market orders use slipped far sides, through the impact blocks a fill would walk; limit
+orders use their limit debit or credit.
 Fees are included. Identical client-ID retries return their original decision with no
 additional buying power or Greek change; loss projection and sizing are unavailable.
 
@@ -918,8 +919,11 @@ width less its credit, and a closing order only its fees. Single-leg orders see 
 positions less the contracts that earlier orders, in acceptance order, already claim to
 close, so two sells cannot both claim the same long; otherwise each order is measured
 against the held positions alone. Portfolio mode uses the same reservation and
-projected-fill checks with the scan in place of strategy margin. Market orders use
-slipped prices; limit orders reserve at their limits. Fees are unchanged.
+projected-fill checks with the scan in place of strategy margin. Market orders reserve
+what they would trade at now: the slipped far side, through the impact blocks a fill
+would walk when the account uses impact; the displayed far side, slipped, when only
+that side is quoted; and a buy with no ask at all, its last mark. Limit orders reserve
+at their limits. Fees are unchanged.
 
 An order or a fill that would reduce free buying power (cash less the positions'
 requirement) must leave available buying power nonnegative, otherwise `BUYING_POWER`

@@ -279,6 +279,43 @@ Money execution_price(const State& s, const std::string& symbol, Side side, std:
   const auto price = buy ? displayed + slip : std::max(Money{}, displayed - slip);
   return limit && s.config.rules.impact_ticks == 0 ? (buy ? std::min(*limit, price) : std::max(*limit, price)) : price;
 }
+/// What a market order for `quantity` contracts would trade at now, as
+/// (price, contracts): an executable book's slipped far side, block by block
+/// with impact as the fills would walk it; with only the far side quoted, that
+/// side slipped; a buy without an ask at its last mark; otherwise nothing.
+std::vector<std::pair<Money, Quantity>> market_slices(const State& s, const std::string& symbol, Side side, Quantity quantity) {
+  if (quantity <= 0) return {};
+  const bool buy = side == Side::Buy;
+  if (const auto book = s.books.find(symbol); book != s.books.end()) {
+    const auto& quote = book->second.quote;
+    if (valid_quote(quote)) {
+      if (s.config.rules.impact_ticks == 0) return {{execution_price(s, symbol, side), quantity}};
+      std::vector<std::pair<Money, Quantity>> slices;
+      const auto size = buy ? quote.ask_size : quote.bid_size;
+      const auto left = buy ? book->second.ask_left : book->second.bid_left;
+      for (Quantity k = 0; k < quantity;) {
+        // The rest of the block the k-th contract falls in trades at one price.
+        const auto take = std::min(quantity - k, size - depth_used(size, left, k) % size);
+        slices.emplace_back(execution_price(s, symbol, side, {}, k), take);
+        k += take;
+      }
+      return slices;
+    }
+    const auto far = buy ? quote.ask : quote.bid;
+    if (far && *far > Money{} && (buy ? quote.ask_size : quote.bid_size) > 0) {
+      const auto slip = tick_size(s.contracts.at(symbol).root, *far) * s.config.rules.slippage_ticks;
+      return {{buy ? *far + slip : std::max(Money{}, *far - slip), quantity}};
+    }
+  }
+  if (const auto mark = s.marks.find(symbol); buy && mark != s.marks.end()) return {{mark->second.price, quantity}};
+  return {};
+}
+/// The premium, in dollars, of market_slices.
+Money market_premium(const State& s, const std::string& symbol, Side side, Quantity quantity) {
+  Money total;
+  for (const auto& [price, n] : market_slices(s, symbol, side, quantity)) total = total + (price * 100) * n;
+  return total;
+}
 struct ExecutionSlice {
   std::string symbol;
   Side side;
@@ -442,8 +479,13 @@ Use combo_use(const State& s, const Order& o, const MarginBook& book) {
     const auto mark = s.marks.find(leg.symbol);
     trade(after, leg.symbol, contracts, mark != s.marks.end() ? mark->second.price : Money{});
   }
-  const auto net = o.request.limit_price ? *o.request.limit_price : executable_net(s, o.request).value_or(Money{});
-  return use_of(s, book, after, (net * 100) * units, fees);
+  Money premium;
+  if (o.request.limit_price) premium = (*o.request.limit_price * 100) * units;
+  else for (const auto& leg : o.request.legs) {
+    const auto cost = market_premium(s, leg.symbol, leg.side, units * leg.ratio);
+    premium = leg.side == Side::Buy ? premium + cost : premium - cost;
+  }
+  return use_of(s, book, after, premium, fees);
 }
 Money average_unit_price(const Position& p) {
   const auto size = magnitude(p.quantity);
@@ -462,8 +504,8 @@ struct PowerDetail {
 /// what it receives, never below the fees. Single-leg orders see the positions
 /// less the contracts earlier orders already claim to close, in acceptance
 /// order, so two sells cannot both claim the same long. Bracket exits stay
-/// within their position and reserve only fees. Orders without a limit use the
-/// current far side.
+/// within their position and reserve only fees. Orders without a limit use
+/// market_slices.
 PowerDetail buying_power(const State& s, OrderId focus = 0) {
   PowerDetail out;
   const auto book = held_book(s);
@@ -490,10 +532,8 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
       const auto q = held(s, symbol);
       auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Quantity>(q, 0), std::max<Quantity>(-q, 0)).first->second;
       const bool buy = o.request.side == Side::Buy;
-      Money price;
-      if (o.request.limit_price) price = *o.request.limit_price;
-      else if (const auto quote = s.books.find(symbol); quote != s.books.end() && valid_quote(quote->second.quote))
-        price = execution_price(s, symbol, o.request.side);
+      const Money premium = o.request.limit_price ? (*o.request.limit_price * 100) * remaining
+                                                  : market_premium(s, symbol, o.request.side, remaining);
       const Money fees = s.config.fee_per_contract * remaining;
       if (o.role != OrderRole::Normal) {
         // Bracket exits stay within the position, so they only ever close; they
@@ -508,8 +548,7 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
         left -= closing;
         opening = remaining - closing;
         auto after = before;
-        trade(after, symbol, buy ? remaining : -remaining, price);
-        const Money premium = (price * 100) * remaining;
+        trade(after, symbol, buy ? remaining : -remaining, premium.prorate(1, 100 * remaining));
         use = use_of(s, before, after, buy ? premium : -premium, fees);
       }
     }
@@ -1625,15 +1664,18 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
   const auto power = buying_power(after, candidate.id);
   result.buying_power_required = power.focus_reservation;
   after.orders.mut_back().status = OrderStatus::Filled;
+  // Every leg fills at market, through impact blocks as a real fill would walk them.
   Money premium, fees;
   for (const auto& leg : legs) {
     const auto quantity = signed_contracts(leg, request.quantity);
-    const auto price = execution_price(before, leg.symbol, leg.side,
-        legs.size() == 1 ? request.limit_price : std::nullopt);
-    const auto fee = before.config.fee_per_contract * magnitude(quantity);
-    premium = premium + (price * 100) * quantity;
+    auto fee = before.config.fee_per_contract * magnitude(quantity);
     fees = fees + fee;
-    after.ledger.fill(before.contracts.at(leg.symbol), quantity, price, fee);
+    for (const auto& [price, n] : market_slices(before, leg.symbol, leg.side, magnitude(quantity))) {
+      const auto contracts = quantity < 0 ? -n : n;
+      premium = premium + (price * 100) * contracts;
+      after.ledger.fill(before.contracts.at(leg.symbol), contracts, price, fee);
+      fee = {};
+    }
   }
   // For a resting limit, project its limit debit/credit, not an impossible fill
   // at today's far sides. This also makes size-to-floor conservative at limits.
