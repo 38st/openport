@@ -41,7 +41,7 @@ export function useSpreadExits(entry: number | null, tick: number, enabled = fal
           <option value="at_or_above">At or above</option><option value="at_or_below">At or below</option>
         </select></label>
         <label className="trade-label">Stop level<input className="trade-input" inputMode="decimal" value={level} onChange={(e) => setLevel(e.target.value)} /></label>
-        <p className="text-muted">Combo net is the displayed cost to close: positive to pay, negative to receive. A reached stop sends a market IOC combo with the plan’s slippage.</p>
+        <p className="text-muted">Combo net is the displayed cost to close: positive to pay, negative to receive. A leg nobody bids for is bought back at its ask or given away at $0.00. A reached stop sends a market IOC combo with the plan’s slippage.</p>
       </>}
       <p className="text-muted">Exits close all legs together, wait outside the regular session, and expire at the nearest leg’s last trade or auto-close. A fill cancels the other exit.</p>
     </>}

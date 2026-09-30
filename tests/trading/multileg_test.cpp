@@ -844,6 +844,71 @@ TEST(TradingMultiLeg, AnOffTickComboExitPriceIsAnInvalidTick) {
   EXPECT_EQ(s.submit(exits, f.time).decision.code, Reason::INVALID_TICK);
 }
 
+TEST(TradingMultiLeg, ExitsCloseLegsNobodyBidsFor) {
+  const std::vector<Leg> condor{leg(P4900, Side::Sell), leg(P4890, Side::Buy), leg(C5100, Side::Sell), leg(C5110, Side::Buy)};
+  const std::vector<Leg> closing{leg(P4900, Side::Buy), leg(P4890, Side::Sell), leg(C5100, Side::Buy), leg(C5110, Side::Sell)};
+  // One batch where the far call wing has only an ask: nobody bids for it.
+  const auto quote = [](TradingSession& s, Chain& f, std::vector<std::tuple<std::string, std::string, std::string>> books) {
+    ++f.observation;
+    f.time += md::kNanosPerSecond;
+    std::vector<QuoteObservation> quotes;
+    std::vector<Valuation> valuations;
+    for (const auto& [symbol, bid, ask] : books) {
+      const bool bidless = bid.empty();
+      quotes.push_back({symbol, f.observation, f.time, bidless ? std::nullopt : std::optional(m(bid)), m(ask), bidless ? 0 : 10, 10});
+      valuations.push_back({symbol, f.time, 0.1, 0.001, 2.0, -0.1, 5000, 5010, 0.99,
+                            md::years_between(f.time, md::parse_osi(symbol)->expiry_time()), 0.20, true});
+    }
+    s.on_quotes(quotes, valuations, f.time);
+  };
+  for (const bool stop : {true, false}) {
+    Chain f;
+    TradingSession s(config(), f.time);
+    f.define(s, {P4900, P4890, C5100, C5110});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}, {C5100, "3.00", "3.20", 0.30}, {C5110, "0.05", "0.10", 0.05}});
+    auto entry = combo("condor", condor, 1, {});
+    entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("4.50")}, {}}, ExitSpec{{}, m("2.00")}};
+    ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+    ASSERT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Armed);
+    // The stop's level buys the short call back at its only side, the ask, and
+    // counts the wing at zero: 8.60 - 4.00 + 0.10 - 0 = 4.70. The target's closing
+    // net is 2.20 - 1.00 + 0.80 - 0 = 2.00.
+    if (stop) quote(s, f, {{P4900, "8.40", "8.60"}, {P4890, "4.00", "4.20"}, {C5100, "", "0.10"}, {C5110, "", "0.05"}});
+    else quote(s, f, {{P4900, "2.10", "2.20"}, {P4890, "1.00", "1.10"}, {C5100, "0.70", "0.80"}, {C5110, "", "0.05"}});
+    const auto snap = s.snapshot();
+    const auto& exit = snap->recent_orders[stop ? 1 : 2];
+    EXPECT_EQ(exit.status, OrderStatus::Filled);
+    EXPECT_EQ(exit.filled_notional, m(stop ? "4.70" : "2.00"));
+    EXPECT_EQ(snap->recent_fills[6].price, m(stop ? "0.10" : "0.80"));
+    EXPECT_EQ(snap->recent_orders[stop ? 2 : 1].reason.code, Reason::OCO_FILLED);
+    ASSERT_EQ(snap->recent_fills.size(), 8U);
+    EXPECT_EQ(snap->recent_fills.back().symbol, C5110);
+    EXPECT_EQ(snap->recent_fills.back().price, Money{});
+    EXPECT_EQ(snap->recent_fills.back().fee, m("0.65"));
+    EXPECT_TRUE(snap->positions.empty());
+  }
+  // Held exits can be attached while the wing has no bid, and a plain triggered
+  // combo, which is not an exit, still waits for a bid on every leg.
+  Chain f;
+  TradingSession s(config(), f.time);
+  f.define(s, {P4900, P4890, C5100, C5110});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}, {C5100, "3.00", "3.20", 0.30}, {C5110, "0.05", "0.10", 0.05}});
+  ASSERT_TRUE(s.submit(combo("condor", condor, 2, {}), f.time).decision.ok());
+  auto conditional = combo("conditional", closing, 1, {});
+  conditional.trigger = Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("4.50")};
+  ASSERT_TRUE(s.submit(conditional, f.time).decision.ok());
+  quote(s, f, {{P4900, "5.00", "5.20"}, {P4890, "4.00", "4.20"}, {C5100, "3.00", "3.20"}, {C5110, "", "0.05"}});
+  auto exits = combo("exits", closing, 1, {});
+  exits.trigger = Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("4.50")};
+  exits.bracket = Bracket{ExitSpec{*exits.trigger, {}}, {}};
+  exits.exits_only = true;
+  const auto placed = s.submit(exits, f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  quote(s, f, {{P4900, "5.40", "5.60"}, {P4890, "4.00", "4.20"}, {C5100, "3.00", "3.20"}, {C5110, "", "0.05"}});
+  EXPECT_EQ(s.snapshot()->recent_orders.at(static_cast<std::size_t>(*placed.order_id - 1)).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_orders.at(static_cast<std::size_t>(*placed.order_id - 2)).status, OrderStatus::Armed);
+}
+
 TEST(TradingMultiLeg, PlainConditionalCombosMustReduceAndNeverMatchWhileArmed) {
   Chain f;
   TradingSession s(config(), f.time);
