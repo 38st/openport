@@ -73,6 +73,9 @@ struct Trip {
   const Order* order = nullptr;
   std::vector<const Lifecycle*> legs;
   std::optional<md::Timestamp> closed;
+  /// The order whose fill closed the trip, placing its close among the orders of
+  /// that market second; zero when a settlement or reset closed it.
+  OrderId closed_by = 0;
   Money net;
 };
 std::vector<Trip> trips(const TradingView& view, const std::vector<Lifecycle>& history) {
@@ -92,6 +95,15 @@ std::vector<Trip> trips(const TradingView& view, const std::vector<Lifecycle>& h
     if (trip.legs.size() == count && std::all_of(trip.legs.begin(), trip.legs.end(), [](const auto* life) { return life->closed.has_value(); })) {
       trip.closed = 0;
       for (const auto* life : trip.legs) trip.closed = std::max(*trip.closed, *life->closed);
+      std::uint64_t last = 0;
+      bool settled = false;
+      for (const auto* life : trip.legs) {
+        if (*life->closed != *trip.closed) continue;
+        if (life->closure || life->fills.empty()) settled = true;
+        else last = std::max(last, life->fills.back());
+      }
+      const auto fill = std::find_if(view.snapshot->recent_fills.begin(), view.snapshot->recent_fills.end(), [&](const auto& item) { return item.id == last; });
+      if (!settled && fill != view.snapshot->recent_fills.end()) trip.closed_by = fill->order_id;
     }
     result.push_back(std::move(trip));
   }
@@ -109,8 +121,13 @@ bool guardrails_allow(const json& definition, const TradingView& view, md::Times
   if (entries >= definition.at("guardrails").at("max_entries_per_day").get<int>()) return false;
   const auto history = lives(view);
   const auto cooldown = definition.at("guardrails").at("cooldown_minutes").get<int>() * md::kNanosPerMinute;
+  // Scoring a past entry, a close in its own market second counts only if it came
+  // first, as it did for the live check: orders are numbered as they arrive.
+  const auto closed_first = [&](const Trip& trip) {
+    return before ? *trip.closed < time || (*trip.closed == time && trip.closed_by < before) : *trip.closed <= time;
+  };
   for (const auto& trip : trips(view, history))
-    if (trip.order->id >= view.snapshot->evaluation.first_order && (!before || trip.order->id < before) && tagged(*trip.order, id) && trip.closed && *trip.closed <= time &&
+    if (trip.order->id >= view.snapshot->evaluation.first_order && (!before || trip.order->id < before) && tagged(*trip.order, id) && trip.closed && closed_first(trip) &&
         trip.net < Money{} && time < *trip.closed + cooldown) return false;
   return true;
 }
@@ -557,7 +574,8 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
         exits = actual == required;
       } catch (const std::exception&) {}
       const bool timely = trip.closed && *trip.closed <= playbook_deadline(*definition, opened);
-      const bool guarded = guardrails_allow(*definition, view, opened, order.id);
+      // As the live check did, when the entry arrived.
+      const bool guarded = guardrails_allow(*definition, view, order.accepted_at, order.id);
       json rules{{"entry_window", window}, {"size", size}, {"exits", exits},
           {"time_stop", trip.closed || view.snapshot->time >= playbook_deadline(*definition, opened) ? json(timely) : json(nullptr)},
           {"guardrails", guarded}};

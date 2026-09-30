@@ -740,4 +740,41 @@ TEST(Playbooks, ATimeStopWaitsForLiquidityWithoutJournalingRejections) {
   }
   EXPECT_TRUE(view->snapshot->positions.empty());
 }
+TEST(Playbooks, AdherenceCountsASameSecondLossOnlyIfItClosedBeforeTheEntry) {
+  // B45: an entry accepted while the losing strategy was still open broke no cooldown,
+  // even when that strategy closed later in the same market second.
+  test::ScriptedMarket first, second;
+  second.contract = *md::parse_osi("SPXW261022C05010000");
+  first.time = second.time = md::new_york_to_utc({2026, 9, 22}, 9, 40);
+  trading::SessionConfig config;
+  config.limits.aggregate = {1e9, 1e9}; config.limits.per_underlying = {1e9, 1e9};
+  trading::TradingSession session(config, first.time);
+  auto setup = definition(); setup["guardrails"]["max_entries_per_day"] = 10;
+  server::Playbooks store; store.change({{"action", "create"}, {"definition", setup}}, "main", false);
+  const auto report = [&] {
+    server::TradingView view; view.snapshot = session.snapshot(); view.config = config; view.contracts = session.contracts();
+    return server::playbook_report(store.catalogue(), view).at("morning").at("trades");
+  };
+  for (const bool close_first : {false, true}) {
+    SCOPED_TRACE(close_first);
+    first.seed(session); second.seed(session);
+    auto entry = first.market("losing" + std::to_string(close_first)); entry.tags = {"playbook:morning@v1"};
+    ASSERT_TRUE(session.submit(entry, first.time).decision.ok());
+    first.time = second.time = first.time + 10 * md::kNanosPerMinute;
+    ++first.observation; ++second.observation;
+    session.on_quotes({first.quote("3.20", "3.40"), second.quote()}, {first.valuation(), second.valuation()}, first.time);
+    auto next = second.market("next" + std::to_string(close_first)); next.tags = {"playbook:morning@v1"};
+    const auto close = first.market("close" + std::to_string(close_first), 1, trading::Side::Sell);
+    if (close_first) ASSERT_TRUE(session.submit(close, first.time).decision.ok());
+    ASSERT_TRUE(session.submit(next, first.time).decision.ok());
+    if (!close_first) ASSERT_TRUE(session.submit(close, first.time).decision.ok());
+    const auto trades = report();
+    const auto& losing = trades[trades.size() - 2];
+    ASSERT_LT(trading::Money::parse(losing.at("net").get<std::string>()), trading::Money{});
+    EXPECT_EQ(trades.back().at("rules").at("guardrails").get<bool>(), !close_first) << trades.dump();
+    ASSERT_TRUE(session.submit(second.market("flat" + std::to_string(close_first), 1, trading::Side::Sell), first.time).decision.ok());
+    first.time = second.time = first.time + 60 * md::kNanosPerMinute;
+    ++first.observation; ++second.observation;
+  }
+}
 }  // namespace
