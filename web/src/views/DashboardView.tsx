@@ -71,6 +71,8 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const profit = e.profit
   const target = r.profit_target
   const targetProgress = target ? ratio(profit, target) : null
+  // The high-water mark the floor follows: end-of-day plans take it from closes.
+  const peakLabel = r.drawdown_mode === "end_of_day" ? "Peak close" : "Peak"
   const floorRange = e.floor != null ? subtractMoney(e.peak, e.floor) : null
   const bufferShare = e.drawdown_buffer != null ? ratio(e.drawdown_buffer, floorRange) : null
   const today = subtractMoney(e.equity, e.day_open_equity)
@@ -138,7 +140,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
           : <Tile label="Profit target" value={target ? formatMoney(e.target_equity) : "None"}
             detail={target ? `${formatMoney(e.target_remaining)} to go · ${Math.max(0, (targetProgress ?? 0) * 100).toFixed(1)}%` : "Practice has no target"}
             meter={target ? { value: targetProgress, tone: "positive", label: "Progress to profit target" } : undefined} />}
-          <Tile label="Equity" value={formatMoney(e.equity)} detail={`Peak ${formatMoney(e.peak)} · today ${signedMoney(today)}`} />
+          <Tile label="Equity" value={formatMoney(e.equity)} detail={`${peakLabel} ${formatMoney(e.peak)} · today ${signedMoney(today)}`} />
           <Tile label="Drawdown floor" value={e.floor != null ? formatMoney(e.floor) : "None"}
             tone={bufferShare != null && bufferShare < 0.25 ? "negative" : "neutral"}
             detail={e.floor != null ? `${formatMoney(e.drawdown_buffer)} buffer${e.floor_locked ? " · locked" : ""}` : "Practice has no floor"}
@@ -175,7 +177,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
               {payout && <Check ok={payout.eligible} label={payout.eligible ? "Payout available now" : "Next payout, once eligible"} value={`up to ${formatMoney(payout.maximum)}`} />}
               {e.floor != null && <Check ok={e.status !== "failed"} label="Drawdown left" value={formatMoney(e.drawdown_buffer)} />}
               <Check ok label="Starting balance" value={formatMoney(e.starting_balance)} />
-              <Check ok label="Peak equity" value={formatMoney(e.peak)} />
+              <Check ok label={r.drawdown_mode === "end_of_day" ? "Peak closing equity" : "Peak equity"} value={formatMoney(e.peak)} />
               <Check ok={toneOf(today) !== "negative"} label="Today" value={signedMoney(today)} tone={toneOf(today)} />
             </ul>
           </div>

@@ -69,10 +69,14 @@ struct Evaluation {
 };
 
 /// Shared plan arithmetic. Observations check the floor before the target; rollover
-/// ratchets an end-of-day floor from the last fully marked close.
+/// ratchets an end-of-day floor from the last fully marked close. The peak follows
+/// the drawdown mode even without rules, which then never decide.
 [[nodiscard]] Money evaluation_floor(const AccountRules& rules, Money peak, bool& locked);
 [[nodiscard]] EvaluationStatus evaluate_equity(Evaluation& evaluation, const AccountRules& rules, Money equity);
 void evaluation_rollover(Evaluation& evaluation, const AccountRules& rules);
+/// The floor rollover would leave if the trading day closed at `equity`: an end-of-day
+/// ratchet while the attempt is active, otherwise (decided, locked, intraday) the floor.
+[[nodiscard]] Money evaluation_tomorrow_floor(const Evaluation& evaluation, const AccountRules& rules, Money equity);
 
 struct PassOdds {
   double pass = 0, fail = 0, neither = 0;

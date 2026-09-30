@@ -146,6 +146,32 @@ TEST(TradingEvaluation, EndOfDayFloorRatchetsOnlyAtRolloverFromThatDaysClose) {
   EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
 }
 
+TEST(TradingEvaluation, AccountsWithoutRulesKeepTheirHighWaterMark) {
+  // B50: a practice account's peak stayed at the starting balance whatever its equity did.
+  for (const auto mode : {DrawdownMode::Intraday, DrawdownMode::EndOfDay}) {
+    ScriptedMarket f;
+    AccountRules practice;
+    practice.drawdown_mode = mode;
+    TradingSession s(rules_config("10000", practice), f.time);
+    f.seed(s);
+    s.submit(f.market("open", 5), f.time);
+    quote(s, f, "4.40", "4.60");
+    EXPECT_EQ(s.snapshot()->evaluation.peak, m(mode == DrawdownMode::Intraday ? "10146.75" : "10000"));
+    quote(s, f, "4.00", "4.20");
+    quote(s, f, "4.20", "4.40");
+    f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+    ++f.observation;
+    s.on_quotes({f.quote("4.00", "4.20")}, {f.valuation()}, f.time);
+    ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+    const auto e = s.snapshot()->evaluation;
+    // Intraday follows every fully marked high; end of day takes the finished day's close.
+    EXPECT_EQ(e.peak, m(mode == DrawdownMode::Intraday ? "10146.75" : "10046.75"));
+    EXPECT_EQ(e.days.front().peak, e.peak);
+    EXPECT_EQ(e.floor, Money{});
+    EXPECT_EQ(e.status, EvaluationStatus::Active);
+  }
+}
+
 TEST(TradingEvaluation, JournalsCreatedAtTimeZeroStartAtTheFirstMarketTime) {
   ScriptedMarket f;
   // The engine creates new journals before any market data arrives.
@@ -159,6 +185,20 @@ TEST(TradingEvaluation, JournalsCreatedAtTimeZeroStartAtTheFirstMarketTime) {
   EXPECT_TRUE(e.days.empty());  // 1969-12-31 was a placeholder, not a trading day
   EXPECT_EQ(e.day, (md::Date{2026, 9, 22}));
   EXPECT_EQ(e.day_open_equity, m("10000"));
+}
+
+TEST(TradingEvaluation, ClosestFloorStartsWithItsTimeAtTheFirstMarketTime) {
+  // B51: the session_start record at time zero set closest_floor, so closest_floor_at
+  // stayed null for as long as later observations only tied it.
+  ScriptedMarket f;
+  TradingSession s(rules_config("25000", drawdown("2500", "1250")), 0);
+  EXPECT_FALSE(s.snapshot()->evaluation.closest_floor);
+  f.seed(s);
+  quote(s, f, "4.00", "4.20");
+  const auto e = s.snapshot()->evaluation;
+  EXPECT_EQ(e.closest_floor, m("1250"));
+  EXPECT_EQ(e.closest_floor_at, e.started);
+  EXPECT_GT(e.closest_floor_at, 0);
 }
 
 TEST(TradingEvaluation, ProfitTargetPassesAndLiquidatesAtTheBid) {

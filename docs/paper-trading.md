@@ -716,8 +716,9 @@ Touching the soft floor submits closing orders and latches `SOFT_FLOOR`. Liquida
 uses the same quotes, displayed liquidity and regular-session restrictions as a plan
 floor breach, and retries remaining positions on later updates. It does not itself
 fail the attempt. `TRADE_LIMIT` and `PROFIT_LOCK` leave positions open and cancel
-opening orders. All three last until rollover. `COOLDOWN` lasts until the journaled
-`cooldown_until`, including across rollover; wall time does not shorten it. A later stop restarts it, and a longer
+opening orders. Working opening orders cancelled by a guardrail carry its code and
+message, as new ones refused by it do, not `KILL_SWITCH`. All three last until
+rollover. `COOLDOWN` lasts until the journaled `cooldown_until`, including across rollover; wall time does not shorten it. A later stop restarts it, and a longer
 cooldown setting extends one already active. Closing orders, Flatten and exits keep
 working under all four reasons. Manual reset cannot bypass an active guardrail.
 
@@ -808,7 +809,7 @@ side, no buying-power check. All rule money is exact.
 | --- | --- |
 | `profit_target` | Pass when equity reaches starting balance + target (zero disables) |
 | `max_drawdown` | Fail when equity touches peak − drawdown (zero disables) |
-| `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date |
+| `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date. The peak is the high-water mark the floor follows; an account without a target or drawdown (practice) keeps it the same way, although no rule reads it |
 | `buy_only` | A sell must close contracts already held, counting working sells on the same contract; otherwise `BUY_ONLY` |
 | `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Open orders count as if every sell they offer filled and no buy did (a multi-leg order fills whole; a bracket's two exits sell its position once), so a working sell can never take the long a short needs. Bracket exits and exercise keep shorts covered too. Off in every preset; custom rules take it |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
@@ -832,9 +833,12 @@ the floor rises. The decision is sticky for the attempt: open user orders cancel
 `EVALUATION_CLOSED`, new user orders reject with it, and every position is liquidated.
 
 **System orders** perform liquidation and expiry auto-close: market IOC orders with
-`system = true` and client IDs `system:drawdown:N`, `system:target:N` or
-`system:expiry:N`. They need a registered unexpired contract, the regular session and
-a fresh executable book and available closing-side liquidity under the selected fill model.
+`system = true` and client IDs `system:drawdown:N` (a failed attempt), `system:target:N`
+(a passed one), `system:expiry:N` (the expiry cutoff) or `system:soft_floor:N` (a
+personal soft floor while the attempt is still active; once the plan decides the
+attempt, its own label wins, even when the soft floor latched in the same update).
+They need a registered unexpired contract, the regular session and a fresh
+executable book and available closing-side liquidity under the selected fill model.
 With latency, the close stays pending until an eligible later quote. They skip the kill
 latch, price band, daily-loss, exposure, rule and buying-power checks because they
 only reduce risk. Without executable liquidity nothing is recorded; the monitor retries
