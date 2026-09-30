@@ -1450,7 +1450,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
-| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, or a funded phase with a profit target or no qualifying days |
+| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, or a funded phase with a profit target or no qualifying days. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling or remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |

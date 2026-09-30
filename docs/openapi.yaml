@@ -7266,7 +7266,11 @@
             "description": "Simulated adverse ticks per extra displayed-size block; zero retains displayed-size caps."
           },
           "slippage_ticks": {
-            "type": "number"
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 0,
+            "description": "Adverse ticks per option fill."
           },
           "margin": {
             "anyOf": [
@@ -7284,7 +7288,9 @@
             "type": "boolean"
           },
           "expiry_cutoff_seconds": {
-            "type": "number"
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86399
           },
           "payouts": {
             "anyOf": [
@@ -9125,7 +9131,8 @@
             "type": "string"
           },
           "exits_only": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Multi-leg orders only: attach the bracket to held closing legs instead of submitting an entry."
           }
         },
         "required": [
@@ -9141,8 +9148,17 @@
               "side"
             ],
             "not": {
-              "required": [
-                "legs"
+              "anyOf": [
+                {
+                  "required": [
+                    "legs"
+                  ]
+                },
+                {
+                  "required": [
+                    "exits_only"
+                  ]
+                }
               ]
             }
           },
@@ -10343,7 +10359,9 @@
         "type": "object",
         "properties": {
           "quantity": {
-            "type": "number"
+            "type": "integer",
+            "minimum": 1,
+            "description": "The new total, filled contracts (or units) included; it must exceed the filled quantity."
           },
           "limit_price": {
             "$ref": "#/components/schemas/Money"
