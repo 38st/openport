@@ -1654,6 +1654,42 @@ TEST(PaperRecovery, EtfOptionsSettleAtTheQuarterHourOnTheClosingPrint) {
   std::filesystem::remove_all(path.parent_path());
 }
 
+TEST(PaperRecovery, EachShareDeliveryOfOneSettlementKeepsItsEquitySample) {
+  // B41: after the first of two deliveries at 16:15 the second position still awaited
+  // settlement, equity was not fully marked, and the first delivery lost its sample.
+  const auto path = paper_path();
+  auto options = paper_options(); options.paper_journal = path;
+  test::ScriptedMarket low, high;
+  low.contract = *md::parse_osi("SPY260922C00495000");
+  high.contract = *md::parse_osi("SPY260922C00498000");
+  PaperProvider provider;
+  server::Engine engine(provider, {{"SPY"}}, options); engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  provider.sink->publish(md::ContractDefinition{0, low.contract});
+  provider.sink->publish(md::ContractDefinition{1, high.contract});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", low.time, 500, 500, 500});
+  provider.sink->publish(md::OptionQuote{0, low.time, 5.4, 5.6, 1, 1});
+  provider.sink->publish(md::OptionQuote{1, low.time, 2.8, 3, 1, 1});
+  ASSERT_TRUE(wait_for([&] { return engine.metrics("SPY") && engine.metrics("SPY")->as_of == low.time; }));
+  ASSERT_EQ(write(engine, "POST", "/api/orders", order(low, "long", "5.60")).status, 201);
+  auto sell = order(high, "short", "2.80");
+  sell["side"] = "sell";
+  const auto sold = write(engine, "POST", "/api/orders", sell);
+  ASSERT_EQ(sold.status, 201) << sold.body;
+  // Both calls finish in the money on the 16:00 close and settle together at 16:15.
+  provider.sink->publish(md::UnderlyingQuote{"SPY", md::new_york_to_utc({2026, 9, 22}, 16, 0), 0, 0, 501});
+  provider.sink->publish(md::UnderlyingQuote{"SPY", low.contract.expiry_time(), 0, 0, 501});
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->positions.empty(); }));
+  ASSERT_EQ(engine.trading_view()->snapshot->stock_fills.size(), 2U);
+  std::vector<std::string> shares;
+  const auto history = read(engine, "/api/account/equity");
+  for (const auto& sample : history["samples"])
+    if (sample["fill"].is_string() && sample["fill"].get<std::string>().starts_with("s")) shares.push_back(sample["fill"]);
+  EXPECT_EQ(shares, (std::vector<std::string>{"s1", "s2"}));
+  engine.stop();
+  std::filesystem::remove_all(path.parent_path());
+}
+
 TEST(PaperRecovery, EtfOptionsSettleOnTheOfficialCloseAsRevised) {
   const auto path = paper_path();
   auto options = paper_options(); options.paper_journal = path;

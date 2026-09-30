@@ -61,6 +61,23 @@ TEST(EquityStore, TornRowsAreIgnoredWithoutLosingGoodSamples) {
   EXPECT_EQ(recovered.samples().size(), 1U);
   EXPECT_FALSE(recovered.error().empty());
 }
+TEST(EquityStore, KeepsTheFirstMarkAtTheTargetOrFloorWithinAMinute) {
+  // B25: the mark that decides an attempt is stored even when its minute has one.
+  Directory dir;
+  EquityStore store(dir.path / "history.csv");
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto at = [&](int seconds, std::string_view equity) {
+    store.append({time + seconds * md::kNanosPerSecond, 1, m(equity), m("9900"), m("10000"), m("10100"), {}, 0});
+  };
+  at(0, "10050");
+  at(15, "10060");     // the same minute and levels: dropped
+  at(30, "10109.35");  // first at or past the target: kept
+  at(45, "10110");
+  at(50, "9900");      // touches the floor: kept
+  ASSERT_EQ(store.samples().size(), 3U);
+  EXPECT_EQ(store.samples()[1].equity, m("10109.35"));
+  EXPECT_EQ(store.samples()[2].equity, m("9900"));
+}
 TEST(EquityStore, EachFillGetsItsExactMarkedEquityAndAtomicLegsShareAMark) {
   test::ScriptedMarket f;
   trading::SessionConfig c;
@@ -71,25 +88,22 @@ TEST(EquityStore, EachFillGetsItsExactMarkedEquityAndAtomicLegsShareAMark) {
   s.submit(f.limit("second", 1, "4"), f.time);
   const auto before = s.snapshot();
   f.next(); s.on_quotes({f.quote("3.80", "4", 10)}, {f.valuation()}, f.time);
+  // The mark before the executions leads, then each fill's own.
   const auto samples = fill_equity_samples(s, *before);
-  ASSERT_EQ(samples.size(), 2U);
-  EXPECT_EQ(samples[0].equity, m("99989.35"));
-  EXPECT_EQ(samples[1].equity, m("99978.70"));
-  EXPECT_EQ(samples[1].equity, s.snapshot()->equity);
-  EXPECT_EQ(samples[0].floor, m("99000"));
-  const auto with_open = fill_equity_samples(s, *before, true);
-  ASSERT_EQ(with_open.size(), 3U);
-  EXPECT_EQ(with_open[0].equity, m("100000"));
-  EXPECT_EQ(with_open[0].fill, 0U);
-  EXPECT_EQ(with_open[1].equity, samples[0].equity);
-  EXPECT_EQ(with_open[2].equity, samples[1].equity);
+  ASSERT_EQ(samples.size(), 3U);
+  EXPECT_EQ(samples[0].equity, m("100000"));
+  EXPECT_EQ(samples[0].fill, 0U);
+  EXPECT_EQ(samples[1].equity, m("99989.35"));
+  EXPECT_EQ(samples[2].equity, m("99978.70"));
+  EXPECT_EQ(samples[2].equity, s.snapshot()->equity);
+  EXPECT_EQ(samples[1].floor, m("99000"));
   test::ScriptedMarket wing; wing.contract.strike = 5010; wing.time = f.time; wing.seed(s, "2", "2.20");
   auto combo = f.market("combo"); combo.symbol.clear(); combo.legs = {{f.symbol(), trading::Side::Buy, 1}, {wing.symbol(), trading::Side::Sell, 1}};
   const auto prior = s.snapshot(); s.submit(combo, f.time);
   const auto legs = fill_equity_samples(s, *prior);
-  ASSERT_EQ(legs.size(), 2U);
-  EXPECT_EQ(legs[0].equity, legs[1].equity);
-  EXPECT_EQ(legs[1].equity, s.snapshot()->equity);
+  ASSERT_EQ(legs.size(), 3U);
+  EXPECT_EQ(legs[1].equity, legs[2].equity);
+  EXPECT_EQ(legs[2].equity, s.snapshot()->equity);
 }
 TEST(EquityStore, PreFillObservationPreservesAHighBeforeTheSameQuoteClosesThePosition) {
   test::ScriptedMarket market;
@@ -103,7 +117,7 @@ TEST(EquityStore, PreFillObservationPreservesAHighBeforeTheSameQuoteClosesThePos
   ASSERT_TRUE(session.submit(exit, market.time).decision.ok());
   const auto before = session.snapshot();
   market.next(); session.on_quotes({market.quote("7", "7.20", 10)}, {market.valuation()}, market.time);
-  const auto samples = fill_equity_samples(session, *before, true);
+  const auto samples = fill_equity_samples(session, *before);
   ASSERT_EQ(samples.size(), 2U);
   EXPECT_EQ(samples[0].equity, m("100289.35"));
   EXPECT_EQ(samples[1].equity, m("100278.70"));

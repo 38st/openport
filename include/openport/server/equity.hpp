@@ -18,14 +18,20 @@ struct EquitySample {
   std::uint64_t fill = 0;  ///< Zero for a minute sample; otherwise the fill ID.
   std::uint64_t stock_fill = 0;  ///< A share change, at its committed transaction mark.
 };
-/// Exact marked-equity changes from committed fills. include_pre_fill also emits
-/// the mark before option executions for headless drawdown measurement. Atomic combo legs share
-/// one mark. The engine calls this after each reducer transaction with fills.
+/// Exact marked-equity changes from committed fills, led by the mark before the first
+/// option execution (fill zero), which can be a new high or the equity that decided the
+/// attempt. Atomic combo legs share one mark. Each sample carries the peak, floor and
+/// tomorrow's floor the reducer held at that point. The engine calls this after each
+/// reducer transaction with fills.
 [[nodiscard]] std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session,
-    const trading::TradingSnapshot& before, bool include_pre_fill = false);
+    const trading::TradingSnapshot& before);
+/// Reads a history file as it is, for an archive: nothing is compacted or rewritten.
+/// Invalid rows are skipped and reported in `error`.
+[[nodiscard]] std::vector<EquitySample> read_equity_history(const std::filesystem::path& file, std::string& error);
 /// Engine-thread owned. Append-only CSV beside the journal, monetary values in
-/// micro-dollars, timestamps in nanoseconds. Keeps the current attempt and at
-/// most 90 days / 100,000 samples of earlier attempts. Storage failures never throw.
+/// micro-dollars, timestamps in nanoseconds. Keeps one plain mark per minute, every
+/// fill, floor changes and the first mark at or past the target or floor; the current
+/// attempt and at most 90 days / 100,000 samples of earlier attempts. Storage failures never throw.
 class EquityStore {
  public:
   explicit EquityStore(std::filesystem::path file);

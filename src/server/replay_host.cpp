@@ -268,6 +268,8 @@ class ArchivedReplay final : public MetricsSource {
     view_->config = session.config();
     view_->contracts = session.contracts();
     view_->valuations = session.valuations();
+    // The equity history beside the journal, read as it is: an archive never compacts it.
+    view_->equity_samples = read_equity_history(file.string() + ".equity.csv", view_->equity_error);
     // Replay definitions are journaled as inputs. Archives do not depend on the
     // current live catalogue or a mutable sidecar to explain historical trades.
     std::unique_ptr<Playbooks> playbooks;

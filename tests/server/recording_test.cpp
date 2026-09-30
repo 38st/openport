@@ -12,6 +12,7 @@
 
 #include "openport/providers/replay.hpp"
 #include "openport/server/engine.hpp"
+#include "openport/server/equity.hpp"
 #include "openport/server/replay_host.hpp"
 #include "openport/server/sandboxes.hpp"
 
@@ -705,6 +706,46 @@ TEST(ReplayHost, OlderJournalRecordsNeedNoReplayFieldsAndStillCompactAndRepair) 
   EXPECT_GT(repaired.bytes_cut, 0U);
   EXPECT_EQ(trading::TradingSession::recover(trading::FileJournal::read(journal.string())).snapshot_json(), expected);
   EXPECT_EQ(call(host, "GET", "/api/replay/history/older/fills").status, 200);
+}
+
+TEST(ReplayHost, FinishedRunsServeTheirEquityHistoryWithoutRewritingIt) {
+  // B22: the archive recovered the account from its journal but never read the
+  // equity history beside it, so a finished run's Dashboard had no chart.
+  using nlohmann::json;
+  test::RecordingFile file;
+  const auto replays = file.directory / "replays";
+  std::filesystem::create_directory(replays);
+  const auto journal = replays / "finished.jsonl";
+  test::ScriptedMarket market;
+  {
+    trading::TradingSession session({}, market.time, trading::FileJournal::create(journal.string()));
+    market.seed(session);
+    ASSERT_TRUE(session.submit(market.market("buy"), market.time).decision.ok());
+  }
+  const auto history = journal.string() + ".equity.csv";
+  {
+    server::EquityStore store(history);
+    store.append({market.time, 1, trading::Money::parse("100000"), {}, trading::Money::parse("100000"), {}, {}, 0});
+    store.append({market.time, 1, trading::Money::parse("99989.35"), {}, trading::Money::parse("100000"), {}, {}, 1});
+    store.append({market.time + md::kNanosPerMinute, 1, trading::Money::parse("99979.35"), {}, trading::Money::parse("100000"), {}, {}, 0});
+  }
+  { std::ofstream torn(history, std::ios::app); torn << "torn"; }
+  const auto bytes = std::filesystem::file_size(history);
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  server::ReplayHost host({{}, options, false});
+  const auto response = call(host, "GET", "/api/replay/history/finished/account/equity");
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto body = json::parse(response.body);
+  ASSERT_EQ(body["samples"].size(), 3U) << body;
+  EXPECT_EQ(body["samples"][1]["equity"], "99989.35");
+  EXPECT_EQ(body["samples"][1]["fill"], "1");
+  EXPECT_EQ(body["samples"][2]["time"], md::format_timestamp(market.time + md::kNanosPerMinute));
+  EXPECT_TRUE(body["error"].is_string());  // the torn row is reported, not repaired
+  const auto bounded = json::parse(call(host, "GET", "/api/replay/history/finished/account/equity?from=" +
+      md::format_timestamp(market.time + md::kNanosPerMinute)).body);
+  EXPECT_EQ(bounded["samples"].size(), 1U);
+  EXPECT_EQ(std::filesystem::file_size(history), bytes);
 }
 
 TEST(ReplayHost, ImportedHeaderIsListedAndRetainedInActiveReplay) {
