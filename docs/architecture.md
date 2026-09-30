@@ -127,7 +127,12 @@ uses the existing steady-clock cadence and refreshes on each batch while account
 hold positions or orders. This is the throughput-oriented path.
 
 The replay driver bypasses that queue. `ReplayBatches` reads every selected event
-in file order. Snapshot feeds drain at `SnapshotComplete`. Streams, including older
+in file order. Snapshot feeds drain at `SnapshotComplete`, and consecutive snapshots
+of one market time (a recording holds one per underlying, QQQ, SPX then SPY in the
+demo market's) form one batch: a snapshot joins the batch when its
+`SnapshotComplete` names the same time and none of its events moves the market clock
+past it. So every underlying's quotes for that time are in place before any trigger,
+fill, plan rule, playbook or equity sample runs. Streams, including older
 recordings without snapshot markers, drain at fixed integral market seconds. No
 quotes or trades are discarded. Each batch waits for the Desk and its publications
 before the driver proceeds. Analytics runs at most once per underlying per market
@@ -143,6 +148,12 @@ hash-chained `run_input` transactions; existing state schemas and older journals
 still recover. A replay needs a fresh journal. Verification reproduces the recorded
 prefix, including an intentionally stopped run, without starting Engine or HTTP.
 It compares every transaction hash, final equity and the head hash.
+
+The start input records `"driver": 2`: batches of whole market instants, with each
+underlying's quotes offered at the market time its own snapshot arrived. A run
+recorded without it verifies with the driver it was made with, one batch per
+snapshot and every current quote offered at the latest market time, so its fills and
+hashes reproduce exactly.
 
 Replay, drill and scenario journals write each line at once but sync it to disk at
 most every 250 ms, and at pause, stop, finish and teardown, so a kept run is synced

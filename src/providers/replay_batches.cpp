@@ -1,6 +1,7 @@
 #include "openport/providers/replay_batches.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -16,9 +17,9 @@ md::Timestamp market_time(const md::Event& event) {
   }, event);
 }
 }
-ReplayBatches::ReplayBatches(md::RecordingReader& reader, const md::Subscription& subscription)
+ReplayBatches::ReplayBatches(md::RecordingReader& reader, const md::Subscription& subscription, bool instants)
     : reader_(reader), symbols_(subscription.underlyings.begin(), subscription.underlyings.end()),
-      snapshots_(false) {
+      snapshots_(false), instants_(instants) {
   // Older recordings predate SnapshotComplete. They use the streaming clock
   // even when their header describes a polling provider.
   while (const auto record = reader_.next()) {
@@ -45,8 +46,9 @@ bool ReplayBatches::include(const md::Event& event) {
     }
   }, event);
 }
-std::optional<ReplayBatch> ReplayBatches::next() {
-  ReplayBatch batch;
+std::optional<ReplayBatches::Part> ReplayBatches::read() {
+  Part part;
+  auto& batch = part.batch;
   md::Timestamp end = 0;
   while (true) {
     auto record = pending_ ? std::exchange(pending_, {}) : reader_.next();
@@ -63,12 +65,32 @@ std::optional<ReplayBatch> ReplayBatches::next() {
     time_ = time;
     if (!snapshots_ && end == 0 && time > 0) end = ((time - 1) / md::kNanosPerSecond + 1) * md::kNanosPerSecond;
     batch.received = record->received;
-    const bool complete = std::holds_alternative<md::SnapshotComplete>(record->event);
+    const auto* complete = std::get_if<md::SnapshotComplete>(&record->event);
+    if (complete) part.complete = complete->ts;
     batch.events.push_back(std::move(record->event));
     if (snapshots_ && complete) break;
   }
   if (batch.events.empty()) return {};
   batch.time = snapshots_ ? time_ : std::max(time_, end);
-  return batch;
+  return part;
+}
+std::optional<ReplayBatch> ReplayBatches::next() {
+  auto part = ahead_ ? std::exchange(ahead_, {}) : read();
+  if (!part) return {};
+  // A feed polls its underlyings one after another. The next snapshot belongs to this
+  // market instant when it describes the same time and moves no event's clock past it.
+  while (instants_ && part->complete) {
+    auto following = read();
+    if (!following) break;
+    if (following->complete != part->complete || following->batch.time != part->batch.time) {
+      ahead_ = std::move(following);
+      break;
+    }
+    auto& events = part->batch.events;
+    events.insert(events.end(), std::make_move_iterator(following->batch.events.begin()),
+                  std::make_move_iterator(following->batch.events.end()));
+    part->batch.received = following->batch.received;
+  }
+  return std::move(part->batch);
 }
 }  // namespace openport::providers

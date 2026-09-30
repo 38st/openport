@@ -263,7 +263,8 @@ account-owned liquidation/auto-close orders use the same impact model.
 `fill_latency_ms` is an integer from 0 to 60,000. A positive value holds an accepted
 order until every leg has a fresh, valid quote timestamped at or after acceptance
 plus that delay. Advancing transaction time alone cannot release it. A later
-snapshot confirming an unchanged quote can qualify without replenishing its size.
+snapshot of the leg's underlying confirming an unchanged quote can qualify without
+replenishing its size; another underlying's snapshot cannot.
 On a sparse or 15-minute-delayed feed, the next quote can arrive much later than
 the configured delay. There is no wall clock or random timer in this rule.
 
@@ -337,12 +338,23 @@ remain subject to normal market-time DAY/expiry, risk and explicit cancellation 
 Snapshot providers (Cboe, Massive, ThetaData and the demo market) send only the
 quotes that changed, and end each poll of an underlying with `md::SnapshotComplete`.
 While an underlying's last complete snapshot passes that stall check, the engine
-offers every account its quotes, valuations and share price at the market time. So a
+offers every account its quotes, valuations and share price as current: valuations
+and the share price at the market time, option quotes as described next. So a
 quote that sits unchanged, such as a quiet far wing's, stays current, and so does an
 underlying whose source runs a minute or two behind the others', as Cboe's quote pages
 do. Past the tolerance they are no longer offered, age, and new orders reject; after
 a gap, such as overnight, the account waits for the next complete snapshot.
 Streaming feeds mark no snapshots, so their quotes keep the time they last changed.
+
+Current is not new. An option quote carries the market time its own underlying's
+latest snapshot arrived (or its own later timestamp), not a newer time another
+underlying's data has moved the clock to. So fill latency waits for that
+underlying's next snapshot: a QQQ poll cannot release an SPX order on the SPX quote it
+was sent against. Only once that time falls `max_quote_age` behind the market time
+does the quote follow the clock, which keeps it current until its own feed stalls.
+Fills record the quote time they used. Replays and backtests apply every underlying's
+snapshot of one market time together (see [reproducible runs](architecture.md#reproducible-runs)),
+so triggers, fills, plan rules and equity samples never see an instant half applied.
 
 **Circuit breakers** halt the whole market as the exchanges' market-wide rule does
 (NYSE Rule 7.12, which the options exchanges follow), measured on the S&P 500 (SPX, or

@@ -401,6 +401,7 @@ void Desk::start_trading() {
   if (!options_.run_input.empty()) {
     nlohmann::json start{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
         {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
+    if (options_.instant_batches) start["driver"] = 2;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
   }
@@ -793,6 +794,13 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     }
   }
   publish_circuit_breaker();
+  for (const auto& event : batch) {
+    const auto* complete = std::get_if<md::SnapshotComplete>(&event);
+    if (!complete) continue;
+    // An older snapshot arriving late vouches for nothing newer.
+    const auto latest = snapshots_.find(complete->underlying);
+    if (latest != snapshots_.end() && complete->ts >= latest->second) vouched_at_[complete->underlying] = market_time_;
+  }
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
     auto& session = *account.session;
@@ -831,6 +839,17 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         }
         return it->second;
       };
+      // Current is not new: fill latency needs a quote supplied after the order. A vouched
+      // quote is offered at the market time its own snapshot arrived (or its own newer
+      // time), so another underlying's data cannot release an order on it. Only once that
+      // is older than the freshness window allows does it follow the market time, keeping
+      // the quote current until its own feed stalls.
+      const auto offered = [&](const std::string& underlying, md::Timestamp time) {
+        if (!options_.instant_batches) return market_time_;
+        if (const auto arrived = vouched_at_.find(underlying); arrived != vouched_at_.end())
+          time = std::max(time, arrived->second);
+        return std::clamp(time, market_time_ - session.config().limits.max_quote_age, market_time_);
+      };
       std::vector<QuoteObservation> quotes;
       std::vector<Valuation> valuations;
       for (const auto& symbol : symbols) {
@@ -854,7 +873,7 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         const bool quoted = option && option->has_quote && option->quote_ts >= 0;
         const bool fresh = current(underlying);
         if (quoted && (fresh || open(underlying, option->quote_ts))) {
-          quotes.push_back({symbol, observations_[symbol], fresh ? market_time_ : option->quote_ts,
+          quotes.push_back({symbol, observations_[symbol], fresh ? offered(underlying, option->quote_ts) : option->quote_ts,
                             quote_price(option->bid), quote_price(option->ask),
                             whole_size(option->bid_size), whole_size(option->ask_size)});
         }
@@ -1203,6 +1222,7 @@ void Desk::replay_source(const std::string& input, const md::RecordingHeader& he
   book_ = analytics::ChainBook{};
   metrics_.clear();
   snapshots_.clear();
+  vouched_at_.clear();
   analysed_versions_.clear();
   discount_curves_.clear();
   discount_curve_.reset();
