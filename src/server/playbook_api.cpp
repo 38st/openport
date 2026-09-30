@@ -74,10 +74,11 @@ std::optional<ApiResponse> playbook_read(const ApiRequest& request, const Metric
       const auto value = json::parse(required(parameters, "template", "template").get<std::string>(), nullptr, false);
       if (value.is_discarded()) throw std::invalid_argument("template must be URL-encoded JSON");
       validate_template(value);
+      const auto& expiry = required(parameters, "expiry", "expiry");
       json near = nullptr, far = nullptr;
       for (const auto& slice : metrics->slices) {
         auto chain = template_chain(*metrics, slice);
-        if (chain.at("expiry").at("id") == parameters.at("expiry")) near = chain;
+        if (chain.at("expiry").at("id") == expiry) near = chain;
         if (value.contains("farExpiry") && chain.at("expiry").at("id") == value.at("farExpiry")) far = chain;
       }
       if (near.is_null()) return api_error(404, "UNKNOWN_EXPIRY", "Selected expiry unavailable");

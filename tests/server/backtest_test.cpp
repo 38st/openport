@@ -264,6 +264,25 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
   auto cashless = good; cashless["plan"] = {{"rules", json::object()}};
   try { (void)server::parse_backtest(cashless, definitions, scenarios, {}); ADD_FAILURE(); }
   catch (const std::invalid_argument& error) { EXPECT_STREQ(error.what(), "plan initial_cash is required"); }
+  // A missing seed or day field, and a rule of the wrong type, are named too.
+  for (const auto& [request, message] : std::vector<std::pair<json, std::string>>{
+           {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"scenarios", 2}}, "seed is required"},
+           {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", {{{"seed", "1"}}}}}, "day scenario is required"},
+           {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", {{{"scenario", "reversal"}}}}}, "day seed is required"},
+           {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", {{{"scenario", "reversal"}, {"seed", "1"}, {"date", 20260916}}}}}, "date must be YYYY-MM-DD"},
+           {{{"playbook", "batch@1"}, {"plan", {{"initial_cash", "1000"}, {"rules", {{"profit_target", 100}}}}}, {"scenarios", 1}, {"seed", 0}},
+            "plan rules profit_target must be a decimal string"},
+           {{{"playbook", "batch@1"}, {"plan", {{"initial_cash", "1000"}, {"rules", {{"profit_target", "100"}, {"buy_only", "yes"}}}}}, {"scenarios", 1}, {"seed", 0}},
+            "plan rules buy_only must be true or false"},
+           {{{"playbook", "batch@1"}, {"plan", {{"initial_cash", "1000"}, {"rules", {{"profit_target", "100"}, {"slippage_ticks", "1"}}}}}, {"scenarios", 1}, {"seed", 0}},
+            "plan rules slippage_ticks must be an integer"},
+           {{{"playbook", "batch@1"}, {"plan", {{"initial_cash", "1000"}, {"rules", {{"profit_target", "100"}, {"plan", 5}}}}}, {"scenarios", 1}, {"seed", 0}},
+            "plan rules plan must be text"},
+           {{{"playbook", "batch@1"}, {"plan", {{"initial_cash", "1000"}, {"rules", {{"profit_target", "100"}}}, {"fee_per_contract", 0.65}}}, {"scenarios", 1}, {"seed", 0}},
+            "plan fee_per_contract must be a decimal string"}}) {
+    try { (void)server::parse_backtest(request, definitions, scenarios, {}); ADD_FAILURE() << message; }
+    catch (const std::invalid_argument& error) { EXPECT_EQ(error.what(), message); }
+  }
   const auto custom = server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "1000"},
       {"rules", {{"profit_target", "100"}, {"max_drawdown", "50"}, {"drawdown_mode", "end_of_day"}}}}}, {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
   EXPECT_EQ(custom.config.rules.max_drawdown, Money::parse("50"));

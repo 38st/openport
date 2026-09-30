@@ -39,7 +39,13 @@ std::uint64_t seed_value(const json& value) {
   if (error != std::errc{} || end != text.data() + text.size()) throw std::invalid_argument("seed must be an unsigned 64-bit integer");
   return result;
 }
+/// A dollar amount, which the API writes as a decimal string.
+Money decimal(const json& value, const std::string& field) {
+  if (!value.is_string()) throw std::invalid_argument(field + " must be a decimal string");
+  return Money::parse(value.get<std::string>());
+}
 md::Date date_value(const json& value) {
+  if (!value.is_string()) throw std::invalid_argument("date must be YYYY-MM-DD");
   const auto text = value.get<std::string>();
   const auto parsed = md::parse_datetime(text + "T12:00:00", md::Zone::NewYork);
   if (text.size() != 10 || !parsed) throw std::invalid_argument("date must be YYYY-MM-DD");
@@ -254,14 +260,12 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     result.config.rules = preset->rules;
   } else {
     keys(plan, {"initial_cash", "rules", "fee_per_contract"});
-    const auto& cash = required(plan, "initial_cash", "plan initial_cash");
-    if (!cash.is_string()) throw std::invalid_argument("plan initial_cash must be a decimal string");
-    result.config.initial_cash = Money::parse(cash.get<std::string>());
+    result.config.initial_cash = decimal(required(plan, "initial_cash", "plan initial_cash"), "plan initial_cash");
     json rules = result.config.rules;
     if (!required(plan, "rules", "plan rules").is_object()) throw std::invalid_argument("rules must be an object");
     for (const auto& [key, value] : plan.at("rules").items()) {
       if (!rules.contains(key)) throw std::invalid_argument("Unknown plan rule: " + key);
-      if (key == "profit_target" || key == "max_drawdown" || key == "lock_balance") rules[key] = Money::parse(value.get<std::string>()).micros();
+      if (key == "profit_target" || key == "max_drawdown" || key == "lock_balance") rules[key] = decimal(value, "plan rules " + key).micros();
       else if (key == "drawdown_mode") {
         if (value != "intraday" && value != "end_of_day") throw std::invalid_argument("Unknown drawdown_mode");
         rules[key] = value == "intraday" ? trading::DrawdownMode::Intraday : trading::DrawdownMode::EndOfDay;
@@ -271,11 +275,16 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       } else if (key == "phase" || key == "payouts") throw std::invalid_argument("Funded rules are not evaluation rules");
       else {
         if (key == "expiry_cutoff" && !value.is_number_integer()) throw std::invalid_argument("expiry_cutoff must be integer nanoseconds");
+        // The rest keep their own type: text, true or false, or a whole number.
+        const auto& current = rules.at(key);
+        if (current.is_string() && !value.is_string()) throw std::invalid_argument("plan rules " + key + " must be text");
+        if (current.is_boolean() && !value.is_boolean()) throw std::invalid_argument("plan rules " + key + " must be true or false");
+        if (current.is_number() && !value.is_number_integer()) throw std::invalid_argument("plan rules " + key + " must be an integer");
         rules[key] = value;
       }
     }
     result.config.rules = rules.get<trading::AccountRules>();
-    if (plan.contains("fee_per_contract")) result.config.fee_per_contract = Money::parse(plan.at("fee_per_contract").get<std::string>());
+    if (plan.contains("fee_per_contract")) result.config.fee_per_contract = decimal(plan.at("fee_per_contract"), "plan fee_per_contract");
   }
   trading::validate_rules(result.config.rules);
   if (result.config.initial_cash <= Money{} || result.config.fee_per_contract < Money{} ||
@@ -285,7 +294,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
   json days;
   if (body.contains("scenarios")) {
     const auto count = bounded(body.at("scenarios"), 252, "scenarios");
-    const auto seed = seed_value(body.at("seed"));
+    const auto seed = seed_value(required(body, "seed", "seed"));
     if (seed > UINT64_MAX - count + 1) throw std::invalid_argument("Scenario seeds overflow");
     std::vector<providers::Scenario> selected;
     for (const auto& scenario : scenarios)
@@ -308,6 +317,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     BacktestDay day;
     if (entry.contains("file")) {
       keys(entry, {"file"});
+      if (!entry.at("file").is_string()) throw std::invalid_argument("day file must be a recording name");
       const auto name = entry.at("file").get<std::string>();
       if (confined) {
         if (recordings.empty()) throw std::invalid_argument("Recording directory is unavailable");
@@ -323,10 +333,11 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       day.date = md::trading_date(first->time);
     } else {
       keys(entry, {"scenario", "date", "seed"});
-      for (const auto& scenario : scenarios) if (entry.at("scenario") == scenario.id) day.scenario = scenario;
+      const auto& id = required(entry, "scenario", "day scenario");
+      for (const auto& scenario : scenarios) if (id == scenario.id) day.scenario = scenario;
       if (!day.scenario) throw std::invalid_argument("Unknown scenario");
       day.date = entry.contains("date") ? date_value(entry.at("date")) : day.scenario->date;
-      day.seed = seed_value(entry.at("seed"));
+      day.seed = seed_value(required(entry, "seed", "day seed"));
     }
     if (previous && day.date <= *previous) throw std::invalid_argument("Days must have distinct, increasing trading dates");
     previous = day.date;
