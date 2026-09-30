@@ -1144,9 +1144,12 @@ positive, a credit negative) and shown as the opening price is ("$0.85 db");
 return divides leg net P&L by the absolute net entry premium, or is null at zero
 premium. List filters select
 known or unknown planned risk and positive give-back. The weekday and month reports
-group closed trades by the trading date they closed on, so a close in Sunday
-evening's overnight session counts toward Monday; the calendar keeps the New York
-date.
+group closed trades by the session they closed in, as the engine's trading date does:
+a weekday's New York date until 17:00, and after that or over a weekend the next
+weekday, so a close in Sunday evening's overnight session counts toward Monday. The
+terminal knows weekdays but not market holidays, so an evening close before a holiday
+counts toward the holiday rather than the next session. The calendar keeps the New
+York date.
 
 ## Trade notes and tags
 
