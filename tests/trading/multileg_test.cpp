@@ -369,6 +369,30 @@ OrderRequest single(std::string client, const std::string& symbol, Side side, st
           1, limit ? std::optional<Money>(m(*limit)) : std::nullopt, {}, {}, {}};
 }
 
+TEST(TradingBuyingPower, BuyingBackALongThatReCoversAWorkingSellIsAllowed) {
+  Chain f;
+  AccountRules rules;
+  rules.buying_power = true;
+  TradingSession s(config("10000", rules), f.time);
+  f.define(s, {P4900, P4890, C5100});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}, {C5100, "3.00", "3.20", 0.25}});
+  ASSERT_TRUE(s.submit(single("long", P4890, Side::Buy), f.time).decision.ok());
+  // A working sell against the long reserves the width less its credit.
+  ASSERT_TRUE(s.submit(single("sell", P4900, Side::Sell, "5.60"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("440.65"));
+  // Selling the long is a close, so it is allowed; the working sell is now naked.
+  ASSERT_TRUE(s.submit(single("close", P4890, Side::Sell), f.time).decision.ok());
+  EXPECT_LT(s.snapshot()->buying_power.available, Money{});
+  // Buying the long back costs 420.65 but re-covers the working sell, which then
+  // reserves 440.65 again instead of a naked requirement: it frees buying power.
+  const auto back = s.submit(single("back", P4890, Side::Buy, "4.20"), f.time);
+  ASSERT_TRUE(back.decision.ok()) << back.decision.message;
+  EXPECT_EQ(s.snapshot()->positions.size(), 1U);
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("9117.40"));
+  // A buy that frees nothing still needs the buying power.
+  ASSERT_TRUE(s.submit(single("cover-gone", P4890, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.submit(single("unrelated", C5100, Side::Buy, "3.20"), f.time).decision.code, Reason::BUYING_POWER);
+}
 TEST(TradingBuyingPower, LeggingIntoASpreadReservesOnlyItsWidth) {
   Chain f;
   AccountRules rules;
