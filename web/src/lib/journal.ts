@@ -230,14 +230,15 @@ export function contractLabel(t: { underlying: string; expiry: string; strike: n
   return `${t.underlying} ${day} ${t.strike}${t.type === "call" ? "C" : "P"}`
 }
 
-/** Signed closing premium per strategy unit, and return on absolute net entry premium. */
+/** Net closing premium per strategy unit, signed as order prices are (positive a debit, negative a credit), and return on absolute net entry premium. */
 export function strategyResults(trades: readonly Trade[], filledUnits?: number): { close: number | null; return: number | null } {
   if (!trades.length || trades.some((t) => t.status !== "closed" || t.average_close == null)) return { close: null, return: null }
   const units = filledUnits ?? trades.reduce((n, t) => {
     const gcd = (a: number, b: number): number => b ? gcd(b, a % b) : a
     return gcd(n, t.opened_contracts)
   }, 0)
-  const close = trades.reduce((sum, t) => sum + (t.direction === "long" ? 1 : -1) * Number(t.average_close) * t.closed_contracts, 0)
+  // Closing sells a long leg, a credit, and buys back a short one, a debit.
+  const close = trades.reduce((sum, t) => sum + (t.direction === "long" ? -1 : 1) * Number(t.average_close) * t.closed_contracts, 0)
   const cost = Math.abs(trades.reduce((sum, t) => sum + (t.direction === "long" ? 1 : -1) * Number(t.cost), 0))
   return { close: units ? close / units : null, return: cost ? trades.reduce((sum, t) => sum + tradeNet(t), 0) / cost : null }
 }

@@ -66,16 +66,34 @@ describe("trade review", () => {
     const short = { ...trade, id: "2", symbol: "short", direction: "short" as const, opened_contracts: 2, closed_contracts: 2, cost: "400", average_close: "2.50", net: "-102", fills: ["b"] }
     const combo = { ...order, id: "combo", filled_quantity: 2, average_fill_price: "2", legs: [{ symbol: "long", side: "buy" as const, ratio: 1 }, { symbol: "short", side: "sell" as const, ratio: 1 }] }
     const group = tradeGroups([long, short], [{ ...fill, id: "a", order_id: "combo" }, { ...fill, id: "b", order_id: "combo" }], [combo])[0]!
-    expect(strategyResults(group.trades)).toEqual({ close: 2.5, return: .24 })
+    // Opened for a 2.00 debit; closing sells the long leg at 5 and buys the short back at 2.50, a 2.50 credit.
+    expect(strategyResults(group.trades)).toEqual({ close: -2.5, return: .24 })
     await render(<table><tbody><StrategyRow group={group} expanded={false} onToggle={() => {}} /></tbody></table>)
     const cells = [...host.querySelectorAll("td")]
-    expect(cells[7]?.textContent).toBe("$2.50")
+    expect(cells[6]?.textContent).toBe("$2.00 db")
+    expect(cells[7]?.textContent).toBe("$2.50 cr")
     expect(cells[9]?.textContent).toContain("24.0%")
     expect(strategyResults([{ ...short, cost: "800" }, { ...long, cost: "400" }]).return).toBe(.24)
     expect(strategyResults([{ ...long, status: "open" }])).toEqual({ close: null, return: null })
     expect(strategyResults([{ ...long, cost: "0" }]).return).toBeNull()
     expect(strategyResults([{ ...long, opened_contracts: 4, closed_contracts: 4 },
-      { ...short, opened_contracts: 8, closed_contracts: 8, average_close: "2" }], 2).close).toBe(2)
+      { ...short, opened_contracts: 8, closed_contracts: 8, average_close: "2" }], 2).close).toBe(-2)
+  })
+  it("states a credit spread's closing debit as a debit, as its opening credit", async () => {
+    // A bull put spread opened for a 0.50 credit and bought back for 0.85.
+    const short = { ...trade, id: "1", symbol: "short", type: "put" as const, direction: "short" as const, opened_contracts: 1, closed_contracts: 1,
+      cost: "220", average_close: "2.45", net: "-26.30", fills: ["a"] }
+    const long = { ...trade, id: "2", symbol: "long", type: "put" as const, opened_contracts: 1, closed_contracts: 1,
+      cost: "170", average_close: "1.60", net: "-11.30", fills: ["b"] }
+    const combo = { ...order, id: "combo", filled_quantity: 1, average_fill_price: "-0.50",
+      legs: [{ symbol: "short", side: "sell" as const, ratio: 1 }, { symbol: "long", side: "buy" as const, ratio: 1 }] }
+    const group = tradeGroups([short, long], [{ ...fill, id: "a", order_id: "combo" }, { ...fill, id: "b", order_id: "combo" }], [combo])[0]!
+    expect(strategyResults(group.trades).close).toBeCloseTo(.85, 9)
+    await render(<table><tbody><StrategyRow group={group} expanded={false} onToggle={() => {}} /></tbody></table>)
+    const cells = [...host.querySelectorAll("td")]
+    expect(cells[6]?.textContent).toBe("$0.50 cr")
+    expect(cells[7]?.textContent).toBe("$0.85 db")
+    expect(cells[8]?.textContent).toContain("37.60")
   })
   it("counts realised P&L and fees on partially closed strategy legs", () => {
     const open = { ...trade, status: "open" as const, closed: null, net: "40", unrealised: "30" }
