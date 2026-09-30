@@ -67,6 +67,23 @@ export function newYorkDate(iso: string): { date: string; weekday: number } | nu
   return { date: `${parts.year}-${parts.month}-${parts.day}`, weekday: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(parts.weekday ?? "") }
 }
 
+const newYorkHour = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hourCycle: "h23" })
+/**
+ * ISO timestamp -> the engine's trading date and its weekday (1 = Monday): a weekday's New York date until 17:00,
+ * when its curb session ends; after that, and over the weekend, the next weekday, whose overnight session opens that
+ * evening. So a Sunday-evening close counts toward Monday. Holidays are unknown here, so the evening before one counts
+ * toward it rather than the next session.
+ */
+export function tradingDate(iso: string): { date: string; weekday: number } | null {
+  const day = newYorkDate(iso)
+  if (!day) return null
+  const hour = Number(newYorkHour.formatToParts(Date.parse(iso)).find((p) => p.type === "hour")?.value)
+  let ahead = hour >= 17 ? 1 : 0
+  while ([0, 6].includes((day.weekday + ahead) % 7)) ahead++
+  const date = new Date(Date.parse(`${day.date}T12:00:00Z`) + ahead * 86_400_000).toISOString().slice(0, 10)
+  return { date, weekday: (day.weekday + ahead) % 7 }
+}
+
 export interface DayResult { date: string; net: number; trades: number; wins: number }
 /** Closed trades by the New York date they closed. */
 export function dailyResults(trades: readonly JournalTrade[]): Map<string, DayResult> {
@@ -117,7 +134,7 @@ const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 export interface Bucket { label: string; net: number; trades: number; wins: number; winRate: number | null }
-/** Closed trades grouped by holding time, closing weekday, closing month or tag (a trade counts under each of its tags). Shares count only without a call or put side. */
+/** Closed trades grouped by holding time, the weekday or month of the trading date they closed on (an overnight close counts toward the session's day), or tag (a trade counts under each of its tags). Shares count only without a call or put side. */
 export function tradeBuckets(trades: readonly JournalTrade[], dimension: Dimension, side: Side = "all"): Bucket[] {
   const tags = dimension === "tag" ? [...tradeTags(trades), "untagged"] : []
   const labels = dimension === "duration" ? durationBuckets.map((b) => b.label) : dimension === "weekday" ? weekdays : dimension === "month" ? months : tags
@@ -140,7 +157,7 @@ export function tradeBuckets(trades: readonly JournalTrade[], dimension: Dimensi
       const seconds = trade.duration_seconds ?? 0
       index = durationBuckets.findIndex((b) => seconds < b.max)
     } else {
-      const day = newYorkDate(trade.closed)
+      const day = tradingDate(trade.closed)
       if (!day) continue
       index = dimension === "weekday" ? day.weekday - 1 : Number(day.date.slice(5, 7)) - 1
     }

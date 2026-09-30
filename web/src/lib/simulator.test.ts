@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { quote, shareTrades, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
-import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, shareSourceLabel, tradeBuckets, tradeTags } from "./journal"
+import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, shareSourceLabel, tradeBuckets, tradeTags, tradingDate } from "./journal"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "./ticket"
 import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
 
@@ -76,6 +76,26 @@ describe("journal analytics", () => {
     expect(weekday.map((b) => b.trades)).toEqual([0, 1, 1, 0, 0])
     expect(tradeBuckets(trades, "month").find((b) => b.label === "Sep")?.trades).toBe(2)
     expect(tradeBuckets(trades, "month", "put").every((b) => b.trades === 0)).toBe(true)
+  })
+  it("counts an overnight close toward the weekday and month of the session it trades for", () => {
+    expect(tradingDate("2026-09-21T01:00:00Z")).toEqual({ date: "2026-09-21", weekday: 1 })  // Sunday 21:00 ET
+    expect(tradingDate("2026-09-22T20:59:00Z")).toEqual({ date: "2026-09-22", weekday: 2 })  // Tuesday 16:59 ET
+    expect(tradingDate("2026-09-22T21:00:00Z")).toEqual({ date: "2026-09-23", weekday: 3 })  // Tuesday 17:00 ET
+    expect(tradingDate("2026-09-25T22:00:00Z")).toEqual({ date: "2026-09-28", weekday: 1 })  // Friday 18:00 ET
+    expect(tradingDate("2026-12-01T01:00:00Z")).toEqual({ date: "2026-12-01", weekday: 2 })  // Monday 20:00 EST
+    expect(tradingDate("not a time")).toBeNull()
+    // Two closes on Sunday evening and one after midnight, all in Monday's overnight session.
+    const closed = trades.find((t) => t.status === "closed")!
+    const overnight = [{ ...closed, id: "a", closed: "2026-09-21T01:00:00Z", net: "-241.30" },
+      { ...closed, id: "b", closed: "2026-09-21T01:30:00Z", net: "-71.30" },
+      { ...closed, id: "c", closed: "2026-09-21T04:30:00Z", net: "-591.30" }]
+    const weekday = tradeBuckets(overnight, "weekday")
+    expect(weekday.map((b) => b.trades)).toEqual([3, 0, 0, 0, 0])
+    expect(weekday[0]!.net).toBeCloseTo(-903.9, 9)
+    // Wednesday 30 September at 20:30 ET trades for Thursday 1 October.
+    const month = tradeBuckets([{ ...closed, closed: "2026-10-01T00:30:00Z" }], "month")
+    expect(month.find((b) => b.label === "Oct")?.trades).toBe(1)
+    expect(month.find((b) => b.label === "Sep")?.trades).toBe(0)
   })
   it("reads tags and buckets closed trades under each of them", () => {
     expect(parseTags(" Breakout, 0DTE ,, breakout ")).toEqual(["breakout", "0dte"])
