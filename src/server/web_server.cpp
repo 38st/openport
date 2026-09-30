@@ -239,11 +239,24 @@ std::optional<std::string> websocket_authorization(std::string_view bearer, std:
   return "Bearer " + secret;
 }
 
-std::string write_mode(const WritePolicy& policy) {
-  if (!policy.token.empty() || !policy.tokens.empty() || policy.require_token || policy.sandboxes) return "token";
+namespace {
+bool loopback_bind(const WritePolicy& policy) {
   boost::system::error_code error;
   const auto address = boost::asio::ip::make_address(policy.address, error);
-  return !error && address.is_loopback() ? "open" : "disabled";
+  return !error && address.is_loopback();
+}
+/// Writes without credentials: loopback binds, unless a legacy token, --require-token
+/// or visitor sandboxes (a public demo, often behind a local proxy) close them.
+/// Named tokens alone leave them open.
+bool open_writes(const WritePolicy& policy) {
+  return loopback_bind(policy) && policy.token.empty() && !policy.require_token && !policy.sandboxes;
+}
+}  // namespace
+
+std::string write_mode(const WritePolicy& policy) {
+  if (open_writes(policy)) return "open";
+  if (!policy.token.empty() || !policy.tokens.empty() || policy.require_token || policy.sandboxes) return "token";
+  return "disabled";
 }
 
 std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy, std::string* actor, ApiAccess* access) {
@@ -257,9 +270,6 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
     return api_error(403, "ORIGIN_REJECTED", "Origin or security headers are ambiguous or not allowed");
   const bool create_sandbox = request.method == "POST" && request.target.substr(0, request.target.find('?')) == "/api/sandboxes";
   if (create_sandbox && !policy.sandboxes) return api_error(404, "NOT_FOUND", "Sandboxes are not offered");
-  boost::system::error_code address_error;
-  const auto address = boost::asio::ip::make_address(policy.address, address_error);
-  const bool loopback = !address_error && address.is_loopback();
   std::vector<std::string> scopes;
   std::string name, sandbox;
   if (!request.authorization.empty()) {
@@ -291,7 +301,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
     // cannot hide the market data; writes still reject it.
     if (name.empty() && (!read || policy.require_token))
       return api_error(403, "WRITE_TOKEN_REQUIRED", "A valid bearer token is required");
-  } else if (create_sandbox || (!policy.require_token && (read || (loopback && policy.token.empty() && !policy.sandboxes)))) {
+  } else if (create_sandbox || (!policy.require_token && read) || open_writes(policy)) {
     name = "loopback";
     scopes = {"admin"};
   } else {

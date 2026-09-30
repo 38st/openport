@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 
+#include "openport/server/sandboxes.hpp"
 #include "openport/server/web_server.hpp"
 
 namespace {
@@ -509,6 +510,29 @@ TEST(WebPolicy, EverySpellingOfTheAccountIsScopedAsTheRoutesReadIt) {
   EXPECT_EQ(form->at("flag"), "");
   EXPECT_EQ(server::query_parameters("from=2026-09-28T09:30:00+00:00")->at("from"), "2026-09-28T09:30:00+00:00");
   EXPECT_EQ(server::query_parameters("from=2026-09-28T13%3A30%3A00Z")->at("from"), "2026-09-28T13:30:00Z");
+}
+
+TEST(WebPolicy, WriteModeSaysWhetherAWriteWithoutCredentialsIsAccepted) {
+  const auto tokens = server::parse_token_file("reader read reader-secret");
+  server::Sandboxes::Options limits;
+  limits.capacity = 1;
+  const auto sandboxes = std::make_shared<server::Sandboxes>(limits);
+  server::ApiRequest order{"POST", "/api/orders"};
+  order.content_type = "application/json";
+  const std::vector<std::pair<server::WritePolicy, std::string>> cases{
+      {{"127.0.0.1", "", {}}, "open"},
+      {{"127.0.0.1", "", {}, tokens}, "open"},  // named tokens alone leave loopback writes open
+      {{"127.0.0.1", "legacy-secret", {}}, "token"},
+      {{"127.0.0.1", "", {}, tokens, true}, "token"},
+      {{"127.0.0.1", "", {}, {}, false, sandboxes}, "token"},
+      {{"0.0.0.0", "", {}}, "disabled"},
+      {{"0.0.0.0", "", {}, tokens}, "token"},
+      {{"0.0.0.0", "legacy-secret", {}}, "token"}};
+  for (const auto& [policy, mode] : cases) {
+    EXPECT_EQ(server::write_mode(policy), mode) << policy.address << " token=" << policy.token << " named=" << policy.tokens.size();
+    // A terminal reading "open" writes without a token; any other mode needs one or refuses.
+    EXPECT_EQ(!server::check_api_write(order, policy), mode == "open") << policy.address << " " << mode;
+  }
 }
 
 TEST(WebPolicy, RequireTokenProtectsLoopbackReadsAndWritesAndAttributesActors) {
