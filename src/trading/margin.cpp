@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <map>
 #include <vector>
@@ -77,26 +78,28 @@ Pairing verticals(const std::vector<const MarginLeg*>& legs, OptionType type) {
   }
   for (std::size_t j = 0; j < longs.size(); ++j) link(1 + shorts.size() + j, sink, size(*longs[j]), 0);
   // Augment along the cheapest path while it still saves something. The residual
-  // graph never has a negative cycle, so Bellman-Ford finds it.
+  // graph never has a negative cycle, so a queue-based Bellman-Ford finds it.
   constexpr auto unreached = std::numeric_limits<std::int64_t>::max();
+  std::vector<std::int64_t> distance(sink + 1);
+  std::vector<std::size_t> via(sink + 1);
+  std::vector<char> queued(sink + 1);
+  std::deque<std::size_t> queue;
   for (;;) {
-    std::vector<std::int64_t> distance(sink + 1, unreached);
-    std::vector<std::size_t> via(sink + 1, edges.size());
+    std::fill(distance.begin(), distance.end(), unreached);
     distance[source] = 0;
-    for (std::size_t round = 0; round <= sink; ++round) {
-      bool changed = false;
-      for (std::size_t node = 0; node <= sink; ++node) {
-        if (distance[node] == unreached) continue;
-        for (const auto e : out[node]) {
-          const auto& edge = edges[e];
-          if (edge.capacity > 0 && distance[node] + edge.cost < distance[edge.to]) {
-            distance[edge.to] = distance[node] + edge.cost;
-            via[edge.to] = e;
-            changed = true;
-          }
-        }
+    queue.assign(1, source);
+    queued[source] = 1;
+    while (!queue.empty()) {
+      const auto node = queue.front();
+      queue.pop_front();
+      queued[node] = 0;
+      for (const auto e : out[node]) {
+        const auto& edge = edges[e];
+        if (edge.capacity <= 0 || distance[node] + edge.cost >= distance[edge.to]) continue;
+        distance[edge.to] = distance[node] + edge.cost;
+        via[edge.to] = e;
+        if (!queued[edge.to]) { queue.push_back(edge.to); queued[edge.to] = 1; }
       }
-      if (!changed) break;
     }
     if (distance[sink] == unreached || distance[sink] >= 0) break;
     auto push = std::numeric_limits<Quantity>::max();
