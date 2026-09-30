@@ -592,6 +592,19 @@ ProjectedFill project_fill(State& after, const State& before, const OrderRequest
   }
   return result;
 }
+/// Whether filling working order `o` now, in full, would leave more buying power
+/// available than cancelling it: its fill changes what the other working orders
+/// reserve, as a long bought back re-covers a working sell that had become naked.
+bool fill_frees_power(const State& s, const Order& o) {
+  State without = s;
+  without.orders.mut(static_cast<std::size_t>(o.id - 1)).status = OrderStatus::Cancelled;
+  State filled = s;
+  auto& order = filled.orders.mut(static_cast<std::size_t>(o.id - 1));
+  order.status = OrderStatus::Filled;
+  order.filled_quantity = order.request.quantity;
+  (void)project_fill(filled, s, o.request, o.remaining());
+  return buying_power(filled).total.available > buying_power(without).total.available;
+}
 /// The personal soft floor now: an absolute level, or a share of the plan's
 /// drawdown above its floor, whichever is higher.
 std::optional<Money> soft_floor_of(const State& s) {
@@ -1028,9 +1041,9 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
     const auto power = buying_power(s, o.id);
-    if (power.focus_uses && power.total.available < Money{})
+    if (power.focus_uses && power.total.available < Money{} && !fill_frees_power(s, o))
       return {Reason::BUYING_POWER, power.focus_opening > 0 ? "Order needs more buying power than the account has available"
-                : "Closing these legs uncovers a short option; close the short legs too, or first",
+                : "Closing these legs uncovers a short option they protect; close that short too, or first",
               power.focus_reservation.dollars(), (power.total.available + power.focus_reservation).dollars(), first->underlying};
   }
   return {};
@@ -1090,10 +1103,11 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && !at_fill) {
-    // Orders that free buying power are always allowed; fills recheck against
-    // the projected ledger instead.
+    // Orders that free buying power are always allowed, including one whose fill
+    // lowers other working orders' reservations; fills recheck against the
+    // projected ledger instead.
     const auto power = buying_power(s, o.id);
-    if (power.focus_uses && power.total.available < Money{})
+    if (power.focus_uses && power.total.available < Money{} && !fill_frees_power(s, o))
       return {Reason::BUYING_POWER, power.focus_opening > 0 ? "Order needs more buying power than the account has available"
                 : "Selling this long uncovers a short option it protects; buy the short back first, or close both together as one order",
               power.focus_reservation.dollars(), (power.total.available + power.focus_reservation).dollars(), request.symbol};
