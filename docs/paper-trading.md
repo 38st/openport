@@ -1899,8 +1899,10 @@ records the reference value, canonical definition and integration
 externally when an independent provenance audit is required. The first market
 batch on a later trading date rolls the daily baseline on the finished day's closing
 marks before its own quotes are applied. When a PM position of the finished day is
-still to settle, it settles first, and when the close was not completely marked, the
-day rolls over once the new quotes complete the marks; the kill latch survives. All accounting uses effective market time, including
+still to settle, or the close was not completely marked, the day instead rolls over
+after that batch's quotes, once the position has settled and the marks are complete,
+so the finished day's P&L by Greek and that night's assignments then follow those
+quotes; the kill latch survives. All accounting uses effective market time, including
 delayed feeds, rather than HTTP receipt time.
 
 ## Tests
