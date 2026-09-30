@@ -6,7 +6,7 @@ import type { ClosePositionsResponse, Order, Position, StockHolding, TradingStat
 import { contractLabel, orderLabel } from "../lib/journal"
 import { closingAction, editableFields, flattenPlan, isOpen, orderChange, orderDraft, outcome, underlyingsOf } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
-import { extendedSession, formatMoney } from "../lib/trading"
+import { extendedSession, formatMoney, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
@@ -141,10 +141,20 @@ export function CancelAllDialog({ orders, trading, onClose, onDone }: {
   )
 }
 
-/** What a flatten did: each closing order's outcome, the shares it traded and the shares it left. */
-export function FlattenOutcome({ done }: { done: ClosePositionsResponse }) {
+/**
+ * What a flatten did: each closing order's outcome, the shares it traded and the shares
+ * it left, and, given the positions it set out to close, the longs it left covering a short.
+ */
+export function FlattenOutcome({ done, closing = [] }: { done: ClosePositionsResponse; closing?: readonly Position[] }) {
   const stockFills = done.stock_fills ?? []
   const kept = done.kept_stocks ?? []
+  // A long sells only as far as the shorts still held leave it free: a short bought back
+  // in part, or on a later quote with fill latency, keeps the long that covers it.
+  const covering = closing.flatMap((position) => {
+    if (position.quantity <= 0) return []
+    const selling = done.orders.filter((o) => o.symbol === position.symbol && o.side === "sell").reduce((sum, o) => sum + o.quantity, 0)
+    return selling < position.quantity ? [{ position, contracts: position.quantity - selling }] : []
+  })
   return (
     <>
       <ul className="space-y-1 text-sm">
@@ -166,7 +176,12 @@ export function FlattenOutcome({ done }: { done: ClosePositionsResponse }) {
           {Math.abs(stock.shares)} {stock.symbol} shares stay open: {stock.reason.message}.
         </p>
       ))}
-      {!done.orders.length && !stockFills.length && !kept.length && <p className="text-sm text-muted">No position needed closing.</p>}
+      {covering.map(({ position, contracts }) => (
+        <p key={`covering-${position.symbol}`} role="status" className="text-sm text-warn">
+          {contracts} {contractLabel(position)} stay open: they cover a short that is still held or being bought back. Flatten again once it is closed.
+        </p>
+      ))}
+      {!done.orders.length && !stockFills.length && !kept.length && !covering.length && <p className="text-sm text-muted">No position needed closing.</p>}
       <p className="text-xs text-muted">{done.cancelled_orders.length} {done.cancelled_orders.length === 1 ? "order" : "orders"} cancelled first.</p>
     </>
   )
@@ -183,17 +198,27 @@ export function FlattenDialog({ positions, stocks = [], orders, trading, initial
   const { underlyings } = useLive()
   const [scope, setScope] = useState<string | null>(initial)
   const [done, setDone] = useState<ClosePositionsResponse | null>(null)
+  // The positions it set out to close, as they were when Close was pressed.
+  const [closed, setClosed] = useState<readonly Position[]>([])
   const plan = flattenPlan(positions, orders, scope)
   const shares = stocks.filter((s) => s.shares !== 0 && (scope == null || s.symbol === scope))
   // Flattening sends market orders, which the overnight and curb sessions refuse.
   const limitOnly = [...new Set(plan.closing.map((p) => p.underlying))]
     .filter((symbol) => extendedSession(underlyings.find((u) => u.symbol === symbol)) != null)
   const waiting = positions.filter((p) => p.awaiting_settlement && (scope == null || p.underlying === scope)).length
+  // An underlying whose paper orders are refused (a stalled feed, a halt) cannot close,
+  // so the flatten leaves its positions and orders alone.
+  const closingUnderlyings = [...new Set([...plan.closing.map((p) => p.underlying), ...shares.map((s) => s.symbol)])]
+  const refused = closingUnderlyings.flatMap((symbol) => {
+    const underlying = underlyings.find((u) => u.symbol === symbol)
+    return underlying?.paper && !underlying.paper.accepting ? [{ symbol, notice: (paperNotice(symbol, underlying) ?? "").replace(/\.$/, "") }] : []
+  })
+  const cancelling = plan.cancelling.filter((o) => !refused.some((r) => r.symbol === o.underlying))
   return (
     <Dialog title={scope ? `Flatten ${scope}` : "Close all positions"} onClose={onClose}>
       {done ? (
         <div className="space-y-3">
-          <FlattenOutcome done={done} />
+          <FlattenOutcome done={done} closing={closed} />
           <button type="button" className="trade-button" onClick={onClose}>Done</button>
         </div>
       ) : (
@@ -217,18 +242,24 @@ export function FlattenDialog({ positions, stocks = [], orders, trading, initial
             </ul>}
           </>) : <p className="text-sm text-muted">No position{scope ? ` on ${scope}` : ""} can trade now.</p>}
           <p className="text-xs text-muted">
-            {plan.cancelling.length ? `${plan.cancelling.length} working ${plan.cancelling.length === 1 ? "order is" : "orders are"} cancelled first. ` : ""}
-            Each position closes with a market order at the displayed quote, short ones first so a spread never leaves a naked short.
+            {cancelling.length ? `${cancelling.length} working ${cancelling.length === 1 ? "order is" : "orders are"} cancelled first. ` : ""}
+            Each position closes with a market order at the displayed quote, short ones first so a spread never leaves a naked short:
+            a long that covers a short sells once the short is bought back.
             An order the account's rules refuse is reported and the rest still close.
           </p>
+          {refused.map(({ symbol, notice }) => <p key={symbol} role="status" className="text-sm text-warn">
+            {notice}. Its positions and orders stay as they are.</p>)}
           {waiting > 0 && <p className="text-xs text-muted">{waiting === 1 ? "1 expired position waits" : `${waiting} expired positions wait`} for settlement.</p>}
           {limitOnly.length > 0 && <p role="status" className="text-sm text-warn">
             {limitOnly.join(", ")} {limitOnly.length === 1 ? "is" : "are"} outside the regular session, which takes limit orders only.
             Close with a limit order from the position's Close button, or flatten once the regular session opens.</p>}
           <WriteAccess trading={trading} />
           <TradingError error={write.error} />
-          <button type="button" className="trade-button" disabled={!(plan.closing.length + shares.length) || limitOnly.length > 0 || write.pending || write.blocked}
-            onClick={() => void write.run(() => api.closePositions(scope, trading.write), setDone)}>
+          <button type="button" className="trade-button" disabled={!(plan.closing.length + shares.length) || limitOnly.length > 0 || refused.length === closingUnderlyings.length || write.pending || write.blocked}
+            onClick={() => {
+              const closing = plan.closing
+              void write.run(() => api.closePositions(scope, trading.write), (result) => { setClosed(closing); setDone(result) })
+            }}>
             {write.pending ? "Closing…" : `Close ${plan.closing.length + shares.length} ${plan.closing.length + shares.length === 1 ? "position" : "positions"}`}
           </button>
         </>

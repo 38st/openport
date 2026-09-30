@@ -1584,9 +1584,13 @@ The web ticket estimates fees using `fee_per_contract`; only older servers witho
 it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
 and `paper.accepting: false` disables ticket submission. In the overnight and curb
 sessions (by `paper.session`) the tickets offer limit orders only, without a condition
-or bracket, and Close all is disabled because flattening sends market orders. After a
-flatten, its dialog lists each closing order's outcome, the delivered shares it traded
-and any it left with the reason. For
+or bracket, and Close all is disabled because flattening sends market orders. The
+flatten dialog names an underlying whose paper orders are refused (a stalled feed, a
+halt), whose positions and orders the flatten leaves, and does not count its orders
+among those cancelled; Close all is disabled when that is every underlying in scope.
+After a flatten, its dialog lists each closing order's outcome, the delivered shares it
+traded and any it left with the reason, and the longs it left because they still cover
+a short. For
 older servers without `paper`, they fall back to the session-based notice and
 submission gate.
 Limit prices display cents, with buttons and arrow keys following the root's tier
