@@ -1,6 +1,9 @@
 #include "openport/providers/demo_feed.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <charconv>
+#include <csignal>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -8,6 +11,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "openport/providers/factory.hpp"
@@ -103,7 +107,8 @@ void DemoProvider::start_after(md::Timestamp recovered_time) {
 void DemoProvider::start(const md::Subscription& subscription, md::EventSink& sink) {
   if (started_) throw std::logic_error("DemoProvider::start may be called only once");
   validate(subscription);
-  auto pattern = (std::filesystem::temp_directory_path() / "openport-feed-XXXXXX").string();
+  // The process id lets a later start find and remove this after a SIGKILL.
+  auto pattern = (std::filesystem::temp_directory_path() / ("openport-feed-" + std::to_string(::getpid()) + "-XXXXXX")).string();
   const auto* created = ::mkdtemp(pattern.data());
   if (!created) throw std::runtime_error("demo: cannot create private recording directory");
   directory_ = created;
@@ -209,6 +214,33 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
   } catch (const std::exception& error) {
     sink.publish(md::ProviderStatus{time(), md::FeedState::Error, "demo: " + std::string(error.what()), ""});
   }
+}
+
+std::size_t remove_orphaned_demo_directories() {
+  std::size_t removed = 0;
+  try {
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::temp_directory_path())) {
+      const auto name = entry.path().filename().string();
+      std::string_view rest;
+      for (const std::string_view prefix : {"openport-feed-", "openport-demo-"})
+        if (std::string_view(name).starts_with(prefix)) rest = std::string_view(name).substr(prefix.size());
+      const auto dash = rest.find('-');
+      if (dash == 0 || dash == std::string_view::npos) continue;
+      pid_t pid = 0;
+      const auto [end, error] = std::from_chars(rest.data(), rest.data() + dash, pid);
+      if (error != std::errc{} || end != rest.data() + dash || pid <= 0 || pid == ::getpid()) continue;
+      struct stat info {};
+      if (::lstat(entry.path().c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::getuid()) continue;
+      // Only a process that no longer exists gives its directories up.
+      if (::kill(pid, 0) == 0 || errno != ESRCH) continue;
+      std::error_code ec;
+      std::filesystem::remove_all(entry.path(), ec);
+      if (!ec) ++removed;
+    }
+  } catch (const std::filesystem::filesystem_error&) {
+    // An unreadable temporary directory leaves nothing to clean.
+  }
+  return removed;
 }
 
 }  // namespace openport::providers

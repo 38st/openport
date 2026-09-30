@@ -637,9 +637,12 @@ rollover apply. A series stays listed until its last trade, so positions carry f
 day to day. Scenario opening levels can gap from the preceding close; the feed keeps
 the close each day actually printed rather than the one a scenario starts from.
 
-The existing generator writes each day in a private temporary directory. Replay
-pacing consumes complete snapshots; the next day generates concurrently. Played
-files are deleted, and shutdown removes the directory. Feed status names the day
+The existing generator writes each day in a private temporary directory,
+`openport-feed-PID-*` (scenario replays use `openport-demo-PID-*`). Replay pacing
+consumes complete snapshots; the next day generates concurrently. Played files are
+deleted, and shutdown removes the directory. A process killed outright cannot, so
+openportd removes such directories at startup once the process that made them is no
+longer running; a running server's and other users' are left alone. Feed status names the day
 and labels prices simulated, without an end-of-recording stop between days. The
 engine retains live accounts and write protection; Replay still runs beside it.
 

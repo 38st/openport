@@ -53,4 +53,9 @@ class DemoProvider final : public md::Provider {
   bool started_ = false;
 };
 
+/// Removes the openport-feed-PID-* and openport-demo-PID-* directories that a process
+/// no longer running left in the temporary directory, as a SIGKILL does; a running
+/// process's directories and other users' are never touched. Returns how many went.
+std::size_t remove_orphaned_demo_directories();
+
 }  // namespace openport::providers

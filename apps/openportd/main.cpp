@@ -524,6 +524,8 @@ int run(int argc, char** argv) {
   if (settings.paper_enabled && settings.paper_journal.empty())
     return usage("HOME is unavailable; specify --paper-journal or --no-paper");
   if (!demo) providers::validate_subscription(settings.provider.name, settings.subscription);
+  // A SIGKILLed run leaves its generated days behind; nothing else would remove them.
+  providers::remove_orphaned_demo_directories();
   auto provider = providers::make_provider(settings.provider);
   if (const auto* feed = dynamic_cast<providers::DemoProvider*>(provider.get())) {
     if (!settings.explicit_symbols) settings.subscription.underlyings = feed->symbols();
