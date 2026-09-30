@@ -72,13 +72,15 @@ void omit_actors(json& value) {
 }
 class ComparisonJournal final : public trading::Journal {
  public:
-  explicit ComparisonJournal(const trading::JournalRecovery& expected) : expected_(expected) {}
+  /// `attributed` is false only for a run recorded before actors, whose records carry none.
+  ComparisonJournal(const trading::JournalRecovery& expected, bool attributed)
+      : expected_(expected), attributed_(attributed) {}
   void append(md::Timestamp time, std::string_view type, std::string_view payload) override {
     auto recorded = json::parse(payload);
-    // Pre-actor runs used the same reducer and delta format. Reproduce their
-    // wire representation for hashing; attributed records stay byte-exact.
-    if (sequence_ < expected_.records.size() &&
-        !json::parse(expected_.records[sequence_].payload).contains("actor")) omit_actors(recorded);
+    // Pre-actor runs used the same reducer and delta format. Reproduce their wire
+    // representation for hashing. The choice is the whole run's: every record of an
+    // attributed run stays byte-exact, so one whose actor was removed differs.
+    if (!attributed_) omit_actors(recorded);
     json line{{"seq", sequence_ + 1}, {"time", time}, {"type", type}, {"payload", std::move(recorded)}, {"prev_hash", head_}};
     const auto hash = hash_text(line.dump());
     if (sequence_ >= expected_.records.size() || expected_.records[sequence_].hash != hash) {
@@ -93,6 +95,7 @@ class ComparisonJournal final : public trading::Journal {
   std::string error;
  private:
   const trading::JournalRecovery& expected_;
+  bool attributed_;
   std::uint64_t sequence_ = 0;
   std::string head_ = std::string(64, '0');
 };
@@ -172,7 +175,10 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     if (driver != 1 && driver != 2) throw std::runtime_error("Unsupported run driver version");
     const bool instants = driver == 2;
     auto batches = std::make_unique<providers::ReplayBatches>(*reader, subscription, instants);
-    auto comparison = std::make_shared<ComparisonJournal>(expected);
+    // Every build that writes a driver version also attributes every record, so only a
+    // driver 1 run whose first record has no actor predates actors.
+    const bool attributed = driver != 1 || json::parse(expected.records.front().payload).contains("actor");
+    auto comparison = std::make_shared<ComparisonJournal>(expected, attributed);
     Desk::Options options;
     options.replay = true;
     options.instant_batches = instants;
