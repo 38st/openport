@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -39,6 +41,16 @@ using ApiCompletion = std::function<void(ApiResponse)>;
 
 [[nodiscard]] ApiResponse api_error(int status, std::string code, std::string message,
                                     const trading::Decision& evidence = {});
+/// Splits a query ("a=1&b=2", without the "?") into percent-decoded keys and values;
+/// "+" stays "+" unless `plus_is_space` (form encoding). A pair without "=" has an
+/// empty value. nullopt when an escape is malformed or a decoded key repeats. Every
+/// route and access check parses queries here, so each reads the same keys however
+/// a client spells them: %61ccount is account (RFC 3986 equivalence).
+[[nodiscard]] std::optional<std::map<std::string, std::string>> query_parameters(std::string_view query, bool plus_is_space = false);
+/// The account a request addresses: its decoded account=ID query parameter, or the
+/// main account without one. nullopt when the query does not parse or the ID is not
+/// an account ID (lowercase letters, digits and single hyphens); refuse the request.
+[[nodiscard]] std::optional<std::string> query_account(std::string_view target);
 /// Writes enqueue on the owner thread. Never wait for completion on an I/O thread.
 void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompletion complete);
 

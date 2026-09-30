@@ -472,6 +472,45 @@ TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
   }
 }
 
+TEST(WebPolicy, EverySpellingOfTheAccountIsScopedAsTheRoutesReadIt) {
+  // Routes percent-decode query keys and values (%61 is "a"), so the scope check reads
+  // the account through the same parser and cannot be sidestepped by encoding it.
+  server::WritePolicy policy{"0.0.0.0", "", {}, server::parse_token_file("mainer trade:main mainer-secret\nbeta trade:beta beta-secret"), false};
+  const auto check = [&](std::string method, std::string path, const std::string& secret) {
+    server::ApiRequest request{std::move(method), std::move(path)};
+    request.content_type = "application/json";
+    request.authorization = "Bearer " + secret;
+    return server::check_api_write(request, policy);
+  };
+  for (const std::string path : {"/api/playbooks/staged/1/send", "/api/orders", "/api/positions/close"}) {
+    for (const auto* query : {"?account=beta", "?%61ccount=beta", "?%61%63%63ount=beta", "?account=%62eta", "?%61ccount=%62%65%74%61", "?x=1&%61ccount=beta"}) {
+      const auto refused = check("POST", path + query, "mainer-secret");
+      ASSERT_TRUE(refused) << path << query;
+      EXPECT_EQ(refused->status, 403) << path << query;
+      EXPECT_FALSE(check("POST", path + query, "beta-secret")) << path << query;
+    }
+    // Two spellings of one key are ambiguous whichever comes first, and a malformed
+    // query or account cannot fall back to the main account.
+    for (const auto* query : {"?account=main&%61ccount=beta", "?%61ccount=beta&account=main", "?account=main&account=beta",
+                              "?%zz=1&account=main", "?account=%6", "?account=Beta", "?account=", "?account"}) {
+      const auto refused = check("POST", path + query, "mainer-secret");
+      ASSERT_TRUE(refused) << path << query;
+      EXPECT_EQ(refused->status, 400) << path << query;
+    }
+    EXPECT_FALSE(check("POST", path + "?%61ccount=main", "mainer-secret")) << path;
+  }
+  EXPECT_EQ(server::query_account("/api/orders?%61ccount=%62eta"), "beta");
+  EXPECT_EQ(server::query_account("/api/orders"), "main");
+  EXPECT_EQ(server::query_account("/api/orders?status=open"), "main");
+  EXPECT_FALSE(server::query_account("/api/orders?account=main&%61ccount=main"));
+  const auto form = server::query_parameters("template=%7B%22name%22%3A%22iron+condor%22%7D&flag", true);
+  ASSERT_TRUE(form);
+  EXPECT_EQ(form->at("template"), R"({"name":"iron condor"})");
+  EXPECT_EQ(form->at("flag"), "");
+  EXPECT_EQ(server::query_parameters("from=2026-09-28T09:30:00+00:00")->at("from"), "2026-09-28T09:30:00+00:00");
+  EXPECT_EQ(server::query_parameters("from=2026-09-28T13%3A30%3A00Z")->at("from"), "2026-09-28T13:30:00Z");
+}
+
 TEST(WebPolicy, RequireTokenProtectsLoopbackReadsAndWritesAndAttributesActors) {
   server::WritePolicy policy{"127.0.0.1", "", {}, server::parse_token_file("alice read,trade:main secret"), false};
   server::ApiRequest request{"POST", "/api/orders"};

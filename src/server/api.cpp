@@ -159,22 +159,6 @@ json option_json(const analytics::OptionMetrics& o) {
   };
 }
 
-std::optional<std::map<std::string, std::string>> parse_query(std::string_view query) {
-  std::map<std::string, std::string> out;
-  while (!query.empty()) {
-    const std::size_t amp = query.find('&');
-    const std::string_view pair = query.substr(0, amp);
-    const std::size_t eq = pair.find('=');
-    const auto [it, inserted] = out.emplace(
-        std::string(pair.substr(0, eq)),
-        eq == std::string_view::npos ? std::string() : std::string(pair.substr(eq + 1)));
-    if (!inserted) return std::nullopt;
-    if (amp == std::string_view::npos) break;
-    query.remove_prefix(amp + 1);
-  }
-  return out;
-}
-
 // Strict decimal syntax before strtod: libc++ and libstdc++ streams disagree
 // on underflow. ERANGE rejects both overflow and underflow, including subnormals.
 bool decimal_number(const std::string& text, double& value) {
@@ -674,9 +658,9 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   const std::string_view target = request.target;
   const std::size_t question = target.find('?');
   const std::string_view path = target.substr(0, question);
-  const auto parsed = parse_query(question == std::string_view::npos ? std::string_view{}
-                                                                     : target.substr(question + 1));
-  if (!parsed) return error(400, "duplicate query parameter");
+  const auto parsed = query_parameters(question == std::string_view::npos ? std::string_view{}
+                                                                          : target.substr(question + 1));
+  if (!parsed) return error(400, "duplicate or malformed query parameter");
   const auto& query = *parsed;
   int expiries = 8;
   double window = 0.0;

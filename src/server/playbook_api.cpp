@@ -10,34 +10,14 @@
 namespace openport::server {
 namespace {
 using nlohmann::json;
-std::string decode(std::string_view text) {
-  std::string value;
-  for (std::size_t index = 0; index < text.size(); ++index) {
-    if (text[index] != '%') { value += text[index] == '+' ? ' ' : text[index]; continue; }
-    if (index + 2 >= text.size()) throw std::invalid_argument("Invalid query encoding");
-    unsigned int byte = 0;
-    const auto parsed = std::from_chars(text.data() + index + 1, text.data() + index + 3, byte, 16);
-    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + index + 3) throw std::invalid_argument("Invalid query encoding");
-    value += static_cast<char>(byte);
-    index += 2;
-  }
-  return value;
-}
+// The shared parser, so the access check reads the same account as these routes;
+// strategy templates arrive form-encoded, with "+" for a space.
 json query(const ApiRequest& request) {
+  const auto question = request.target.find('?');
+  const auto parameters = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1), true);
+  if (!parameters) throw std::invalid_argument("Invalid query encoding or duplicate query parameter");
   json result = json::object();
-  auto index = request.target.find('?');
-  if (index == std::string::npos) return result;
-  ++index;
-  while (index < request.target.size()) {
-    const auto end = std::min(request.target.find('&', index), request.target.size());
-    const auto pair = request.target.substr(index, end - index);
-    const auto equals = pair.find('=');
-    if (equals == std::string::npos) throw std::invalid_argument("Expected query key=value");
-    const auto key = decode(pair.substr(0, equals));
-    if (result.contains(key)) throw std::invalid_argument("Duplicate query parameter");
-    result[key] = decode(pair.substr(equals + 1));
-    index = end + 1;
-  }
+  for (const auto& [key, value] : *parameters) result[key] = value;
   return result;
 }
 std::uint64_t uint_parameter(const json& parameters, const char* key, std::uint64_t fallback) {
@@ -111,7 +91,9 @@ std::optional<ApiResponse> playbook_read(const ApiRequest& request, const Metric
     }
     strict_keys(parameters, path == "/api/account/pass-odds" ? std::initializer_list<std::string_view>{"account", "days", "samples", "seed", "playbook"} : std::initializer_list<std::string_view>{"account", "version"});
     if (path == "/api/playbooks" && parameters.contains("version")) throw std::invalid_argument("version requires a playbook ID");
-    const auto view = source.trading_view(parameters.value("account", ""));
+    const auto account = query_account(request.target);
+    if (!account) throw std::invalid_argument("account must be an account ID");
+    const auto view = source.trading_view(*account);
     if (!view || !view->snapshot) return api_error(404, "UNKNOWN_ACCOUNT", "Account unavailable");
     const auto catalogue = view->playbooks_json.empty() ? json{{"definitions", json::object()}, {"modes", json::object()}, {"staged", json::array()}, {"reasons", json::object()}, {"auto_allowed", false}} : json::parse(view->playbooks_json);
     if (path == "/api/account/pass-odds") {
@@ -175,7 +157,9 @@ bool playbook_write(const ApiRequest& request, MetricsSource& source, ApiComplet
     TradingCommand request_command;
     request_command.kind = TradingCommand::Kind::Playbook;
     request_command.actor = request.actor;
-    request_command.account = parameters.value("account", "");
+    const auto account = query_account(request.target);
+    if (!account) throw std::invalid_argument("account must be an account ID");
+    request_command.account = *account;
     request_command.note = command.dump();
     if (!source.post_trading(request_command, [complete](TradingReply reply) {
       if (!reply.error_code.empty() || !reply.decision.ok()) complete(api_error(400, "INVALID_PLAYBOOK", reply.decision.message));

@@ -272,6 +272,32 @@ TEST_F(Sandboxes, ListingsStatusTicksAndGuessedIdsRespectVisibility) {
   EXPECT_EQ(private_tick.find(id(other)), std::string::npos);
   EXPECT_EQ(json::parse(send(request("GET", "/api/status")).body)["sandboxes"]["enabled"], true);
 }
+TEST_F(Sandboxes, EncodedAccountKeysCannotReachAnotherAccountOrAHiddenSandbox) {
+  const auto own = create();
+  const auto created = send(request("POST", "/api/accounts", "operator", R"({"name":"Beta","plan":"practice"})"));
+  ASSERT_EQ(created.status, 201) << created.body;
+  policy.tokens.push_back({"mainer", {"read", "trade:main"}, "mainer-secret"});
+  // The playbook routes decode %61ccount as account; the scope check must read beta too.
+  for (const auto* query : {"?%61ccount=beta", "?account=%62eta"}) {
+    const auto refused = send(request("POST", std::string("/api/playbooks/staged/1/send") + query, "mainer-secret"));
+    EXPECT_EQ(refused.status, 403) << query << refused.body;
+    EXPECT_EQ(json::parse(refused.body)["error"]["code"], "SCOPE_REQUIRED") << query;
+  }
+  // Without a token, a sandbox stays hidden however its ID or the key is spelled.
+  const auto encoded = "%73" + id(own).substr(1);
+  for (const auto& path : {"/api/playbooks?%61ccount=" + id(own), "/api/playbooks?account=" + encoded,
+                           "/api/account/pass-odds?%61ccount=" + id(own), "/api/portfolio?%61ccount=" + id(own),
+                           "/api/account?account=" + encoded}) {
+    const auto hidden = send(request("GET", path));
+    EXPECT_EQ(hidden.status, 404) << path << hidden.body;
+    EXPECT_EQ(json::parse(hidden.body)["error"]["code"], "UNKNOWN_ACCOUNT") << path;
+  }
+  // The same spellings name the same accounts for callers entitled to them.
+  EXPECT_EQ(send(request("GET", "/api/playbooks?%61ccount=" + id(own), token(own))).status, 200);
+  EXPECT_EQ(send(request("GET", "/api/account?account=" + encoded, token(own))).status, 200);
+  EXPECT_EQ(send(request("GET", "/api/playbooks?%61ccount=beta", "operator")).status, 200);
+  EXPECT_EQ(send(request("GET", "/api/orders?%61ccount=main", token(own))).status, 403);
+}
 TEST_F(Sandboxes, OrderRateIncludesPreviewsAndEditsButExitsStayAvailable) {
   limits.orders = 2;
   configure();

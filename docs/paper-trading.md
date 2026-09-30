@@ -1360,6 +1360,9 @@ plans are refused: they start by resetting an account that passed the evaluation
 Every other trading route acts on the main account, or on another given as
 `account=<id>` in the query (reads and writes alike; a write takes no other query
 parameter). An unknown account is 404 `UNKNOWN_ACCOUNT`; a malformed one is 400.
+Every route and the token check read query keys and values percent-decoded, so
+`%61ccount=beta` is `account=beta` and needs beta's scope. A key given twice in any
+spelling, or a malformed escape, is 400.
 Without an accounts directory (`--paper-journal` empty in tests) the server keeps
 one account and account creation returns 503.
 

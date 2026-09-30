@@ -301,17 +301,12 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
   }
   const auto has = [&](std::string_view scope) { return std::find(scopes.begin(), scopes.end(), scope) != scopes.end(); };
   std::string_view path(request.target);
-  const auto question = path.find('?');
-  auto query = question == std::string_view::npos ? std::string_view{} : path.substr(question + 1);
-  path = path.substr(0, question);
-  std::string account = "main";
-  while (!query.empty()) {
-    const auto amp = query.find('&');
-    const auto pair = query.substr(0, amp);
-    if (pair.starts_with("account=")) account = std::string(pair.substr(8));
-    if (amp == std::string_view::npos) break;
-    query.remove_prefix(amp + 1);
-  }
+  path = path.substr(0, path.find('?'));
+  // The routes read the account through the same parser, so no spelling of the
+  // key or value can address an account other than the one checked here.
+  const auto addressed = query_account(request.target);
+  if (!addressed) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
+  const auto& account = *addressed;
   if (!sandbox.empty()) {
     const bool market_read = read && (path == "/ws" || path == "/api/status" || path == "/api/accounts" ||
         path == "/api/plans" || path == "/api/strategy-template" || path.starts_with("/api/underlyings/"));

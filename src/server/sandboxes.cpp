@@ -156,20 +156,13 @@ bool sandbox_visible(const AccountStatus& account, const ApiAccess& access) {
   return !account.sandbox_idle_seconds || access.admin;
 }
 std::optional<ApiResponse> sandbox_visibility(const ApiRequest& request, const MetricsSource& source) {
-  const auto question = request.target.find('?');
-  if (question == std::string::npos) return {};
-  auto query = std::string_view(request.target).substr(question + 1);
-  while (!query.empty()) {
-    const auto amp = query.find('&');
-    const auto pair = query.substr(0, amp);
-    if (pair.starts_with("account=")) {
-      for (const auto& account : source.status().accounts)
-        if (account.id == pair.substr(8) && !sandbox_visible(account, request.access))
-          return api_error(404, "UNKNOWN_ACCOUNT", "Unknown paper account");
-    }
-    if (amp == std::string_view::npos) break;
-    query.remove_prefix(amp + 1);
-  }
+  if (request.target.find('?') == std::string::npos) return {};
+  // Decoded as the routes decode it: %61ccount=sbox-... names the sandbox too.
+  const auto id = query_account(request.target);
+  if (!id) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
+  for (const auto& account : source.status().accounts)
+    if (account.id == *id && !sandbox_visible(account, request.access))
+      return api_error(404, "UNKNOWN_ACCOUNT", "Unknown paper account");
   return {};
 }
 std::string sandbox_tick(std::string message, const ApiAccess& access) {
