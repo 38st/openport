@@ -3550,7 +3550,7 @@
       "BearerToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Legacy write token is admin. Named --token-file tokens grant read, trade:ACCOUNT, trade:*, replay or admin. --require-token requires read authorization for GET and WebSocket. Without it GET is public and ignores a token that matches nothing; loopback writes without a configured legacy token remain open. Writes always check the token they carry. Browser WebSocket credentials use a subprotocol; HTTP uses Authorization: Bearer SECRET."
+        "description": "Legacy write token is admin. Named --token-file tokens grant read, trade:ACCOUNT, trade:*, replay or admin. --require-token requires read authorization for GET and WebSocket. Without it GET is public and ignores a token that matches nothing; loopback writes without a configured legacy token remain open unless --sandboxes is set. Writes always check the token they carry. Browser WebSocket credentials use a subprotocol; HTTP uses Authorization: Bearer SECRET."
       }
     },
     "parameters": {
