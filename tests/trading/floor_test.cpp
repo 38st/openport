@@ -451,6 +451,33 @@ TEST(TradingPreview, ImpactBlocksPriceTheProjectionAndTheSize) {
   ASSERT_TRUE(s.submit(f.market("26", 26), f.time).decision.ok());
   EXPECT_EQ(s.snapshot()->account.cash, m("100000") - m("2896.90"));
 }
+TEST(TradingPreview, ABracketEntryCountsItsExitsFeeReservation) {
+  ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s);
+  auto entry = f.market("bracket");
+  entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3")}, {}},
+                          ExitSpec{{}, m("6")}};
+  // 10,000 - 420 premium - 0.65 fee - 0.65 held for the exit pair.
+  const auto preview = s.preview(entry, f.time);
+  EXPECT_EQ(preview.buying_power_after, m("9578.70"));
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.available, *preview.buying_power_after);
+}
+TEST(TradingPreview, SellingHeldLongsIsMeasuredOnTheAccountNotAsNewShorts) {
+  ScriptedMarket f; f.contract = *md::parse_osi("SPXW261022P05000000");
+  TradingSession s(config(), f.time);
+  s.define(f.contract, f.time);
+  s.on_quotes({f.quote()}, {f.valuation(-0.5)}, f.time);
+  ASSERT_TRUE(s.submit(f.market("longs", 2), f.time).decision.ok());
+  // Selling both puts at 4.00 against a 4.10 mark costs 20.00 and 1.30 of fees; the account is then flat.
+  const auto close = s.preview(f.limit("close", 2, "4.00", Side::Sell), f.time);
+  EXPECT_EQ(close.max_loss_basis, "scenario_grid");
+  EXPECT_EQ(close.max_loss, m("21.30"));
+  EXPECT_FALSE(*close.breaches_floor);
+  // Selling more than is held still writes shorts, and the grid shows their risk.
+  const auto flip = s.preview(f.limit("flip", 3, "4.00", Side::Sell), f.time);
+  EXPECT_EQ(flip.max_loss_basis, "scenario_grid");
+  EXPECT_GT(*flip.max_loss, *close.max_loss);
+}
 TEST(TradingBuyingPower, AMarketOrderOnAOneSidedBookReservesTheSideItWouldTake) {
   ScriptedMarket f; auto c = config(); c.initial_cash = m("100000");
   TradingSession s(c, f.time); f.seed(s);
