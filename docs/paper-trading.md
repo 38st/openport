@@ -300,9 +300,12 @@ expiring ETF options trade on to 16:15. SPX/SPXW, XSP, VIX/VIXW and RUT/RUTW opt
 date, and in the **curb** session, 16:15 to 17:00 ET after a full day (see
 [runtime notes](runtime.md#product-sessions-and-cboe-clocks)). As on Cboe, the overnight and curb
 sessions take limit orders only; openport also leaves triggers and brackets out of
-them, so they match plain limit orders, single or multi-leg, DAY or IOC. GTC orders
-wait for the regular session. Other nonpersistent orders
-reject with `LIMIT_ONLY`, and orders between sessions with `SESSION_CLOSED`. A DAY
+them, so they match plain limit orders, single or multi-leg, DAY or IOC. GTC limits,
+including those with a trigger or a bracket, and a held spread's exits (`exits_only`)
+are accepted there, and between sessions, when the data and other checks permit, but
+they wait for the regular session: nothing matches, triggers or creates exits for them
+before it. Other market orders, triggers and brackets
+reject with `LIMIT_ONLY`, and other orders between sessions with `SESSION_CLOSED`. A DAY
 order lasts the session it was accepted in: an overnight order ends at 09:25 with
 `DAY_END` and does not carry into the regular session. It never outlasts its earliest
 leg's last trade or the account's auto-close deadline either, and its `day_end`
@@ -486,7 +489,8 @@ To attach exits to a held spread, submit its **closing** legs with `exits_only: 
 and `bracket`. No entry fill is generated. The submitted order is the take-profit
 (or the stop if there is no target); its `type`, `limit_price` or `trigger` must match
 that exit. Use GTC for its limit or IOC for its triggered market order. Both exits
-last until the nearest leg's last trade or auto-close. Every leg must oppose a held
+last until the nearest leg's last trade or auto-close. They can be attached in any
+session, and outside the regular session they wait for it. Every leg must oppose a held
 position, and `quantity * ratio` must fit the holding. For example:
 
 ```json
@@ -1428,7 +1432,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, the end of a DAY order's session (a triggered one's activation session) |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry or last-trade boundary, or pending settlement quality flag |
-| `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, triggers or brackets |
+| `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, and triggers or brackets only on GTC limits (and a held spread's exits), which wait for the regular session |
 | `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age` (a delayed feed: at least three minutes); message includes the lag behind the wall clock |
 | `REPLAY_FAST_FORWARD` | The replay is preparing its start state; wait before submitting orders or changing playback |
 | `REPLAY_STEPPING` | A lockstep step (`PUT /api/replay {"until"}`) is playing; orders wait for its response and then use the paused market time |

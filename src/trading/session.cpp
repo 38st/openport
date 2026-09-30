@@ -32,15 +32,17 @@ void event(Events& events, std::string_view type, Json payload) {
 bool regular(const md::OptionContract& c, Timestamp time) { return md::trading_session(c.root, time).name == "regular"; }
 /// Whether the contract trades now, and the order with it: every order in the
 /// regular session; plain limit orders in the overnight (global) and curb sessions.
+/// GTC limits, with or without a trigger or bracket, and a held spread's exits are
+/// accepted at any time and wait for the regular session.
 Decision session_check(const md::OptionContract& c, Timestamp time, const OrderRequest& r) {
   if (time >= c.last_trade_time())
     return failure(Reason::SESSION_CLOSED, "AM-settled series stop trading at the regular close before expiry");
-  if (r.tif == TimeInForce::Gtc && r.type == OrderType::Limit) return {};
+  if ((r.tif == TimeInForce::Gtc && r.type == OrderType::Limit) || r.exits_only) return {};
   const auto session = md::trading_session(c.root, time);
   if (!session.open) return failure(Reason::SESSION_CLOSED, "Outside the contract's trading sessions");
   if (session.name != "regular" && (r.type != OrderType::Limit || r.trigger || r.bracket))
-    return failure(Reason::LIMIT_ONLY, "The overnight and curb sessions take plain limit orders only: "
-                   "no market orders, triggers or brackets");
+    return failure(Reason::LIMIT_ONLY, "The overnight and curb sessions take plain limit orders only: no market "
+                   "orders, and triggers or brackets only on a GTC limit, which waits for the regular session");
   return {};
 }
 Timestamp session_end(const md::OptionContract& c, Timestamp time) {
@@ -69,7 +71,7 @@ bool persistent(const Order& o) {
 }
 Annotation clean_annotation(std::string note, const std::vector<std::string>& tags);
 void store_annotation(State& s, const std::string& key, Annotation annotation, Events& events);
-Decision system_check(const State& s, const Order& o);
+Decision system_check(const State& s, const Order& o, bool now = true);
 Money mid(const QuoteObservation& q) {
   // Both sides are positive. Difference-first avoids overflowing their sum.
   return *q.bid + (*q.ask - *q.bid).prorate(1, 2);
@@ -1027,7 +1029,7 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
     const auto& primary = r.bracket->take_profit ? *r.bracket->take_profit : *r.bracket->stop_loss;
     if (r.trigger != primary.trigger || r.limit_price != primary.limit_price)
       return failure(Reason::INVALID_ORDER, "Held exit terms must match the take-profit, or the stop when there is no target");
-    return system_check(s, o);
+    return system_check(s, o, false);
   }
   if (r.bracket && std::any_of(r.legs.begin(), r.legs.end(), [&](const Leg& leg) {
         const auto q = held(s, leg.symbol);
@@ -1145,14 +1147,16 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
 }
 /// Liquidation and expiry auto-close reduce risk, so only the contract,
 /// session and executable-quote gates apply, including under the kill latch.
-Decision system_check(const State& s, const Order& o) {
+/// A held spread's exits are accepted outside the regular session (`now` false)
+/// and trade in the next one.
+Decision system_check(const State& s, const Order& o, bool now) {
   if (multi_leg(o.request)) {
     if (!closing_only(s, o, false)) return failure(Reason::POSITION_CLOSED, "Exit legs no longer fit the held positions");
     std::vector<std::pair<std::string, Quantity>> legs;
     for (const auto& leg : o.request.legs) {
       const auto& c = s.contracts.at(leg.symbol);
       if (s.time >= c.last_trade_time()) return failure(Reason::EXPIRED, "An exit leg reached its last trade");
-      if (!regular(c, s.time)) return failure(Reason::SESSION_CLOSED, "Combo exits wait for the regular session");
+      if (now && !regular(c, s.time)) return failure(Reason::SESSION_CLOSED, "Combo exits wait for the regular session");
       if (auto d = quote_check(s, leg.symbol); !d.ok()) return d;
       legs.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
     }

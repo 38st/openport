@@ -801,6 +801,34 @@ TEST(TradingMultiLeg, HeldExitsValidateHoldingsAndCanModifyCancelAndCloseUnderKi
   EXPECT_EQ(s.snapshot()->recent_orders.at(static_cast<std::size_t>(stop - 1)).reason.code, Reason::OCO_FILLED);
 }
 
+TEST(TradingMultiLeg, HeldExitsCanBeAttachedOvernightAndWaitForTheRegularSession) {
+  for (const bool target : {true, false}) {
+    Chain f;
+    TradingSession s(config(), f.time);
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    ASSERT_TRUE(s.submit(combo("entry", credit_legs(), 1, {}), f.time).decision.ok());
+    f.time = md::new_york_to_utc({2026, 9, 22}, 21, 0);  // the overnight session
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    // A GTC target with a stop, or a stop alone as a triggered market order.
+    const Trigger stop{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("1.20")};
+    auto exits = target ? combo("exits", close_legs(), 1, "1.40", TimeInForce::Gtc) : combo("exits", close_legs(), 1, {});
+    exits.bracket = Bracket{ExitSpec{stop, {}}, target ? std::optional(ExitSpec{{}, m("1.40")}) : std::nullopt};
+    if (!target) exits.trigger = stop;
+    exits.exits_only = true;
+    const auto placed = s.submit(exits, f.time);
+    ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+    // Both are reached overnight (a 1.20 net), yet neither trades until the regular session.
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(s.snapshot()->recent_fills.size(), 2U);
+    EXPECT_EQ(s.snapshot()->recent_orders.at(1).status, target ? OrderStatus::Working : OrderStatus::Armed);
+    f.time = md::new_york_to_utc({2026, 9, 23}, 9, 31);
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(s.snapshot()->recent_orders.at(1).status, OrderStatus::Filled);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+  }
+}
+
 TEST(TradingMultiLeg, PlainConditionalCombosMustReduceAndNeverMatchWhileArmed) {
   Chain f;
   TradingSession s(config(), f.time);
