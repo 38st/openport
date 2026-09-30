@@ -981,6 +981,75 @@ TEST(PaperAccounts, AccountNamesCountCharactersNotBytes) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(PaperAccounts, JournalsAFullDiskLeftEmptyStartAfreshAndFailedCreatesLeaveNothing) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-empty-" + std::to_string(md::now()));
+  const auto accounts = directory / "accounts";
+  auto options = paper_options();
+  options.paper_journal = directory / "paper-journal.jsonl";
+  options.paper_accounts = accounts;
+  auto fail = std::make_shared<std::atomic<bool>>(false);
+  options.journal_io.sync = [fail](int) { return !fail->load(); };
+  // What a disk that refused every first record leaves: empty journals and a name.
+  std::filesystem::create_directories(accounts);
+  std::ofstream(options.paper_journal).close();
+  std::ofstream(accounts / "side.jsonl").close();
+  std::ofstream(accounts / "side.name") << "side\n";
+  const auto enabled = [](const json& listed) {
+    std::vector<std::string> ids;
+    for (const auto& account : listed["accounts"]) {
+      EXPECT_EQ(account["trading"]["enabled"], true) << account.dump();
+      ids.push_back(account["id"].get<std::string>());
+    }
+    return ids;
+  };
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+    // The main account starts afresh; the named one never existed, so its files go.
+    EXPECT_EQ(enabled(read(engine, "/api/accounts")), std::vector<std::string>{"main"});
+    EXPECT_EQ(read(engine, "/api/portfolio")["equity"], "100000.00");
+    EXPECT_GT(std::filesystem::file_size(options.paper_journal), 0U);
+    EXPECT_FALSE(std::filesystem::exists(accounts / "side.jsonl"));
+    EXPECT_FALSE(std::filesystem::exists(accounts / "side.name"));
+    auto created = write(engine, "POST", "/api/accounts", {{"name", "side"}, {"plan", "practice"}});
+    ASSERT_EQ(created.status, 201) << created.body;
+    EXPECT_EQ(json::parse(created.body)["account"]["id"], "side");
+    // A create whose name cannot be written, or whose first record fails, removes
+    // the journal it made, and the same name is then created as asked.
+    std::filesystem::create_directory(accounts / "probe.name");
+    auto failed = write(engine, "POST", "/api/accounts", {{"name", "Probe"}, {"plan", "practice"}});
+    EXPECT_EQ(failed.status, 503) << failed.body;
+    EXPECT_FALSE(std::filesystem::exists(accounts / "probe.jsonl"));
+    EXPECT_TRUE(std::filesystem::is_directory(accounts / "probe.name"));
+    std::filesystem::remove(accounts / "probe.name");
+    created = write(engine, "POST", "/api/accounts", {{"name", "Probe"}, {"plan", "practice"}});
+    ASSERT_EQ(created.status, 201) << created.body;
+    EXPECT_EQ(json::parse(created.body)["account"]["id"], "probe");
+    fail->store(true);
+    failed = write(engine, "POST", "/api/accounts", {{"name", "Disk"}, {"plan", "practice"}});
+    EXPECT_EQ(failed.status, 503) << failed.body;
+    EXPECT_NE(failed.body.find("JOURNAL_IO"), std::string::npos) << failed.body;
+    EXPECT_FALSE(std::filesystem::exists(accounts / "disk.jsonl"));
+    EXPECT_FALSE(std::filesystem::exists(accounts / "disk.name"));
+    fail->store(false);
+    created = write(engine, "POST", "/api/accounts", {{"name", "Disk"}, {"plan", "practice"}});
+    ASSERT_EQ(created.status, 201) << created.body;
+    EXPECT_EQ(json::parse(created.body)["account"]["id"], "disk");
+    engine.stop();
+  }
+  {
+    PaperProvider provider;
+    server::Engine engine(provider, {{"SPX"}}, options);
+    engine.start();
+    ASSERT_TRUE(wait_for([&] { return engine.trading_view("side") != nullptr; }));
+    EXPECT_EQ(enabled(read(engine, "/api/accounts")), (std::vector<std::string>{"main", "disk", "probe", "side"}));
+    engine.stop();
+  }
+  std::filesystem::remove_all(directory);
+}
+
 TEST(PaperAccounts, AServerWithoutAnAccountsDirectoryKeepsOneAccount) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());

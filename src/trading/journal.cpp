@@ -79,6 +79,13 @@ int open_locked(const std::string& path, bool create) {
           "' is in use by another openportd; use --paper-journal to choose another file or --no-paper");
     io("Cannot lock paper journal '" + path + "': " + std::strerror(error));
   }
+  // The lock's holder may have removed an empty journal between this open and the
+  // lock: writing to the file the path no longer names would lose every record.
+  struct stat named {};
+  if (::stat(path.c_str(), &named) != 0 || named.st_dev != info.st_dev || named.st_ino != info.st_ino) {
+    ::close(fd);
+    io("Journal '" + path + "' was removed or replaced while opening it");
+  }
   return fd;
 }
 }  // namespace
@@ -149,17 +156,17 @@ JournalRepair FileJournal::repair(const std::string& path) {
   const int fd = open_locked(path, false);
   struct Close { int fd; ~Close() { ::close(fd); } } close{fd};
   const auto contents = read_file(path);
-  if (!verify_journal(contents).truncated_final_line) return {};
+  if (!verify_journal(contents).truncated_final_line) return {0, {}, contents.empty()};
+  // A torn first record, the journal's only content, leaves an empty journal: it
+  // held no transaction, so its account starts afresh.
   const auto end = contents.rfind('\n');
-  if (end == std::string::npos)
-    corrupt("The journal holds no complete record; move it aside to start the account afresh");
-  const std::size_t keep = end + 1;
+  const std::size_t keep = end == std::string::npos ? 0 : end + 1;
   char stamp[32];
   const std::time_t now = std::time(nullptr);
   std::tm utc{};
   ::gmtime_r(&now, &utc);
   std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", &utc);
-  JournalRepair result{contents.size() - keep, path + ".torn-" + stamp};
+  JournalRepair result{contents.size() - keep, path + ".torn-" + stamp, keep == 0};
   const int copy = ::open(result.backup.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (copy < 0) io("Cannot create " + result.backup + ": " + std::strerror(errno));
   std::size_t done = 0;

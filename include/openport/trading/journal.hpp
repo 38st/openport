@@ -28,6 +28,7 @@ struct JournalRecovery {
 struct JournalRepair {
   std::size_t bytes_cut = 0;  ///< the torn final line's length; 0 when the journal was whole
   std::string backup;         ///< where the original was copied, when a line was cut
+  bool empty = false;         ///< it holds no record now, so its account starts afresh
 };
 
 /// Optional durable sink; all other trading components are filesystem-free.
@@ -48,7 +49,8 @@ class Journal {
 
 /// Exclusive single-writer file, O_EXCL on creation, immediate writes with optional
 /// batched syncs. Single owner: append and flush must not run concurrently.
-/// Non-blocking flock excludes other opens (including in this process) until destruction.
+/// Non-blocking flock excludes other opens (including in this process) until destruction,
+/// and an open fails if the path stops naming the file it locked (a holder removed it).
 /// Resume requires a clean verified file. A torn suffix is never silently erased.
 class FileJournal final : public Journal {
  public:
@@ -70,8 +72,9 @@ class FileJournal final : public Journal {
   static JournalRecovery read(const std::string& path, std::string_view expected_head = {});
   /// Cuts a torn final line, as a write the disk ran out for leaves, off a journal so
   /// that it resumes, after copying the original beside it as FILE.torn-YYYYMMDDTHHMMSSZ.
-  /// It takes the writer's lock, so openportd must be stopped. A journal that verifies
-  /// is left alone; damage before the last line throws JOURNAL_CORRUPT, changing nothing.
+  /// A torn first record leaves the journal empty. It takes the writer's lock, so
+  /// openportd must be stopped. A journal that verifies is left alone; damage before
+  /// the last line throws JOURNAL_CORRUPT, changing nothing.
   static JournalRepair repair(const std::string& path);
   /// Deletes a journal whatever its contents, torn or edited ones included, under the
   /// writer's lock: a file another open is writing throws JOURNAL_LOCKED and stays.

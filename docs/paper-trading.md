@@ -1334,6 +1334,18 @@ full disk stops trading without tearing the journal. If a write is torn anyway, 
 refuses the journal until, with openportd stopped, `openportd --repair-journals` cuts
 the torn last line off it and each account journal beside it, keeping the original as
 `FILE.torn-YYYYMMDDTHHMMSSZ`; damage before the last line is reported and left alone.
+
+An account exists from its journal's first record, its `session_start`. A new journal
+whose first record the disk refused (or that a crash cut off before it) is empty, or
+holds only that torn line, which the repair cuts off: it holds no transaction, so
+nothing is lost by starting over. After freeing space, the main account starts
+afresh on its empty journal; startup removes a named account's empty journal and its
+name file, so the name can be created again. A failed `POST /api/accounts` removes
+the journal and name file it made, and a replay that fails to start removes its
+run's files, so neither leaves an account or history entry behind. The repair
+reports an empty journal as `empty, holds no transaction`. Opening a journal also
+checks, once it holds the lock, that the path still names the file it locked, so a
+writer never appends to one another process removed.
 An append failure throws `JOURNAL_IO`, leaves the prior account/orders visible, sets the
 snapshot's `journal_failed` flag, and refuses every subsequent command. The disk
 outcome can be indeterminate after a failed write/sync: **stop trading and recover**;
@@ -1811,7 +1823,10 @@ it. `--paper-cash` defaults to `100000` and `--paper-fee` to
 `0.65`. These seed new journals; recovery restores the recorded configuration. The
 fee also seeds every new named account and visitor sandbox, whose cash and rules
 come from their plan.
-Existing files are verified, exclusively locked and resumed. A corrupt, torn, locked
+Existing files are verified, exclusively locked and resumed; an empty one holds no
+transaction and starts the main account afresh (see
+[Journal, recovery and failure handling](#journal-recovery-and-failure-handling)).
+A corrupt, torn, locked
 or unwritable journal disables its account's writes with 503 `TRADING_UNAVAILABLE`
 and a status reason; other accounts carry on. They are never overwritten or silently replaced by an ephemeral
 account. A runtime journal failure preserves the last committed account and

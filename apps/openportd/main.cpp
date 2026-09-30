@@ -251,11 +251,13 @@ int repair_journals(const std::filesystem::path& journal, const std::filesystem:
   for (const auto& file : files) {
     try {
       const auto repaired = trading::FileJournal::repair(file.string());
+      // An empty journal held no transaction: its account starts afresh.
       if (repaired.bytes_cut == 0) {
-        std::printf("%s: whole\n", file.c_str());
+        std::printf("%s: %s\n", file.c_str(), repaired.empty ? "empty, holds no transaction" : "whole");
       } else {
-        std::printf("%s: cut a torn last line (%zu bytes); the original is %s\n", file.c_str(),
-                    repaired.bytes_cut, std::filesystem::path(repaired.backup).filename().c_str());
+        std::printf("%s: cut a torn last line (%zu bytes)%s; the original is %s\n", file.c_str(),
+                    repaired.bytes_cut, repaired.empty ? ", leaving no transaction" : "",
+                    std::filesystem::path(repaired.backup).filename().c_str());
       }
     } catch (const std::exception& error) {
       failed = true;
