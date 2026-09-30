@@ -123,6 +123,31 @@ TEST(Backtest, EndOfDayFloorsRatchetAcrossRealAccountDays) {
   EXPECT_EQ(recovery.snapshot()->evaluation.floor, request.config.initial_cash + Money::parse("77.40") - Money::parse("500"));
   EXPECT_EQ(report.at("attempts")[0].at("pnl"), "154.80");
 }
+TEST(Backtest, EntryReasonsGiveWhatBlockedEntriesInsideTheWindow) {
+  // B47: the reasons were read at the end of the input, after every window had closed,
+  // so each day said only "Outside entry window".
+  test::RecordingFile storage;
+  auto request = request_for({recorded_day(storage.directory, {2026, 9, 14})});
+  // A dollar of floor room fits no spread.
+  request.config.rules.max_drawdown = Money::parse("1");
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(request, storage.directory / "reasons", cancel);
+  ASSERT_EQ(report.at("status"), "completed") << report.dump();
+  const auto& day = report.at("days")[0];
+  EXPECT_TRUE(day.at("fills").empty());
+  EXPECT_EQ(day.at("ended"), md::format_timestamp(md::new_york_to_utc({2026, 9, 14}, 9, 32)));
+  EXPECT_EQ(day.at("entry_reasons"), json({{"batch:SPX", "No units fit buying power, limits and floor room"}})) << day.dump();
+  EXPECT_EQ(report.at("attempts")[0].at("entry_reasons"), day.at("entry_reasons"));
+  // A day whose window never opens still says so.
+  auto closed = catalogue();
+  closed["definitions"]["batch"]["versions"][0]["window"]["weekdays"] = {2, 3, 4, 5};
+  auto monday = server::parse_backtest({{"playbook", "batch@1"}, {"plan", "eod-50k"},
+      {"days", {{{"file", (storage.directory / "2026-09-14.oprec").string()}}}}}, closed, {}, {}, false);
+  monday.analytics.fallback_rate = 0;
+  const auto skipped = server::run_backtest(monday, storage.directory / "closed", cancel);
+  ASSERT_EQ(skipped.at("status"), "completed") << skipped.dump();
+  EXPECT_EQ(skipped.at("days")[0].at("entry_reasons"), json({{"batch:SPX", "Outside entry window"}}));
+}
 TEST(Backtest, GeneratedDaysMatchSingleReplayAndParallelReportsAreByteIdentical) {
   test::RecordingFile storage;
   auto definitions = catalogue();

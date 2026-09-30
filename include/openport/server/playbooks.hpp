@@ -7,6 +7,8 @@
 #include "openport/server/paper.hpp"
 
 namespace openport::server {
+/// The reason an evaluation outside a playbook's entry window gives.
+inline constexpr std::string_view kOutsideEntryWindow = "Outside entry window";
 struct PlaybookInputs {
   double spot = analytics::kNaN, prior_close = analytics::kNaN, day_open = analytics::kNaN;
   double iv_rank = analytics::kNaN, vrp = analytics::kNaN, term_ratio = analytics::kNaN;
@@ -49,7 +51,8 @@ class Playbooks {
   std::filesystem::path file_;
   Json catalogue_ = {{"schema", 1}, {"definitions", Json::object()}, {"modes", Json::object()}};
   std::map<std::string, Json> staged_, reasons_;
-  std::map<std::string, md::Date> dismissed_;
+  /// Setups suppressed for a New York day, with the reason shown meanwhile.
+  std::map<std::string, std::pair<md::Date, std::string>> suppressed_;
   std::uint64_t revision_ = 0;
 };
 }
