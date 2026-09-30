@@ -157,8 +157,9 @@ its final marked positions remain in the journal.
 
 The terminal opens finished runs read-only in Journal and Dashboard, with replay
 and simulated/recording labels. The account switcher also lists them. Their routes
-are `/api/replay/history/ID/account`, `/portfolio`, `/trades` and `/fills`; they do
-not become live accounts. `DELETE /api/replay/history/ID` removes the journal and
+are `/api/replay/history/ID/account`, `/account/equity`, `/portfolio`, `/trades` and
+`/fills`; they do not become live accounts. The equity history is read from the
+`ID.jsonl.equity.csv` beside the journal and never rewritten. `DELETE /api/replay/history/ID` removes the journal and
 metadata; the terminal asks for confirmation. A running run cannot be deleted.
 The archive contains account history, not a persisted copy of the replay's chart
 or analytics book.

@@ -152,6 +152,97 @@ TEST(Desk, AnalyticsInputsAndEquityHooksUseExplicitMarketTime) {
   EXPECT_EQ(samples.back().equity, reply.view->snapshot->equity);
 }
 
+/// A desk whose main account keeps its equity history beside a journal, fed one
+/// SPX call's quotes at explicit market times.
+struct EquityDesk {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  std::unique_ptr<server::Desk> desk;
+  explicit EquityDesk(const trading::SessionConfig& paper) {
+    server::Desk::Options options;
+    options.analytics.fallback_rate = 0;
+    options.paper = paper;
+    options.paper.limits.aggregate = {1e9, 1e9};
+    options.paper.limits.per_underlying = {1e9, 1e9};
+    options.paper_journal = file.directory / "main.jsonl";
+    desk = std::make_unique<server::Desk>("test", md::Capabilities{}, md::Subscription{{"SPX"}}, options);
+    desk->start_trading();
+  }
+  void quotes(md::Timestamp time, double bid, double ask) {
+    market.time = time;
+    desk->replay_batch({md::ContractDefinition{0, market.contract}, md::UnderlyingQuote{"SPX", time, 5000, 5000, 5000},
+                        md::OptionQuote{0, time, bid, ask, 20, 20}, md::SnapshotComplete{"SPX", time}}, time);
+  }
+  void buy(trading::Quantity quantity) {
+    server::TradingCommand request;
+    request.order = market.market("buy-" + std::to_string(market.time), quantity);
+    const auto reply = command(*desk, request, market.time, market.time);
+    ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+  }
+  std::shared_ptr<const trading::TradingSnapshot> snapshot() const { return desk->trading_view()->snapshot; }
+  const std::vector<server::EquitySample>& samples() const { return desk->trading_view()->equity_samples; }
+};
+
+TEST(DeskEquity, APassedAttemptsHistoryHoldsThePassingEquityAndTomorrowsFloorStopsRising) {
+  // B25: the transaction that passed also liquidated at the bid, and only the fill's
+  // lower equity was stored, so the chart of a passed day never reached its target.
+  // B27: once decided, an end-of-day attempt's floor no longer ratchets at rollover.
+  for (const auto mode : {trading::DrawdownMode::Intraday, trading::DrawdownMode::EndOfDay}) {
+    trading::SessionConfig paper;
+    paper.initial_cash = Money::parse("10000");
+    paper.rules.profit_target = Money::parse("100");
+    paper.rules.max_drawdown = Money::parse("100");
+    paper.rules.drawdown_mode = mode;
+    EquityDesk f(paper);
+    f.quotes(md::new_york_to_utc({2026, 9, 22}, 10, 0), 4.00, 4.20);
+    f.buy(1);
+    const auto pass = md::new_york_to_utc({2026, 9, 22}, 10, 0) + 15 * md::kNanosPerSecond;
+    f.quotes(pass, 5.20, 5.40);
+    f.quotes(md::new_york_to_utc({2026, 9, 22}, 10, 1), 5.20, 5.40);
+    const auto e = f.snapshot()->evaluation;
+    ASSERT_EQ(e.status, trading::EvaluationStatus::Passed);
+    ASSERT_EQ(e.decided_equity, Money::parse("10109.35"));
+    EXPECT_EQ(f.snapshot()->equity, Money::parse("10098.70"));  // sold at the 5.20 bid
+    const auto& samples = f.samples();
+    const auto passing = std::find_if(samples.begin(), samples.end(), [&](const server::EquitySample& s) {
+      return s.time == pass && s.fill == 0 && s.equity == e.decided_equity;
+    });
+    ASSERT_NE(passing, samples.end());
+    EXPECT_EQ(passing->target, Money::parse("10100"));
+    std::size_t later = 0;
+    for (const auto& sample : samples) {
+      if (sample.time < pass) continue;
+      ++later;
+      if (mode == trading::DrawdownMode::EndOfDay) EXPECT_EQ(sample.tomorrow_floor, sample.floor);
+      else EXPECT_FALSE(sample.tomorrow_floor);
+    }
+    EXPECT_GE(later, 3U);  // the passing mark, the liquidation fill and 10:01
+  }
+}
+
+TEST(DeskEquity, ARolloverLiquidationIsStoredUnderTheRatchetedFloor) {
+  // B26: the end-of-day ratchet and the liquidation it caused share the rollover
+  // transaction, and the fill's sample carried the previous day's peak and floor.
+  trading::SessionConfig paper;
+  paper.initial_cash = Money::parse("10000");
+  paper.rules.max_drawdown = Money::parse("100");
+  paper.rules.drawdown_mode = trading::DrawdownMode::EndOfDay;
+  EquityDesk f(paper);
+  f.quotes(md::new_york_to_utc({2026, 9, 22}, 10, 0), 4.00, 4.20);
+  f.buy(5);
+  f.quotes(md::new_york_to_utc({2026, 9, 22}, 15, 59), 4.40, 4.60);  // closes at 10,146.75
+  f.quotes(md::new_york_to_utc({2026, 9, 23}, 9, 30), 4.00, 4.20);
+  const auto snapshot = f.snapshot();
+  ASSERT_EQ(snapshot->evaluation.status, trading::EvaluationStatus::Failed);
+  ASSERT_EQ(snapshot->recent_fills.size(), 2U);
+  const auto& samples = f.samples();
+  const auto liquidation = std::find_if(samples.begin(), samples.end(), [](const server::EquitySample& s) { return s.fill == 2; });
+  ASSERT_NE(liquidation, samples.end());
+  EXPECT_EQ(liquidation->peak, Money::parse("10146.75"));
+  EXPECT_EQ(liquidation->floor, Money::parse("10046.75"));
+  EXPECT_EQ(liquidation->tomorrow_floor, liquidation->floor);
+}
+
 void write_stream(const std::filesystem::path& file, bool snapshots) {
   test::ScriptedMarket market;
   auto header = test::recording_header();

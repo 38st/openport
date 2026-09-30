@@ -933,9 +933,15 @@ marked equity contributes, and ties keep the first time. `closest_floor` is the
 smallest equity minus floor observed during the attempt, with `closest_floor_at`.
 Older records leave these values null and times absent rather than inventing history.
 
-The engine stores marked equity once per market minute, at every fill and when the
-floor changes. Atomic spread legs share their post-execution equity. Share deliveries and closes
-use their committed transaction mark. History is
+The engine stores marked equity once per market minute, at every fill, when the
+floor changes and when equity first reaches the target or the floor. Atomic spread legs
+share their post-execution equity. When one update both marks equity and executes
+(a pass or breach liquidating at the bid, an exit on a new high), the mark before the
+execution is kept at the same time, so a passed attempt's history reaches the equity
+that passed it and a trailing floor's new level shows where it was set. Share
+deliveries and closes use their committed transaction mark; when several positions
+settle at one time, their deliveries share the first fully marked equity after them.
+History is
 appended beside each journal as `<journal>.equity.csv`, reloaded on start and compacted
 to the current attempt plus at most 90 days and 100,000 samples from older attempts.
 The CSV columns are nanosecond timestamp, attempt, equity micros, floor micros, peak
@@ -950,7 +956,10 @@ inclusive UTC ISO timestamps; `account=ID` selects an account. Each sample carri
 `time`, trading `day`, `attempt`, `equity`, `floor`, `peak`, `target`, `tomorrow_floor`
 and `fill` (share IDs start with `s`). The Dashboard keeps its daily chart and adds a day-selectable intraday
 chart, with gaps, ratchet markers and the target. End-of-day plans also show the floor
-that would apply tomorrow if the day ended at that sample.
+that would apply tomorrow if the day ended at that sample; once the attempt is decided
+or the floor is locked, that is the floor itself, since rollover no longer moves it. A
+finished replay serves its history read-only at
+`GET /api/replay/history/ID/account/equity`.
 
 ### Funded accounts and payouts
 

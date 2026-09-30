@@ -38,7 +38,7 @@ EquitySample parse(std::string text) {
   return sample;
 }
 }
-std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session, const trading::TradingSnapshot& before, bool include_pre_fill) {
+std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session, const trading::TradingSnapshot& before) {
   const auto after = session.snapshot();
   if (!after->valuation_complete || after->journal_failed || after->evaluation.attempt != before.evaluation.attempt) return {};
   const auto first = before.recent_fills.size();
@@ -55,94 +55,77 @@ std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& ses
     total = total + change;
   }
   auto equity = after->equity - total;
-  auto peak = before.evaluation.peak;
-  auto floor = before.evaluation.floor;
   const auto& rules = session.config().rules;
-  bool decided = before.evaluation.status != trading::EvaluationStatus::Active;
-  const auto ratchet = [&] {
-    if (!decided && rules.evaluation() && rules.drawdown_mode == trading::DrawdownMode::Intraday) {
-      peak = std::max(peak, equity);
-      if (rules.max_drawdown > Money{}) {
-        floor = peak - rules.max_drawdown;
-        if (rules.lock_balance > Money{}) floor = std::min(floor, rules.lock_balance);
-      }
+  // The rule state the fills met, observed as the reducer does. An end-of-day peak and
+  // floor move only at rollover, which comes before the fills of its own transaction;
+  // an intraday peak follows the marks from the state before.
+  const auto& ratcheted = rules.drawdown_mode == trading::DrawdownMode::EndOfDay ? after->evaluation : before.evaluation;
+  trading::Evaluation state;
+  state.starting_balance = after->evaluation.starting_balance;
+  state.peak = ratcheted.peak;
+  state.floor = ratcheted.floor;
+  state.floor_locked = ratcheted.floor_locked;
+  state.status = before.evaluation.status;
+  const auto observe = [&] { state.status = trading::evaluate_equity(state, rules, equity); };
+  const auto sample = [&](md::Timestamp time, const trading::Evaluation& e, Money value) {
+    EquitySample result;
+    result.time = time; result.attempt = after->evaluation.attempt; result.equity = value; result.peak = e.peak;
+    if (rules.max_drawdown > Money{}) {
+      result.floor = e.floor;
+      if (rules.drawdown_mode == trading::DrawdownMode::EndOfDay) result.tomorrow_floor = trading::evaluation_tomorrow_floor(e, rules, value);
     }
-    if ((rules.max_drawdown > Money{} && equity <= floor) ||
-        (rules.profit_target > Money{} && equity >= after->evaluation.starting_balance + rules.profit_target)) decided = true;
+    if (rules.profit_target > Money{}) result.target = e.starting_balance + rules.profit_target;
+    return result;
   };
-  ratchet();
+  observe();
   std::vector<EquitySample> result;
-  // Optional observation for headless drawdown measurement: a quote can mark a
-  // new high and trigger an exit in the same transaction. Preserve that mark
-  // before subtracting the committed fills' spread and fees.
-  if (include_pre_fill && first < after->recent_fills.size()) {
-    EquitySample sample;
-    sample.time = after->recent_fills[first].time;
-    sample.attempt = after->evaluation.attempt;
-    sample.equity = equity;
-    sample.peak = peak;
-    if (rules.max_drawdown > Money{}) sample.floor = floor;
-    result.push_back(sample);
-  }
+  // A quote can mark a new high, or decide the attempt, and execute in the same
+  // transaction: keep that mark before subtracting the committed fills' spread and fees.
+  if (first < after->recent_fills.size()) result.push_back(sample(after->recent_fills[first].time, state, equity));
   for (auto i = first; i < after->recent_fills.size();) {
     auto end = i + 1;
     const auto& fill = after->recent_fills[i];
     const auto& order = after->recent_orders.at(static_cast<std::size_t>(fill.order_id - 1));
     if (trading::multi_leg(order.request)) end = std::min(after->recent_fills.size(), i + order.request.legs.size());
     for (auto j = i; j < end; ++j) equity = equity + changes[j - first];
-    ratchet();
+    observe();
     for (; i < end; ++i) {
-      EquitySample sample;
-      sample.time = after->recent_fills[i].time; sample.attempt = after->evaluation.attempt;
-      sample.equity = equity; sample.peak = peak; sample.fill = after->recent_fills[i].id;
-      if (rules.max_drawdown > Money{}) {
-        sample.floor = floor;
-        if (rules.drawdown_mode == trading::DrawdownMode::EndOfDay) {
-          auto tomorrow = std::max(peak, equity) - rules.max_drawdown;
-          if (rules.lock_balance > Money{}) tomorrow = std::min(tomorrow, rules.lock_balance);
-          sample.tomorrow_floor = std::max(floor, tomorrow);
-        }
-      }
-      if (rules.profit_target > Money{}) sample.target = after->evaluation.starting_balance + rules.profit_target;
-      result.push_back(sample);
+      auto leg = sample(after->recent_fills[i].time, state, equity);
+      leg.fill = after->recent_fills[i].id;
+      result.push_back(leg);
     }
   }
   // Deliveries can also remove an option at intrinsic value; use the committed
   // transaction mark for these atomic share changes, including manual closes.
   for (auto i = before.stock_fills.size(); i < after->stock_fills.size(); ++i) {
     const auto& fill = after->stock_fills[i];
-    EquitySample sample;
-    sample.time = fill.time; sample.attempt = after->evaluation.attempt;
-    sample.equity = after->equity; sample.peak = after->evaluation.peak; sample.stock_fill = fill.id;
-    if (rules.max_drawdown > Money{}) {
-      sample.floor = after->evaluation.floor;
-      if (rules.drawdown_mode == trading::DrawdownMode::EndOfDay) {
-        auto tomorrow = std::max(sample.peak, sample.equity) - rules.max_drawdown;
-        if (rules.lock_balance > Money{}) tomorrow = std::min(tomorrow, rules.lock_balance);
-        sample.tomorrow_floor = std::max(*sample.floor, tomorrow);
-      }
-    }
-    if (rules.profit_target > Money{}) sample.target = after->evaluation.starting_balance + rules.profit_target;
-    result.push_back(sample);
+    auto change = sample(fill.time, after->evaluation, after->equity);
+    change.stock_fill = fill.id;
+    result.push_back(change);
   }
   return result;
 }
-EquityStore::EquityStore(std::filesystem::path file) : file_(std::move(file)) {
+std::vector<EquitySample> read_equity_history(const std::filesystem::path& file, std::string& error) {
+  std::vector<EquitySample> samples;
   try {
-    if (!std::filesystem::exists(file_)) return;
-    std::ifstream input(file_);
+    if (!std::filesystem::exists(file)) return samples;
+    std::ifstream input(file);
     if (!input) throw std::runtime_error("cannot read equity history");
     std::string text;
     while (std::getline(input, text)) {
-      ++lines_;
       // A torn trailing row is ignored; earlier complete rows stay usable.
       try {
         auto sample = parse(text);
-        if (samples_.empty() || sample.time >= samples_.back().time) samples_.push_back(std::move(sample));
-      } catch (const std::exception&) { error_ = "equity: ignored an invalid row"; }
+        if (samples.empty() || sample.time >= samples.back().time) samples.push_back(std::move(sample));
+      } catch (const std::exception&) { error = "equity: ignored an invalid row"; }
     }
-    compact();
-  } catch (const std::exception& e) { error_ = std::string("equity: ") + e.what(); }
+  } catch (const std::exception& e) { error = std::string("equity: ") + e.what(); }
+  return samples;
+}
+EquityStore::EquityStore(std::filesystem::path file) : file_(std::move(file)) {
+  samples_ = read_equity_history(file_, error_);
+  try { compact(); }
+  catch (const std::exception& e) { error_ = std::string("equity: ") + e.what(); }
 }
 void EquityStore::compact() {
   if (samples_.empty()) return;
@@ -171,8 +154,13 @@ void EquityStore::append(const EquitySample& sample) noexcept {
     if (!samples_.empty()) {
       const auto& last = samples_.back();
       if (sample.time < last.time) return;
+      // One mark per minute, but keep a floor change and the first mark at or past the
+      // target or the floor, the equity that decides an attempt.
+      const auto side = [](const EquitySample& s) {
+        return std::pair{s.target && s.equity >= *s.target, s.floor && s.equity <= *s.floor};
+      };
       if (sample.attempt == last.attempt && sample.fill == 0 && sample.stock_fill == 0 && last.time / md::kNanosPerMinute == sample.time / md::kNanosPerMinute &&
-          last.floor == sample.floor && last.target == sample.target) return;
+          last.floor == sample.floor && last.target == sample.target && side(last) == side(sample)) return;
       if (sample.fill != 0 && std::any_of(samples_.rbegin(), samples_.rend(), [&](const EquitySample& s) { return s.fill == sample.fill; })) return;
       if (sample.stock_fill != 0 && std::any_of(samples_.rbegin(), samples_.rend(), [&](const EquitySample& s) { return s.stock_fill == sample.stock_fill; })) return;
     }

@@ -492,12 +492,15 @@ void Desk::sample_equity(PaperAccount& account) {
   };
   const auto& session = *account.session;
   const auto current = session.snapshot();
-  if (account.sampled_snapshot && current != account.sampled_snapshot)
-    for (const auto& sample : fill_equity_samples(session, *account.sampled_snapshot, bool(options_.equity_sample))) {
-      if (!sample.fill && !sample.stock_fill) options_.equity_sample(account.id, sample);
-      else append(sample);
-    }
   const auto& snapshot = *current;
+  const auto& previous = account.sampled_snapshot;
+  // Until equity is fully marked again, as when a second expiry still awaits its
+  // settlement, keep the earlier snapshot: the fills and deliveries since then are
+  // sampled at the first complete mark instead of being skipped.
+  if (previous && !snapshot.valuation_complete && !snapshot.journal_failed &&
+      snapshot.evaluation.attempt == previous->evaluation.attempt) return;
+  if (previous && current != previous)
+    for (const auto& sample : fill_equity_samples(session, *previous)) append(sample);
   const auto& e = snapshot.evaluation;
   const auto& rules = session.config().rules;
   if (snapshot.valuation_complete && market_time_ > 0 && !snapshot.journal_failed) {
@@ -508,11 +511,7 @@ void Desk::sample_equity(PaperAccount& account) {
     sample.peak = e.peak;
     if (rules.max_drawdown > Money{}) {
       sample.floor = e.floor;
-      if (rules.drawdown_mode == DrawdownMode::EndOfDay) {
-        auto floor = std::max(e.peak, snapshot.equity) - rules.max_drawdown;
-        if (rules.lock_balance > Money{}) floor = std::min(floor, rules.lock_balance);
-        sample.tomorrow_floor = e.floor_locked ? e.floor : std::max(e.floor, floor);
-      }
+      if (rules.drawdown_mode == DrawdownMode::EndOfDay) sample.tomorrow_floor = trading::evaluation_tomorrow_floor(e, rules, snapshot.equity);
     }
     if (rules.profit_target > Money{}) sample.target = e.starting_balance + rules.profit_target;
     append(sample);
