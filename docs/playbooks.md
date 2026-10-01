@@ -286,9 +286,14 @@ do not reconstruct historical events. `--scenario-dir` supplies custom scenarios
 
 `--plan` takes an evaluation preset ID, or a JSON file with `initial_cash`, `rules`
 and optional `fee_per_contract`. The API accepts that object directly as `plan`.
-Custom rule money uses decimal strings; drawdown mode is `intraday` or `end_of_day`,
-margin is `strategy` or `portfolio`, and `expiry_cutoff` is nanoseconds. Omitted
-rules use `AccountRules` defaults. Positive starting cash and a profit target are
+Custom rule money uses decimal strings; drawdown mode is `intraday`, `end_of_day` or
+`static`, margin is `strategy` or `portfolio`, and `expiry_cutoff` is nanoseconds. The
+plan objectives and daily loss rules take their journal names and forms:
+`daily_loss_limit` and `profitable_day_profit` are decimal strings, `profit_basis`,
+`daily_loss_basis`, `daily_loss_action` and `consistency_basis` their API words,
+`lock_at_start` true or false, and `consistency_percent`, `min_trading_days`,
+`min_profitable_days` and `day_end_minutes` (minutes after New York midnight) whole
+numbers. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
 required; practice and funded plans are refused. A custom plan example is:
 
 ```json
@@ -332,7 +337,8 @@ an evaluation failure unless the reducer's evaluation rules fail the account.
 ### Reports and reproducibility
 
 Each daily result includes marked P&L, maximum observed peak-to-later-trough equity
-drawdown, the smallest observed equity-minus-floor distance, rule trips, strategy
+drawdown, the smallest observed equity-minus-floor distance, rule trips (evaluation
+failures, plan daily-loss locks, kill latches and order rejections), strategy
 trades, option and share fills, share round trips, adherence, entry-blocking reasons,
 mark quality and open positions. Entry-blocking reasons give, per setup and
 underlying, the last reason an evaluation gave inside the entry window, such as

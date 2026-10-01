@@ -66,7 +66,13 @@ std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& ses
   state.floor = ratcheted.floor;
   state.floor_locked = ratcheted.floor_locked;
   state.status = before.evaluation.status;
-  const auto observe = [&] { state.status = trading::evaluate_equity(state, rules, equity); };
+  // Objectives, or a target on the closed balance, can hold a pass back: only the
+  // reducer's own pass stops the ratchet.
+  const auto observe = [&] {
+    const auto outcome = trading::evaluate_equity(state, rules, equity);
+    if (outcome != trading::EvaluationStatus::Passed || after->evaluation.status == trading::EvaluationStatus::Passed)
+      state.status = outcome;
+  };
   const auto sample = [&](md::Timestamp time, const trading::Evaluation& e, Money value) {
     EquitySample result;
     result.time = time; result.attempt = after->evaluation.attempt; result.equity = value; result.peak = e.peak;

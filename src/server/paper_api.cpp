@@ -7,6 +7,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <set>
@@ -37,12 +38,31 @@ json payout_rules_json(const PayoutRules& p) {
           {"withdrawal_percent", p.withdrawal_percent}, {"split_percent", p.split_percent},
           {"minimum", p.minimum.str()}, {"caps", caps}};
 }
+constexpr const char* kDrawdownModes[] = {"intraday", "end_of_day", "static"};
+constexpr const char* kProfitBases[] = {"equity", "balance"};
+constexpr const char* kDailyLossBases[] = {"equity", "balance", "higher", "peak"};
+constexpr const char* kBreachActions[] = {"lock", "fail"};
+constexpr const char* kConsistencyBases[] = {"total", "positive_days"};
+/// "HH:MM" New York time for minutes after midnight; 1440 is "24:00".
+std::string clock_text(std::int64_t minutes) {
+  char text[8];
+  std::snprintf(text, sizeof text, "%02d:%02d", static_cast<int>(minutes / 60), static_cast<int>(minutes % 60));
+  return text;
+}
 json rules_json(const AccountRules& r) {
   const bool funded = r.phase == Phase::Funded;
   json result = {{"plan", nullable(r.plan)}, {"phase", funded ? "funded" : "evaluation"},
           {"profit_target", positive(r.profit_target)}, {"max_drawdown", positive(r.max_drawdown)},
-          {"drawdown_mode", r.drawdown_mode == DrawdownMode::Intraday ? "intraday" : "end_of_day"},
-          {"lock_balance", positive(r.lock_balance)},
+          {"drawdown_mode", kDrawdownModes[static_cast<int>(r.drawdown_mode)]},
+          {"lock_balance", positive(r.lock_balance)}, {"lock_at_start", r.lock_at_start},
+          {"profit_basis", kProfitBases[static_cast<int>(r.profit_basis)]},
+          {"daily_loss_limit", positive(r.daily_loss_limit)},
+          {"daily_loss_basis", kDailyLossBases[static_cast<int>(r.daily_loss_basis)]},
+          {"daily_loss_action", kBreachActions[static_cast<int>(r.daily_loss_action)]},
+          {"consistency_percent", r.consistency_percent},
+          {"consistency_basis", kConsistencyBases[static_cast<int>(r.consistency_basis)]},
+          {"min_trading_days", r.min_trading_days}, {"min_profitable_days", r.min_profitable_days},
+          {"profitable_day_profit", positive(r.profitable_day_profit)}, {"day_end", clock_text(r.day_end_minutes)},
           {"buy_only", r.buy_only}, {"defined_risk", r.defined_risk}, {"buying_power", r.buying_power},
           {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin == MarginMode::Portfolio ? "portfolio" : "strategy"},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
@@ -609,15 +629,34 @@ json account_json(const TradingView& view) {
   const bool target = r.profit_target > Money{};
   const bool decided = e.status != EvaluationStatus::Active;
   const Money target_equity = e.starting_balance + r.profit_target;
+  const auto in = plan_inputs(s);
+  const bool executions = counts_executions(r);
   json days = json::array();
-  for (const auto& d : e.days)
+  for (const auto& d : e.days) {
+    const auto profit = day_profit(d, r);
     days.push_back({{"day", md::format_date(d.day)}, {"open_equity", d.open_equity.str()},
                     {"close_equity", d.close_equity.str()}, {"peak", d.peak.str()},
                     {"floor", floor ? json(d.floor.str()) : json(nullptr)},
                     {"realised", d.realised.str()}, {"qualifying", d.qualifying},
                     {"attribution", attribution_json(d.attribution)},
                     {"low_equity", money(d.low_equity)}, {"high_equity", money(d.high_equity)},
-                    {"low_at", time_or_null(d.low_at)}, {"high_at", time_or_null(d.high_at)}});
+                    {"low_at", time_or_null(d.low_at)}, {"high_at", time_or_null(d.high_at)},
+                    {"profit", profit.str()},
+                    {"profitable", profit > Money{} && profit >= r.profitable_day_profit},
+                    {"executions", executions ? json(d.executions) : json(nullptr)},
+                    {"locked", d.locked == Reason::NONE ? json(nullptr) : json(to_string(d.locked))}});
+  }
+  json objectives = json::array();
+  for (const auto& o : evaluation_objectives(e, r, in))
+    objectives.push_back({{"code", to_string(o.code)}, {"met", o.met}, {"actual", o.actual ? number(*o.actual) : json(nullptr)},
+                          {"required", number(o.required)}, {"message", o.message}});
+  const auto stats = day_stats(e, r, in);
+  json daily_loss = nullptr;
+  if (const auto level = daily_loss_level(e, r, in))
+    daily_loss = {{"limit", r.daily_loss_limit.str()}, {"basis", kDailyLossBases[static_cast<int>(r.daily_loss_basis)]},
+                  {"action", kBreachActions[static_cast<int>(r.daily_loss_action)]}, {"reference", level->reference.str()},
+                  {"level", level->level.str()}, {"room", (s.equity - level->level).str()}};
+  const bool liquidated = decided && in.flat;
   json payouts = json::array();
   for (const auto& p : e.payouts)
     payouts.push_back({{"number", p.number}, {"time", md::format_timestamp(p.time)}, {"day", md::format_date(p.day)}, {"amount", p.amount.str()},
@@ -627,7 +666,8 @@ json account_json(const TradingView& view) {
     attempts.push_back({{"attempt", a.attempt}, {"plan", nullable(a.plan)}, {"started", md::format_timestamp(a.started)},
                         {"ended", md::format_timestamp(a.ended)}, {"starting_balance", a.starting_balance.str()},
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
-                        {"decision", nullable(a.decision)}});
+                        {"decision", nullable(a.decision)},
+                        {"decision_code", a.status == EvaluationStatus::Active ? json(nullptr) : json(to_string(a.decision_code))}});
   return {{"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
           {"rules", rules_json(r)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"guardrails", guardrails_json(view.config.guardrails)}, {"guardrail_state", guardrail_state_json(s)},
@@ -640,8 +680,10 @@ json account_json(const TradingView& view) {
               {"drawdown_buffer", floor ? json((s.equity - e.floor).str()) : json(nullptr)},
               {"target_equity", target ? json(target_equity.str()) : json(nullptr)},
               // Liquidating a pass at the bid can leave equity just under the target it reached.
+              // A target on the closed balance counts the balance.
               {"target_remaining", target ? json((e.status == EvaluationStatus::Passed ? Money{}
-                                                 : std::max(Money{}, target_equity - s.equity)).str()) : json(nullptr)},
+                  : std::max(Money{}, target_equity - (r.profit_basis == ProfitBasis::Balance ? in.balance : s.equity))).str())
+                  : json(nullptr)},
               {"decided_at", decided ? json(md::format_timestamp(e.decided_at)) : json(nullptr)},
               {"decided_equity", decided ? json(e.decided_equity.str()) : json(nullptr)},
               {"decision", nullable(e.decision)},
@@ -651,7 +693,21 @@ json account_json(const TradingView& view) {
               {"day_low_at", time_or_null(e.day_low_at)}, {"day_high_at", time_or_null(e.day_high_at)},
               {"closest_floor", money(e.closest_floor)}, {"closest_floor_at", time_or_null(e.closest_floor_at)},
               {"floor_locked", floor && e.floor_locked}, {"qualifying_days", e.qualifying_days},
-              {"cycle_started", md::format_timestamp(e.cycle_started)}, {"payouts", payouts}}},
+              {"cycle_started", md::format_timestamp(e.cycle_started)}, {"payouts", payouts},
+              {"decision_code", decided ? json(to_string(e.decision_code)) : json(nullptr)},
+              {"balance", in.balance.str()}, {"profit_basis", kProfitBases[static_cast<int>(r.profit_basis)]},
+              {"objectives", objectives},
+              {"trading_days", executions ? json(stats.trading_days) : json(nullptr)},
+              {"profitable_days", stats.profitable_days},
+              {"best_day", stats.best_day ? json{{"day", md::format_date(stats.best_day_date)}, {"profit", stats.best_day->str()}}
+                                          : json(nullptr)},
+              {"consistency_target", money(consistency_target(e, r, in))},
+              {"daily_loss", daily_loss},
+              {"day_lock", e.day_lock == Reason::NONE ? json(nullptr) : json(to_string(e.day_lock))},
+              {"day_locked_at", time_or_null(e.day_locked_at)},
+              {"exit_equity", s.exit_equity.str()}, {"exit_cost", (s.equity - s.exit_equity).str()},
+              {"liquidated_equity", liquidated ? json(s.equity.str()) : json(nullptr)},
+              {"liquidation_cost", liquidated ? json((e.decided_equity - s.equity).str()) : json(nullptr)}}},
           {"buying_power", buying_power_json(s.buying_power)},
           {"payout", payout_json(view)},
           {"attempts", attempts}};
@@ -957,7 +1013,7 @@ json risk_json(const TradingView& view) {
           {"guardrails", guardrails_json(view.config.guardrails)},
           {"pending_guardrails", s.pending_guardrails ? guardrails_json(*s.pending_guardrails) : json(nullptr)},
           {"guardrail_state", guardrail_state_json(s)}, {"pending_applied_at", time_or_null(s.pending_applied_at)},
-          {"pending_applied_day", s.pending_applied_at > 0 ? json(md::format_date(md::trading_date(s.pending_applied_at))) : json(nullptr)},
+          {"pending_applied_day", s.pending_applied_at > 0 ? json(md::format_date(plan_trading_date(view.config.rules, s.pending_applied_at))) : json(nullptr)},
           {"pending_effective", s.pending_limits || s.pending_guardrails ? json("next_trading_day") : json(nullptr)},
           {"time", md::format_timestamp(s.time)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"complete", s.risk.complete}, {"daily_loss", s.risk.daily_loss.str()},
@@ -1203,9 +1259,32 @@ PayoutRules parse_payout_rules(const json& j) {
 }
 /// Custom rules: nullable money for an absent target/drawdown, like rules_json.
 /// The phase defaults to evaluation; a funded phase requires payout rules.
+/// One of a rule's named choices; anything else is a malformed request.
+template <class E, std::size_t N>
+E choice_field(const json& j, const char* key, const char* const (&names)[N]) {
+  const auto value = string_field(j, key);
+  for (std::size_t i = 0; i < N; ++i)
+    if (value == names[i]) return static_cast<E>(i);
+  std::string list;
+  for (std::size_t i = 0; i < N; ++i) list += (i == 0 ? "" : i + 1 == N ? " or " : ", ") + std::string(names[i]);
+  throw std::invalid_argument(std::string(key) + " must be " + list);
+}
+/// "HH:MM", 00:00 to 24:00, as minutes after midnight.
+std::int64_t clock_field(const json& j, const char* key) {
+  const auto text = string_field(j, key);
+  const auto digit = [&](std::size_t i) { return text[i] >= '0' && text[i] <= '9'; };
+  if (text.size() != 5 || text[2] != ':' || !digit(0) || !digit(1) || !digit(3) || !digit(4))
+    throw std::invalid_argument(std::string(key) + " must be HH:MM New York time");
+  const auto hours = (text[0] - '0') * 10 + (text[1] - '0'), minutes = (text[3] - '0') * 10 + (text[4] - '0');
+  if (minutes > 59 || hours > 24 || (hours == 24 && minutes != 0))
+    throw std::invalid_argument(std::string(key) + " must be HH:MM New York time");
+  return hours * 60 + minutes;
+}
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
-         {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks"});
+         {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",
+          "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
+          "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end"});
   AccountRules rules;
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
@@ -1221,9 +1300,20 @@ AccountRules parse_rules(const json& j) {
   auto optional_money = [&](const char* key) { return j.at(key).is_null() ? Money{} : decimal_field(j, key); };
   rules.profit_target = optional_money("profit_target");
   rules.max_drawdown = optional_money("max_drawdown");
-  const auto mode = string_field(j, "drawdown_mode");
-  if (mode != "intraday" && mode != "end_of_day") throw std::invalid_argument("drawdown_mode must be intraday or end_of_day");
-  rules.drawdown_mode = mode == "intraday" ? DrawdownMode::Intraday : DrawdownMode::EndOfDay;
+  rules.drawdown_mode = choice_field<DrawdownMode>(j, "drawdown_mode", kDrawdownModes);
+  // The evaluation rules added later are optional, with their defaults off.
+  const auto has = [&](const char* key) { return j.contains(key) && !j.at(key).is_null(); };
+  if (has("lock_at_start")) rules.lock_at_start = boolean_field(j, "lock_at_start");
+  if (has("profit_basis")) rules.profit_basis = choice_field<ProfitBasis>(j, "profit_basis", kProfitBases);
+  if (has("daily_loss_limit")) rules.daily_loss_limit = decimal_field(j, "daily_loss_limit");
+  if (has("daily_loss_basis")) rules.daily_loss_basis = choice_field<DailyLossBasis>(j, "daily_loss_basis", kDailyLossBases);
+  if (has("daily_loss_action")) rules.daily_loss_action = choice_field<BreachAction>(j, "daily_loss_action", kBreachActions);
+  if (has("consistency_percent")) rules.consistency_percent = integer_field(j, "consistency_percent");
+  if (has("consistency_basis")) rules.consistency_basis = choice_field<ConsistencyBasis>(j, "consistency_basis", kConsistencyBases);
+  if (has("min_trading_days")) rules.min_trading_days = integer_field(j, "min_trading_days");
+  if (has("min_profitable_days")) rules.min_profitable_days = integer_field(j, "min_profitable_days");
+  if (has("profitable_day_profit")) rules.profitable_day_profit = decimal_field(j, "profitable_day_profit");
+  if (has("day_end")) rules.day_end_minutes = clock_field(j, "day_end");
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");
@@ -1791,7 +1881,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
     json samples = json::array();
     for (const auto& sample : view->equity_samples) {
       if ((since && sample.time < *since) || (until && sample.time > *until)) continue;
-      samples.push_back({{"time", md::format_timestamp(sample.time)}, {"day", md::format_date(md::trading_date(sample.time))},
+      samples.push_back({{"time", md::format_timestamp(sample.time)}, {"day", md::format_date(plan_trading_date(view->config.rules, sample.time))},
           {"attempt", sample.attempt}, {"equity", sample.equity.str()}, {"floor", money(sample.floor)}, {"peak", sample.peak.str()},
           {"target", money(sample.target)}, {"tomorrow_floor", money(sample.tomorrow_floor)},
           {"fill", sample.stock_fill ? json("s" + std::to_string(sample.stock_fill)) : sample.fill ? json(std::to_string(sample.fill)) : json(nullptr)}});

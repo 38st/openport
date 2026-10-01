@@ -159,7 +159,7 @@ json result_for(Desk& desk, const BacktestRequest& request, const std::filesyste
     const auto payload = json::parse(record.payload);
     for (const auto& event : payload.at("events")) {
       const auto type = event.at("type").get<std::string>();
-      if (type == "evaluation_failed" || type == "kill_trip" || type == "order_rejected")
+      if (type == "evaluation_failed" || type == "day_locked" || type == "kill_trip" || type == "order_rejected")
         trips.push_back({{"time", md::format_timestamp(record.time)}, {"type", type}, {"detail", event.at("payload")}});
     }
   }
@@ -271,13 +271,30 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     keys(plan, {"initial_cash", "rules", "fee_per_contract"});
     result.config.initial_cash = decimal(required(plan, "initial_cash", "plan initial_cash"), "plan initial_cash");
     json rules = result.config.rules;
+    // The journal leaves out optional rules at their defaults; a plan may set them.
+    for (const auto& [key, value] : trading::optional_rule_defaults().items())
+      if (!rules.contains(key)) rules[key] = value;
     if (!required(plan, "rules", "plan rules").is_object()) throw std::invalid_argument("rules must be an object");
+    const auto choice = [](const json& value, const std::string& key, std::initializer_list<const char*> names) {
+      for (const auto* name : names)
+        if (value == name) return;
+      throw std::invalid_argument("Unknown " + key);
+    };
     for (const auto& [key, value] : plan.at("rules").items()) {
       if (!rules.contains(key)) throw std::invalid_argument("Unknown plan rule: " + key);
-      if (key == "profit_target" || key == "max_drawdown" || key == "lock_balance") rules[key] = decimal(value, "plan rules " + key).micros();
+      if (key == "profit_target" || key == "max_drawdown" || key == "lock_balance" || key == "daily_loss_limit" ||
+          key == "profitable_day_profit")
+        rules[key] = decimal(value, "plan rules " + key).micros();
       else if (key == "drawdown_mode") {
-        if (value != "intraday" && value != "end_of_day") throw std::invalid_argument("Unknown drawdown_mode");
-        rules[key] = value == "intraday" ? trading::DrawdownMode::Intraday : trading::DrawdownMode::EndOfDay;
+        choice(value, key, {"intraday", "end_of_day", "static"});
+        rules[key] = value == "intraday" ? trading::DrawdownMode::Intraday
+                   : value == "end_of_day" ? trading::DrawdownMode::EndOfDay : trading::DrawdownMode::Static;
+      } else if (key == "profit_basis" || key == "daily_loss_basis" || key == "daily_loss_action" || key == "consistency_basis") {
+        choice(value, key, key == "profit_basis" ? std::initializer_list<const char*>{"equity", "balance"}
+                         : key == "daily_loss_basis" ? std::initializer_list<const char*>{"equity", "balance", "higher", "peak"}
+                         : key == "daily_loss_action" ? std::initializer_list<const char*>{"lock", "fail"}
+                                                      : std::initializer_list<const char*>{"total", "positive_days"});
+        rules[key] = value;
       } else if (key == "margin") {
         if (value != "strategy" && value != "portfolio") throw std::invalid_argument("Unknown margin");
         rules[key] = value == "strategy" ? trading::MarginMode::Strategy : trading::MarginMode::Portfolio;

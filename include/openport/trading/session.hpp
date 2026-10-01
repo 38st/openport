@@ -106,7 +106,15 @@ struct TradingSnapshot {
   /// and whole-trade reviews of trades with more than one entry, by trade ID.
   SharedMap<std::string, std::string> groups;
   SharedMap<std::string, TradeReview> group_reviews;
+  /// Equity if every position closed now with a market order at the displayed
+  /// quotes (bids for longs, asks for shorts) and the account's slippage and
+  /// impact, after fees: a long nobody bids for counts as nothing, a short without
+  /// an ask at its mark, an expired position at its mark and shares at their price.
+  /// Derived from the books, so snapshot_json leaves it out.
+  Money exit_equity;
 };
+/// What the plan's rules read of a published account (see PlanInputs).
+[[nodiscard]] PlanInputs plan_inputs(const TradingSnapshot& snapshot);
 /// A funded account's standing for its next payout: an active, flat account
 /// with the required qualifying days since the last payout. `blocked` is the
 /// first unmet requirement; when it is NONE, any whole-cent amount from
@@ -426,7 +434,8 @@ class TradingSession {
   /// settled keep what they settled on.
   CommandResult record_close(const std::string& underlying, md::Date date, Money price, Timestamp print_time, Timestamp time);
   [[nodiscard]] std::optional<ClosingPrint> closing_print(const std::string& underlying, md::Date date) const;
-  /// Explicit baseline reset, once per later New York date; requires full marks.
+  /// Explicit baseline reset, once per later trading date of the plan
+  /// (trading_date); requires full marks.
   /// Kill latch persists across rollover.
   /// `dividends` are those going ex on the new trading date (and any skipped while
   /// the server was down): each pays the shares held into it, once.
@@ -490,6 +499,9 @@ class TradingSession {
   /// The quotes whose displayed size this account's orders have taken some of.
   [[nodiscard]] std::map<std::string, SizeLeft> sizes_left() const;
   [[nodiscard]] md::Date trading_day() const;
+  /// The plan's trading date at `time` (AccountRules::day_end_minutes): rollover
+  /// moves trading_day() to it once it is later.
+  [[nodiscard]] md::Date trading_date(Timestamp time) const;
 
   /// Rebuild recorded outcomes without matching/repricing. Optional resumed
   /// sink must have exactly the verified recovered head and sequence.

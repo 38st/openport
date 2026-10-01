@@ -987,7 +987,9 @@ trading date (`md::trading_date`) is a business day's New York date until
 17:00 ET, when its last session (curb) ends; after that, and over weekends and
 holidays, it is the next business day, whose overnight session opens that evening. So
 an overnight trade counts toward the day it trades for, and a day's close is the last
-marked equity before 17:00. Rollover first monitors the old daily baseline, then
+marked equity before 17:00. A plan can end its day at another time
+(`day_end_minutes`, see Plan objectives and the daily loss limit); rollover then
+follows the plan's date. Rollover first monitors the old daily baseline, then
 stores the new baseline. Repeated same-day rollover rejects. Manual and daily-loss kill latches survive rollover and recovery. Personal daily
 latches clear at rollover; cooldowns expire on market time.
 There are no deposits/withdrawals or cash interest. Without
@@ -1241,9 +1243,9 @@ side, no buying-power check. All rule money is exact.
 
 | Rule | Effect |
 | --- | --- |
-| `profit_target` | Pass when equity reaches starting balance + target (zero disables) |
+| `profit_target` | Pass when profit under `profit_basis` reaches the target and every objective below is met (zero disables) |
 | `max_drawdown` | Fail when equity touches peak − drawdown (zero disables) |
-| `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date. The peak is the high-water mark the floor follows; an account without a target or drawdown (practice) keeps it the same way, although no rule reads it |
+| `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date. `Static` (API `static`): the floor stays at the starting balance − drawdown for the whole attempt and counts as locked from the start, while the peak still follows every high. The peak is the high-water mark the floor follows; an account without a target or drawdown (practice) keeps it the same way, although no rule reads it |
 | `buy_only` | A sell must close contracts already held, counting working and armed sells on the same contract; otherwise `BUY_ONLY`. A manual (untriggered) close that only the account's own armed stop sells keep from fitting supersedes them: it cancels them with `POSITION_CLOSED`, newest first and only as many as it needs, and keeps them if it is refused anyway. Preview shows the same |
 | `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Open orders count as if every sell they offer filled and no buy did (a multi-leg order fills whole; a bracket's two exits sell its position once), so a working sell can never take the long a short needs. Bracket exits and exercise keep shorts covered too. Off in every preset; custom rules take it |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
@@ -1254,23 +1256,40 @@ side, no buying-power check. All rule money is exact.
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), every open order on the contract cancels with `EXPIRY_CUTOFF` (DAY, GTC, armed and bracket exits alike, held or not), positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
 | `lock_balance` | Caps the trailing floor: the floor is the lesser of peak − drawdown and the lock, and once peak − drawdown reaches the lock the floor stays there and stops trailing (zero disables). A lock at or below the starting floor (starting balance − drawdown) therefore fixes the floor at the lock from the start: a static floor, which below the starting floor gives more room than `max_drawdown` alone would |
+| `lock_at_start` | The same lock at the attempt's own starting balance, so the floor trails until it reaches the start and then stays there. Not with `lock_balance`, and neither with a static floor (`INVALID_RULES`) |
+| `profit_basis` | `Equity` (default): profit is fully marked equity less the starting balance. `Balance`: profit is the closed balance (cash plus the positions' cost, so realised P&L after fees, open P&L left out) less the starting balance, and a pass also needs every position closed. It also decides each day's profit for the consistency rule and profitable days: the day's equity change, or its net realised P&L |
+| `daily_loss_limit` | Dollars below `daily_loss_basis` that equity may not touch in one trading day (zero disables); see Plan objectives and the daily loss limit |
+| `daily_loss_basis` | `Equity` (default, the day's opening equity), `Balance` (its opening closed balance), `Higher` (the higher of the two) or `Peak` (the day's fully marked equity high, starting at its opening equity, so the limit trails the day's gains) |
+| `daily_loss_action` | `Lock` (default): close every position and refuse opening orders until the next trading day. `Fail`: fail the attempt |
+| `consistency_percent` | A pass needs the best day's profit at most this whole percent (1–100) of `consistency_basis`; zero disables |
+| `consistency_basis` | `Total` (default): the attempt's profit. `PositiveDays`: the profitable days' profits added up |
+| `min_trading_days` | A pass needs this many trading days with an execution of the trader's own orders (0–366) |
+| `min_profitable_days` | A pass needs this many days whose profit reaches `profitable_day_profit` and is above zero (0–366) |
+| `profitable_day_profit` | The profit a day needs to count as profitable; zero counts any day above zero |
+| `day_end_minutes` | Minutes after New York midnight at which the plan's trading day ends, 975 (16:15) to 1440 (24:00); default 1020 (17:00). API `day_end` as `HH:MM` |
 | `payouts` | Funded phase: qualifying days, withdrawal share, trader split, minimum and caps (see Funded accounts and payouts) |
 
 Outcomes use **fully marked equity**: every position has a mark, fresh or not. A
 position without any mark defers the decision rather than counting as zero. Every
 transaction runs the monitor after its command and the daily-loss check, as well as
 after each atomic fill and before matching a new quote batch: it records
-the day's latest marked equity, ratchets an intraday peak, fails on `equity <= floor`
-(the floor is breached by touching it) and otherwise passes on `equity >= target`.
-Breaches are checked on every transaction in both modes; the mode only controls when
-the floor rises. The decision is sticky for the attempt: open user orders cancel with
-`EVALUATION_CLOSED`, new user orders reject with it, and every position is liquidated.
+the day's latest marked equity and applies `evaluate_plan`. That ratchets an
+intraday peak, fails on `equity <= floor` (the floor is breached by touching it),
+then locks the day or fails on the plan's daily loss limit, and otherwise passes
+once the target and every objective are met. Breaches are checked on every
+transaction in every mode; the mode only controls when the floor rises. The decision
+is sticky for the attempt: open user orders cancel with `EVALUATION_CLOSED`, new user
+orders reject with it, and every position is liquidated. `Evaluation::decision_code`
+names the rule that decided it: `PROFIT_TARGET`, `DRAWDOWN_FLOOR` or
+`DAILY_LOSS_LIMIT`.
 
 **System orders** perform liquidation and expiry auto-close: market IOC orders with
 `system = true` and client IDs `system:drawdown:N` (a failed attempt), `system:target:N`
-(a passed one), `system:expiry:N` (the expiry cutoff) or `system:soft_floor:N` (a
+(a passed one), `system:daily_loss:N` (the plan's daily loss limit, locking the day or
+failing the attempt), `system:expiry:N` (the expiry cutoff) or `system:soft_floor:N` (a
 personal soft floor while the attempt is still active; once the plan decides the
-attempt, its own label wins, even when the soft floor latched in the same update).
+attempt or locks the day, its own label wins, even when the soft floor latched in the
+same update).
 Like Flatten, they close shorts first: a short is bought back before the long that
 covers it is sold, so the order of events never shows a naked short.
 They need a registered unexpired contract, the regular session and a fresh
@@ -1408,9 +1427,73 @@ attempt begins. Settlements, early exercises and early assignments are also reco
 as closures.
 
 `Evaluation` carries the attempt number, start time, starting balance, peak, floor,
-status and decision, plus one `EvaluationDay` per finished trading date (open and
-close equity, peak and floor after that day's ratchet, net realised P&L after fees,
-and whether it qualified toward a payout), appended at `roll_day`.
+status, decision and its code, plus one `EvaluationDay` per finished trading date (open
+and close equity, peak and floor after that day's ratchet, net realised P&L after fees,
+whether it qualified toward a payout, its executions when a rule counts them, and the
+plan limit that locked it, if any), appended at `roll_day`.
+
+### Plan objectives and the daily loss limit
+
+A plan's **trading day** ends at `day_end_minutes` New York time (`plan_trading_date`,
+from `md::trading_date(time, minutes)`): a business day's own date until then, the
+next business day after it and over weekends and holidays. 17:00 is the default, as
+for every other trading date; 18:00 matches a day that starts at 6 pm ET (or at
+midnight in central Europe), and 24:00 keeps the evening with the day it follows. The
+engine rolls each account over on the first market batch of its own plan's new
+date, and `TradingSession::trading_date(time)` reports it. Rollover closes the
+evaluation's day, so the day's boundary decides which day an overnight trade, a
+day's loss and the end-of-day ratchet count toward. Equity samples carry the plan's
+day.
+
+**Daily loss limit.** On every observation of fully marked equity, the limit's level is
+its reference less `daily_loss_limit`. The reference is the day's opening equity, its
+opening closed balance (the balance now less today's net realised P&L, so a payout today
+moves it down as it moves the opening equity), the higher of the two, or the day's
+fully marked equity high (from its opening equity). Touching the level (`equity <=
+level`) either fails the attempt (`Fail`, code `DAILY_LOSS_LIMIT`, liquidated as
+`system:daily_loss:N`) or locks the day (`Lock`). A locked day records
+`Evaluation::day_lock = DAILY_LOSS_LIMIT` with its time and a `day_locked` event,
+cancels every open user order with that code, liquidates every position and share like
+a decision (`system:daily_loss:N`, retried on later updates until flat), and refuses
+orders that open or add with `DAILY_LOSS_LIMIT` until rollover; closing orders are
+still accepted. The attempt stays active and the drawdown floor still applies. Rollover
+clears the lock and records it in the finished day's `locked`. The limit is checked
+once a day: after a lock it does not act again until the next day. The personal
+`max_daily_loss` above is separate and still trips the reduce-only latch.
+
+**Objectives.** `evaluation_objectives` lists what a pass needs, each with whether it is
+met, where it stands and what it requires: `PROFIT_TARGET` (dollars of profit under the
+basis; a closed-balance target also needs the account flat, with no option positions or
+shares), `MIN_TRADING_DAYS`, `MIN_PROFITABLE_DAYS` (days) and `CONSISTENCY` (the best
+day's percent of its basis against the limit). The attempt passes on the first
+observation that meets all of them, so a trader who reaches the target early keeps
+trading, and protecting it, until the other objectives are met. Days are the finished
+`days[]` and the day in progress, which counts as soon as it qualifies: a trading day
+once one of the trader's own orders executes on it (bracket exits count; the account's
+liquidations, expiry closes, settlements and assignments do not), and a profitable day
+once its profit so far reaches `profitable_day_profit`. Holding a position over a day
+does not make it a trading day. Each day's profit follows `profit_basis`: its equity
+change, or its net realised P&L. The consistency rule holds when `best day × 100 <=
+percent × basis`, exactly, where the basis is the attempt's profit or the profitable
+days' total; with no profitable day it holds. A breach never fails the account: it holds
+the pass back, which is the same as raising the target to `best day × 100 / percent`
+(reported as `consistency_target`, rounded up to the cent) or trading more days. The
+reducer counts each day's executions only while `min_trading_days` asks for them, and
+journals the plan rules, a decision's code (other than the target's or the floor's,
+which the status implies), the day's lock and its executions only when they are set,
+so a plan without these rules keeps the journal bytes it had.
+
+**What liquidation costs.** A pass on marked equity liquidates at the bid or ask, which
+can leave less than the equity that passed. `TradingSnapshot::exit_equity` is what
+closing every position now with a market order at the displayed quotes, the account's
+slippage and impact would leave after fees (a long nobody bids for counts as nothing).
+The account view shows it, the cost against equity, and, once a decided attempt is
+flat, its equity then and the liquidation's cost against the decided equity.
+
+Pass odds run the same `evaluate_plan` on each simulated observation, treating the
+path as equity and closed balance alike, flat at every observation, with a trade on
+every simulated day and the attempt's finished days counted toward its objectives; a
+lock ends that simulated day at its level.
 
 ### Equity extremes and history
 
@@ -1920,6 +2003,9 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |
 | `DELTA_LIMIT`, `VEGA_LIMIT` | The order raises worst reachable exposure above an underlying/aggregate limit |
 | `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; opening orders and manual latch resets are refused while closing orders and exits remain available |
+| `DAILY_LOSS_LIMIT` | The plan's daily loss limit locked the day (opening orders refused and open orders cancelled until rollover) or failed the attempt |
+| `PROFIT_TARGET`, `DRAWDOWN_FLOOR` | Decision codes: the target passed the attempt, or the floor failed it |
+| `MIN_TRADING_DAYS`, `MIN_PROFITABLE_DAYS`, `CONSISTENCY` | Objective codes: what a pass still waits for |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause at the start of the message, its `actual`, `limit` and `scope` kept on the order |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder (a stop exit's re-arms instead), explicit cancellation, the end of a DAY order's session (a triggered one's activation session) or an EXTO trading date |
@@ -1947,7 +2033,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
-| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, or a funded phase with a profit target or no qualifying days. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
+| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling cancelled when the other exit filled completely, remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
@@ -2203,7 +2289,7 @@ focus at the top of the ticket.
 | `PUT /api/risk/guardrails` | `expected_revision` string and complete `guardrails`; tighter fields apply now, looser fields wait for rollover on all accounts; returns the risk view, or 409 `LIMITS_REVISION` as for limits |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs. The kill state here and in `GET /api/risk` is `{latched, reason, reset_blocked, history}`: why a reset could not clear the latch now (a decision, or null) and its last 50 trips, resets and releases (`{time, action, reason, previous, actor}`) |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
-| `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target), decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
+| `GET /api/account` | Rules (including `phase`, `lock_balance`, `lock_at_start`, `profit_basis`, the daily loss limit, consistency, minimum days, `day_end` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `balance`, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target; on the balance basis, measured on the balance), decision and `decision_code`, current day, finished `days[]` with `realised`, `qualifying`, `attribution`, equity low/high with times, `profit`, `profitable`, `executions` and `locked`, attempt closest-floor distance/time, `qualifying_days`, `cycle_started`, `payouts[]`, `objectives[]` (code, met, actual, required, message), `trading_days`, `profitable_days`, `best_day`, `consistency_target`, `daily_loss` (limit, basis, action, reference, level, room), `day_lock` and `day_locked_at`, `exit_equity` and `exit_cost`, and once a decided attempt is flat `liquidated_equity` and `liquidation_cost`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, round trips by trade ID: join their trades into one (a closed round trip can name a whole trade still holding an open one), or take each listed open round trip out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
@@ -2219,12 +2305,18 @@ in its query for an account other than the main one (see [accounts](#accounts)).
 demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
-defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, margin, buying_power, expiry_cutoff_seconds}`.
-`defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks` and `margin` are optional when creating or resetting
-an account: `defined_risk` defaults to false, the execution settings to 0, and
-`margin` to `"strategy"`. Older journals missing these
-fields recover with the same defaults. Money is null for a disabled target or
-drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
+defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, margin, buying_power, expiry_cutoff_seconds,
+lock_at_start, profit_basis, daily_loss_limit, daily_loss_basis, daily_loss_action, consistency_percent,
+consistency_basis, min_trading_days, min_profitable_days, profitable_day_profit, day_end}`.
+`defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `margin` and every field from `lock_at_start`
+on are optional when creating or resetting an account: `defined_risk` and `lock_at_start` default to false, the
+execution settings, counts and percentages to 0, `margin` to `"strategy"`, `profit_basis` to `"equity"`,
+`daily_loss_basis` to `"equity"`, `daily_loss_action` to `"lock"`, `consistency_basis` to `"total"` and `day_end`
+to `"17:00"`. Older journals missing these fields recover with the same defaults. Money is null for a disabled
+target, drawdown, daily loss limit or profitable-day profit; `drawdown_mode` is `intraday`, `end_of_day` or
+`static`; `profit_basis` `equity` or `balance`; `daily_loss_basis` `equity`, `balance`, `higher` or `peak`;
+`daily_loss_action` `lock` or `fail`; `consistency_basis` `total` or `positive_days`; and `day_end` `HH:MM`
+New York time from `16:15` to `24:00`. Portfolio adds
 `buying_power: {available, reserved, short_requirement, requirement}` (`requirement`
 is the same amount as `short_requirement`, named for both margin modes) and `margin`,
 the requirement by underlying with what holds it (see buying power under Account rules); orders add `origin`

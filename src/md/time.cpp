@@ -500,10 +500,11 @@ TradingSession trading_session(std::string_view root, Timestamp ts) {
 
 TradingSession stock_session(Timestamp ts) { return session_at(false, false, false, ts); }
 
-Date trading_date(Timestamp ts) noexcept {
+Date trading_date(Timestamp ts) noexcept { return trading_date(ts, 17 * 60); }
+Date trading_date(Timestamp ts, int day_end_minutes) noexcept {
   auto& memo = Memo::current();
   const auto local = local_time(ts);
-  if (memo.day(local.date).business && local.seconds < 17 * 3600) return local.date;
+  if (memo.day(local.date).business && local.seconds < day_end_minutes * 60) return local.date;
   // Two weeks covers every closure in the supported calendar.
   for (int ahead = 1; ahead <= 14; ++ahead)
     if (const auto date = date_from_days(local.days + ahead); memo.day(date).business) return date;

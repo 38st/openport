@@ -878,12 +878,12 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     const auto latest = snapshots_.find(complete->underlying);
     if (latest != snapshots_.end() && complete->ts >= latest->second) vouched_at_[complete->underlying] = market_time_;
   }
-  // An overnight session belongs to the next trading date, so a day ends when the
-  // last session of the one before (curb) does.
-  const auto day = md::trading_date(market_time_);
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty()) continue;
     auto& session = *account.session;
+    // An overnight session belongs to the next trading date, so a day ends when the
+    // last session of the one before (curb) does, or at the plan's own boundary.
+    const auto day = session.trading_date(market_time_);
     try {
       const auto roll = [&] {
         if (!batch.empty() && day > session.trading_day() &&
