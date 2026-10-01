@@ -86,6 +86,19 @@ struct BreachRisk {
   bool complete = true;
   std::vector<UnderlyingBreach> underlyings;
 };
+/// Something about the held book worth acting on before the market or the night
+/// acts on it. `actual` and `limit` are numbers whose meaning depends on the code
+/// (see TradingSession::warnings).
+struct RiskWarning {
+  std::string code;
+  std::string severity;  ///< "warning": it costs room, buying power or a fill soon; "info": worth knowing.
+  std::string scope;     ///< The underlying, or "aggregate" for the account.
+  std::string symbol;    ///< The contract it is about, if one; empty otherwise.
+  std::string message;
+  std::optional<double> actual;
+  std::optional<double> limit;
+};
+
 /// Every held underlying, with levels where equity reaches the plan floor, or the
 /// soft floor on an account without one, and separately the soft floor's levels;
 /// with neither floor there are no levels.

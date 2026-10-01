@@ -92,6 +92,14 @@ json breach_json(const BreachRisk& b) {
           {"scan_down_percent", -99.75}, {"scan_up_percent", 1000}};
 }
 json units(const std::optional<Quantity>& value) { return value ? json(*value) : json(nullptr); }
+json warnings_json(const std::vector<RiskWarning>& warnings) {
+  json out = json::array();
+  for (const auto& w : warnings)
+    out.push_back({{"code", w.code}, {"severity", w.severity}, {"scope", w.scope},
+                   {"symbol", w.symbol.empty() ? json(nullptr) : json(w.symbol)}, {"message", w.message},
+                   {"actual", w.actual ? number(*w.actual) : json(nullptr)}, {"limit", w.limit ? number(*w.limit) : json(nullptr)}});
+  return out;
+}
 json preview_fills(const std::vector<PreviewFill>& fills) {
   json out = json::array();
   for (const auto& f : fills)
@@ -352,7 +360,7 @@ json account_json(const TradingView& view) {
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
                         {"decision", nullable(a.decision)}});
   return {{"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
-          {"rules", rules_json(r)}, {"breach", breach_json(view.breach)},
+          {"rules", rules_json(r)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"guardrails", guardrails_json(view.config.guardrails)}, {"guardrail_state", guardrail_state_json(s)},
           {"evaluation", {
               {"enabled", r.evaluation()}, {"attempt", e.attempt}, {"status", status_name(e.status)},
@@ -606,7 +614,8 @@ json risk_json(const TradingView& view) {
           {"guardrail_state", guardrail_state_json(s)}, {"pending_applied_at", time_or_null(s.pending_applied_at)},
           {"pending_applied_day", s.pending_applied_at > 0 ? json(md::format_date(md::trading_date(s.pending_applied_at))) : json(nullptr)},
           {"pending_effective", s.pending_limits || s.pending_guardrails ? json("next_trading_day") : json(nullptr)},
-          {"time", md::format_timestamp(s.time)}, {"breach", breach_json(view.breach)}, {"complete", s.risk.complete}, {"daily_loss", s.risk.daily_loss.str()},
+          {"time", md::format_timestamp(s.time)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
+          {"complete", s.risk.complete}, {"daily_loss", s.risk.daily_loss.str()},
           {"kill", kill_json(s.risk)}, {"aggregate", bucket_json(s.risk.aggregate)}, {"underlyings", underlyings},
           {"scenarios", {{"spot_percent", view.config.scenarios.spot_percent}, {"vol_points", view.config.scenarios.vol_points},
                          {"pnl", pnl}, {"clamped", clamped}, {"complete", s.scenarios.complete}}}};

@@ -205,6 +205,25 @@ class TradingSession {
       Decision rejection = {}, const std::map<std::string, double>& close_variances = {}, const PreviewMarket& market = {}) const;
   /// `close_variances`: each underlying's implied variance of its log price to today's close.
   [[nodiscard]] BreachRisk breach(const std::map<std::string, double>& close_variances = {}) const;
+  /// The held book's warnings, most urgent first: a bucket over its delta or vega
+  /// limit (DELTA_LIMIT, VEGA_LIMIT: actual and limit are the exposure and its
+  /// limit); an underlying within max(1%, one standard deviation to today's
+  /// close) of a move that takes its delta to its own or the account's limit, to
+  /// first order in gamma (DELTA_HEADROOM: the signed percent move and that
+  /// threshold); equity at or below the soft floor now (SOFT_FLOOR) or at
+  /// rollover, when pending guardrails apply and a percent soft floor follows a
+  /// ratcheted plan floor (SOFT_FLOOR_ROLLOVER: equity and the floor); an
+  /// end-of-day floor that tonight's close at today's equity would raise
+  /// (FLOOR_RATCHET: the floor tomorrow and today); American equity and ETF
+  /// options expiring today a cent or more in the money, which deliver shares
+  /// (EXPIRY_DELIVERY: buying power once every one of them has delivered, and
+  /// zero); short ones the simulator may assign early, trading below their
+  /// exercise value or with less time value than a dividend going ex within a week
+  /// (EARLY_ASSIGNMENT: the mark and intrinsic value, or the time value and the
+  /// dividend); and a held underlying's ex-date within a week (EX_DIVIDEND: the
+  /// dividend a share). `dividends` is the calendar the rollover pays from.
+  [[nodiscard]] std::vector<RiskWarning> warnings(const std::map<std::string, double>& close_variances = {},
+                                                  const std::vector<Dividend>& dividends = {}) const;
   CommandResult cancel(OrderId id, Timestamp time);
   /// Change a resting order in place: a DAY limit order, an armed order or a
   /// bracket exit. Its ID, fills and place among equal prices stay. The new

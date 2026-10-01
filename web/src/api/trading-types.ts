@@ -167,8 +167,24 @@ export interface AttemptSummary {
   status: EvaluationStatus
   decision: string | null
 }
+/**
+ * Something about the held book worth acting on. `actual` and `limit` depend on the
+ * code (docs/paper-trading.md, Risk warnings).
+ */
+export interface RiskWarning {
+  code: "DELTA_LIMIT" | "VEGA_LIMIT" | "DELTA_HEADROOM" | "SOFT_FLOOR" | "SOFT_FLOOR_ROLLOVER" | "FLOOR_RATCHET" | "EXPIRY_DELIVERY" | "EARLY_ASSIGNMENT" | "EX_DIVIDEND"
+  severity: "warning" | "info"
+  /** The underlying, or "aggregate" for the account. */
+  scope: string
+  symbol: string | null
+  message: string
+  actual: number | null
+  limit: number | null
+}
 export interface Account {
   breach?: Breach
+  /** Absent on older servers. */
+  warnings?: RiskWarning[]
   guardrails?: Guardrails
   guardrail_state?: GuardrailState
   account_version: string
@@ -502,6 +518,8 @@ export interface Scenarios {
 export interface Risk {
   time?: string
   breach?: Breach
+  /** Absent on older servers. */
+  warnings?: RiskWarning[]
   guardrails?: Guardrails
   guardrail_state?: GuardrailState
   pending_limits?: Limits | null

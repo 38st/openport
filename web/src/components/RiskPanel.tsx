@@ -1,5 +1,6 @@
 import { BreachPanel } from "./BreachPanel"
 import { PersonalRules } from "./PersonalRules"
+import { RiskWarnings } from "./RiskWarnings"
 import type { Bucket, Risk } from "../api/trading-types"
 import { fixed, isNum, pct } from "../lib/format"
 import { formatMoney } from "../lib/trading"
@@ -25,6 +26,7 @@ function RiskBucket({ label, bucket }: { label: string; bucket: Bucket }) {
 }
 export function RiskPanel({ risk }: { risk: Risk }) {
   return <div className="space-y-3">
+    <RiskWarnings warnings={risk.warnings} />
     <BreachPanel breach={risk.breach} />
     <PersonalRules risk={risk} />
     {!risk.complete && <p className="text-sm text-warn">Risk valuation incomplete · some analytics are unavailable.</p>}

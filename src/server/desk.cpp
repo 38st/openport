@@ -628,6 +628,7 @@ void Desk::publish_trading() {
       for (const auto& [underlying, bucket] : view->snapshot->risk.underlyings)
         if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
       view->breach = session.breach(vols);
+      view->warnings = session.warnings(vols, dividends_);
       sample_equity(account);
       if (account.equity) {
         view->equity_samples = account.equity->samples();

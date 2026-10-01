@@ -186,6 +186,22 @@ TEST_F(PaperEngine, PendingLimitsGuardrailsAndBreachAreExposedWithRevisionChecks
   ASSERT_EQ(preview.status, 200);
   EXPECT_EQ(json::parse(preview.body)["decision"], "TRADE_LIMIT");
   expect_error(write(*engine, "POST", "/api/orders", opening), 422, "TRADE_LIMIT");
+  // A limit tightened below the held book's delta is warned on the risk and account views.
+  // Within 1% of the 1,000,000 limit by gamma, the call is close to it already.
+  risk = read(*engine, "/api/risk");
+  ASSERT_EQ(risk["warnings"].size(), 1U);
+  EXPECT_EQ(risk["warnings"][0]["code"], "DELTA_HEADROOM");
+  limits = risk["limits"];
+  limits["per_underlying"]["dollar_delta"] = 1;
+  response = write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", risk["limits_revision"]}, {"limits", limits}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto warning = read(*engine, "/api/risk")["warnings"][0];
+  EXPECT_EQ(warning["code"], "DELTA_LIMIT");
+  EXPECT_EQ(warning["severity"], "warning");
+  EXPECT_EQ(warning["scope"], "SPX");
+  EXPECT_TRUE(warning["symbol"].is_null());
+  EXPECT_EQ(warning["limit"], 1);
+  EXPECT_EQ(read(*engine, "/api/account")["warnings"][0], warning);
   EXPECT_EQ(read(*engine, "/api/account/equity")["samples"].size(), 0U); // no journal, no history
   EXPECT_EQ(server::handle_api({"GET", "/api/account/equity?from=bad"}, *engine).status, 400);
   EXPECT_EQ(server::handle_api({"GET", "/api/account/equity?from=2026-09-23T00:00:00Z&to=2026-09-22T00:00:00Z"}, *engine).status, 400);
