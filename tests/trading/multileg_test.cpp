@@ -812,6 +812,30 @@ TEST(TradingMultiLeg, HeldExitsValidateHoldingsAndCanModifyCancelAndCloseUnderKi
   EXPECT_EQ(s.snapshot()->recent_orders.at(static_cast<std::size_t>(stop - 1)).reason.code, Reason::OCO_FILLED);
 }
 
+TEST(TradingMultiLeg, ARetryOfHeldExitsAManualCloseResizedStillGetsThem) {
+  Chain f;
+  TradingSession s(config(), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(combo("entry", credit_legs(), 2, {}), f.time).decision.ok());
+  auto exits = combo("exits", close_legs(), 2, "0.40", TimeInForce::Gtc);
+  exits.bracket = spread_bracket();
+  exits.exits_only = true;
+  const auto placed = s.submit(exits, f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  const auto target = *placed.order_id;
+  // Closing one unit by hand shrinks the exits to the unit left.
+  ASSERT_TRUE(s.submit(combo("close-one", close_legs(), 1, {}), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->recent_orders.at(static_cast<std::size_t>(target - 1)).request.quantity, 1);
+  // A retry of the submission still gets the exits as they now stand, and records nothing.
+  const auto version = s.snapshot()->account_version;
+  const auto retry = s.submit(exits, f.time);
+  EXPECT_TRUE(retry.decision.ok()) << retry.decision.message;
+  EXPECT_TRUE(retry.replayed);
+  EXPECT_EQ(retry.order_id, target);
+  EXPECT_EQ(s.snapshot()->account_version, version);
+}
+
 TEST(TradingMultiLeg, HeldExitsCanBeAttachedOvernightAndWaitForTheRegularSession) {
   for (const bool target : {true, false}) {
     Chain f;

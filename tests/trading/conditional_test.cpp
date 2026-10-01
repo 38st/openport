@@ -228,6 +228,18 @@ TEST(TradingConditional, BuyOnlyAndBuyingPowerCountTheBracketOnceAndNeverBlockMa
   EXPECT_EQ(s.submit(f.limit("extra", 1, "4.40", Side::Sell), f.time).decision.code, Reason::BUY_ONLY);
 }
 
+TEST(TradingConditional, AnOffTickExitPriceIsAnInvalidTick) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  // A take-profit, and a stop exit that rests as a limit, off the contract's tier tick.
+  EXPECT_EQ(s.submit(with_bracket(f.limit("target", 1, "4.10"), stop_at("4.00"), target_at("5.03")), f.time).decision.code,
+            Reason::INVALID_TICK);
+  EXPECT_EQ(s.submit(with_bracket(f.limit("stop", 1, "4.10"), target_at("4.03"), target_at("5.00")), f.time).decision.code,
+            Reason::INVALID_TICK);
+  EXPECT_TRUE(s.submit(with_bracket(f.limit("on-tick", 1, "4.10"), target_at("4.00"), target_at("5.00")), f.time).decision.ok());
+}
+
 TEST(TradingConditional, ABracketStopAlreadyReachedWhenTheEntryFillsFiresAtSubmission) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);
