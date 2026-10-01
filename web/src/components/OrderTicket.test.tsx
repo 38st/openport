@@ -213,6 +213,36 @@ describe("order ticket interaction", () => {
     expect(api.submitOrder).toHaveBeenCalledTimes(1)
     expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ type: "limit", time_in_force: "day" })
   })
+  it("takes a condition and exits overnight only on a GTC limit, which waits for the regular session", async () => {
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }] }, null, "open"))
+    await render({ ...trading, fee_per_contract: "0.65" })
+    expect(host.querySelector('[role="radiogroup"][aria-label="Condition"]')).toBeNull()
+    await choose("Time in force", "GTC")
+    expect(host.textContent).toContain("GTC waits for the regular session")
+    await choose("Condition", "When SPX crosses")
+    await setField("SPX level", "7010")
+    await act(async () => (host.querySelector('input[aria-label="Bracket"]') as HTMLInputElement).click())
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({
+      type: "limit", time_in_force: "gtc", trigger: { source: "underlying", direction: "at_or_above", level: "7010" },
+      bracket: { stop_loss: { trigger: { source: "option", direction: "at_or_below", level: "3.50" } }, take_profit: { limit_price: "6.90" } },
+    })
+  })
+  it("leaves a Day order plain overnight, even after a condition was chosen as GTC", async () => {
+    vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }] }, null, "open"))
+    await render()
+    await choose("Time in force", "GTC")
+    await choose("Condition", "When SPX crosses")
+    await setField("SPX level", "7010")
+    await act(async () => (host.querySelector('input[aria-label="Bracket"]') as HTMLInputElement).click())
+    await choose("Time in force", "Day")
+    expect(host.querySelector('[aria-label="Bracket"]')).toBeNull()
+    await click("Submit order")
+    const sent = vi.mocked(api.submitOrder).mock.calls[0]![0]
+    expect(sent).toMatchObject({ type: "limit", time_in_force: "day" })
+    expect(sent).not.toHaveProperty("trigger")
+    expect(sent).not.toHaveProperty("bracket")
+  })
   it("follows the feed's session over the wall clock's", async () => {
     // Just after 09:30 a 15-minute delayed feed still shows the overnight session.
     vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!,

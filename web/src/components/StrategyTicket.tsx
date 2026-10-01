@@ -84,11 +84,13 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const quote = netQuote(legs)
   const [units, setUnits] = useState(String(initialUnits ?? 1))
   const status = underlyings.find((u) => u.symbol === underlying)
-  // The overnight and curb sessions take a net limit only.
+  // The overnight and curb sessions take a net limit only, and exits only on a GTC
+  // limit, which waits for the regular session.
   const extended = extendedSession(status)
   const [chosenType, setType] = useState<"limit" | "market">("limit")
   const type = extended ? "limit" : chosenType
   const [tif, setTif] = useState<"day" | "gtc" | "ioc">("day")
+  const exitable = !closing && !roll && (!extended || tif === "gtc")
   const [amount, setAmount] = useState(() => quote.mid != null ? Math.abs(roundNet(quote.mid, tick)).toFixed(2) : "")
   const [direction, setDirection] = useState<"debit" | "credit">(() => (quote.mid ?? 0) < 0 ? "credit" : "debit")
   const [pending, setPending] = useState(false)
@@ -157,7 +159,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
   })
   const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
-  const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount) && (closing || roll || extended || exits.valid)
+  const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
 
   const preview = useOrderPreview(valid ? {
     client_order_id: "preview:strategy", legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
@@ -203,7 +205,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       request.current ??= {
         client_order_id: crypto.randomUUID(), legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
         ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitText }),
-        ...(!closing && !roll && !extended && exits.bracket ? { bracket: exits.bracket } : {}),
+        ...(exitable && exits.bracket ? { bracket: exits.bracket } : {}),
         ...(orderTags.length ? { tags: orderTags } : {}), ...(note ? { note } : {}),
       }
       const response = await api.submitOrder(request.current, trading.write)
@@ -295,7 +297,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
               <span className={`text-xs ${amount && !validAmount ? "text-warn" : "text-muted"}`}>{amount && !validAmount ? `Use a multiple of $${(tick / 100).toFixed(2)}` : `$${(tick / 100).toFixed(2)} tick`} · {direction === "debit" ? "pay at most" : "receive at least"}</span>
             </span>
           </div>}
-          {!closing && !roll && !extended && <div className="col-span-2">{exits.fields}</div>}
+          {exitable && <div className="col-span-2">{exits.fields}</div>}
         </fieldset>
         <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} market={type === "market"} legs={legs.map((leg) => ({ label: `${leg.expiry} ${leg.strike} ${leg.type}`, quote: leg.quote, side: leg.side, quantity: q * leg.ratio }))} />
         <p role="status" className={`rounded-md border px-3 py-2 text-xs ${marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>
