@@ -77,11 +77,13 @@ json breach_json(const BreachRisk& b) {
   json underlyings = json::array();
   for (const auto& item : b.underlyings)
     underlyings.push_back({{"underlying", item.underlying}, {"spot", number(item.spot)}, {"complete", item.complete},
-        {"close_sigma", item.close_sigma ? number(*item.close_sigma) : json(nullptr)}, {"down", level(item.down)}, {"up", level(item.up)}});
+        {"close_sigma", item.close_sigma ? number(*item.close_sigma) : json(nullptr)}, {"down", level(item.down)}, {"up", level(item.up)},
+        {"soft_down", level(item.soft_down)}, {"soft_up", level(item.soft_up)}});
   return {{"room", money(b.room)}, {"soft_room", money(b.soft_room)}, {"complete", b.complete},
           {"underlyings", underlyings}, {"model", "Driftless log-return reflection estimate; unchanged volatility, one underlying at a time"},
           {"scan_down_percent", -99.75}, {"scan_up_percent", 1000}};
 }
+json units(const std::optional<Quantity>& value) { return value ? json(*value) : json(nullptr); }
 json preview_json(const OrderPreview& p) {
   json change = nullptr;
   if (p.exposure_change) change = {{"dollar_delta", number(p.exposure_change->dollar_delta)},
@@ -93,7 +95,8 @@ json preview_json(const OrderPreview& p) {
       {"equity_at_max_loss", money(p.equity_at_max_loss)},
       {"breaches_floor", p.breaches_floor ? json(*p.breaches_floor) : json(nullptr)},
       {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
-      {"max_units", p.max_units}, {"breach", breach_json(p.breach)}, {"simulated", true}};
+      {"max_units", units(p.max_units)}, {"max_units_buying_power", units(p.max_units_buying_power)},
+      {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)}, {"simulated", true}};
 }
 
 /// The next payout's requirements, or null outside the funded phase.

@@ -545,7 +545,11 @@ export interface Breach {
   soft_room: Money | null
   complete: boolean
   model: string
-  underlyings: { underlying: string; spot: number; complete: boolean; close_sigma: number | null; down: BreachLevel | null; up: BreachLevel | null }[]
+  underlyings: {
+    underlying: string; spot: number; complete: boolean; close_sigma: number | null; down: BreachLevel | null; up: BreachLevel | null
+    /** Levels at the personal soft floor; the same as down/up without a plan floor. Absent on older servers. */
+    soft_down?: BreachLevel | null; soft_up?: BreachLevel | null
+  }[]
 }
 export interface OrderPreview {
   account_version: string
@@ -558,7 +562,12 @@ export interface OrderPreview {
   equity_at_max_loss: Money | null
   breaches_floor: boolean | null
   breaches_soft_floor: boolean | null
-  max_units: number
+  /** Units that fit buying power, the limits and the floor share; null when sizing is unavailable. */
+  max_units: number | null
+  /** Units that fit buying power and the limits, floor room aside. Absent on older servers. */
+  max_units_buying_power?: number | null
+  /** Units whose loss fits the floor share; null without a plan or soft floor. Absent on older servers. */
+  max_units_floor?: number | null
   breach: Breach
   simulated: true
 }

@@ -160,7 +160,9 @@ class OrderPreview(TypedDict):
     reason: JSON | None
     buying_power: JSON
     max_loss: str | None
-    max_units: int
+    max_units: int | None
+    max_units_buying_power: int | None
+    max_units_floor: int | None
     breach: JSON
     simulated: bool
 

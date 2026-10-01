@@ -364,7 +364,7 @@ TEST(TradingPreview, PureChecksMatchSubmitAndDoNotConsumeIdsJournalOrLiquidity) 
   EXPECT_EQ(retry.buying_power_after, retry.buying_power_before);
   EXPECT_EQ(retry.buying_power_required, Money{});
   EXPECT_EQ(retry.exposure_change->dollar_delta, 0);
-  EXPECT_EQ(retry.max_units, 0);
+  EXPECT_FALSE(retry.max_units);
 }
 TEST(TradingPreview, SameRejectionsAndSizeHonoursPowerLimitsAndRoom) {
   ScriptedMarket f; auto c = config(); c.limits.max_order_contracts = 3;
@@ -431,7 +431,7 @@ TEST(TradingPreview, SizeCanRestoreBuyingPowerWhenAPartialCloseLeavesADeficit) {
   ASSERT_TRUE(preview.buying_power_after);
   EXPECT_LT(*preview.buying_power_after, Money{});
   EXPECT_EQ(preview.max_units, 2);
-  const auto sized = s.preview(f.market("close", preview.max_units), f.time, 1);
+  const auto sized = s.preview(f.market("close", *preview.max_units), f.time, 1);
   EXPECT_GE(*sized.buying_power_after, Money{});
   EXPECT_FALSE(*sized.breaches_floor);
 }

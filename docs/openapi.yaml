@@ -10819,6 +10819,26 @@
                       "type": "null"
                     }
                   ]
+                },
+                "soft_down": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BreachLevel"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "soft_up": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BreachLevel"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -10827,7 +10847,9 @@
                 "complete",
                 "close_sigma",
                 "down",
-                "up"
+                "up",
+                "soft_down",
+                "soft_up"
               ]
             }
           }
@@ -10983,7 +11005,34 @@
             ]
           },
           "max_units": {
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_units_buying_power": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_units_floor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "breach": {
             "$ref": "#/components/schemas/Breach"
@@ -11005,6 +11054,8 @@
           "breaches_floor",
           "breaches_soft_floor",
           "max_units",
+          "max_units_buying_power",
+          "max_units_floor",
           "breach",
           "simulated"
         ]

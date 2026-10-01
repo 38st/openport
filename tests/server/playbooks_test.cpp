@@ -519,7 +519,7 @@ TEST(Playbooks, FloorShareAndFixedSizesUseTheNormalPreviewAndLiveSendPath) {
   server::TradingReply projection;
   desk.command(preview, [&](server::TradingReply result) { projection = std::move(result); }, desk.market_time(), desk.market_time());
   ASSERT_TRUE(projection.preview);
-  EXPECT_EQ(request.quantity, projection.preview->max_units);
+  EXPECT_EQ(std::optional(request.quantity), projection.preview->max_units);
   EXPECT_LE(request.quantity, 2);
   EXPECT_LE(*projection.preview->max_loss, money("800"));
   setup["version"] = 1; setup["sizing"] = {{"units", 100}};

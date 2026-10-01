@@ -804,12 +804,21 @@ ID counter, and consumes no displayed size. The normal HTTP write protections ap
 The response contains `decision` (`ok` or a reason code), `reason`, `buying_power`
 (`required`, `before`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
 vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
-`breaches_floor`, `breaches_soft_floor`, `max_units` and projected `breach`. Missing
+`breaches_floor`, `breaches_soft_floor`, `max_units`, `max_units_buying_power`,
+`max_units_floor` and projected `breach`. Missing
 inputs produce null analytical values. `simulated: true` labels the projection.
 Market orders use slipped far sides, through the impact blocks a fill would walk; limit
 orders use their limit debit or credit.
 Fees are included. Identical client-ID retries return their original decision with no
 additional buying power or Greek change; loss projection and sizing are unavailable.
+
+`buying_power.required` is what the order reserves while it works. `before` is the
+available buying power now, and `after` the available buying power once the order has
+filled in full at the projected price: not `before` less `required`, since a fill that
+releases margin, as a close or a roll does, raises it. An `exits_only` pair rests until
+one of its exits fills, so its `after` is the buying power once it is accepted, with its
+fee reservation held, as the account shows after submitting it; its loss and Greek
+change still project the primary exit (the target, or the stop without one) filling.
 
 For an order that opens every leg, a bounded same-expiry payoff has an exact maximum
 loss at zero or a strike; a net short call tail is unbounded. Other orders use the worst
@@ -823,7 +832,17 @@ describes the account after the order. A bracket entry's projected account inclu
 exit pair, so `buying_power.after` holds the exits' fee reservation as the account will.
 `max_units` fits buying power, pre-trade limits and the requested share of current
 room above the nearer plan or soft floor. Touching a floor never fits. The share is
-rounded down to millionths for fixed-point sizing. The preview is a current projection,
+rounded down to millionths for fixed-point sizing. `max_units_buying_power` is the
+same size with buying power and the limits alone, floor room aside, and
+`max_units_floor` the size whose loss fits the floor share among those the pre-trade
+checks accept, without the fit to available buying power (a plan's `buying_power`
+rule still refuses); it is null on an account with neither a plan nor a soft floor.
+Zero means no size fits: one unit already needs more buying power than is available,
+or raises an exposure or order-size limit. Null means sizing is unavailable: an
+identical retry, an account stopped by a journal failure, held exits (their size
+follows the position), an order the checks refuse at any size for another reason
+(a closed session, a stale quote, the kill switch, a price off its tick), or a loss
+that cannot be projected without marks and valuations. The preview is a current projection,
 not an execution promise; real orders still take all checks when submitted and filled.
 
 `GET /api/risk` and `GET /api/account` expose `breach`: dollar `room` and `soft_room`,
@@ -832,7 +851,9 @@ standard deviation of its log price to today's close), `complete`, and optional
 `down`/`up` levels with signed `points`, `percent` and `touch_probability`. The levels
 are where equity would reach the plan floor, or the personal soft floor on an account
 without one (a practice account, say); with neither floor, held underlyings are listed
-without levels. One underlying moves at a time while volatility and option
+without levels. `soft_down`/`soft_up` are where equity would reach the soft floor,
+which liquidates first when it sits above the plan floor; without a plan floor they
+repeat `down`/`up`, and without a soft floor they are null. One underlying moves at a time while volatility and option
 life stay fixed. The scenario solver scans by 0.25% to −99.75% and +100%, then by 1%
 to +1000%, and bisects the first crossing. A missing level means no crossing in that
 scan, not safety outside it or between scan points. Missing valuations leave levels
@@ -1676,7 +1697,7 @@ focus at the top of the ticket.
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
-| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` and projected `breach` |
+| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable) and projected `breach` |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
