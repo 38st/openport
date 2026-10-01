@@ -2,7 +2,8 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
-import type { NewOrder, OrderPreview, TradingStatus } from "../api/trading-types"
+import type { NewOrder, OrderPreview, PreviewExecution, PreviewFill, TradingStatus } from "../api/trading-types"
+import { osiLabel } from "../lib/journal"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { BreachPanel } from "./BreachPanel"
@@ -29,6 +30,28 @@ export function useOrderPreview(order: NewOrder | null, trading: TradingStatus) 
 const greekChanges = [["dollar_delta", "Dollar delta"], ["dollar_gamma_1pct", "Dollar gamma per 1%"], ["vega", "Vega"], ["theta", "Theta"]] as const
 function signed(value: number) { return `${value > 0 ? "+" : ""}${value.toFixed(2)}` }
 function units(value: number | null | undefined) { return value == null ? "Unavailable" : `${value} ${value === 1 ? "unit" : "units"}` }
+function fillRow(fill: PreviewFill) {
+  return `${fill.side === "buy" ? "Buy" : "Sell"} ${fill.quantity} ${osiLabel(fill.symbol, "")} at ${formatMoney(fill.price)}`
+}
+/** What submitting now would fill at once, what happens to the rest, and the full size block by block. */
+export function ExecutionSummary({ execution: e }: { execution: PreviewExecution }) {
+  if (e.status === "rejected") return null
+  const rest = e.remaining_quantity
+  const fills = e.filled_quantity > 0
+    ? `Fills ${e.filled_quantity} at once${e.average_fill_price != null ? ` at ${formatMoney(e.average_fill_price)} on average` : ""}.`
+    : "Nothing fills at once."
+  const after = rest <= 0 ? "" : e.status === "cancelled" ? ` ${rest} would cancel: ${e.reason?.message ?? "no liquidity left"}.`
+    : e.status === "armed" ? " It waits armed until its trigger is reached."
+    : ` ${rest} ${rest === 1 ? "works" : "work"} as a resting order.`
+  return <section aria-label="Expected execution" className="space-y-1">
+    <p className={e.status === "cancelled" && rest > 0 ? "text-warn" : undefined}>{fills}{after}</p>
+    {e.schedule.length > 0 && <details><summary className="cursor-pointer text-muted">
+      Full size at the current quotes{e.average_price != null ? `: ${formatMoney(e.average_price)} per unit` : ""}</summary>
+      <ul className="mt-1 space-y-0.5 tabular">{e.schedule.map((fill, index) => <li key={index}>{fillRow(fill)}</li>)}</ul>
+      <p className="mt-1 text-faint">Far sides with the account's slippage, each further displayed-size block at its impact price; a limit order pays its limit instead.</p>
+    </details>}
+  </section>
+}
 export function OrderPreviewPanel({ preview, onSize, disabled = false }: {
   preview: { data?: OrderPreview; error: unknown; loading: boolean }; onSize: (size: number) => void; disabled?: boolean
 }) {
@@ -55,6 +78,7 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false }: {
             </>}
         </dl>
         {p.decision !== "ok" && <p role="status" className="text-warn">{p.decision}: {p.reason?.message}</p>}
+        {p.decision === "ok" && p.execution && <ExecutionSummary execution={p.execution} />}
         {(p.breaches_floor || p.breaches_soft_floor) && <p role="alert" className="font-medium text-danger">This order could breach {p.breaches_floor ? "the plan floor" : "your soft floor"}.</p>}
         <details><summary className="cursor-pointer text-muted">After this order · breach risk, and the change in Greeks</summary>
           <BreachPanel breach={p.breach} />

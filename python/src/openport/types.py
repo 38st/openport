@@ -164,6 +164,7 @@ class OrderPreview(TypedDict):
     max_units_buying_power: int | None
     max_units_floor: int | None
     breach: JSON
+    execution: JSON
     simulated: bool
 
 

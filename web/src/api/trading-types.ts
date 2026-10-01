@@ -574,6 +574,19 @@ export interface Breach {
     soft_down?: BreachLevel | null; soft_up?: BreachLevel | null
   }[]
 }
+/** A block of contracts at one price, as a fill would trade it. */
+export interface PreviewFill { symbol: string; side: Side; quantity: number; price: Money }
+/** What submitting the order now would execute (a private dry run), and its full size block by block. */
+export interface PreviewExecution {
+  status: Order["status"]
+  filled_quantity: number
+  remaining_quantity: number
+  reason: { code: string; message: string } | null
+  fills: PreviewFill[]
+  average_fill_price: Money | null
+  schedule: PreviewFill[]
+  average_price: Money | null
+}
 export interface OrderPreview {
   account_version: string
   decision: string
@@ -592,6 +605,8 @@ export interface OrderPreview {
   /** Units whose loss fits the floor share; null without a plan or soft floor. Absent on older servers. */
   max_units_floor?: number | null
   breach: Breach
+  /** Absent on older servers. */
+  execution?: PreviewExecution
   simulated: true
 }
 export interface EquitySample {

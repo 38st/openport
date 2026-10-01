@@ -92,6 +92,20 @@ json breach_json(const BreachRisk& b) {
           {"scan_down_percent", -99.75}, {"scan_up_percent", 1000}};
 }
 json units(const std::optional<Quantity>& value) { return value ? json(*value) : json(nullptr); }
+json preview_fills(const std::vector<PreviewFill>& fills) {
+  json out = json::array();
+  for (const auto& f : fills)
+    out.push_back({{"symbol", f.symbol}, {"side", f.side == Side::Buy ? "buy" : "sell"}, {"quantity", f.quantity}, {"price", f.price.str()}});
+  return out;
+}
+json execution_json(const PreviewExecution& e) {
+  constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
+  return {{"status", statuses[static_cast<int>(e.status)]}, {"filled_quantity", e.filled_quantity},
+          {"remaining_quantity", e.remaining_quantity},
+          {"reason", e.reason.ok() ? json(nullptr) : json{{"code", to_string(e.reason.code)}, {"message", e.reason.message}}},
+          {"fills", preview_fills(e.fills)}, {"average_fill_price", money(e.average_fill_price)},
+          {"schedule", preview_fills(e.schedule)}, {"average_price", money(e.average_price)}};
+}
 json preview_json(const OrderPreview& p) {
   json change = nullptr;
   if (p.exposure_change) change = {{"dollar_delta", number(p.exposure_change->dollar_delta)},
@@ -104,7 +118,8 @@ json preview_json(const OrderPreview& p) {
       {"breaches_floor", p.breaches_floor ? json(*p.breaches_floor) : json(nullptr)},
       {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
       {"max_units", units(p.max_units)}, {"max_units_buying_power", units(p.max_units_buying_power)},
-      {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)}, {"simulated", true}};
+      {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)},
+      {"execution", execution_json(p.execution)}, {"simulated", true}};
 }
 
 /// The next payout's requirements, or null outside the funded phase.

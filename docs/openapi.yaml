@@ -10998,6 +10998,132 @@
           "underlyings"
         ]
       },
+      "PreviewFill": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/Side"
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "price": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "symbol",
+          "side",
+          "quantity",
+          "price"
+        ]
+      },
+      "PreviewExecution": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "const": "working",
+                "type": "string"
+              },
+              {
+                "const": "partially_filled",
+                "type": "string"
+              },
+              {
+                "const": "filled",
+                "type": "string"
+              },
+              {
+                "const": "cancelled",
+                "type": "string"
+              },
+              {
+                "const": "rejected",
+                "type": "string"
+              },
+              {
+                "const": "armed",
+                "type": "string"
+              }
+            ]
+          },
+          "filled_quantity": {
+            "type": "integer"
+          },
+          "remaining_quantity": {
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "message"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreviewFill"
+            }
+          },
+          "average_fill_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schedule": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreviewFill"
+            }
+          },
+          "average_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "filled_quantity",
+          "remaining_quantity",
+          "reason",
+          "fills",
+          "average_fill_price",
+          "schedule",
+          "average_price"
+        ]
+      },
       "OrderPreview": {
         "type": "object",
         "properties": {
@@ -11161,6 +11287,9 @@
           "breach": {
             "$ref": "#/components/schemas/Breach"
           },
+          "execution": {
+            "$ref": "#/components/schemas/PreviewExecution"
+          },
           "simulated": {
             "const": true,
             "type": "boolean"
@@ -11181,6 +11310,7 @@
           "max_units_buying_power",
           "max_units_floor",
           "breach",
+          "execution",
           "simulated"
         ]
       },

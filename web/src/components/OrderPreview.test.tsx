@@ -99,6 +99,22 @@ describe("order preview", () => {
     expect(host.textContent).toContain("Size that fits bothUnavailable")
     expect(host.querySelector("button")!.disabled).toBe(true)
   })
+  it("says what fills at once, what cancels and the full size block by block", async () => {
+    const symbol = "SPXW  261022C05000000"
+    const execution = { status: "cancelled" as const, filled_quantity: 15, remaining_quantity: 5,
+      reason: { code: "IOC_REMAINDER", message: "IOC exhausted available displayed liquidity" },
+      fills: [{ symbol, side: "buy" as const, quantity: 15, price: "4.2" }], average_fill_price: "4.2",
+      schedule: [{ symbol, side: "buy" as const, quantity: 8, price: "4.2" }, { symbol, side: "buy" as const, quantity: 12, price: "4.3" }],
+      average_price: "4.26" }
+    await act(async () => root.render(<OrderPreviewPanel preview={{ data: { ...preview, execution }, error: null, loading: false }} onSize={() => {}} />))
+    const section = host.querySelector('[aria-label="Expected execution"]')!
+    expect(section.textContent).toContain("Fills 15 at once at $4.20 on average. 5 would cancel: IOC exhausted available displayed liquidity.")
+    expect(section.textContent).toContain("Full size at the current quotes: $4.26 per unit")
+    expect(section.textContent).toContain("Buy 12 SPXW Oct 22 5000C at $4.30")
+    const resting = { ...execution, status: "working" as const, filled_quantity: 0, remaining_quantity: 2, reason: null, fills: [], average_fill_price: null }
+    await act(async () => root.render(<OrderPreviewPanel preview={{ data: { ...preview, execution: resting }, error: null, loading: false }} onSize={() => {}} />))
+    expect(host.textContent).toContain("Nothing fills at once. 2 work as a resting order.")
+  })
   it("labels scenario estimates and prevents zero-unit sizing", async () => {
     const result = { ...preview, max_loss_basis: "scenario_grid" as const, max_units: 0 }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: result, error: null, loading: false }} onSize={() => {}} />))

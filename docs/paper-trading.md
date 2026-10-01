@@ -830,12 +830,26 @@ The response contains `decision` (`ok` or a reason code), `reason`, `buying_powe
 (`required`, `before`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
 vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
 `breaches_floor`, `breaches_soft_floor`, `max_units`, `max_units_buying_power`,
-`max_units_floor` and projected `breach`. Missing
+`max_units_floor`, projected `breach` and `execution`. Missing
 inputs produce null analytical values. `simulated: true` labels the projection.
 Market orders use slipped far sides, through the impact blocks a fill would walk; limit
 orders use their limit debit or credit.
 Fees are included. Identical client-ID retries return their original decision with no
 additional buying power or Greek change; loss projection and sizing are unavailable.
+
+`execution` is what submitting the order now would do, from the same acceptance and
+matching run on a private copy of the account: its `status` just after submission
+(`filled`, `partially_filled`, `working`, `armed`, `cancelled` or `rejected`),
+`filled_quantity` and `remaining_quantity`, the `reason` its rest ended at once (an IOC
+remainder past the displayed size, say) or it was refused, its `fills` contract by
+contract with their prices, and `average_fill_price`. As displayed, a market order
+larger than the displayed size fills that size and cancels the rest; with fill latency
+nothing fills on acceptance and the order works until a later quote. `schedule` prices
+the full size at the current far sides with the account's slippage, block by block
+through impact as a fill would walk them and whatever the displayed size, each block
+as `symbol`, `side`, `quantity` and `price`, and `average_price` is its average per unit
+(a multi-leg order's net debit, negative for a credit). The full-size projection below
+uses those prices for a market order and the limit for a limit order.
 
 `buying_power.required` is what the order reserves while it works. `before` is the
 available buying power now, and `after` the available buying power once the order has
@@ -1764,7 +1778,7 @@ focus at the top of the ticket.
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
-| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable) and projected `breach` |
+| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
