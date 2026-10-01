@@ -172,6 +172,39 @@ TEST(PlanRules, ADailyLossLimitFlattensAndLocksTheDayWithoutFailing) {
   EXPECT_TRUE(s.submit(f.market("next-day"), f.time).decision.ok());
 }
 
+TEST(PlanRules, ALockedDayRecoversLockedAndRolloverReleasesIt) {
+  ScriptedMarket f;
+  auto rules = plan("1000", "1000");
+  rules.daily_loss_limit = m("200");
+  JournalFile file;
+  TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 5), f.time).decision.ok());
+  quote(s, f, "3.70", "3.90");
+  ASSERT_EQ(s.snapshot()->evaluation.day_lock, Reason::DAILY_LOSS_LIMIT);
+  // The lock is journaled with its code and level, and a restart keeps it.
+  const auto recovery = FileJournal::read(file.path);
+  bool announced = false;
+  for (const auto& record : recovery.records) {
+    const auto payload = nlohmann::json::parse(record.payload);
+    for (const auto& event : payload.at("events"))
+      if (event.at("type") == "day_locked") {
+        announced = event.at("payload").at("code") == "DAILY_LOSS_LIMIT" && event.at("payload").at("level") == m("9800").micros();
+        EXPECT_TRUE(announced) << event.dump();
+      }
+  }
+  EXPECT_TRUE(announced);
+  auto restored = TradingSession::recover(recovery);
+  EXPECT_EQ(restored.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(restored.snapshot()->evaluation.day_lock, Reason::DAILY_LOSS_LIMIT);
+  EXPECT_EQ(restored.snapshot()->evaluation.day_locked_at, s.snapshot()->evaluation.day_locked_at);
+  EXPECT_EQ(restored.submit(f.market("after-restart"), f.time).decision.code, Reason::DAILY_LOSS_LIMIT);
+  next_day(restored, f, {2026, 9, 23});
+  EXPECT_EQ(restored.snapshot()->evaluation.day_lock, Reason::NONE);
+  EXPECT_EQ(restored.snapshot()->evaluation.days.at(0).locked, Reason::DAILY_LOSS_LIMIT);
+  EXPECT_TRUE(restored.submit(f.market("next-day"), f.time).decision.ok());
+}
+
 TEST(PlanRules, ADailyLossLimitCanFailTheAttemptAndRecoversWithItsCode) {
   ScriptedMarket f;
   auto rules = plan("1000", "1000");
