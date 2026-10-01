@@ -1,4 +1,5 @@
-import type { OptionQuote } from "../api/types"
+import type { PreviewLiquidity } from "../api/trading-types"
+import type { OptionQuote, QuoteIssue } from "../api/types"
 import { count, pct } from "./format"
 
 export const LIQUIDITY = { maxSpread: 0.20, minVolume: 100, minOpenInterest: 500 } as const
@@ -32,4 +33,39 @@ export function liquidityDetail(quote: LiquidityQuote | null | undefined): strin
   const volume = known(quote?.volume) ? count(quote.volume) : "unknown"
   const oi = known(quote?.oi) ? count(quote.oi) : "unknown"
   return `${result.reason} · Spread ${result.spread == null ? "unknown" : pct(result.spread, 1)} · Volume ${volume} · OI ${oi}`
+}
+
+const issues: Record<QuoteIssue, string> = {
+  no_quote: "No quote",
+  no_bid: "One-sided: no bid",
+  no_ask: "One-sided: no ask",
+  crossed: "Crossed: the bid is above the ask",
+  zero_size: "A side shows no displayed size",
+}
+/** Why a displayed quote cannot fill paper orders, or null when it can (or an older server does not say). */
+export function quoteIssueText(quote: Pick<OptionQuote, "executable" | "quote_issue"> | null | undefined): string | null {
+  if (!quote || quote.executable !== false) return null
+  return quote.quote_issue ? issues[quote.quote_issue] : "Not executable"
+}
+
+/**
+ * What a previewed order can take on the quotes it would trade against: each leg's
+ * displayed size this account's orders have used, and how much of the order the
+ * rest leaves to wait, cancel (IOC) or, with impact, fill at simulated depth.
+ */
+export function displayedSizeNotes(legs: readonly PreviewLiquidity[], label: (leg: PreviewLiquidity) => string,
+  options: { ioc: boolean; impact: boolean }): string[] {
+  return legs.flatMap((leg) => {
+    const name = label(leg)
+    const side = leg.side === "buy" ? "ask" : "bid"
+    if (!leg.executable) return [`${name}: ${leg.reason?.message ?? "No executable quote"}; new orders on it are refused until it can fill.`]
+    const notes: string[] = []
+    if (leg.size_left < leg.displayed)
+      notes.push(`${name}: ${leg.size_left} of the ${leg.displayed} displayed at the ${side} left for your paper orders until a new quote.`)
+    if (leg.contracts > leg.size_left)
+      notes.push(options.impact
+        ? `${name}: ${leg.contracts} contracts against ${leg.size_left} left; the rest fills at simulated depth prices, within any limit.`
+        : `${name}: only ${leg.size_left} of ${leg.contracts} contracts can fill on this quote; ${options.ioc ? "the rest cancels (IOC)" : "the rest waits for a new quote"}.`)
+    return notes
+  })
 }

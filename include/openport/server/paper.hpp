@@ -95,6 +95,8 @@ struct TradingView {
   trading::Valuations valuations;
   /// Per-underlying data clocks, seeded from persisted quotes on recovery.
   std::map<std::string, md::Timestamp> market_times;
+  /// What this account's orders have left of the quotes still current, where they took some.
+  std::map<std::string, trading::SizeLeft> sizes_left;
   /// Circuit-breaker halts of the last day.
   std::vector<MarketHalt> halts;
   trading::BreachRisk breach;

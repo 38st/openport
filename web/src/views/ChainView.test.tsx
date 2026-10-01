@@ -4,12 +4,13 @@ import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
-import { chain, selection, status, summary } from "../test/trading-fixtures"
+import { chain, portfolio, quote, selection, status, summary } from "../test/trading-fixtures"
 import { ChainView } from "./ChainView"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../components/PriceChart", () => ({ PriceChart: () => null }))
-vi.mock("../api/trading", () => ({ usePortfolio: () => ({ data: undefined }) }))
+const held = vi.hoisted(() => ({ data: undefined as unknown }))
+vi.mock("../api/trading", () => ({ usePortfolio: () => held }))
 
 it("toggles liquidity columns independently of Greeks", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
@@ -39,6 +40,34 @@ it("toggles liquidity columns independently of Greeks", async () => {
     expect(headers()).toContain("Vol")
   } finally {
     await act(async () => root.unmount())
+    client.clear()
+    vi.unstubAllGlobals()
+  }
+})
+
+it("marks quotes paper orders cannot fill on, and the displayed size the account already took", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
+  held.data = { ...portfolio, liquidity_used: [{ symbol: quote.symbol, bid_size: 10, ask_size: 3, bid_left: 10, ask_left: 1 }] }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+  client.setQueryData(["summary", "SPX", 1], summary)
+  const put = { ...quote, symbol: "SPXW  261016P07000000", bid: null, bid_size: null, executable: false, quote_issue: "no_bid" as const }
+  client.setQueryData(["chain", "SPX", selection.expiry.id, .05, 1], { ...chain, strikes: [{ ...chain.strikes[0]!, call: { ...quote, executable: true, quote_issue: null }, put }] })
+  const host = document.createElement("div")
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} /></QueryClientProvider>))
+    const cells = [...host.querySelectorAll("button[aria-pressed]")]
+    const callAsk = cells.find((cell) => cell.getAttribute("aria-label")?.startsWith("buy 7000 call at ask"))!
+    expect(callAsk.textContent).toContain("1 left")
+    expect(callAsk.getAttribute("title")).toContain("1 of 3 displayed left for your paper orders")
+    const callBid = cells.find((cell) => cell.getAttribute("aria-label")?.startsWith("sell 7000 call at bid"))!
+    expect(callBid.textContent).not.toContain("left")
+    const putBid = cells.find((cell) => cell.getAttribute("aria-label")?.startsWith("sell 7000 put at bid"))!
+    expect(putBid.getAttribute("title")).toContain("Not executable: One-sided: no bid")
+  } finally {
+    await act(async () => root.unmount())
+    held.data = undefined
     client.clear()
     vi.unstubAllGlobals()
   }

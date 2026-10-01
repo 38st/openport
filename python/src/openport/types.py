@@ -66,6 +66,7 @@ class Fill(TypedDict):
     price: str
     fee: str
     time: str
+    quote: JSON | None
 
 
 class Orders(TypedDict):
@@ -165,6 +166,7 @@ class OrderPreview(TypedDict):
     max_units_floor: int | None
     breach: JSON
     execution: JSON
+    liquidity: list[JSON]
     simulated: bool
 
 

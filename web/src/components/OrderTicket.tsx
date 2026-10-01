@@ -143,6 +143,9 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const result = latest.data?.orders.find((item) => item.id === order?.id) ?? order
   const q = Number(quantity)
   const held = portfolio?.positions.find((p) => p.symbol === selection.symbol)?.quantity ?? 0
+  // Displayed size this account's orders already took on the current quote.
+  const taken = portfolio?.liquidity_used?.find((u) => u.symbol === selection.symbol)
+  const leftNote = (side: "bid" | "ask") => taken && taken[`${side}_left`] < taken[`${side}_size`] ? ` · ${taken[`${side}_left`]} left` : ""
   const marketPrice = quote?.[side === "buy" ? "ask" : "bid"]
   const estimatedPrice = type === "limit" ? limitPrice : marketPrice != null && Number.isFinite(marketPrice) ? String(marketPrice) : null
   const serverFee = trading.fee_per_contract
@@ -280,11 +283,11 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     </div>
     <div className="grid grid-cols-3 gap-2 rounded-md border border-border bg-background/40 p-3 text-xs tabular">
       <button type="button" className="text-left hover:text-accent" disabled={type === "market"} onClick={() => setPrice(quote?.bid)} title="Use the bid as the limit">
-        <span className="text-muted">Bid</span><div className="text-bearish">{price(quote?.bid)} × {count(quote?.bid_size)}</div></button>
+        <span className="text-muted">Bid</span><div className="text-bearish">{price(quote?.bid)} × {count(quote?.bid_size)}{leftNote("bid")}</div></button>
       <button type="button" className="text-left hover:text-accent" disabled={type === "market"} onClick={() => setPrice(quote?.mid)} title="Use the mid as the limit">
         <span className="text-muted">Mid</span><div>{price(quote?.mid)}</div></button>
       <button type="button" className="text-left hover:text-accent" disabled={type === "market"} onClick={() => setPrice(quote?.ask)} title="Use the ask as the limit">
-        <span className="text-muted">Ask</span><div className="text-bullish">{price(quote?.ask)} × {count(quote?.ask_size)}</div></button>
+        <span className="text-muted">Ask</span><div className="text-bullish">{price(quote?.ask)} × {count(quote?.ask_size)}{leftNote("ask")}</div></button>
     </div>
     <WriteAccess trading={trading} />
     {notice && <p role="status" className="text-sm text-warn">{notice}</p>}
@@ -353,7 +356,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           </>}
         </div>}
       </fieldset>
-      <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} market={type === "market"} legs={[{ label: `${selection.strike} ${selection.optionType}`, quote, side, quantity: q }]} />
+      <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} impact={!!rules?.impact_ticks} market={type === "market"}
+        preview={preview.data?.liquidity} ioc={type === "market" || tif === "ioc"} legs={[{ label: `${selection.strike} ${selection.optionType}`, quote, side, quantity: q }]} />
       <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{rules?.fill_latency_ms || rules?.impact_ticks
         ? "Simulated fills use the account’s latency and size impact. Displayed prices and quantities are estimates; the order may wait or fill at worse prices within its limit."
         : fill.message}</p>

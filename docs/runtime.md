@@ -258,6 +258,16 @@ Tickets warn on thin or absent liquidity for each leg without blocking submissio
 Market tickets show the requested contracts and displayed executable-side size
 per leg, and state that fills are simulated against displayed quotes and sizes only.
 
+Unlike the cue, the server's `executable` flag on each chain side is the simulator's
+own test: a positive, uncrossed bid and ask with a whole contract of displayed size on
+each side, as `trading::valid_quote` takes the quote the Desk offers. A quote that is
+not executable shows faded on the chain, with `quote_issue` (`no_quote`, `no_bid`,
+`no_ask`, `crossed` or `zero_size`) in its tooltip, and tickets name the problem.
+Paper orders share a quote's displayed size until a new observation refreshes it; the
+portfolio's `liquidity_used` lists the current quotes the account's orders have taken
+some of, which the chain marks as "N left" and the ticket shows beside the size, and the
+preview's per-leg `liquidity` says how much of the order can fill on the current quote.
+
 ## Recording and replay
 
 ### Importing a historical day

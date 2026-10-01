@@ -162,6 +162,27 @@ struct PreviewExecution {
   std::vector<PreviewFill> schedule;
   std::optional<Money> average_price;  ///< The schedule per unit, as average_fill_price.
 };
+/// The quote one of a previewed order's legs would trade against: whether paper
+/// orders can fill on it now (`quote` says why not, as INVALID_QUOTE or
+/// STALE_QUOTE), the displayed size on the side the leg takes, and what this
+/// account's orders have left of it on that observation.
+struct LegLiquidity {
+  std::string symbol;
+  Side side = Side::Buy;
+  Quantity contracts = 0;
+  Decision quote;
+  Quantity displayed = 0;
+  Quantity left = 0;
+};
+/// What this account's orders have left of a quote's displayed size, by side,
+/// for the observation it holds; below zero once impact depth is in use.
+struct SizeLeft {
+  std::uint64_t observation = 0;
+  Quantity bid_size = 0;
+  Quantity ask_size = 0;
+  Quantity bid = 0;
+  Quantity ask = 0;
+};
 struct OrderPreview {
   Decision decision;
   Money buying_power_required;
@@ -191,6 +212,7 @@ struct OrderPreview {
   std::optional<Quantity> max_units_floor;
   BreachRisk breach;
   PreviewExecution execution;
+  std::vector<LegLiquidity> liquidity;  ///< Each leg's quote, in leg order.
 };
 
 /// An account as a what-if projects it, measured from today's equity.
@@ -408,6 +430,8 @@ class TradingSession {
   [[nodiscard]] const Contracts& contracts() const;
   [[nodiscard]] const Valuations& valuations() const;
   [[nodiscard]] std::optional<QuoteObservation> quote(const std::string& symbol) const;
+  /// The quotes whose displayed size this account's orders have taken some of.
+  [[nodiscard]] std::map<std::string, SizeLeft> sizes_left() const;
   [[nodiscard]] md::Date trading_day() const;
 
   /// Rebuild recorded outcomes without matching/repricing. Optional resumed

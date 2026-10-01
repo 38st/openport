@@ -527,6 +527,8 @@ export interface Portfolio {
   margin?: MarginUnderlying[]
   /** Today's P&L by Greek; absent from older servers. */
   attribution?: Attribution
+  /** Current quotes whose displayed size this account's orders have taken some of; absent from older servers. */
+  liquidity_used?: LiquidityUsed[]
 }
 /** An OSI symbol, or the underlying for shares, with the signed contracts or shares a part takes. */
 export interface MarginLeg { symbol: string; quantity: number }
@@ -540,6 +542,7 @@ export interface MarginPart {
 export interface MarginScan { loss: Money; spot_percent: number; vol_points: number; minimum: Money }
 /** Strategy margin's parts add up to the requirement; portfolio margin's scan sets it. */
 export interface MarginUnderlying { underlying: string; requirement: Money; parts: MarginPart[]; scan: MarginScan | null }
+export interface LiquidityUsed { symbol: string; bid_size: number; ask_size: number; bid_left: number; ask_left: number }
 export interface RiskCaps { dollar_delta: number; vega: number }
 export interface Limits {
   max_order_contracts: number
@@ -692,6 +695,8 @@ export interface OrderPreview {
   breach: Breach
   /** Absent on older servers. */
   execution?: PreviewExecution
+  /** Each leg's quote; absent on older servers. */
+  liquidity?: PreviewLiquidity[]
   simulated: true
 }
 /** An account as POST /api/orders/what-if projects it, measured from today's equity. */
@@ -736,6 +741,16 @@ export interface FlattenPreview {
   simulated: true
 }
 export interface WhatIfResponse { account_version: string; current: WhatIfAccount; candidates: WhatIfCandidate[]; simulated: true }
+/** The quote a previewed leg takes: size_left is what this account's orders have left of its displayed size. */
+export interface PreviewLiquidity {
+  symbol: string
+  side: Side
+  contracts: number
+  executable: boolean
+  reason: { code: string; message: string } | null
+  displayed: number
+  size_left: number
+}
 export interface EquitySample {
   time: string
   day: string

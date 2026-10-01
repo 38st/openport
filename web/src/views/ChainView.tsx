@@ -8,7 +8,7 @@ import { Flash } from "../components/Flash"
 import { CoverageBadge, Empty, Panel, Segmented, Stat } from "../components/ui"
 import { expiryCoverage } from "../lib/coverage"
 import { count, days, fixed, isNum, money, pct, price, vol } from "../lib/format"
-import { liquidity, liquidityDetail, spreadShare, volumeOiRatio } from "../lib/liquidity"
+import { liquidity, liquidityDetail, quoteIssueText, spreadShare, volumeOiRatio } from "../lib/liquidity"
 import { matchingPayload } from "../lib/payload"
 import { americanApproximation, rateSourceHint } from "../lib/model"
 import { OrderTicket, type TicketSelection } from "../components/OrderTicket"
@@ -18,6 +18,7 @@ import { StrategyTemplates } from "../components/StrategyTemplates"
 import { MAX_LEGS, strategyLabel, toggleLeg, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { Dialog } from "../components/Dialog"
 import { usePortfolio } from "../api/trading"
+import type { LiquidityUsed } from "../api/trading-types"
 import { useMediaQuery } from "../lib/media"
 import { sideFromCell } from "../lib/trading"
 import { autoCloseCountdown, defaultExpiry } from "../lib/expiry"
@@ -61,8 +62,11 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const [untradable, setUntradable] = useState<string | null>(null)
   // Wide screens dock the ticket beside the chain so quotes stay visible.
   const docked = useMediaQuery("(min-width: 1280px)")
-  const positions = usePortfolio().data?.positions
+  const portfolio = usePortfolio().data
+  const positions = portfolio?.positions
   const held = useMemo(() => new Map((positions ?? []).map((p) => [p.symbol, p.quantity])), [positions])
+  const usedList = portfolio?.liquidity_used
+  const used = useMemo(() => new Map((usedList ?? []).map((u) => [u.symbol, u])), [usedList])
 
   const summary = useQuery({
     queryKey: ["summary", symbol, version],
@@ -174,7 +178,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
       >
         {data ? (
           <ChainTable key={`${symbol}/${selected}`} rows={data.strikes} forward={forward} atmStrike={atmStrike} showGreeks={showGreeks} showLiquidity={showLiquidity} provider={provider}
-            selected={highlighted} held={held}
+            selected={highlighted} held={held} used={used}
             onQuote={live.trading ? (quote, row, optionType, cell) => {
               if (!quote.tradable || !quote.symbol) { setUntradable(quote.untradable_reason ?? "Contract unavailable for paper trading"); return }
               if (mode === "strategy") {
@@ -275,6 +279,7 @@ function ChainTable({
   onQuote,
   selected = null,
   held,
+  used,
 }: {
   rows: ChainRow[]
   forward: number | null
@@ -287,6 +292,8 @@ function ChainTable({
   selected?: Map<string, "bid" | "ask"> | null
   /** Held quantity by canonical OSI, marked beside the strike. */
   held?: Map<string, number>
+  /** Current quotes whose displayed size the account's paper orders have taken some of, by canonical OSI. */
+  used?: Map<string, LiquidityUsed>
 }) {
   const all = columns(provider).filter((c) => (showGreeks || !c.greek) && (showLiquidity || !c.liquidity))
   const callColumns = all
@@ -298,10 +305,18 @@ function ChainTable({
     const key = column.key
     if (!onQuote || (key !== "bid" && key !== "ask")) return column.render(quote)
     const active = quote.symbol != null && selected?.get(quote.symbol) === key
-    return <button type="button" aria-pressed={active} className={`rounded px-1 underline decoration-dotted underline-offset-4 hover:bg-raised hover:text-accent ${active ? "bg-accent/15 text-accent ring-1 ring-accent/50" : key === "bid" ? "text-bearish" : "text-bullish"}`}
-      aria-label={`${sideFromCell(key)} ${row.strike} ${type} at ${key} ${price(quote[key])}${quote.tradable ? "" : `: ${quote.untradable_reason ?? "unavailable"}`}`}
-      title={quote.tradable ? `${sideFromCell(key)} paper order` : quote.untradable_reason ?? "Unavailable"}
-      onClick={() => onQuote(quote, row, type, key)}>{column.render(quote)}</button>
+    // Paper orders cannot fill on a one-sided, crossed or sizeless quote; and what the
+    // account's orders took of the displayed size stays used until a new quote.
+    const issue = quoteIssueText(quote)
+    const taken = quote.symbol != null ? used?.get(quote.symbol) : undefined
+    const left = taken ? (key === "bid" ? taken.bid_left : taken.ask_left) : null
+    const size = taken ? (key === "bid" ? taken.bid_size : taken.ask_size) : null
+    const note = [issue ? `Not executable: ${issue}` : null, left != null && size != null && left < size ? `${left} of ${size} displayed left for your paper orders` : null].filter(Boolean).join(" · ")
+    return <button type="button" aria-pressed={active} className={`rounded px-1 underline decoration-dotted underline-offset-4 hover:bg-raised hover:text-accent ${active ? "bg-accent/15 text-accent ring-1 ring-accent/50" : issue ? "text-faint" : key === "bid" ? "text-bearish" : "text-bullish"}`}
+      aria-label={`${sideFromCell(key)} ${row.strike} ${type} at ${key} ${price(quote[key])}${quote.tradable ? "" : `: ${quote.untradable_reason ?? "unavailable"}`}${note ? `: ${note}` : ""}`}
+      title={[quote.tradable ? `${sideFromCell(key)} paper order` : quote.untradable_reason ?? "Unavailable", note].filter(Boolean).join(" · ")}
+      onClick={() => onQuote(quote, row, type, key)}>{column.render(quote)}
+      {left != null && size != null && left < size && <div className="text-[9px] leading-none text-warn no-underline">{left} left</div>}</button>
   }
 
   // Open centred on the money, and re-centre when the expiry (and so the ATM strike) changes.

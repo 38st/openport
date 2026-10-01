@@ -619,6 +619,10 @@ void Desk::publish_trading() {
       }
       for (const auto& [symbol, book] : book_.underlyings())
         if (book.data_time > 0) view->market_times[symbol] = book.data_time;
+      // A newer observation than the account's refreshes the displayed size it took.
+      for (const auto& [symbol, left] : session.sizes_left())
+        if (const auto current = observations_.find(symbol); current != observations_.end() && current->second == left.observation)
+          view->sizes_left.emplace(symbol, left);
       for (const auto& [symbol, time] : snapshots_) {
         auto& latest = view->market_times[symbol];
         latest = std::max(latest, time);

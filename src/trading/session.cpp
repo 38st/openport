@@ -89,6 +89,14 @@ Decision quote_check(const State& s, const std::string& symbol) {
     return failure(Reason::STALE_QUOTE, "Quote is outside the configured market-time freshness window");
   return {};
 }
+/// Why a quote that is not executable cannot fill paper orders, in words.
+std::string quote_problem(const QuoteObservation& q) {
+  if (q.observation == 0 || (!q.bid && !q.ask)) return "No quote";
+  if (!q.bid || *q.bid <= Money{}) return "No bid: the quote is one-sided";
+  if (!q.ask || *q.ask <= Money{}) return "No ask: the quote is one-sided";
+  if (*q.ask < *q.bid) return "Crossed: the bid is above the ask";
+  return "A side shows no displayed size";
+}
 /// Whether a position's quote marks it now: markable, and inside the freshness window.
 /// A far option nobody bids for is marked; only a valid quote trades.
 bool marked_now(const State& s, const std::string& symbol) {
@@ -3014,6 +3022,26 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
         result.execution = executed(before, trial, *placed.order_id, std::move(result.execution));
     } catch (const TradingError&) {}
   }
+  // Each leg's quote: whether it can fill now, its displayed size on the leg's
+  // side and what this account's orders have left of that observation.
+  auto legs = request.legs;
+  if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
+  for (const auto& leg : legs) {
+    Quantity contracts = 0;
+    if (!before.contracts.contains(leg.symbol) || leg.ratio < 1 || request.quantity < 1 ||
+        __builtin_mul_overflow(request.quantity, leg.ratio, &contracts))
+      continue;
+    LegLiquidity item{leg.symbol, leg.side, contracts, quote_check(before, leg.symbol), 0, 0};
+    if (const auto book = before.books.find(leg.symbol); book != before.books.end()) {
+      const bool buy = leg.side == Side::Buy;
+      const auto& q = book->second.quote;
+      const auto far = buy ? q.ask : q.bid;
+      item.displayed = far && *far > Money{} ? (buy ? q.ask_size : q.bid_size) : 0;
+      item.left = std::max<Quantity>(0, buy ? book->second.ask_left : book->second.bid_left);
+      if (item.quote.code == Reason::INVALID_QUOTE) item.quote.message = quote_problem(book->second.quote);
+    }
+    result.liquidity.push_back(std::move(item));
+  }
   result.breach = breach_of(projection.projected, close_variances);
   std::map<Quantity, OrderPreview> sized_previews;
   const auto sized_preview = [&](Quantity quantity) -> const OrderPreview& {
@@ -3837,6 +3865,17 @@ const Valuations& TradingSession::valuations() const { return impl_->state.valua
 std::optional<QuoteObservation> TradingSession::quote(const std::string& symbol) const {
   const auto it = impl_->state.books.find(symbol);
   return it == impl_->state.books.end() ? std::nullopt : std::optional(it->second.quote);
+}
+std::map<std::string, SizeLeft> TradingSession::sizes_left() const {
+  std::map<std::string, SizeLeft> out;
+  for (const auto& [symbol, book] : impl_->state.books) {
+    const auto& q = book.quote;
+    // The budgets an observation starts with: an ask-only quote offers its ask to exits.
+    const auto bid = valid_quote(q) ? q.bid_size : 0;
+    const auto ask = markable_quote(q) ? q.ask_size : 0;
+    if (book.bid_left < bid || book.ask_left < ask) out[symbol] = {q.observation, q.bid_size, q.ask_size, book.bid_left, book.ask_left};
+  }
+  return out;
 }
 md::Date TradingSession::trading_day() const { return impl_->state.day; }
 namespace {

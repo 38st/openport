@@ -153,6 +153,16 @@ json what_if_json(const WhatIf& w, const std::vector<std::string>& names, const 
   }
   return {{"current", what_if_account_json(w.current, grid)}, {"candidates", candidates}, {"simulated", true}};
 }
+/// Each leg's quote in a preview: whether it can fill now, and the displayed size
+/// on its side with what this account's orders have left of it.
+json leg_liquidity_json(const OrderPreview& p) {
+  json legs = json::array();
+  for (const auto& leg : p.liquidity)
+    legs.push_back({{"symbol", leg.symbol}, {"side", leg.side == Side::Buy ? "buy" : "sell"}, {"contracts", leg.contracts},
+                    {"executable", leg.quote.ok()}, {"reason", decision_json(leg.quote)},
+                    {"displayed", leg.displayed}, {"size_left", leg.left}});
+  return legs;
+}
 json preview_json(const OrderPreview& p) {
   json change = nullptr;
   if (p.exposure_change) change = {{"dollar_delta", number(p.exposure_change->dollar_delta)},
@@ -167,7 +177,7 @@ json preview_json(const OrderPreview& p) {
       {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
       {"max_units", units(p.max_units)}, {"max_units_buying_power", units(p.max_units_buying_power)},
       {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)},
-      {"execution", execution_json(p.execution)}, {"simulated", true}};
+      {"execution", execution_json(p.execution)}, {"liquidity", leg_liquidity_json(p)}, {"simulated", true}};
 }
 
 /// The next payout's requirements, or null outside the funded phase.
@@ -409,6 +419,14 @@ json margin_json(const std::vector<MarginUnderlying>& margin) {
   }
   return result;
 }
+/// The current quotes whose displayed size this account's orders have taken some of.
+json liquidity_used_json(const TradingView& view) {
+  json used = json::array();
+  for (const auto& [symbol, left] : view.sizes_left)
+    used.push_back({{"symbol", symbol}, {"bid_size", left.bid_size}, {"ask_size", left.ask_size},
+                    {"bid_left", std::max<Quantity>(0, left.bid)}, {"ask_left", std::max<Quantity>(0, left.ask)}});
+  return used;
+}
 json portfolio_json(const TradingView& view) {
   const auto& s = *view.snapshot;
   json positions = json::array();
@@ -456,7 +474,8 @@ json portfolio_json(const TradingView& view) {
           {"realised", s.account.realised.str()}, {"unrealised", s.unrealised.str()}, {"fees", s.account.fees.str()},
           {"valuation_complete", s.valuation_complete}, {"quality_flags", flags}, {"positions", positions}, {"stocks", stocks},
           {"buying_power", buying_power_json(s.buying_power)}, {"margin", margin_json(s.margin)},
-          {"attribution", attribution_json(s.attribution)}};
+          {"attribution", attribution_json(s.attribution)},
+          {"liquidity_used", liquidity_used_json(view)}};
 }
 json account_json(const TradingView& view) {
   const auto& s = *view.snapshot;
