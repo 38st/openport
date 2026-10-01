@@ -1374,6 +1374,20 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
 }
+/// An IOC's unfilled remainder cancels, except a stop exit's: a thin book, or one
+/// other orders have used up, re-arms it for what it still protects, and it fires
+/// again on the next quote that reaches its level, so no remainder is left bare.
+void end_ioc(State& s, OrderId id, std::string message, Events& events) {
+  const auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
+  if (!o.open() || o.request.tif != TimeInForce::Ioc) return;
+  if (o.role != OrderRole::Normal && o.request.trigger) {
+    auto& stop = s.orders.mut(id - 1);
+    stop.status = OrderStatus::Armed;
+    event(events, "order_rearmed", stop);
+    return;
+  }
+  cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, std::move(message)), events);
+}
 /// Sweep successive simulated tiers, retaining the original one-fill path when
 /// impact is off. A delayed IOC gets its one attempt on an eligible quote.
 void match_order(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
@@ -1386,9 +1400,7 @@ void match_order(State& s, OrderId id, Events& events, std::optional<OrderId> in
     const auto& current = s.orders[id - 1];
     if (s.config.rules.impact_ticks == 0 || !current.open() || current.filled_quantity == before) break;
   }
-  const auto& stored = s.orders[id - 1];
-  if (s.config.rules.fill_latency_ms > 0 && stored.open() && stored.request.tif == TimeInForce::Ioc)
-    cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted eligible liquidity"), events);
+  if (s.config.rules.fill_latency_ms > 0) end_ioc(s, id, "IOC exhausted eligible liquidity", events);
 }
 void match_symbols(State& s, const std::set<std::string>& symbols, Events& events,
                    std::optional<OrderId> incoming = {}) {
@@ -1494,10 +1506,11 @@ void attach_exits(State& s, OrderId entry_id, Events& events) {
 }
 void on_fill(State& s, OrderId id, Events& events) {
   detail::update_reviews(s);
-  const auto oco = s.orders.at(static_cast<std::size_t>(id - 1)).oco;
-  if (oco != 0 && s.orders.at(static_cast<std::size_t>(oco - 1)).open())
-    cancel_order(s.orders.mut(oco - 1), failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
   const auto order = s.orders.at(static_cast<std::size_t>(id - 1));
+  // One exit filling completely cancels the other; a partial fill leaves it to
+  // protect what is still held, shrunk to that by sync_exits below.
+  if (order.oco != 0 && order.status == OrderStatus::Filled && s.orders.at(static_cast<std::size_t>(order.oco - 1)).open())
+    cancel_order(s.orders.mut(order.oco - 1), failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
   if (order.role != OrderRole::Normal && order.parent != 0 && s.orders.at(static_cast<std::size_t>(order.parent - 1)).open())
     cancel_order(s.orders.mut(order.parent - 1), failure(Reason::OCO_FILLED, "An exit filled; the remaining entry is cancelled"), events);
   if (order.request.bracket && !order.request.exits_only) attach_exits(s, id, events);
@@ -1552,9 +1565,7 @@ void activate(State& s, OrderId id, Events& events) {
   }
   const auto symbols = order_symbols(s.orders.at(static_cast<std::size_t>(id - 1)).request);
   match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
-  const auto& stored = s.orders.at(static_cast<std::size_t>(id - 1));
-  if (s.config.rules.fill_latency_ms == 0 && stored.open() && stored.request.tif == TimeInForce::Ioc)
-    cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+  if (s.config.rules.fill_latency_ms == 0) end_ioc(s, id, "IOC exhausted available displayed liquidity", events);
 }
 /// Armed orders activate only in their contract's regular session.
 void check_triggers(State& s, Events& events) {
