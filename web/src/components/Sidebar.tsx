@@ -36,6 +36,7 @@ export function evaluationBadge(account: Pick<Account, "evaluation" | "rules"> |
   if (!account) return null
   const { evaluation } = account
   if (!evaluation.enabled) return <Badge tone="neutral">{plan ? "Practice" : "Paper"}</Badge>
+  if (evaluation.status === "active" && evaluation.day_lock) return <Badge tone="warn" title="A plan limit locked trading until the next trading day">locked today</Badge>
   if (account.rules.phase === "funded" && evaluation.status === "active") return <Badge tone="positive">funded</Badge>
   const tone = evaluation.status === "passed" ? "positive" : evaluation.status === "failed" ? "negative" : "accent"
   return <Badge tone={tone}>{evaluation.status}</Badge>

@@ -25,6 +25,23 @@ export function ruleAlerts(account: Account, risk: Risk): RuleAlert[] {
   const target = Number(account.rules.profit_target), remaining = Number(e.target_remaining)
   if (e.status === "active" && e.valuation_complete && target > 0 && e.target_remaining != null && remaining > 0 && remaining <= target * 0.1)
     result.push({ id: "target-near", title: "Profit target within 10%", body: `${formatMoney(e.target_remaining)} remains to the profit target.` })
+  // The plan's own daily loss limit, apart from the personal one above.
+  const plan = e.daily_loss
+  if (e.status === "active" && e.valuation_complete && plan && !e.day_lock) {
+    const room = Number(plan.room), limit = Number(plan.limit)
+    if (Number.isFinite(room) && limit > 0)
+      for (const percent of [50, 25, 10]) if (room < limit * percent / 100)
+        result.push({ id: `plan-loss-${percent}`, title: `Plan daily loss room below ${percent}%`,
+          body: `${formatMoney(plan.room)} remains above the plan's daily loss limit at ${formatMoney(plan.level)}; reaching it ${plan.action === "fail" ? "fails the attempt" : "locks the day"}.` })
+  }
+  if (e.status === "active" && e.day_lock)
+    result.push({ id: "day-lock", title: "Trading locked for the day", body: "The plan's daily loss limit closed your positions. Only closing orders are accepted until the next trading day." })
+  // A target reached while other objectives, or open positions on a closed-balance plan, hold the pass back.
+  const objectives = e.objectives ?? []
+  const goal = objectives.find((o) => o.code === "PROFIT_TARGET")
+  const waiting = objectives.filter((o) => !o.met)
+  if (e.status === "active" && goal && goal.actual != null && goal.actual >= goal.required && waiting.length)
+    result.push({ id: "target-waits", title: "Target reached: the pass waits", body: waiting.map((o) => o.message).join(". ") })
   return result
 }
 

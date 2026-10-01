@@ -221,12 +221,14 @@ Plans set an account's rules: `practice` (the default: buying power only),
 that fails the attempt and four trading days) or `locking-25k|50k|100k` (a floor that
 locks at the starting balance, a daily loss limit that locks the day and a best-day
 consistency rule). Touching the floor fails the attempt and closes every position;
-reaching the target passes it. Custom plans take the rules prop firms use most: a daily
-loss limit measured from the day's opening equity or balance, the higher of the two or
-the day's high, which closes the positions and locks the day or fails the attempt;
-static and lock-at-start floors; minimum trading and profitable days and a best-day
-consistency rule that hold a pass back; a target counted on the closed balance; and a
-trading day that ends at the plan's own time.
+reaching the target passes it. Custom plans, set up when starting an attempt, take the
+rules prop firms use most: a daily loss limit measured from the day's opening equity or
+balance, the higher of the two or the day's high, which closes the positions and locks
+the day or fails the attempt; static and lock-at-start floors; minimum trading and
+profitable days and a best-day consistency rule that hold a pass back; a target counted
+on the closed balance; and a trading day that ends at the plan's own time. The
+Dashboard lists what a pass still needs, the daily loss room and what closing every
+position now would leave.
 On the default 15-minute delayed feed a pass is practice, not proof: any real-time chart
 shows where the market went next.
 `--plan` picks the main account's first plan; start a new attempt on any plan from the

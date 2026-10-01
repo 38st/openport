@@ -13,6 +13,7 @@ import { isNum, money, price } from "../lib/format"
 import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
 import { addWhatIfOrder, useWhatIfScope } from "../lib/what-if"
 import { whatIfOrderText } from "./WhatIfPanel"
+import { dayLockNotice } from "../lib/plan-rules"
 import { probabilityOfProfit, probabilitySource, smileDistribution, valueToday } from "../lib/probability"
 import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { comboTickCents, extendedSession, formatMoney, limitOnlyNotice, paperNotice } from "../lib/trading"
@@ -158,11 +159,12 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const limitOnly = notice ? null : limitOnlyNotice(underlying, status)
   const untradable = legs.find((l) => l.quote?.tradable !== true)
   const closed = account?.evaluation.enabled && account.evaluation.status !== "active"
+  const dayLocked = account?.evaluation.status === "active" && !!account.evaluation.day_lock
   const reduces = legs.every((leg) => {
     const held = positions?.find((p) => p.symbol === leg.symbol)?.quantity ?? 0
     return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
   })
-  const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
+  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked) && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
   const valid = (type === "market" || tif !== "gtd" || good_till != null) && legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
 
   const draft: NewOrder | null = valid ? {
@@ -275,6 +277,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       {untradable && <p role="status" className="text-sm text-warn">{untradable.strike} {untradable.type}: {untradable.quote?.untradable_reason ?? "unavailable for paper trading"}</p>}
       {trading.kill_latched && <p role="status" className="text-sm text-warn">Kill switch latched · reduce-only: closing orders and exits still work.</p>}
       {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Start a new attempt from the Dashboard to trade again.</p>}
+      {dayLocked && <p role="status" className="text-sm text-warn">{dayLockNotice}</p>}
       {rules?.buy_only && !reduces && <p role="status" className="text-sm text-warn">{rules.plan ?? "This plan"} is buy-only. Multi-leg orders may only close held positions.</p>}
       <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>
         <fieldset disabled={pending || order != null} className="grid min-w-0 grid-cols-2 gap-3 disabled:opacity-70">
