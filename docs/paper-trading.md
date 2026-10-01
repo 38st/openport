@@ -569,6 +569,32 @@ their size follows the position. Time in force cannot change in place; cancel an
 submit again to change DAY/GTC. The engine applies a new order's feed gate
 (`FEED_STALLED`) before a change, because a change can trade.
 
+Every change asked of an open order stays on it in `Order::changes`, oldest first,
+applied or refused: its market time and actor, the terms requested (each left empty
+kept), the terms the order had then, and the refusal's decision with its numbers.
+A refused change leaves the order's terms as they were. `Order::ended_at` is when an
+order stopped working: the fill that completed it, its cancellation (whatever the
+reason: `USER_CANCEL`, `DAY_END`, `EXPIRED`, `RISK_CHANGED` and the rest) or its
+rejection, zero while it is open. Both are journaled only on orders that have them, so
+other orders keep their bytes, and orders from older journals load without them.
+
+The snapshot also says what keeps each open order from filling now
+(`TradingSnapshot::waiting`, derived from the account's books, sessions and clocks as
+matching reads them, never journaled):
+
+| Code | The order waits for |
+| --- | --- |
+| `TRIGGER` | Its trigger: the reference (ask, bid, the closing legs' net or the underlying), the level and the value now |
+| `REGULAR_SESSION` | The regular session: armed orders, GTC orders, bracket exits and triggered GTC orders fill only then |
+| `INVALID_QUOTE`, `STALE_QUOTE` | A two-sided quote with sizes, or a fresh one, on a leg; a one-sided book supplies no liquidity |
+| `FILL_LATENCY` | A quote stamped at or after its acceptance (or activation) plus the account's fill latency, with the time |
+| `NEWER_QUOTE` | A quote newer than its acceptance: resting orders take only those |
+| `LIMIT` | The market: the far side (or a multi-leg order's net at the far sides) is worse than its limit, with both prices |
+| `DISPLAYED_SIZE` | A new quote: paper orders used the displayed size at this one |
+| `STALE_DATA` | Fresh marks on held positions and the valuations risk needs |
+
+An order with nothing visible holding it back has no entry.
+
 `cancel_all` cancels every open order, armed ones and bracket exits included, or
 only one underlying's. `close_positions` flattens the account or one underlying: it
 cancels the open orders in scope, then closes each unexpired position in scope with
@@ -1857,8 +1883,8 @@ drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `buying_power: {available, reserved, short_requirement, requirement}` (`requirement`
 is the same amount as `short_requirement`, named for both margin modes); orders add `origin`
 (`user` or `system`), `tags`, `note`, `exits_only` (false when absent in older journals), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`
-(`stop_loss`/`take_profit`/null), `parent`, `oco`, `stop_loss_order` and
-`take_profit_order`; status and ticks add `trading.plan` and `trading.evaluation`
+(`stop_loss`/`take_profit`/null), `parent`, `oco`, `stop_loss_order`,
+`take_profit_order`, `ended_at`, `modified_at`, `changes` and `waiting` (see below); status and ticks add `trading.plan` and `trading.evaluation`
 (`active`/`passed`/`failed`, null without a target or drawdown rule). `--plan ID`
 chooses the rules for a new journal (default `practice`); `--paper-cash` then overrides
 its starting balance. Recovery keeps the recorded rules. New latency and impact fields default to zero
@@ -1902,6 +1928,14 @@ limit of 2, a projected loss of 15.65 against 15.64), and so does a Flatten leg 
 rules refused. The preview's `reason`, a payout's `blocked` and a flatten's
 `kept_stocks[].reason` use it too. The Orders page and the flatten dialog show the
 numbers beside the reason.
+
+Orders also report `ended_at` (null while open), `modified_at` (when a change last
+applied, or null), `changes` (each with `time`, `actor`, the requested `quantity`,
+`limit_price` and `trigger_level`, null where kept, the `previous` terms, `applied`
+and the refusal's `reason`) and, while open, `waiting` (`{code, message}` from the
+table under [changing orders](#changing-cancelling-and-flattening), or null). The
+Orders page's **Details** shows an order's history: accepted, triggered, each change
+and refusal, and how it ended or what it waits for.
 
 ### Write protection
 

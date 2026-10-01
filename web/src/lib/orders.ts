@@ -1,4 +1,4 @@
-import type { Decision, Order, OrderChange, Position } from "../api/trading-types"
+import type { Decision, Money, Order, OrderChange, OrderChangeRecord, Position } from "../api/trading-types"
 import { compareMoney, formatMoney } from "./trading"
 
 export const isOpen = (order: Order) => order.status === "working" || order.status === "partially_filled" || order.status === "armed"
@@ -98,4 +98,50 @@ export function outcome(order: Order): string {
     return `${order.filled_quantity ? `Filled ${order.filled_quantity} of ${order.quantity}, then ` : ""}${order.status === "rejected" ? "rejected" : "cancelled"}${order.reason ? `: ${order.reason.message}` : ""}${evidence ? ` (${evidence})` : ""}`
   }
   return order.status
+}
+
+export interface TimelineEntry { time: string | null; text: string; detail?: string; tone?: "negative" }
+/** A price as the order states it: a multi-leg net is a debit ("db") or a credit ("cr"). */
+function termPrice(value: Money | null, multi: boolean): string {
+  if (value == null) return "none"
+  if (!multi) return formatMoney(value)
+  const n = Number(value)
+  return n === 0 ? "even" : `${formatMoney(value.replace("-", ""))} ${n > 0 ? "db" : "cr"}`
+}
+/** The terms a change asked for, each beside the one before: "quantity 3 → 5, limit $4.00 → $4.10". */
+export function changeText(change: OrderChangeRecord, multi = false): string {
+  const parts: string[] = []
+  if (change.quantity != null) parts.push(`quantity ${change.previous.quantity} → ${change.quantity}`)
+  if (change.limit_price != null) parts.push(`limit ${termPrice(change.previous.limit_price, multi)} → ${termPrice(change.limit_price, multi)}`)
+  if (change.trigger_level != null)
+    parts.push(`trigger ${termPrice(change.previous.trigger_level, multi)} → ${termPrice(change.trigger_level, multi)}`)
+  return parts.length ? parts.join(", ") : "no new terms"
+}
+function ending(order: Order): string {
+  if (order.status === "filled") return "Filled"
+  if (order.status === "rejected") return "Rejected"
+  return order.reason?.code === "USER_CANCEL" ? "Cancelled by you" : `Cancelled${order.reason ? ` (${order.reason.code})` : ""}`
+}
+const at = (time: string | null) => time == null ? Number.POSITIVE_INFINITY : Date.parse(time)
+/**
+ * An order's life in time order: accepted, triggered, each change asked of it
+ * (applied, or refused and why) and how it ended; a working order ends with the
+ * time it lasts until.
+ */
+export function orderTimeline(order: Order): TimelineEntry[] {
+  const multi = order.legs != null
+  const reason = order.reason ? `${order.reason.message}${reasonEvidence(order.reason) ? ` (${reasonEvidence(order.reason)})` : ""}` : undefined
+  if (order.status === "rejected") return [{ time: order.ended_at ?? order.accepted_at, text: "Rejected", detail: reason, tone: "negative" }]
+  const entries: TimelineEntry[] = [{ time: order.accepted_at, text: "Accepted" }]
+  if (order.triggered_at) entries.push({ time: order.triggered_at, text: "Triggered" })
+  for (const change of order.changes ?? []) {
+    entries.push(change.applied
+      ? { time: change.time, text: `Changed: ${changeText(change, multi)}`, detail: `by ${change.actor}` }
+      : { time: change.time, text: `Change refused: ${changeText(change, multi)}`, tone: "negative",
+          detail: change.reason ? `${change.reason.code}: ${change.reason.message}${reasonEvidence(change.reason) ? ` (${reasonEvidence(change.reason)})` : ""}` : undefined })
+  }
+  entries.sort((a, b) => at(a.time) - at(b.time))
+  if (!isOpen(order)) entries.push({ time: order.ended_at ?? null, text: ending(order), detail: reason, tone: order.status === "filled" ? undefined : "negative" })
+  else if (order.day_end) entries.push({ time: order.day_end, text: "Lasts until, unless it fills or is cancelled" })
+  return entries
 }

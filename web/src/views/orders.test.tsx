@@ -6,6 +6,7 @@ import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import type { Order, Position, StockHolding } from "../api/trading-types"
 import { CancelAllDialog, EditOrderDialog, FlattenDialog, FlattenOutcome } from "../components/OrderActions"
+import { OrderDetailDialog } from "../components/OrderDetail"
 import { ExerciseDialog } from "../components/StockActions"
 import { account, fill, order, portfolio, risk, status, trading } from "../test/trading-fixtures"
 import { OrdersView } from "./OrdersView"
@@ -194,4 +195,23 @@ describe("closing positions", () => {
 it("shows the originating actor and marks older orders unknown", () => {
   expect(render(<OrdersView />, [{ ...order, actor: "research-agent" }])).toContain("research-agent")
   expect(render(<OrdersView />, [{ ...order, actor: undefined }])).toContain("unknown")
+})
+
+describe("order details", () => {
+  it("say what a working order waits for and offer details from the list", () => {
+    const waiting: Order = { ...order, waiting: { code: "LIMIT", message: "The ask 4.70 is above the limit 4.60" }, changes: [] }
+    const html = render(<OrderDetailDialog order={waiting} onClose={() => {}} />)
+    expect(html).toContain("Waiting for")
+    expect(html).toContain("The ask 4.70 is above the limit 4.60")
+    expect(html).toContain("Accepted")
+    expect(html).toContain("Lasts until")
+    expect(render(<OrdersView />, [waiting])).toContain('aria-label="Details of order order-1')
+  })
+  it("show a cancel's numbers", () => {
+    const cancelled: Order = { ...order, status: "cancelled", ended_at: "2026-09-22T15:00:00Z",
+      reason: { code: "RISK_CHANGED", message: "DELTA_LIMIT: Worst reachable absolute dollar delta exceeds limit", actual: 878617, limit: 700000, scope: "SPX" } }
+    const html = render(<OrderDetailDialog order={cancelled} onClose={() => {}} />)
+    expect(html).toContain("878,617 dollar delta against a limit of 700,000 dollar delta · SPX")
+    expect(html).toContain("Cancelled (RISK_CHANGED)")
+  })
 })

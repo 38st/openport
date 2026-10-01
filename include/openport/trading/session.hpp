@@ -30,6 +30,19 @@ struct MarkedStock {
   std::optional<Money> unrealised;
   bool fresh = false;
 };
+/// What keeps an open order from filling now, read from the account's books,
+/// sessions and clocks as matching would read them. Derived for each snapshot,
+/// never journaled. `code` is TRIGGER (armed until its level is reached),
+/// REGULAR_SESSION (waits for the regular session), INVALID_QUOTE or STALE_QUOTE
+/// (no usable quote on a leg), FILL_LATENCY (held for a quote stamped after the
+/// account's delay), NEWER_QUOTE (resting orders take quotes newer than their
+/// acceptance), LIMIT (the far side is worse than the limit), DISPLAYED_SIZE (the
+/// quote's displayed size is used up until a new one) or STALE_DATA (held
+/// positions need fresh marks and valuations first).
+struct OrderWait {
+  std::string code;
+  std::string message;
+};
 struct TradingSnapshot {
   std::uint64_t account_version = 0;
   Timestamp time = 0;
@@ -43,6 +56,8 @@ struct TradingSnapshot {
   std::vector<MarkedStock> stocks;  ///< Shares from exercise and assignment.
   std::vector<Order> open_orders;
   SharedVector<Order> recent_orders;  ///< All v1 orders, in acceptance sequence.
+  /// Why each open order that is not filling waits, by order ID (see OrderWait).
+  std::map<OrderId, OrderWait> waiting;
   SharedVector<Fill> recent_fills;    ///< All v1 fills, in execution sequence.
   RiskSnapshot risk;
   ScenarioGrid scenarios;
