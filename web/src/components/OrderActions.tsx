@@ -3,9 +3,9 @@ import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useRefreshTrading, useTradingSession } from "../api/trading"
-import type { ClosePositionsResponse, FlattenPreview, Order, Position, StockHolding, TradingStatus } from "../api/trading-types"
+import type { ClosePositionsResponse, FlattenPreview, FlattenResidual, Order, Position, StockHolding, TradingStatus } from "../api/trading-types"
 import { contractLabel, orderLabel, osiLabel } from "../lib/journal"
-import { closingAction, editableFields, flattenPlan, isOpen, orderChange, orderDraft, outcome, underlyingsOf } from "../lib/orders"
+import { closingAction, editableFields, flattenPlan, isOpen, openOrdersIn, orderChange, orderDraft, outcome, underlyingsOf } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
 import { extendedSession, formatMoney, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -127,7 +127,8 @@ export function CancelAllDialog({ orders, trading, onClose, onDone }: {
 }) {
   const write = useWrite(trading)
   const [scope, setScope] = useState<string | null>(null)
-  const { cancelling, exits } = flattenPlan([], orders, scope)
+  const cancelling = openOrdersIn(orders, scope)
+  const exits = cancelling.filter((o) => o.role != null).length
   return (
     <Dialog title="Cancel orders" onClose={onClose}>
       <ScopePicker value={scope} options={underlyingsOf(orders.filter(isOpen))} onChange={setScope} what="Cancel" />
@@ -146,16 +147,28 @@ export function CancelAllDialog({ orders, trading, onClose, onDone }: {
   )
 }
 
+/** What a residual is waiting for: "3 working on later quotes", or why it stays. */
+export function residualNote(residual: FlattenResidual, closing: readonly Position[] = []): string {
+  const position = closing.find((p) => p.symbol === residual.symbol)
+  const name = position ? contractLabel(position) : orderLabel({ symbol: residual.symbol, underlying: residual.underlying })
+  const held = Math.abs(residual.quantity)
+  const why = residual.reason?.message.replace(/\.$/, "")
+  if (!residual.working) return `${held} ${name} stay open${why ? `: ${why}` : ""}.`
+  const working = `${residual.working === held ? "" : `${residual.working} `}working on later quotes until filled or the session ends`
+  return `${held} ${name} still open: ${working}${why ? `; ${held - residual.working} stay: ${why}` : ""}.`
+}
+
 /**
  * What a flatten did: each closing order's outcome, the shares it traded and the shares
- * it left, and, given the positions it set out to close, the longs it left covering a short.
+ * it left, and the positions still open, with what their closes are still working.
  */
 export function FlattenOutcome({ done, closing = [] }: { done: ClosePositionsResponse; closing?: readonly Position[] }) {
   const stockFills = done.stock_fills ?? []
   const kept = done.kept_stocks ?? []
-  // A long sells only as far as the shorts still held leave it free: a short bought back
-  // in part, or on a later quote with fill latency, keeps the long that covers it.
-  const covering = closing.flatMap((position) => {
+  const residuals = done.residuals
+  // Older servers report no residuals and sell a long only as far as the shorts still
+  // held leave it free, so a long that covers a short stays until a later flatten.
+  const covering = residuals ? [] : closing.flatMap((position) => {
     if (position.quantity <= 0) return []
     const selling = done.orders.filter((o) => o.symbol === position.symbol && o.side === "sell").reduce((sum, o) => sum + o.quantity, 0)
     return selling < position.quantity ? [{ position, contracts: position.quantity - selling }] : []
@@ -165,7 +178,7 @@ export function FlattenOutcome({ done, closing = [] }: { done: ClosePositionsRes
       <ul className="space-y-1 text-sm">
         {done.orders.map((order) => (
           <li key={order.id} className="flex flex-wrap justify-between gap-2">
-            <span>{order.side === "buy" ? "Buy" : "Sell"} {order.quantity} {orderLabel(order)}</span>
+            <span>{order.legs?.length ? "Close" : order.side === "buy" ? "Buy" : "Sell"} {order.quantity} {orderLabel(order)}</span>
             <span className={order.status === "filled" ? "text-bullish" : "text-warn"}>{outcome(order)}</span>
           </li>
         ))}
@@ -186,8 +199,15 @@ export function FlattenOutcome({ done, closing = [] }: { done: ClosePositionsRes
           {contracts} {contractLabel(position)} stay open: they cover a short that is still held or being bought back. Flatten again once it is closed.
         </p>
       ))}
-      {!done.orders.length && !stockFills.length && !kept.length && !covering.length && <p className="text-sm text-muted">No position needed closing.</p>}
-      <p className="text-xs text-muted">{done.cancelled_orders.length} {done.cancelled_orders.length === 1 ? "order" : "orders"} cancelled first.</p>
+      {(residuals ?? []).map((residual) => (
+        <p key={`residual-${residual.symbol}`} role="status" className={`text-sm ${residual.reason ? "text-warn" : "text-muted"}`}>
+          {residualNote(residual, closing)}
+        </p>
+      ))}
+      {(residuals ?? []).some((r) => r.working > 0) && <p className="text-xs text-muted">
+        Working closes show on the Orders page, where they can be cancelled. Bracket exits keep protecting what is still open until it is flat.</p>}
+      {!done.orders.length && !stockFills.length && !kept.length && !covering.length && !residuals?.length && <p className="text-sm text-muted">No position needed closing.</p>}
+      <p className="text-xs text-muted">{done.cancelled_orders.length} {done.cancelled_orders.length === 1 ? "order" : "orders"} cancelled, with any bracket exit whose position it closed.</p>
     </>
   )
 }
@@ -256,6 +276,7 @@ export function FlattenDialog({ positions, stocks = [], orders, trading, initial
   })
   const cancelling = plan.cancelling.filter((o) => !refused.some((r) => r.symbol === o.underlying))
   const dryRun = useFlattenPreview(scope, trading, done == null && plan.closing.length + shares.length > 0 && !write.pending)
+  const exits = openOrdersIn(orders, scope).filter((o) => o.role != null && !refused.some((r) => r.symbol === o.underlying)).length
   return (
     <Dialog title={scope ? `Flatten ${scope}` : "Close all positions"} onClose={onClose}>
       {done ? (
@@ -285,8 +306,10 @@ export function FlattenDialog({ positions, stocks = [], orders, trading, initial
           </>) : <p className="text-sm text-muted">No position{scope ? ` on ${scope}` : ""} can trade now.</p>}
           <p className="text-xs text-muted">
             {cancelling.length ? `${cancelling.length} working ${cancelling.length === 1 ? "order is" : "orders are"} cancelled first. ` : ""}
-            Each position closes with a market order at the displayed quote, short ones first so a spread never leaves a naked short:
-            a long that covers a short sells once the short is bought back.
+            {exits ? `${exits === 1 ? "1 bracket exit stays" : `${exits} bracket exits stay`} until the position ${exits === 1 ? "it protects" : "they protect"} is flat. ` : ""}
+            Each position closes with a market order at the displayed quote; a short and the long that covers it close together as one order,
+            so a spread never leaves a naked short. What a thin quote cannot fill keeps working on later quotes until it fills or the session ends,
+            and a position larger than the order size limit closes in several orders.
             An order the account's rules refuse is reported and the rest still close.
           </p>
           {refused.map(({ symbol, notice }) => <p key={symbol} role="status" className="text-sm text-warn">

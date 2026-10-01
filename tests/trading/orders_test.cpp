@@ -194,7 +194,7 @@ TEST(TradingOrders, CancelAllTakesEveryOpenOrderOrOneUnderlyings) {
   EXPECT_TRUE(s.snapshot()->open_orders.empty());
 }
 
-TEST(TradingOrders, ClosingPositionsBuysShortsBackFirstAndLeavesOtherUnderlyings) {
+TEST(TradingOrders, ClosingPositionsClosesASpreadTogetherAndLeavesOtherUnderlyings) {
   ScriptedMarket f;
   const auto upper = beside(f, "SPXW261022C05010000");
   const auto xsp = beside(f, "XSP261022C00500000");
@@ -211,23 +211,26 @@ TEST(TradingOrders, ClosingPositionsBuysShortsBackFirstAndLeavesOtherUnderlyings
   ASSERT_TRUE(s.submit(upper.limit("resting", 1, "3.00"), f.time).decision.ok());
   ASSERT_EQ(s.snapshot()->positions.size(), 3u);
   const auto before = s.snapshot()->recent_orders.size();
-  ASSERT_TRUE(s.close_positions(std::string("SPX"), f.time).decision.ok());
+  const auto result = s.close_positions(std::string("SPX"), f.time);
+  ASSERT_TRUE(result.decision.ok());
   const auto& orders = s.snapshot()->recent_orders;
   EXPECT_EQ(order(s, 4).status, OrderStatus::Cancelled);  // the resting SPX order
-  ASSERT_EQ(orders.size(), before + 2);
-  const auto& first = orders[before];
-  const auto& second = orders[before + 1];
-  EXPECT_EQ(first.request.symbol, f.symbol());
-  EXPECT_EQ(first.request.side, Side::Buy);
-  EXPECT_EQ(first.request.type, OrderType::Market);
-  EXPECT_EQ(first.status, OrderStatus::Filled);
-  EXPECT_EQ(second.request.symbol, upper.symbol());
-  EXPECT_EQ(second.request.side, Side::Sell);
-  EXPECT_EQ(second.status, OrderStatus::Filled);
-  EXPECT_FALSE(first.system) << "a flatten is the trader's own order";
-  EXPECT_NE(first.request.client_order_id, second.request.client_order_id);
+  // The short and the long that covers it close as one order: buy the short back, sell the long.
+  ASSERT_EQ(orders.size(), before + 1);
+  const auto& close = orders[before];
+  ASSERT_EQ(close.request.legs.size(), 2u);
+  EXPECT_EQ(close.request.legs[0], (Leg{f.symbol(), Side::Buy, 1}));
+  EXPECT_EQ(close.request.legs[1], (Leg{upper.symbol(), Side::Sell, 1}));
+  EXPECT_EQ(close.request.type, OrderType::Market);
+  EXPECT_EQ(close.request.tif, TimeInForce::Day);
+  EXPECT_EQ(close.request.quantity, 1);
+  EXPECT_EQ(close.status, OrderStatus::Filled);
+  EXPECT_TRUE(close.reduce_only);
+  EXPECT_FALSE(close.system) << "a flatten is the trader's own order";
+  EXPECT_EQ(close.request.client_order_id.rfind("openport-close-", 0), 0u);
   ASSERT_EQ(s.snapshot()->positions.size(), 1u);
   EXPECT_EQ(s.snapshot()->positions[0].position.contract.underlying, "XSP");
+  EXPECT_TRUE(result.residuals.empty());
 }
 
 TEST(TradingOrders, AClosingOrderTheIntegrationRefusesIsRecordedAndTheRestStillClose) {
@@ -261,6 +264,12 @@ TEST(TradingOrders, AClosingOrderTheIntegrationRefusesIsRecordedAndTheRestStillC
   }
   ASSERT_EQ(s.snapshot()->positions.size(), 1u);
   EXPECT_EQ(s.snapshot()->positions[0].position.contract.underlying, "XSP");
+  // The position left open says why.
+  ASSERT_EQ(result.residuals.size(), 1u);
+  EXPECT_EQ(result.residuals[0].symbol, xsp.symbol());
+  EXPECT_EQ(result.residuals[0].quantity, 1);
+  EXPECT_EQ(result.residuals[0].working, 0);
+  EXPECT_EQ(result.residuals[0].reason.code, Reason::FEED_STALLED);
   // Nothing to close is not an error.
   EXPECT_TRUE(s.close_positions(std::string("SPX"), f.time).decision.ok());
   EXPECT_EQ(s.snapshot()->recent_orders.size(), before + 2);
@@ -277,9 +286,9 @@ Quantity held(const TradingSession& s, const std::string& symbol) {
   return 0;
 }
 
-TEST(TradingOrders, AFlattenSellsOnlyTheLongsTheShortsLeftNoLongerNeed) {
-  // Five bull put spreads; the short put's ask then shows 2 contracts. Custom
-  // rules without buying power or defined risk would allow a naked short.
+TEST(TradingOrders, OneFlattenGetsASpreadFlatOnAThinQuoteWithoutLeavingAShortNaked) {
+  // Five bull put spreads; the short put's ask then shows 2 contracts at a time.
+  // Custom rules without buying power or defined risk would allow a naked short.
   for (const auto latency : {std::int64_t{0}, std::int64_t{1000}}) {
     ScriptedMarket f;
     f.contract = *md::parse_osi("SPXW261022P05000000");
@@ -292,6 +301,8 @@ TEST(TradingOrders, AFlattenSellsOnlyTheLongsTheShortsLeftNoLongerNeed) {
     const auto next = [&](Quantity short_ask_size) {
       f.next(); lower.next();
       s.on_quotes({f.quote("4.00", "4.20", short_ask_size), lower.quote("3.00", "3.20")}, {f.valuation(), lower.valuation()}, f.time);
+      // Every short is covered at every step.
+      EXPECT_LE(-held(s, f.symbol()), held(s, lower.symbol()));
     };
     ASSERT_TRUE(s.submit(f.market("short", 5, Side::Sell), f.time).decision.ok());
     ASSERT_TRUE(s.submit(lower.market("long", 5), f.time).decision.ok());
@@ -299,33 +310,187 @@ TEST(TradingOrders, AFlattenSellsOnlyTheLongsTheShortsLeftNoLongerNeed) {
     ASSERT_EQ(held(s, f.symbol()), -5);
     ASSERT_EQ(held(s, lower.symbol()), 5);
     next(2);
-    ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
-    if (!latency) {
-      // Two shorts bought back free two longs; the three spreads left stay covered.
-      EXPECT_EQ(held(s, f.symbol()), -3);
-      EXPECT_EQ(held(s, lower.symbol()), 3);
-      const auto& sale = s.snapshot()->recent_orders.back();
-      EXPECT_EQ(sale.request.symbol, lower.symbol());
-      EXPECT_EQ(sale.request.quantity, 2);
-      EXPECT_EQ(sale.status, OrderStatus::Filled);
+    const auto result = s.close_positions(std::nullopt, f.time);
+    ASSERT_TRUE(result.decision.ok());
+    const auto close = s.snapshot()->recent_orders.back().id;
+    ASSERT_EQ(order(s, close).request.legs.size(), 2u) << "one order for the spread";
+    EXPECT_EQ(order(s, close).request.quantity, 5);
+    // Without latency two spreads close at once; the rest is worked on later quotes.
+    const Quantity first = latency ? 0 : 2;
+    EXPECT_EQ(held(s, f.symbol()), -5 + first);
+    EXPECT_EQ(held(s, lower.symbol()), 5 - first);
+    ASSERT_EQ(result.residuals.size(), 2u);
+    for (const auto& residual : result.residuals) {
+      EXPECT_EQ(residual.working, 5 - first) << residual.symbol;
+      EXPECT_TRUE(residual.reason.ok()) << residual.reason.message;
+    }
+    next(2);
+    next(2);
+    if (latency) next(2);
+    EXPECT_EQ(order(s, close).status, OrderStatus::Filled);
+    EXPECT_TRUE(s.snapshot()->positions.empty()) << "one flatten gets flat";
+  }
+}
+
+TEST(TradingOrders, AFlattenSplitsAPositionLargerThanTheOrderLimit) {
+  ScriptedMarket f;
+  auto config = roomy();
+  config.limits.max_order_contracts = 4;
+  TradingSession s(config, f.time);
+  f.seed(s, "4.00", "4.20", 20);
+  for (const auto* id : {"a", "b", "c"}) ASSERT_TRUE(s.submit(f.market(id, id == std::string("c") ? 2 : 4), f.time).decision.ok());
+  ASSERT_EQ(held(s, f.symbol()), 10);
+  const auto before = s.snapshot()->recent_orders.size();
+  ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
+  const auto& orders = s.snapshot()->recent_orders;
+  ASSERT_EQ(orders.size(), before + 3);
+  EXPECT_EQ(orders[before].request.quantity, 4);
+  EXPECT_EQ(orders[before + 1].request.quantity, 4);
+  EXPECT_EQ(orders[before + 2].request.quantity, 2);
+  for (auto i = before; i < orders.size(); ++i) EXPECT_EQ(orders[i].status, OrderStatus::Filled) << orders[i].reason.message;
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingOrders, AFlattenKeepsTheExitsOfWhatItHasNotClosedYet) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  auto entry = f.market("entry", 5);
+  entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.00")}, {}}, ExitSpec{{}, m("6.00")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  ASSERT_EQ(held(s, f.symbol()), 5);
+  const auto stop = order(s, 1).stop_loss, target = order(s, 1).take_profit;
+  ASSERT_NE(stop, 0u);
+  ASSERT_NE(target, 0u);
+  f.next();
+  s.on_quotes({f.quote("4.00", "4.20", 2)}, {f.valuation()}, f.time);
+  const auto result = s.close_positions(std::nullopt, f.time);
+  ASSERT_TRUE(result.decision.ok());
+  // Two sold at the bid; the exits stay, sized to the three still held, while the close works.
+  EXPECT_EQ(held(s, f.symbol()), 3);
+  EXPECT_TRUE(order(s, stop).open());
+  EXPECT_TRUE(order(s, target).open());
+  EXPECT_EQ(order(s, stop).remaining(), 3);
+  EXPECT_EQ(order(s, target).remaining(), 3);
+  const auto close = s.snapshot()->recent_orders.back();
+  EXPECT_TRUE(close.reduce_only);
+  EXPECT_EQ(close.status, OrderStatus::PartiallyFilled);
+  ASSERT_EQ(result.residuals.size(), 1u);
+  EXPECT_EQ(result.residuals[0].quantity, 3);
+  EXPECT_EQ(result.residuals[0].working, 3);
+  EXPECT_TRUE(result.residuals[0].reason.ok());
+  // The kill switch leaves a close alone.
+  ASSERT_TRUE(s.trip_kill("pause", f.time).decision.ok());
+  EXPECT_TRUE(order(s, close.id).open());
+  f.next();
+  s.on_quotes({f.quote("4.00", "4.20", 10)}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(s, close.id).status, OrderStatus::Filled);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(order(s, stop).reason.code, Reason::POSITION_CLOSED);
+  EXPECT_EQ(order(s, target).reason.code, Reason::POSITION_CLOSED);
+}
+
+TEST(TradingOrders, AFlattenWaitsForQuotesAndGetsPastAPositionAwaitingSettlement) {
+  // 15:50 on the expiry day of a PM series that stops at 16:00; a later series too.
+  ScriptedMarket today;
+  today.contract = *md::parse_osi("SPXW260922C05000000");
+  today.time = md::new_york_to_utc({2026, 9, 22}, 15, 50);
+  auto later = beside(today, "SPXW261022C05000000");
+  TradingSession s(roomy(), today.time);
+  seed(s, today, "4.00", "4.20");
+  seed(s, later, "6.00", "6.20");
+  ASSERT_TRUE(s.submit(today.market("today", 1), today.time).decision.ok());
+  ASSERT_TRUE(s.submit(later.market("later", 2), today.time).decision.ok());
+  // After 16:00 the expiring series waits for its settlement, and the later one's
+  // quote has gone stale: other orders are refused until both are marked again.
+  later.time = md::new_york_to_utc({2026, 9, 22}, 16, 5);
+  EXPECT_EQ(s.submit(later.limit("refused", 1, "6.20"), later.time).decision.code, Reason::STALE_QUOTE);
+  const auto result = s.close_positions(std::nullopt, later.time);
+  ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+  const auto close = s.snapshot()->recent_orders.back();
+  EXPECT_EQ(close.request.symbol, later.symbol());
+  EXPECT_EQ(close.status, OrderStatus::Working) << "a stale quote only makes the close wait";
+  ASSERT_EQ(result.residuals.size(), 2u);
+  for (const auto& residual : result.residuals) {
+    if (residual.symbol == today.symbol()) {
+      EXPECT_EQ(residual.working, 0);
+      EXPECT_EQ(residual.reason.code, Reason::AWAITING_SETTLEMENT);
     } else {
-      // The buy-back waits for a later quote, so every long still covers a short
-      // held now: none is sold, and the shorts are never left naked.
-      EXPECT_EQ(s.snapshot()->recent_orders.back().request.symbol, f.symbol());
-      next(2);
-      EXPECT_EQ(held(s, f.symbol()), -3);
-      EXPECT_EQ(held(s, lower.symbol()), 5);
-      // Flattening again buys back the other three and sells the two longs already free.
-      ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
-      next(10);
-      EXPECT_EQ(held(s, f.symbol()), 0);
-      EXPECT_EQ(held(s, lower.symbol()), 3);
-      // With no short left, the next flatten sells the rest.
-      ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
-      next(10);
-      EXPECT_TRUE(s.snapshot()->positions.empty());
+      EXPECT_EQ(residual.working, 2);
+      EXPECT_TRUE(residual.reason.ok());
     }
   }
+  later.next();
+  s.on_quotes({later.quote("6.00", "6.20")}, {later.valuation()}, later.time);
+  EXPECT_EQ(order(s, close.id).status, OrderStatus::Filled);
+  EXPECT_EQ(held(s, later.symbol()), 0);
+  EXPECT_EQ(held(s, today.symbol()), 1);
+}
+
+TEST(TradingOrders, AFlattenBuysBackAShortQuotedOnlyOnTheAskAndGivesAWorthlessLongAway) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW261022P04000000");
+  auto wing = beside(f, "SPXW261022C06000000");
+  TradingSession s(roomy(), f.time);
+  seed(s, f, "0.05", "0.10");
+  seed(s, wing, "0.05", "0.10");
+  ASSERT_TRUE(s.submit(f.market("short", 3, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(wing.market("long", 2), f.time).decision.ok());
+  // Nobody bids for either now: 0.00/0.05.
+  f.next(); wing.next();
+  const auto ask_only = [](const ScriptedMarket& g) {
+    return QuoteObservation{g.symbol(), g.observation, g.time, std::nullopt, m("0.05"), 0, 10};
+  };
+  s.on_quotes({ask_only(f), ask_only(wing)}, {f.valuation(), wing.valuation()}, f.time);
+  const auto result = s.close_positions(std::nullopt, f.time);
+  ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_TRUE(result.residuals.empty());
+  const auto& fills = s.snapshot()->recent_fills;
+  ASSERT_GE(fills.size(), 2u);
+  const auto buy_back = fills[fills.size() - 2], gift = fills.back();
+  EXPECT_EQ(buy_back.symbol, f.symbol());
+  EXPECT_EQ(buy_back.price, m("0.05"));
+  EXPECT_EQ(buy_back.quantity, 3);
+  EXPECT_EQ(gift.symbol, wing.symbol());
+  EXPECT_EQ(gift.price, Money{});
+  EXPECT_EQ(gift.quantity, 2);
+  // An ordinary order still needs a two-sided quote.
+  EXPECT_EQ(s.submit(f.market("opening", 1), f.time).decision.code, Reason::INVALID_QUOTE);
+}
+
+TEST(TradingOrders, AWorkingFlattenCloseRecoversFromTheJournal) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-orders-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "session.jsonl").string();
+  ScriptedMarket f;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(path);
+    TradingSession s(roomy(), f.time, journal);
+    f.seed(s, "4.00", "4.20", 1);
+    ASSERT_TRUE(s.submit(f.limit("open", 1, "4.20"), f.time).decision.ok());
+    f.next();
+    s.on_quotes({f.quote("4.00", "4.20", 1)}, {f.valuation()}, f.time);
+    ASSERT_TRUE(s.submit(f.limit("more", 1, "4.20"), f.time).decision.ok());
+    ASSERT_EQ(held(s, f.symbol()), 2);
+    f.next();
+    s.on_quotes({f.quote("4.00", "4.20", 1)}, {f.valuation()}, f.time);
+    ASSERT_TRUE(s.close_positions(std::nullopt, f.time).decision.ok());
+    ASSERT_EQ(held(s, f.symbol()), 1);
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(path, head));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  const auto close = recovered.snapshot()->open_orders.at(0);
+  EXPECT_TRUE(close.reduce_only);
+  f.next();
+  recovered.on_quotes({f.quote("4.00", "4.20", 1)}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(recovered, close.id).status, OrderStatus::Filled);
+  EXPECT_TRUE(recovered.snapshot()->positions.empty());
+  std::filesystem::remove_all(directory);
 }
 
 TEST(TradingOrders, AFlattenNeverTakesAClientIdTheTraderAlreadyUsed) {

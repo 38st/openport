@@ -1217,6 +1217,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           }
           result = session.close_positions(scope, market_time_, rejections);
           reply.kept_stocks = result.kept_stocks;
+          reply.residuals = result.residuals;
           break;
         }
         case TradingCommand::Kind::Cancel: result = session.cancel(c.order_id, market_time_); break;

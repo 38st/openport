@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
-import type { FlattenPreview, Order, Position, StockHolding, WhatIfAccount } from "../api/trading-types"
+import type { ClosePositionsResponse, FlattenPreview, Order, Position, StockHolding, WhatIfAccount } from "../api/trading-types"
 import { CancelAllDialog, EditOrderDialog, FlattenDialog, FlattenDryRun, FlattenOutcome } from "../components/OrderActions"
 import { OrderDetailDialog } from "../components/OrderDetail"
 import { ExerciseDialog } from "../components/StockActions"
@@ -116,7 +116,8 @@ describe("closing positions", () => {
     const sell = html.indexOf("Sell 2 at market")
     expect(buy).toBeGreaterThan(0)
     expect(sell).toBeGreaterThan(buy)
-    expect(html).toContain("2 working orders are cancelled first.")
+    expect(html).toContain("1 working order is cancelled first.")
+    expect(html).toContain("1 bracket exit stays until the position it protects is flat.")
     expect(html).toContain("1 expired position waits for settlement.")
     expect(html).toContain("Close 2 positions</button>")
   })
@@ -172,6 +173,26 @@ describe("closing positions", () => {
     // A long closed in full leaves nothing to report.
     expect(render(<FlattenOutcome done={{ ...done, orders: [{ ...buyBack, id: "21", symbol: long.symbol, side: "sell", status: "filled" }] }}
       closing={[long]} />)).not.toContain("stay open")
+  })
+
+  it("lists the positions still open: what is being worked, and why the rest stay", () => {
+    const done: ClosePositionsResponse = { account_version: "18", cancelled_orders: [], fills: [], stock_fills: [], kept_stocks: [],
+      orders: [{ ...order, id: "30", symbol: null, side: null, type: "market", time_in_force: "day", limit_price: null, reduce_only: true,
+        legs: [{ symbol: "SPXW  261016P06900000", side: "buy", ratio: 1 }, { symbol: "SPXW  261016P06890000", side: "sell", ratio: 1 }],
+        quantity: 5, filled_quantity: 2, average_fill_price: "1.10", status: "partially_filled", reason: null }],
+      residuals: [
+        { symbol: "SPXW  261016P06900000", underlying: "SPX", quantity: -3, working: 3, reason: null },
+        { symbol: "SPXW  261016C07000000", underlying: "SPX", quantity: 2, working: 0,
+          reason: { code: "AWAITING_SETTLEMENT", message: "The contract has expired; it closes at its settlement" } },
+      ] }
+    const html = render(<FlattenOutcome done={done} />)
+    expect(html).toContain("Close 5")
+    expect(html).toContain("Filled 2 of 5 at $1.10; working the rest on later quotes")
+    expect(html).toContain("still open: working on later quotes until filled or the session ends.")
+    expect(html).toContain("stay open: The contract has expired; it closes at its settlement.")
+    expect(html).toContain("Working closes show on the Orders page")
+    expect(html).not.toContain("No position needed closing.")
+    expect(html).not.toContain("they cover a short")
   })
 
   it("leaves an underlying whose orders are refused alone", () => {

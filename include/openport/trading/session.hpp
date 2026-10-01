@@ -109,6 +109,17 @@ struct PayoutQuote {
 };
 [[nodiscard]] PayoutQuote payout_quote(const TradingSnapshot& snapshot, const AccountRules& rules);
 
+/// A position a flatten left open: the contracts still held, those its closes are
+/// still working on later quotes, and why the rest are not being closed (a refusal,
+/// a settlement still to come, or an expired short a long still covers); the
+/// reason is empty while every contract left is being worked.
+struct Residual {
+  std::string symbol;
+  Quantity quantity = 0;  ///< Signed contracts still held.
+  Quantity working = 0;   ///< Contracts a reduce-only close is still working.
+  Decision reason;
+};
+
 struct CommandResult {
   Decision decision;
   std::optional<OrderId> order_id;
@@ -118,6 +129,8 @@ struct CommandResult {
   bool replayed = false;
   /// Delivered shares a flatten could not close, by symbol, and why.
   std::map<std::string, Decision> kept_stocks = {};
+  /// Positions in scope a flatten left open, by symbol.
+  std::vector<Residual> residuals = {};
 };
 
 /// Current integration inputs for contracts not yet registered by this account.
@@ -309,19 +322,25 @@ class TradingSession {
   CommandResult modify(OrderId id, OrderChange change, Timestamp time, Decision rejection = {});
   /// Cancel every open order, or every open order on one underlying.
   CommandResult cancel_all(std::optional<std::string> underlying, Timestamp time);
-  /// Flatten the account, or one underlying: cancel the open orders in scope,
-  /// then close each unexpired position in scope with a market IOC at the
-  /// displayed quotes with the account's slippage, short positions first so a
-  /// spread never leaves a naked short: a long sells only as far as the shorts
-  /// still held leave it free. Delivered shares in scope close at their fresh
-  /// price in the stock market's regular session. Expired positions wait for
-  /// their settlement. Every closing order takes the checks any order does; one
-  /// that cannot trade is recorded as rejected (with an underlying's entry in
-  /// `rejections` when the integration refuses it) and the others still go.
-  /// An underlying where the account, `rejections` or the session refuses every
-  /// close keeps its open orders; shares that cannot close are in `kept_stocks`.
-  /// When nothing in scope can close, the decision is the first such refusal
-  /// (scoped to its underlying) and nothing changes; otherwise it is success.
+  /// Flatten the account, or one underlying: cancel the open orders in scope but
+  /// the bracket exits, then close each unexpired position in scope with
+  /// reduce-only market DAY orders under the account's fill model. A short and
+  /// the long that covers it (as for `defined_risk`) close together as one
+  /// two-leg order, so no short is ever left naked; the other shorts and longs
+  /// close alone, and each close is split at `max_order_contracts`. The closes
+  /// work on later quotes until they fill, the session ends, they are cancelled
+  /// or the position closes otherwise; they shrink with the position like the
+  /// exits, which keep protecting whatever is still open and are cancelled once
+  /// it is flat. Delivered shares in scope close at their fresh price in the
+  /// stock market's regular session. Expired positions wait for their settlement,
+  /// and a long that covers an expired short waits with it. A close the account
+  /// (an attempt no longer open), `rejections` (the integration's gate) or the
+  /// session refuses is recorded as rejected and the others still go; missing or
+  /// stale quotes only make a close wait. An underlying where every close is
+  /// refused keeps its open orders; shares that cannot close are in
+  /// `kept_stocks`, and positions left open in `residuals`. When nothing in scope
+  /// can close, the decision is the first such refusal (scoped to its
+  /// underlying) and nothing changes; otherwise it is success.
   CommandResult close_positions(std::optional<std::string> underlying, Timestamp time,
                                 const std::map<std::string, Decision>& rejections = {});
   /// Apply a whole batch before risk/matching. Unknown symbols and future data

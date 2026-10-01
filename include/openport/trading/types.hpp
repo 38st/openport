@@ -162,6 +162,10 @@ struct Order {
   Timestamp ended_at = 0;
   /// Every change asked of it while it rested, applied or refused, oldest first.
   std::vector<OrderChangeRecord> changes;
+  /// A close the account works for the trader, as a flatten's are: it only reduces,
+  /// is kept within the position like a bracket exit and works on later quotes
+  /// until it fills, its session ends, the position closes or it is cancelled.
+  bool reduce_only = false;
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   /// The terms a retry must repeat to be answered with this order.
   [[nodiscard]] const OrderRequest& submission() const { return submitted ? *submitted : request; }

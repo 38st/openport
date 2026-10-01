@@ -179,6 +179,7 @@ struct TradingReply {
   std::vector<trading::OrderId> created_orders;  ///< Orders the command added, in sequence.
   std::vector<std::uint64_t> stock_fills;        ///< Share changes the command made, by StockFill ID.
   std::map<std::string, trading::Decision> kept_stocks;  ///< Shares a flatten left, and why.
+  std::vector<trading::Residual> residuals;              ///< Positions a flatten left open, and why.
   std::string account;  ///< The account the command acted on (a new account's ID for CreateAccount).
   bool replayed = false;  ///< A retried order answered as first submitted.
   std::optional<trading::OrderPreview> preview;

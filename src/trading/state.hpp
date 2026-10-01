@@ -73,6 +73,7 @@ inline void to_json(Json& j, const Order& o) {
   // Likewise an order's end and its changes, once it has them.
   if (o.ended_at != 0) j["ended_at"] = o.ended_at;
   if (!o.changes.empty()) j["changes"] = o.changes;
+  if (o.reduce_only) j["reduce_only"] = true;
 }
 inline void from_json(const Json& j, Order& o) {
   j.at("id").get_to(o.id); j.at("request").get_to(o.request); j.at("status").get_to(o.status);
@@ -81,7 +82,7 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "system", o.system); added_field(j, "role", o.role); added_field(j, "parent", o.parent);
   added_field(j, "oco", o.oco); added_field(j, "stop_loss", o.stop_loss); added_field(j, "take_profit", o.take_profit);
   added_field(j, "triggered_at", o.triggered_at); added_field(j, "actor", o.actor);
-  added_field(j, "submitted", o.submitted);
+  added_field(j, "submitted", o.submitted); added_field(j, "reduce_only", o.reduce_only);
   added_field(j, "ended_at", o.ended_at); added_field(j, "changes", o.changes);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)

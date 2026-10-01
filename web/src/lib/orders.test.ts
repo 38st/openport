@@ -45,10 +45,12 @@ describe("flatten", () => {
   const xsp: Position = { ...long, symbol: "XSP   261016C00700000", underlying: "XSP", quantity: 3 }
   const expired = portfolio.positions[1]!  // awaiting settlement
 
-  it("closes short positions first and leaves expired ones to settle", () => {
-    const plan = flattenPlan([long, expired, short, xsp], [order, stop, { ...order, id: "11", underlying: "XSP" }], null)
+  it("closes short positions first, keeps the exits and leaves expired ones to settle", () => {
+    const system: Order = { ...order, id: "12", origin: "system", type: "market", time_in_force: "ioc", limit_price: null }
+    const plan = flattenPlan([long, expired, short, xsp], [order, stop, { ...order, id: "11", underlying: "XSP" }, system], null)
     expect(plan.closing.map((p) => p.symbol)).toEqual([short.symbol, long.symbol, xsp.symbol])
-    expect(plan.cancelling.map((o) => o.id)).toEqual(["order-1", "9", "11"])
+    // Bracket exits stay until the position is flat, and the account's own closes keep working.
+    expect(plan.cancelling.map((o) => o.id)).toEqual(["order-1", "11"])
     expect(plan.exits).toBe(1)
     expect(closingAction(short)).toBe("Buy 1")
     expect(closingAction(long)).toBe("Sell 2")
@@ -71,6 +73,10 @@ describe("flatten", () => {
     expect(outcome({ ...order, status: "rejected", filled_quantity: 0, reason: { code: "DELTA_LIMIT",
       message: "Worst reachable absolute dollar delta exceeds limit", actual: 878617.4, limit: 700000, scope: "SPX" } }))
       .toBe("rejected: Worst reachable absolute dollar delta exceeds limit (878,617.4 dollar delta against a limit of 700,000 dollar delta · SPX)")
+    // A flatten's close works the rest on later quotes.
+    expect(outcome({ ...order, reduce_only: true, status: "partially_filled", quantity: 5, filled_quantity: 2, average_fill_price: "4.00" }))
+      .toBe("Filled 2 of 5 at $4.00; working the rest on later quotes")
+    expect(outcome({ ...order, reduce_only: true, status: "working", quantity: 5, filled_quantity: 0 })).toBe("working the rest on later quotes")
   })
 
   it("reads a reason's numbers, a RISK_CHANGED cancel by the check it names", () => {

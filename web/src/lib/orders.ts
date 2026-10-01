@@ -51,16 +51,24 @@ export function orderChange(order: Order, draft: OrderDraft): { change: OrderCha
 /** The side and size of the order that closes a position: "Sell 2" for a long, "Buy 1" for a short. */
 export const closingAction = (position: Position) => `${position.quantity > 0 ? "Sell" : "Buy"} ${Math.abs(position.quantity)}`
 
+/** The open orders on one underlying, or on every one. */
+export function openOrdersIn(orders: readonly Order[], underlying: string | null): Order[] {
+  return orders.filter((o) => isOpen(o) && (underlying == null || o.underlying === underlying))
+}
+
 /**
- * What flattening does, as the server will: cancel the open orders in scope, then
- * close each position in scope that can still trade, short positions first.
+ * What flattening does, as the server will: cancel the open orders in scope but the
+ * bracket exits (`exits` of them, kept until the position they protect is flat) and
+ * the account's own closes, then close each position in scope that can still trade,
+ * short positions first.
  */
 export function flattenPlan(positions: readonly Position[], orders: readonly Order[], underlying: string | null) {
   const inScope = (symbol: string) => underlying == null || symbol === underlying
   const closing = positions.filter((p) => p.quantity !== 0 && !p.awaiting_settlement && inScope(p.underlying))
     .sort((a, b) => Number(a.quantity > 0) - Number(b.quantity > 0))
-  const cancelling = orders.filter((o) => isOpen(o) && inScope(o.underlying))
-  return { closing, cancelling, exits: cancelling.filter((o) => o.role != null).length }
+  const open = openOrdersIn(orders, underlying)
+  const cancelling = open.filter((o) => o.role == null && o.origin !== "system")
+  return { closing, cancelling, exits: open.filter((o) => o.role != null).length }
 }
 
 /** Underlyings with something to act on, in the order they first appear. */
@@ -93,6 +101,8 @@ export function reasonEvidence(reason: Decision | null | undefined): string | nu
 /** A closing order's outcome: "Filled 2 at $4.00", or how much filled and why the rest did not, with its numbers. */
 export function outcome(order: Order): string {
   if (order.status === "filled") return `Filled ${order.filled_quantity} at ${formatMoney(order.average_fill_price)}`
+  if (order.reduce_only && (order.status === "working" || order.status === "partially_filled"))
+    return `${order.filled_quantity ? `Filled ${order.filled_quantity} of ${order.quantity} at ${formatMoney(order.average_fill_price)}; ` : ""}working the rest on later quotes`
   if (order.status === "rejected" || order.status === "cancelled") {
     const evidence = reasonEvidence(order.reason)
     return `${order.filled_quantity ? `Filled ${order.filled_quantity} of ${order.quantity}, then ` : ""}${order.status === "rejected" ? "rejected" : "cancelled"}${order.reason ? `: ${order.reason.message}` : ""}${evidence ? ` (${evidence})` : ""}`

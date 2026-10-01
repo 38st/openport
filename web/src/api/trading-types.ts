@@ -422,6 +422,11 @@ export interface Order {
   changes?: OrderChangeRecord[]
   /** System orders liquidate or auto-close; absent on older servers. */
   origin?: "user" | "system"
+  /**
+   * A close the account works for the trader, as a flatten's are: it only reduces, shrinks
+   * with its position and works on later quotes until it fills or its session ends.
+   */
+  reduce_only?: boolean
   trigger?: Trigger | null
   triggered_at?: string | null
   bracket?: { stop_loss: { trigger: Trigger | null; limit_price: Money | null } | null; take_profit: { trigger: Trigger | null; limit_price: Money | null } | null } | null
@@ -586,6 +591,16 @@ export type CreateAccountRequest = { name: string; fill_model?: FillModel } & ({
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
 /** Delivered shares a flatten could not close, as held after it, and why. */
 export interface KeptStock { symbol: string; shares: number; reason: Decision }
+/** A position a flatten left open: contracts still held, those still being worked, and why the rest are not. */
+export interface FlattenResidual {
+  symbol: string
+  underlying: string
+  /** Signed contracts still held. */
+  quantity: number
+  /** Contracts its reduce-only closes are still working on later quotes. */
+  working: number
+  reason: Decision | null
+}
 /**
  * Each closing order with its outcome; a rejected one carries its reason. The
  * share fields are absent from older servers.
@@ -597,6 +612,8 @@ export interface ClosePositionsResponse extends CancelAllResponse {
   stock_fills?: StockFill[]
   /** Shares it could not close. */
   kept_stocks?: KeptStock[]
+  /** Positions still open after it; absent on older servers. */
+  residuals?: FlattenResidual[]
 }
 export interface KillResponse { account_version: string; kill: KillState; cancelled_orders: string[] }
 export interface SettlementResponse { account_version: string; position_closed: boolean }
