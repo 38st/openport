@@ -23,8 +23,9 @@ print(client.preview_order(symbol="SPXW  261022P05000000", side="buy",
 
 Discover current contract symbols with `chain()` before submitting an order; the
 symbol above is an example. `place_order` and `preview_order` generate a UUID
-`client_order_id` if omitted. The client retries HTTP 503 up to three times with
-0.1, 0.2 and 0.4 second delays, reusing the same body and ID. Other HTTP failures
+`client_order_id` if omitted. The client retries HTTP 503 up to three times,
+reusing the same body and ID: after the server's `Retry-After` seconds (at most 10;
+a full command inbox sends 1), or else after 0.1, 0.2 and 0.4 seconds. Other HTTP failures
 raise `ApiError`, carrying `status`, `code` / `reason_code`, and the server's
 `actual`, `limit` and `scope`. Transport failures are not retried. If retrying an
 order after an uncertain response, supply the original ID and identical terms.

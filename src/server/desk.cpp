@@ -467,8 +467,15 @@ void Desk::expire_sandboxes(const std::vector<std::string>& expired) {
 
 void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
   const bool sandbox = c.kind == TradingCommand::Kind::CreateSandbox;
-  if (!options_.paper_enabled || (sandbox ? !options_.sandboxes : options_.paper_accounts.empty()) || stopping_) {
+  if (!options_.paper_enabled || stopping_) {
     reply.error_code = "TRADING_UNAVAILABLE";
+    reply.decision.message = "Paper trading is disabled or the engine is stopping";
+    return;
+  }
+  // Lasting, unlike a full inbox: a replay or a server without an accounts directory
+  // keeps one account, so a retry cannot succeed.
+  if (sandbox ? !options_.sandboxes : options_.paper_accounts.empty()) {
+    reply.error_code = "ACCOUNTS_UNSUPPORTED";
     reply.decision.message = "This server keeps a single paper account";
     return;
   }

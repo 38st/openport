@@ -185,7 +185,8 @@ specification. Observed fill prices need not themselves be on the limit-order ti
 
 Orders have buy/sell side, a positive integer contract count, a client ID and one
 of market/IOC or limit/DAY/GTC/IOC. Market/DAY or market/GTC, market with a limit, and limit without
-a positive price reject. Client IDs cannot be reused, even after a rejected order.
+a positive price reject. A client ID is 1 to 128 bytes of text without control
+characters, and cannot be reused, even after a rejected order.
 Submitting the same terms again under a used client ID is a retry, not a new order: it
 gets the first answer (the order as it now stands, even after a change, or the original
 rejection) and records nothing. Other terms under that ID reject with `DUPLICATE_CLIENT_ID`.
@@ -889,7 +890,9 @@ exact playbook version in a tag. The Playbooks page reports adherence and expect
 the Journal filters across versions.
 
 `GET /api/account/pass-odds` resamples recorded equity days through the same plan
-arithmetic as the reducer. It requires ten completed days with intraday extrema.
+arithmetic as the reducer. It requires ten completed days with intraday extrema:
+with fewer, without an evaluation rule or without complete current marks it returns
+422 `PASS_ODDS_UNAVAILABLE` with the reason.
 It is an estimate from past results, not a prediction. Per-playbook sampling excludes
 days whose account equity cannot be attributed exclusively to that setup.
 
@@ -985,7 +988,8 @@ repricing but its grid is fixed, independent of `SessionConfig::scenarios`. If f
 snapshot flags incomplete data and uses strategy margin plus the option minimum
 until a complete scan is possible; normal order checks still require fresh data.
 The historical `short_requirement` field carries the whole requirement in portfolio
-mode, longs and shares included. Strategy mode keeps its existing
+mode, longs and shares included; `requirement` carries the same amount under a name
+that fits both modes. Strategy mode keeps its existing
 share rule: long shares are paid for and short shares hold 150% of their value.
 
 Each working order reserves what filling it now would cost: its fees, plus the change
@@ -1465,7 +1469,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `DELTA_LIMIT`, `VEGA_LIMIT` | The order raises worst reachable exposure above an underlying/aggregate limit |
 | `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; opening orders and manual latch resets are refused while closing orders and exits remain available |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
-| `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
+| `RISK_CHANGED` | Fill/limit-change recheck failed; original cause at the start of the message, its `actual`, `limit` and `scope` kept on the order |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder (a stop exit's re-arms instead), explicit cancellation, the end of a DAY order's session (a triggered one's activation session) |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry or last-trade boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, and triggers or brackets only on GTC limits (and a held spread's exits), which wait for the regular session |
@@ -1475,6 +1479,11 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `REPLAY_READ_ONLY`, `REPLAY_RUNNING` | A finished run refuses writes; a running run cannot be opened as history or deleted |
 | `REPLAY_HISTORY_FAILED` | A saved replay run's journal cannot be opened, as when it was edited; the message gives the reason |
 | `MARKET_HALTED` | A market-wide circuit breaker has halted trading; the message gives the S&P 500's fall and when trading resumes |
+| `INVALID_REQUEST` | HTTP 400: a malformed body or query, including an order no market could make valid (see the HTTP errors below); nothing is recorded |
+| `UNKNOWN_ACCOUNT`, `ACCOUNTS_UNSUPPORTED` | HTTP 404 for an `account=` the server does not have; 409 when creating an account on a server that keeps one (a replay, or no accounts directory) |
+| `LIMITS_REVISION` | HTTP 409: `expected_revision` on `PUT /api/risk/limits` or `/api/risk/guardrails` is not the current `limits_revision`; refetch and retry |
+| `TRADING_UNAVAILABLE` | HTTP 503: the command inbox is full or the engine is stopping (with `Retry-After`), or the account's journal failed or is locked |
+| `PASS_ODDS_UNAVAILABLE` | HTTP 422: pass odds need an evaluation rule, complete current marks and ten completed days with intraday extremes |
 | `INVALID_SETTLEMENT`, `ALREADY_SETTLED` | Invalid/premature settlement or already settled OSI |
 | `UNKNOWN_ORDER`, `ORDER_TERMINAL` | Invalid cancellation target or already finished order |
 | `INVALID_LIMITS`, `INVALID_TIME`, `INVALID_SCENARIO`, `INVALID_REASON` | Invalid control/configuration input |
@@ -1520,7 +1529,8 @@ Every route and the token check read query keys and values percent-decoded, so
 `%61ccount=beta` is `account=beta` and needs beta's scope. A key given twice in any
 spelling, or a malformed escape, is 400.
 Without an accounts directory (`--paper-journal` empty in tests) the server keeps
-one account and account creation returns 503.
+one account, as a replay does, and account creation returns 409 `ACCOUNTS_UNSUPPORTED`,
+which a retry cannot change.
 
 ### Commands and views
 
@@ -1528,7 +1538,9 @@ The engine thread alone owns every session. A bounded FIFO inbox (256 pending
 commands) sequences writes, applies the drained market batch first, then applies
 commands in ingress order. HTTP threads enqueue
 and return; completions are posted onto the requesting Beast session executor.
-A full inbox or stopping engine returns 503 `TRADING_UNAVAILABLE`.
+A full inbox or stopping engine returns 503 `TRADING_UNAVAILABLE` with
+`Retry-After: 1`: the inbox drains as the engine applies commands, and an order sent
+again with the same client ID and terms is answered once.
 
 Every referenced listed contract is registered before its first quote batch. Held
 positions, open orders and pending-command symbols receive quotes from ChainBook
@@ -1713,8 +1725,8 @@ focus at the top of the ticket.
 | `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |
 | `PUT /api/days/{YYYY-MM-DD}/note` | Required `plan` and `review` strings replace the day note; returns version, `day` and `note`. Invalid text returns `INVALID_NOTE` (422); invalid dates return 400 |
 | `GET /api/risk` | Version, active/pending limits and guardrails, guardrail progress, pending activation, daily loss, kill state, aggregate/underlying buckets, scenario matrices and `breach` |
-| `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; tighter fields apply now, looser evaluation fields are pending until rollover; 200 returns the risk view, 409 if revision changed |
-| `PUT /api/risk/guardrails` | `expected_revision` string and complete `guardrails`; tighter fields apply now, looser fields wait for rollover on all accounts; returns the risk view |
+| `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; tighter fields apply now, looser evaluation fields are pending until rollover; 200 returns the risk view, 409 `LIMITS_REVISION` if the revision changed (refetch it and retry) |
+| `PUT /api/risk/guardrails` | `expected_revision` string and complete `guardrails`; tighter fields apply now, looser fields wait for rollover on all accounts; returns the risk view, or 409 `LIMITS_REVISION` as for limits |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target), decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
@@ -1738,7 +1750,8 @@ an account: `defined_risk` defaults to false, the execution settings to 0, and
 `margin` to `"strategy"`. Older journals missing these
 fields recover with the same defaults. Money is null for a disabled target or
 drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
-`buying_power: {available, reserved, short_requirement}`; orders add `origin`
+`buying_power: {available, reserved, short_requirement, requirement}` (`requirement`
+is the same amount as `short_requirement`, named for both margin modes); orders add `origin`
 (`user` or `system`), `tags`, `note`, `exits_only` (false when absent in older journals), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`
 (`stop_loss`/`take_profit`/null), `parent`, `oco`, `stop_loss_order` and
 `take_profit_order`; status and ticks add `trading.plan` and `trading.evaluation`
@@ -1760,8 +1773,13 @@ Limits contain `max_order_contracts`, `price_band_absolute`, `price_band_relativ
 `max_quote_age_seconds` and `max_valuation_age_seconds`.
 
 Unknown fields, duplicate JSON keys, missing required fields, wrong types and
-noncanonical OSIs return 400 `INVALID_REQUEST`. Business rejections return 422
-and remain recorded as rejected orders; unknown contracts/orders return 404,
+noncanonical OSIs return 400 `INVALID_REQUEST`. So does an order no market could make
+valid, whichever field breaks it: an empty, overlong or control-character client ID,
+a quantity below one, a market order that is not IOC, a single contract's limit that
+is not positive, fewer than two or more than four legs, two legs naming one contract,
+or a ratio outside 1 to 10. Nothing is recorded and the client ID stays free. Business
+rejections, which depend on the account and the market, return 422 and remain recorded
+as rejected orders; unknown contracts/orders return 404,
 terminal orders and a client ID reused with other terms return 409; an identical
 retry returns 200 with the order as it now stands. Errors always have this shape:
 
@@ -1773,7 +1791,13 @@ Unused `actual`, `limit` and `scope` are null. `scope` names an underlying or
 `aggregate`: a check on one contract, such as `PRICE_BAND`, reports that contract's
 underlying, while the journaled decision keeps the contract's OSI symbol, as the
 order itself does. Rejected writes still consume their client ID; GET orders shows
-their resulting rejection reason.
+their resulting rejection reason. An order's `reason` has the same shape as an error,
+`{code, message, actual, limit, scope}`: a `RISK_CHANGED` cancel keeps the original
+check's code at the start of its message and its numbers (3 contracts against a new
+limit of 2, a projected loss of 15.65 against 15.64), and so does a Flatten leg the
+rules refused. The preview's `reason`, a payout's `blocked` and a flatten's
+`kept_stocks[].reason` use it too. The Orders page and the flatten dialog show the
+numbers beside the reason.
 
 ### Write protection
 

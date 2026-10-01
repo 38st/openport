@@ -51,7 +51,14 @@ export interface AccountRules {
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null
 }
-export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money }
+/**
+ * A reason code with its numeric evidence: `actual` against `limit` for a numeric
+ * check, and `scope`, the underlying or "aggregate" it applies to. The evidence is
+ * absent on older servers and null when a check has none.
+ */
+export interface Decision { code: string; message: string; actual?: number | null; limit?: number | null; scope?: string | null }
+/** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
+export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }
 /**
  * P&L explained by the Greeks, in dollars: each stretch a position is held at one
  * size, split by its Greeks at the start. `other` is what they leave unexplained;
@@ -97,7 +104,7 @@ export interface Payout {
 export interface PayoutStatus {
   eligible: boolean
   /** The first unmet requirement. */
-  blocked: { code: string; message: string; actual: number | null; limit: number | null } | null
+  blocked: Decision | null
   number: number
   active: boolean
   /** No positions and no working or armed orders. */
@@ -358,7 +365,7 @@ export interface Order {
   limit_price: Money | null
   average_fill_price: Money | null
   status: "working" | "partially_filled" | "filled" | "cancelled" | "rejected" | "armed"
-  reason: { code: string; message: string } | null
+  reason: Decision | null
   accepted_at: string
   day_end: string | null
   /** System orders liquidate or auto-close; absent on older servers. */
@@ -508,7 +515,7 @@ export interface AccountsResponse { accounts: AccountListItem[] }
 export type CreateAccountRequest = { name: string; fill_model?: FillModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
 /** Delivered shares a flatten could not close, as held after it, and why. */
-export interface KeptStock { symbol: string; shares: number; reason: { code: string; message: string } }
+export interface KeptStock { symbol: string; shares: number; reason: Decision }
 /**
  * Each closing order with its outcome; a rejected one carries its reason. The
  * share fields are absent from older servers.
@@ -554,7 +561,7 @@ export interface Breach {
 export interface OrderPreview {
   account_version: string
   decision: string
-  reason: { code: string; message: string } | null
+  reason: Decision | null
   buying_power: { required: Money; before: Money; after: Money | null }
   exposure_change: { dollar_delta: number; dollar_gamma_1pct: number; vega: number; theta: number } | null
   max_loss: Money | null

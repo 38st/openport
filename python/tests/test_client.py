@@ -55,6 +55,15 @@ def test_bounded_retry_reuses_id_and_body(stub, monkeypatch):
     assert len(stub.failures) == 1
 
 
+def test_retry_waits_the_servers_retry_after(stub, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("openport.client.time.sleep", sleeps.append)
+    stub.failures = [(503, "TRADING_UNAVAILABLE", 1), (503, "TRADING_UNAVAILABLE", 60), (503, "TRADING_UNAVAILABLE")]
+    Client(stub.url, "secret", "main", retries=3).place_order(quantity=1)
+    # Its own seconds, capped at ten; without the header, the backoff.
+    assert sleeps == [1.0, 10.0, 0.4]
+
+
 def test_preview_cancel_and_replay_routing(stub):
     client = Client(stub.url, "secret", "practice")
     client.preview_order(quantity=1)

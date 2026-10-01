@@ -617,7 +617,7 @@
       },
       "post": {
         "summary": "POST /api/accounts",
-        "description": "Requires admin.",
+        "description": "Requires admin. 409 ACCOUNTS_UNSUPPORTED on a server that keeps a single account (no accounts directory, or a replay).",
         "x-scope": "admin",
         "responses": {
           "201": {
@@ -1146,7 +1146,7 @@
       ],
       "put": {
         "summary": "PUT /api/risk/limits",
-        "description": "Requires admin.",
+        "description": "Requires admin. 409 LIMITS_REVISION when expected_revision is not the current limits_revision; refetch GET /api/risk and retry.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -1183,7 +1183,7 @@
       ],
       "put": {
         "summary": "PUT /api/risk/guardrails",
-        "description": "Requires admin.",
+        "description": "Requires admin. 409 LIMITS_REVISION when expected_revision is not the current limits_revision; refetch GET /api/risk and retry.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -3025,7 +3025,7 @@
       ],
       "get": {
         "summary": "GET /api/account/pass-odds",
-        "description": "Read the current publication. A seeded block bootstrap of completed days through the plan's rules; 400 with fewer than ten usable days.",
+        "description": "Read the current publication. A seeded block bootstrap of completed days through the plan's rules. 422 PASS_ODDS_UNAVAILABLE without an evaluation rule, with incomplete current marks or with fewer than ten usable days; 400 INVALID_REQUEST for a malformed query; 404 UNKNOWN_ACCOUNT or UNKNOWN_PLAYBOOK.",
         "x-scope": "read",
         "parameters": [
           {
@@ -3568,11 +3568,20 @@
     },
     "responses": {
       "Error": {
-        "description": "Failure with a stable reason code and optional evidence. 400 invalid request; 403 authentication/scope; 404 missing resource; 409 conflict; 422 simulator rejection; 503 inbox full or unavailable. Orders may retry using identical client_order_id and terms.",
+        "description": "Failure with a stable reason code and optional evidence. 400 invalid request; 403 authentication/scope; 404 missing resource; 409 conflict (a client ID reused with other terms, a stale limits revision LIMITS_REVISION, a server that keeps a single account ACCOUNTS_UNSUPPORTED); 422 simulator rejection; 503 inbox full or unavailable. Orders may retry using identical client_order_id and terms.",
         "content": {
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait before retrying, sent with a 503 for a full command inbox or a stopping engine (1).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         }
@@ -7326,13 +7335,19 @@
             "$ref": "#/components/schemas/Money"
           },
           "short_requirement": {
-            "$ref": "#/components/schemas/Money"
+            "$ref": "#/components/schemas/Money",
+            "description": "The positions' margin requirement, under its historical name; under portfolio margin it is the whole book's scan requirement."
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/Money",
+            "description": "The same amount as short_requirement, under a name that fits both margin modes."
           }
         },
         "required": [
           "available",
           "reserved",
-          "short_requirement"
+          "short_requirement",
+          "requirement"
         ]
       },
       "Attribution": {
@@ -7496,41 +7511,7 @@
           "blocked": {
             "anyOf": [
               {
-                "type": "object",
-                "properties": {
-                  "code": {
-                    "type": "string"
-                  },
-                  "message": {
-                    "type": "string"
-                  },
-                  "actual": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "limit": {
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "code",
-                  "message",
-                  "actual",
-                  "limit"
-                ]
+                "$ref": "#/components/schemas/Decision"
               },
               {
                 "type": "null"
@@ -9079,7 +9060,10 @@
         "properties": {
           "client_order_id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (market orders IOC, a positive quantity, two to four legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
           },
           "symbol": {
             "type": "string"
@@ -9201,6 +9185,25 @@
                 "required": [
                   "limit_price"
                 ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "market"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "time_in_force": {
+                  "const": "ioc"
+                }
               }
             }
           }
@@ -9354,24 +9357,13 @@
           "reason": {
             "anyOf": [
               {
-                "type": "object",
-                "properties": {
-                  "code": {
-                    "type": "string"
-                  },
-                  "message": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "code",
-                  "message"
-                ]
+                "$ref": "#/components/schemas/Decision"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Why the order was rejected or cancelled, with the check's numbers: a RISK_CHANGED cancel keeps the original check's code in its message and its actual, limit and scope."
           },
           "accepted_at": {
             "type": "string"
@@ -10588,19 +10580,7 @@
             "type": "number"
           },
           "reason": {
-            "type": "object",
-            "properties": {
-              "code": {
-                "type": "string"
-              },
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "code",
-              "message"
-            ]
+            "$ref": "#/components/schemas/Decision"
           }
         },
         "required": [
@@ -10874,19 +10854,7 @@
           "reason": {
             "anyOf": [
               {
-                "type": "object",
-                "properties": {
-                  "code": {
-                    "type": "string"
-                  },
-                  "message": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "code",
-                  "message"
-                ]
+                "$ref": "#/components/schemas/Decision"
               },
               {
                 "type": "null"
@@ -11378,7 +11346,8 @@
           },
           "ratio": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "maximum": 10
           }
         },
         "required": [
@@ -13364,6 +13333,55 @@
           "queued"
         ],
         "additionalProperties": false
+      },
+      "Decision": {
+        "type": "object",
+        "description": "A reason code with its numeric evidence: actual against limit for a numeric check, and scope, the underlying or aggregate it applies to (null when a check has none). A check on one contract reports its underlying; the journal keeps the contract's OSI.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "actual": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "actual",
+          "limit",
+          "scope"
+        ]
       }
     }
   }

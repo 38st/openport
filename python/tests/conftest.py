@@ -53,6 +53,7 @@ class Stub:
     def __init__(self):
         self.requests = []
         self.failures = []
+        self.retry_after = None
         self.order_bodies = {}
         self.expiry = shaped("Expiry", id="2026-10-22PM", expiry="2026-10-22")
         option = shaped("OptionQuote", symbol="SPXW  261022P05000000", tradable=True, bid=4, ask=4.2, mid=4.1)
@@ -67,7 +68,8 @@ class Stub:
     def respond(self, method, target, headers, body):
         self.requests.append((method, target, dict(headers), copy.deepcopy(body)))
         if self.failures:
-            status, code = self.failures.pop(0)
+            status, code, *retry = self.failures.pop(0)
+            self.retry_after = retry[0] if retry else None
             return status, {"error": {"code": code, "message": "synthetic rejection", "actual": None, "limit": None, "scope": None}}
         path = urlsplit(target).path
         if path == "/api/backtests":
@@ -149,6 +151,9 @@ def stub(monkeypatch):
             status, value = fixture.respond(self.command, self.path, self.headers, body)
             raw = value.encode() if isinstance(value, str) else json.dumps(value).encode()
             self.send_response(status)
+            if fixture.retry_after is not None:
+                self.send_header("Retry-After", str(fixture.retry_after))
+                fixture.retry_after = None
             self.send_header("Content-Type", "text/csv" if isinstance(value, str) else "application/json")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()

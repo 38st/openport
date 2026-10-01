@@ -30,7 +30,11 @@ Both status and tick JSON expose `engine.queue_depth`, `coalesced_events`,
 lifetime; only trades contribute to `dropped_events`. `overloaded` means depth
 exceeds capacity or trades have been dropped since the last drain. WebSocket
 clients retain the active write and only the newest pending tick, since ticks
-contain complete snapshots.
+contain complete snapshots. The server holds at most 256 `/ws` sessions at once,
+handshakes included; the next upgrade gets 503 `WebSocket session limit reached` with
+`Retry-After: 5`, and a slot frees as soon as another session closes. Paper commands
+queue in a bounded inbox of 256; a full one answers 503 `TRADING_UNAVAILABLE` with
+`Retry-After: 1` (see [paper trading](paper-trading.md#commands-and-views)).
 
 The engine publishes health state and message changes after the batch that
 contains them. Otherwise it publishes receipt and error timestamps at most once

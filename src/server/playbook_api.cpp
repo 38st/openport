@@ -64,8 +64,10 @@ std::vector<trading::EvaluationDay> playbook_days(const TradingView& view, const
 std::optional<ApiResponse> playbook_read(const ApiRequest& request, const MetricsSource& source) {
   const auto path = request.target.substr(0, request.target.find('?'));
   if (path != "/api/playbooks" && !path.starts_with("/api/playbooks/") && path != "/api/account/pass-odds" && path != "/api/strategy-template") return {};
+  json parameters;
+  try { parameters = query(request); }
+  catch (const std::exception& error) { return api_error(400, "INVALID_REQUEST", error.what()); }
   try {
-    const auto parameters = query(request);
     if (path == "/api/strategy-template") {
       strict_keys(parameters, {"symbol", "expiry", "template", "min_strike", "max_strike"});
       const auto symbol = required(parameters, "symbol", "symbol").get<std::string>();
@@ -92,22 +94,35 @@ std::optional<ApiResponse> playbook_read(const ApiRequest& request, const Metric
       }
       return ApiResponse{200, build_template(value, near, far).dump()};
     }
-    strict_keys(parameters, path == "/api/account/pass-odds" ? std::initializer_list<std::string_view>{"account", "days", "samples", "seed", "playbook"} : std::initializer_list<std::string_view>{"account", "version"});
-    if (path == "/api/playbooks" && parameters.contains("version")) throw std::invalid_argument("version requires a playbook ID");
+    const bool odds = path == "/api/account/pass-odds";
+    // The query is the request's: a malformed one is 400 INVALID_REQUEST, as on every route.
+    std::uint64_t days = 0, samples = 0, seed = 0;
+    try {
+      strict_keys(parameters, odds ? std::initializer_list<std::string_view>{"account", "days", "samples", "seed", "playbook"} : std::initializer_list<std::string_view>{"account", "version"});
+      if (path == "/api/playbooks" && parameters.contains("version")) throw std::invalid_argument("version requires a playbook ID");
+      if (odds) {
+        days = uint_parameter(parameters, "days", 20);
+        samples = uint_parameter(parameters, "samples", 1000);
+        seed = uint_parameter(parameters, "seed", 81723);
+        if (days < 1 || days > 252 || samples < 1 || samples > 10000) throw std::invalid_argument("days must be 1–252 and samples 1–10000");
+      }
+    } catch (const std::exception& error) { return api_error(400, "INVALID_REQUEST", error.what()); }
     const auto account = query_account(request.target);
-    if (!account) throw std::invalid_argument("account must be an account ID");
+    if (!account) return api_error(400, "INVALID_REQUEST", "account must be an account ID");
     const auto view = source.trading_view(*account);
-    if (!view || !view->snapshot) return api_error(404, "UNKNOWN_ACCOUNT", "Account unavailable");
+    if (!view || !view->snapshot) return api_error(404, "UNKNOWN_ACCOUNT", "No paper account " + *account);
     const auto catalogue = view->playbooks_json.empty() ? json{{"definitions", json::object()}, {"modes", json::object()}, {"staged", json::array()}, {"reasons", json::object()}, {"auto_allowed", false}} : json::parse(view->playbooks_json);
-    if (path == "/api/account/pass-odds") {
-      if (!view->snapshot->valuation_complete) throw std::invalid_argument("Pass odds require complete current equity marks");
-      const auto days = uint_parameter(parameters, "days", 20), samples = uint_parameter(parameters, "samples", 1000);
-      if (days < 1 || days > 252 || samples < 1 || samples > 10000) throw std::invalid_argument("days must be 1–252 and samples 1–10000");
+    if (odds) {
+      // The account cannot be estimated yet: no evaluation rule, incomplete marks or too little history.
+      if (!view->snapshot->valuation_complete)
+        return api_error(422, "PASS_ODDS_UNAVAILABLE", "Pass odds require complete current equity marks");
       const auto id = parameters.value("playbook", "");
       if (!id.empty() && !catalogue.at("definitions").contains(id)) return api_error(404, "UNKNOWN_PLAYBOOK", "Unknown playbook");
-      const auto seed = uint_parameter(parameters, "seed", 81723);
-      const auto result = trading::pass_odds(view->snapshot->evaluation, view->config.rules, view->snapshot->equity,
-          playbook_days(*view, id), static_cast<int>(days), static_cast<int>(samples), seed);
+      trading::PassOdds result;
+      try {
+        result = trading::pass_odds(view->snapshot->evaluation, view->config.rules, view->snapshot->equity,
+            playbook_days(*view, id), static_cast<int>(days), static_cast<int>(samples), seed);
+      } catch (const std::invalid_argument& error) { return api_error(422, "PASS_ODDS_UNAVAILABLE", error.what()); }
       return ApiResponse{200, json{{"pass", result.pass}, {"fail", result.fail}, {"neither", result.neither},
           {"median_days_to_pass", result.median_days_to_pass ? json(*result.median_days_to_pass) : json(nullptr)},
           {"historical_days", result.historical_days}, {"seed", std::to_string(result.seed)}, {"days", days}, {"samples", samples},
@@ -162,13 +177,20 @@ bool playbook_write(const ApiRequest& request, MetricsSource& source, ApiComplet
     request_command.kind = TradingCommand::Kind::Playbook;
     request_command.actor = request.actor;
     const auto account = query_account(request.target);
-    if (!account) throw std::invalid_argument("account must be an account ID");
+    if (!account) { complete(api_error(400, "INVALID_REQUEST", "account must be an account ID")); return true; }
     request_command.account = *account;
     request_command.note = command.dump();
     if (!source.post_trading(request_command, [complete](TradingReply reply) {
-      if (!reply.error_code.empty() || !reply.decision.ok()) complete(api_error(400, "INVALID_PLAYBOOK", reply.decision.message));
+      // As on every account route: an unknown account is 404, an unavailable one 503.
+      if (reply.error_code == "UNKNOWN_ACCOUNT") complete(api_error(404, "UNKNOWN_ACCOUNT", reply.decision.message));
+      else if (!reply.error_code.empty()) complete(api_error(503, reply.error_code, reply.decision.message));
+      else if (!reply.decision.ok()) complete(api_error(400, "INVALID_PLAYBOOK", reply.decision.message));
       else complete(ApiResponse{200, reply.playbook_result});
-    })) complete(api_error(503, "TRADING_UNAVAILABLE", "Command inbox unavailable"));
+    })) {
+      auto busy = api_error(503, "TRADING_UNAVAILABLE", "Command inbox full or trading unavailable");
+      busy.retry_after = kInboxRetrySeconds;
+      complete(std::move(busy));
+    }
   } catch (const std::exception& error) { complete(api_error(400, "INVALID_PLAYBOOK", error.what())); }
   return true;
 }

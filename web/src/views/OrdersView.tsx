@@ -7,7 +7,7 @@ import { CancelAllDialog, EditOrderDialog } from "../components/OrderActions"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented, type Tone } from "../components/ui"
 import { newYorkDate, orderLabel, osiLabel } from "../lib/journal"
-import { editable } from "../lib/orders"
+import { editable, reasonEvidence } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -150,6 +150,7 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
           <td><div className="flex flex-col items-end gap-1">
             <Badge tone={statusTone[order.status]}>{statusLabel[order.status]}</Badge>
             {order.reason && <span className="max-w-64 truncate text-[10px] text-muted" title={order.reason.message}>{order.reason.code === "USER_CANCEL" ? "Cancelled by you" : order.reason.code}</span>}
+            {reasonEvidence(order.reason) && <span className="max-w-64 truncate text-[10px] text-faint" title={order.reason!.message}>{reasonEvidence(order.reason)}</span>}
           </div></td>
           <td><div className="flex justify-end gap-1">
             {editable(order) && <button type="button" className="trade-button" aria-label={`Edit order ${order.id} for ${orderLabel(order)}`}

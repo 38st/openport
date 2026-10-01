@@ -89,7 +89,9 @@ void Sandboxes::create(const ApiRequest& request, MetricsSource& source, ApiComp
             {"idle_seconds", options_.idle.count()}, {"simulated", true}}.dump()});
       })) {
     removed(id);
-    complete(api_error(503, "SANDBOX_UNAVAILABLE", "Sandbox command inbox is full or trading is unavailable."));
+    auto busy = api_error(503, "SANDBOX_UNAVAILABLE", "Sandbox command inbox is full or trading is unavailable.");
+    busy.retry_after = kInboxRetrySeconds;
+    complete(std::move(busy));
   }
 }
 
