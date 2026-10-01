@@ -302,6 +302,26 @@ TEST(DeskPlans, EveryPresetIsValidAndTheObjectivePresetsNameTheirFloors) {
   EXPECT_TRUE(locked);
 }
 
+TEST(DeskPlans, EachAccountRollsOverAtItsPlansOwnDayEnd) {
+  // At 17:30 New York time the default trading day has ended; a plan whose day
+  // ends at 18:00 still counts the evening toward the day it follows.
+  for (const std::int64_t day_end : {std::int64_t{17 * 60}, std::int64_t{18 * 60}}) {
+    trading::SessionConfig paper;
+    paper.initial_cash = Money::parse("10000");
+    paper.rules.max_drawdown = Money::parse("100");
+    paper.rules.day_end_minutes = day_end;
+    EquityDesk f(paper);
+    f.quotes(md::new_york_to_utc({2026, 9, 22}, 10, 0), 4.00, 4.20);
+    f.quotes(md::new_york_to_utc({2026, 9, 22}, 17, 30), 4.00, 4.20);
+    EXPECT_EQ(f.snapshot()->evaluation.days.size(), day_end == 17 * 60 ? 1U : 0U) << day_end;
+    f.quotes(md::new_york_to_utc({2026, 9, 22}, 18, 5), 4.00, 4.20);
+    const auto& e = f.snapshot()->evaluation;
+    ASSERT_EQ(e.days.size(), 1U) << day_end;
+    EXPECT_EQ(e.days[0].day, (md::Date{2026, 9, 22}));
+    EXPECT_EQ(e.day, (md::Date{2026, 9, 23}));
+  }
+}
+
 TEST(DeskEquity, OnlyAPassOfThePresetItselfUnlocksItsFundedPlan) {
   // B36: custom rules that only borrowed the name "Intraday 25K" unlocked funded-intraday-25k.
   const auto* evaluation = server::find_plan("intraday-25k");
