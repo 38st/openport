@@ -327,7 +327,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
               level={targetLevel} setLevel={setTargetLevel} underlying={selection.underlying}
               hint={!exitLevel(targetLevel) ? "Enter a target." : targetSource === "option" ? `Rests as a ${formatMoney(targetLevel)} limit to ${side === "buy" ? "sell" : "buy"}.`
                 : `${side === "buy" ? "Sells" : "Buys"} at market when ${describeTrigger({ source: "underlying", direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel }, side, selection.underlying)}.`} />
-            <p className="text-[11px] text-muted">Exits are placed as the entry fills, sized to the fill; one cancels the other. Both are good until expiry.</p>
+            <p className="text-[11px] text-muted">Exits are placed as the entry fills, sized to the fill. One filling completely cancels the other; a stop that fills only in part re-arms for the rest. Both are good until expiry.</p>
           </>}
         </div>}
       </fieldset>

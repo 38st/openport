@@ -271,8 +271,16 @@ TEST(TradingFills, BracketsStartAtEntryFillAndStopsStartLatencyAtTrigger) {
       session.trip_kill("reduce only", market.time);
       next(session, market, "3.00", "3.20", 1);
       EXPECT_EQ(order(session, 2).filled_quantity, 1);
-      EXPECT_EQ(order(session, 2).reason.code, Reason::IOC_REMAINDER);
       EXPECT_EQ(session.snapshot()->recent_fills.back().price, m("3.00"));
+      // The remainder re-arms, and the bid still at the stop triggers it again: its
+      // delay starts over, and the target stays for the contract still held.
+      EXPECT_EQ(order(session, 2).status, OrderStatus::Working);
+      EXPECT_EQ(order(session, 2).triggered_at, market.time);
+      EXPECT_EQ(order(session, 3).request.quantity, 1);
+      EXPECT_TRUE(order(session, 3).open());
+      next(session, market, "2.90", "3.10", 1);
+      EXPECT_EQ(order(session, 2).status, OrderStatus::Filled);
+      EXPECT_EQ(session.snapshot()->recent_fills.back().price, m("2.90"));
     } else {
       next(session, market, "5.00", "5.20");
       EXPECT_EQ(order(session, 3).filled_quantity, 2);

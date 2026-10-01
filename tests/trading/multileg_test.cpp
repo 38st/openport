@@ -734,14 +734,25 @@ TEST(TradingMultiLeg, StopsReadDisplayedComboNetOrUnderlyingAndUseSlippageAndSiz
     }
     const auto snap = s.snapshot();
     EXPECT_EQ(snap->recent_orders[1].filled_quantity, 1);
-    EXPECT_EQ(snap->recent_orders[1].reason.code, Reason::IOC_REMAINDER);
-    EXPECT_EQ(snap->recent_orders[2].reason.code, Reason::OCO_FILLED);
+    // The displayed size took one unit: the stop re-arms for the other, and the
+    // target stays, shrunk to it.
+    EXPECT_EQ(snap->recent_orders[1].status, OrderStatus::Armed);
+    EXPECT_EQ(snap->recent_orders[1].remaining(), 1);
+    EXPECT_TRUE(snap->recent_orders[2].open());
+    EXPECT_EQ(snap->recent_orders[2].request.quantity, 1);
     ASSERT_EQ(snap->recent_fills.size(), 4U);
     EXPECT_EQ(snap->recent_fills[2].price, m("6.10"));
     EXPECT_EQ(snap->recent_fills[3].price, m("3.90"));
     ASSERT_EQ(snap->positions.size(), 2U);
     EXPECT_EQ(std::abs(snap->positions[0].position.quantity), 1);
     EXPECT_EQ(std::abs(snap->positions[1].position.quantity), 1);
+    // The next quote still at the stop closes the rest and cancels the target.
+    f.quote(s, {{P4900, "5.80", "6.00", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+    if (source == TriggerSource::Underlying)
+      s.on_quotes({}, {{P4900, f.time, -0.30, 0.001, 2, -0.1, 5010, 5010, 0.99, 0.1, 0.2, true}}, f.time);
+    EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Filled);
+    EXPECT_EQ(s.snapshot()->recent_orders[2].reason.code, Reason::OCO_FILLED);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
   }
 }
 

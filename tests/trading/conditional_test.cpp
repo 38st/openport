@@ -131,6 +131,65 @@ TEST(TradingConditional, BracketTakeProfitFillsAndCancelsTheStop) {
   EXPECT_TRUE(s.snapshot()->positions.empty());
 }
 
+TEST(TradingConditional, APartialStopFillReArmsForTheRestAndKeepsTheTargetForIt) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(with_bracket(f.limit("entry", 3, "4.20"), stop_at("3.50"), target_at("5.00")), f.time).decision.ok());
+  // The bid that reaches the stop shows one contract: the stop sells it and re-arms for the other two.
+  quote(s, f, "3.40", "3.60", 1);
+  EXPECT_EQ(order(s, 2).filled_quantity, 1);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, 2).remaining(), 2);
+  // The target is not cancelled: it shrinks to the two contracts still held.
+  EXPECT_EQ(order(s, 3).status, OrderStatus::Working);
+  EXPECT_EQ(order(s, 3).request.quantity, 2);
+  // The next quote still at the stop sells the rest; only then is the target cancelled.
+  quote(s, f, "3.30", "3.50", 5);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("3.30"));
+  EXPECT_EQ(s.snapshot()->recent_fills.back().quantity, 2);
+  EXPECT_EQ(order(s, 3).reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingConditional, AStopThatFindsTheBidUsedUpReArmsInsteadOfCancelling) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(with_bracket(f.limit("first", 1, "4.20"), stop_at("3.50"), target_at("5.00")), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(with_bracket(f.limit("second", 1, "4.20"), stop_at("3.50"), target_at("5.00")), f.time).decision.ok());
+  // Both stops are reached on a bid of one contract: the first takes it, and the
+  // second, finding nothing left, re-arms rather than cancel and leave its contract bare.
+  quote(s, f, "3.40", "3.60", 1);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 5).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, 5).filled_quantity, 0);
+  EXPECT_TRUE(order(s, 6).open());
+  quote(s, f, "3.40", "3.60", 1);
+  EXPECT_EQ(order(s, 5).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 6).reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingConditional, APartialTargetFillShrinksTheStopInsteadOfCancellingIt) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(with_bracket(f.limit("entry", 3, "4.20"), stop_at("3.50"), target_at("5.00")), f.time).decision.ok());
+  quote(s, f, "5.00", "5.20", 1);
+  EXPECT_EQ(order(s, 3).status, OrderStatus::PartiallyFilled);
+  EXPECT_EQ(order(s, 3).filled_quantity, 1);
+  // The stop still protects the two contracts left.
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, 2).request.quantity, 2);
+  quote(s, f, "3.40", "3.60", 5);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().quantity, 2);
+  EXPECT_EQ(order(s, 3).reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 TEST(TradingConditional, ExitsGrowWithEntryFillsAndShrinkOrCancelWithManualCloses) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

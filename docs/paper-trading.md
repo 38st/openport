@@ -424,9 +424,14 @@ price (a resting take-profit). Exits take the opposite side and are sized to the
 filled quantity; later entry fills grow them. Client IDs are the entry's with `:stop` or
 `:target`. The stop is market IOC and the take-profit a GTC limit; both last, and report
 in `day_end`, until the nearest contract's last trade or auto-close, and a stop already
-reached when the entry fills fires at once. The two exits are linked: the first fill of
-one cancels the other with `OCO_FILLED`. If the entry still has an unfilled remainder, the exit fill cancels
-it with the same reason so it cannot reopen after protection has fired. Exits never exceed the position they protect: they shrink when it shrinks
+reached when the entry fills fires at once. The two exits are linked: when one fills
+completely it cancels the other with `OCO_FILLED`, and a partial fill of one leaves the
+other in place, shrunk to what is still held. A stop that fills only in part, because the
+bid shows fewer contracts than it sells or other orders have used them, does not cancel
+its remainder: it re-arms for it (`order_rearmed`) and fires again on the next quote that
+still reaches its level, so a thin book never leaves part of the position bare. If the
+entry still has an unfilled remainder, the first exit fill cancels it with `OCO_FILLED`
+so it cannot reopen after protection has fired. Exits never exceed the position they protect: they shrink when it shrinks
 and are cancelled with `POSITION_CLOSED` once it is flat, so they never open a
 position. Because they only reduce risk, they execute like system orders, without the
 price band or loss projection, and good-until-expiry exits wait for the next regular
@@ -490,8 +495,8 @@ spread's stop or target back; a plain triggered combo, which is not an exit, sti
 needs a two-sided quote on every leg. Underlying levels must be positive
 and read the first leg's fresh valuation. On reaching the inclusive direction, the
 stop sends a closing market IOC combo with normal slippage and displayed-size
-limits. A partial stop fill cancels the sibling and its own IOC remainder; the
-remaining held units need new exits. Missing data never triggers. Plain triggered
+limits. A partial stop fill re-arms the stop for the units still held and shrinks the
+target to them, as for a single contract. Missing data never triggers. Plain triggered
 combos are accepted only when every leg reduces holdings, including other manual
 closing orders' claims. Opening combos cannot carry triggers.
 
@@ -1461,7 +1466,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; opening orders and manual latch resets are refused while closing orders and exits remain available |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause in message, numeric evidence retained |
-| `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder, explicit cancellation, the end of a DAY order's session (a triggered one's activation session) |
+| `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder (a stop exit's re-arms instead), explicit cancellation, the end of a DAY order's session (a triggered one's activation session) |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry or last-trade boundary, or pending settlement quality flag |
 | `LIMIT_ONLY` | The overnight and curb sessions take plain limit orders: no market orders, and triggers or brackets only on GTC limits (and a held spread's exits), which wait for the regular session |
 | `FEED_STALLED` | Market data lags what a healthy feed would show by more than `max_quote_age` (a delayed feed: at least three minutes); message includes the lag behind the wall clock |
@@ -1479,7 +1484,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
 | `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, or a funded phase with a profit target or no qualifying days. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
-| `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling or remaining entry cancelled by an exit fill, or an exit whose held legs closed |
+| `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling cancelled when the other exit filled completely, remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
 | `INVALID_NOTE`, `UNKNOWN_TRADE` | An order or trade note or tag past its limits, or a note on a fill that opens no trade |
