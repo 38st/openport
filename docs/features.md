@@ -215,9 +215,18 @@ margin and As displayed fills unless Conservative is selected; the
 [paper-trading guide](paper-trading.md#account-rules-and-evaluations) has the details.
 
 Plans set an account's rules: `practice` (the default: buying power only),
-`intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new high) or
-`eod-25k|50k|100k` (any strategy, 12% target, 6% drawdown trailing each close). Touching
-the floor fails the attempt and closes every position; reaching the target passes it.
+`intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new high),
+`eod-25k|50k|100k` (any strategy, 12% target, 6% drawdown trailing each close),
+`static-25k|50k|100k` (a static floor, a target on the closed balance, a daily loss limit
+that fails the attempt and four trading days) or `locking-25k|50k|100k` (a floor that
+locks at the starting balance, a daily loss limit that locks the day and a best-day
+consistency rule). Touching the floor fails the attempt and closes every position;
+reaching the target passes it. Custom plans take the rules prop firms use most: a daily
+loss limit measured from the day's opening equity or balance, the higher of the two or
+the day's high, which closes the positions and locks the day or fails the attempt;
+static and lock-at-start floors; minimum trading and profitable days and a best-day
+consistency rule that hold a pass back; a target counted on the closed balance; and a
+trading day that ends at the plan's own time.
 On the default 15-minute delayed feed a pass is practice, not proof: any real-time chart
 shows where the market went next.
 `--plan` picks the main account's first plan; start a new attempt on any plan from the
@@ -262,6 +271,9 @@ the simulation's limits.
       equity and ETF options
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets and a trade
       journal, with the funded phase and payouts in the engine
+- [x] Plan objectives: daily loss limits by basis that lock the day or fail, best-day
+      consistency, minimum trading and profitable days, static and lock-at-start floors,
+      closed-balance targets, exit costs and a trading day set per plan
 - [x] Strategies: multi-leg orders with spread-aware buying power, held strategies as
       positions, rolls, risk graph, probability of profit with skew, and templates
 - [x] Terminal: underlying chart, order changes in place, flatten, multiple named

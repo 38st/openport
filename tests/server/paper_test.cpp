@@ -2177,7 +2177,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());
   const auto plans = read(engine, "/api/plans")["plans"];
-  ASSERT_EQ(plans.size(), 13);
+  ASSERT_EQ(plans.size(), 19);
   EXPECT_EQ(plans[0]["id"], "practice");
   EXPECT_EQ(plans[0]["rules"]["profit_target"], nullptr);
   EXPECT_EQ(plans[0]["rules"]["buying_power"], true);
@@ -2212,6 +2212,27 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(plans[8]["rules"]["payouts"]["qualifying_profit"], "150.00");
   EXPECT_EQ(plans[10]["id"], "funded-eod-25k");
   EXPECT_EQ(plans[10]["rules"]["payouts"]["qualifying_profit"], "100.00");
+  // The plan objectives' presets: a static floor, and one that locks at the start.
+  const auto fixed = plans[14];
+  EXPECT_EQ(fixed["id"], "static-50k");
+  EXPECT_EQ(fixed["initial_cash"], "50000.00");
+  EXPECT_EQ(fixed["unlocked_by"], nullptr);
+  auto fixed_rules = off({{"plan", "Static 50K"}, {"phase", "evaluation"}, {"profit_target", "5000.00"},
+      {"max_drawdown", "4000.00"}, {"drawdown_mode", "static"}, {"lock_balance", nullptr}, {"buy_only", false},
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300},
+      {"payouts", nullptr}});
+  fixed_rules.update({{"profit_basis", "balance"}, {"daily_loss_limit", "2000.00"}, {"daily_loss_basis", "balance"},
+                      {"daily_loss_action", "fail"}, {"min_trading_days", 4}, {"day_end", "18:00"}});
+  EXPECT_EQ(fixed["rules"], fixed_rules);
+  const auto locking = plans[18];
+  EXPECT_EQ(locking["id"], "locking-100k");
+  EXPECT_EQ(locking["name"], "Locking 100K");
+  auto locking_rules = off({{"plan", "Locking 100K"}, {"phase", "evaluation"}, {"profit_target", "6000.00"},
+      {"max_drawdown", "4000.00"}, {"drawdown_mode", "end_of_day"}, {"lock_balance", nullptr}, {"buy_only", false},
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300},
+      {"payouts", nullptr}});
+  locking_rules.update({{"lock_at_start", true}, {"daily_loss_limit", "2000.00"}, {"consistency_percent", 50}});
+  EXPECT_EQ(locking["rules"], locking_rules);
   EXPECT_EQ(plans[10]["rules"]["drawdown_mode"], "end_of_day");
   EXPECT_EQ(plans[10]["rules"]["buy_only"], false);
   const auto eod = plans[4];

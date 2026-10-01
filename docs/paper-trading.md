@@ -1495,6 +1495,20 @@ path as equity and closed balance alike, flat at every observation, with a trade
 every simulated day and the attempt's finished days counted toward its objectives; a
 lock ends that simulated day at its level.
 
+#### Plan presets with objectives
+
+Two preset families use these rules, at 25K, 50K and 100K, with any strategy, strategy
+margin, buying power and the five-minute expiry auto-close of the other evaluations:
+
+| Preset | Target | Floor | Daily loss limit | To pass | Day ends |
+| --- | --- | --- | --- | --- | --- |
+| `static-*` | 10%, on the closed balance | Static, 8% below the starting balance | 4% below the day's opening balance; fails the attempt | At least 4 trading days | 18:00 ET |
+| `locking-*` | 6%, on equity | 4% trailing each close, locking at the starting balance | 2% below the day's opening equity; closes every position and locks the day | Best day at most 50% of the total profit | 17:00 ET |
+
+They have no funded counterpart. Like every preset, their parameters are this
+project's own, modelled on common prop-firm terms; custom rules can combine the
+same rules any other way.
+
 ### Equity extremes and history
 
 Each finished `EvaluationDay` keeps `low_equity`, `high_equity`, `low_at` and
@@ -1572,7 +1586,7 @@ compares closes net of it; a locked floor stays where it is.
 
 The web terminal hides funded plans and the Payouts page (this simulator funds no one)
 unless the account is already funded; `showFundedAccounts` in `web/src/lib/features.ts`
-offers them again. The server offers a funded preset for each evaluation preset
+offers them again. The server offers a funded preset for each intraday and end-of-day evaluation preset
 (`funded-intraday-25k` and so on). A reset into one requires that the current attempt passed the evaluation
 it names, otherwise `PLAN_LOCKED`: that preset's starting balance and every one of its
 rules, with only the fill model's execution settings free. Custom rules may set `phase`
@@ -1887,7 +1901,8 @@ and snapshot every time (a 14,063-record journal of mostly idle polls shrank fro
 
 Schema 2 added `config.rules`, the evaluation, attempts and closures to the state and
 snapshot, and `system` to orders; it also records `evaluation_passed`,
-`evaluation_failed`, `evaluation_day`, `account_reset` and `payout` outcomes. Later
+`evaluation_failed` (each with a `code` when a rule other than the target or the floor
+decided it), `evaluation_day`, `day_locked`, `account_reset` and `payout` outcomes. Later
 schema 2 fields (conditional and bracket orders, the funded phase, payout rules and
 records, qualifying days) default when absent, so earlier schema 2 journals recover
 unchanged; multi-leg orders record their `legs`. F24 appends TIF enum values without
@@ -2293,7 +2308,7 @@ focus at the top of the ticket.
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, round trips by trade ID: join their trades into one (a closed round trip can name a whole trade still holding an open one), or take each listed open round trip out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
-| `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
+| `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing), their `funded-*` accounts (`unlocked_by` names the evaluation), `static-25k/50k/100k` and `locking-25k/50k/100k` (see [plan presets with objectives](#plan-presets-with-objectives)); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |
 | `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
 | `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
