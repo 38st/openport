@@ -135,6 +135,9 @@ struct OrderPreview {
   Decision decision;
   Money buying_power_required;
   Money buying_power_before;
+  /// Available while the order works on its terms, before it fills: for a change,
+  /// with what it reserved before released.
+  std::optional<Money> buying_power_working;
   /// Available once the order has filled in full at the projected price; for an
   /// exits-only pair, which rests until one exit fills, once it is accepted.
   std::optional<Money> buying_power_after;
@@ -193,6 +196,12 @@ class TradingSession {
   /// Pure pre-trade check and full-size projection; never takes displayed size,
   /// allocates IDs or writes a journal. floor_share is in (0, 1], default 0.5.
   [[nodiscard]] OrderPreview preview(const OrderRequest& request, Timestamp time, double floor_share = 0.5,
+      Decision rejection = {}, const std::map<std::string, double>& close_variances = {}, const PreviewMarket& market = {}) const;
+  /// The same preview of a change to open order `id`, as modify would make it: the
+  /// change's decision and what it executes at once, and the order on its new terms
+  /// projected as a new order is, its remaining units filling in full. Sizing counts
+  /// the units it could still work (its filled ones aside); exits have none.
+  [[nodiscard]] OrderPreview preview_change(OrderId id, const OrderChange& change, Timestamp time, double floor_share = 0.5,
       Decision rejection = {}, const std::map<std::string, double>& close_variances = {}, const PreviewMarket& market = {}) const;
   /// `close_variances`: each underlying's implied variance of its log price to today's close.
   [[nodiscard]] BreachRisk breach(const std::map<std::string, double>& close_variances = {}) const;

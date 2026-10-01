@@ -179,6 +179,10 @@ class Client:
     def preview_order(self, order: JSON | None = None, **fields) -> OrderPreview:
         return self._request("POST", "/orders/preview", self._order(order, fields), scoped=True)
 
+    def preview_change(self, order_id: str, **change) -> OrderPreview:
+        """Preview a change to a resting order (quantity, limit_price, trigger_level, floor_share) without making it."""
+        return self._request("POST", "/orders/" + quote(str(order_id), safe="") + "/preview", change, scoped=True)
+
     def modify_order(self, order_id: str, **change) -> SubmitResult:
         return self._request("PUT", "/orders/" + quote(str(order_id), safe=""), change, scoped=True)
 

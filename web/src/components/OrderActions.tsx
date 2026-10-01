@@ -9,6 +9,7 @@ import { describeTrigger } from "../lib/ticket"
 import { extendedSession, formatMoney, paperNotice } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
+import { OrderPreviewPanel, useChangePreview } from "./OrderPreview"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
 import { Badge } from "./ui"
 
@@ -65,6 +66,7 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
   const [draft, setDraft] = useState(() => orderDraft(order))
   const fields = editableFields(order)
   const result = orderChange(order, draft)
+  const preview = useChangePreview(order.id, "change" in result ? result.change : null, trading)
   const side = order.side ?? "buy"
   const priceLabel = order.legs ? "Net limit per unit (negative for a credit)" : "Limit price"
   return (
@@ -104,6 +106,8 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
         )}
         {order.role && <p className="text-xs text-muted">A bracket exit's size follows the position it protects.</p>}
         {"error" in result && <p className="text-xs text-warn" role="status">{result.error}</p>}
+        {"change" in result && <OrderPreviewPanel what="change" preview={preview} disabled={!fields.quantity}
+          onSize={(size) => setDraft({ ...draft, quantity: String(order.filled_quantity + size) })} />}
         <p className="text-[11px] text-muted">
           The order keeps its number and fills. The new terms are checked like a new order, and a limit that crosses the market fills at once.
         </p>

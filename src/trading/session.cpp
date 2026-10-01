@@ -1794,18 +1794,20 @@ struct PreviewProjection {
   OrderPreview result;
   State projected;
 };
-PreviewProjection project_order(const State& before, OrderRequest request, const Decision& rejection) {
-  PreviewProjection projection{{}, before};
+/// Open order `id` in `after`, a copy of `before` that holds it on the terms to
+/// preview, which the checks decided `decision`: what it reserves there, and the
+/// account once its remaining units fill in full.
+PreviewProjection project_working(const State& before, State after_state, OrderId id, Decision decision) {
+  PreviewProjection projection{{}, std::move(after_state)};
   auto& result = projection.result;
   auto& after = projection.projected;
   const auto snapshot = snapshot_of(before);
   result.buying_power_before = snapshot.buying_power.available;
-  Order candidate;
-  candidate.id = static_cast<OrderId>(after.orders.size() + 1);
-  candidate.request = request;
-  candidate.accepted_at = before.time;
-  add_order(after, candidate);
-  result.decision = acceptance_check(after, after.orders.back(), rejection);
+  result.decision = std::move(decision);
+  const auto total = after.orders.at(static_cast<std::size_t>(id - 1)).request.quantity;
+  // The units still to fill: the whole of a new order.
+  auto request = after.orders.at(static_cast<std::size_t>(id - 1)).request;
+  request.quantity = after.orders.at(static_cast<std::size_t>(id - 1)).remaining();
   auto legs = request.legs;
   if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
   if (request.quantity <= 0 || legs.size() > kMaxLegs) return projection;
@@ -1824,18 +1826,19 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
   // Held exits rest as a bracket's exits do, holding only their fees, until one fills:
   // buying power after them is what their acceptance leaves.
   if (request.exits_only && request.bracket)
-    after.orders.mut_back().role = request.bracket->take_profit ? OrderRole::TakeProfit : OrderRole::StopLoss;
-  const auto power = buying_power(after, candidate.id);
+    after.orders.mut(static_cast<std::size_t>(id - 1)).role = request.bracket->take_profit ? OrderRole::TakeProfit : OrderRole::StopLoss;
+  const auto power = buying_power(after, id);
   result.buying_power_required = power.focus_reservation;
+  result.buying_power_working = power.total.available;
   if (request.exits_only) result.buying_power_after = power.total.available;
-  auto& filled = after.orders.mut_back();
+  auto& filled = after.orders.mut(static_cast<std::size_t>(id - 1));
   filled.status = OrderStatus::Filled;
-  filled.filled_quantity = request.quantity;
+  filled.filled_quantity = total;
   const auto [premium, fees] = project_fill(after, before, request, request.quantity);
   // A filled bracket entry leaves its exits working, and they reserve their fees.
   if (request.bracket && !request.exits_only) {
     Events ignored;
-    attach_exits(after, candidate.id, ignored);
+    attach_exits(after, id, ignored);
   }
   const auto projected = snapshot_of(after);
   if (!request.exits_only) result.buying_power_after = projected.buying_power.available;
@@ -1869,16 +1872,85 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
   }
   return projection;
 }
+/// A new order: accepted, or not, on a copy of `before`, then projected.
+PreviewProjection project_order(const State& before, OrderRequest request, const Decision& rejection) {
+  State after = before;
+  Order candidate;
+  candidate.id = static_cast<OrderId>(after.orders.size() + 1);
+  candidate.request = std::move(request);
+  candidate.accepted_at = before.time;
+  add_order(after, candidate);
+  auto decision = acceptance_check(after, after.orders.back(), rejection);
+  return project_working(before, std::move(after), candidate.id, std::move(decision));
+}
+/// The checks a resting entry's new terms take in change_order, on `s`, where the order has them.
+Decision change_check(const State& s, const Order& order, const Decision& rejection) {
+  if (!rejection.ok()) return rejection;
+  auto decision = order_check(s, order);
+  return decision.ok() ? open_orders_risk_check(s, order) : decision;
+}
+/// Order `id` with `change`'s terms in place, as change_order sets them, unchecked.
+void change_terms(State& s, OrderId id, const OrderChange& change) {
+  auto& order = s.orders.mut(static_cast<std::size_t>(id - 1));
+  if (change.quantity) order.request.quantity = *change.quantity;
+  if (change.limit_price && order.request.type == OrderType::Limit) order.request.limit_price = *change.limit_price;
+  if (change.trigger_level && order.request.trigger) order.request.trigger->level = *change.trigger_level;
+}
+/// The account a preview starts from: the current one with the integration's newer
+/// market for contracts it may not hold yet, at the market time, its daily loss checked.
+State prepared(const State& state, Timestamp time, const PreviewMarket& market) {
+  State before = state;
+  for (const auto& contract : market.contracts) {
+    const auto symbol = contract.osi_symbol();
+    if (!eligible(contract).ok()) continue;
+    if (const auto saved = before.contracts.find(symbol); saved != before.contracts.end() && Json(saved->second) != Json(contract))
+      throw TradingError(Reason::INVALID_CONTRACT, "Preview definition conflicts with registered terms");
+    before.contracts[symbol] = contract;
+  }
+  for (const auto& quote : market.quotes) {
+    if (!before.contracts.contains(quote.symbol) || quote.time > time || quote.time < 0) continue;
+    const auto prior = before.books.find(quote.symbol);
+    if (prior != before.books.end() && prior->second.quote.observation == quote.observation) {
+      auto& book = before.books[quote.symbol];
+      book.quote = quote;
+    } else {
+      before.books[quote.symbol] = {quote, valid_quote(quote) ? quote.bid_size : 0, markable_quote(quote) ? quote.ask_size : 0};
+    }
+    if (markable_quote(quote)) before.marks[quote.symbol] = {mark_of(quote), quote.time};
+  }
+  for (const auto& valuation : market.valuations)
+    if (before.contracts.contains(valuation.symbol) && valuation.time <= time && valuation.time >= 0)
+      before.valuations[valuation.symbol] = valuation;
+  Events ignored;
+  advance(before, time, ignored);
+  monitor_loss(before, ignored);
+  return before;
+}
+/// The room sizing shares: above the nearer of the plan and soft floors, if any.
+std::optional<Money> floor_room(const State& s) {
+  const auto snapshot = measure(s);
+  std::optional<Money> room;
+  if (s.config.rules.max_drawdown > Money{}) room = snapshot.equity - s.evaluation.floor;
+  if (snapshot.soft_floor) room = room ? std::min(*room, snapshot.equity - *snapshot.soft_floor) : snapshot.equity - *snapshot.soft_floor;
+  return room;
+}
+void check_floor_share(double floor_share) {
+  if (!std::isfinite(floor_share) || floor_share <= 0 || floor_share > 1)
+    throw TradingError(Reason::INVALID_ORDER, "floor_share must be greater than zero and at most one");
+}
 
-/// What order `id` did in `trial`, a private copy of `before` that took it: its
-/// state and the fills it got there, beside `execution`'s full-size schedule.
+/// What order `id` did in `trial`, a private copy of `before` that took it or a
+/// change to it: its state and the fills it got there, beside `execution`'s
+/// full-size schedule. Fills from before the copy do not count.
 PreviewExecution executed(const State& before, const State& trial, OrderId id, PreviewExecution execution) {
   const auto& order = trial.orders.at(static_cast<std::size_t>(id - 1));
+  const auto* prior = id <= before.orders.size() ? &before.orders.at(static_cast<std::size_t>(id - 1)) : nullptr;
   execution.status = order.status;
   execution.reason = order.reason;
-  execution.filled_quantity = order.filled_quantity;
+  execution.filled_quantity = order.filled_quantity - (prior ? prior->filled_quantity : 0);
   execution.remaining_quantity = order.status == OrderStatus::Rejected ? 0 : order.remaining();
-  if (order.filled_quantity > 0) execution.average_fill_price = order.filled_notional.prorate(1, order.filled_quantity);
+  if (execution.filled_quantity > 0)
+    execution.average_fill_price = (order.filled_notional - (prior ? prior->filled_notional : Money{})).prorate(1, execution.filled_quantity);
   for (auto i = before.fills.size(); i < trial.fills.size(); ++i)
     if (const auto& fill = trial.fills[i]; fill.order_id == id) execution.fills.push_back({fill.symbol, fill.side, fill.quantity, fill.price});
   return execution;
@@ -2531,8 +2603,7 @@ BreachRisk TradingSession::breach(const std::map<std::string, double>& close_var
 }
 OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time, double floor_share,
     Decision rejection, const std::map<std::string, double>& close_variances, const PreviewMarket& market) const {
-  if (!std::isfinite(floor_share) || floor_share <= 0 || floor_share > 1)
-    throw TradingError(Reason::INVALID_ORDER, "floor_share must be greater than zero and at most one");
+  check_floor_share(floor_share);
   // Submit answers an identical retry before advancing market time. It cannot
   // create another fill or reserve more buying power, even if the feed changed.
   if (!impl_->stopped) {
@@ -2552,31 +2623,8 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
       return retry;
     }
   }
-  State before = impl_->state;
-  for (const auto& contract : market.contracts) {
-    const auto symbol = contract.osi_symbol();
-    if (!eligible(contract).ok()) continue;
-    if (const auto saved = before.contracts.find(symbol); saved != before.contracts.end() && Json(saved->second) != Json(contract))
-      throw TradingError(Reason::INVALID_CONTRACT, "Preview definition conflicts with registered terms");
-    before.contracts[symbol] = contract;
-  }
-  for (const auto& quote : market.quotes) {
-    if (!before.contracts.contains(quote.symbol) || quote.time > time || quote.time < 0) continue;
-    const auto prior = before.books.find(quote.symbol);
-    if (prior != before.books.end() && prior->second.quote.observation == quote.observation) {
-      auto& book = before.books[quote.symbol];
-      book.quote = quote;
-    } else {
-      before.books[quote.symbol] = {quote, valid_quote(quote) ? quote.bid_size : 0, markable_quote(quote) ? quote.ask_size : 0};
-    }
-    if (markable_quote(quote)) before.marks[quote.symbol] = {mark_of(quote), quote.time};
-  }
-  for (const auto& valuation : market.valuations)
-    if (before.contracts.contains(valuation.symbol) && valuation.time <= time && valuation.time >= 0)
-      before.valuations[valuation.symbol] = valuation;
+  const auto before = prepared(impl_->state, time, market);
   Events ignored;
-  advance(before, time, ignored);
-  monitor_loss(before, ignored);
   auto projection = project_order(before, request, rejection);
   auto result = projection.result;
   if (impl_->stopped) result.decision = failure(Reason::JOURNAL_IO, "Trading stopped after journal failure");
@@ -2589,10 +2637,6 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
     } catch (const TradingError&) {}
   }
   result.breach = breach_of(projection.projected, close_variances);
-  const auto snapshot = snapshot_of(before);
-  std::optional<Money> room;
-  if (before.config.rules.max_drawdown > Money{}) room = snapshot.equity - before.evaluation.floor;
-  if (snapshot.soft_floor) room = room ? std::min(*room, snapshot.equity - *snapshot.soft_floor) : snapshot.equity - *snapshot.soft_floor;
   std::map<Quantity, OrderPreview> sized_previews;
   const auto sized_preview = [&](Quantity quantity) -> const OrderPreview& {
     const auto saved = sized_previews.find(quantity);
@@ -2611,7 +2655,62 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
     if (leg.ratio <= 0) return result;
     upper = std::min(upper, before.config.limits.max_order_contracts / leg.ratio);
   }
-  const auto sizing = size_order(sized_preview, upper, room, floor_share);
+  const auto sizing = size_order(sized_preview, upper, floor_room(before), floor_share);
+  result.max_units = sizing.units;
+  result.max_units_buying_power = sizing.buying_power;
+  result.max_units_floor = sizing.floor;
+  return result;
+}
+OrderPreview TradingSession::preview_change(OrderId id, const OrderChange& change, Timestamp time, double floor_share,
+    Decision rejection, const std::map<std::string, double>& close_variances, const PreviewMarket& market) const {
+  check_floor_share(floor_share);
+  const auto before = prepared(impl_->state, time, market);
+  OrderPreview result;
+  // An unknown or finished order is the change's answer, as modify gives it.
+  if (id == 0 || id > before.orders.size()) {
+    result.decision = failure(Reason::UNKNOWN_ORDER, "Unknown order ID");
+    return result;
+  }
+  if (!before.orders.at(static_cast<std::size_t>(id - 1)).open()) {
+    result.decision = failure(Reason::ORDER_TERMINAL, "Order is already terminal");
+    return result;
+  }
+  // The change itself, on a copy: its decision, and what it executes at once.
+  State trial = before;
+  Events ignored;
+  auto decision = change_order(trial, id, change, rejection, ignored).decision;
+  if (impl_->stopped) decision = failure(Reason::JOURNAL_IO, "Trading stopped after journal failure");
+  // The order on its new terms, unmatched: what it reserves, and the account once it fills.
+  State changed = before;
+  change_terms(changed, id, change);
+  auto projection = project_working(before, std::move(changed), id, decision);
+  result = std::move(projection.result);
+  result.breach = breach_of(projection.projected, close_variances);
+  result.execution = executed(before, trial, id, std::move(result.execution));
+  // Sizing counts the units the order could still work, its filled ones aside.
+  const auto& order = before.orders.at(static_cast<std::size_t>(id - 1));
+  if (impl_->stopped || order.role != OrderRole::Normal || order.request.exits_only) return result;
+  Quantity upper = before.config.limits.max_order_contracts;
+  for (const auto& leg : order.request.legs) {
+    if (leg.ratio <= 0) return result;
+    upper = std::min(upper, before.config.limits.max_order_contracts / leg.ratio);
+  }
+  std::map<Quantity, OrderPreview> sized_previews;
+  const auto sized_preview = [&](Quantity units) -> const OrderPreview& {
+    const auto saved = sized_previews.find(units);
+    if (saved != sized_previews.end()) return saved->second;
+    auto sized = change;
+    sized.quantity = order.filled_quantity + units;
+    State resized = before;
+    change_terms(resized, id, sized);
+    OrderPreview value;
+    try {
+      auto check = change_check(resized, resized.orders.at(static_cast<std::size_t>(id - 1)), rejection);
+      value = project_working(before, std::move(resized), id, std::move(check)).result;
+    } catch (const TradingError& error) { value.decision = failure(error.code(), error.what()); }
+    return sized_previews.emplace(units, std::move(value)).first->second;
+  };
+  const auto sizing = size_order(sized_preview, upper - order.filled_quantity, floor_room(before), floor_share);
   result.max_units = sizing.units;
   result.max_units_buying_power = sizing.buying_power;
   result.max_units_floor = sizing.floor;

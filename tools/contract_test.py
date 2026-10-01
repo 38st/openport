@@ -208,6 +208,7 @@ class Contract:
             placed = self.call("POST", "/api/replay/orders?account=main", order, success=True)
             if placed["order"]["status"] != "working":
                 raise ContractMismatch("POST /api/replay/orders: order.status: expected a resting limit")
+            self.call("POST", "/api/replay/orders/" + placed["order"]["id"] + "/preview?account=main", {"quantity": 2}, success=True)
             self.call("DELETE", "/api/replay/orders/" + placed["order"]["id"] + "?account=main", success=True)
             self.call("GET", "/api/replay/orders?account=main", success=True)
             self.call("DELETE", "/api/replay", success=True)

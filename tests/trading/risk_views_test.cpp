@@ -206,5 +206,81 @@ TEST(TradingPreview, ASpreadsScheduleNetsItsLegs) {
   EXPECT_EQ(p.execution.average_fill_price, m("2.20"));
   EXPECT_EQ(p.execution.filled_quantity, 2);
 }
+TEST(TradingPreview, AChangeIsPreviewedAsModifyWouldMakeItWithoutMakingIt) {
+  ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("rest", 2, "3.00"), f.time).decision.ok());
+  const auto id = s.snapshot()->recent_orders.back().id;
+  const auto state = s.snapshot_json();
+  // Repricing to the ask makes it marketable: it would fill 3 at once.
+  OrderChange change; change.quantity = 3; change.limit_price = m("4.20");
+  const auto p = s.preview_change(id, change, f.time);
+  ASSERT_TRUE(p.decision.ok()) << p.decision.message;
+  EXPECT_EQ(p.execution.status, OrderStatus::Filled);
+  EXPECT_EQ(p.execution.filled_quantity, 3);
+  ASSERT_EQ(p.execution.fills.size(), 1U);
+  EXPECT_EQ(p.execution.fills[0].price, m("4.20"));
+  // It holds 2 x 300.65 now; 3 at the new limit reserve 3 x 420.65.
+  const auto before = s.snapshot()->buying_power.available;
+  EXPECT_EQ(p.buying_power_before, before);
+  EXPECT_EQ(p.buying_power_required, m("1261.95"));
+  EXPECT_EQ(p.buying_power_working, before + m("601.30") - m("1261.95"));
+  EXPECT_EQ(p.buying_power_after, m("10000") - m("1261.95"));
+  ASSERT_TRUE(p.exposure_change);
+  EXPECT_EQ(p.exposure_change->dollar_delta, 750000);
+  EXPECT_EQ(p.max_loss, m("1261.95"));
+  EXPECT_EQ(s.snapshot_json(), state);
+  // The change itself does what the preview said.
+  ASSERT_TRUE(s.modify(id, change, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders.at(id - 1).filled_quantity, 3);
+  EXPECT_EQ(s.snapshot()->buying_power.available, *p.buying_power_after);
+}
+TEST(TradingPreview, AChangeCountsOnlyWhatItFillsNow) {
+  ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s);
+  // 10 of 15 fill at 4.20; the other 5 rest once the ask moves to 4.40.
+  ASSERT_TRUE(s.submit(f.limit("part", 15, "4.20"), f.time).decision.ok());
+  const auto id = s.snapshot()->recent_orders.back().id;
+  f.next(); s.on_quotes({f.quote("4.20", "4.40")}, {f.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->recent_orders.at(id - 1).filled_quantity, 10);
+  OrderChange reprice; reprice.limit_price = m("4.40");
+  const auto p = s.preview_change(id, reprice, f.time);
+  ASSERT_TRUE(p.decision.ok()) << p.decision.message;
+  EXPECT_EQ(p.execution.status, OrderStatus::Filled);
+  EXPECT_EQ(p.execution.filled_quantity, 5);
+  EXPECT_EQ(p.execution.remaining_quantity, 0);
+  EXPECT_EQ(p.execution.average_fill_price, m("4.40"));
+  ASSERT_EQ(p.execution.fills.size(), 1U);
+  EXPECT_EQ(p.execution.fills[0].quantity, 5);
+  // The schedule and the projection are for the 5 still to fill.
+  ASSERT_EQ(p.execution.schedule.size(), 1U);
+  EXPECT_EQ(p.execution.schedule[0].quantity, 5);
+  // Sizing counts units beside the 10 filled: the quantity to send is 10 + max_units.
+  ASSERT_TRUE(p.max_units_buying_power);
+  OrderChange most; most.quantity = 10 + *p.max_units_buying_power;
+  EXPECT_TRUE(s.preview_change(id, most, f.time).decision.ok());
+  most.quantity = *most.quantity + 1;
+  EXPECT_EQ(s.preview_change(id, most, f.time).decision.code, Reason::BUYING_POWER);
+}
+TEST(TradingPreview, AChangePreviewGivesTheRefusalAndSizesTheUnitsStillWorking) {
+  ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("rest", 1, "3.00"), f.time).decision.ok());
+  const auto id = s.snapshot()->recent_orders.back().id;
+  // 40 at 3.00 need 12,026 of the 10,000: refused, and the order stays as it is.
+  OrderChange bigger; bigger.quantity = 40;
+  const auto refused = s.preview_change(id, bigger, f.time);
+  EXPECT_EQ(refused.decision.code, Reason::BUYING_POWER);
+  EXPECT_EQ(refused.execution.status, OrderStatus::Working);
+  EXPECT_EQ(refused.execution.remaining_quantity, 1);
+  EXPECT_TRUE(refused.execution.fills.empty());
+  // A unit at 3.00 loses at most 300.65: one fits half the 1,000 room, 33 fit buying power.
+  EXPECT_EQ(refused.max_units, 1);
+  EXPECT_EQ(refused.max_units_buying_power, 33);
+  EXPECT_EQ(refused.max_units_floor, 1);
+  OrderChange none;
+  EXPECT_EQ(s.preview_change(id, none, f.time).decision.code, Reason::INVALID_ORDER);
+  EXPECT_EQ(s.preview_change(99, bigger, f.time).decision.code, Reason::UNKNOWN_ORDER);
+  s.cancel(id, f.time);
+  EXPECT_EQ(s.preview_change(id, bigger, f.time).decision.code, Reason::ORDER_TERMINAL);
+  EXPECT_THROW((void)s.preview_change(id, bigger, f.time, 0), TradingError);
+}
 }  // namespace
 }  // namespace openport::trading

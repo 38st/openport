@@ -129,6 +129,8 @@ export const api = {
     return get<TemplateResult>(`/api/strategy-template?${query}`, signal)
   },
   previewOrder: (order: NewOrder, mode: WriteMode, floor_share = 0.5) => write<OrderPreview>(scoped("/api/orders/preview"), "POST", mode, { ...order, floor_share }),
+  previewChange: (id: string, change: OrderChange, mode: WriteMode, floor_share = 0.5) =>
+    write<OrderPreview>(scoped(`/api/orders/${encodeURIComponent(id)}/preview`), "POST", mode, { ...change, floor_share }),
   equity: (signal?: AbortSignal) => get<EquityHistory>(scoped("/api/account/equity"), signal),
   updateGuardrails: (expected_revision: string, guardrails: Guardrails, mode: WriteMode) => write<Risk>(scoped("/api/risk/guardrails"), "PUT", mode, { expected_revision, guardrails }),
   portfolio: (signal?: AbortSignal) => get<Portfolio>(scoped("/api/portfolio"), signal),

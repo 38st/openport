@@ -2,29 +2,37 @@ import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
-import type { NewOrder, OrderPreview, PreviewExecution, PreviewFill, TradingStatus } from "../api/trading-types"
+import type { NewOrder, OrderChange, OrderPreview, PreviewExecution, PreviewFill, TradingStatus } from "../api/trading-types"
 import { osiLabel } from "../lib/journal"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { BreachPanel } from "./BreachPanel"
 
-export function useOrderPreview(order: NewOrder | null, trading: TradingStatus) {
+/** A debounced preview of `body`, refetched when the account changes. */
+function usePreview<T>(kind: string, body: T | null, trading: TradingStatus, fetch: (body: T) => Promise<OrderPreview>) {
   const { accountScope } = useLive()
   const token = useWriteToken()
-  const signature = JSON.stringify(order)
+  const signature = JSON.stringify(body)
   const [ready, setReady] = useState("")
   useEffect(() => {
     const timer = window.setTimeout(() => setReady(signature), 300)
     return () => window.clearTimeout(timer)
   }, [signature])
   const query = useQuery({
-    queryKey: ["trading", accountScope, "preview", trading.account_version, ready, trading.write, token],
-    queryFn: () => api.previewOrder(JSON.parse(ready) as NewOrder, trading.write),
-    enabled: order != null && signature === ready && trading.enabled,
+    queryKey: ["trading", accountScope, kind, trading.account_version, ready, trading.write, token],
+    queryFn: () => fetch(JSON.parse(ready) as T),
+    enabled: body != null && signature === ready && trading.enabled,
     retry: false,
   })
-  return { data: signature === ready && order ? query.data : undefined, error: signature === ready ? query.error : null,
-    loading: order != null && (signature !== ready || query.isFetching) }
+  return { data: signature === ready && body ? query.data : undefined, error: signature === ready ? query.error : null,
+    loading: body != null && (signature !== ready || query.isFetching) }
+}
+export function useOrderPreview(order: NewOrder | null, trading: TradingStatus) {
+  return usePreview("preview", order, trading, (body) => api.previewOrder(body, trading.write))
+}
+/** The preview of a change to resting order `id`, as saving it would make it; null previews nothing. */
+export function useChangePreview(id: string, change: OrderChange | null, trading: TradingStatus) {
+  return usePreview(`preview-change-${id}`, change, trading, (body) => api.previewChange(id, body, trading.write))
 }
 // exposure_change is the order's change to the book's Greeks, not the book after it.
 const greekChanges = [["dollar_delta", "Dollar delta"], ["dollar_gamma_1pct", "Dollar gamma per 1%"], ["vega", "Vega"], ["theta", "Theta"]] as const
@@ -52,8 +60,9 @@ export function ExecutionSummary({ execution: e }: { execution: PreviewExecution
     </details>}
   </section>
 }
-export function OrderPreviewPanel({ preview, onSize, disabled = false }: {
-  preview: { data?: OrderPreview; error: unknown; loading: boolean }; onSize: (size: number) => void; disabled?: boolean
+/** `what` names what is previewed: a new order, or a change to a resting one, whose sizes count the units still to work. */
+export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "order" }: {
+  preview: { data?: OrderPreview; error: unknown; loading: boolean }; onSize: (size: number) => void; disabled?: boolean; what?: "order" | "change"
 }) {
   const p = preview.data
   // Without a plan or soft floor, size follows buying power and the limits alone.
@@ -64,11 +73,11 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false }: {
         onClick={() => { if (p?.max_units) onSize(p.max_units) }}>{floorless ? "Size to buying power" : "Size to floor"}</button></div>
     {preview.loading ? <p className="text-muted">Checking order…</p>
       : preview.error ? <p role="status" className="text-warn">Preview failed. Buying power and floor risk are unavailable. You can still submit for the server's checks.</p>
-      : !p ? <p className="text-muted">Complete the order to preview its risk.</p> : <>
+      : !p ? <p className="text-muted">{what === "change" ? "Change a term to preview the order on its new terms." : "Complete the order to preview its risk."}</p> : <>
         <dl className="grid grid-cols-2 gap-2 tabular">
           <dt className="text-muted">Buying power after</dt><dd className="text-right">{formatMoney(p.buying_power.after)}</dd>
           <dt className="text-muted">{p.max_loss_basis === "scenario_grid" ? "Scenario-grid loss" : "Max loss at expiry"}</dt><dd className="text-right">{formatMoney(p.max_loss)}</dd>
-          <dt className="text-muted">Room after this order</dt><dd className="text-right">{formatMoney(p.breach.room)}</dd>
+          <dt className="text-muted">Room after this {what}</dt><dd className="text-right">{formatMoney(p.breach.room)}</dd>
           {floorless ? <><dt className="text-muted">Size within buying power and limits</dt><dd className="text-right">{units(p.max_units)}</dd></>
             : p.max_units_buying_power === undefined ? <><dt className="text-muted">Size at 50% of floor room</dt><dd className="text-right">{units(p.max_units)}</dd></>
             : <>
@@ -79,11 +88,11 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false }: {
         </dl>
         {p.decision !== "ok" && <p role="status" className="text-warn">{p.decision}: {p.reason?.message}</p>}
         {p.decision === "ok" && p.execution && <ExecutionSummary execution={p.execution} />}
-        {(p.breaches_floor || p.breaches_soft_floor) && <p role="alert" className="font-medium text-danger">This order could breach {p.breaches_floor ? "the plan floor" : "your soft floor"}.</p>}
-        <details><summary className="cursor-pointer text-muted">After this order · breach risk, and the change in Greeks</summary>
+        {(p.breaches_floor || p.breaches_soft_floor) && <p role="alert" className="font-medium text-danger">This {what} could breach {p.breaches_floor ? "the plan floor" : "your soft floor"}.</p>}
+        <details><summary className="cursor-pointer text-muted">After this {what} · breach risk, and the change in Greeks</summary>
           <BreachPanel breach={p.breach} />
           {p.exposure_change && <section aria-label="Change in Greeks" className="mt-2">
-            <p className="text-muted">Change from this order</p>
+            <p className="text-muted">{what === "change" ? "Change once the rest fills on the new terms" : "Change from this order"}</p>
             <dl className="mt-1 grid grid-cols-2 gap-1 tabular">{greekChanges.map(([key, label]) =>
               <div key={key}><dt className="text-muted">{label}</dt><dd>{signed(p.exposure_change![key])}</dd></div>)}</dl>
           </section>}

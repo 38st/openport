@@ -72,8 +72,9 @@ simulation's limits.
   order, or flatten an underlying or the whole account at market, shorts first; a long
   that still covers a short (a partial buy-back, or fill latency) sells in a later
   flatten, so no short is left uncovered. Server order
-  previews show buying power, maximum loss and a size that uses at most half the
-  floor room. Breach risk shows the spot moves that could reach the floor (the
+  previews show buying power, maximum loss, what fills at once and the full size's
+  fill schedule, and the size that fits buying power apart from the size that uses at
+  most half the floor room; Edit order previews a change to a resting order the same way. Breach risk shows the spot moves that could reach the floor (the
   personal soft floor on an account without a plan floor) and labelled model
   estimates of touching it before the close.
 - **Playbooks**: versioned setups with entry windows and conditions, shared strategy

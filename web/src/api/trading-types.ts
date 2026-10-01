@@ -591,7 +591,8 @@ export interface OrderPreview {
   account_version: string
   decision: string
   reason: Decision | null
-  buying_power: { required: Money; before: Money; after: Money | null }
+  /** working: available while the order works, before it fills; absent on older servers. */
+  buying_power: { required: Money; before: Money; working?: Money | null; after: Money | null }
   exposure_change: { dollar_delta: number; dollar_gamma_1pct: number; vega: number; theta: number } | null
   max_loss: Money | null
   max_loss_basis: "expiry_payoff" | "scenario_grid" | null
