@@ -1086,6 +1086,30 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
       return paper_acceptance(underlying, time == view->market_times.end() ? 0 : time->second,
                               driver_time, capabilities_.delay, session.config().limits.max_quote_age, breaker_.halts);
     };
+    // A dry run's newer market: the listed contracts, their quotes and valuations now,
+    // without the market transaction that would journal them. `vols` gains each one's
+    // underlying's variance to the close, and every held underlying's.
+    const auto preview_market = [&](const std::set<std::string>& symbols, std::map<std::string, double>& vols) {
+      PreviewMarket market;
+      for (const auto& symbol : symbols) {
+        const auto id = instruments_.find(symbol);
+        const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
+        if (!option) continue;
+        market.contracts.push_back(option->contract);
+        const auto& underlying = option->contract.underlying;
+        const auto complete = snapshots_.find(underlying);
+        const bool current = complete != snapshots_.end() && acceptance(underlying).ok();
+        if (option->has_quote) market.quotes.push_back({symbol, observations_[symbol], current ? market_time_ : option->quote_ts,
+            quote_price(option->bid), quote_price(option->ask), whole_size(option->bid_size), whole_size(option->ask_size)});
+        auto valuation = valuation_for(symbol, option->contract, metrics(underlying));
+        if (current && valuation.time > 0) valuation.time = market_time_;
+        market.valuations.push_back(valuation);
+        if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
+      }
+      for (const auto& [underlying, bucket] : before->risk.underlyings)
+        if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
+      return market;
+    };
     try {
       CommandResult result;
       switch (c.kind) {
@@ -1110,27 +1134,29 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
             if (!rejection.ok()) break;
           }
           if (c.kind == TradingCommand::Kind::Preview) {
-            PreviewMarket market;
             std::map<std::string, double> vols;
-            for (const auto& symbol : order_symbols(c.order)) {
-              const auto id = instruments_.find(symbol);
-              const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
-              if (!option) continue;
-              market.contracts.push_back(option->contract);
-              const auto& underlying = option->contract.underlying;
-              const auto complete = snapshots_.find(underlying);
-              const bool current = complete != snapshots_.end() && acceptance(underlying).ok();
-              if (option->has_quote) market.quotes.push_back({symbol, observations_[symbol], current ? market_time_ : option->quote_ts,
-                  quote_price(option->bid), quote_price(option->ask), whole_size(option->bid_size), whole_size(option->ask_size)});
-              auto valuation = valuation_for(symbol, option->contract, metrics(underlying));
-              if (current && valuation.time > 0) valuation.time = market_time_;
-              market.valuations.push_back(valuation);
-              if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
-            }
-            for (const auto& [underlying, bucket] : before->risk.underlyings)
-              if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
+            const auto symbols = order_symbols(c.order);
+            const auto market = preview_market({symbols.begin(), symbols.end()}, vols);
             reply.preview = session.preview(c.order, market_time_, c.floor_share, rejection, vols, market);
           } else result = session.submit(c.order, market_time_, rejection);
+          break;
+        }
+        case TradingCommand::Kind::PreviewChange: {
+          // The change's own feed gate, as Modify takes it, at the current quotes.
+          Decision rejection;
+          std::set<std::string> symbols;
+          for (const auto& order : before->open_orders)
+            if (order.id == c.order_id) {
+              for (const auto& symbol : order_symbols(order.request)) symbols.insert(symbol);
+              const auto contract = session.contracts().find(order_symbols(order.request).front());
+              if (contract != session.contracts().end()) rejection = acceptance(contract->second.underlying);
+            }
+          std::map<std::string, double> vols;
+          const auto market = preview_market(symbols, vols);
+          reply.preview = session.preview_change(c.order_id, c.change, market_time_, c.floor_share, rejection, vols, market);
+          // As for the change itself, an unknown or finished order is not found or in conflict.
+          if (const auto code = reply.preview->decision.code; code == Reason::UNKNOWN_ORDER || code == Reason::ORDER_TERMINAL)
+            result.decision = reply.preview->decision;
           break;
         }
         case TradingCommand::Kind::Modify: {
@@ -1226,7 +1252,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;
       reply.replayed = result.replayed;
-      if (c.kind != TradingCommand::Kind::Preview) publish_trading();
+      if (!dry_run(c.kind)) publish_trading();
       const auto& orders = session.snapshot()->recent_orders;
       for (const auto& order : before->open_orders) {
         if (orders.at(static_cast<std::size_t>(order.id - 1)).status == OrderStatus::Cancelled)
@@ -1353,7 +1379,7 @@ void Desk::record_input(const std::string& input, const std::string& actor, bool
   }
 }
 bool Desk::recorded_input(const TradingCommand& command) const {
-  return !playbook_running_ && !options_.run_input.empty() && command.kind != TradingCommand::Kind::Preview;
+  return !playbook_running_ && !options_.run_input.empty() && !dry_run(command.kind);
 }
 void Desk::record_command(const TradingCommand& c, md::Timestamp driver_time) {
   record_input(nlohmann::json{{"kind", "command"}, {"command", c}, {"time", market_time_}, {"driver_time", driver_time}}.dump(),
@@ -1365,7 +1391,7 @@ void Desk::command(TradingCommand command, TradingCompletion completion, md::Tim
   // Driver 4: the input comes before the command's quotes and its own transaction.
   const bool recorded = inputs_first() && recorded_input(commands.front().command);
   if (recorded) record_command(commands.front().command, driver_time);
-  if (commands.front().command.kind != TradingCommand::Kind::Preview) update_trading({}, commands, driver_time);
+  if (!dry_run(commands.front().command.kind)) update_trading({}, commands, driver_time);
   apply_command(commands.front(), market_time_, driver_time, recorded);
 }
 bool Desk::refresh_analytics() {

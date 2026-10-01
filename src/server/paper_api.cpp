@@ -112,7 +112,8 @@ json preview_json(const OrderPreview& p) {
       {"dollar_gamma_1pct", number(p.exposure_change->dollar_gamma_1pct)},
       {"vega", number(p.exposure_change->vega)}, {"theta", number(p.exposure_change->theta)}};
   return {{"decision", p.decision.ok() ? "ok" : to_string(p.decision.code)}, {"reason", decision_json(p.decision)},
-      {"buying_power", {{"required", p.buying_power_required.str()}, {"before", p.buying_power_before.str()}, {"after", money(p.buying_power_after)}}},
+      {"buying_power", {{"required", p.buying_power_required.str()}, {"before", p.buying_power_before.str()},
+                        {"working", money(p.buying_power_working)}, {"after", money(p.buying_power_after)}}},
       {"exposure_change", change}, {"max_loss", money(p.max_loss)}, {"max_loss_basis", nullable(p.max_loss_basis)},
       {"equity_at_max_loss", money(p.equity_at_max_loss)},
       {"breaches_floor", p.breaches_floor ? json(*p.breaches_floor) : json(nullptr)},
@@ -671,6 +672,7 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     }
     case TradingCommand::Kind::Playbook: body = json::parse(reply.playbook_result); break;
     case TradingCommand::Kind::Preview:
+    case TradingCommand::Kind::PreviewChange:
       if (!reply.preview) return api_error(503, "TRADING_UNAVAILABLE", "No preview available");
       body = preview_json(*reply.preview);
       body["account_version"] = std::to_string(s.account_version);
@@ -915,10 +917,20 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
   auto body = strict_json(request.body);
-  if (request.method == "PUT" && path.starts_with("/api/orders/")) {
-    fields(body, {}, {"quantity", "limit_price", "trigger_level"});
-    command.kind = TradingCommand::Kind::Modify;
-    command.order_id = identifier(path.substr(std::string_view("/api/orders/").size()));
+  // POST /api/orders/{id}/preview: a change's terms, as PUT takes them, and floor_share.
+  const bool change_preview = request.method == "POST" && path != "/api/orders/preview" &&
+      path.starts_with("/api/orders/") && path.ends_with("/preview");
+  if ((request.method == "PUT" && path.starts_with("/api/orders/")) || change_preview) {
+    if (change_preview) fields(body, {}, {"quantity", "limit_price", "trigger_level", "floor_share"});
+    else fields(body, {}, {"quantity", "limit_price", "trigger_level"});
+    command.kind = change_preview ? TradingCommand::Kind::PreviewChange : TradingCommand::Kind::Modify;
+    auto id = path.substr(std::string_view("/api/orders/").size());
+    if (change_preview) id = id.substr(0, id.size() - std::string_view("/preview").size());
+    command.order_id = identifier(id);
+    if (change_preview && body.contains("floor_share")) {
+      command.floor_share = number_field(body, "floor_share");
+      if (command.floor_share <= 0 || command.floor_share > 1) throw std::invalid_argument("floor_share must be in (0, 1]");
+    }
     if (body.contains("quantity")) command.change.quantity = integer_field(body, "quantity");
     if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
     if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
@@ -1365,6 +1377,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   const std::string path = request.target.substr(0, question);
   const auto pairs = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
   const bool route = (request.method == "POST" && (path == "/api/orders" || path == "/api/orders/preview" ||
+      (path.starts_with("/api/orders/") && path.ends_with("/preview")) ||
       path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/accounts" ||
       path == "/api/positions/exercise" || path == "/api/stocks/close" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||

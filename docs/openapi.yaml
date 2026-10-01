@@ -900,6 +900,51 @@
         }
       }
     },
+    "/api/orders/{id}/preview": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "summary": "POST /api/orders/{id}/preview",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderPreview"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePreviewRequest"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/orders/cancel": {
       "parameters": [
         {
@@ -2286,6 +2331,9 @@
     },
     "/api/replay/orders/{id}": {
       "$ref": "#/paths/~1api~1orders~1{id}"
+    },
+    "/api/replay/orders/{id}/preview": {
+      "$ref": "#/paths/~1api~1orders~1{id}~1preview"
     },
     "/api/replay/orders/cancel": {
       "$ref": "#/paths/~1api~1orders~1cancel"
@@ -11152,6 +11200,16 @@
               "before": {
                 "$ref": "#/components/schemas/Money"
               },
+              "working": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Money"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "after": {
                 "anyOf": [
                   {
@@ -11166,6 +11224,7 @@
             "required": [
               "required",
               "before",
+              "working",
               "after"
             ]
           },
@@ -11645,6 +11704,24 @@
         "allOf": [
           {
             "$ref": "#/components/schemas/NewOrder"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "floor_share": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": []
+          }
+        ]
+      },
+      "ChangePreviewRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/OrderChange"
           },
           {
             "type": "object",

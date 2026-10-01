@@ -134,6 +134,29 @@ TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
   expect_error(write(*engine, "POST", "/api/orders/preview", request), 400, "INVALID_REQUEST");
 }
 
+TEST_F(PaperEngine, AChangePreviewAnswersLikeTheChangeWithoutMakingIt) {
+  seed();
+  const auto placed = write(*engine, "POST", "/api/orders", order(market, "resting", "3.40"));
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  const auto id = json::parse(placed.body)["order"]["id"].get<std::string>();
+  auto response = write(*engine, "POST", "/api/orders/" + id + "/preview", {{"limit_price", "4.20"}, {"floor_share", 1}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto preview = json::parse(response.body);
+  EXPECT_EQ(preview["decision"], "ok");
+  EXPECT_TRUE(preview["simulated"]);
+  EXPECT_EQ(preview["execution"]["status"], "filled");
+  EXPECT_EQ(preview["execution"]["fills"][0]["price"], "4.20");
+  EXPECT_TRUE(preview["buying_power"]["working"].is_string());
+  // The order is untouched: still working at its old price, and nothing filled.
+  const auto orders = read(*engine, "/api/orders")["orders"];
+  EXPECT_EQ(orders[0]["status"], "working");
+  EXPECT_EQ(orders[0]["limit_price"], "3.40");
+  EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+  expect_error(write(*engine, "POST", "/api/orders/99/preview", {{"limit_price", "4.20"}}), 404, "UNKNOWN_ORDER");
+  expect_error(write(*engine, "POST", "/api/orders/" + id + "/preview", json::object()), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/orders/" + id + "/preview", {{"limit_price", "4.20"}, {"floor_share", 2}}), 400, "INVALID_REQUEST");
+}
+
 TEST_F(PaperEngine, PendingLimitsGuardrailsAndBreachAreExposedWithRevisionChecks) {
   seed();
   ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "eod-25k"}, {"reason", "evaluation"}}).status, 200);
@@ -2764,6 +2787,7 @@ TEST_F(PaperEngine, ContractFixture) {
   capture("POST", "/api/orders/preview", order(market));
   const auto placed = capture("POST", "/api/orders", order(market));
   const auto id = placed.at("order").at("id").get<std::string>();
+  capture("POST", "/api/orders/" + id + "/preview", {{"quantity", 2}});
   capture("PUT", "/api/orders/" + id, {{"limit_price", "4.20"}});
   market.next();
   quote();

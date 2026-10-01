@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import type { NewOrder, OrderPreview } from "../api/trading-types"
-import { status, trading } from "../test/trading-fixtures"
+import { order as resting, status, trading } from "../test/trading-fixtures"
+import { EditOrderDialog } from "./OrderActions"
 import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 const preview: OrderPreview = { account_version: "17", decision: "ok", reason: null, buying_power: { required: "501", before: "10000", after: "9499" },
@@ -17,6 +18,8 @@ let root: Root, host: HTMLDivElement, client: QueryClient
 beforeEach(() => {
   vi.useFakeTimers()
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true)
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   host = document.createElement("div"); document.body.append(host); root = createRoot(host)
@@ -114,6 +117,27 @@ describe("order preview", () => {
     const resting = { ...execution, status: "working" as const, filled_quantity: 0, remaining_quantity: 2, reason: null, fills: [], average_fill_price: null }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: { ...preview, execution: resting }, error: null, loading: false }} onSize={() => {}} />))
     expect(host.textContent).toContain("Nothing fills at once. 2 work as a resting order.")
+  })
+  it("previews an order change as the terms are edited, and sizes the units beside those filled", async () => {
+    const execution = { status: "filled" as const, filled_quantity: 3, remaining_quantity: 0, reason: null,
+      fills: [{ symbol: resting.symbol!, side: "buy" as const, quantity: 3, price: "4.70" }], average_fill_price: "4.70", schedule: [], average_price: null }
+    const request = vi.spyOn(api, "previewChange").mockResolvedValue({ ...preview, max_units: 4, execution,
+      buying_power: { required: "1412", before: "10000", working: "9200", after: "8600" } })
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <EditOrderDialog order={resting} trading={trading} onClose={() => {}} onDone={() => {}} /></QueryClientProvider>))
+    expect(host.querySelector('[aria-label="Order preview"]')).toBeNull()
+    const price = host.querySelector<HTMLInputElement>('input[aria-label="Limit price"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(price, "4.70")
+      price.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    await tick()
+    expect(request).toHaveBeenCalledWith("order-1", { limit_price: "4.70" }, trading.write)
+    expect(host.textContent).toContain("Room after this change")
+    expect(host.textContent).toContain("Fills 3 at once at $4.70 on average.")
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Order preview"] button')!.click())
+    // Four more units beside the two filled.
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="Quantity"]')!.value).toBe("6")
   })
   it("labels scenario estimates and prevents zero-unit sizing", async () => {
     const result = { ...preview, max_loss_basis: "scenario_grid" as const, max_units: 0 }

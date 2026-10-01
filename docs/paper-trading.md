@@ -827,7 +827,7 @@ and makes a private full-size projection. It writes no journal, changes no accou
 ID counter, and consumes no displayed size. The normal HTTP write protections apply.
 
 The response contains `decision` (`ok` or a reason code), `reason`, `buying_power`
-(`required`, `before`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
+(`required`, `before`, `working`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
 vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
 `breaches_floor`, `breaches_soft_floor`, `max_units`, `max_units_buying_power`,
 `max_units_floor`, projected `breach` and `execution`. Missing
@@ -852,7 +852,8 @@ as `symbol`, `side`, `quantity` and `price`, and `average_price` is its average 
 uses those prices for a market order and the limit for a limit order.
 
 `buying_power.required` is what the order reserves while it works. `before` is the
-available buying power now, and `after` the available buying power once the order has
+available buying power now, `working` the available buying power while the order works
+before any of it fills, and `after` the available buying power once the order has
 filled in full at the projected price: not `before` less `required`, since a fill that
 releases margin, as a close or a roll does, raises it. An `exits_only` pair rests until
 one of its exits fills, so its `after` is the buying power once it is accepted, with its
@@ -883,6 +884,23 @@ follows the position), an order the checks refuse at any size for another reason
 (a closed session, a stale quote, the kill switch, a price off its tick), or a loss
 that cannot be projected without marks and valuations. The preview is a current projection,
 not an execution promise; real orders still take all checks when submitted and filled.
+
+`POST /api/orders/{id}/preview` previews a change to a resting order without making it.
+It takes the fields `PUT /api/orders/{id}` takes (`quantity`, `limit_price`,
+`trigger_level`, at least one of them) and `floor_share`, and answers with the same
+response. Its `decision` is the change's, from the checks a change takes with the
+order's own reservation released, and an unknown or finished order answers
+`UNKNOWN_ORDER` (404) or `ORDER_TERMINAL` (409) as the change would. `execution` is what
+the change would do now, on a private copy of the account: a limit repriced through the
+market fills at once (`filled_quantity` and `fills` count only what fills now), an armed order whose new level is reached activates, and a refused
+change leaves the order as it stands, with its status and remaining quantity. The rest
+projects the order on its new terms as a new order is projected: `required` is what it
+would reserve, `working` the buying power while it works on them (its current reservation
+released), and `after`, the loss and the Greek change are for its remaining units filling
+in full, its filled ones already in the account. Sizing counts the units the order could
+still work beside those already filled, so the quantity to send is the filled quantity
+plus `max_units`; a bracket exit's size follows its position, so its sizing is null.
+Edit order in the terminal shows this preview as the terms change.
 
 `GET /api/risk` and `GET /api/account` expose `breach`: dollar `room` and `soft_room`,
 `complete`, and `underlyings[]`. Each held underlying has `spot`, `close_sigma` (one

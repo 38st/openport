@@ -68,6 +68,9 @@ def test_preview_cancel_and_replay_routing(stub):
     client = Client(stub.url, "secret", "practice")
     client.preview_order(quantity=1)
     assert stub.requests[-1][3]["client_order_id"]
+    assert client.preview_change("1", limit_price="4.20")["simulated"]
+    assert stub.requests[-1][1].startswith("/api/orders/1/preview?")
+    assert stub.requests[-1][3] == {"limit_price": "4.20"}
     client.cancel_order("1")
     assert stub.requests[-1][3] is None
     client.for_replay().orders()
