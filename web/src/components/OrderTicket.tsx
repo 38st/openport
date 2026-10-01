@@ -96,7 +96,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const portfolio = usePortfolio().data
   const [side, setSide] = useState<Side>(sideFromCell(selection.cell))
   const underlying = underlyings.find((u) => u.symbol === selection.underlying)
-  // The overnight and curb sessions take plain limit orders only.
+  // The overnight and curb sessions take limit orders only, and a condition or
+  // bracket only on a GTC limit, which waits for the regular session.
   const extended = extendedSession(underlying)
   const [chosenType, setType] = useState<"limit" | "market">("limit")
   const type = extended ? "limit" : chosenType
@@ -107,11 +108,12 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   // Conditional entry and bracket exits.
   const spot = selection.spot != null && Number.isFinite(selection.spot) ? selection.spot : null
   const [chosenCondition, setCondition] = useState<"now" | "cross">("now")
-  const condition = extended ? "now" : chosenCondition
+  const conditional = !extended || tif === "gtc"
+  const condition = conditional ? chosenCondition : "now"
   // No default level: one at spot would sit on the boundary, so the trader picks it.
   const [crossLevel, setCrossLevel] = useState("")
   const [chosenProtect, setProtect] = useState(false)
-  const protect = !extended && chosenProtect
+  const protect = conditional && chosenProtect
   const [stopOn, setStopOn] = useState(true)
   const [stopSource, setStopSource] = useState<"option" | "underlying">("option")
   const [stopLevel, setStopLevel] = useState("")
@@ -302,7 +304,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         </div>}
         {serverFee == null ? <label className="trade-label col-span-2">Fee / contract ($, estimate)<input className="trade-input" inputMode="decimal" value={fee} placeholder="Not provided by server" onChange={(e) => setFee(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
           : <div className="trade-label col-span-2">Fee / contract<div className="tabular text-foreground">{formatMoney(serverFee)}</div></div>}
-        {!extended && <div className="trade-label col-span-2">Condition
+        {conditional && <div className="trade-label col-span-2">Condition
           <Segmented label="Condition" value={condition} onChange={setCondition}
             options={[{ value: "now", label: "Now" }, { value: "cross", label: `When ${selection.underlying} crosses` }]} />
           {condition === "cross" && <>
@@ -314,7 +316,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
               : `Enter the level that activates the order${spot != null ? `; ${selection.underlying} is at ${spot.toFixed(2)}` : ""}.`}</span>
           </>}
         </div>}
-        {!extended && <div className="col-span-2 space-y-2 rounded-md border border-border p-3">
+        {conditional && <div className="col-span-2 space-y-2 rounded-md border border-border p-3">
           <label className="flex items-center justify-between gap-2 text-xs text-muted">
             <span>Protect with a stop-loss and take-profit</span>
             <input type="checkbox" role="switch" aria-label="Bracket" checked={protect} onChange={(e) => enableProtection(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />

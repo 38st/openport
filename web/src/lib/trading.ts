@@ -131,9 +131,10 @@ export function paperSessionNotice(symbol: string, session: TradingSession | nul
 }
 
 /**
- * The overnight (global) and curb sessions take plain limit orders only: no
- * market orders, triggers or brackets. Uses the session of the market-data
- * clock, which a delayed feed keeps behind the wall clock, when the server gives it.
+ * The overnight (global) and curb sessions take limit orders only: no market
+ * orders, and a trigger or bracket only on a GTC limit, which waits for the
+ * regular session. Uses the session of the market-data clock, which a delayed
+ * feed keeps behind the wall clock, when the server gives it.
  */
 export function extendedSession(underlying: UnderlyingSnapshot | undefined): "overnight" | "curb" | null {
   const name = underlying?.paper?.session ?? (underlying?.session?.open ? underlying.session.name : null)
@@ -143,8 +144,8 @@ export function limitOnlyNotice(symbol: string, underlying: UnderlyingSnapshot |
   const session = extendedSession(underlying)
   if (!session) return null
   return session === "overnight"
-    ? `${symbol} is in its overnight session (8:15 pm to 9:25 am ET): limit orders only, with no triggers or brackets. A Day order lasts until 9:25 am.`
-    : `${symbol} is in its curb session (4:15 to 5:00 pm ET): limit orders only, with no triggers or brackets. A Day order lasts until 5:00 pm.`
+    ? `${symbol} is in its overnight session (8:15 pm to 9:25 am ET): limit orders only, with a condition or exits only on a GTC order, which waits for the regular session. A Day order lasts until 9:25 am.`
+    : `${symbol} is in its curb session (4:15 to 5:00 pm ET): limit orders only, with a condition or exits only on a GTC order, which waits for the regular session. A Day order lasts until 5:00 pm.`
 }
 
 export function paperNotice(symbol: string, underlying: UnderlyingSnapshot | undefined) {
