@@ -72,9 +72,11 @@ simulation's limits.
   (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
   keep working while opening orders are cancelled. Positions close together as one
-  order, or flatten an underlying or the whole account at market, shorts first; a long
-  that still covers a short (a partial buy-back, or fill latency) sells in a later
-  flatten, so no short is left uncovered. Server order
+  order, or flatten an underlying or the whole account at market: each short closes
+  together with the long that covers it, so no short is left naked; closes larger than
+  the order limit split, what a thin quote leaves works on later quotes until flat,
+  bracket exits keep protecting whatever is still open, and the flatten reports what
+  stays and why. Server order
   previews show buying power, maximum loss, what fills at once and the full size's
   fill schedule, and the size that fits buying power apart from the size that uses at
   most half the floor room; Edit order previews a change to a resting order the same way,

@@ -261,7 +261,7 @@ json order_json(const Order& o, const TradingView& view) {
              return {{"code", wait->second.code}, {"message", wait->second.message}};
            }()},
           {"ended_at", time_or_null(o.ended_at)}, {"modified_at", modified_at(o)}, {"changes", order_changes_json(o)},
-          {"origin", o.system ? "system" : "user"},
+          {"origin", o.system ? "system" : "user"}, {"reduce_only", o.reduce_only},
           {"trigger", trigger_json(o.request.trigger)},
           {"triggered_at", o.triggered_at > 0 ? json(md::format_timestamp(o.triggered_at)) : json(nullptr)},
           {"bracket", o.request.bracket ? json{{"stop_loss", exit_json(o.request.bracket->stop_loss)},
@@ -794,6 +794,11 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
         if (const auto kept = reply.kept_stocks.find(stock.position.symbol); kept != reply.kept_stocks.end())
           body["kept_stocks"].push_back({{"symbol", stock.position.symbol}, {"shares", stock.position.shares},
               {"reason", decision_json(kept->second)}});
+      // Positions still open: the contracts its closes are still working, and why the rest are not.
+      body["residuals"] = json::array();
+      for (const auto& residual : reply.residuals)
+        body["residuals"].push_back({{"symbol", residual.symbol}, {"underlying", underlying(view, residual.symbol)},
+            {"quantity", residual.quantity}, {"working", residual.working}, {"reason", decision_json(residual.reason)}});
       break;
     }
     case TradingCommand::Kind::Playbook: body = json::parse(reply.playbook_result); break;

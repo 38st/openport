@@ -97,17 +97,30 @@ bool marked_now(const State& s, const std::string& symbol) {
   const auto time = it->second.quote.time;
   return time <= s.time && observation_time(s.contracts.at(symbol), s.time) - time <= s.config.limits.max_quote_age;
 }
-/// A combo exit's leg whose fresh quote shows only an ask, as a far option nobody
-/// bids for does. The exit buys such a leg back at that ask and gives it away at
-/// zero when it sells it, rather than wait for a bid that may never come, so a
-/// worthless wing cannot hold a stop or target back.
+/// Orders kept within the position they close: bracket exits and reduce-only
+/// closes shrink with it and are cancelled once it is flat, so they never open one.
+bool kept_within(const Order& o) { return o.role != OrderRole::Normal || o.reduce_only; }
+/// A fresh quote that shows only an ask, as a far option nobody bids for does.
+bool asks_only(const State& s, const std::string& symbol) {
+  const auto it = s.books.find(symbol);
+  return it != s.books.end() && !valid_quote(it->second.quote) && marked_now(s, symbol);
+}
+/// A combo exit's (or reduce-only close's) leg whose fresh quote shows only an ask.
+/// The order buys such a leg back at that ask and gives it away at zero when it
+/// sells it, rather than wait for a bid that may never come, so a worthless wing
+/// cannot hold a stop, a target or a flatten back.
 bool ask_only(const State& s, const Order& o, const Leg& leg) {
-  const auto it = s.books.find(leg.symbol);
-  return (o.role != OrderRole::Normal || o.request.exits_only) && it != s.books.end() &&
-         !valid_quote(it->second.quote) && marked_now(s, leg.symbol);
+  return (kept_within(o) || o.request.exits_only) && asks_only(s, leg.symbol);
 }
 /// An exit's long leg that nobody bids for: sold at zero, without displayed size.
 bool given_away(const State& s, const Order& o, const Leg& leg) { return leg.side == Side::Sell && ask_only(s, o, leg); }
+/// The same for a single contract: a close kept within its position buys a short
+/// back at an ask-only quote within its size (a short quoted 0.00/0.05), and a
+/// reduce-only market close gives a long nobody bids for away at zero.
+bool ask_only_single(const State& s, const Order& o) {
+  return !multi_leg(o.request) && kept_within(o) && asks_only(s, o.request.symbol) &&
+         (o.request.side == Side::Buy || (o.reduce_only && o.request.type == OrderType::Market));
+}
 /// The price band around the quote's mid, or around `center` (a stop-limit's trigger level).
 Decision price_check(const State& s, const QuoteObservation& q, Money price, std::optional<Money> center = {}) {
   const auto middle = center ? *center : mid(q);
@@ -254,7 +267,7 @@ bool closing_only(const State& s, const Order& o, bool include_working = true) {
     if (!include_working) return true;
     for (const auto id : open_ids(s)) {
       const auto& other = s.orders[id - 1];
-      if (other.system || other.role != OrderRole::Normal || other.id == o.id) continue;
+      if (other.system || kept_within(other) || other.id == o.id) continue;
       if (multi_leg(other.request)) {
         for (const auto& leg : other.request.legs)
           if (leg.symbol == symbol && leg.side == side && !reserve(other.remaining(), leg.ratio)) return false;
@@ -396,7 +409,8 @@ bool latency_ready(const State& s, const Order& o) {
   for (const auto& symbol : order_symbols(o.request)) {
     const auto& quote = s.books.at(symbol).quote;
     const auto leg = std::find_if(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& l) { return l.symbol == symbol; });
-    const bool usable = quote_check(s, symbol).ok() || (leg != o.request.legs.end() && ask_only(s, o, *leg));
+    const bool usable = quote_check(s, symbol).ok() ||
+                        (leg != o.request.legs.end() ? ask_only(s, o, *leg) : ask_only_single(s, o));
     if (quote.time < start || quote.time - start < delay || !usable) return false;
     if ((persistent(o) || o.system) && !regular(s.contracts.at(symbol), s.time)) return false;
   }
@@ -578,7 +592,7 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
     Use use;
     Quantity opening = 0;
     if (multi_leg(o.request)) {
-      if (o.role != OrderRole::Normal) {
+      if (kept_within(o)) {
         Money fees;
         for (const auto& leg : o.request.legs) fees = fees + s.config.fee_per_contract * (remaining * leg.ratio);
         use = {fees, false};
@@ -594,9 +608,9 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
       const Money premium = o.request.limit_price ? (*o.request.limit_price * 100) * remaining
                                                   : market_premium(s, symbol, o.request.side, remaining);
       const Money fees = s.config.fee_per_contract * remaining;
-      if (o.role != OrderRole::Normal) {
-        // Bracket exits stay within the position, so they only ever close; they
-        // leave closing capacity to ordinary orders such as a manual close.
+      if (kept_within(o)) {
+        // Bracket exits and reduce-only closes stay within the position, so they only
+        // ever close; they leave closing capacity to ordinary orders such as a manual close.
         use = {fees, false};
       } else {
         auto before = book;
@@ -886,7 +900,7 @@ void trip(State& s, const std::string& reason, Events& events) {
   // closes that together exceed the position, newest first, so older ones keep priority.
   const auto cancel_unless_closing = [&](OrderId id, bool include_working) {
     const auto& o = s.orders[id - 1];
-    if (o.open() && !o.system && o.role == OrderRole::Normal && !closing_only(s, o, include_working))
+    if (o.open() && !o.system && !kept_within(o) && !closing_only(s, o, include_working))
       cancel_order(s, id, kill_decision(s), events);
   };
   const auto ids = open_ids(s);
@@ -967,17 +981,6 @@ Quantity uncovered(const State& s, const std::vector<std::pair<std::string, Quan
   for (const auto& [symbol, q] : held)
     if (q != 0) legs.push_back({s.contracts.at(symbol), q, {}, std::nullopt});
   return naked_shorts(legs);
-}
-/// Contracts of a held long that can be sold without leaving more shorts uncovered.
-Quantity free_long(const State& s, const std::string& symbol) {
-  const auto base = uncovered(s, {});
-  Quantity low = 0, high = std::max<Quantity>(held(s, symbol), 0);
-  // Uncovered shorts only grow as more of the long is sold.
-  while (low < high) {
-    const auto middle = low + (high - low) / 2 + (high - low) % 2;
-    if (uncovered(s, {{symbol, -middle}}) <= base) low = middle; else high = middle - 1;
-  }
-  return low;
 }
 /// A defined-risk plan refuses an order that would leave more shorts uncovered.
 Decision defined_risk_check(const State& s, const std::vector<std::pair<std::string, Quantity>>& order,
@@ -1229,7 +1232,8 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   return {};
 }
 /// Liquidation and expiry auto-close reduce risk, so only the contract,
-/// session and executable-quote gates apply, including under the kill latch.
+/// session and executable-quote gates apply, including under the kill latch;
+/// so do bracket exits and reduce-only closes, which stay within their position.
 /// A held spread's exits are accepted outside the regular session (`now` false)
 /// and trade in the next one.
 Decision system_check(const State& s, const Order& o, bool now) {
@@ -1256,6 +1260,7 @@ Decision system_check(const State& s, const Order& o, bool now) {
                                     "Selling this long would leave a short option uncovered; close the short first");
         !d.ok())
       return d;
+  if (ask_only_single(s, o)) return {};
   return quote_check(s, o.request.symbol);
 }
 bool marketable(const Order& o, const QuoteObservation& q) {
@@ -1284,14 +1289,19 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   // Good-until-expiry exits and triggered orders outlive a session; outside
   // the regular session they wait for the next one.
   if (persistent(o) && !regular(s.contracts.at(o.request.symbol), s.time)) return;
-  if (!quote_check(s, o.request.symbol).ok() || !marketable(o, s.books.at(o.request.symbol).quote)) return;
-  if (s.config.rules.impact_ticks > 0 && o.request.limit_price) {
+  // A close kept within its position may meet a quote with only an ask: it buys at
+  // that ask, or a reduce-only market close gives the long away at zero.
+  const bool one_sided = ask_only_single(s, o);
+  const bool given = one_sided && o.request.side == Side::Sell;
+  if (!one_sided && !quote_check(s, o.request.symbol).ok()) return;
+  if (!given && !marketable(o, s.books.at(o.request.symbol).quote)) return;
+  if (s.config.rules.impact_ticks > 0 && o.request.limit_price && !given) {
     const auto candidate = execution_price(s, o.request.symbol, o.request.side);
     if (o.request.side == Side::Buy ? candidate > *o.request.limit_price : candidate < *o.request.limit_price) return;
   }
-  // System orders and bracket exits only ever reduce a position (exits are kept
-  // within it), so they skip the price band and loss projection when executing.
-  const bool reducing = o.system || o.role != OrderRole::Normal;
+  // System orders, bracket exits and reduce-only closes only ever reduce a position
+  // (they are kept within it), so they skip the price band and loss projection.
+  const bool reducing = o.system || kept_within(o);
   auto decision = reducing ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
   if (!decision.ok()) {
@@ -1303,13 +1313,15 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto symbol = o.request.symbol;
   const auto side = o.request.side;
   const auto& book = s.books.at(symbol);
-  if (!marketable(o, book.quote)) return;
-  const Money price = execution_price(s, symbol, side, o.request.limit_price);
+  if (!given && !marketable(o, book.quote)) return;
+  const Money price = given ? Money{} : execution_price(s, symbol, side, o.request.limit_price);
   const auto remaining_depth = side == Side::Buy ? book.ask_left : book.bid_left;
   const auto size = side == Side::Buy ? book.quote.ask_size : book.quote.bid_size;
-  const auto budget = s.config.rules.impact_ticks > 0 ? size - depth_used(size, remaining_depth) % size : remaining_depth;
   const auto position = held(s, o.request.symbol);
   const auto capacity = o.request.side == Side::Sell ? std::max<Quantity>(position, 0) : std::max<Quantity>(-position, 0);
+  // A long given away needs no bid, so no displayed size limits it.
+  const auto budget = given ? capacity
+      : s.config.rules.impact_ticks > 0 ? size - depth_used(size, remaining_depth) % size : remaining_depth;
   const Quantity quantity = reducing ? std::min({o.remaining(), budget, capacity}) : std::min(o.remaining(), budget);
   if (quantity <= 0) return;
   decision = reducing ? Decision{} : price_check(s, book.quote, price);
@@ -1342,8 +1354,10 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const bool opening = quantity > capacity;
   const auto quote = book.quote;
   fill_position(s, symbol, side == Side::Buy ? quantity : -quantity, price, fee);
-  auto& left = s.books[symbol];
-  consume_depth(side == Side::Buy ? left.ask_left : left.bid_left, quantity);
+  if (!given) {
+    auto& left = s.books[symbol];
+    consume_depth(side == Side::Buy ? left.ask_left : left.bid_left, quantity);
+  }
   auto& order = s.orders.mut(id - 1);
   order.filled_quantity += quantity;
   order.filled_notional = order.filled_notional + price * quantity;
@@ -1371,7 +1385,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   }
   const auto net = executable_net(s, o);
   if (!net || (o.request.limit_price && *net > *o.request.limit_price)) return;
-  const bool exit = o.role != OrderRole::Normal;
+  const bool exit = kept_within(o);
   auto decision = exit ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
   Quantity units = s.config.rules.impact_ticks > 0 ? 1 : o.remaining();
@@ -1498,7 +1512,7 @@ void match_symbols(State& s, const std::set<std::string>& symbols, Events& event
 void sync_exits(State& s, const std::string& symbol, Events& events) {
   for (const auto id : open_ids(s)) {
     const auto& o = s.orders[id - 1];
-    if (!o.open() || o.role == OrderRole::Normal || !touches(o.request, symbol)) continue;
+    if (!o.open() || !kept_within(o) || !touches(o.request, symbol)) continue;
     auto capacity = std::numeric_limits<Quantity>::max();
     const auto cap = [&](const std::string& leg_symbol, Side side, Quantity ratio) {
       const auto q = held(s, leg_symbol);
@@ -3158,6 +3172,106 @@ CommandResult TradingSession::cancel_all(std::optional<std::string> underlying, 
     return CommandResult{};
   });
 }
+namespace {
+/// One of a flatten's closes: a single contract, or a short and the long that covers
+/// it closing together (the short bought back, the long sold), `units` of each.
+struct PlannedClose {
+  std::vector<Leg> legs;
+  Quantity units = 0;
+};
+std::int64_t milli_strike(const md::OptionContract& c) { return std::llround(c.strike * 1000); }
+/// How a flatten closes `symbols`, the positions in scope (expired ones included,
+/// since a short that has expired still holds its cover until it settles). Per
+/// underlying and type, the latest-expiring shorts take the longs that cover them
+/// (expiring with them or later; the nearest expiry, then the nearest strike, first),
+/// which covers the most shorts, as naked_shorts counts them. Each such pair closes
+/// as one two-leg order; the shorts and longs left over close alone. A long whose
+/// short has expired waits for its settlement, in `held_back`.
+std::vector<PlannedClose> plan_closes(const State& s, const std::vector<std::string>& symbols,
+                                      std::map<std::string, Quantity>& held_back) {
+  const auto expired = [&](const std::string& symbol) { return s.time >= s.contracts.at(symbol).expiry_time(); };
+  std::map<std::pair<std::string, pricing::OptionType>, std::pair<std::vector<std::string>, std::vector<std::string>>> books;
+  for (const auto& symbol : symbols) {
+    const auto& c = s.contracts.at(symbol);
+    auto& [shorts, longs] = books[{c.underlying, c.type}];
+    (held(s, symbol) < 0 ? shorts : longs).push_back(symbol);
+  }
+  std::vector<PlannedClose> pairs, buys, sells;
+  for (auto& [key, book] : books) {
+    auto& [shorts, longs] = book;
+    std::map<std::string, Quantity> left;
+    for (const auto& symbol : longs) left[symbol] = held(s, symbol);
+    std::stable_sort(shorts.begin(), shorts.end(), [&](const std::string& a, const std::string& b) {
+      return s.contracts.at(a).expiry_time() > s.contracts.at(b).expiry_time();
+    });
+    for (const auto& short_symbol : shorts) {
+      const auto& sold = s.contracts.at(short_symbol);
+      auto need = -held(s, short_symbol);
+      std::vector<std::string> covers;
+      for (const auto& long_symbol : longs)
+        if (s.contracts.at(long_symbol).expiry_time() >= sold.expiry_time()) covers.push_back(long_symbol);
+      std::stable_sort(covers.begin(), covers.end(), [&](const std::string& a, const std::string& b) {
+        const auto& x = s.contracts.at(a);
+        const auto& y = s.contracts.at(b);
+        if (x.expiry_time() != y.expiry_time()) return x.expiry_time() < y.expiry_time();
+        return std::llabs(milli_strike(x) - milli_strike(sold)) < std::llabs(milli_strike(y) - milli_strike(sold));
+      });
+      for (const auto& long_symbol : covers) {
+        const auto n = std::min(need, left[long_symbol]);
+        if (n <= 0) continue;
+        need -= n;
+        left[long_symbol] -= n;
+        if (expired(short_symbol)) {
+          if (!expired(long_symbol)) held_back[long_symbol] += n;
+        } else {
+          pairs.push_back({{{short_symbol, Side::Buy, 1}, {long_symbol, Side::Sell, 1}}, n});
+        }
+      }
+      if (need > 0 && !expired(short_symbol)) buys.push_back({{{short_symbol, Side::Buy, 1}}, need});
+    }
+    for (const auto& long_symbol : longs)
+      if (left[long_symbol] > 0 && !expired(long_symbol)) sells.push_back({{{long_symbol, Side::Sell, 1}}, left[long_symbol]});
+  }
+  pairs.insert(pairs.end(), buys.begin(), buys.end());
+  pairs.insert(pairs.end(), sells.begin(), sells.end());
+  return pairs;
+}
+/// Accept or reject one of a flatten's reduce-only closes. The integration's gate,
+/// the account and the session can refuse it whatever the price; missing or stale
+/// quotes only make it wait. Accepted, it trades at once where it can and works
+/// the rest on later quotes until its session ends.
+Decision place_close(State& s, OrderRequest request, const Decision& rejection, Events& events) {
+  Order order;
+  order.id = static_cast<OrderId>(s.orders.size() + 1);
+  order.request = std::move(request);
+  order.actor = s.actor;
+  order.accepted_at = s.time;
+  order.reduce_only = true;
+  add_order(s, order);
+  // Written until matching starts; nothing copies the orders before that.
+  auto& stored = s.orders.mut_back();
+  auto decision = rejection.ok() ? account_check(s, true) : rejection;
+  for (const auto& symbol : order_symbols(stored.request)) {
+    if (!decision.ok()) break;
+    const auto& contract = s.contracts.at(symbol);
+    decision = s.time >= contract.expiry_time() ? failure(Reason::EXPIRED, "Contract has expired")
+                                                : session_check(contract, s.time, stored.request);
+    if (!decision.ok() && multi_leg(stored.request)) decision.scope = symbol;
+  }
+  if (!decision.ok()) {
+    stored.status = OrderStatus::Rejected;
+    stored.reason = decision;
+    event(events, "order_rejected", stored);
+    return decision;
+  }
+  const auto id = stored.id;
+  stored.day_end = day_deadline(s, stored.request, s.time);
+  event(events, "order_accepted", stored);
+  const auto symbols = order_symbols(stored.request);
+  match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
+  return {};
+}
+}  // namespace
 CommandResult TradingSession::close_positions(std::optional<std::string> underlying, Timestamp time,
                                               const std::map<std::string, Decision>& rejections) {
   return impl_->transact(time, "close_positions", [&](State& s, Events& events) {
@@ -3178,13 +3292,15 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
     };
     OrderRequest market;
     market.type = OrderType::Market;
-    market.tif = TimeInForce::Ioc;
-    std::vector<std::pair<std::string, Quantity>> closing;
-    // Expired contracts cannot trade; they close at settlement.
+    market.tif = TimeInForce::Day;
+    // Every position in scope, expired ones included: they cannot trade and close
+    // at settlement, but an expired short keeps the long that covers it until then.
+    std::vector<std::string> positions;
     for (const auto& [symbol, position] : s.ledger.positions()) {
       const auto& contract = s.contracts.at(symbol);
-      if (position.quantity == 0 || !in_scope(contract.underlying) || s.time >= contract.expiry_time()) continue;
-      closing.emplace_back(symbol, position.quantity);
+      if (position.quantity == 0 || !in_scope(contract.underlying)) continue;
+      positions.push_back(symbol);
+      if (s.time >= contract.expiry_time()) continue;
       const auto rejection = rejections.find(contract.underlying);
       auto decision = account_check(s, true);
       if (decision.ok() && rejection != rejections.end()) decision = rejection->second;
@@ -3207,17 +3323,17 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
     // Nothing in scope can close: refused, with nothing cancelled or recorded.
     if (!closable.empty() && std::none_of(closable.begin(), closable.end(), [](const auto& c) { return c.second; }))
       return CommandResult{refusal, {}, 0};
-    // An underlying where nothing can close keeps its orders, exits included.
+    // The open orders in scope are cancelled, but the bracket exits, which keep
+    // protecting whatever stays open until it is flat, and the account's own
+    // closes. An underlying where nothing can close keeps all its orders.
     for (const auto id : open_ids(s))
-      if (const auto& o = s.orders[id - 1]; o.open() && in_scope(underlying_of(s, o))) {
+      if (const auto& o = s.orders[id - 1]; o.open() && !o.system && o.role == OrderRole::Normal && in_scope(underlying_of(s, o))) {
         const auto it = closable.find(underlying_of(s, o));
         if (it == closable.end() || it->second)
           cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled to close positions"), events);
       }
-    // Shorts first, and each long sized when its turn comes: it sells only as far
-    // as the shorts still held leave it free, so a buy-back that fills in part, or
-    // waits for fill latency, never leaves a short uncovered.
-    std::stable_partition(closing.begin(), closing.end(), [](const auto& p) { return p.second < 0; });
+    std::map<std::string, Quantity> held_back;
+    const auto plan = plan_closes(s, positions, held_back);
     // A client ID the trader already used stays theirs: take the next free number.
     const auto prefix = "openport-close-" + std::to_string(s.version + 1) + "-";
     std::size_t count = 0;
@@ -3226,22 +3342,53 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       while (s.clients.contains(id)) id = prefix + std::to_string(++count);
       return id;
     };
-    // A refused close is still recorded, rejected with its reason.
-    for (const auto& [symbol, quantity] : closing) {
-      const auto& name = s.contracts.at(symbol).underlying;
-      const auto size = quantity < 0 || !closable.at(name) ? magnitude(quantity) : free_long(s, symbol);
-      if (size == 0) continue;
-      OrderRequest request;
-      request.client_order_id = client_id();
-      request.symbol = symbol;
-      request.side = quantity > 0 ? Side::Sell : Side::Buy;
-      request.type = OrderType::Market;
-      request.tif = TimeInForce::Ioc;
-      request.quantity = size;
-      const auto rejection = rejections.find(name);
-      place(s, std::move(request), time, rejection == rejections.end() ? Decision{} : rejection->second, events);
+    // Each close is split at the order size limit. A refused close is still
+    // recorded, rejected with its reason.
+    std::map<std::string, Decision> refused;
+    const auto limit = s.config.limits.max_order_contracts;
+    for (const auto& close : plan) {
+      const auto rejection = rejections.find(s.contracts.at(close.legs.front().symbol).underlying);
+      for (Quantity placed = 0; placed < close.units;) {
+        OrderRequest request;
+        request.client_order_id = client_id();
+        if (close.legs.size() == 1) {
+          request.symbol = close.legs.front().symbol;
+          request.side = close.legs.front().side;
+        } else {
+          request.legs = close.legs;
+        }
+        request.type = OrderType::Market;
+        request.tif = TimeInForce::Day;
+        request.quantity = std::min(close.units - placed, limit);
+        placed += request.quantity;
+        const auto decision = place_close(s, std::move(request), rejection == rejections.end() ? Decision{} : rejection->second, events);
+        if (!decision.ok())
+          for (const auto& leg : close.legs) refused.emplace(leg.symbol, decision);
+      }
     }
     for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Trade, events);
+    // What is left open: the contracts still being worked, and why the rest are not.
+    for (const auto& symbol : positions) {
+      const auto quantity = held(s, symbol);
+      if (quantity == 0) continue;
+      Quantity working = 0;
+      for (const auto id : open_ids(s)) {
+        const auto& o = s.orders[id - 1];
+        if (!o.reduce_only) continue;
+        if (!multi_leg(o.request)) { if (o.request.symbol == symbol) working += o.remaining(); continue; }
+        for (const auto& leg : o.request.legs) if (leg.symbol == symbol) working += o.remaining() * leg.ratio;
+      }
+      Residual residual{symbol, quantity, std::min(working, magnitude(quantity)), {}};
+      if (residual.working < magnitude(quantity)) {
+        if (s.time >= s.contracts.at(symbol).expiry_time())
+          residual.reason = failure(Reason::AWAITING_SETTLEMENT, "The contract has expired; it closes at its settlement");
+        else if (held_back.contains(symbol))
+          residual.reason = failure(Reason::AWAITING_SETTLEMENT, "It covers a short that has expired; it stays until that short settles");
+        else if (const auto it = refused.find(symbol); it != refused.end())
+          residual.reason = it->second;
+      }
+      result.residuals.push_back(std::move(residual));
+    }
     return result;
   });
 }
@@ -3302,9 +3449,11 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     monitor_loss(s, events);
     monitor_rules(s, events);
     // Invalid quotes provide no liquidity. Keep orders until a new valid quote
-    // permits the fill-time risk check (or a clock/kill command cancels them).
+    // permits the fill-time risk check (or a clock/kill command cancels them). A
+    // fresh quote with only an ask still serves the closes that may take it.
+    const auto usable = [&](const std::string& symbol) { return quote_check(s, symbol).ok() || asks_only(s, symbol); };
     for (auto it = changed.begin(); it != changed.end();) {
-      if (!quote_check(s, *it).ok()) it = changed.erase(it); else ++it;
+      if (!usable(*it)) it = changed.erase(it); else ++it;
     }
     // Offered again, a quote's remaining displayed size can fill the orders that
     // a data gap held back when it was new.
@@ -3312,7 +3461,7 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
       const auto& o = s.orders[id - 1];
       if (o.status == OrderStatus::Armed) continue;
       for (const auto& symbol : order_symbols(o.request))
-        if (offered_again.contains(symbol) && quote_check(s, symbol).ok()) changed.insert(symbol);
+        if (offered_again.contains(symbol) && usable(symbol)) changed.insert(symbol);
     }
     match_symbols(s, changed, events);
     // Triggers read the batch's books and valuations after resting orders match.
@@ -3334,9 +3483,10 @@ CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
       const auto& order = s.orders[id - 1];
       if (!order.open()) continue;
       // A triggered stop-limit keeps its limit beyond the band, as it may after a gap.
-      auto d = order.system || order.role != OrderRole::Normal ? system_check(s, order)
+      auto d = order.system || kept_within(order) ? system_check(s, order)
           : order_check(s, order, order.triggered_at > 0 ? Stage::Activate : Stage::Accept);
-      if (persistent(order) && (data_gap(d.code) || d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY)) continue;
+      if ((persistent(order) || order.reduce_only) &&
+          (data_gap(d.code) || d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY)) continue;
       if (!d.ok()) {
         d.message = std::string(to_string(d.code)) + ": " + d.message;
         d.code = Reason::RISK_CHANGED;

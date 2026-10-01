@@ -218,7 +218,9 @@ fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
 
 Both positive prices and both positive integer sizes are required; crossed,
 one-sided, missing and zero-size books supply **no liquidity**, except to a combo
-exit closing a leg that shows only an ask (see Multi-leg orders). Locked positive
+exit closing a leg that shows only an ask (see Multi-leg orders), and to an exit or
+a flatten's close buying a short back at a book that shows only an ask (see
+[flattening](#changing-cancelling-and-flattening)). Locked positive
 books are accepted. Displayed size is an independent bid/ask budget per
 (contract, observation), consumed across all paper orders. The same observation
 never refills that budget, including after recovery. Each new observation refreshes
@@ -509,7 +511,7 @@ ask, as a far option nobody bids for does, counts at that ask when the exit buys
 back, and at zero when the exit sells it. The exit trades it that way too: it buys
 at the ask within its displayed size, and gives a long away at 0.00, without a size
 limit and with the usual fee. So a worthless wing cannot hold a bracket's or held
-spread's stop or target back; a plain triggered combo, which is not an exit, still
+spread's stop or target, or a flatten, back; a plain triggered combo, which is not an exit, still
 needs a two-sided quote on every leg. Underlying levels must be positive
 and read the first leg's fresh valuation. On reaching the inclusive direction, the
 stop sends a closing market IOC combo with normal slippage and displayed-size
@@ -596,19 +598,46 @@ matching reads them, never journaled):
 An order with nothing visible holding it back has no entry.
 
 `cancel_all` cancels every open order, armed ones and bracket exits included, or
-only one underlying's. `close_positions` flattens the account or one underlying: it
-cancels the open orders in scope, then closes each unexpired position in scope with
-a market IOC order under the account's fill model, short positions first so buying one back
-never uncovers another leg. Each long then sells only as far as the shorts still held
-leave it free (`naked_shorts`, as for `defined_risk`): when a buy-back fills only in part,
-the long that covers the rest stays, and with fill latency, whose buy-backs wait for a
-later quote, a long that covers a short sells in a later flatten, once the short is
-gone. These are the trader's own orders (client IDs
-`openport-close-{version}-{n}`, numbered past any client ID the account has already
-used) and take the normal checks; one the rules refuse is
-recorded as rejected with its reason and the others still go. Expired positions wait
-for settlement. Delivered shares in scope close at the underlying's fresh price in the
-stock market's regular session.
+only one underlying's. `close_positions` flattens the account or one underlying and
+works until it is flat. It cancels the open orders in scope but the bracket exits,
+then closes each unexpired position in scope with market orders under the account's
+fill model:
+
+- **Spreads close together.** Each short and the long that covers it (one of its type
+  on the same underlying that expires with it or later, as `defined_risk` counts
+  cover) close as one two-leg order: the short is bought back and the long sold in the
+  same fill, so no short is ever left naked, with or without fill latency. Per type,
+  the latest-expiring shorts take their cover first, from the nearest expiry and then
+  the nearest strike, which covers the most shorts. The shorts and longs left over
+  close alone.
+- **Remainders keep working.** The closes are reduce-only market DAY orders
+  (`reduce_only` on the order). What a thin quote or fill latency leaves unfilled
+  works on later quotes until it fills, its session ends (`DAY_END`), the trader
+  cancels it or the position closes otherwise. Like bracket exits, they shrink with
+  the position and are cancelled with `POSITION_CLOSED` once it is flat, so they never
+  open one; they keep working under the kill switch and personal guardrails.
+- **Large positions split.** A close larger than `max_order_contracts` goes as several
+  orders, none larger than the limit.
+- **Exits stay until flat.** Bracket exits keep protecting whatever is still open,
+  sized to it, and are cancelled with `POSITION_CLOSED` once it is flat. A pending
+  close the account placed itself (an auto-close or liquidation) keeps working too.
+- **Thin and missing quotes wait.** A stale, missing or invalid quote only makes a
+  close wait for a usable one; it is not refused. A short nobody offers below the
+  ask (a 0.00/0.05 quote with no bid) is bought back at its ask within the displayed
+  size, and a long nobody bids for is given away at 0.00 with the usual fee, as a
+  combo exit does, so a worthless wing cannot hold the flatten back.
+
+Being reduce-only, the closes execute like bracket exits and the account's own
+closes: without the price band, loss projection, exposure or buying-power checks,
+and without needing fresh marks on every other position, so an expired position
+awaiting its settlement no longer blocks them. They are the trader's own orders
+(client IDs `openport-close-{version}-{n}`, numbered past any client ID the account
+has already used). Expired positions wait for settlement, and so does a long that
+covers a short that has expired. Delivered shares in scope close at the underlying's
+fresh price in the stock market's regular session. The response lists every position
+in scope still open (`residuals`): the contracts still held, those its closes are
+still working, and why the rest are not being closed (a refusal,
+`AWAITING_SETTLEMENT`).
 
 Before it cancels anything, a flatten checks what each close needs whatever the price:
 an attempt still open (`EVALUATION_CLOSED`), the underlying's feed
@@ -1838,9 +1867,11 @@ disabled because flattening sends market orders. The
 flatten dialog names an underlying whose paper orders are refused (a stalled feed, a
 halt), whose positions and orders the flatten leaves, and does not count its orders
 among those cancelled; Close all is disabled when that is every underlying in scope.
-After a flatten, its dialog lists each closing order's outcome, the delivered shares it
-traded and any it left with the reason, and the longs it left because they still cover
-a short. For
+After a flatten, its dialog lists each closing order's outcome (a close still
+working says so), the delivered shares it traded and any it left with the reason, and
+each position still open with the contracts being worked and why the rest stay. The
+dialog counts the orders it cancels without the bracket exits, which stay until the
+position they protect is flat. For
 older servers without `paper`, they fall back to the session-based notice and
 submission gate.
 Limit prices display cents, with buttons and arrow keys following the root's tier
@@ -1909,7 +1940,7 @@ focus at the top of the ticket.
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
-| `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope and closes its positions at market, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the delivered shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
+| `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope but the bracket exits and closes its positions at market with reduce-only orders that keep working until filled, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the delivered shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason), and each position still open (`residuals`: symbol, underlying, signed `quantity`, the contracts still `working` and the `reason` the rest are not, or null). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
 | `POST /api/positions/close/preview` | Optional `underlying`; the flatten's dry run on a private copy: `decision` and `reason`, `cancelled_orders`, the closing `orders` without IDs and their `fills`, `stock_fills`, `kept_stocks`, `remaining` and `remaining_shares` in scope, and the account `current` and `after`; `simulated: true`, nothing recorded ([flattening](#changing-cancelling-and-flattening)) |
 | `GET /api/fills` | Version and fills, newest first, with pre-execution `context` (null on older fills) |
 | `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |

@@ -9801,6 +9801,10 @@
             ],
             "description": "When the order ends. A DAY order ends with its session (a triggered one, the session it activated in) or at its earliest leg's last trade or the account's auto-close deadline, whichever comes first; GTC orders, armed orders and bracket exits last until that deadline."
           },
+          "reduce_only": {
+            "type": "boolean",
+            "description": "A close the account works for the trader, as a flatten's closes are: it only reduces, shrinks with its position like a bracket exit (cancelled with POSITION_CLOSED once it is flat), and works on later quotes until it fills, its session ends or it is cancelled. Such a market order is DAY rather than IOC."
+          },
           "origin": {
             "anyOf": [
               {
@@ -11137,6 +11141,13 @@
             "items": {
               "$ref": "#/components/schemas/KeptStock"
             }
+          },
+          "residuals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FlattenResidual"
+            },
+            "description": "Every position in scope still open after the flatten, with the contracts its closes are still working."
           }
         },
         "required": [
@@ -11145,7 +11156,43 @@
           "orders",
           "fills",
           "stock_fills",
-          "kept_stocks"
+          "kept_stocks",
+          "residuals"
+        ]
+      },
+      "FlattenResidual": {
+        "type": "object",
+        "description": "A position a flatten left open: the signed contracts still held, those its reduce-only closes are still working on later quotes, and why the rest are not being closed (null while every contract left is being worked).",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "underlying": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "working": {
+            "type": "number"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "symbol",
+          "underlying",
+          "quantity",
+          "working",
+          "reason"
         ]
       },
       "KeptStock": {

@@ -218,3 +218,4 @@ class FlattenResult(CancelAllResult):
     fills: list[Fill]
     stock_fills: list[JSON]
     kept_stocks: list[JSON]
+    residuals: list[JSON]

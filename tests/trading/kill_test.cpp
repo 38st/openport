@@ -109,7 +109,8 @@ TEST(TradingKill, FlattenAfterDailyLossClosesEveryPosition) {
   ASSERT_EQ(s.snapshot()->positions.size(), 2U);
   ASSERT_TRUE(s.close_positions({}, a.time).decision.ok());
   EXPECT_TRUE(s.snapshot()->positions.empty());
-  EXPECT_EQ(s.snapshot()->recent_fills.size(), 4U);
+  // The short closes with one of the two longs as one order (two fills); the other long alone.
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 5U);
   EXPECT_TRUE(s.snapshot()->risk.kill_latched);
 }
 
