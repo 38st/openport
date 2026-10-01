@@ -39,7 +39,10 @@ simulation's limits.
   stop-limits, and brackets whose stop-loss (a stop or a stop-limit) and take-profit
   cancel each other, keeping a partly filled position protected. GTC orders wait
   outside the regular session and last until the contract's last trade or auto-close.
-  Working orders change in place: size, limit or trigger level. Entry notes and tags
+  Working orders change in place: size, limit or trigger level. Each order keeps its
+  history (accepted, triggered, every change and refused change, and when and why it
+  ended, with the check's numbers), and a working order says what it is waiting for:
+  its limit, trigger, the regular session, a fresh quote or fill latency. Entry notes and tags
   follow the trades into the Journal. Tickets warn on thin liquidity without blocking;
   market orders show the displayed size they take against.
 - **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
@@ -269,3 +272,5 @@ the simulation's limits.
       exits that re-arm or shrink so a partly filled position stays protected
 - [x] Exports that name their replay run and attempt, trades that say what closed them,
       holiday-aware weekday reports and one win-rate definition
+- [x] Order history: end times, changes and refusals, what a working order waits for,
+      and the numbers behind every rejection or risk cancel

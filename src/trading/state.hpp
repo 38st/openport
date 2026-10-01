@@ -48,6 +48,21 @@ inline void from_json(const Json& j, OrderRequest& r) {
   added_field(j, "trigger", r.trigger); added_field(j, "bracket", r.bracket); added_field(j, "legs", r.legs);
   added_field(j, "tags", r.tags); added_field(j, "note", r.note); added_field(j, "exits_only", r.exits_only);
 }
+inline void to_json(Json& j, const OrderChangeRecord& c) {
+  j = Json{{"time", c.time}, {"actor", c.actor}, {"previous_quantity", c.previous_quantity}};
+  if (c.quantity) j["quantity"] = *c.quantity;
+  if (c.limit_price) j["limit_price"] = *c.limit_price;
+  if (c.trigger_level) j["trigger_level"] = *c.trigger_level;
+  if (c.previous_limit_price) j["previous_limit_price"] = *c.previous_limit_price;
+  if (c.previous_trigger_level) j["previous_trigger_level"] = *c.previous_trigger_level;
+  if (!c.decision.ok()) j["decision"] = c.decision;
+}
+inline void from_json(const Json& j, OrderChangeRecord& c) {
+  j.at("time").get_to(c.time); j.at("actor").get_to(c.actor); j.at("previous_quantity").get_to(c.previous_quantity);
+  added_field(j, "quantity", c.quantity); added_field(j, "limit_price", c.limit_price);
+  added_field(j, "trigger_level", c.trigger_level); added_field(j, "previous_limit_price", c.previous_limit_price);
+  added_field(j, "previous_trigger_level", c.previous_trigger_level); added_field(j, "decision", c.decision);
+}
 inline void to_json(Json& j, const Order& o) {
   j = Json{{"id", o.id}, {"request", o.request}, {"status", o.status}, {"filled_quantity", o.filled_quantity},
            {"filled_notional", o.filled_notional}, {"accepted_at", o.accepted_at}, {"day_end", o.day_end},
@@ -55,6 +70,9 @@ inline void to_json(Json& j, const Order& o) {
            {"stop_loss", o.stop_loss}, {"take_profit", o.take_profit}, {"triggered_at", o.triggered_at}, {"actor", o.actor}};
   // Only a changed order records its submitted terms; every other order keeps its bytes.
   if (o.submitted) j["submitted"] = *o.submitted;
+  // Likewise an order's end and its changes, once it has them.
+  if (o.ended_at != 0) j["ended_at"] = o.ended_at;
+  if (!o.changes.empty()) j["changes"] = o.changes;
 }
 inline void from_json(const Json& j, Order& o) {
   j.at("id").get_to(o.id); j.at("request").get_to(o.request); j.at("status").get_to(o.status);
@@ -64,6 +82,7 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "oco", o.oco); added_field(j, "stop_loss", o.stop_loss); added_field(j, "take_profit", o.take_profit);
   added_field(j, "triggered_at", o.triggered_at); added_field(j, "actor", o.actor);
   added_field(j, "submitted", o.submitted);
+  added_field(j, "ended_at", o.ended_at); added_field(j, "changes", o.changes);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)

@@ -4,6 +4,7 @@ import { useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTradingSession } from "../api/trading"
 import type { Fill, Order, TradingStatus } from "../api/trading-types"
 import { CancelAllDialog, EditOrderDialog } from "../components/OrderActions"
+import { OrderDetailDialog } from "../components/OrderDetail"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented, type Tone } from "../components/ui"
 import { newYorkDate, orderLabel, osiLabel } from "../lib/journal"
@@ -116,6 +117,7 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
   const [error, setError] = useState<unknown>()
   const [result, setResult] = useState<string | null>(null)
   const [editing, setEditing] = useState<Order | null>(null)
+  const [detail, setDetail] = useState<Order | null>(null)
   const busy = useRef(false)
   async function cancel(id: string) {
     if (busy.current || writeBlocked(trading, token)) return
@@ -141,7 +143,8 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
               {order.bracket && <Badge tone="neutral">Bracket</Badge>}</div>
             <div className="text-[10px] text-faint">#{order.id} · {order.actor ?? "unknown"}{order.origin === "system" ? " · system" : ""}{order.parent ? ` · for #${order.parent}` : ""}
               {order.trigger ? ` · when ${describeTrigger(order.trigger, order.side ?? "buy", order.underlying)}` : ""}
-              {order.triggered_at ? " · triggered" : ""}</div></td>
+              {order.triggered_at ? " · triggered" : ""}
+              {order.changes?.length ? ` · changed ${order.changes.filter((c) => c.applied).length}×${order.changes.some((c) => !c.applied) ? `, ${order.changes.filter((c) => !c.applied).length} refused` : ""}` : ""}</div></td>
           <td className={order.side === "buy" ? "text-bullish" : order.side === "sell" ? "text-bearish" : "text-accent"}>{order.side ? order.side.toUpperCase() : "NET"}</td>
           <td>{order.type} · {order.time_in_force.toUpperCase()}</td>
           <td>{order.filled_quantity} / {order.quantity}</td>
@@ -153,6 +156,8 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
             {reasonEvidence(order.reason) && <span className="max-w-64 truncate text-[10px] text-faint" title={order.reason!.message}>{reasonEvidence(order.reason)}</span>}
           </div></td>
           <td><div className="flex justify-end gap-1">
+            <button type="button" className="trade-button" aria-label={`Details of order ${order.id} for ${orderLabel(order)}`}
+              onClick={() => setDetail(order)}>Details</button>
             {editable(order) && <button type="button" className="trade-button" aria-label={`Edit order ${order.id} for ${orderLabel(order)}`}
               disabled={pending != null || writeBlocked(trading, token)} onClick={() => { setResult(null); setEditing(order) }}>Edit</button>}
             {open(order) && order.origin !== "system" && <button type="button" className="trade-button" aria-label={`Cancel order ${order.id} for ${orderLabel(order)}`}
@@ -161,6 +166,7 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
         </tr>),
       ])}
     </Table>
+    {detail && <OrderDetailDialog order={orders.find((o) => o.id === detail.id) ?? detail} onClose={() => setDetail(null)} />}
     {editing && <EditOrderDialog order={editing} trading={trading} onClose={() => setEditing(null)}
       onDone={(order) => { setResult(`${orderLabel(order)}: changed, ${order.status === "partially_filled" ? "partially filled" : order.status}`); setEditing(null) }} />}
   </div>

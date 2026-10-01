@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Order, Position } from "../api/trading-types"
 import { order, portfolio } from "../test/trading-fixtures"
-import { checkCode, closingAction, editable, editableFields, flattenPlan, orderChange, orderDraft, outcome, reasonEvidence, underlyingsOf } from "./orders"
+import { changeText, checkCode, closingAction, orderTimeline, editable, editableFields, flattenPlan, orderChange, orderDraft, outcome, reasonEvidence, underlyingsOf } from "./orders"
 
 const stop: Order = { ...order, id: "9", status: "armed", role: "stop_loss", side: "sell", type: "market", time_in_force: "ioc",
   limit_price: null, quantity: 2, filled_quantity: 0, remaining_quantity: 2, trigger: { source: "option", direction: "at_or_below", level: "3.50" } }
@@ -81,5 +81,30 @@ describe("flatten", () => {
     // Older servers send neither numbers nor scope.
     expect(reasonEvidence({ code: "USER_CANCEL", message: "Cancelled by caller" })).toBeNull()
     expect(reasonEvidence(null)).toBeNull()
+  })
+})
+
+describe("an order's history", () => {
+  const changed: Order = { ...order, status: "cancelled", reason: { code: "DAY_END", message: "The order's session ended" },
+    accepted_at: "2026-09-22T14:00:00Z", ended_at: "2026-09-22T20:15:00Z", changes: [
+      { time: "2026-09-22T14:05:00Z", actor: "trader", quantity: null, limit_price: "4.70", trigger_level: null,
+        previous: { quantity: 5, limit_price: "4.60", trigger_level: null }, applied: true, reason: null },
+      { time: "2026-09-22T14:10:00Z", actor: "trader", quantity: 2, limit_price: null, trigger_level: null,
+        previous: { quantity: 5, limit_price: "4.70", trigger_level: null }, applied: false,
+        reason: { code: "INVALID_ORDER", message: "The new quantity must exceed the filled quantity; cancel the order instead", actual: 2, limit: 2, scope: null } },
+    ] }
+  it("lists acceptance, each change and refusal, and the end with its reason", () => {
+    const timeline = orderTimeline(changed)
+    expect(timeline.map((entry) => entry.text)).toEqual(["Accepted", "Changed: limit $4.60 → $4.70",
+      "Change refused: quantity 5 → 2", "Cancelled (DAY_END)"])
+    expect(timeline[2]!.detail).toBe("INVALID_ORDER: The new quantity must exceed the filled quantity; cancel the order instead (2 against a limit of 2)")
+    expect(timeline[3]!.time).toBe("2026-09-22T20:15:00Z")
+  })
+  it("ends a working order with when it lasts until, and names a multi-leg net", () => {
+    expect(orderTimeline(order).at(-1)).toEqual({ time: order.day_end, text: "Lasts until, unless it fills or is cancelled" })
+    expect(changeText({ ...changed.changes![0]!, limit_price: "-1.10", previous: { quantity: 1, limit_price: "-1.20", trigger_level: null } }, true))
+      .toBe("limit $1.20 cr → $1.10 cr")
+    // Older servers send no changes or end time.
+    expect(orderTimeline({ ...order, status: "filled" }).at(-1)).toMatchObject({ time: null, text: "Filled" })
   })
 })

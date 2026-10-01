@@ -723,6 +723,7 @@ Measures measure(const State& s) {
   out.buying_power = buying_power(s).total;
   return out;
 }
+std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_complete);
 TradingSnapshot snapshot_of(const State& s) {
   auto m = measure(s);
   TradingSnapshot out;
@@ -735,7 +736,11 @@ TradingSnapshot snapshot_of(const State& s) {
   out.valuation_complete = m.valuation_complete;
   out.recent_orders = s.orders;
   out.recent_fills = s.fills;
-  for (const auto id : open_ids(s)) out.open_orders.push_back(s.orders[id - 1]);
+  const bool data = m.valuation_complete && m.risk.complete;
+  for (const auto id : open_ids(s)) {
+    out.open_orders.push_back(s.orders[id - 1]);
+    if (auto wait = waiting_for(s, s.orders[id - 1], data)) out.waiting.emplace(id, std::move(*wait));
+  }
   out.positions = std::move(m.positions);
   out.stocks = std::move(m.stocks);
   out.risk = std::move(m.risk);
@@ -821,10 +826,13 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.day_close_equity = e.starting_balance;
   return e;
 }
-void cancel_order(Order& order, Decision reason, Events& events) {
-  if (!order.open()) return;
+/// Cancel an open order now, with the reason it records.
+void cancel_order(State& s, OrderId id, Decision reason, Events& events) {
+  if (!s.orders.at(static_cast<std::size_t>(id - 1)).open()) return;
+  auto& order = s.orders.mut(id - 1);
   order.status = OrderStatus::Cancelled;
   order.reason = std::move(reason);
+  order.ended_at = s.time;
   event(events, "cancel", order);
 }
 bool personal_reason(std::string_view reason) {
@@ -852,7 +860,7 @@ void trip(State& s, const std::string& reason, Events& events) {
   const auto cancel_unless_closing = [&](OrderId id, bool include_working) {
     const auto& o = s.orders[id - 1];
     if (o.open() && !o.system && o.role == OrderRole::Normal && !closing_only(s, o, include_working))
-      cancel_order(s.orders.mut(id - 1), kill_decision(s), events);
+      cancel_order(s, id, kill_decision(s), events);
   };
   const auto ids = open_ids(s);
   for (const auto id : ids) cancel_unless_closing(id, false);
@@ -915,11 +923,11 @@ void advance(State& s, Timestamp time, Events& events) {
     auto last = std::numeric_limits<Timestamp>::max();
     for (const auto& symbol : order_symbols(o.request)) last = std::min(last, s.contracts.at(symbol).last_trade_time());
     if (time >= last)
-      cancel_order(s.orders.mut(id - 1), failure(Reason::EXPIRED, "A contract reached its last trade"), events);
+      cancel_order(s, id, failure(Reason::EXPIRED, "A contract reached its last trade"), events);
     else if (!o.system && cutoff > 0 && time >= last - cutoff)
-      cancel_order(s.orders.mut(id - 1), failure(Reason::EXPIRY_CUTOFF, "A contract reached the account's pre-expiry cutoff"), events);
+      cancel_order(s, id, failure(Reason::EXPIRY_CUTOFF, "A contract reached the account's pre-expiry cutoff"), events);
     else if (time >= o.day_end)
-      cancel_order(s.orders.mut(id - 1), failure(Reason::DAY_END, "The order's session ended"), events);
+      cancel_order(s, id, failure(Reason::DAY_END, "The order's session ended"), events);
   }
 }
 /// Short contracts no long covers, after the account's positions take `extra`
@@ -1262,7 +1270,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
     decision.code = Reason::RISK_CHANGED;
-    cancel_order(s.orders.mut(id - 1), decision, events);
+    cancel_order(s, id, decision, events);
     return;
   }
   const auto symbol = o.request.symbol;
@@ -1298,7 +1306,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
     decision.code = Reason::RISK_CHANGED;
-    cancel_order(s.orders.mut(id - 1), decision, events);
+    cancel_order(s, id, decision, events);
     return;
   }
   const auto context = fill_context(s, symbol, measure(s));
@@ -1313,6 +1321,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   order.filled_quantity += quantity;
   order.filled_notional = order.filled_notional + price * quantity;
   order.status = order.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
+  if (order.status == OrderStatus::Filled) order.ended_at = s.time;
   Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, symbol, side,
             quantity, price, fee, quote.observation, quote.time, s.time, context, order.actor};
   s.fills.push_back(fill);
@@ -1364,7 +1373,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
     decision.code = Reason::RISK_CHANGED;
-    cancel_order(s.orders.mut(id - 1), decision, events);
+    cancel_order(s, id, decision, events);
     return;
   }
   const auto request = o.request;
@@ -1395,6 +1404,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   order.filled_quantity += units;
   order.filled_notional = order.filled_notional + *net * units;
   order.status = order.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
+  if (order.status == OrderStatus::Filled) order.ended_at = s.time;
   on_fill(s, id, events);
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
@@ -1411,7 +1421,7 @@ void end_ioc(State& s, OrderId id, std::string message, Events& events) {
     event(events, "order_rearmed", stop);
     return;
   }
-  cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, std::move(message)), events);
+  cancel_order(s, id, failure(Reason::IOC_REMAINDER, std::move(message)), events);
 }
 /// Sweep successive simulated tiers, retaining the original one-fill path when
 /// impact is off. A delayed IOC gets its one attempt on an eligible quote.
@@ -1470,7 +1480,7 @@ void sync_exits(State& s, const std::string& symbol, Events& events) {
     if (multi_leg(o.request)) for (const auto& leg : o.request.legs) cap(leg.symbol, leg.side, leg.ratio);
     else cap(o.request.symbol, o.request.side, 1);
     if (capacity == 0) {
-      cancel_order(s.orders.mut(id - 1), failure(Reason::POSITION_CLOSED, "The position this exit protected is closed"), events);
+      cancel_order(s, id, failure(Reason::POSITION_CLOSED, "The position this exit protected is closed"), events);
     } else if (o.remaining() > capacity) {
       auto& exit = s.orders.mut(id - 1);
       // A held spread's exits were submitted; a retry of that submission still finds them.
@@ -1537,16 +1547,16 @@ void on_fill(State& s, OrderId id, Events& events) {
   // One exit filling completely cancels the other; a partial fill leaves it to
   // protect what is still held, shrunk to that by sync_exits below.
   if (order.oco != 0 && order.status == OrderStatus::Filled && s.orders.at(static_cast<std::size_t>(order.oco - 1)).open())
-    cancel_order(s.orders.mut(order.oco - 1), failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
+    cancel_order(s, order.oco, failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
   if (order.role != OrderRole::Normal && order.parent != 0 && s.orders.at(static_cast<std::size_t>(order.parent - 1)).open())
-    cancel_order(s.orders.mut(order.parent - 1), failure(Reason::OCO_FILLED, "An exit filled; the remaining entry is cancelled"), events);
+    cancel_order(s, order.parent, failure(Reason::OCO_FILLED, "An exit filled; the remaining entry is cancelled"), events);
   if (order.request.bracket && !order.request.exits_only) attach_exits(s, id, events);
   for (const auto& symbol : order_symbols(s.orders.at(static_cast<std::size_t>(id - 1)).request)) sync_exits(s, symbol, events);
 }
 /// Option triggers read the order's executable side from a fresh book; underlying
 /// triggers read spot from a fresh valuation. Missing data never triggers; an exit's
 /// leg that shows only an ask counts at that ask, or at zero when the exit sells it.
-bool reached(const State& s, const Order& o) {
+std::optional<Money> trigger_value(const State& s, const Order& o) {
   const auto& t = *o.request.trigger;
   std::optional<Money> value;
   if (t.source == TriggerSource::Underlying) {
@@ -1559,7 +1569,7 @@ bool reached(const State& s, const Order& o) {
     Money net;
     for (const auto& leg : o.request.legs) {
       if (given_away(s, o, leg)) continue;
-      if (!quote_check(s, leg.symbol).ok() && !ask_only(s, o, leg)) return false;
+      if (!quote_check(s, leg.symbol).ok() && !ask_only(s, o, leg)) return std::nullopt;
       const auto& q = s.books.at(leg.symbol).quote;
       net = net + (leg.side == Side::Buy ? *q.ask : -*q.bid) * leg.ratio;
     }
@@ -1568,6 +1578,11 @@ bool reached(const State& s, const Order& o) {
     const auto& q = s.books.at(o.request.symbol).quote;
     value = o.request.side == Side::Buy ? *q.ask : *q.bid;
   }
+  return value;
+}
+bool reached(const State& s, const Order& o) {
+  const auto& t = *o.request.trigger;
+  const auto value = trigger_value(s, o);
   return value && (t.direction == TriggerDirection::AtOrBelow ? *value <= t.level : *value >= t.level);
 }
 /// A reached order runs its checks now: exits need only an executable book;
@@ -1581,7 +1596,7 @@ void activate(State& s, OrderId id, Events& events) {
     if (!d.ok()) {
       d.message = std::string(to_string(d.code)) + ": " + d.message;
       d.code = Reason::RISK_CHANGED;
-      cancel_order(s.orders.mut(id - 1), d, events);
+      cancel_order(s, id, d, events);
       return;
     }
     auto& order = s.orders.mut(id - 1);
@@ -1634,7 +1649,7 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   event(events, "order_accepted", order);
   match_symbols(s, {symbol}, events, order.id);
   if (s.config.rules.fill_latency_ms == 0 && s.orders.at(static_cast<std::size_t>(order.id - 1)).open())
-    cancel_order(s.orders.mut(order.id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+    cancel_order(s, order.id, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
 }
 /// Why shares cannot trade now: they need the stock market's regular session and
 /// the underlying's fresh price.
@@ -1660,7 +1675,7 @@ void decide(State& s, EvaluationStatus status, Money equity, std::string message
   event(events, status == EvaluationStatus::Passed ? "evaluation_passed" : "evaluation_failed",
         Json{{"attempt", e.attempt}, {"equity", equity}, {"peak", e.peak}, {"floor", e.floor}, {"message", message}});
   for (const auto id : open_ids(s))
-    if (!s.orders[id - 1].system) cancel_order(s.orders.mut(id - 1), failure(Reason::EVALUATION_CLOSED, message), events);
+    if (!s.orders[id - 1].system) cancel_order(s, id, failure(Reason::EVALUATION_CLOSED, message), events);
 }
 /// Runs after every command: tracks the day's closing equity, ratchets an
 /// intraday peak, decides pass/fail on fully marked equity (touching the floor
@@ -1728,10 +1743,84 @@ void monitor_rules(State& s, Events& events) {
         s.time < contract.last_trade_time()) {
       for (const auto id : open_ids(s))
         if (const auto& o = s.orders[id - 1]; !o.system && touches(o.request, symbol))
-          cancel_order(s.orders.mut(id - 1), failure(Reason::EXPIRY_CUTOFF, "Pre-expiry cutoff: the position is being closed"), events);
+          cancel_order(s, id, failure(Reason::EXPIRY_CUTOFF, "Pre-expiry cutoff: the position is being closed"), events);
       flatten(s, symbol, "expiry", events);
     }
   }
+}
+/// New York wall time of a market timestamp, for messages: "10:31:05 ET".
+std::string clock_text(Timestamp time) {
+  const auto seconds = md::new_york_time(time).seconds;
+  const auto two = [](int value) { return std::string(value < 10 ? "0" : "") + std::to_string(value); };
+  return two(seconds / 3600) + ":" + two(seconds / 60 % 60) + ":" + two(seconds % 60) + " ET";
+}
+/// What keeps open order `o` from filling now (OrderWait), checked in the order
+/// matching checks it; nothing when nothing visible does. `data_complete`: the held
+/// positions' marks and every valuation risk needs are fresh.
+std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_complete) {
+  const auto wait = [](std::string code, std::string message) { return std::optional<OrderWait>(OrderWait{std::move(code), std::move(message)}); };
+  const auto& r = o.request;
+  const auto symbols = order_symbols(r);
+  for (const auto& symbol : symbols) if (!s.contracts.contains(symbol)) return std::nullopt;
+  if (o.status == OrderStatus::Armed) {
+    if (!regular(s.contracts.at(symbols.front()), s.time))
+      return wait("REGULAR_SESSION", "Armed orders trigger in the regular session only");
+    const auto& t = *r.trigger;
+    const auto value = trigger_value(s, o);
+    const std::string source = t.source == TriggerSource::Underlying ? "the underlying" : t.source == TriggerSource::Combo
+        ? "the closing legs' net" : r.side == Side::Buy ? "the ask" : "the bid";
+    return wait("TRIGGER", "Waits for " + source + " to reach " + (t.direction == TriggerDirection::AtOrBelow ? "at or below " : "at or above ") +
+                t.level.str() + (value ? " (now " + value->str() + ")" : " (no fresh value now; missing or stale data never triggers)"));
+  }
+  if (persistent(o) || o.system)
+    for (const auto& symbol : symbols)
+      if (!regular(s.contracts.at(symbol), s.time))
+        return wait("REGULAR_SESSION", std::string(r.tif == TimeInForce::Gtc && o.role == OrderRole::Normal ? "GTC orders" : "Bracket exits and triggered orders") +
+                    " fill in the regular session only");
+  for (const auto& symbol : symbols) {
+    const auto leg = std::find_if(r.legs.begin(), r.legs.end(), [&](const Leg& l) { return l.symbol == symbol; });
+    if (const auto d = quote_check(s, symbol); !d.ok() && !(leg != r.legs.end() && ask_only(s, o, *leg)))
+      return wait(d.code == Reason::STALE_QUOTE ? "STALE_QUOTE" : "INVALID_QUOTE",
+                  d.code == Reason::STALE_QUOTE ? symbol + "'s quote is older than the freshness window"
+                                                : symbol + " has no two-sided quote with sizes; a one-sided book supplies no liquidity");
+  }
+  if (!latency_ready(s, o)) {
+    const auto start = std::max(o.accepted_at, o.triggered_at);
+    return wait("FILL_LATENCY", "Fill latency holds it for a quote stamped at or after " +
+                clock_text(start + s.config.rules.fill_latency_ms * (md::kNanosPerSecond / 1000)));
+  }
+  for (const auto& symbol : symbols)
+    if (s.books.at(symbol).quote.time < o.accepted_at)
+      return wait("NEWER_QUOTE", "Waits for a quote newer than its acceptance at " + clock_text(o.accepted_at));
+  const bool impact = s.config.rules.impact_ticks > 0;
+  if (!multi_leg(r)) {
+    const auto& book = s.books.at(r.symbol);
+    const bool buy = r.side == Side::Buy;
+    if (!marketable(o, book.quote))
+      return wait("LIMIT", std::string(buy ? "The ask " : "The bid ") + (buy ? *book.quote.ask : *book.quote.bid).str() +
+                  (buy ? " is above" : " is below") + " the limit " + r.limit_price->str());
+    if (impact && r.limit_price) {
+      const auto next = execution_price(s, r.symbol, r.side);
+      if (buy ? next > *r.limit_price : next < *r.limit_price)
+        return wait("LIMIT", "The next simulated block's price " + next.str() + " is beyond the limit " + r.limit_price->str());
+    }
+    if (!impact && (buy ? book.ask_left : book.bid_left) <= 0)
+      return wait("DISPLAYED_SIZE", "Paper orders used this quote's displayed size; a new quote refreshes it");
+  } else {
+    const auto net = executable_net(s, o);
+    if (!net) return wait("INVALID_QUOTE", "A leg has no executable quote");
+    if (r.limit_price && *net > *r.limit_price)
+      return wait("LIMIT", "The net at the far sides, " + net->str() + ", is worse than the limit " + r.limit_price->str());
+    if (!impact)
+      for (const auto& leg : r.legs) {
+        if (given_away(s, o, leg)) continue;
+        const auto& book = s.books.at(leg.symbol);
+        if ((leg.side == Side::Buy ? book.ask_left : book.bid_left) / leg.ratio <= 0)
+          return wait("DISPLAYED_SIZE", "Paper orders used " + leg.symbol + "'s displayed size; a new quote refreshes it");
+      }
+  }
+  if (!data_complete) return wait("STALE_DATA", "Held positions need fresh marks and valuations before it can fill");
+  return std::nullopt;
 }
 /// Both submit and preview check the candidate while its reservation is present.
 Decision acceptance_check(const State& s, const Order& candidate, const Decision& rejection) {
@@ -2264,6 +2353,7 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   if (!decision.ok()) {
     stored.status = OrderStatus::Rejected;
     stored.reason = decision;
+    stored.ended_at = time;
     event(events, "order_rejected", stored);
     return CommandResult{decision, stored.id, 0};
   }
@@ -2317,7 +2407,7 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
   const auto& accepted = s.orders.at(static_cast<std::size_t>(id - 1));
   if (s.config.rules.fill_latency_ms == 0 && accepted.open() && accepted.request.tif == TimeInForce::Ioc)
-    cancel_order(s.orders.mut(id - 1), failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+    cancel_order(s, id, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
   // A bracket stop the entry's fills created may already be reached.
   check_triggers(s, events);
   return CommandResult{{}, id, 0};
@@ -2327,27 +2417,36 @@ std::string underlying_of(const State& s, const Order& o) {
   return c == s.contracts.end() ? std::string{} : c->second.underlying;
 }
 /// Apply new terms to a resting order, or leave it untouched with the reason.
+/// Each change asked of an open order stays on it, applied or refused, with the
+/// terms it had then.
 CommandResult change_order(State& s, OrderId id, const OrderChange& change, const Decision& rejection, Events& events) {
   if (id == 0 || id > s.orders.size()) return {failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), {}, 0};
+  if (!s.orders.at(static_cast<std::size_t>(id - 1)).open()) return {failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
   // Written until matching or activation; nothing copies the orders before that.
   auto& order = s.orders.mut(static_cast<std::size_t>(id - 1));
-  if (!order.open()) return {failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
   const auto& r = order.request;
+  OrderChangeRecord record{s.time, s.actor, change.quantity, change.limit_price, change.trigger_level, r.quantity, r.limit_price,
+                           r.trigger ? std::optional(r.trigger->level) : std::nullopt, {}};
+  const auto refuse = [&](Decision decision) {
+    record.decision = decision;
+    order.changes.push_back(record);
+    return CommandResult{std::move(decision), id, 0};
+  };
   const bool exit = order.role != OrderRole::Normal;
   const bool resting = order.status == OrderStatus::Armed || (r.type == OrderType::Limit && r.tif != TimeInForce::Ioc);
   if (order.system || !resting)
-    return {failure(Reason::INVALID_ORDER, "Only resting orders change: DAY/GTC limit orders, armed orders and bracket exits"), id, 0};
-  if (change.empty()) return {failure(Reason::INVALID_ORDER, "Give a new quantity, limit price or trigger level"), id, 0};
+    return refuse(failure(Reason::INVALID_ORDER, "Only resting orders change: DAY/GTC limit orders, armed orders and bracket exits"));
+  if (change.empty()) return refuse(failure(Reason::INVALID_ORDER, "Give a new quantity, limit price or trigger level"));
   if (change.quantity && exit)
-    return {failure(Reason::INVALID_ORDER, "A bracket exit's size follows its position; change its level or price instead"), id, 0};
+    return refuse(failure(Reason::INVALID_ORDER, "A bracket exit's size follows its position; change its level or price instead"));
   if (change.quantity && *change.quantity <= order.filled_quantity)
-    return {{Reason::INVALID_ORDER, "The new quantity must exceed the filled quantity; cancel the order instead",
-             static_cast<double>(*change.quantity), static_cast<double>(order.filled_quantity), {}}, id, 0};
+    return refuse({Reason::INVALID_ORDER, "The new quantity must exceed the filled quantity; cancel the order instead",
+                   static_cast<double>(*change.quantity), static_cast<double>(order.filled_quantity), {}});
   if (change.limit_price && r.type != OrderType::Limit)
-    return {failure(Reason::INVALID_ORDER, "Only limit orders have a limit price"), id, 0};
+    return refuse(failure(Reason::INVALID_ORDER, "Only limit orders have a limit price"));
   if (change.trigger_level && (!r.trigger || order.status != OrderStatus::Armed))
-    return {failure(Reason::INVALID_ORDER, "Only armed orders with a trigger have a trigger level"), id, 0};
-  if (!rejection.ok()) return {rejection, id, 0};
+    return refuse(failure(Reason::INVALID_ORDER, "Only armed orders with a trigger have a trigger level"));
+  if (!rejection.ok()) return refuse(rejection);
   const Order before = order;
   if (!order.submitted) order.submitted = order.request;
   if (change.quantity) order.request.quantity = *change.quantity;
@@ -2369,8 +2468,9 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   }
   if (!decision.ok()) {
     order = before;
-    return {decision, id, 0};
+    return refuse(decision);
   }
+  order.changes.push_back(record);
   event(events, "order_modified", order);
   const auto symbols = order_symbols(order.request);
   if (order.status != OrderStatus::Armed) match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
@@ -2927,7 +3027,7 @@ CommandResult TradingSession::cancel(OrderId id, Timestamp time) {
     if (id == 0 || id > s.orders.size()) return CommandResult{failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), {}, 0};
     if (!s.orders.at(static_cast<std::size_t>(id - 1)).open())
       return CommandResult{failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
-    cancel_order(s.orders.mut(id - 1), failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
+    cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
     return CommandResult{{}, id, 0};
   });
 }
@@ -2941,7 +3041,7 @@ CommandResult TradingSession::cancel_all(std::optional<std::string> underlying, 
   return impl_->transact(time, "cancel_all", [&](State& s, Events& events) {
     for (const auto id : open_ids(s))
       if (const auto& o = s.orders[id - 1]; o.open() && (!underlying || underlying_of(s, o) == *underlying))
-        cancel_order(s.orders.mut(id - 1), failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
+        cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
     return CommandResult{};
   });
 }
@@ -2999,7 +3099,7 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       if (const auto& o = s.orders[id - 1]; o.open() && in_scope(underlying_of(s, o))) {
         const auto it = closable.find(underlying_of(s, o));
         if (it == closable.end() || it->second)
-          cancel_order(s.orders.mut(id - 1), failure(Reason::USER_CANCEL, "Cancelled to close positions"), events);
+          cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled to close positions"), events);
       }
     // Shorts first, and each long sized when its turn comes: it sells only as far
     // as the shorts still held leave it free, so a buy-back that fills in part, or
@@ -3127,7 +3227,7 @@ CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
       if (!d.ok()) {
         d.message = std::string(to_string(d.code)) + ": " + d.message;
         d.code = Reason::RISK_CHANGED;
-        cancel_order(s.orders.mut(id - 1), d, events);
+        cancel_order(s, id, d, events);
       }
     }
     return CommandResult{};
@@ -3416,7 +3516,7 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
   if (initial_cash <= Money{}) throw TradingError(Reason::INVALID_MONEY, "Starting balance must be positive");
   return impl_->transact(time, "account_reset", [&](State& s, Events& events) {
     const auto snapshot = snapshot_of(s);
-    for (const auto id : open_ids(s)) cancel_order(s.orders.mut(id - 1), failure(Reason::ACCOUNT_RESET, reason), events);
+    for (const auto id : open_ids(s)) cancel_order(s, id, failure(Reason::ACCOUNT_RESET, reason), events);
     for (const auto& p : snapshot.positions) {
       const auto& position = p.position;
       s.closures.push_back({position.contract.osi_symbol(), position.quantity,

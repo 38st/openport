@@ -369,5 +369,111 @@ TEST(TradingOrders, ChangesAndFlattensRecoverFromTheJournal) {
   std::filesystem::remove_all(directory);
 }
 
+
+TEST(TradingOrders, EachOrderKeepsWhenItEndedAndEveryChangeAskedOfIt) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-orders-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "lifecycle.jsonl").string();
+  ScriptedMarket f;
+  std::string expected;
+  {
+    TradingSession s(roomy(), f.time, FileJournal::create(path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.limit("rest", 3, "3.90"), f.time).decision.ok());
+    EXPECT_EQ(order(s, 1).ended_at, 0) << "open orders have not ended";
+    f.next();
+    s.set_actor("trader");
+    ASSERT_TRUE(s.modify(1, price("4.00"), f.time).decision.ok());
+    s.set_actor("trader");
+    EXPECT_EQ(s.modify(1, size(0), f.time).decision.code, Reason::INVALID_ORDER);
+    const auto& changes = order(s, 1).changes;
+    ASSERT_EQ(changes.size(), 2u) << "a refused change is kept beside the applied one";
+    EXPECT_EQ(changes[0].time, f.time);
+    EXPECT_EQ(changes[0].actor, "trader");
+    EXPECT_EQ(changes[0].limit_price, m("4.00"));
+    EXPECT_EQ(changes[0].previous_limit_price, m("3.90"));
+    EXPECT_EQ(changes[0].previous_quantity, 3);
+    EXPECT_FALSE(changes[0].quantity);
+    EXPECT_TRUE(changes[0].decision.ok());
+    EXPECT_EQ(changes[1].quantity, 0);
+    EXPECT_EQ(changes[1].decision.code, Reason::INVALID_ORDER);
+    EXPECT_EQ(order(s, 1).request.quantity, 3) << "and leaves the order's terms as they were";
+    f.next();
+    ASSERT_TRUE(s.cancel(1, f.time).decision.ok());
+    EXPECT_EQ(order(s, 1).ended_at, f.time);
+    // A fill ends an order at the fill's time; a rejection at its submission.
+    f.next();
+    ASSERT_TRUE(s.submit(f.limit("take", 1, "4.20"), f.time).decision.ok());
+    EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+    EXPECT_EQ(order(s, 2).ended_at, f.time);
+    EXPECT_FALSE(s.submit(f.limit("off-tick", 1, "4.01"), f.time).decision.ok());
+    EXPECT_EQ(order(s, 3).ended_at, f.time);
+    EXPECT_TRUE(order(s, 2).changes.empty());
+    expected = s.snapshot_json();
+  }
+  const auto recovery = FileJournal::read(path);
+  EXPECT_EQ(TradingSession::recover(recovery).snapshot_json(), expected);
+  // Orders without either keep their bytes: neither field is written for them.
+  const auto first = recovery.records.at(3);  // the first submit, after the definition and the quotes
+  EXPECT_EQ(first.type, "submit");
+  EXPECT_EQ(first.payload.find("\"changes\""), std::string::npos);
+  EXPECT_EQ(first.payload.find("\"ended_at\""), std::string::npos);
+  std::filesystem::remove_all(directory);
+}
+
+TEST(TradingOrders, AWorkingOrderSaysWhatItWaitsFor) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s, "4.00", "4.20", 2);
+  const auto waiting = [&](OrderId id) {
+    const auto& all = s.snapshot()->waiting;
+    const auto it = all.find(id);
+    return it == all.end() ? OrderWait{} : it->second;
+  };
+  ASSERT_TRUE(s.submit(f.limit("behind", 1, "3.90"), f.time).decision.ok());
+  EXPECT_EQ(waiting(1).code, "LIMIT");
+  EXPECT_EQ(waiting(1).message, "The ask 4.20 is above the limit 3.90");
+  auto stop = f.market("stop");
+  stop.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrAbove, m("5.00")};
+  ASSERT_TRUE(s.submit(stop, f.time).decision.ok());
+  EXPECT_EQ(waiting(2).code, "TRIGGER");
+  EXPECT_EQ(waiting(2).message, "Waits for the ask to reach at or above 5.00 (now 4.20)");
+  // The first marketable limit takes both displayed contracts; the second waits for a new quote.
+  ASSERT_TRUE(s.submit(f.limit("first", 2, "4.20"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("second", 1, "4.20"), f.time).decision.ok());
+  EXPECT_EQ(order(s, 3).status, OrderStatus::Filled);
+  EXPECT_EQ(waiting(3).code, "") << "finished orders wait for nothing";
+  EXPECT_EQ(waiting(4).code, "DISPLAYED_SIZE");
+  // A one-sided book supplies no liquidity.
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, std::nullopt, m("4.20"), 0, 5}}, {f.valuation()}, f.time);
+  EXPECT_EQ(waiting(4).code, "INVALID_QUOTE");
+  // A GTC limit accepted overnight waits for the regular session.
+  ScriptedMarket night = f;
+  night.time = md::new_york_to_utc({2026, 9, 22}, 21, 0);
+  ++night.observation;
+  s.on_quotes({night.quote("4.00", "4.20")}, {night.valuation()}, night.time);
+  ASSERT_TRUE(s.submit(night.limit("gtc", 1, "4.20", Side::Buy, TimeInForce::Gtc), night.time).decision.ok());
+  EXPECT_EQ(waiting(5).code, "REGULAR_SESSION");
+  EXPECT_EQ(waiting(5).message, "GTC orders fill in the regular session only");
+}
+
+TEST(TradingOrders, AnOrderHeldByFillLatencySaysUntilWhen) {
+  ScriptedMarket f;
+  AccountRules rules;
+  rules.fill_latency_ms = 1000;
+  TradingSession s(roomy(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("late", 1, "4.20"), f.time).decision.ok());
+  const auto& wait = s.snapshot()->waiting.at(1);
+  EXPECT_EQ(wait.code, "FILL_LATENCY");
+  EXPECT_EQ(wait.message, "Fill latency holds it for a quote stamped at or after 10:00:01 ET");
+  f.next();
+  s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Filled);
+  EXPECT_FALSE(s.snapshot()->waiting.contains(1));
+}
+
 }  // namespace
 }  // namespace openport::trading

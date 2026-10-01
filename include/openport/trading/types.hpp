@@ -120,6 +120,20 @@ struct OrderRequest {
 /// Every contract an order trades: its symbol, or each leg's.
 [[nodiscard]] std::vector<std::string> order_symbols(const OrderRequest& request);
 enum class OrderRole { Normal, StopLoss, TakeProfit };
+/// A change asked of a resting order: the terms requested (each one left empty
+/// kept), the terms the order had then, who asked and when, and why it was
+/// refused (NONE when it was applied). A refused change leaves the order as it was.
+struct OrderChangeRecord {
+  Timestamp time = 0;
+  std::string actor;
+  std::optional<Quantity> quantity;
+  std::optional<Money> limit_price;
+  std::optional<Money> trigger_level;
+  Quantity previous_quantity = 0;
+  std::optional<Money> previous_limit_price;
+  std::optional<Money> previous_trigger_level;
+  Decision decision;
+};
 struct Order {
   OrderId id = 0;  ///< Also the acceptance priority sequence; never reused.
   OrderRequest request;
@@ -142,6 +156,11 @@ struct Order {
   /// The request as submitted, once a change or resize replaced its terms, so a
   /// retry of the submission still finds it; absent in older journals.
   std::optional<OrderRequest> submitted;
+  /// When it stopped working: filled, cancelled or rejected; zero while open and
+  /// for orders that ended before older journals kept it.
+  Timestamp ended_at = 0;
+  /// Every change asked of it while it rested, applied or refused, oldest first.
+  std::vector<OrderChangeRecord> changes;
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   /// The terms a retry must repeat to be answered with this order.
   [[nodiscard]] const OrderRequest& submission() const { return submitted ? *submitted : request; }

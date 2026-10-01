@@ -171,6 +171,25 @@ json exit_json(const std::optional<ExitSpec>& e) {
   return {{"trigger", trigger_json(e->trigger)}, {"limit_price", money(e->limit_price)}};
 }
 json id_or_null(OrderId id) { return id == 0 ? json(nullptr) : json(std::to_string(id)); }
+/// Each change asked of an order: the terms requested (null where kept), the terms
+/// before it, and whether it was applied or refused, and why.
+json order_changes_json(const Order& o) {
+  json changes = json::array();
+  for (const auto& c : o.changes)
+    changes.push_back({{"time", md::format_timestamp(c.time)}, {"actor", c.actor},
+        {"quantity", c.quantity ? json(*c.quantity) : json(nullptr)}, {"limit_price", money(c.limit_price)},
+        {"trigger_level", money(c.trigger_level)},
+        {"previous", {{"quantity", c.previous_quantity}, {"limit_price", money(c.previous_limit_price)},
+                      {"trigger_level", money(c.previous_trigger_level)}}},
+        {"applied", c.decision.ok()}, {"reason", decision_json(c.decision)}});
+  return changes;
+}
+/// When the order's terms last changed, or null.
+json modified_at(const Order& o) {
+  for (auto it = o.changes.rbegin(); it != o.changes.rend(); ++it)
+    if (it->decision.ok()) return md::format_timestamp(it->time);
+  return nullptr;
+}
 const char* side_name(Side side) { return side == Side::Buy ? "buy" : "sell"; }
 json order_json(const Order& o, const TradingView& view) {
   constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
@@ -197,6 +216,12 @@ json order_json(const Order& o, const TradingView& view) {
           {"reason", decision_json(o.reason)},
           {"accepted_at", md::format_timestamp(o.accepted_at)},
           {"day_end", o.day_end > 0 ? json(md::format_timestamp(o.day_end)) : json(nullptr)},
+          {"waiting", [&]() -> json {
+             const auto wait = view.snapshot->waiting.find(o.id);
+             if (!o.open() || wait == view.snapshot->waiting.end()) return nullptr;
+             return {{"code", wait->second.code}, {"message", wait->second.message}};
+           }()},
+          {"ended_at", time_or_null(o.ended_at)}, {"modified_at", modified_at(o)}, {"changes", order_changes_json(o)},
           {"origin", o.system ? "system" : "user"},
           {"trigger", trigger_json(o.request.trigger)},
           {"triggered_at", o.triggered_at > 0 ? json(md::format_timestamp(o.triggered_at)) : json(nullptr)},

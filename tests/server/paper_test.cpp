@@ -513,6 +513,31 @@ TEST_F(PaperEngine, OrderReasonsCarryTheirNumbersAndScope) {
   EXPECT_EQ(cancelled, json({{"code", "USER_CANCEL"}, {"message", "Cancelled by caller"}, {"actual", nullptr}, {"limit", nullptr}, {"scope", nullptr}}));
 }
 
+TEST_F(PaperEngine, OrdersReportTheirHistoryAndWhatTheyWaitFor) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "resting", "3.90")).status, 201);
+  auto listed = read(*engine, "/api/orders")["orders"][0];
+  EXPECT_EQ(listed["waiting"], json({{"code", "LIMIT"}, {"message", "The ask 4.20 is above the limit 3.90"}}));
+  EXPECT_EQ(listed["ended_at"], nullptr);
+  EXPECT_EQ(listed["modified_at"], nullptr);
+  EXPECT_EQ(listed["changes"], json::array());
+  ASSERT_EQ(write(*engine, "PUT", "/api/orders/1", {{"limit_price", "4.00"}}).status, 200);
+  expect_error(write(*engine, "PUT", "/api/orders/1", {{"trigger_level", "5.00"}}), 422, "INVALID_ORDER");
+  ASSERT_EQ(write(*engine, "DELETE", "/api/orders/1").status, 200);
+  listed = read(*engine, "/api/orders")["orders"][0];
+  const auto time = md::format_timestamp(market.time);
+  EXPECT_EQ(listed["ended_at"], time);
+  EXPECT_EQ(listed["modified_at"], time);
+  EXPECT_EQ(listed["waiting"], nullptr) << "finished orders wait for nothing";
+  ASSERT_EQ(listed["changes"].size(), 2);
+  EXPECT_EQ(listed["changes"][0], json({{"time", time}, {"actor", "unknown"}, {"quantity", nullptr}, {"limit_price", "4.00"},
+      {"trigger_level", nullptr}, {"previous", {{"quantity", 1}, {"limit_price", "3.90"}, {"trigger_level", nullptr}}},
+      {"applied", true}, {"reason", nullptr}}));
+  EXPECT_FALSE(listed["changes"][1]["applied"]);
+  EXPECT_EQ(listed["changes"][1]["trigger_level"], "5.00");
+  EXPECT_EQ(listed["changes"][1]["reason"]["code"], "INVALID_ORDER");
+}
+
 TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejections) {
   seed();
   auto request = order(market);

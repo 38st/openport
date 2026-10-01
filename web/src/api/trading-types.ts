@@ -374,6 +374,22 @@ export type NewOrder = { tags?: string[]; note?: string } & ({
   symbol?: never
   side?: never
 }) & Pricing
+/** What keeps an open order from filling now. */
+export interface OrderWait {
+  code: "TRIGGER" | "REGULAR_SESSION" | "INVALID_QUOTE" | "STALE_QUOTE" | "FILL_LATENCY" | "NEWER_QUOTE" | "LIMIT" | "DISPLAYED_SIZE" | "STALE_DATA"
+  message: string
+}
+/** A change asked of a resting order: the terms requested (null where kept), those before it, and its outcome. */
+export interface OrderChangeRecord {
+  time: string
+  actor: string
+  quantity: number | null
+  limit_price: Money | null
+  trigger_level: Money | null
+  previous: { quantity: number; limit_price: Money | null; trigger_level: Money | null }
+  applied: boolean
+  reason: Decision | null
+}
 export interface Order {
   actor?: string
   tags?: string[]
@@ -398,6 +414,12 @@ export interface Order {
   reason: Decision | null
   accepted_at: string
   day_end: string | null
+  /** When it stopped working; null while open. Absent on older servers, as are the changes. */
+  ended_at?: string | null
+  /** An open order: what keeps it from filling now, or null. */
+  waiting?: OrderWait | null
+  modified_at?: string | null
+  changes?: OrderChangeRecord[]
   /** System orders liquidate or auto-close; absent on older servers. */
   origin?: "user" | "system"
   trigger?: Trigger | null

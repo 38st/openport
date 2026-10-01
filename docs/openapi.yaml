@@ -9761,6 +9761,46 @@
                 "type": "null"
               }
             ]
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the order stopped working (filled, cancelled or rejected); null while it is open, and for orders that ended before the server kept it."
+          },
+          "modified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When a change last applied to its terms; null if none did."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderChangeRecord"
+            },
+            "description": "Every change asked of the order while it rested, applied or refused, oldest first."
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderWait"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Open orders: what keeps it from filling now; null when nothing visible does, and for finished orders."
           }
         },
         "required": [
@@ -10582,6 +10622,104 @@
             "$ref": "#/components/schemas/Money"
           }
         }
+      },
+      "OrderChangeRecord": {
+        "type": "object",
+        "description": "A change asked of a resting order (PUT /api/orders/{id}): the terms requested, null where kept; the terms before it; and whether it was applied, or refused with its reason (a refused change leaves the order as it was).",
+        "properties": {
+          "time": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trigger_level": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previous": {
+            "type": "object",
+            "properties": {
+              "quantity": {
+                "type": "integer"
+              },
+              "limit_price": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Money"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "trigger_level": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Money"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "quantity",
+              "limit_price",
+              "trigger_level"
+            ]
+          },
+          "applied": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "time",
+          "actor",
+          "quantity",
+          "limit_price",
+          "trigger_level",
+          "previous",
+          "applied",
+          "reason"
+        ]
       },
       "CancelAllResponse": {
         "type": "object",
@@ -13834,6 +13972,32 @@
           "actual",
           "limit",
           "scope"
+        ]
+      },
+      "OrderWait": {
+        "type": "object",
+        "description": "What keeps an open order from filling now, as matching reads the books, sessions and clocks: TRIGGER, REGULAR_SESSION, INVALID_QUOTE, STALE_QUOTE, FILL_LATENCY, NEWER_QUOTE, LIMIT, DISPLAYED_SIZE or STALE_DATA.",
+        "properties": {
+          "code": {
+            "enum": [
+              "TRIGGER",
+              "REGULAR_SESSION",
+              "INVALID_QUOTE",
+              "STALE_QUOTE",
+              "FILL_LATENCY",
+              "NEWER_QUOTE",
+              "LIMIT",
+              "DISPLAYED_SIZE",
+              "STALE_DATA"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
         ]
       }
     }
