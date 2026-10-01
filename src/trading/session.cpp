@@ -1541,10 +1541,14 @@ void annotate_opening(State& s, const OrderRequest& r, const std::string& symbol
   store_annotation(s, std::to_string(s.fills.size() + 1), std::move(a), events);
 }
 void observe_equity(State& s, Events& events);
-/// One execution of the trader's own order (a bracket exit included, the account's
-/// own closes not), counted toward the day's trading while a rule reads it.
+/// One trade of the trader's own, counted toward the day's trading while a rule reads
+/// it: an execution of their order (a bracket exit included, the account's own closes
+/// not), or a sale or buy-back of delivered shares.
+void count_trade(State& s) {
+  if (counts_executions(s.config.rules)) ++s.evaluation.day_executions;
+}
 void count_execution(State& s, const Order& order) {
-  if (!order.system && counts_executions(s.config.rules)) ++s.evaluation.day_executions;
+  if (!order.system) count_trade(s);
 }
 /// Stale marks, an invalid quote or a missing valuation hold a fill back until a
 /// later batch brings the data; they say nothing about the order itself.
@@ -2058,6 +2062,7 @@ void close_shares(State& s, const std::string& symbol, Quantity shares, StockSou
   const auto price = stock_price(s, symbol);
   if (shares == 0 || !price || !md::market_session(s.time).open) return;
   trade_shares(s, symbol, -shares, *price, source);
+  if (source == StockSource::Trade) count_trade(s);
   event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", -shares}, {"price", *price}});
 }
 /// The status's own code (a pass on the target, a failure on the floor) is the
@@ -4687,6 +4692,7 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
     }
     const auto realised_before = s.ledger.account().realised;
     trade_shares(s, symbol, signed_shares, *price, StockSource::Trade);
+    count_trade(s);
     if (s.config.guardrails.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -s.config.guardrails.cooldown_loss)
       begin_cooldown(s, events);
     event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", signed_shares}, {"price", *price}});

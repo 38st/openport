@@ -1469,10 +1469,11 @@ day's percent of its basis against the limit). The attempt passes on the first
 observation that meets all of them, so a trader who reaches the target early keeps
 trading, and protecting it, until the other objectives are met. Days are the finished
 `days[]` and the day in progress, which counts as soon as it qualifies: a trading day
-once one of the trader's own orders executes on it (bracket exits count; the account's
-liquidations, expiry closes, settlements and assignments do not), and a profitable day
-once its profit so far reaches `profitable_day_profit`. Holding a position over a day
-does not make it a trading day. Each day's profit follows `profit_basis`: its equity
+once one of the trader's own orders executes on it or the trader sells or buys back
+delivered shares, a flatten's included (bracket exits count; the account's liquidations,
+expiry closes, settlements, exercises and assignments do not), and a profitable day once
+its profit so far reaches `profitable_day_profit`. Holding a position over a day does
+not make it a trading day. Each day's profit follows `profit_basis`: its equity
 change, or its net realised P&L. The consistency rule holds when `best day × 100 <=
 percent × basis`, exactly, where the basis is the attempt's profit or the profitable
 days' total; with no profitable day it holds. A breach never fails the account: it holds

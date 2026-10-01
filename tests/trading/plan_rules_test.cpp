@@ -294,6 +294,33 @@ TEST(PlanRules, MinimumTradingDaysHoldAPassUntilEnoughDaysTraded) {
   EXPECT_EQ(snap->evaluation.decision_code, Reason::PROFIT_TARGET);
 }
 
+TEST(PlanRules, SellingDeliveredSharesIsTradingButExercisingIsNot) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPY261022C00500000");
+  auto rules = plan("1000", "1000");
+  rules.min_trading_days = 3;
+  TradingSession s(config(rules), f.time);
+  auto valuation = f.valuation();
+  valuation.spot = 505;
+  valuation.forward = 505;
+  s.define(f.contract, f.time);
+  s.on_quotes({f.quote("6", "6.20")}, {valuation}, f.time, {{"SPY", f.time, m("505")}});
+  ASSERT_TRUE(s.submit(f.market("entry"), f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(f.symbol(), 1, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.day_executions, 1U);
+  f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("506")}});
+  EXPECT_EQ(s.snapshot()->evaluation.day_executions, 0U);
+  ASSERT_TRUE(s.trade_stock("SPY", -40, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.day_executions, 1U);
+  // Flattening the rest is the trader's own trade too.
+  ASSERT_TRUE(s.close_positions({}, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.day_executions, 2U);
+  const auto in = plan_inputs(*s.snapshot());
+  EXPECT_EQ(day_stats(s.snapshot()->evaluation, rules, in).trading_days, 2U);
+}
+
 TEST(PlanRules, MinimumProfitableDaysCountDaysAboveTheThreshold) {
   ScriptedMarket f;
   auto rules = plan("100", "1000");
