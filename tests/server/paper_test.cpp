@@ -2182,11 +2182,19 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(plans[0]["rules"]["profit_target"], nullptr);
   EXPECT_EQ(plans[0]["rules"]["buying_power"], true);
   EXPECT_EQ(plans[0]["unlocked_by"], nullptr);
+  // These presets leave the later evaluation rules off.
+  const auto off = [](json rules) {
+    rules.update({{"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
+                  {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
+                  {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
+                  {"profitable_day_profit", nullptr}, {"day_end", "17:00"}});
+    return rules;
+  };
   const auto intraday = plans[3];
   EXPECT_EQ(intraday["id"], "intraday-100k");
   EXPECT_EQ(intraday["name"], "Intraday 100K");
   EXPECT_EQ(intraday["initial_cash"], "100000.00");
-  EXPECT_EQ(intraday["rules"], json({{"plan", "Intraday 100K"}, {"phase", "evaluation"}, {"profit_target", "10000.00"},
+  EXPECT_EQ(intraday["rules"], off({{"plan", "Intraday 100K"}, {"phase", "evaluation"}, {"profit_target", "10000.00"},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", nullptr}, {"buy_only", true},
       {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
   const auto funded = plans[9];
@@ -2194,7 +2202,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(funded["name"], "Funded Intraday 100K");
   EXPECT_EQ(funded["unlocked_by"], "intraday-100k");
   EXPECT_EQ(funded["initial_cash"], "100000.00");
-  EXPECT_EQ(funded["rules"], json({{"plan", "Funded Intraday 100K"}, {"phase", "funded"}, {"profit_target", nullptr},
+  EXPECT_EQ(funded["rules"], off({{"plan", "Funded Intraday 100K"}, {"phase", "funded"}, {"profit_target", nullptr},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", "100000.00"}, {"buy_only", true},
       {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300},
       {"payouts", {{"qualifying_profit", "200.00"}, {"qualifying_days", 8}, {"withdrawal_percent", 50},

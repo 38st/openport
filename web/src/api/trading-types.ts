@@ -36,9 +36,26 @@ export interface AccountRules {
   phase: "evaluation" | "funded"
   profit_target: Money | null
   max_drawdown: Money | null
-  drawdown_mode: "intraday" | "end_of_day"
+  /** intraday and end_of_day floors trail; a static one stays at the starting balance less max_drawdown. */
+  drawdown_mode: "intraday" | "end_of_day" | "static"
   /** The trailing floor stops once it reaches this balance. */
   lock_balance: Money | null
+  /** The trailing floor locks at the attempt's starting balance. Fields to day_end are absent from older servers. */
+  lock_at_start?: boolean
+  /** Marked equity, or the closed balance (cash plus the positions' cost), for the target, consistency and profitable days. */
+  profit_basis?: ProfitBasis
+  daily_loss_limit?: Money | null
+  daily_loss_basis?: DailyLossBasis
+  /** lock: flatten and refuse opening orders until the next trading day; fail: fail the attempt. */
+  daily_loss_action?: "lock" | "fail"
+  /** The best day may be at most this percent of the basis; 0 is off. */
+  consistency_percent?: number
+  consistency_basis?: "total" | "positive_days"
+  min_trading_days?: number
+  min_profitable_days?: number
+  profitable_day_profit?: Money | null
+  /** "HH:MM" New York time the plan's trading day ends, 16:15 to 24:00. */
+  day_end?: string
   buy_only: boolean
   /** Every short option needs a long of its type expiring with it or later; absent from older servers. */
   defined_risk?: boolean
@@ -51,6 +68,8 @@ export interface AccountRules {
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null
 }
+export type ProfitBasis = "equity" | "balance"
+export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
 /**
  * A reason code with its numeric evidence: `actual` against `limit` for a numeric
  * check, and `scope`, the underlying or "aggregate" it applies to. The evidence is
@@ -95,6 +114,31 @@ export interface EvaluationDay {
   qualifying: boolean
   /** The day's P&L by Greek; absent from older servers. */
   attribution?: Attribution
+  /** The day's profit under the plan's basis. Fields to locked are absent from older servers. */
+  profit?: Money
+  profitable?: boolean
+  /** Executions of your own orders; null unless a minimum-days rule counts them. */
+  executions?: number | null
+  /** The plan limit that locked the day, such as DAILY_LOSS_LIMIT. */
+  locked?: string | null
+}
+/** One condition a pass needs; `actual` and `required` are dollars, days or percent by code. */
+export interface Objective {
+  code: "PROFIT_TARGET" | "MIN_TRADING_DAYS" | "MIN_PROFITABLE_DAYS" | "CONSISTENCY" | string
+  met: boolean
+  actual: number | null
+  required: number
+  message: string
+}
+export interface DailyLossStatus {
+  limit: Money
+  basis: DailyLossBasis
+  action: "lock" | "fail"
+  /** What today's limit is measured from. */
+  reference: Money
+  /** The equity that reaches it. */
+  level: Money
+  room: Money
 }
 export interface Payout {
   number: number
@@ -162,6 +206,25 @@ export interface Evaluation {
   qualifying_days: number
   cycle_started: string
   payouts: Payout[]
+  /** PROFIT_TARGET, DRAWDOWN_FLOOR or DAILY_LOSS_LIMIT once decided. Fields to liquidation_cost are absent from older servers. */
+  decision_code?: string | null
+  /** Cash plus the positions' cost: the closed balance. */
+  balance?: Money
+  profit_basis?: ProfitBasis
+  objectives?: Objective[]
+  trading_days?: number | null
+  profitable_days?: number
+  best_day?: { day: string; profit: Money } | null
+  consistency_target?: Money | null
+  daily_loss?: DailyLossStatus | null
+  day_lock?: string | null
+  day_locked_at?: string | null
+  /** Equity if every position closed now at the bid or ask, with slippage and fees. */
+  exit_equity?: Money
+  exit_cost?: Money
+  /** A decided attempt's equity once flat, and what the liquidation cost against decided_equity. */
+  liquidated_equity?: Money | null
+  liquidation_cost?: Money | null
 }
 export interface AttemptSummary {
   attempt: number
@@ -172,6 +235,8 @@ export interface AttemptSummary {
   final_equity: Money
   status: EvaluationStatus
   decision: string | null
+  /** Absent from older servers. */
+  decision_code?: string | null
 }
 /**
  * Something about the held book worth acting on. `actual` and `limit` depend on the

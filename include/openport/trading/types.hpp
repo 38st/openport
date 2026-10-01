@@ -28,10 +28,13 @@ enum class Reason {
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
   OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED,
   LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE, DEFINED_RISK, MARKET_HALTED, SOFT_FLOOR, TRADE_LIMIT, COOLDOWN, PROFIT_LOCK,
-  RUN_ENDED, INVALID_GROUP, GTD_END
+  RUN_ENDED, INVALID_GROUP, GTD_END,
+  // Plan decisions and objectives: what decided an attempt, what locked its day,
+  // and what a pass still waits for.
+  PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::GTD_END;
+inline constexpr Reason kLastReason = Reason::CONSISTENCY;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -386,11 +389,28 @@ struct ScenarioConfig {
 };
 
 /// How often the trailing drawdown floor may rise. Breaches are always
-/// monitored on every transaction; the mode only controls the ratchet.
-enum class DrawdownMode { Intraday, EndOfDay };
+/// monitored on every transaction; the mode only controls the ratchet. A static
+/// floor never moves: it stays at the starting balance less the drawdown.
+enum class DrawdownMode { Intraday, EndOfDay, Static };
 /// An evaluation passes on its target; a funded account pays out instead.
 enum class Phase { Evaluation, Funded };
 enum class MarginMode { Strategy, Portfolio };
+/// What a plan counts as profit, for its target, its consistency rule and its
+/// profitable days: fully marked equity, or the closed balance (cash plus the
+/// positions' cost: realised P&L after fees, open P&L left out).
+enum class ProfitBasis { Equity, Balance };
+/// Where a plan's daily loss limit is measured from: the day's opening equity,
+/// its opening (closed) balance, the higher of the two, or the day's equity high
+/// (from its opening equity), so the limit trails intraday gains.
+enum class DailyLossBasis { Equity, Balance, Higher, Peak };
+/// What reaching a plan limit does: close every position and lock the account
+/// until the next trading day, or fail the attempt.
+enum class BreachAction { Lock, Fail };
+/// What a consistency rule compares the best day with: the attempt's total
+/// profit, or the sum of its profitable days' profits.
+enum class ConsistencyBasis { Total, PositiveDays };
+/// The default trading day ends at 17:00 New York time (md::trading_date).
+inline constexpr std::int64_t kDayEndMinutes = 17 * 60;
 
 /// Funded-account withdrawals. A qualifying day ends with at least
 /// `qualifying_profit` of net realised profit; each payout needs
@@ -426,7 +446,23 @@ struct AccountRules {
   Phase phase = Phase::Evaluation;
   Money lock_balance;         ///< Once the floor reaches it, the floor stops trailing; zero disables.
   PayoutRules payouts;        ///< Funded phase only.
-  [[nodiscard]] bool evaluation() const { return profit_target > Money{} || max_drawdown > Money{}; }
+  /// The trailing floor locks at the attempt's starting balance (instead of `lock_balance`).
+  bool lock_at_start = false;
+  ProfitBasis profit_basis = ProfitBasis::Equity;
+  Money daily_loss_limit;     ///< Below the daily loss basis; zero disables.
+  DailyLossBasis daily_loss_basis = DailyLossBasis::Equity;
+  BreachAction daily_loss_action = BreachAction::Lock;
+  std::int64_t consistency_percent = 0;  ///< Best day at most this share of the basis, 1-100; zero disables.
+  ConsistencyBasis consistency_basis = ConsistencyBasis::Total;
+  std::int64_t min_trading_days = 0;     ///< Days with an execution of the trader's own orders.
+  std::int64_t min_profitable_days = 0;  ///< Days whose profit reaches `profitable_day_profit`.
+  Money profitable_day_profit;           ///< Zero counts any profitable day.
+  /// Minutes after New York midnight at which the plan's trading day ends, from
+  /// 16:15 (975) to 24:00 (1440): it decides which day a moment counts toward.
+  std::int64_t day_end_minutes = kDayEndMinutes;
+  [[nodiscard]] bool evaluation() const {
+    return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{};
+  }
   bool operator==(const AccountRules&) const = default;
 };
 
@@ -450,7 +486,9 @@ struct SessionConfig {
 void validate_limits(const Limits& limits);
 /// Money amounts nonnegative, cutoff within [0, 1 day), plan name at most 64 bytes,
 /// payout percentages 0-100 with positive caps; a funded phase has no profit
-/// target and needs at least one qualifying day; slippage is 0-10 ticks.
+/// target and needs at least one qualifying day; slippage is 0-10 ticks. The
+/// consistency percentage is 0-100, minimum days 0-366 and the day's end 16:15 to
+/// 24:00; a floor locks at one level at most, and a static floor not at all.
 void validate_rules(const AccountRules& rules);
 
 }  // namespace openport::trading

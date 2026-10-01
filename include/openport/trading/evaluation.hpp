@@ -10,7 +10,8 @@ namespace openport::trading {
 
 enum class EvaluationStatus { Active, Passed, Failed };
 
-/// One finished New York trading day of an attempt, recorded at rollover.
+/// One finished trading day of an attempt, recorded at rollover. Days follow the
+/// plan's boundary (AccountRules::day_end_minutes; 17:00 New York time by default).
 struct EvaluationDay {
   md::Date day;
   Money open_equity;   ///< Fully marked equity when the day began (its baseline).
@@ -24,6 +25,10 @@ struct EvaluationDay {
   std::optional<Money> high_equity;
   Timestamp low_at = 0;
   Timestamp high_at = 0;
+  /// Executions of the trader's own orders that day, counted while a rule reads them
+  /// (counts_executions); zero otherwise.
+  std::uint64_t executions = 0;
+  Reason locked = Reason::NONE;  ///< The plan limit that locked the day, if one did.
 };
 
 /// A funded-account withdrawal. The account pays out `amount`; the trader keeps
@@ -66,17 +71,117 @@ struct Evaluation {
   Timestamp day_high_at = 0;
   std::optional<Money> closest_floor;
   Timestamp closest_floor_at = 0;
+  /// What decided the attempt (PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, ...);
+  /// NONE while active. Journals leave out the code a status implies (PROFIT_TARGET
+  /// for a pass, DRAWDOWN_FLOOR for a failure), which older decisions also imply.
+  Reason decision_code = Reason::NONE;
+  /// A plan limit that closed the positions and locks the account against opening
+  /// orders until the next trading day (DAILY_LOSS_LIMIT), and when it did.
+  Reason day_lock = Reason::NONE;
+  Timestamp day_locked_at = 0;
+  std::uint64_t day_executions = 0;  ///< Today's, as EvaluationDay::executions.
 };
 
 /// Shared plan arithmetic. Observations check the floor before the target; rollover
 /// ratchets an end-of-day floor from the last fully marked close. The peak follows
-/// the drawdown mode even without rules, which then never decide.
-[[nodiscard]] Money evaluation_floor(const AccountRules& rules, Money peak, bool& locked);
+/// the drawdown mode even without rules, which then never decide; a static plan's
+/// peak follows every high like an intraday one's, though its floor stays put.
+/// The level the trailing floor locks at: the starting balance with lock_at_start,
+/// otherwise lock_balance; zero for none.
+[[nodiscard]] Money lock_level(const AccountRules& rules, Money starting_balance);
+/// peak - max_drawdown, capped by the lock level (sticky once reached); a static
+/// floor is the starting balance less the drawdown, locked from the start.
+[[nodiscard]] Money evaluation_floor(const AccountRules& rules, Money peak, bool& locked, Money starting_balance);
+/// The equity part of the rules alone: ratchets an intraday peak, then fails on the
+/// floor and passes on an equity target. evaluate_plan adds the rest.
 [[nodiscard]] EvaluationStatus evaluate_equity(Evaluation& evaluation, const AccountRules& rules, Money equity);
 void evaluation_rollover(Evaluation& evaluation, const AccountRules& rules);
 /// The floor rollover would leave if the trading day closed at `equity`: an end-of-day
 /// ratchet while the attempt is active, otherwise (decided, locked, intraday) the floor.
 [[nodiscard]] Money evaluation_tomorrow_floor(const Evaluation& evaluation, const AccountRules& rules, Money equity);
+/// The plan's trading date at `time`: its day ends at AccountRules::day_end_minutes.
+[[nodiscard]] md::Date plan_trading_date(const AccountRules& rules, Timestamp time);
+
+/// What the plan's rules read of the account at one observation.
+struct PlanInputs {
+  Money equity;        ///< Fully marked equity.
+  Money balance;       ///< Closed balance: cash plus the positions' cost, open P&L left out.
+  Money net_realised;  ///< The ledger's realised P&L less fees (Evaluation::day_open_realised's measure).
+  bool flat = true;    ///< No option positions and no shares.
+};
+/// Whether the rules read each day's executions, so the reducer counts them
+/// (accounts without such a rule keep their journal unchanged).
+[[nodiscard]] bool counts_executions(const AccountRules& rules);
+/// A finished day's profit under the plan's basis: its equity change, or its net
+/// realised P&L (closed balance).
+[[nodiscard]] Money day_profit(const EvaluationDay& day, const AccountRules& rules);
+/// The day in progress's profit so far under the plan's basis.
+[[nodiscard]] Money today_profit(const Evaluation& evaluation, const AccountRules& rules, const PlanInputs& now);
+/// The attempt's profit so far under the plan's basis, counting payouts withdrawn.
+[[nodiscard]] Money attempt_profit(const Evaluation& evaluation, const AccountRules& rules, const PlanInputs& now);
+/// The day in progress's opening closed balance: today's realised P&L taken off
+/// the balance, so a payout today moves it down as it moves the opening equity.
+[[nodiscard]] Money day_open_balance(const Evaluation& evaluation, const PlanInputs& now);
+
+/// The attempt's days as the objectives count them: the finished days and the one in
+/// progress, which counts as soon as it qualifies.
+struct DayStats {
+  std::uint64_t days = 0;             ///< Days of the attempt, today included.
+  std::uint64_t trading_days = 0;     ///< With an execution (counted only under counts_executions).
+  std::uint64_t profitable_days = 0;  ///< Profit at least profitable_day_profit, and above zero.
+  std::optional<Money> best_day;      ///< The largest day profit, when one is above zero.
+  md::Date best_day_date;
+  Money positive_total;               ///< The profitable days' profits added up.
+};
+[[nodiscard]] DayStats day_stats(const Evaluation& evaluation, const AccountRules& rules, const PlanInputs& now);
+
+/// One condition a pass needs: the target first, then the minimum days and the
+/// consistency rule in force. `actual` and `required` are dollars for the target,
+/// days for the minimums and percent for consistency (the best day's share of its
+/// basis, against the rule's limit).
+struct Objective {
+  Reason code = Reason::NONE;  ///< PROFIT_TARGET, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS or CONSISTENCY.
+  bool met = false;
+  std::optional<double> actual;  ///< Absent for consistency while the basis is not above zero.
+  double required = 0;
+  std::string message;           ///< Where it stands, in a trader's words.
+};
+/// The pass conditions in force, as they stand: an attempt passes on the first
+/// observation that meets them all. A target on the closed balance also needs
+/// the account flat, so the balance is what the trader actually closed.
+[[nodiscard]] std::vector<Objective> evaluation_objectives(const Evaluation& evaluation, const AccountRules& rules,
+                                                           const PlanInputs& now);
+/// With a consistency rule, the profit the best day so far requires: the target
+/// rises to best day × 100 / percent when that is more (whole cents, rounded up).
+[[nodiscard]] std::optional<Money> consistency_target(const Evaluation& evaluation, const AccountRules& rules,
+                                                      const PlanInputs& now);
+
+/// The daily loss limit as it stands: the basis it is measured from and the
+/// equity level that reaches it (touching it counts).
+struct DailyLossLevel {
+  Money reference;
+  Money level;
+};
+[[nodiscard]] std::optional<DailyLossLevel> daily_loss_level(const Evaluation& evaluation, const AccountRules& rules,
+                                                             const PlanInputs& now);
+
+/// What one observation decides: a pass or failure (status), or a lock of the
+/// trading day (lock), with the reason code, the level reached and a message.
+struct PlanVerdict {
+  EvaluationStatus status = EvaluationStatus::Active;
+  bool lock = false;
+  Reason code = Reason::NONE;
+  Money level;
+  std::string message;
+  [[nodiscard]] bool decided() const { return status != EvaluationStatus::Active; }
+};
+/// The plan's rules on one fully marked observation of an active attempt, in
+/// order: ratchet an intraday peak; fail on the floor; lock or fail on the daily
+/// loss limit (once a day); pass once every objective is met. Pure: the caller
+/// applies the verdict (the reducer decides, or locks and liquidates).
+[[nodiscard]] PlanVerdict evaluate_plan(Evaluation& evaluation, const AccountRules& rules, const PlanInputs& now);
+/// Why opening orders are refused while the day is locked.
+[[nodiscard]] std::string day_lock_message(Reason lock);
 
 struct PassOdds {
   double pass = 0, fail = 0, neither = 0;
@@ -102,6 +207,7 @@ struct AttemptSummary {
   std::string decision;
   OrderId first_order = 1;
   std::uint64_t first_fill = 1;
+  Reason decision_code = Reason::NONE;  ///< As Evaluation::decision_code.
 };
 
 /// Exercise: contracts exercised early into shares, at intrinsic value.

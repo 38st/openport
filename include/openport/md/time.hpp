@@ -132,6 +132,10 @@ struct TradingSession {
 /// weekends and holidays, the next business day, whose overnight session opens
 /// that evening. Before 2022 only weekdays are known.
 [[nodiscard]] Date trading_date(Timestamp ts) noexcept;
+/// The same with the day ending `day_end_minutes` after New York midnight instead
+/// of 17:00, as a plan's trading day can (1440 ends it at midnight); 1020 is
+/// trading_date(ts).
+[[nodiscard]] Date trading_date(Timestamp ts, int day_end_minutes) noexcept;
 
 /// The business day before `date`, skipping weekends and calendar holidays.
 [[nodiscard]] Date previous_business_day(Date date) noexcept;

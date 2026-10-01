@@ -906,6 +906,19 @@ Measures measure(const State& s) {
 }
 std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_complete);
 Decision reset_check(const State& s, const Measures& m);
+/// The equity closing every position now would leave (TradingSnapshot::exit_equity).
+Money exit_equity_of(const State& s, const TradingSnapshot& out) {
+  auto value = out.equity;
+  for (const auto& p : out.positions) {
+    const auto& position = p.position;
+    const auto symbol = position.contract.osi_symbol();
+    if (p.awaiting_settlement || !p.market_value) continue;
+    const auto size = magnitude(position.quantity);
+    const auto closing = market_premium(s, symbol, position.quantity > 0 ? Side::Sell : Side::Buy, size);
+    value = value - *p.market_value + (position.quantity > 0 ? closing : -closing) - s.config.fee_per_contract * size;
+  }
+  return value;
+}
 TradingSnapshot snapshot_of(const State& s) {
   auto m = measure(s);
   TradingSnapshot out;
@@ -971,6 +984,7 @@ TradingSnapshot snapshot_of(const State& s) {
     if (const auto trip = s.trips.find(symbol); trip != s.trips.end()) out.trip_attributions[trip->second] += open;
   }
   for (const auto& [symbol, attribution] : out.attributions) out.attribution += attribution;
+  out.exit_equity = exit_equity_of(s, out);
   return out;
 }
 /// Rules only act on fully marked equity: every position has a mark, fresh or not.
@@ -1011,7 +1025,7 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.started = s.time;
   e.starting_balance = s.ledger.account().cash;
   e.peak = e.starting_balance;
-  e.floor = evaluation_floor(s.config.rules, e.peak, e.floor_locked);
+  e.floor = evaluation_floor(s.config.rules, e.peak, e.floor_locked, e.starting_balance);
   e.day_open_realised = net_realised(s);
   e.cycle_started = s.time;
   e.first_order = static_cast<OrderId>(s.orders.size() + 1);
@@ -1247,6 +1261,9 @@ Decision account_check(const State& s, bool reducing = false) {
     return failure(Reason::EVALUATION_CLOSED, std::string("The evaluation has ") +
         (s.evaluation.status == EvaluationStatus::Passed ? "passed" : "failed") +
         "; reset the account to start a new attempt");
+  // A plan limit that locked the day leaves only closing orders until rollover.
+  if (s.evaluation.day_lock != Reason::NONE && !reducing)
+    return failure(s.evaluation.day_lock, day_lock_message(s.evaluation.day_lock));
   return {};
 }
 /// When an order is checked: as it is accepted or changed, as its trigger is
@@ -1524,6 +1541,11 @@ void annotate_opening(State& s, const OrderRequest& r, const std::string& symbol
   store_annotation(s, std::to_string(s.fills.size() + 1), std::move(a), events);
 }
 void observe_equity(State& s, Events& events);
+/// One execution of the trader's own order (a bracket exit included, the account's
+/// own closes not), counted toward the day's trading while a rule reads it.
+void count_execution(State& s, const Order& order) {
+  if (!order.system && counts_executions(s.config.rules)) ++s.evaluation.day_executions;
+}
 /// Stale marks, an invalid quote or a missing valuation hold a fill back until a
 /// later batch brings the data; they say nothing about the order itself.
 bool data_gap(Reason code) {
@@ -1616,6 +1638,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
             quantity, price, fee, quote.observation, quote.time, s.time, context, order.actor, taken};
   s.fills.push_back(fill);
   event(events, "fill", fill);
+  count_execution(s, order);
   on_fill(s, id, quantity, events);
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
@@ -1696,6 +1719,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   order.filled_notional = order.filled_notional + *net * units;
   order.status = order.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
   if (order.status == OrderStatus::Filled) order.ended_at = s.time;
+  count_execution(s, order);
   on_fill(s, id, units, events);
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
@@ -2036,20 +2060,51 @@ void close_shares(State& s, const std::string& symbol, Quantity shares, StockSou
   trade_shares(s, symbol, -shares, *price, source);
   event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", -shares}, {"price", *price}});
 }
-void decide(State& s, EvaluationStatus status, Money equity, std::string message, Events& events) {
+/// The status's own code (a pass on the target, a failure on the floor) is the
+/// default a journal leaves out; any other rule's code is recorded with the decision.
+bool default_code(EvaluationStatus status, Reason code) {
+  return code == (status == EvaluationStatus::Passed ? Reason::PROFIT_TARGET : Reason::DRAWDOWN_FLOOR);
+}
+void decide(State& s, const PlanVerdict& verdict, Money equity, Events& events) {
   auto& e = s.evaluation;
-  e.status = status;
+  e.status = verdict.status;
   e.decided_at = s.time;
   e.decided_equity = equity;
-  e.decision = message;
-  event(events, status == EvaluationStatus::Passed ? "evaluation_passed" : "evaluation_failed",
-        Json{{"attempt", e.attempt}, {"equity", equity}, {"peak", e.peak}, {"floor", e.floor}, {"message", message}});
+  e.decision = verdict.message;
+  e.decision_code = verdict.code;
+  Json payload{{"attempt", e.attempt}, {"equity", equity}, {"peak", e.peak}, {"floor", e.floor}, {"message", verdict.message}};
+  if (!default_code(verdict.status, verdict.code)) payload["code"] = verdict.code;
+  event(events, verdict.status == EvaluationStatus::Passed ? "evaluation_passed" : "evaluation_failed", std::move(payload));
   for (const auto id : open_ids(s))
-    if (!s.orders[id - 1].system) cancel_order(s, id, failure(Reason::EVALUATION_CLOSED, message), events);
+    if (!s.orders[id - 1].system) cancel_order(s, id, failure(Reason::EVALUATION_CLOSED, verdict.message), events);
 }
-/// Runs after every command: tracks the day's closing equity, ratchets an
-/// intraday peak, decides pass/fail on fully marked equity (touching the floor
-/// fails), then liquidates a decided attempt and auto-closes expiring positions.
+/// A plan limit locks the trading day: open orders cancel with its code, the
+/// positions close (monitor_rules) and only closing orders are accepted until rollover.
+void lock_day(State& s, const PlanVerdict& verdict, Money equity, Events& events) {
+  auto& e = s.evaluation;
+  e.day_lock = verdict.code;
+  e.day_locked_at = s.time;
+  event(events, "day_locked", Json{{"attempt", e.attempt}, {"code", verdict.code}, {"equity", equity},
+                                   {"level", verdict.level}, {"message", verdict.message}});
+  for (const auto id : open_ids(s))
+    if (!s.orders[id - 1].system) cancel_order(s, id, failure(verdict.code, verdict.message), events);
+}
+/// What the plan's rules read of the account now, at marked `equity`.
+PlanInputs plan_inputs(const State& s, Money equity) {
+  PlanInputs in;
+  in.equity = equity;
+  // Cash plus the positions' cost: the closed balance, as if nothing were open.
+  in.balance = s.ledger.account().cash;
+  for (const auto& [symbol, position] : s.ledger.positions()) in.balance = in.balance + position.basis;
+  for (const auto& [symbol, stock] : s.ledger.stocks()) in.balance = in.balance + stock.basis;
+  in.net_realised = net_realised(s);
+  in.flat = s.ledger.positions().empty() && s.ledger.stocks().empty();
+  return in;
+}
+/// Runs after every command: tracks the day's closing equity, then applies the
+/// plan's verdict on fully marked equity (evaluate_plan: the floor, the daily
+/// loss limit, the target and its objectives); monitor_rules then liquidates a
+/// decided attempt or a locked day and auto-closes expiring positions.
 void observe_equity(State& s, Events& events) {
   const auto& rules = s.config.rules;
   auto& e = s.evaluation;
@@ -2059,21 +2114,14 @@ void observe_equity(State& s, Events& events) {
   // Likewise the first payout cycle; journals from before payouts start it here too.
   if (e.cycle_started == 0) e.cycle_started = e.started;
   if (const auto equity = marked_equity(measure(s))) {
-    if (md::trading_date(s.time) == e.day) {
+    if (plan_trading_date(rules, s.time) == e.day) {
       e.day_close_equity = *equity;
       if (!e.day_low_equity || *equity < *e.day_low_equity) { e.day_low_equity = *equity; e.day_low_at = s.time; }
       if (!e.day_high_equity || *equity > *e.day_high_equity) { e.day_high_equity = *equity; e.day_high_at = s.time; }
     }
-    const auto outcome = evaluate_equity(e, rules, *equity);
-    if (outcome != e.status) {
-      const auto target = e.starting_balance + rules.profit_target;
-      if (outcome == EvaluationStatus::Failed) {
-        decide(s, outcome, *equity, "Equity " + dollars(*equity) + " reached the drawdown floor " +
-               dollars(e.floor) + " (peak " + dollars(e.peak) + ", max drawdown " + dollars(rules.max_drawdown) + ")", events);
-      } else {
-        decide(s, outcome, *equity, "Equity " + dollars(*equity) + " reached the profit target " + dollars(target), events);
-      }
-    }
+    const auto verdict = evaluate_plan(e, rules, plan_inputs(s, *equity));
+    if (verdict.decided()) decide(s, verdict, *equity, events);
+    else if (verdict.lock) lock_day(s, verdict, *equity, events);
     // Like the attempt itself, its closest approach starts at the first real market time.
     if (rules.max_drawdown > Money{} && e.started > 0 && (!e.closest_floor || *equity - e.floor < *e.closest_floor)) {
       e.closest_floor = *equity - e.floor;
@@ -2087,13 +2135,21 @@ void observe_equity(State& s, Events& events) {
       latch_guardrail(s, Reason::TRADE_LIMIT, events);
   }
 }
+/// The client ID label of a plan's liquidation: the decision's, else a locked day's.
+std::string_view liquidation_label(const Evaluation& e, bool decided) {
+  const auto code = decided ? e.decision_code : e.day_lock;
+  if (code == Reason::DAILY_LOSS_LIMIT) return "daily_loss";
+  if (decided) return e.status == EvaluationStatus::Passed ? "target" : "drawdown";
+  return "day_lock";
+}
 void monitor_rules(State& s, Events& events) {
   observe_equity(s, events);
   const auto& rules = s.config.rules;
   const auto& e = s.evaluation;
   const bool soft = std::find(s.guardrails.latched.begin(), s.guardrails.latched.end(), Reason::SOFT_FLOOR) != s.guardrails.latched.end();
   const bool decided = rules.evaluation() && e.status != EvaluationStatus::Active;
-  if (soft || decided) {
+  const bool locked = e.day_lock != Reason::NONE;
+  if (soft || decided || locked) {
     std::vector<std::pair<std::string, Quantity>> stocks;
     for (const auto& [symbol, stock] : s.ledger.stocks()) stocks.emplace_back(symbol, stock.shares);
     for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Rule, events);
@@ -2104,9 +2160,10 @@ void monitor_rules(State& s, Events& events) {
   // covers it is sold never leaves a naked short, even for one event.
   std::stable_partition(symbols.begin(), symbols.end(), [&](const std::string& symbol) { return held(s, symbol) < 0; });
   for (const auto& symbol : symbols) {
-    if (soft || decided) {
-      // The plan's decision names the liquidation, even when the soft floor latched with it.
-      flatten(s, symbol, !decided ? "soft_floor" : e.status == EvaluationStatus::Passed ? "target" : "drawdown", events);
+    if (soft || decided || locked) {
+      // The plan's decision names the liquidation, then a locked day, even when the
+      // soft floor latched with it.
+      flatten(s, symbol, decided || locked ? liquidation_label(e, decided) : "soft_floor", events);
       continue;
     }
     // The cutoff counts back from the last trade: 15:55 for SPXW, 16:10 for SPY,
@@ -3234,6 +3291,16 @@ Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit) {
 }
 }  // namespace
 
+PlanInputs plan_inputs(const TradingSnapshot& s) {
+  PlanInputs in;
+  in.equity = s.equity;
+  in.balance = s.account.cash;
+  for (const auto& p : s.positions) in.balance = in.balance + p.position.basis;
+  for (const auto& p : s.stocks) in.balance = in.balance + p.position.basis;
+  in.net_realised = s.account.realised - s.account.fees;
+  in.flat = s.positions.empty() && s.stocks.empty();
+  return in;
+}
 PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
   const auto& p = rules.payouts;
   const auto& e = s.evaluation;
@@ -3351,7 +3418,7 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
   impl_->actor = std::move(actor);
   impl_->state.config = std::move(config);
   impl_->state.time = time;
-  impl_->state.day = md::trading_date(time);
+  impl_->state.day = plan_trading_date(impl_->state.config.rules, time);
   impl_->state.ledger = Ledger(impl_->state.config.initial_cash);
   impl_->state.start_equity = impl_->state.config.initial_cash;
   impl_->state.evaluation = fresh_evaluation(impl_->state, 1);
@@ -4265,7 +4332,7 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
   const auto closing = impl_->snapshot;
   const auto closing_time = impl_->state.time;
   return impl_->transact(time, "day_rollover", [&](State& s, Events& events) {
-    const auto day = md::trading_date(time);
+    const auto day = plan_trading_date(s.config.rules, time);
     if (day <= s.day) return CommandResult{failure(Reason::INVALID_TIME, "Rollover requires a later trading date"), {}, 0};
     monitor_loss(s, events);
     const auto& snapshot = *closing;
@@ -4279,15 +4346,20 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
     // A placeholder date from before the attempt started is not a trading day.
     // On a funded account, a day with enough net realised profit counts once,
     // toward the payout cycle in progress when it closes.
-    if (e.started > 0 && e.day >= md::trading_date(e.started)) {
+    if (e.started > 0 && e.day >= plan_trading_date(rules, e.started)) {
       const auto realised = net_realised(s) - e.day_open_realised;
       const auto& payouts = rules.payouts;
       const bool qualifying = rules.phase == Phase::Funded && e.status == EvaluationStatus::Active &&
           payouts.qualifying_days > 0 && realised >= payouts.qualifying_profit && realised > Money{};
       if (qualifying) ++e.qualifying_days;
-      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying, snapshot.attribution, e.day_low_equity, e.day_high_equity, e.day_low_at, e.day_high_at});
+      e.days.push_back({e.day, e.day_open_equity, e.day_close_equity, e.peak, e.floor, realised, qualifying, snapshot.attribution,
+                        e.day_low_equity, e.day_high_equity, e.day_low_at, e.day_high_at, e.day_executions, e.day_lock});
       event(events, "evaluation_day", e.days.back());
     }
+    // A plan limit's lock and the day's executions end with the day.
+    e.day_lock = Reason::NONE;
+    e.day_locked_at = 0;
+    e.day_executions = 0;
     if (s.pending_limits || s.pending_guardrails) {
       if (s.limits_revision == std::numeric_limits<std::uint64_t>::max()) throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Limits revision exhausted");
       if (s.pending_limits) { s.config.limits = *s.pending_limits; s.pending_limits.reset(); }
@@ -4355,9 +4427,13 @@ CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
     s.start_equity = s.start_equity - amount;
     e.day_open_equity = e.day_open_equity - amount;
     e.day_close_equity = e.day_close_equity - amount;
+    // The day's extremes too, so a daily loss limit trailing the day's high
+    // does not count the withdrawal as a loss.
+    if (e.day_low_equity) e.day_low_equity = *e.day_low_equity - amount;
+    if (e.day_high_equity) e.day_high_equity = *e.day_high_equity - amount;
     if (!e.floor_locked) {
       e.peak = e.peak - amount;
-      e.floor = evaluation_floor(rules, e.peak, e.floor_locked);
+      e.floor = evaluation_floor(rules, e.peak, e.floor_locked, e.starting_balance);
     }
     e.payouts.push_back({quote.number, s.time, e.day, amount, amount.prorate(rules.payouts.split_percent, 100), equity});
     e.qualifying_days = 0;
@@ -4387,7 +4463,7 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     }
     const auto& e = s.evaluation;
     s.attempts.push_back({e.attempt, s.config.rules.plan, e.started, s.time, e.starting_balance, snapshot.equity,
-                          e.status, e.decision, e.first_order, e.first_fill});
+                          e.status, e.decision, e.first_order, e.first_fill, e.decision_code});
     const auto attempt = e.attempt + 1;
     s.config.initial_cash = initial_cash;
     s.config.rules = std::move(rules);
@@ -4406,7 +4482,7 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     if (s.pending_guardrails) { s.config.guardrails = *s.pending_guardrails; s.pending_guardrails.reset(); ++s.limits_revision; }
     s.guardrails = {};
     s.pending_applied_at = pending ? s.time : 0;
-    s.day = md::trading_date(s.time);
+    s.day = plan_trading_date(s.config.rules, s.time);
     s.evaluation = fresh_evaluation(s, attempt);
     event(events, "account_reset", Json{{"reason", reason}, {"attempt", attempt}, {"initial_cash", initial_cash},
                                         {"rules", s.config.rules}});
@@ -4434,6 +4510,7 @@ std::map<std::string, SizeLeft> TradingSession::sizes_left() const {
   return out;
 }
 md::Date TradingSession::trading_day() const { return impl_->state.day; }
+md::Date TradingSession::trading_date(Timestamp time) const { return plan_trading_date(impl_->state.config.rules, time); }
 namespace {
 /// Records (or, empty, clears) a trade's note and tags under `key`.
 void store_annotation(State& s, const std::string& key, Annotation annotation, Events& events) {
@@ -4628,6 +4705,12 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
     // Schema 3 records no snapshot; the reducer derives it from the state.
     impl->snapshot = std::make_shared<TradingSnapshot>(
         last.at("schema") == 3 ? snapshot_of(impl->state) : last.at("snapshot").get<TradingSnapshot>());
+    // Older snapshots predate the exit value, which the books give.
+    if (last.at("schema") != 3) {
+      auto snapshot = std::make_shared<TradingSnapshot>(*impl->snapshot);
+      snapshot->exit_equity = exit_equity_of(impl->state, *snapshot);
+      impl->snapshot = std::move(snapshot);
+    }
     if (last.at("schema") == 1) {
       // A schema 1 account has no rules; start its progress record from the
       // journal's first transaction so later records continue it.
