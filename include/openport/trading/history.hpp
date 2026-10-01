@@ -30,6 +30,7 @@ struct Lifecycle {
   Money basis;                    ///< Signed basis of the remaining position.
   std::optional<FillContext> entry_context;
   std::optional<FillContext> exit_context;
+  OrderId exit_order = 0;           ///< The last reducing fill's order; none after a closure.
   std::uint64_t first_fill = 0;     ///< ID of the opening fill, for attempt filtering.
   OrderId entry_order = 0;          ///< The opening fill's order.
   Quantity entry_contracts = 0;     ///< Contracts that order opened in this round trip.

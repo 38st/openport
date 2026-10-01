@@ -65,6 +65,7 @@ void LifecycleBuilder::fill(const Fill& fill, const Contracts& contracts) {
     }
   } else {
     life->exit_context = fill.context;
+    life->exit_order = fill.order_id;
     const auto closing = std::min(magnitude(held), fill.quantity);
     const auto remainder = fill.quantity - closing;
     const Money closing_fee = fill.fee.prorate(closing, fill.quantity);
@@ -113,6 +114,7 @@ void LifecycleBuilder::closure(const Closure& closure, const Contracts& contract
     it->second.ledger.fill(contract->second, held > 0 ? -closing : closing, closure.price, Money{});
   }
   life.exit_context.reset();
+  life.exit_order = 0;
   life.basis = it->second.ledger.positions().contains(closure.symbol)
       ? it->second.ledger.positions().at(closure.symbol).basis : Money{};
   life.quantity = held > 0 ? held - closing : held + closing;

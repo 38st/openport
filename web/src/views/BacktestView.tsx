@@ -45,7 +45,7 @@ export function BacktestReportView({ report }: { report: BacktestReport }) {
       <Stat label="Attempt pass rate" value={percent(summary.pass_rate)} hint="Passed / decided attempts. Open attempts are excluded." />
       <Stat label="Attempts" value={`${summary.passed} passed · ${summary.failed} failed · ${summary.open} open`} />
       <Stat label="Trade expectancy" value={signedMoney(summary.expectancy)} hint="Mean net result per closed strategy in independent daily runs." />
-      <Stat label="Trade win rate" value={percent(summary.win_rate)} hint={`${summary.trades} closed strategies; breakeven trades are not wins.`} />
+      <Stat label="Trade win rate" value={percent(summary.win_rate)} hint={`${summary.trades} closed strategies; wins over decided ones, breakevens left out.`} />
     </div>
     <p className="text-xs text-muted">{summary.completed_days} independent days, {summary.marked_days} with complete final marks. Day win rate: {percent(summary.day_win_rate)}. Attempts replay the ordered days on one account until a pass or failure, then start fresh on the next day.</p>
     <div className="grid gap-4 lg:grid-cols-2">{([

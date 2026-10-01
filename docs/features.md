@@ -61,9 +61,10 @@ simulation's limits.
   per contract or per strategy, with shares from exercise and assignment as trades of
   their own. Each trade's review shows the market and the account at entry and exit,
   how far it went against you and in your favour (MAE and MFE), what you gave back and
-  its R-multiple, on the underlying's chart. Trades take notes and tags, each day a
-  plan and a review, and trades and fills download as CSV. A new attempt keeps the
-  history.
+  its R-multiple, on the underlying's chart, and marks the exits a stop, a flatten or
+  a liquidation forced. Trades take notes and tags, each day a plan and a review, and
+  trades and fills download as CSV, each row naming its attempt and, from a replay,
+  the run, scenario and seed. A new attempt keeps the history.
 - **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
   (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
@@ -262,3 +263,5 @@ the simulation's limits.
 - [x] Morning brief with market levels, account allowance, day notes and chart overlays
 - [x] Stop-limit exits on single contracts and spreads, banded around their stop, and
       exits that re-arm or shrink so a partly filled position stays protected
+- [x] Exports that name their replay run and attempt, trades that say what closed them,
+      holiday-aware weekday reports and one win-rate definition

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { quote, shareTrades, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
-import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, shareSourceLabel, tradeBuckets, tradeTags, tradingDate } from "./journal"
+import { closingDay, contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, shareSourceLabel, tradeBuckets, tradeTags, tradingDate } from "./journal"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "./ticket"
 import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
 
@@ -96,6 +96,23 @@ describe("journal analytics", () => {
     const month = tradeBuckets([{ ...closed, closed: "2026-10-01T00:30:00Z" }], "month")
     expect(month.find((b) => b.label === "Oct")?.trades).toBe(1)
     expect(month.find((b) => b.label === "Sep")?.trades).toBe(0)
+  })
+  it("counts a close before a market holiday toward the server's next session", () => {
+    // Wednesday 25 November 2026 at 18:00 ET: Thanksgiving is closed, so the engine's trading date is Friday the 27th.
+    const closed = { ...trades.find((t) => t.status === "closed")!, closed: "2026-11-25T23:00:00Z" }
+    expect(closingDay(closed)).toEqual({ date: "2026-11-26", weekday: 4 })
+    const served = { ...closed, trading_day: "2026-11-27" }
+    expect(closingDay(served)).toEqual({ date: "2026-11-27", weekday: 5 })
+    expect(tradeBuckets([served], "weekday").map((b) => b.trades)).toEqual([0, 0, 0, 0, 1])
+    expect(tradeBuckets([{ ...closed, trading_day: null }], "weekday").map((b) => b.trades)).toEqual([0, 0, 0, 1, 0])
+  })
+  it("gives each bucket the Journal's win rate: wins over decided trades", () => {
+    const closed = trades.find((t) => t.status === "closed")!
+    const three = [{ ...closed, id: "w", net: "10.00" }, { ...closed, id: "l", net: "-5.00" }, { ...closed, id: "b", net: "0.00" }]
+    const month = tradeBuckets(three, "month").find((b) => b.trades > 0)!
+    expect(month).toMatchObject({ trades: 3, wins: 1, losses: 1, winRate: 0.5 })
+    expect(journalStats(three).winRate).toBe(month.winRate)
+    expect(tradeBuckets([{ ...closed, net: "0.00" }], "month").find((b) => b.trades > 0)?.winRate).toBeNull()
   })
   it("reads tags and buckets closed trades under each of them", () => {
     expect(parseTags(" Breakout, 0DTE ,, breakout ")).toEqual(["breakout", "0dte"])

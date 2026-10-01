@@ -615,7 +615,8 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
         if (net < Money{}) { ++losses; loss_total = loss_total - net; }
         if (row.at("r").is_number()) { ++r_count; r_total += row.at("r").get<double>(); }
       }
-      return json{{"trades", count}, {"win_rate", count ? json(static_cast<double>(wins) / count) : json(nullptr)},
+      // Wins over decided trades: a breakeven is neither, as in the Journal and backtests.
+      return json{{"trades", count}, {"win_rate", wins + losses ? json(static_cast<double>(wins) / (wins + losses)) : json(nullptr)},
           {"average_win", wins ? json(win_total.prorate(1, wins).str()) : json(nullptr)},
           {"average_loss", losses ? json((-loss_total).prorate(1, losses).str()) : json(nullptr)},
           {"expectancy", count ? json(total.prorate(1, count).str()) : json(nullptr)},

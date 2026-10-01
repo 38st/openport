@@ -30,6 +30,7 @@ class Desk {
     std::string initial_playbooks;  ///< Replay provenance snapshot; empty loads the journal sibling.
     std::shared_ptr<SeriesStore> series;
     std::string run_input;  ///< Canonical provenance JSON; empty for legacy/live desks.
+    std::string run_id;     ///< The run's id, named in its exports; empty without one.
     bool paper_enabled = true;
     bool replay = false;  ///< Publish the replay market clock and keep halt state isolated.
     /// Driver 2, recorded in a run's start input: the driver applies every underlying's
@@ -136,6 +137,7 @@ class Desk {
   void fail_trading(PaperAccount& account, std::string reason);
 
   Options options_;
+  std::optional<RunIdentity> run_;  ///< What options_.run_input replays, for exports.
   std::string provider_;
   md::Subscription subscription_;
   md::Capabilities capabilities_;

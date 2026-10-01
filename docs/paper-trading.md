@@ -1222,6 +1222,14 @@ are not reconstructed. Share trades retain their existing P&L and notes. Greek
 attribution remains per day and contract; its daily stretch baselines do not supply
 an independent attribution for each round trip.
 
+Each closed option trade says what closed it, `closed_by`: the closure that ended it
+(`settlement`, `exercise`, `assignment`, `reset`), or the order of its last reducing
+fill: the trader's own `order`, a bracket exit (`stop_loss`, `take_profit`), a
+`flatten`, a playbook's close (`playbook`), or a reducer liquidation (`system`), with
+`system_reason` saying why: `target` and `drawdown` when a decided attempt liquidates,
+`soft_floor` for the personal guardrail and `expiry` for the auto-close before expiry.
+The Journal marks such trades, so after a pass or fail the forced exits stand apart.
+
 The Journal shows context side by side, excursions and risk multiples, notes and
 tags, and stored one-minute underlying candles with entry, exit, MAE and MFE
 markers. Missing candle history is shown as unavailable. The candles route returns
@@ -1229,14 +1237,17 @@ the latest 5,000 bars, so older trades may have partial or no coverage. Strategy
 closing prices are net premiums per unit, signed as order prices are (a debit
 positive, a credit negative) and shown as the opening price is ("$0.85 db");
 return divides leg net P&L by the absolute net entry premium, or is null at zero
-premium. List filters select
+premium. Win rate everywhere, the Journal's tile and reports, the playbook report and
+backtests alike, is wins over decided trades: a breakeven round trip is neither a win
+nor a loss. List filters select
 known or unknown planned risk and positive give-back. The weekday and month reports
-group closed trades by the session they closed in, as the engine's trading date does:
-a weekday's New York date until 17:00, and after that or over a weekend the next
-weekday, so a close in Sunday evening's overnight session counts toward Monday. The
-terminal knows weekdays but not market holidays, so an evening close before a holiday
-counts toward the holiday rather than the next session. The calendar keeps the New
-York date.
+group closed trades by the session they closed in, each trade's `trading_day`: the
+engine's trading date of its close, a business day's New York date until 17:00, and
+after that, over a weekend or on a market holiday the next business day, so a close in
+Sunday evening's overnight session counts toward Monday and one on the evening before
+Thanksgiving toward the Friday. (Trades from older servers have no `trading_day`; for
+them the terminal counts weekdays without holidays.) The calendar keeps the New York
+date.
 
 ## Trade notes and tags
 
@@ -1290,7 +1301,12 @@ notes are preserved. Money retains micro-dollar precision, with two to six decim
 row field is included, with nested context and review fields in dotted columns;
 arrays, including tags and fill IDs, join with `;`. Missing values are empty cells.
 Times remain ISO UTC and each row adds `new_york_date`, account, account version,
-current provider and a price-source label. Paper P&L is simulated; demo prices are
+current provider and a price-source label. Exports from a replay, running or saved, also
+name the run on every row: `run_id`, and `scenario` and `seed` or the `recording` it
+replayed (empty for a live account), so rows from several practice runs stay apart once
+merged; `GET /api/trades` gives the same as `run`. Fill rows carry their `attempt`, as
+trade rows do. Share trades list their stock fills with an `s` prefix (`s3`), as their
+own IDs have, so they never read as option fill IDs. Paper P&L is simulated; demo prices are
 labelled simulated too. Other exports leave price provenance unrecorded because
 the current provider cannot establish the source of historical fills. The separate stock-fill, dividend and day-note collections are not
 trade rows in these exports.

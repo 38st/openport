@@ -11,6 +11,7 @@ import { JournalView } from "./JournalView"
 import { RulesView, ruleText } from "./RulesView"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { describeAttribution } from "../lib/attribution"
+import { exitLabel } from "../lib/journal"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 const clients: QueryClient[] = []
@@ -102,6 +103,22 @@ describe("simulator pages", () => {
       "4m 49s", "+12.6%", "$4.25", "$4.80"])
       expect(html).toContain(text)
     expect(html).not.toContain("NaN")
+  })
+  it("names a replay's run and marks the trades a liquidation or a stop closed", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+    clients.push(client)
+    const queries = tradingQueries(0, "17", true)
+    client.setQueryData(queries.fills.queryKey, { account_version: "17", fills: [fill] })
+    client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 2,
+      run: { id: "reversal-2026-09-22-7", scenario: "reversal", seed: "7", recording: null, date: "2026-09-22" },
+      trades: trades.map((t) => t.id === "2" ? { ...t, closed_by: "system" as const, system_reason: "drawdown" }
+        : t.status === "closed" ? { ...t, closed_by: "stop_loss" as const } : t) })
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><JournalView /></QueryClientProvider>)
+    for (const text of ["2 closed trades · attempt 2 · replay reversal seed 7", "(liquidated: drawdown)", "(stop)"]) expect(html).toContain(text)
+    expect(exitLabel({ ...trades[1]!, closed_by: "system", system_reason: "expiry" })).toBe("auto-closed before expiry")
+    expect(exitLabel({ ...trades[1]!, closed_by: "order" })).toBeNull()
+    expect(exitLabel({ ...trades[1]!, closure: "settlement" })).toBe("settlement")
+    expect(render(<JournalView />)).not.toContain("replay")
   })
   it("puts shares from exercise and assignment in the journal", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })

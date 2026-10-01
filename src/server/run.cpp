@@ -121,6 +121,24 @@ std::string scenario_input(const providers::Scenario& scenario, md::Date date, s
       {"revision", providers::kScenarioRevision}, {"seed", seed}, {"date", date},
       {"started", providers::scenario_open(scenario, date)}}.dump();
 }
+RunIdentity run_identity(std::string_view input, std::string id) {
+  RunIdentity run;
+  run.id = std::move(id);
+  const auto parsed = json::parse(input, nullptr, false);
+  if (!parsed.is_object()) return run;
+  if (parsed.value("kind", "") == "scenario") {
+    run.scenario = parsed.value("id", "");
+    if (const auto seed = parsed.find("seed"); seed != parsed.end() && seed->is_number_unsigned())
+      run.seed = std::to_string(seed->get<std::uint64_t>());
+    if (const auto date = parsed.find("date"); date != parsed.end() && date->is_object())
+      run.date = md::format_date(date->get<md::Date>());
+  } else {
+    run.recording = parsed.value("name", "");
+    if (const auto started = parsed.find("started"); started != parsed.end() && started->is_number_integer() && started->get<md::Timestamp>() > 0)
+      run.date = md::format_date(md::new_york_time(started->get<md::Timestamp>()).date);
+  }
+  return run;
+}
 RunVerification verify_run(const std::filesystem::path& journal) {
   RunVerification result;
   try {
