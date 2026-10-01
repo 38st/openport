@@ -109,6 +109,28 @@ struct PreviewMarket {
   std::vector<QuoteObservation> quotes;
   std::vector<Valuation> valuations;
 };
+/// A block of contracts at one price, as a fill would trade it.
+struct PreviewFill {
+  std::string symbol;
+  Side side = Side::Buy;
+  Quantity quantity = 0;
+  Money price;
+};
+/// What submitting an order now would execute, from the same acceptance and
+/// matching run on a private copy of the account, and its full size priced at
+/// the current far sides.
+struct PreviewExecution {
+  OrderStatus status = OrderStatus::Rejected;  ///< The order's state just after submission.
+  Quantity filled_quantity = 0;   ///< Units (contracts for one leg) that fill at once.
+  Quantity remaining_quantity = 0;
+  Decision reason;                ///< Why it was refused, or why its rest ended at once (IOC_REMAINDER).
+  std::vector<PreviewFill> fills; ///< The fills it gets at once.
+  std::optional<Money> average_fill_price;  ///< Per unit; a multi-leg order's net debit, negative a credit.
+  /// The full size at the current far sides, slipped and block by block through
+  /// impact as a fill would walk them, whatever displayed size there is.
+  std::vector<PreviewFill> schedule;
+  std::optional<Money> average_price;  ///< The schedule per unit, as average_fill_price.
+};
 struct OrderPreview {
   Decision decision;
   Money buying_power_required;
@@ -134,6 +156,7 @@ struct OrderPreview {
   /// refuses. Empty without a plan or soft floor.
   std::optional<Quantity> max_units_floor;
   BreachRisk breach;
+  PreviewExecution execution;
 };
 
 /// New terms for an open order; each field left empty keeps its value.

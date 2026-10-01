@@ -1812,6 +1812,15 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
   for (const auto& leg : legs)
     if (leg.ratio <= 0 || leg.ratio > kMaxRatio || request.quantity > std::numeric_limits<Quantity>::max() / (100 * leg.ratio) ||
         !before.contracts.contains(leg.symbol) || !quote_check(before, leg.symbol).ok()) return projection;
+  // The full size at the far sides, block by block, as market_slices prices it.
+  Money gross, net;
+  for (const auto& leg : legs)
+    for (const auto& [price, n] : market_slices(before, leg.symbol, leg.side, magnitude(signed_contracts(leg, request.quantity)))) {
+      result.execution.schedule.push_back({leg.symbol, leg.side, n, price});
+      gross = gross + price * n;
+      net = leg.side == Side::Buy ? net + price * n : net - price * n;
+    }
+  result.execution.average_price = (multi_leg(request) ? net : gross).prorate(1, request.quantity);
   // Held exits rest as a bracket's exits do, holding only their fees, until one fills:
   // buying power after them is what their acceptance leaves.
   if (request.exits_only && request.bracket)
@@ -1861,6 +1870,19 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
   return projection;
 }
 
+/// What order `id` did in `trial`, a private copy of `before` that took it: its
+/// state and the fills it got there, beside `execution`'s full-size schedule.
+PreviewExecution executed(const State& before, const State& trial, OrderId id, PreviewExecution execution) {
+  const auto& order = trial.orders.at(static_cast<std::size_t>(id - 1));
+  execution.status = order.status;
+  execution.reason = order.reason;
+  execution.filled_quantity = order.filled_quantity;
+  execution.remaining_quantity = order.status == OrderStatus::Rejected ? 0 : order.remaining();
+  if (order.filled_quantity > 0) execution.average_fill_price = order.filled_notional.prorate(1, order.filled_quantity);
+  for (auto i = before.fills.size(); i < trial.fills.size(); ++i)
+    if (const auto& fill = trial.fills[i]; fill.order_id == id) execution.fills.push_back({fill.symbol, fill.side, fill.quantity, fill.price});
+  return execution;
+}
 struct Sizing {
   std::optional<Quantity> units;
   std::optional<Quantity> buying_power;
@@ -2525,6 +2547,8 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
       retry.buying_power_after = retry.buying_power_before;
       retry.exposure_change = Exposure{};
       retry.breach = breach_of(state, close_variances);
+      retry.execution.status = first->status;
+      retry.execution.reason = first->reason;
       return retry;
     }
   }
@@ -2556,6 +2580,14 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
   auto projection = project_order(before, request, rejection);
   auto result = projection.result;
   if (impl_->stopped) result.decision = failure(Reason::JOURNAL_IO, "Trading stopped after journal failure");
+  // What submitting it now would execute: the same acceptance and matching, on a copy.
+  if (!impl_->stopped) {
+    State trial = before;
+    try {
+      if (const auto placed = place(trial, request, time, rejection, ignored); placed.order_id)
+        result.execution = executed(before, trial, *placed.order_id, std::move(result.execution));
+    } catch (const TradingError&) {}
+  }
   result.breach = breach_of(projection.projected, close_variances);
   const auto snapshot = snapshot_of(before);
   std::optional<Money> room;

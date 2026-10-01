@@ -138,5 +138,73 @@ TEST(TradingPreview, HeldExitsShowBuyingPowerOnceAcceptedNotAsIfATargetFilled) {
   ASSERT_TRUE(s.submit(exits, f.time).decision.ok());
   EXPECT_EQ(s.snapshot()->buying_power.available, *p.buying_power_after);
 }
+TEST(TradingPreview, ExecutionShowsWhatFillsAtOnceAndWhatHappensToTheRest) {
+  ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s, "4", "4.20", 15);
+  // As displayed: 15 of 20 fill at the ask and the other 5 cancel.
+  const auto p = s.preview(f.market("twenty", 20), f.time);
+  ASSERT_TRUE(p.decision.ok());
+  EXPECT_EQ(p.execution.status, OrderStatus::Cancelled);
+  EXPECT_EQ(p.execution.filled_quantity, 15);
+  EXPECT_EQ(p.execution.remaining_quantity, 5);
+  EXPECT_EQ(p.execution.reason.code, Reason::IOC_REMAINDER);
+  ASSERT_EQ(p.execution.fills.size(), 1U);
+  EXPECT_EQ(p.execution.fills[0].quantity, 15);
+  EXPECT_EQ(p.execution.fills[0].price, m("4.20"));
+  EXPECT_EQ(p.execution.average_fill_price, m("4.20"));
+  // The full-size projection still prices all 20 at the far side.
+  ASSERT_EQ(p.execution.schedule.size(), 1U);
+  EXPECT_EQ(p.execution.schedule[0].quantity, 20);
+  EXPECT_EQ(p.execution.average_price, m("4.20"));
+  // Nothing was taken: submitting gets the same fills.
+  ASSERT_TRUE(s.submit(f.market("twenty", 20), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders.back().filled_quantity, 15);
+  // A limit below the ask rests.
+  const auto resting = s.preview(f.limit("rest", 2, "3.00"), f.time);
+  EXPECT_EQ(resting.execution.status, OrderStatus::Working);
+  EXPECT_EQ(resting.execution.filled_quantity, 0);
+  EXPECT_EQ(resting.execution.remaining_quantity, 2);
+  EXPECT_TRUE(resting.execution.fills.empty());
+  // A refused order executes nothing.
+  const auto refused = s.preview(f.limit("tick", 1, "4.01"), f.time);
+  EXPECT_EQ(refused.execution.status, OrderStatus::Rejected);
+  EXPECT_EQ(refused.execution.reason.code, Reason::INVALID_TICK);
+}
+TEST(TradingPreview, ExecutionWalksImpactBlocksAndWaitsForFillLatency) {
+  // An ask of 1.05 for 8 contracts; each further block of 8 costs one tick (0.05) more.
+  ScriptedMarket f; auto c = config();
+  c.initial_cash = m("100000"); c.rules.max_drawdown = m("6000"); c.rules.impact_ticks = 1;
+  TradingSession s(c, f.time); f.seed(s, "1.00", "1.05", 8);
+  const auto p = s.preview(f.market("26", 26), f.time);
+  ASSERT_EQ(p.execution.schedule.size(), 4U);
+  const std::vector<std::pair<Quantity, Money>> blocks{{8, m("1.05")}, {8, m("1.10")}, {8, m("1.15")}, {2, m("1.20")}};
+  for (std::size_t i = 0; i < blocks.size(); ++i) {
+    EXPECT_EQ(p.execution.schedule[i].quantity, blocks[i].first);
+    EXPECT_EQ(p.execution.schedule[i].price, blocks[i].second);
+  }
+  // 2,880 of premium over 26 contracts.
+  EXPECT_EQ(p.execution.average_price, m("1.107692"));
+  EXPECT_EQ(p.execution.status, OrderStatus::Filled);
+  EXPECT_EQ(p.execution.filled_quantity, 26);
+  EXPECT_EQ(p.execution.fills.size(), 4U);
+  EXPECT_EQ(p.execution.average_fill_price, m("1.107692"));
+  // With fill latency nothing fills on acceptance: the order works until a later quote.
+  c.rules.impact_ticks = 0; c.rules.fill_latency_ms = 1000;
+  TradingSession delayed(c, f.time); f.seed(delayed, "1.00", "1.05", 8);
+  const auto waiting = delayed.preview(f.market("delayed", 2), f.time);
+  EXPECT_EQ(waiting.execution.status, OrderStatus::Working);
+  EXPECT_EQ(waiting.execution.filled_quantity, 0);
+}
+TEST(TradingPreview, ASpreadsScheduleNetsItsLegs) {
+  ScriptedMarket f, wing; wing.contract.strike = 5010;
+  TradingSession s(config(), f.time); f.seed(s); wing.seed(s, "2", "2.20");
+  const auto p = s.preview(spread(f, wing, "spread", 2), f.time);
+  ASSERT_EQ(p.execution.schedule.size(), 2U);
+  EXPECT_EQ(p.execution.schedule[0].side, Side::Buy);
+  EXPECT_EQ(p.execution.schedule[1].side, Side::Sell);
+  // Buy at 4.20, sell at 2.00: a net debit of 2.20 a unit.
+  EXPECT_EQ(p.execution.average_price, m("2.20"));
+  EXPECT_EQ(p.execution.average_fill_price, m("2.20"));
+  EXPECT_EQ(p.execution.filled_quantity, 2);
+}
 }  // namespace
 }  // namespace openport::trading
