@@ -18,7 +18,7 @@ field, rule and reason code.
 | `GET /api/underlyings/{symbol}/volatility` | Current model-free IV, ATM/skew, realized vol, cones, implied moves, IV rank/percentile and ex-ante/ex-post VRP, with sources and history counts |
 | `GET /api/underlyings/{symbol}/series?fields=mfiv30,atm30,rr25&from=&to=&interval=1d` | Selected metric history at `1m` or `1d`; bounded date ranges, null gaps and per-value sources ([fields and limits](volatility.md#series-api)) |
 | `GET /api/underlyings/{symbol}/candles?interval=5m` | OHLC bars at 1m, 5m, 15m, 30m, 1h or 1d, oldest first |
-| `WS /ws` | A small tick each second with versions, so clients refetch only what changed |
+| `WS /ws` | A small tick each second with versions, so clients refetch only what changed; at most 256 open sessions, after which an upgrade gets 503 with `Retry-After: 5` |
 
 Expiry ids are the date plus settlement, for example `2026-10-16AM`.
 
@@ -34,7 +34,7 @@ these routes, so anything it does can be scripted:
 | `GET/POST /api/playbooks`, `GET/PUT/DELETE /api/playbooks/{id}` | Versioned definitions, archive, account stages and adherence/expectancy reports; `?version=N` reads an old version |
 | `PUT /api/playbooks/{id}/mode`, `POST /api/playbooks/staged/{stage}/send`, `/dismiss` | Enable staging or replay-only auto; send or dismiss a current stage |
 | `GET/POST/DELETE /api/backtests`, `GET/DELETE /api/backtests/{id}` | Start one batch job, watch progress, read kept reports or cancel; mutations need replay scope |
-| `GET /api/account/pass-odds?days=N&samples=M&playbook=ID&seed=S` | Seeded estimate from historical equity days, not a prediction; needs ten days with intraday extremes |
+| `GET /api/account/pass-odds?days=N&samples=M&playbook=ID&seed=S` | Seeded estimate from historical equity days, not a prediction; needs ten days with intraday extremes (422 `PASS_ODDS_UNAVAILABLE` otherwise) |
 | `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | Shared server leg selection for terminal templates and playbooks |
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
@@ -62,7 +62,8 @@ curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{
 ```
 
 Sending the same order again with the same `client_order_id` is safe: it returns the
-first answer instead of placing a second order. [Paper trading](paper-trading.md)
+first answer instead of placing a second order. A 503 for a full command inbox carries
+`Retry-After` seconds; wait that long and send the same body again. [Paper trading](paper-trading.md)
 documents every field, rule and reason code.
 
 Sandbox demos also offer `POST /api/sandboxes` without a token. It returns

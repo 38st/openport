@@ -35,7 +35,12 @@ struct ApiResponse {
   std::string body;
   std::string content_type = "application/json";
   std::string download = {};
+  /// Seconds a client should wait before retrying (Retry-After); zero sends none.
+  int retry_after = 0;
 };
+/// A full command inbox frees up as the engine applies commands, so its 503
+/// asks the client to retry after this many seconds.
+inline constexpr int kInboxRetrySeconds = 1;
 
 using ApiCompletion = std::function<void(ApiResponse)>;
 

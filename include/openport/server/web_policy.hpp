@@ -13,7 +13,9 @@
 namespace openport::server {
 
 inline constexpr std::size_t kWebSocketMessageMax = 4 * 1024;
+/// Open /ws sessions, handshakes included; the next upgrade gets 503 with Retry-After.
 inline constexpr std::size_t kWebSocketSessionMax = 256;
+inline constexpr int kWebSocketRetrySeconds = 5;
 
 struct NamedToken {
   std::string name;

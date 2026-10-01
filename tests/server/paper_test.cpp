@@ -451,6 +451,29 @@ TEST_F(PaperEngine, CancelFillOrderingKillAndRevisionChecks) {
   expect_error(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "2"}, {"limits", limits}}), 422, "INVALID_LIMITS");
 }
 
+TEST_F(PaperEngine, OrderReasonsCarryTheirNumbersAndScope) {
+  seed();
+  auto resting = order(market, "resting", "3.50");
+  resting["quantity"] = 3;
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", resting).status, 201);
+  auto limits = read(*engine, "/api/risk")["limits"];
+  limits["max_order_contracts"] = 2;
+  ASSERT_EQ(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "1"}, {"limits", limits}}).status, 200);
+  // The cancel keeps the check's numbers: three contracts against the new limit of
+  // two, scoped to the underlying (the journal keeps the contract's OSI).
+  const auto reason = read(*engine, "/api/orders")["orders"][0]["reason"];
+  EXPECT_EQ(reason["code"], "RISK_CHANGED");
+  EXPECT_EQ(reason["message"], "MAX_ORDER_CONTRACTS: Order contract count exceeds limit");
+  EXPECT_EQ(reason["actual"], 3);
+  EXPECT_EQ(reason["limit"], 2);
+  EXPECT_EQ(reason["scope"], "SPX");
+  // A reason without numbers still has every field.
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "cancelled", "3.50")).status, 201);
+  ASSERT_EQ(write(*engine, "DELETE", "/api/orders/2").status, 200);
+  const auto cancelled = read(*engine, "/api/orders")["orders"][0]["reason"];
+  EXPECT_EQ(cancelled, json({{"code", "USER_CANCEL"}, {"message", "Cancelled by caller"}, {"actual", nullptr}, {"limit", nullptr}, {"scope", nullptr}}));
+}
+
 TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejections) {
   seed();
   auto request = order(market);
@@ -466,6 +489,19 @@ TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejection
   expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
   request = order(market); request["limit_price"] = "4e0";
   expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  // The schema's bounds: a client ID of 1 to 128 bytes without control characters,
+  // a positive quantity, IOC for market orders and a positive single-contract limit.
+  for (const auto& id : {std::string(), std::string(129, 'x'), std::string("tab\tid")}) {
+    request = order(market); request["client_order_id"] = id;
+    expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  }
+  request = order(market); request["quantity"] = 0;
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request = order(market, "zero", "0.00");
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  request = order(market); request["type"] = "market"; request.erase("limit_price");
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
+  EXPECT_TRUE(read(*engine, "/api/orders")["orders"].empty());
   for (const auto* body : {"{", "[]", "{\"action\":\"trip\",\"action\":\"reset\",\"reason\":\"x\"}"}) {
     server::ApiResponse response;
     server::ApiRequest raw{"POST", "/api/risk/kill", body};
@@ -1055,8 +1091,11 @@ TEST(PaperAccounts, AServerWithoutAnAccountsDirectoryKeepsOneAccount) {
   server::Engine engine(provider, {{"SPX"}}, paper_options());
   engine.start();
   ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  // Lasting, so not a 503 a client would retry.
   const auto response = write(engine, "POST", "/api/accounts", {{"name", "Second"}, {"plan", "practice"}});
-  EXPECT_EQ(response.status, 503) << response.body;
+  EXPECT_EQ(response.status, 409) << response.body;
+  EXPECT_EQ(json::parse(response.body)["error"]["code"], "ACCOUNTS_UNSUPPORTED");
+  EXPECT_EQ(response.retry_after, 0);
   EXPECT_EQ(read(engine, "/api/accounts")["accounts"].size(), 1);
 }
 
@@ -1381,6 +1420,10 @@ TEST(PaperAvailability, DisabledFailedJournalFullInboxAndStoppingFailClosed) {
     const auto response = write(engine, "POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});
     EXPECT_EQ(response.status, 503) << response.body;
     EXPECT_EQ(json::parse(response.body)["error"]["code"], "TRADING_UNAVAILABLE");
+    // A full inbox or stopping engine asks the client to retry; a failed journal does not.
+    if (mode >= 2) {
+      EXPECT_EQ(response.retry_after, server::kInboxRetrySeconds);
+    }
     if (mode == 0) {
       EXPECT_FALSE(engine.status().trading.enabled);
     }
@@ -1645,7 +1688,7 @@ TEST_F(PaperEngine, ValidatesConditionalOrderFieldsAndReturnsNumericRiskEvidence
   request = order(market); request["type"] = "market";
   expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
   request.erase("limit_price"); request["time_in_force"] = "day";
-  expect_error(write(*engine, "POST", "/api/orders", request), 422, "INVALID_ORDER");
+  expect_error(write(*engine, "POST", "/api/orders", request), 400, "INVALID_REQUEST");
   request["client_order_id"] = "market"; request["time_in_force"] = "ioc";
   const auto market_order = write(*engine, "POST", "/api/orders", request);
   ASSERT_EQ(market_order.status, 201) << market_order.body;
@@ -2513,9 +2556,26 @@ TEST_F(PaperEngine, MultiLegOrdersOverHttp) {
   bad["legs"] = legs;
   bad["legs"][1]["ratio"] = 1.5;
   expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  // A shape no market could make valid is malformed, whichever field breaks it:
+  // 400, nothing recorded, and the client ID stays free.
+  const auto recorded = read(*engine, "/api/orders")["orders"].size();
   bad["legs"] = legs;
   bad["legs"][1]["ratio"] = 11;
-  expect_error(write(*engine, "POST", "/api/orders", bad), 422, "INVALID_ORDER");
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["legs"] = legs;
+  bad["legs"][1]["symbol"] = legs[0]["symbol"];
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["legs"] = json::array({legs[0], legs[1], legs[0], legs[1], legs[0]});
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["legs"] = legs;
+  bad.erase("limit_price");
+  bad["type"] = "market";
+  bad["time_in_force"] = "day";
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  bad["time_in_force"] = "ioc";
+  bad["quantity"] = 0;
+  expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), recorded);
   engine->stop();
 }
 

@@ -490,6 +490,11 @@ TEST(PlaybookApi, VersionReadsAndAutoRefusalUseAccountCommandPath) {
   EXPECT_EQ(api(source, "DELETE", "/api/playbooks/morning?version=1").status, 400);
   EXPECT_EQ(api(source, "DELETE", "/api/playbooks/morning?version=2").status, 200);
   EXPECT_EQ(api(source, "GET", "/api/playbooks/morning?version=1").status, 200);
+  // An unknown account is 404 UNKNOWN_ACCOUNT on writes as on reads, not a playbook error.
+  const auto unknown = api(source, "PUT", "/api/playbooks/morning/mode?account=zzz", {{"mode", "stage"}});
+  EXPECT_EQ(unknown.status, 404);
+  EXPECT_EQ(json::parse(unknown.body).at("error").at("code"), "UNKNOWN_ACCOUNT");
+  EXPECT_EQ(json::parse(api(source, "GET", "/api/playbooks?account=zzz").body).at("error").at("code"), "UNKNOWN_ACCOUNT");
   EXPECT_TRUE(desk.trading_status().enabled);
 }
 TEST(Playbooks, FloorShareAndFixedSizesUseTheNormalPreviewAndLiveSendPath) {
@@ -642,12 +647,21 @@ TEST(PlaybookApi, PassOddsReturnsSeedLabelsAndClearHistoryAndParameterErrors) {
   const auto result = json::parse(response.body);
   EXPECT_EQ(result.at("seed"), "42"); EXPECT_EQ(result.at("historical_days"), 10); EXPECT_EQ(result.at("pass"), 1);
   EXPECT_EQ(result.at("label"), "Estimate from past results, not a prediction");
-  EXPECT_EQ(server::handle_api({"GET", "/api/account/pass-odds?days=0"}, source).status, 400);
-  EXPECT_EQ(server::handle_api({"GET", "/api/account/pass-odds?seed=42&seed=42"}, source).status, 400);
+  const auto code = [](const server::ApiResponse& r) { return json::parse(r.body).at("error").at("code").get<std::string>(); };
+  // A malformed query is the request's fault, not a playbook's.
+  const auto days = server::handle_api({"GET", "/api/account/pass-odds?days=0"}, source);
+  EXPECT_EQ(days.status, 400); EXPECT_EQ(code(days), "INVALID_REQUEST");
+  EXPECT_EQ(code(server::handle_api({"GET", "/api/account/pass-odds?seed=42&seed=42"}, source)), "INVALID_REQUEST");
   EXPECT_EQ(server::handle_api({"GET", "/api/account/pass-odds?playbook=unknown"}, source).status, 404);
+  const auto unknown = server::handle_api({"GET", "/api/account/pass-odds?account=zzz"}, source);
+  EXPECT_EQ(unknown.status, 404); EXPECT_EQ(code(unknown), "UNKNOWN_ACCOUNT");
+  // Too little history is the account's state, named for what it is.
   snapshot->evaluation.days.pop_back();
   const auto short_history = server::handle_api({"GET", "/api/account/pass-odds"}, source);
-  EXPECT_EQ(short_history.status, 400); EXPECT_NE(short_history.body.find("at least 10 completed days"), std::string::npos);
+  EXPECT_EQ(short_history.status, 422); EXPECT_EQ(code(short_history), "PASS_ODDS_UNAVAILABLE");
+  EXPECT_NE(short_history.body.find("at least 10 completed days"), std::string::npos);
+  snapshot->valuation_complete = false;
+  EXPECT_EQ(code(server::handle_api({"GET", "/api/account/pass-odds"}, source)), "PASS_ODDS_UNAVAILABLE");
 }
 TEST(Playbooks, AutomaticEntryLimitIsSharedAcrossUnderlyingsWithinOneUpdate) {
   ScenarioFixture fixture(true);

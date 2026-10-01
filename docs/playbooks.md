@@ -236,7 +236,7 @@ modes need the `admin` scope; sending and dismissing a stage need the account's
 | `PUT /api/playbooks/{id}/mode` | `{"mode":"off"}`, `stage` or replay-only `auto` |
 | `POST /api/playbooks/staged/{stage}/send` | Empty object; recheck and submit the stage's latest order |
 | `POST /api/playbooks/staged/{stage}/dismiss` | Empty object; dismiss for this day |
-| `GET /api/account/pass-odds` | Seeded, labelled estimate as above; 400 for insufficient history or invalid inputs |
+| `GET /api/account/pass-odds` | Seeded, labelled estimate as above; 422 `PASS_ODDS_UNAVAILABLE` for insufficient history, incomplete marks or no evaluation rule, 400 `INVALID_REQUEST` for invalid inputs, 404 `UNKNOWN_ACCOUNT` for an unknown account |
 | `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | URL-encoded template JSON; return legs, tag and actual widths. Optional paired `min_strike`/`max_strike` preserve a terminal's loaded strike window |
 
 ## Batch backtests

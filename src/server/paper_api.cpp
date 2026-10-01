@@ -48,10 +48,18 @@ json rules_json(const AccountRules& r) {
   if (r.impact_ticks != 0) result["impact_ticks"] = r.impact_ticks;
   return result;
 }
+/// A check one contract failed reports that contract's underlying as its scope, as
+/// HTTP errors do; the journaled decision keeps the OSI, as the order itself does.
+json scope_json(const std::string& scope) {
+  const auto contract = md::parse_osi(scope);
+  return nullable(contract ? contract->underlying : scope);
+}
+/// A reason with its numeric evidence: how far a check was exceeded, and where.
 json decision_json(const Decision& d) {
   if (d.ok()) return nullptr;
   return {{"code", to_string(d.code)}, {"message", d.message},
-          {"actual", d.actual ? number(*d.actual) : json(nullptr)}, {"limit", d.limit ? number(*d.limit) : json(nullptr)}};
+          {"actual", d.actual ? number(*d.actual) : json(nullptr)}, {"limit", d.limit ? number(*d.limit) : json(nullptr)},
+          {"scope", scope_json(d.scope)}};
 }
 json time_or_null(Timestamp time) { return time > 0 ? json(md::format_timestamp(time)) : json(nullptr); }
 json guardrails_json(const Guardrails& g) {
@@ -113,8 +121,10 @@ json payout_json(const TradingView& view) {
           {"withdrawal_percent", r.payouts.withdrawal_percent}, {"split_percent", r.payouts.split_percent}};
 }
 json buying_power_json(const BuyingPower& power) {
+  // short_requirement keeps its historical name; requirement is the same amount
+  // under a name that also fits portfolio margin, where it covers the whole book.
   return {{"available", power.available.str()}, {"reserved", power.reserved.str()},
-          {"short_requirement", power.short_requirement.str()}};
+          {"short_requirement", power.short_requirement.str()}, {"requirement", power.short_requirement.str()}};
 }
 /// Per-unit average of a notional over whole contracts, nearest micro-dollar.
 json average(Money notional, Quantity contracts) {
@@ -160,7 +170,7 @@ json order_json(const Order& o, const TradingView& view) {
           {"average_fill_price", o.filled_quantity > 0
               ? json(o.filled_notional.prorate(1, o.filled_quantity).str()) : json(nullptr)},
           {"status", statuses[static_cast<int>(o.status)]},
-          {"reason", o.reason.ok() ? json(nullptr) : json{{"code", to_string(o.reason.code)}, {"message", o.reason.message}}},
+          {"reason", decision_json(o.reason)},
           {"accepted_at", md::format_timestamp(o.accepted_at)},
           {"day_end", o.day_end > 0 ? json(md::format_timestamp(o.day_end)) : json(nullptr)},
           {"origin", o.system ? "system" : "user"},
@@ -559,7 +569,8 @@ int reason_status(Reason reason) {
 }
 ApiResponse command_response(const TradingCommand& command, const TradingReply& reply) {
   if (!reply.error_code.empty())
-    return api_error(reply.error_code == "LIMITS_REVISION" ? 409 : reply.error_code == "UNKNOWN_ACCOUNT" ? 404 : 503,
+    return api_error(reply.error_code == "LIMITS_REVISION" || reply.error_code == "ACCOUNTS_UNSUPPORTED" ? 409
+                     : reply.error_code == "UNKNOWN_ACCOUNT" ? 404 : 503,
                      reply.error_code, reply.decision.message);
   if (!reply.decision.ok()) return api_error(reason_status(reply.decision.code),
       std::string(to_string(reply.decision.code)), reply.decision.message, reply.decision);
@@ -604,7 +615,7 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       for (const auto& stock : s.stocks)
         if (const auto kept = reply.kept_stocks.find(stock.position.symbol); kept != reply.kept_stocks.end())
           body["kept_stocks"].push_back({{"symbol", stock.position.symbol}, {"shares", stock.position.shares},
-              {"reason", {{"code", to_string(kept->second.code)}, {"message", kept->second.message}}}});
+              {"reason", decision_json(kept->second)}});
       break;
     }
     case TradingCommand::Kind::Playbook: body = json::parse(reply.playbook_result); break;
@@ -833,6 +844,11 @@ std::string scope_field(const json& body) {
     throw std::invalid_argument("underlying must be an uppercase symbol such as SPX");
   return underlying;
 }
+/// Client order IDs: 1 to 128 bytes of text, none of them a control character.
+bool valid_client_order_id(std::string_view id) {
+  return !id.empty() && id.size() <= 128 &&
+         std::none_of(id.begin(), id.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; });
+}
 /// Account IDs are lowercase letters, digits and single hyphens, as their journals are named.
 bool valid_account(std::string_view id) {
   return !id.empty() && id.size() <= 40 && id.front() != '-' && id.back() != '-' && id.find("--") == std::string_view::npos &&
@@ -960,14 +976,22 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     const bool legs = body.is_object() && body.contains("legs");
     if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only"});
     else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note"});
+    // A body no market could make a valid order is malformed: 400, and nothing is
+    // recorded, so its client_order_id stays free. The reducer's own checks (422,
+    // recorded) are those that depend on the account and the market.
     auto& order = command.order;
     order.client_order_id = string_field(body, "client_order_id");
+    if (!valid_client_order_id(order.client_order_id))
+      throw std::invalid_argument("client_order_id must be 1 to 128 bytes of text without control characters");
     const auto type = string_field(body, "type"), tif = string_field(body, "time_in_force");
     if ((type != "limit" && type != "market") || (tif != "day" && tif != "ioc" && tif != "gtc"))
       throw std::invalid_argument("Invalid type or time_in_force");
     order.type = type == "limit" ? OrderType::Limit : OrderType::Market;
     order.tif = tif == "day" ? TimeInForce::Day : tif == "gtc" ? TimeInForce::Gtc : TimeInForce::Ioc;
+    if (order.type == OrderType::Market && order.tif != TimeInForce::Ioc)
+      throw std::invalid_argument("A market order's time_in_force must be ioc");
     order.quantity = integer_field(body, "quantity");
+    if (order.quantity < 1) throw std::invalid_argument("quantity must be a positive whole number of contracts or units");
     if ((order.type == OrderType::Limit) != body.contains("limit_price"))
       throw std::invalid_argument("limit_price is required for limit orders and forbidden for market orders");
     if (body.contains("limit_price")) order.limit_price = decimal_field(body, "limit_price");
@@ -975,6 +999,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       const auto& list = body.at("legs");
       if (!list.is_array() || list.size() < 2 || list.size() > kMaxLegs)
         throw std::invalid_argument("legs must be an array of two to four legs");
+      std::set<std::string> symbols;
       for (const auto& item : list) {
         fields(item, {"symbol", "side"}, {"ratio"});
         Leg leg;
@@ -983,9 +1008,13 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
         if (side != "buy" && side != "sell") throw std::invalid_argument("Leg side must be buy or sell");
         leg.side = side == "buy" ? Side::Buy : Side::Sell;
         if (item.contains("ratio")) leg.ratio = integer_field(item, "ratio");
+        if (leg.ratio < 1 || leg.ratio > kMaxRatio) throw std::invalid_argument("A leg's ratio must be 1 to 10");
+        if (!symbols.insert(leg.symbol).second) throw std::invalid_argument("Each leg must name a different contract");
         order.legs.push_back(std::move(leg));
       }
     } else {
+      if (order.limit_price && *order.limit_price <= Money{})
+        throw std::invalid_argument("A single contract's limit_price must be positive");
       order.symbol = symbol_field(body);
       const auto side = string_field(body, "side");
       if (side != "buy" && side != "sell") throw std::invalid_argument("Invalid side, type or time_in_force");
@@ -1098,12 +1127,10 @@ json attribution_json(const trading::Attribution& a) {
 ApiResponse api_error(int status, std::string code, std::string message, const Decision& evidence) {
   // Some reducer checks identify a single contract. The HTTP contract exposes
   // risk scope as the underlying, while the order itself carries the OSI.
-  const auto contract = md::parse_osi(evidence.scope);
-  const auto scope = contract ? contract->underlying : evidence.scope;
   return {status, json{{"error", {{"code", code}, {"message", message},
       {"actual", evidence.actual ? number(*evidence.actual) : json(nullptr)},
       {"limit", evidence.limit ? number(*evidence.limit) : json(nullptr)},
-      {"scope", nullable(scope)}}}}.dump()};
+      {"scope", scope_json(evidence.scope)}}}}.dump()};
 }
 json trading_status_json(const TradingStatus& status) {
   return {{"enabled", status.enabled}, {"reason", nullable(status.reason)},
@@ -1319,7 +1346,12 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
     command.actor = request.actor;
     if (!source.post_trading(command, [command, complete](TradingReply reply) {
           complete(command_response(command, reply));
-        })) complete(api_error(503, "TRADING_UNAVAILABLE", "Command inbox full or trading unavailable"));
+        })) {
+      // Safe to retry: an order resent with the same client_order_id and terms is answered once.
+      auto busy = api_error(503, "TRADING_UNAVAILABLE", "Command inbox full or trading unavailable");
+      busy.retry_after = kInboxRetrySeconds;
+      complete(std::move(busy));
+    }
   } catch (const TradingError& error) {
     complete(api_error(reason_status(error.code()), std::string(to_string(error.code())), error.what()));
   } catch (const std::exception& error) {

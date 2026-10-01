@@ -87,8 +87,9 @@ class Client:
                 with error:
                     raw = error.read().decode(errors="replace")
                     status = error.code
+                    retry_after = error.headers.get("Retry-After") if error.headers else None
                 if status == 503 and attempt < self.retries:
-                    time.sleep(min(2.0, self.backoff * 2 ** attempt))
+                    time.sleep(self._retry_delay(retry_after, attempt))
                     continue
                 try:
                     payload = json.loads(raw)
@@ -96,6 +97,16 @@ class Client:
                     payload = raw
                 raise ApiError(status, payload) from None
         raise AssertionError("unreachable")
+
+    def _retry_delay(self, retry_after: str | None, attempt: int) -> float:
+        """The server's Retry-After seconds (at most 10) when it sends them, else exponential backoff."""
+        try:
+            seconds = float(retry_after) if retry_after is not None else -1.0
+        except ValueError:
+            seconds = -1.0
+        if 0 <= seconds < float("inf"):
+            return min(10.0, seconds)
+        return min(2.0, self.backoff * 2 ** attempt)
 
     def status(self) -> Status:
         return self._request("GET", "/status")

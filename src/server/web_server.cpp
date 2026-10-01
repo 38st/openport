@@ -649,9 +649,11 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
         if (auto rejection = check_api_write(auth, shared_.write_policy, nullptr, &auth.access))
           return reject_upgrade(request, http::status::forbidden, rejection->body);
         auto slot = shared_.slots.acquire();
+        // Sessions free up as other clients disconnect: ask this one to retry.
         if (!slot)
           return reject_upgrade(request, http::status::service_unavailable,
-                                "WebSocket session limit reached");
+                                "WebSocket session limit reached (" + std::to_string(kWebSocketSessionMax) +
+                                " open sessions); retry later", kWebSocketRetrySeconds);
         stream_.expires_never();
         auto session =
             std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot), std::move(auth.access), shared_.write_policy.sandboxes);
@@ -668,9 +670,10 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
   }
 
   void reject_upgrade(const http::request<http::string_body>& request, http::status status,
-                      std::string reason) {
+                      std::string reason, int retry_after = 0) {
     http::response<http::string_body> response{status, request.version()};
     response.set(http::field::content_type, "text/plain; charset=utf-8");
+    if (retry_after > 0) response.set(http::field::retry_after, std::to_string(retry_after));
     response.keep_alive(false);
     response.body() = std::move(reason);
     response.prepare_payload();
@@ -683,6 +686,7 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     response.set(http::field::content_type, api.content_type);
     if (!api.download.empty()) response.set(http::field::content_disposition, "attachment; filename=\"" + api.download + "\"");
     response.set(http::field::cache_control, "no-store");
+    if (api.retry_after > 0) response.set(http::field::retry_after, std::to_string(api.retry_after));
     response.keep_alive(keep_alive);
     response.body() = std::move(api.body);
     response.prepare_payload();
