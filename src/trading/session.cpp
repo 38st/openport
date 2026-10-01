@@ -1,8 +1,10 @@
 #include "openport/trading/session.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <limits>
@@ -643,16 +645,17 @@ bool fill_frees_power(const State& s, const Order& o) {
 }
 /// The personal soft floor now: an absolute level, or a share of the plan's
 /// drawdown above its floor, whichever is higher.
-std::optional<Money> soft_floor_of(const State& s) {
+/// The soft floor `personal` sets above a plan floor of `plan_floor`.
+std::optional<Money> soft_floor_at(const Guardrails& personal, const AccountRules& rules, Money plan_floor) {
   std::optional<Money> floor;
-  const auto& personal = s.config.guardrails;
   if (personal.soft_floor > Money{}) floor = personal.soft_floor;
-  if (personal.soft_floor_percent > 0 && s.config.rules.max_drawdown > Money{}) {
-    const auto level = s.evaluation.floor + s.config.rules.max_drawdown.prorate(personal.soft_floor_percent, 100);
+  if (personal.soft_floor_percent > 0 && rules.max_drawdown > Money{}) {
+    const auto level = plan_floor + rules.max_drawdown.prorate(personal.soft_floor_percent, 100);
     floor = floor ? std::max(*floor, level) : level;
   }
   return floor;
 }
+std::optional<Money> soft_floor_of(const State& s) { return soft_floor_at(s.config.guardrails, s.config.rules, s.evaluation.floor); }
 /// What rules and checks read of the account now: its equity at the marks and
 /// the positions behind it, risk, the soft floor and buying power. Unlike a
 /// snapshot it copies no history and builds no scenario grid or attribution,
@@ -1762,6 +1765,205 @@ BreachRisk breach_of(const State& s, const std::map<std::string, double>& close_
   }
   return result;
 }
+/// Whole units with thousands separators, as warnings print exposures.
+std::string whole(double value) {
+  const auto rounded = std::llround(std::abs(value));
+  auto digits = std::to_string(rounded);
+  for (auto i = static_cast<std::ptrdiff_t>(digits.size()) - 3; i > 0; i -= 3) digits.insert(static_cast<std::size_t>(i), ",");
+  return (value < 0 && rounded != 0 ? "-" : "") + digits;
+}
+std::string decimal(double value, int places) {
+  std::array<char, 64> text{};
+  std::snprintf(text.data(), text.size(), "%.*f", places, value);
+  return text.data();
+}
+/// "SPY 2026-10-16 500C", as a warning names a contract.
+std::string contract_name(const md::OptionContract& c) {
+  const auto strike = std::abs(c.strike - std::round(c.strike)) < 1e-9 ? whole(c.strike) : decimal(c.strike, 2);
+  return c.underlying + " " + md::format_date(c.expiry) + " " + strike + (c.type == pricing::OptionType::Call ? "C" : "P");
+}
+/// The trading date after `day`: the one whose overnight session opens that evening.
+md::Date next_trading_day(md::Date day) { return md::trading_date(md::new_york_to_utc(day, 17, 1)); }
+/// An option's underlying price: its shares' fresh price, or the valuation's spot.
+std::optional<Money> underlying_price(const State& s, const std::string& symbol) {
+  if (auto price = stock_price(s, s.contracts.at(symbol).underlying)) return price;
+  if (const auto* valuation = valuation_of(s, symbol); valuation && valuation->spot > 0) return Money::from_double(valuation->spot);
+  return std::nullopt;
+}
+std::vector<RiskWarning> warnings_of(const State& s, const std::map<std::string, double>& close_variances,
+                                     const std::vector<Dividend>& dividends) {
+  std::vector<RiskWarning> out;
+  const auto now = measure(s);
+  const auto add = [&](std::string code, bool urgent, std::string scope, std::string symbol, std::string message,
+                       std::optional<double> actual, std::optional<double> limit) {
+    out.push_back({std::move(code), urgent ? "warning" : "info", std::move(scope), std::move(symbol), std::move(message), actual, limit});
+  };
+  if (now.risk.complete) {
+    // Over a limit, orders that add to the excess are refused; closes and hedges still go.
+    const auto over = [&](const std::string& scope, const RiskBucket& b) {
+      const auto name = scope == "aggregate" ? std::string("The account's") : scope + "'s";
+      if (const auto delta = std::abs(b.position.dollar_delta); delta > b.limits.dollar_delta)
+        add("DELTA_LIMIT", true, scope, {}, name + " dollar delta " + whole(b.position.dollar_delta) + " is over its " +
+            whole(b.limits.dollar_delta) + " limit: orders that add to it are refused, while closes and hedges still go",
+            delta, b.limits.dollar_delta);
+      if (const auto vega = std::abs(b.position.vega); vega > b.limits.vega)
+        add("VEGA_LIMIT", true, scope, {}, name + " vega " + whole(b.position.vega) + " is over its " + whole(b.limits.vega) +
+            " limit: orders that add to it are refused, while closes and hedges still go", vega, b.limits.vega);
+    };
+    for (const auto& [name, bucket] : now.risk.underlyings) over(name, bucket);
+    over("aggregate", now.risk.aggregate);
+    // A move changes dollar delta by gamma and by the price itself: per 1%,
+    // dollar gamma plus 1% of dollar delta. How far each underlying can move
+    // before its delta reaches its own limit or the account's, to first order.
+    for (const auto& [name, bucket] : now.risk.underlyings) {
+      const auto& p = bucket.position;
+      const double rate = p.dollar_gamma_1pct + 0.01 * p.dollar_delta;
+      if (rate == 0 || !std::isfinite(rate)) continue;
+      std::optional<double> nearest;
+      std::string reached;
+      const auto reach = [&](double delta, double limit, const std::string& which) {
+        if (std::abs(delta) > limit) return;  // Already over: DELTA_LIMIT says so.
+        const double up = ((rate > 0 ? limit : -limit) - delta) / rate;
+        const double down = ((rate > 0 ? -limit : limit) - delta) / rate;
+        const double move = up <= -down ? up : down;
+        if (!nearest || std::abs(move) < std::abs(*nearest)) { nearest = move; reached = which; }
+      };
+      reach(p.dollar_delta, bucket.limits.dollar_delta, "its " + whole(bucket.limits.dollar_delta) + " limit");
+      reach(now.risk.aggregate.position.dollar_delta, now.risk.aggregate.limits.dollar_delta,
+            "the account's " + whole(now.risk.aggregate.limits.dollar_delta) + " limit");
+      if (!nearest) continue;
+      const auto variance = close_variances.find(name);
+      const double sigma = variance == close_variances.end() || !(variance->second > 0) ? 0 : 100 * std::sqrt(variance->second);
+      const double within = std::max(1.0, sigma);
+      if (std::abs(*nearest) > within) continue;
+      add("DELTA_HEADROOM", true, name, {}, "A " + decimal(std::abs(*nearest), 2) + "% " + (*nearest > 0 ? "rise" : "fall") + " in " +
+          name + " would take its dollar delta to " + reached + " (dollar gamma " + whole(p.dollar_gamma_1pct) +
+          " per 1%, a first-order estimate): orders that add to it would then be refused", *nearest, within);
+    }
+  }
+  const auto& rules = s.config.rules;
+  const auto& e = s.evaluation;
+  const bool at_soft_floor = now.valuation_complete && now.soft_floor && now.equity <= *now.soft_floor;
+  if (at_soft_floor)
+    add("SOFT_FLOOR", true, "aggregate", {}, "Equity " + dollars(now.equity) + " is at or below your soft floor " +
+        dollars(*now.soft_floor) + ": it closes positions and refuses opening orders until rollover",
+        now.equity.dollars(), now.soft_floor->dollars());
+  if (now.valuation_complete) {
+    // Tonight's close at today's equity: an end-of-day floor ratchets, pending
+    // guardrails apply, and a percent soft floor follows the plan floor.
+    const auto tomorrow = rules.max_drawdown > Money{} ? evaluation_tomorrow_floor(e, rules, now.equity) : e.floor;
+    if (rules.max_drawdown > Money{} && tomorrow > e.floor) {
+      const bool locks = rules.lock_balance > Money{} && tomorrow == rules.lock_balance && !e.floor_locked;
+      add("FLOOR_RATCHET", false, "aggregate", {}, "Closing at today's equity " + dollars(now.equity) + " raises the floor tonight from " +
+          dollars(e.floor) + " to " + dollars(tomorrow) + (locks ? ", where it locks" : "") +
+          ": what the day gained is then no longer room to lose", tomorrow.dollars(), e.floor.dollars());
+    }
+    const auto soft = soft_floor_at(s.pending_guardrails ? *s.pending_guardrails : s.config.guardrails, rules, tomorrow);
+    if (!at_soft_floor && soft && now.equity <= *soft)
+      add("SOFT_FLOOR_ROLLOVER", true, "aggregate", {}, "At rollover your soft floor becomes " + dollars(*soft) +
+          ", at or above today's equity " + dollars(now.equity) + ": unless equity rises, it closes positions on the next trading day",
+          now.equity.dollars(), soft->dollars());
+  }
+  // Held into expiry, American equity and ETF options a cent or more in the money
+  // are exercised or assigned and deliver shares, which together cost the strike.
+  struct Expiring { std::string symbol; Money price; Money intrinsic; };
+  std::vector<Expiring> expiring;
+  for (const auto& [symbol, position] : s.ledger.positions()) {
+    const auto& c = s.contracts.at(symbol);
+    if (position.quantity == 0 || !physical(c) || c.expiry != s.day || s.time >= c.expiry_time()) continue;
+    const auto price = underlying_price(s, symbol);
+    if (!price) continue;
+    const Money strike = Money::from_double(c.strike);
+    const Money intrinsic = std::max(Money{}, c.type == pricing::OptionType::Call ? *price - strike : strike - *price);
+    if (intrinsic >= Money::from_micros(10'000)) expiring.push_back({symbol, *price, intrinsic});
+  }
+  if (!expiring.empty()) {
+    // Buying power once every one of them has delivered, at today's prices.
+    State delivered_state = s;
+    for (const auto& x : expiring) {
+      const auto& c = delivered_state.contracts.at(x.symbol);
+      const auto shares = delivered(c, held(delivered_state, x.symbol));
+      delivered_state.ledger.settle(x.symbol, x.intrinsic);
+      delivered_state.stock_marks[c.underlying] = {x.price, delivered_state.time};
+      delivered_state.ledger.trade_stock(c.underlying, shares, x.price, Money{});
+    }
+    const auto power = buying_power(delivered_state).total.available;
+    for (const auto& x : expiring) {
+      const auto& c = s.contracts.at(x.symbol);
+      const auto contracts = held(s, x.symbol);
+      const auto shares = delivered(c, contracts);
+      const Money strike = Money::from_double(c.strike);
+      add("EXPIRY_DELIVERY", power < Money{}, c.underlying, x.symbol,
+          std::to_string(magnitude(contracts)) + " " + (contracts > 0 ? "long " : "short ") + contract_name(c) + " expiring today " +
+          (magnitude(contracts) == 1 ? "is " : "are ") + dollars(x.intrinsic) + " in the money: held into expiry " +
+          (magnitude(contracts) == 1 ? "it is " : "they are ") + (contracts > 0 ? "exercised" : "assigned") + ", " +
+          (shares > 0 ? "buying " : "selling ") + std::to_string(magnitude(shares)) + " " + c.underlying + " shares at the strike (" +
+          dollars(strike * magnitude(shares)) + "). Buying power once the options expiring in the money today deliver: " + dollars(power),
+          power.dollars(), 0.0);
+    }
+  }
+  // Short American equity and ETF options the simulator assigns at a rollover:
+  // those trading below their exercise value, and calls with less time value than
+  // a dividend going ex on the new day (TradingSession::roll_day).
+  const auto next_day = next_trading_day(s.day);
+  const auto horizon = md::date_from_days(md::days_since_epoch(s.day) + 7);
+  for (const auto& [symbol, position] : s.ledger.positions()) {
+    const auto& c = s.contracts.at(symbol);
+    if (position.quantity >= 0 || !physical(c) || c.expiry <= s.day) continue;
+    const auto mark = s.marks.find(symbol);
+    const auto price = underlying_price(s, symbol);
+    if (mark == s.marks.end() || !price) continue;
+    const Money strike = Money::from_double(c.strike);
+    const bool call = c.type == pricing::OptionType::Call;
+    const Money intrinsic = std::max(Money{}, call ? *price - strike : strike - *price);
+    if (intrinsic < Money::from_micros(10'000)) continue;
+    const auto name = std::to_string(-position.quantity) + " short " + contract_name(c);
+    if (mark->second.price < intrinsic) {
+      add("EARLY_ASSIGNMENT", true, c.underlying, symbol, name + " trade" + (position.quantity == -1 ? "s" : "") + " at " +
+          dollars(mark->second.price) + ", below " + dollars(intrinsic) + " of exercise value: holders exercise rather than sell, " +
+          "and the simulator assigns about half of them at the next rollover", mark->second.price.dollars(), intrinsic.dollars());
+      continue;
+    }
+    if (!call) continue;
+    const auto time_value = mark->second.price - intrinsic;
+    std::map<md::Date, Money> by_date;
+    for (const auto& d : dividends)
+      if (d.symbol == c.underlying && d.ex_date > s.day && d.ex_date <= std::min(horizon, c.expiry)) by_date[d.ex_date] = by_date[d.ex_date] + d.per_share;
+    for (const auto& [date, dividend] : by_date) {
+      if (time_value >= dividend) continue;
+      const bool tonight = date <= next_day;
+      add("EARLY_ASSIGNMENT", tonight, c.underlying, symbol, name + " ha" + (position.quantity == -1 ? "s " : "ve ") +
+          dollars(time_value) + " of time value, less than the " + dollars(dividend) + " dividend going ex on " + md::format_date(date) +
+          ": holders exercise to collect it, and the simulator assigns about half of them " +
+          (tonight ? "at tonight's rollover" : "at the rollover before it") + ", delivering short shares that owe the dividend",
+          time_value.dollars(), dividend.dollars());
+      break;
+    }
+  }
+  // Ex-dates within a week on underlyings the account holds options or shares of.
+  std::set<std::string> held_underlyings;
+  for (const auto& [symbol, position] : s.ledger.positions())
+    if (position.quantity != 0 && s.time < s.contracts.at(symbol).expiry_time()) held_underlyings.insert(s.contracts.at(symbol).underlying);
+  for (const auto& [symbol, stock] : s.ledger.stocks())
+    if (stock.shares != 0) held_underlyings.insert(symbol);
+  std::map<std::pair<std::string, md::Date>, Money> upcoming;
+  for (const auto& d : dividends)
+    if (held_underlyings.contains(d.symbol) && d.ex_date > s.day && d.ex_date <= horizon && d.per_share > Money{})
+      upcoming[{d.symbol, d.ex_date}] = upcoming[{d.symbol, d.ex_date}] + d.per_share;
+  for (const auto& [key, per_share] : upcoming) {
+    const auto& [symbol, date] = key;
+    const auto shares = shares_held(s, symbol);
+    auto message = symbol + " goes ex-dividend on " + md::format_date(date) + ", " + dollars(per_share) + " a share";
+    if (shares > 0) message += ": your " + std::to_string(shares) + " shares are paid " + dollars(per_share * shares);
+    else if (shares < 0) message += ": your " + std::to_string(-shares) + " short shares pay " + dollars(per_share * -shares);
+    else message += ": option prices allow for it, and short calls with less time value than it may be assigned the night before";
+    add("EX_DIVIDEND", shares < 0, symbol, {}, message, per_share.dollars(), std::nullopt);
+  }
+  std::stable_sort(out.begin(), out.end(), [](const RiskWarning& a, const RiskWarning& b) {
+    return a.severity == "warning" && b.severity != "warning";
+  });
+  return out;
+}
 /// A bounded same-expiry payoff is piecewise linear: its minimum is at zero or
 /// a strike, unless its terminal call slope is negative (unbounded loss).
 std::optional<Money> expiry_loss(const State& s, const OrderRequest& request, Money premium, Money fees) {
@@ -2600,6 +2802,10 @@ CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decis
 }
 BreachRisk TradingSession::breach(const std::map<std::string, double>& close_variances) const {
   return breach_of(impl_->state, close_variances);
+}
+std::vector<RiskWarning> TradingSession::warnings(const std::map<std::string, double>& close_variances,
+                                                  const std::vector<Dividend>& dividends) const {
+  return warnings_of(impl_->state, close_variances, dividends);
 }
 OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time, double floor_share,
     Decision rejection, const std::map<std::string, double>& close_variances, const PreviewMarket& market) const {

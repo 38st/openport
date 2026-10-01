@@ -98,6 +98,7 @@ struct TradingView {
   /// Circuit-breaker halts of the last day.
   std::vector<MarketHalt> halts;
   trading::BreachRisk breach;
+  std::vector<trading::RiskWarning> warnings;
   std::vector<EquitySample> equity_samples;
   std::string equity_error;
   std::string playbooks_json;  ///< Immutable catalogue and transient stages for this account.

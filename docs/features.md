@@ -74,7 +74,10 @@ simulation's limits.
   flatten, so no short is left uncovered. Server order
   previews show buying power, maximum loss, what fills at once and the full size's
   fill schedule, and the size that fits buying power apart from the size that uses at
-  most half the floor room; Edit order previews a change to a resting order the same way. Breach risk shows the spot moves that could reach the floor (the
+  most half the floor room; Edit order previews a change to a resting order the same way.
+  Warnings name what the held book is close to: a delta or vega limit (by gamma, too),
+  the soft floor, tonight's floor ratchet, delivery of in-the-money ETF options at
+  expiry, early assignment and ex-dates. Breach risk shows the spot moves that could reach the floor (the
   personal soft floor on an account without a plan floor) and labelled model
   estimates of touching it before the close.
 - **Playbooks**: versioned setups with entry windows and conditions, shared strategy

@@ -930,6 +930,29 @@ model estimates, not observed market outcomes. Dashboard, Risk and both ticket
 previews label them accordingly. Tickets debounce previews, offer **Size to floor**,
 and show an explicit failure without guessing when the endpoint is unavailable.
 
+### Risk warnings
+
+`GET /api/risk` and `GET /api/account` list `warnings`: what the held book is close to,
+most urgent first. Each has a `code`, a `severity` (`warning` when it costs room, buying
+power or a fill soon, `info` when it is worth knowing), a `scope` (the underlying, or
+`aggregate` for the account), the contract's `symbol` when it is about one, a `message`
+in words, and `actual` and `limit` numbers whose meaning depends on the code:
+
+| Code | When | `actual`, `limit` |
+| --- | --- | --- |
+| `DELTA_LIMIT`, `VEGA_LIMIT` | A bucket's held exposure is over its limit: orders that add to it are refused, while closes and hedges still go | The absolute exposure and the limit |
+| `DELTA_HEADROOM` | An underlying is within max(1%, one standard deviation of its move to today's close) of a move that takes its dollar delta to its own limit or the account's. Per 1% move, dollar delta changes by dollar gamma plus 1% of itself; this is a first-order estimate | The signed percent move, and the threshold |
+| `SOFT_FLOOR` | Equity is at or below the soft floor, which closes positions and refuses opening orders until rollover | Equity and the soft floor |
+| `SOFT_FLOOR_ROLLOVER` | At rollover the soft floor would be at or above today's equity: pending guardrails apply, and a percent soft floor follows a ratcheted plan floor | Equity and that soft floor |
+| `FLOOR_RATCHET` | An active end-of-day drawdown floor that tonight's close at today's equity would raise (and lock, at a lock balance) | The floor tomorrow and today |
+| `EXPIRY_DELIVERY` | An American equity or ETF option expiring today a cent or more in the money: held into expiry it is exercised or assigned and delivers shares, together the strike | Buying power once every option expiring in the money today has delivered at today's price, and zero; `warning` when that is negative |
+| `EARLY_ASSIGNMENT` | A short American equity or ETF option the rollover may assign (about half of it, as described under early assignment): marked below its exercise value, or a call with less time value than a dividend going ex within a week and before its expiry; `warning` for tonight's rollover | The mark and the exercise value, or the time value and the dividend |
+| `EX_DIVIDEND` | A held underlying (options or shares) goes ex-dividend within a week; `warning` when short shares will pay it | The dividend a share, and null |
+
+Warnings use the account's marks, valuations, limits and the dividend calendar the
+rollover pays from. They are views, not rules: nothing is journaled and no order is
+placed. Positions (Risk) and Dashboard show them above the breach estimates.
+
 ## Playbooks
 
 [Playbooks](playbooks.md) combine versioned setups, server template selection,

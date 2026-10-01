@@ -72,6 +72,7 @@ target_sources(openport_tests PRIVATE
   trading/kill_test.cpp
   trading/floor_test.cpp
   trading/risk_views_test.cpp
+  trading/warnings_test.cpp
   trading/risk_settlement_test.cpp
   trading/journal_test.cpp
   trading/journal_schema_test.cpp

@@ -7916,6 +7916,13 @@
           "breach": {
             "$ref": "#/components/schemas/Breach"
           },
+          "warnings": {
+            "type": "array",
+            "description": "The held book's warnings, most urgent first.",
+            "items": {
+              "$ref": "#/components/schemas/RiskWarning"
+            }
+          },
           "guardrails": {
             "$ref": "#/components/schemas/Guardrails"
           },
@@ -7961,7 +7968,8 @@
           "evaluation",
           "buying_power",
           "payout",
-          "attempts"
+          "attempts",
+          "warnings"
         ]
       },
       "FillContext": {
@@ -10378,6 +10386,13 @@
           "breach": {
             "$ref": "#/components/schemas/Breach"
           },
+          "warnings": {
+            "type": "array",
+            "description": "The held book's warnings, most urgent first.",
+            "items": {
+              "$ref": "#/components/schemas/RiskWarning"
+            }
+          },
           "guardrails": {
             "$ref": "#/components/schemas/Guardrails"
           },
@@ -10475,7 +10490,8 @@
           "kill",
           "aggregate",
           "underlyings",
-          "scenarios"
+          "scenarios",
+          "warnings"
         ]
       },
       "OrdersResponse": {
@@ -11044,6 +11060,80 @@
           "complete",
           "model",
           "underlyings"
+        ]
+      },
+      "RiskWarning": {
+        "type": "object",
+        "description": "Something about the held book worth acting on. actual and limit depend on the code: DELTA_LIMIT and VEGA_LIMIT the exposure and its limit; DELTA_HEADROOM the signed percent move that takes dollar delta to a limit and the threshold it is within; SOFT_FLOOR and SOFT_FLOOR_ROLLOVER equity and the soft floor; FLOOR_RATCHET the floor tomorrow and today; EXPIRY_DELIVERY buying power once the options expiring in the money today deliver, and zero; EARLY_ASSIGNMENT the mark and intrinsic value, or the time value and the dividend; EX_DIVIDEND the dividend a share.",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "DELTA_LIMIT",
+              "VEGA_LIMIT",
+              "DELTA_HEADROOM",
+              "SOFT_FLOOR",
+              "SOFT_FLOOR_ROLLOVER",
+              "FLOOR_RATCHET",
+              "EXPIRY_DELIVERY",
+              "EARLY_ASSIGNMENT",
+              "EX_DIVIDEND"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "warning",
+              "info"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "description": "The underlying, or aggregate for the account."
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The contract it is about, if one."
+          },
+          "message": {
+            "type": "string"
+          },
+          "actual": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "code",
+          "severity",
+          "scope",
+          "symbol",
+          "message",
+          "actual",
+          "limit"
         ]
       },
       "PreviewFill": {
