@@ -1495,6 +1495,19 @@ path as equity and closed balance alike, flat at every observation, with a trade
 every simulated day and the attempt's finished days counted toward its objectives; a
 lock ends that simulated day at its level.
 
+**In the terminal.** Starting an attempt offers a **Custom plan** beside the presets:
+it starts from a preset's rules and edits the name, starting balance, target and its
+basis, the floor (trailing every high or each close, or static) and its lock, the daily
+loss limit with its basis and action, the consistency rule, the minimum days, the
+trading day's end and the strategies, then resets with those rules (the server checks
+them again). The Rules page explains each rule in force with the account's numbers, and
+its plan table adds the daily loss limit and what a pass needs. The Dashboard lists the
+objectives with where each stands, the best day and what the consistency rule asks of
+it, a daily loss tile with its level and room, the closed balance on a balance plan,
+and what closing every position now would leave; a locked day gets a banner, a
+`locked today` badge, rule alerts and ticket notices that only closing orders work, and
+a decided attempt names its rule and what liquidating cost against the decided equity.
+
 #### Plan presets with objectives
 
 Two preset families use these rules, at 25K, 50K and 100K, with any strategy, strategy

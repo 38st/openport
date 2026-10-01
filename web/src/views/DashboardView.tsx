@@ -17,8 +17,9 @@ import { timestampET } from "../lib/freshness"
 import { attributionParts } from "../lib/attribution"
 import { contractLabel, formatDuration } from "../lib/journal"
 import { offeredPlans, unlockedFundedPlan } from "../lib/payouts"
+import { clockText, dailyLossBasisText, dailyLossShare, dayEnd, decisionLabel, objectiveLabels, objectiveValue } from "../lib/plan-rules"
 import { useRoute } from "../lib/route"
-import { formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
+import { compareMoney, formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
 
 const dayFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" })
 
@@ -81,6 +82,14 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const today = subtractMoney(e.equity, e.day_open_equity)
   const recent = (trades.data?.trades ?? []).filter((t) => t.status === "closed").slice(0, 5)
   const funded = r.phase === "funded"
+  const balanceBasis = r.profit_basis === "balance"
+  const floorMode = r.drawdown_mode === "static" ? "static" : r.drawdown_mode === "intraday" ? "intraday" : "end of day"
+  // The target leads the objectives; the rest are what a pass also waits for.
+  const objectives = e.objectives ?? []
+  const others = objectives.filter((o) => o.code !== "PROFIT_TARGET")
+  const lossShare = dailyLossShare(e)
+  const locked = e.status === "active" && e.day_lock ? e.day_lock : null
+  const exitCost = e.exit_cost != null && compareMoney(e.exit_cost, "0") !== 0 ? e.exit_cost : null
   const payout = data.payout
   const unlocked = unlockedFundedPlan(offeredPlans(plans.data?.plans ?? []), data)
 
@@ -100,12 +109,22 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             {e.status === "passed" ? "Evaluation passed" : funded ? "Funded account closed" : "Evaluation failed"}
           </div>
           <p className="mt-1 text-sm">{e.decision}</p>
-          <p className="mt-1 text-xs text-muted">Decided {timestampET(e.decided_at)}. Positions are closed and new orders are refused until you start a new attempt.</p>
+          <p className="mt-1 text-xs text-muted">Decided {timestampET(e.decided_at)}{decisionLabel(e.decision_code) ? ` by the ${decisionLabel(e.decision_code)}` : ""}. Positions are closed and new orders are refused until you start a new attempt.</p>
+          {e.liquidated_equity != null && e.liquidation_cost != null && compareMoney(e.liquidation_cost, "0") !== 0 &&
+            <p className="mt-1 text-xs text-muted">Decided at {formatMoney(e.decided_equity)} equity; closing every position at the bid or ask left {formatMoney(e.liquidated_equity)}, {
+              (compareMoney(e.liquidation_cost, "0") ?? 0) > 0 ? `${formatMoney(e.liquidation_cost)} less` : `${formatMoney(subtractMoney("0", e.liquidation_cost))} more`}.</p>}
           {unlocked && <p className="mt-2 text-sm">Your <strong>{unlocked.name}</strong> account is unlocked: the same size and drawdown, no profit target, and payouts from your profits.</p>}
           <div className="mt-3 flex flex-wrap gap-2">
             {unlocked && <button type="button" className="trade-button border-bullish/60" onClick={() => setResetting(unlocked.id)} disabled={!trading.enabled}>Start {unlocked.name}</button>}
             <button type="button" className="trade-button" onClick={() => setResetting("")} disabled={!trading.enabled}>Start a new attempt</button>
           </div>
+        </div>
+      )}
+      {locked && (
+        <div role="status" className="rounded-lg border border-warn/50 bg-warn/5 p-4">
+          <div className="font-medium text-warn">Trading locked until the next trading day</div>
+          <p className="mt-1 text-sm">{locked === "DAILY_LOSS_LIMIT" ? "The plan's daily loss limit" : "A plan limit"} was reached {timestampET(e.day_locked_at)}.
+            Positions are closed and working orders cancelled; only closing orders are accepted until the day ends at {clockText(dayEnd(r))} ET. The attempt is still active.</p>
         </div>
       )}
       {!e.enabled && (
@@ -124,6 +143,15 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
         {e.closest_floor != null && <p className="mt-2 text-xs text-muted">Closest approach this attempt: {formatMoney(e.closest_floor)} above the floor · {timestampET(e.closest_floor_at)}</p>}
         {e.day_low_equity != null && <p className="mt-1 text-xs text-muted">Today's low {formatMoney(e.day_low_equity)} · {timestampET(e.day_low_at)}; high {formatMoney(e.day_high_equity)} · {timestampET(e.day_high_at)}</p>}
       </Panel>
+      {e.enabled && e.status === "active" && (others.length > 0 || (balanceBasis && objectives.length > 0)) && <Panel title="Objectives to pass"
+        actions={<span className="text-[11px] text-muted">{objectives.filter((o) => o.met).length} of {objectives.length} met</span>}>
+        <ul className="space-y-1.5 text-sm">
+          {objectives.map((o) => <Check key={o.code} ok={o.met} label={<><span className="font-medium">{objectiveLabels[o.code] ?? o.code}</span>
+            <span className="block text-xs text-muted">{o.message}</span></>} value={objectiveValue(o)} />)}
+        </ul>
+        {e.best_day && <p className="mt-2 text-xs text-muted">Best day {formatMoney(e.best_day.profit)} on {e.best_day.day}{e.consistency_target
+          ? ` · the consistency rule needs ${formatMoney(e.consistency_target)} of profit for it` : ""}{e.trading_days != null ? ` · ${e.trading_days} trading ${e.trading_days === 1 ? "day" : "days"}` : ""} · {e.profitable_days ?? 0} profitable</p>}
+      </Panel>}
       {e.enabled && e.status === "active" && <PassOddsCard />}
       <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_18rem]">
         <Panel title="Equity" actions={<span className="text-[11px] text-muted">{e.days.length ? `${e.days.length} finished day${e.days.length === 1 ? "" : "s"}` : "first day"}</span>}>
@@ -132,7 +160,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
           <div className="mt-2 flex flex-wrap gap-4 text-[11px] text-muted">
             <span className="flex items-center gap-1.5"><span className="h-0.5 w-4 bg-[var(--chart-1)]" />Equity</span>
             {e.target_equity != null && <span className="flex items-center gap-1.5"><span className="h-0 w-4 border-t border-dashed border-bullish" />Profit target</span>}
-            {e.floor != null && <span className="flex items-center gap-1.5"><span className="h-0 w-4 border-t border-dashed border-bearish" />Drawdown floor ({e.floor_locked ? "locked" : r.drawdown_mode === "intraday" ? "trails intraday" : "trails at the close"})</span>}
+            {e.floor != null && <span className="flex items-center gap-1.5"><span className="h-0 w-4 border-t border-dashed border-bearish" />Drawdown floor ({r.drawdown_mode === "static" ? "static" : e.floor_locked ? "locked" : r.drawdown_mode === "intraday" ? "trails intraday" : "trails at the close"})</span>}
           </div>
         </Panel>
         <div className="grid min-w-0 grid-cols-2 gap-3 xl:grid-cols-1">
@@ -143,13 +171,18 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             meter={{ value: payout.qualifying_days / payout.required_days, tone: "positive", label: "Qualifying days toward the next payout" }} />
           : <Tile label="Profit target" value={target ? formatMoney(e.target_equity) : "None"}
             detail={!target ? "Practice has no target" : reached ? `Reached at ${formatMoney(e.decided_equity)}`
-              : `${formatMoney(e.target_remaining)} to go · ${Math.max(0, (targetProgress ?? 0) * 100).toFixed(1)}%`}
+              : `${formatMoney(e.target_remaining)} to go${balanceBasis ? " on the closed balance" : ""} · ${Math.max(0, (targetProgress ?? 0) * 100).toFixed(1)}%`}
             meter={target ? { value: targetProgress, tone: "positive", label: "Progress to profit target" } : undefined} />}
           <Tile label="Equity" value={formatMoney(e.equity)} detail={`${peakLabel} ${formatMoney(e.peak)} · today ${signedMoney(today)}`} />
           <Tile label="Drawdown floor" value={e.floor != null ? formatMoney(e.floor) : "None"}
             tone={bufferShare != null && bufferShare < 0.25 ? "negative" : "neutral"}
-            detail={e.floor != null ? `${formatMoney(e.drawdown_buffer)} buffer${e.floor_locked ? " · locked" : ""}` : "Practice has no floor"}
+            detail={e.floor != null ? `${formatMoney(e.drawdown_buffer)} buffer${r.drawdown_mode === "static" ? " · static" : e.floor_locked ? " · locked" : ""}` : "Practice has no floor"}
             meter={bufferShare != null ? { value: bufferShare, tone: bufferShare < 0.25 ? "negative" : bufferShare < 0.5 ? "warn" : "positive", label: "Buffer above the drawdown floor" } : undefined} />
+          {e.daily_loss && <Tile label="Daily loss limit" value={formatMoney(e.daily_loss.level)}
+            tone={locked || (lossShare != null && lossShare < 0.25) ? "negative" : "neutral"}
+            detail={locked ? "Reached · locked until the next trading day" : `${formatMoney(e.daily_loss.room)} room · ${e.daily_loss.action === "fail" ? "fails the attempt" : "locks the day"}`}
+            hint={`${formatMoney(e.daily_loss.limit)} below ${dailyLossBasisText[e.daily_loss.basis]} (${formatMoney(e.daily_loss.reference)})`}
+            meter={lossShare != null ? { value: lossShare, tone: lossShare < 0.25 ? "negative" : lossShare < 0.5 ? "warn" : "positive", label: "Room above the daily loss limit" } : undefined} />}
         </div>
       </div>
 
@@ -158,7 +191,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
           ["Started", timestampET(e.started)],
           ["Plan", r.plan ?? "Paper account"],
           ["Starting balance", formatMoney(e.starting_balance)],
-          ["Drawdown", r.max_drawdown ? `${formatMoney(r.max_drawdown, 0)} · ${r.drawdown_mode === "intraday" ? "intraday" : "end of day"}` : "None"],
+          ["Drawdown", r.max_drawdown ? `${formatMoney(r.max_drawdown, 0)} · ${floorMode}` : "None"],
           ["Buying power", formatMoney(data.buying_power.available)],
           ["Updated", timestampET(data.time)],
         ] as const).map(([label, value]) => (
@@ -177,7 +210,10 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-accent">Progress</h3>
             <ul className="space-y-1.5 text-sm">
               <Check ok={toneOf(profit) !== "negative"} label="Current P&L" value={signedMoney(profit)} tone={toneOf(profit)} />
-              {target && <Check ok={reached} label="Remaining to target" value={reached ? "Reached" : formatMoney(e.target_remaining)} />}
+              {target && <Check ok={reached} label={balanceBasis ? "Remaining to target, on the closed balance" : "Remaining to target"} value={reached ? "Reached" : formatMoney(e.target_remaining)} />}
+              {balanceBasis && e.balance != null && <Check ok label="Closed balance" value={formatMoney(e.balance)} />}
+              {exitCost && <Check ok label={`Equity if every position closed now, at the bid or ask after fees (${signedMoney(subtractMoney("0", exitCost))})`}
+                value={formatMoney(e.exit_equity)} />}
               {payout && <Check ok={payout.qualifying_days >= payout.required_days} label="Qualifying days this cycle" value={`${payout.qualifying_days} of ${payout.required_days}`} />}
               {payout && <Check ok={payout.eligible} label={payout.eligible ? "Payout available now" : "Next payout, once eligible"} value={`up to ${formatMoney(payout.maximum)}`} />}
               {e.floor != null && <Check ok={e.status !== "failed"} label="Drawdown left" value={formatMoney(e.drawdown_buffer)} />}
@@ -209,7 +245,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
                   <span>#{a.attempt} · {a.plan ?? "Paper account"} <span className="text-xs text-muted">{timestampET(a.started)}</span></span>
                   <span className="flex items-center gap-2 tabular">
                     <span className={toneText[toneOf(subtractMoney(a.final_equity, a.starting_balance))]}>{signedMoney(subtractMoney(a.final_equity, a.starting_balance))}</span>
-                    <span className="text-xs text-muted">{a.status}</span>
+                    <span className="text-xs text-muted">{a.status}{a.decision_code && a.status !== "active" ? ` · ${decisionLabel(a.decision_code)}` : ""}</span>
                   </span>
                 </li>
               ))}

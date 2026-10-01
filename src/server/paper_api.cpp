@@ -1257,8 +1257,6 @@ PayoutRules parse_payout_rules(const json& j) {
   }
   return p;
 }
-/// Custom rules: nullable money for an absent target/drawdown, like rules_json.
-/// The phase defaults to evaluation; a funded phase requires payout rules.
 /// One of a rule's named choices; anything else is a malformed request.
 template <class E, std::size_t N>
 E choice_field(const json& j, const char* key, const char* const (&names)[N]) {
@@ -1280,6 +1278,8 @@ std::int64_t clock_field(const json& j, const char* key) {
     throw std::invalid_argument(std::string(key) + " must be HH:MM New York time");
   return hours * 60 + minutes;
 }
+/// Custom rules: nullable money for an absent target/drawdown, like rules_json.
+/// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
          {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",

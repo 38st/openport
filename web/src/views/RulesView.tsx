@@ -9,6 +9,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
 import { lockReason, offeredPlans, payoutCap } from "../lib/payouts"
+import { clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts } from "../lib/plan-rules"
 import { formatMoney } from "../lib/trading"
 
 function Rule({ title, children }: { title: string; children: ReactNode }) {
@@ -25,20 +26,45 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
   const minutes = Math.round(r.expiry_cutoff_seconds / 60)
   const p = r.payouts
   const funded = r.phase === "funded"
+  const balance = r.profit_basis === "balance"
+  const objectives = objectiveFacts(r)
+  const fixed = r.drawdown_mode === "static"
+  const lockAt = r.lock_at_start ? e.starting_balance : r.lock_balance
+  const end = dayEnd(r)
   return [
     funded ? { title: "Funded account", body: <>There is no profit target: trade the account and withdraw from its profits under the payout rules below.
         The account stays open until equity touches the drawdown floor.</> }
     : { title: "Profit target", body: r.profit_target
-      ? <>Pass by reaching <strong className="text-foreground">{formatMoney(e.target_equity)}</strong> equity, {formatMoney(r.profit_target)} above your {formatMoney(e.starting_balance)} starting balance. There is no time limit and no minimum number of trading days. Once you pass, positions are closed and the attempt is complete.</>
+      ? <>Pass by reaching <strong className="text-foreground">{formatMoney(e.target_equity)}</strong> {balance
+          ? <>on the closed balance (cash plus what your positions cost, so realised P&amp;L after fees), with every position closed: open profit counts only once you close the trade</>
+          : "equity"}, {formatMoney(r.profit_target)} above your {formatMoney(e.starting_balance)} starting balance.
+        {objectives.length
+          ? <> The pass also waits for: {objectives.map((o) => o.charAt(0).toLowerCase() + o.slice(1)).join("; ")}. Until then, reaching the target does not end the attempt: keep trading, and protect it.</>
+          : " There is no time limit and no minimum number of trading days."} Once you pass, positions are closed and the attempt is complete.</>
       : "This account has no profit target." },
-    { title: "Trailing drawdown", body: r.max_drawdown
-      ? <>Equity may never touch the floor, now <strong className="text-foreground">{formatMoney(e.floor)}</strong>{e.floor_locked
-          ? <>. It has locked at {formatMoney(r.lock_balance)} and no longer trails.</>
+    { title: fixed ? "Static drawdown" : "Trailing drawdown", body: r.max_drawdown
+      ? <>Equity may never touch the floor, now <strong className="text-foreground">{formatMoney(e.floor)}</strong>{fixed
+          ? <>: {formatMoney(r.max_drawdown)} below your {formatMoney(e.starting_balance)} starting balance. It is static: it stays there for the whole attempt, whatever equity does.</>
+          : e.floor_locked
+          ? <>. It has locked at {formatMoney(lockAt)} and no longer trails.</>
           : <>: {formatMoney(r.max_drawdown)} below your highest equity ({formatMoney(e.peak)}).
             {r.drawdown_mode === "intraday" ? " The floor rises with every new equity high during the session." : " The floor rises only once a day, from each day's closing equity."} It never moves down.
-            {r.lock_balance && <> Once it reaches {formatMoney(r.lock_balance)} it locks there and stops trailing.</>}</>}{" "}
-        Breaches are checked on every update in both modes; touching the floor {funded ? "closes the funded account" : "fails the attempt"} and closes every position.</>
+            {lockAt && <> Once it reaches {r.lock_at_start ? <>your {formatMoney(lockAt)} starting balance</> : formatMoney(lockAt)} it locks there and stops trailing.</>}</>}{" "}
+        Breaches are checked on every update in every mode; touching the floor {funded ? "closes the funded account" : "fails the attempt"} and closes every position.</>
       : "This account has no drawdown floor." },
+    ...(r.daily_loss_limit ? [{ title: "Plan daily loss limit", body: <>
+        Each trading day, equity may not touch {formatMoney(r.daily_loss_limit)} below {dailyLossBasisText[r.daily_loss_basis ?? "equity"]}
+        {e.daily_loss ? <>: today <strong className="text-foreground">{formatMoney(e.daily_loss.level)}</strong>, {formatMoney(e.daily_loss.room)} below current equity</> : null}.
+        {r.daily_loss_basis === "peak" ? " The level rises with the day's equity high, so it trails the day's gains." : null}
+        {r.daily_loss_action === "fail"
+          ? " Touching it fails the attempt and closes every position."
+          : " Touching it closes every position, cancels your working orders and refuses opening orders until the next trading day; closing orders still work and the attempt continues."}
+        {e.day_lock && <> <strong className="text-foreground">Today is locked.</strong></>}
+        {" "}It is the plan's own rule, apart from your personal daily loss limit below.</> }] : []),
+    ...(objectives.length ? [{ title: "Objectives to pass", body: <>
+        {objectives.join("; ")}. A trading day counts once one of your own orders executes on it; holding a position over a day does not count.
+        Days follow the plan's trading day and the profit {balance ? "you close each day (net realised P&L after fees)" : "of each day's equity change"}.
+        {r.consistency_percent ? <> The consistency rule never fails the attempt: while the best day is too large a share, the pass waits, as if the target were higher{e.consistency_target ? <> (the best day so far needs {formatMoney(e.consistency_target)} of profit)</> : null}, or for more profitable days.</> : null}</> }] : []),
     ...(p ? [{ title: "Payouts", body: <>
         A payout needs <strong className="text-foreground">{p.qualifying_days} qualifying days</strong> since the previous one: days that end with at least {formatMoney(p.qualifying_profit)} of net realised profit, after fees.
         Request it with no open positions or working orders. Each payout may take up to {p.withdrawal_percent}% of the profit above your {formatMoney(e.starting_balance)} starting balance,
@@ -68,7 +94,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
     { title: "Expiring positions", body: minutes > 0
       ? `From ${minutes} minutes before a contract's last trade, working orders on it are cancelled, the position is closed at the bid or ask with the account's slippage, and only closing orders are accepted. Expiring index options such as SPXW and XSP last trade at 4:00 pm ET, SPY, QQQ, IWM, DIA and other ETF options at 4:15 pm, and AM-settled series at the regular close the day before.`
       : "Positions are held into expiry. Expiring index options trade until 4:00 pm ET and settle in cash; SPY, QQQ, IWM, DIA and other ETF options trade until 4:15 pm and deliver shares when a cent or more in the money at the 4:00 pm close." },
-    { title: "Trading hours", body: "Every product trades in its regular session. SPX, XSP, VIX and RUT options also trade overnight, 8:15 pm to 9:25 am ET, and in the 4:15 to 5:00 pm curb session. Those sessions take limit orders only, with a condition or bracket only on a GTC limit; a day order lasts until its session ends, and stops, triggered orders, GTC limits and the account's own closing orders wait for the regular session. A trading day ends at 5:00 pm ET, so an overnight trade counts toward the next day. A delayed or stalled feed refuses new orders rather than filling on stale quotes." },
+    { title: "Trading hours", body: `Every product trades in its regular session. SPX, XSP, VIX and RUT options also trade overnight, 8:15 pm to 9:25 am ET, and in the 4:15 to 5:00 pm curb session. Those sessions take limit orders only, with a condition or bracket only on a GTC limit; a day order lasts until its session ends, and stops, triggered orders, GTC limits and the account's own closing orders wait for the regular session. A trading day ends at ${end === "17:00" ? "5:00 pm" : clockText(end)} ET, so ${end === "17:00" ? "an overnight trade counts toward the next day" : "a trade after that counts toward the next trading day"}. A delayed or stalled feed refuses new orders rather than filling on stale quotes.` },
     { title: "Fills", body: <>{r.slippage_ticks
       ? <>Slippage is {r.slippage_ticks} {r.slippage_ticks === 1 ? "tick" : "ticks"}: buys pay more than the ask and sells receive less than the bid, never below zero, using the displayed price's tick size. This applies to every leg, bracket exits and automatic closes. </>
       : <>Slippage is 0 ticks: buys fill at the ask and sells at the bid. </>}
@@ -115,8 +141,11 @@ function Rules({ trading }: { trading: TradingStatus }) {
         <Panel title="Evaluation plans">
           <PlanTable label="Evaluation plans" plans={plans.data.plans.filter((p) => p.rules.phase !== "funded")} columns={[
             ["Profit target", (p) => p.rules.profit_target ? formatMoney(p.rules.profit_target, 0) : "—", true],
-            ["Trailing drawdown", (p) => p.rules.max_drawdown ? formatMoney(p.rules.max_drawdown, 0) : "—", true],
-            ["Floor moves", (p) => p.rules.max_drawdown ? (p.rules.drawdown_mode === "intraday" ? "Every new high" : "At each close") : "—"],
+            ["Drawdown", (p) => p.rules.max_drawdown ? formatMoney(p.rules.max_drawdown, 0) : "—", true],
+            ["Floor moves", (p) => floorMoves(p.rules)],
+            ["Daily loss limit", (p) => p.rules.daily_loss_limit ? <span title={dailyLossFact(p.rules) ?? undefined}>
+              {formatMoney(p.rules.daily_loss_limit, 0)} · {p.rules.daily_loss_action === "fail" ? "fails" : "locks the day"}</span> : "—"],
+            ["To pass", (p) => p.rules.profit_target ? [p.rules.profit_basis === "balance" ? "Target, closed" : "Target", ...objectiveFacts(p.rules)].join(" · ") : "—"],
             ["Strategies", (p) => p.rules.buy_only ? "Buy only" : p.rules.defined_risk ? "Defined risk" : "Any"],
             ["Margin", (p) => p.rules.margin === "portfolio" ? "Portfolio" : "Strategy"],
             ["Slippage", (p) => `${p.rules.slippage_ticks ?? 0} ticks`],
