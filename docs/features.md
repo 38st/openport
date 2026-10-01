@@ -44,7 +44,8 @@ simulation's limits.
   ended, with the check's numbers), and a working order says what it is waiting for:
   its limit, trigger, the regular session, a fresh quote or fill latency. Entry notes and tags
   follow the trades into the Journal. Tickets warn on thin liquidity without blocking;
-  market orders show the displayed size they take against.
+  market orders show the displayed size they take against. Every fill keeps the bid,
+  ask and sizes it traded against, the displayed size left, and how old the quote was.
 - **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
   and diagonals) picked on the chain, or built from a template such as a 10-wide put
   spread at 15 delta or a condor one expected move out, with presets saved in the
@@ -285,3 +286,4 @@ the simulation's limits.
 - [x] Fuller previews: fill schedules, order changes, flatten dry runs and sizing to
       buying power apart from the floor; held-book risk warnings; what-if comparison of
       candidate adjustments
+- [x] Fill audit trail: the bid, ask, sizes, observation and first quote time on every fill

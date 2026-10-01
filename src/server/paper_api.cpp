@@ -342,12 +342,22 @@ std::uint64_t fill_attempt(const TradingSnapshot& s, std::uint64_t fill) {
 json trading_day(const std::optional<Timestamp>& closed) {
   return closed ? json(md::format_date(md::trading_date(*closed))) : json(nullptr);
 }
+/// The book a fill traded against; null for fills recorded before it was kept.
+json fill_quote_json(const Fill& f) {
+  if (!f.quote) return nullptr;
+  const auto& q = *f.quote;
+  return {{"observation", std::to_string(f.observation)}, {"bid", money(q.bid)}, {"ask", money(q.ask)},
+          {"bid_size", q.bid_size}, {"ask_size", q.ask_size}, {"size_left", std::max<Quantity>(q.left, 0)},
+          {"quoted_at", md::format_timestamp(q.quoted)},
+          {"age_seconds", static_cast<double>(f.time - q.quoted) / md::kNanosPerSecond}};
+}
 json fill_json(const Fill& f, const TradingView& view) {
   return {{"id", std::to_string(f.id)}, {"order_id", std::to_string(f.order_id)}, {"actor", f.actor},
           {"attempt", fill_attempt(*view.snapshot, f.id)},
           {"symbol", f.symbol}, {"underlying", underlying(view, f.symbol)},
           {"side", f.side == Side::Buy ? "buy" : "sell"}, {"quantity", f.quantity},
           {"price", f.price.str()}, {"fee", f.fee.str()}, {"context", context_json(f.context)},
+          {"quote", fill_quote_json(f)},
           {"quote_time", md::format_timestamp(f.quote_time)}, {"time", md::format_timestamp(f.time)}};
 }
 json position_greeks(const MarkedPosition& p, const TradingView& view) {

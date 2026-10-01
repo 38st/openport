@@ -10057,6 +10057,16 @@
               }
             ]
           },
+          "quote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FillQuote"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "type": "string"
           },
@@ -10103,7 +10113,62 @@
           "fee",
           "quote_time",
           "time",
-          "actor"
+          "actor",
+          "quote"
+        ]
+      },
+      "FillQuote": {
+        "type": "object",
+        "description": "The book the fill traded against, as the account held it. size_left is what was left of the taken side's displayed size for paper orders before this fill; quoted_at is when the quote was first given (quote_time is when it was last confirmed current), and age_seconds is the fill time less quoted_at.",
+        "properties": {
+          "observation": {
+            "type": "string"
+          },
+          "bid": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ask": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bid_size": {
+            "type": "number"
+          },
+          "ask_size": {
+            "type": "number"
+          },
+          "size_left": {
+            "type": "number"
+          },
+          "quoted_at": {
+            "type": "string"
+          },
+          "age_seconds": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "observation",
+          "bid",
+          "ask",
+          "bid_size",
+          "ask_size",
+          "size_left",
+          "quoted_at",
+          "age_seconds"
         ]
       },
       "Position": {

@@ -96,6 +96,12 @@ TEST(TradeReviewApi, CsvQuotesNotesAndKeepsColumnsAndExactMoneyWithEmptyHistory)
   ASSERT_EQ(filled.size(), 3U);
   check_columns(json::parse(server::handle_api({"GET", "/api/fills"}, source).body)["fills"][0], {filled[0].begin(), filled[0].end()});
   EXPECT_EQ(csv_record(filled[0], filled[1])["fee"], "0.650001");
+  // Each fill carries the book it took: the newest, a sale, left all ten bids.
+  const auto book = csv_record(filled[0], filled[1]);
+  EXPECT_EQ(book["quote.bid"], "4.00"); EXPECT_EQ(book["quote.ask"], "4.20");
+  EXPECT_EQ(book["quote.bid_size"], "10"); EXPECT_EQ(book["quote.size_left"], "10");
+  EXPECT_EQ(book["quote.observation"], "1"); EXPECT_EQ(book["quote.quoted_at"], "2026-09-22T14:00:00.000Z");
+  EXPECT_EQ(book["quote.age_seconds"], "0.0");
 }
 
 TEST(TradeReviewApi, GivesBackProfitAndReportsRAndHeatOnlyWithKnownRisk) {
@@ -131,7 +137,9 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
   EXPECT_EQ(server::csv_quote("a\rb"), "\"a\rb\"");
   const std::vector<std::string> fill_columns = {"account", "account_version", "provider", "prices", "new_york_date",
       "run_id", "scenario", "seed", "recording", "id", "attempt", "order_id", "actor", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time", "context.spot",
-      "context.spot_source", "context.iv", "context.delta", "context.years", "context.equity", "context.floor_room", "context.buying_power"};
+      "context.spot_source", "context.iv", "context.delta", "context.years", "context.equity", "context.floor_room", "context.buying_power",
+      "quote.observation", "quote.bid", "quote.ask", "quote.bid_size", "quote.ask_size", "quote.size_left", "quote.quoted_at",
+      "quote.age_seconds"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
   EXPECT_EQ(server::paper_csv_columns(false).size(), 92U);
 }

@@ -436,9 +436,22 @@ export interface Order {
   stop_loss_order?: string | null
   take_profit_order?: string | null
 }
+/** The book a fill traded against: size_left is the taken side's displayed size still free for paper orders before it, quoted_at when the quote was first given. */
+export interface FillQuote {
+  observation: string
+  bid: Money | null
+  ask: Money | null
+  bid_size: number
+  ask_size: number
+  size_left: number
+  quoted_at: string
+  age_seconds: number
+}
 export interface Fill {
   actor?: string
   context?: FillContext | null
+  /** Null for fills recorded before the book was kept; absent on older servers. */
+  quote?: FillQuote | null
   id: string
   order_id: string
   /** The attempt it belongs to; absent from older servers. */

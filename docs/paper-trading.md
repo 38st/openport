@@ -228,6 +228,17 @@ it once. The same observation offered again with a later time confirms the quote
 still current: its time and its mark's advance, and its budget does not.
 Fractional provider sizes must be converted conservatively by the caller.
 
+Every fill keeps the book it traded against (`Fill::quote`): both sides and their
+displayed sizes, what was left of the taken side's displayed size for paper orders
+before it (below zero once impact depth is in use), and when the quote was first
+given. `quote_time` is when the quote was last confirmed current. A confirmation of
+the same observation at a later time keeps the first time, and so does a quote offered
+later than the provider gave it (`QuoteObservation::quoted`: the engine supplies the
+provider's own quote time, which a snapshot feed can vouch for long after). A fill on
+a quote that stayed unchanged for minutes, or one that latency held back, therefore
+shows how old its quote was. The book is written only with fills that have it, so
+fills recorded by earlier builds recover without one.
+
 Resting buy limits cross when ask <= limit; resting sell limits cross when bid >=
 limit, on a new valid observation timestamped at/after acceptance. A newly
 submitted order may execute against the latest cached quote if it is still fresh.
@@ -1942,7 +1953,7 @@ focus at the top of the ticket.
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
 | `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope but the bracket exits and closes its positions at market with reduce-only orders that keep working until filled, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the delivered shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason), and each position still open (`residuals`: symbol, underlying, signed `quantity`, the contracts still `working` and the `reason` the rest are not, or null). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
 | `POST /api/positions/close/preview` | Optional `underlying`; the flatten's dry run on a private copy: `decision` and `reason`, `cancelled_orders`, the closing `orders` without IDs and their `fills`, `stock_fills`, `kept_stocks`, `remaining` and `remaining_shares` in scope, and the account `current` and `after`; `simulated: true`, nothing recorded ([flattening](#changing-cancelling-and-flattening)) |
-| `GET /api/fills` | Version and fills, newest first, with pre-execution `context` (null on older fills) |
+| `GET /api/fills` | Version and fills, newest first, with pre-execution `context` and the `quote` each took: `observation`, `bid`, `ask`, `bid_size`, `ask_size`, `size_left` (displayed size still free for paper orders before the fill), `quoted_at` (when the quote was first given) and `age_seconds` (both null on older fills) |
 | `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |
 | `PUT /api/days/{YYYY-MM-DD}/note` | Required `plan` and `review` strings replace the day note; returns version, `day` and `note`. Invalid text returns `INVALID_NOTE` (422); invalid dates return 400 |
 | `GET /api/risk` | Version, active/pending limits and guardrails, guardrail progress, pending activation, daily loss, kill state, aggregate/underlying buckets, scenario matrices and `breach` |

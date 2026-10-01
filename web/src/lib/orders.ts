@@ -1,4 +1,5 @@
-import type { Decision, Money, Order, OrderChange, OrderChangeRecord, Position } from "../api/trading-types"
+import type { Decision, Fill, Money, Order, OrderChange, OrderChangeRecord, Position } from "../api/trading-types"
+import { formatDuration } from "./journal"
 import { compareMoney, formatMoney } from "./trading"
 
 export const isOpen = (order: Order) => order.status === "working" || order.status === "partially_filled" || order.status === "armed"
@@ -154,4 +155,15 @@ export function orderTimeline(order: Order): TimelineEntry[] {
   if (!isOpen(order)) entries.push({ time: order.ended_at ?? null, text: ending(order), detail: reason, tone: order.status === "filled" ? undefined : "negative" })
   else if (order.day_end) entries.push({ time: order.day_end, text: "Lasts until, unless it fills or is cancelled" })
   return entries
+}
+
+/** The book a fill traded against, as its bid × ask and a detail line, or null when the server did not record it. */
+export function fillBook(fill: Fill): { book: string; detail: string } | null {
+  const q = fill.quote
+  if (!q) return null
+  const taken = fill.side === "buy" ? q.ask_size : q.bid_size
+  return {
+    book: `${formatMoney(q.bid)} × ${formatMoney(q.ask)}`,
+    detail: `${q.bid_size} × ${q.ask_size} · ${q.size_left} of ${taken} left · quoted ${formatDuration(q.age_seconds)} before`,
+  }
 }

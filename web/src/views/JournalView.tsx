@@ -4,6 +4,7 @@ import { marketNow, useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTrades, useTradingSession } from "../api/trading"
 import type { DayNote, Fill, RunIdentity, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
+import { FillBook } from "../components/FillBook"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Empty, PageHeader, Panel, Segmented, Tile, toneOf, toneText } from "../components/ui"
 import { signedPercent } from "../lib/format"
@@ -415,14 +416,14 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
     </dl>
     <div className="max-w-full overflow-x-auto">
       <table className="w-full text-right text-xs tabular whitespace-nowrap" aria-label="Trade fills">
-        <thead className="text-muted"><tr>{["Fill", "Time", "Side", "Qty", "Price", "Fee"].map((h, i) => <th key={h} className={`px-2 py-1 font-normal ${i === 0 ? "text-left" : ""}`}>{h}</th>)}</tr></thead>
+        <thead className="text-muted"><tr>{["Fill", "Time", "Side", "Qty", "Price", "Quote", "Fee"].map((h, i) => <th key={h} className={`px-2 py-1 font-normal ${i === 0 ? "text-left" : ""}`}>{h}</th>)}</tr></thead>
         <tbody>{fills.map((f) => <tr key={f.id} className="border-t border-border/40">
           <td className="px-2 py-1 text-left">#{f.id}<div className="text-[10px] text-faint">{f.actor ?? "unknown"}</div></td><td className="px-2 py-1 text-muted">{timestampET(f.time)}</td>
           <td className={`px-2 py-1 ${f.side === "buy" ? "text-bullish" : "text-bearish"}`}>{f.side}</td>
-          <td className="px-2 py-1">{f.quantity}</td><td className="px-2 py-1">{formatMoney(f.price)}</td><td className="px-2 py-1">{formatMoney(f.fee)}</td>
+          <td className="px-2 py-1">{f.quantity}</td><td className="px-2 py-1">{formatMoney(f.price)}</td><td className="px-2 py-1"><FillBook fill={f} /></td><td className="px-2 py-1">{formatMoney(f.fee)}</td>
         </tr>)}
-        {trade.closure && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left" colSpan={6}>Closed by {trade.closure} at {formatMoney(trade.average_close)}</td></tr>}
-        {trade.closed_by === "system" && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left text-warn" colSpan={6}>
+        {trade.closure && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left" colSpan={7}>Closed by {trade.closure} at {formatMoney(trade.average_close)}</td></tr>}
+        {trade.closed_by === "system" && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left text-warn" colSpan={7}>
           {trade.system_reason === "expiry" ? "Closed by the simulator before expiry, not by your order." : `Closed by the simulator's ${trade.system_reason === "soft_floor" ? "soft-floor" : trade.system_reason === "target" ? "profit-target" : trade.system_reason === "drawdown" ? "drawdown" : ""} liquidation, not by your order.`}</td></tr>}
         </tbody>
       </table>
