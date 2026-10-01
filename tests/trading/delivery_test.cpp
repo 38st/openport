@@ -69,6 +69,58 @@ TEST(TradingDelivery, KillAllowsShareClosesAndFlattenButRejectsExercise) {
   }
 }
 
+TEST(TradingDelivery, SharesCoverCallsWrittenAgainstThem) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  const auto higher = *md::parse_osi("SPY261022C00520000");
+  AccountRules rules;
+  rules.buying_power = true;
+  Spy f;
+  TradingSession s(roomy(rules, "52000"), f.time);
+  f.define(s, call);
+  f.define(s, higher);
+  f.quote(s, call, "10.00", "10.20");
+  f.quote(s, higher, "3.00", "3.20");
+  ASSERT_TRUE(s.submit(f.market("open", call, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  ASSERT_EQ(stock(s, "SPY")->position.shares, 100);
+  EXPECT_EQ(s.snapshot()->account.cash, m("979.35"));
+  // The shares cover a call written against them: it holds nothing, and its premium is free.
+  ASSERT_TRUE(s.submit(f.market("covered", higher, 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, Money{});
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("1278.70"));
+  // A second call has no shares behind it: naked, it needs about 9,200.
+  EXPECT_EQ(s.submit(f.market("naked", higher, 1, Side::Sell), f.time).decision.code, Reason::BUYING_POWER);
+  // Selling the shares leaves the call naked, but frees far more cash than it holds.
+  ASSERT_TRUE(s.trade_stock("SPY", -100, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, s.snapshot()->positions.front().market_value.value_or(Money{}) * -1 +
+            naked_requirement(higher, f.spot));
+}
+
+TEST(TradingDelivery, SellingSharesThatCoverACallNeedsWhatTheNakedCallHolds) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  const auto deep = *md::parse_osi("SPY261022C00100000");
+  const auto spend = *md::parse_osi("SPY261022P00550000");  // A put, which covers no call.
+  AccountRules rules;
+  rules.buying_power = true;
+  Spy f;
+  TradingSession s(roomy(rules, "52000"), f.time);
+  for (const auto& c : {call, deep, spend}) f.define(s, c);
+  f.quote(s, call, "10.00", "10.20");
+  f.quote(s, deep, "409.90", "410.10");
+  f.quote(s, spend, "41.70", "41.90");
+  ASSERT_TRUE(s.submit(f.market("open", call, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("covered", deep, 1, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("spend", spend, 10), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("62.20"));
+  // Naked, the deep call would hold 41,000 of value and 10,200 of requirement:
+  // more than the 51,000 the shares bring.
+  EXPECT_EQ(s.trade_stock("SPY", -100, f.time).decision.code, Reason::BUYING_POWER);
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
+  ASSERT_TRUE(s.submit(f.market("raise", spend, 10, Side::Sell), f.time).decision.ok());
+  EXPECT_TRUE(s.trade_stock("SPY", -100, f.time).decision.ok());
+}
+
 TEST(TradingDelivery, PortfolioMarginScansDeliveredSharesAndReleasesItOnClose) {
   const auto call = *md::parse_osi("SPY260922C00500000");
   for (const auto side : {Side::Buy, Side::Sell}) {

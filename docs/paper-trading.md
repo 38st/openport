@@ -146,11 +146,15 @@ after-hours trades; without a valid close it keeps the current quote
 ([Cboe clocks](runtime.md#product-sessions-and-cboe-clocks)).
 They count in equity, daily loss and the rules, at their dollar
 delta in risk limits and scenarios, and in the P&L by Greek (all delta). Short shares
-hold 150% of their value in buying power. `trade_stock(symbol, shares, time)` only
+hold 150% of their value in buying power, and under strategy margin every 100 shares
+can cover an option (see buying power under Account rules). `trade_stock(symbol, shares, time)` only
 reduces them, at the underlying's fresh price in the regular session and without a
 fee; flattening closes them too while the stock market is open (after its close they
 stay, and the flatten lists them in `kept_stocks`), and a decided attempt liquidates them, and a reset
-drops them at their mark. Every change is a `StockFill` in `TradingSnapshot::stock_fills`,
+drops them at their mark. With the `buying_power` rule, a sale of shares that a short
+call is written against, which leaves the call naked, must leave available buying power
+nonnegative when it reduces free buying power, otherwise `BUYING_POWER`; buy the call
+back first. Every change is a `StockFill` in `TradingSnapshot::stock_fills`,
 with how it came about (`StockSource`: delivery at settlement, early exercise, a trade,
 the rule, a reset) and the delivering option, so the trade history follows the shares
 too.
@@ -962,23 +966,38 @@ portfolio margin, below, takes it from equity instead.
 With the default `margin: "strategy"`, a naked short option holds its buy-back
 value (last mark, or its entry credit without one) plus the naked requirement
 `100 * max(20% of spot - OTM amount, 10% of spot for calls or of strike for puts)`,
-with the strike standing in for a missing spot. `margin_requirement` nets spreads. A
-short pairs with a long of the same type on the same underlying that expires with it or
-later, as a vertical: a put long below or a call long above its short costs the width,
-one at or beyond it nothing, no pair costs more than naked, and unpaired shorts are
-naked. Shorts and longs pair to hold the least in total (a minimum-cost assignment), so
-one short never takes the long that another short needed, across expiries or on equal
-strikes. Pairs whose shorts expire together hold at most their combined worst loss at
-that expiry, a later long counting at its intrinsic value then, so an iron condor's two
-wings are not both held. Positions that expire together may instead need their worst
-loss at that expiry, when no net short calls make it unbounded. Each underlying needs
-the lesser of pairing across expiries and taking each expiry on its own (the lesser of
-its verticals and worst loss). So a credit spread holds its width, an iron condor its
-wider wing (a calendar beside it adds nothing), a long butterfly nothing, a calendar
-nothing beyond its debit, a diagonal the strike difference when its long is further out
-of the money, and a short strangle both naked requirements. A long that expires before
-its short does not cover it. (European puts can trade below intrinsic value before
-expiry; the pairing ignores that.)
+with the strike standing in for a missing spot. `margin_requirement` nets spreads,
+shares and straddles. A short pairs with a long of the same type on the same underlying
+that expires with it or later, as a vertical: a put long below or a call long above its
+short costs the width, one at or beyond it nothing, no pair costs more than naked, and
+unpaired shorts are naked. Every 100 shares cover an option too, whatever it expires:
+long shares make a short call covered, which holds nothing more (the shares are paid
+for and deliver on assignment); short shares make a short put covered, which holds its
+buy-back value (the short sale's proceeds buy the shares back on assignment); and a long
+call caps 100 short shares at its strike, a protected short, instead of 150% of their
+value. Shorts and their covers pair to hold the least in total (a minimum-cost
+assignment), so one short never takes the long that another short needed, across
+expiries or on equal strikes, and a long call goes to the short shares or to the short
+call where it saves more. Pairs of options whose shorts expire together hold at most
+their combined worst loss at that expiry, a later long counting at its intrinsic value
+then, so an iron condor's two wings are not both held. Short puts and short calls the
+pairing leaves naked then pair as Reg T straddles or combinations, of any strikes and
+expiries: each pair holds the greater naked requirement (buy-back value included) plus
+the other side's buy-back value, the greatest of each type pairing together, and a short
+still naked takes a vertical's short of the other type when a straddle saves more than
+the vertical did. Positions that expire together may instead need their worst loss at
+that expiry, when no net short calls make it unbounded. Each underlying needs the least
+of pairing across expiries, with straddles and without, and taking each expiry on its
+own (the lesser of its verticals and worst loss, with shares covering nothing). So a
+credit spread holds its width, an iron condor its wider wing (a calendar beside it adds
+nothing), a long butterfly nothing, a calendar nothing beyond its debit, a diagonal the
+strike difference when its long is further out of the money, a covered call nothing
+beyond its shares, and a short strangle its greater side plus the other side's value.
+Structures combine without holding more than each would alone: a butterfly beside a
+calendar holds nothing. Long options and long shares are paid in full, so a protective
+put needs nothing beyond its premium; short shares no long call protects hold 150% of
+their value. A long that expires before its short does not cover it. (European puts can
+trade below intrinsic value before expiry; the pairing ignores that.)
 
 With `margin: "portfolio"`, `portfolio_margin_requirement` sums a separate scan for
 each underlying, so gains on one underlying cannot offset losses on another. The
@@ -1004,8 +1023,7 @@ snapshot flags incomplete data and uses strategy margin plus the option minimum
 until a complete scan is possible; normal order checks still require fresh data.
 The historical `short_requirement` field carries the whole requirement in portfolio
 mode, longs and shares included; `requirement` carries the same amount under a name
-that fits both modes. Strategy mode keeps its existing
-share rule: long shares are paid for and short shares hold 150% of their value.
+that fits both modes. Strategy mode pairs shares with options as above.
 
 Each working order reserves what filling it now would cost: its fees, plus the change
 in the positions' margin requirement, plus the premium it pays less the premium it

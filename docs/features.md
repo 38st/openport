@@ -167,7 +167,10 @@ whichever provider supplies the quotes.
 
 Buying power follows each order's real margin: a naked short holds the usual
 20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals
-hold only what they can lose. An order that would use buying power must fit within it;
+hold only what they can lose, a covered call nothing beyond its shares, a short put
+against short shares its value, a long call protecting short shares its strike, and a
+short straddle or strangle its greater side plus the other side's value, as Reg T sets
+it. An order that would use buying power must fit within it;
 anything that frees buying power (closing, buying back a short, buying protection) is
 always allowed, even when the account is short of it. A close whose longs also cover
 other shorts must carry those shorts, like selling a spread's long leg alone.

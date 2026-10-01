@@ -79,9 +79,8 @@ TEST(TradingMargin, SpreadsNeedTheirWidthAndBoundedGroupsTheirWorstLoss) {
   EXPECT_EQ(margin_requirement({margin(C5100, 1), margin(C5110, -2, "500"), margin(C5120, 1)}), m("0"));
   // A 1x2 ratio: one short covered, the other naked at half the buy-back value.
   EXPECT_EQ(margin_requirement({margin(P4900, -2, "1000"), margin(P4890, 1)}), m("91500"));
-  // A strangle is unbounded above, so both shorts are naked.
-  const auto call = naked_requirement(*md::parse_osi(C5100), 5000.0);
-  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(C5100, -1, "300")}), m("90800") + call);
+  // A strangle is unbounded above: it holds the greater naked requirement plus the other short's value.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(C5100, -1, "300")}), m("90800"));
   // A long that expires with its short or later covers it: diagonals hold the width, calendars nothing.
   EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(LATER, 1)}), m("1000"));
   EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(LATER_4900, 1)}), m("0"));
@@ -124,6 +123,138 @@ TEST(TradingMargin, PairsExpiringTogetherHoldTheirCombinedWorstLoss) {
   two_expiries.push_back(margin(osi("SPXW261023P04900000"), -1, "520"));
   two_expiries.push_back(margin(osi("SPXW261023P04880000"), 1));
   EXPECT_EQ(margin_requirement(two_expiries), m("4000"));
+}
+
+TEST(TradingMargin, ShortStraddlesHoldTheGreaterSidePlusTheOthersValue) {
+  const auto C5200 = osi("SPXW261022C05200000");
+  // Put 4900: 100 * max(1000 - 100, 490) = 90,000; call 5200: 100 * max(1000 - 200, 500) = 80,000.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(C5200, -1, "300")}), m("90800"));
+  // Two puts and one call: one straddle, and the other put naked.
+  EXPECT_EQ(margin_requirement({margin(P4900, -2, "1000"), margin(C5200, -1, "300")}), m("90800") + m("90500"));
+  // Expiries need not match.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(osi("SPXW261023C05200000"), -1, "300")}), m("90800"));
+  // The greater requirement includes its own value: a later put worth 20,000 with
+  // 80,000 of naked requirement outweighs the call's 300 and 90,000, so the pair
+  // holds the put's 100,000 plus the call's 300, not both values on the call's 90,000.
+  EXPECT_EQ(margin_requirement({margin(osi("SPXW261120P04800000"), -1, "20000"), margin(C5100, -1, "300")}), m("100300"));
+  // A naked call takes a put spread's short when the straddle holds less than the
+  // spread's width did: 90,000 plus both values, instead of 1,000 plus the naked call.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(P4890, 1), margin(C5100, -1, "300")}), m("90800"));
+  // Not when the spread holds less: a 2-point spread's 200 beats a straddle's 500 of put value.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(osi("SPXW261022P04898000"), 1), margin(C5100, -1, "300")}),
+            m("200") + m("90300"));
+  // A wide condor's verticals save less than a straddle would, but its wings
+  // share one worst loss, which holds less again: one 500-point wing.
+  const std::vector<MarginLeg> wide{margin(P4900, -1, "500"), margin(osi("SPXW261022P04400000"), 1),
+                                    margin(C5100, -1, "300"), margin(osi("SPXW261022C05600000"), 1)};
+  EXPECT_EQ(margin_requirement(wide), m("50000"));
+  // Underlyings never offset.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(osi("XSP261022C00510000"), -1, "30")}),
+            m("90500") + m("30") + naked_requirement(*md::parse_osi("XSP261022C00510000"), 5000.0));
+}
+TEST(TradingMargin, SharesCoverOptionsAndLongCallsProtectShortShares) {
+  const auto spy = [](std::string_view compact, Quantity quantity, std::string_view value = "0") {
+    return MarginLeg{*md::parse_osi(compact), quantity, m(value), 500.0};
+  };
+  const auto naked_call = m("300") + naked_requirement(*md::parse_osi("SPY261022C00510000"), 500.0);
+  // A covered call holds nothing; 150 shares cover one call, and the second is naked.
+  EXPECT_EQ(margin_requirement({spy("SPY261022C00510000", -1, "300")}, {{"SPY", 100, m("50000")}}), Money{});
+  EXPECT_EQ(margin_requirement({spy("SPY261022C00510000", -2, "600")}, {{"SPY", 150, m("75000")}}), naked_call);
+  // Shares cover calls of any strike or expiry, but not puts.
+  EXPECT_EQ(margin_requirement({spy("SPY261023C00450000", -1, "5000")}, {{"SPY", 100, m("50000")}}), Money{});
+  const auto put = spy("SPY261022P00490000", -1, "200");
+  EXPECT_EQ(margin_requirement({put}, {{"SPY", 100, m("50000")}}), margin_requirement({put}));
+  // Short shares hold 150% of their value; a short put against them adds only its buy-back value.
+  EXPECT_EQ(margin_requirement({}, {{"SPY", -100, m("50000")}}), m("75000"));
+  EXPECT_EQ(margin_requirement({put}, {{"SPY", -100, m("50000")}}), m("75200"));
+  // A long call caps 100 short shares at its strike, never above 150%.
+  EXPECT_EQ(margin_requirement({spy("SPY261022C00510000", 1)}, {{"SPY", -100, m("50000")}}), m("51000"));
+  EXPECT_EQ(margin_requirement({spy("SPY261022C00490000", 1)}, {{"SPY", -100, m("50000")}}), m("49000"));
+  EXPECT_EQ(margin_requirement({spy("SPY261022C00800000", 1)}, {{"SPY", -100, m("50000")}}), m("75000"));
+  // 250 short shares: two lots protected, the other 50 shares at 150%.
+  EXPECT_EQ(margin_requirement({spy("SPY261022C00510000", 3)}, {{"SPY", -250, m("125000")}}), m("102000") + m("37500"));
+  // One long call cannot both protect shares and cover a short call: it goes where it saves more.
+  EXPECT_EQ(margin_requirement({spy("SPY261022C00510000", 1), spy("SPY261022C00520000", -1, "200")}, {{"SPY", -100, m("50000")}}),
+            m("51000") + m("200") + naked_requirement(*md::parse_osi("SPY261022C00520000"), 500.0));
+}
+TEST(TradingMargin, CombinedStructuresHoldNoMoreThanEachAlone) {
+  // A long put butterfly and a call calendar each hold nothing; together, still nothing.
+  const std::vector<MarginLeg> book{margin(osi("SPXW261022P04980000"), 1), margin(osi("SPXW261022P04990000"), -2, "900"),
+                                    margin(osi("SPXW261022P05000000"), 1), margin(osi("SPXW261022C04990000"), -1, "1500"),
+                                    margin(osi("SPXW261023C04990000"), 1)};
+  EXPECT_EQ(margin_requirement(book), Money{});
+}
+TEST(TradingMargin, TheBreakdownNamesWhatHoldsEachShortAndAddsUp) {
+  const auto spy = [](std::string_view compact, Quantity quantity, std::string_view value) {
+    return MarginLeg{*md::parse_osi(compact), quantity, m(value), 500.0};
+  };
+  const std::vector<MarginLeg> legs{margin(P4900, -1, "500"), margin(P4890, 1), margin(C5100, -1, "300"), margin(C5110, 1),
+                                    spy("SPY261022C00510000", -1, "300"), spy("SPY261022P00490000", -2, "400"),
+                                    spy("SPY261022C00520000", -1, "100")};
+  const std::vector<MarginStock> stocks{{"SPY", 100, m("50000")}};
+  const auto breakdown = margin_breakdown(legs, stocks);
+  ASSERT_EQ(breakdown.size(), 2U);
+  Money total;
+  for (const auto& underlying : breakdown) {
+    Money parts;
+    for (const auto& part : underlying.parts) parts = parts + part.requirement;
+    EXPECT_EQ(parts, underlying.requirement) << underlying.underlying;
+    total = total + underlying.requirement;
+  }
+  EXPECT_EQ(total, margin_requirement(legs, stocks));
+  // SPX: the condor holds one wing as its worst loss.
+  ASSERT_EQ(breakdown[0].underlying, "SPX");
+  ASSERT_EQ(breakdown[0].parts.size(), 1U);
+  EXPECT_EQ(breakdown[0].parts[0].kind, MarginPartKind::WorstLoss);
+  EXPECT_EQ(breakdown[0].parts[0].requirement, m("1000"));
+  EXPECT_EQ(breakdown[0].parts[0].legs.size(), 4U);
+  // SPY: the shares cover the 510 call, whose naked cost is the greater, a put
+  // straddles the 520 call, and the second put is naked: 9,300 and 9,200.
+  ASSERT_EQ(breakdown[1].underlying, "SPY");
+  std::map<MarginPartKind, int> kinds;
+  for (const auto& part : breakdown[1].parts) ++kinds[part.kind];
+  EXPECT_EQ(kinds[MarginPartKind::Covered], 1);
+  EXPECT_EQ(kinds[MarginPartKind::Straddle], 1);
+  EXPECT_EQ(kinds[MarginPartKind::Naked], 1);
+  for (const auto& part : breakdown[1].parts)
+    if (part.kind == MarginPartKind::Covered) {
+      EXPECT_EQ(part.requirement, Money{});
+      const std::vector<std::pair<std::string, Quantity>> expected{{osi("SPY261022C00510000"), -1}, {"SPY", 100}};
+      EXPECT_EQ(part.legs, expected);
+    }
+  EXPECT_EQ(breakdown[1].requirement, m("18500"));
+  // Every position is in a part: longs and shares nothing needs are paid in full.
+  const auto paid = margin_breakdown({spy("SPY261022P00490000", -1, "200"), spy("SPY261022P00480000", 1, "0"),
+                                      spy("SPY261022C00520000", 2, "0")}, {{"SPY", 50, m("25000")}});
+  ASSERT_EQ(paid.size(), 1U);
+  std::map<MarginPartKind, Money> held;
+  for (const auto& part : paid[0].parts) held[part.kind] = held[part.kind] + part.requirement;
+  ASSERT_EQ(held.size(), 2U);
+  EXPECT_EQ(held[MarginPartKind::Vertical], m("1000"));
+  EXPECT_EQ(held[MarginPartKind::Long], Money{});
+  std::vector<std::pair<std::string, Quantity>> longs;
+  for (const auto& part : paid[0].parts)
+    if (part.kind == MarginPartKind::Long) longs.insert(longs.end(), part.legs.begin(), part.legs.end());
+  const std::vector<std::pair<std::string, Quantity>> expected_longs{{osi("SPY261022C00520000"), 2}, {"SPY", 50}};
+  EXPECT_EQ(longs, expected_longs);
+}
+TEST(TradingMargin, PortfolioBreakdownNamesTheWorstScanPoint) {
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto c = *md::parse_osi("SPXW261022P05000000");
+  const auto symbol = c.osi_symbol();
+  const Valuation v{symbol, now, -0.5, 0.001, 2, -0.1, 5000, 5000, 0.99, 0.1, 0.2, true};
+  const std::vector<MarginLeg> legs{{c, -1, {}, 5000.0}};
+  const auto breakdown = portfolio_margin_breakdown(legs, {{symbol, v}}, now, md::kNanosPerMinute);
+  ASSERT_TRUE(breakdown);
+  ASSERT_EQ(breakdown->size(), 1U);
+  const auto& item = breakdown->front();
+  ASSERT_TRUE(item.scan);
+  EXPECT_EQ(item.scan->spot_percent, -8);  // A short put loses most at the lowest price.
+  EXPECT_EQ(item.scan->vol_points, 0);
+  EXPECT_EQ(item.scan->minimum, m("37.50"));
+  EXPECT_EQ(item.requirement, std::max(item.scan->loss, item.scan->minimum));
+  EXPECT_EQ(item.requirement, *portfolio_margin_requirement(legs, {{symbol, v}}, now, md::kNanosPerMinute));
+  EXPECT_TRUE(item.parts.empty());
 }
 
 TEST(TradingMultiLeg, SlippageAppliesToEveryLegAndWaitsForTheNetLimit) {
@@ -245,6 +376,24 @@ TEST(TradingMultiLeg, PortfolioMarginAllowsAStraddleThatStrategyMarginCannotFund
       EXPECT_GT(s.snapshot()->buying_power.available, Money{});
     }
   }
+}
+
+TEST(TradingMultiLeg, AShortStrangleHoldsItsGreaterSideUnderStrategyMargin) {
+  Chain f;
+  auto c = config("95000");
+  c.rules.buying_power = true;
+  TradingSession s(c, f.time);
+  f.define(s, {P4900, C5100});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {C5100, "3.00", "3.20", 0.25}});
+  // Both sides naked would need about 181,000; the greater side plus the other's value fits.
+  const auto result = s.submit(combo("strangle", {leg(P4900, Side::Sell), leg(C5100, Side::Sell)}, 1, {}), f.time);
+  ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+  const auto snap = s.snapshot();
+  ASSERT_EQ(snap->positions.size(), 2U);
+  Money values;
+  for (const auto& p : snap->positions) values = values + *p.mark * 100;
+  EXPECT_EQ(snap->buying_power.short_requirement, m("90000") + values);
+  EXPECT_GT(snap->buying_power.available, Money{});
 }
 
 TEST(TradingMultiLeg, CreditSpreadFillsBothLegsTogetherAtTheFarSides) {

@@ -62,7 +62,9 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
           Long options and shares count as collateral, so you can borrow against them.</>
         : <>Strategy margin: long premium is paid in full.
         A naked short holds its buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike). Spreads are netted: a vertical holds its width,
-        an iron condor its wider wing, a calendar nothing beyond its debit, and a position with a bounded worst case at expiry never more than that loss.</>} Orders that free buying power are always allowed.</> },
+        an iron condor its wider wing, a calendar nothing beyond its debit, and a position with a bounded worst case at expiry never more than that loss.
+        Every 100 shares cover an option: a covered call holds nothing beyond its shares, a short put against short shares its buy-back value, and a long call caps 100 short shares at its strike.
+        A short straddle or strangle holds its greater side plus the other side's buy-back value.</>} Orders that free buying power are always allowed.</> },
     { title: "Expiring positions", body: minutes > 0
       ? `From ${minutes} minutes before a contract's last trade, working orders on it are cancelled, the position is closed at the bid or ask with the account's slippage, and only closing orders are accepted. Expiring index options such as SPXW and XSP last trade at 4:00 pm ET, SPY, QQQ, IWM, DIA and other ETF options at 4:15 pm, and AM-settled series at the regular close the day before.`
       : "Positions are held into expiry. Expiring index options trade until 4:00 pm ET and settle in cash; SPY, QQQ, IWM, DIA and other ETF options trade until 4:15 pm and deliver shares when a cent or more in the money at the 4:00 pm close." },
