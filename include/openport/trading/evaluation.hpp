@@ -176,23 +176,79 @@ struct MarginLeg {
   Money value;                   ///< Shorts: buy-back value of all the contracts.
   std::optional<double> spot;    ///< For the naked rule.
 };
-/// Requirement for option positions. Shorts pair with longs of the same type on
-/// the same underlying that expire with them or later, as verticals: a put long
-/// below or a call long above its short costs the width, one at or beyond it
-/// nothing, and no pair costs more than naked; unpaired shorts are naked at their
-/// buy-back value plus naked_requirement. The pairing holds the least in total,
-/// and pairs whose shorts expire together hold at most their combined worst loss
-/// then. Positions that expire together may instead need their worst loss at
-/// expiry, when that is bounded (no net short calls). Each underlying needs the
-/// least of pairing across expiries and taking each expiry on its own (the lesser
-/// of its verticals and worst loss). Longs need nothing: their premium is paid in full.
-[[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs);
+/// Shares for strategy margin: one underlying's signed shares and their value.
+struct MarginStock {
+  std::string underlying;
+  Quantity shares = 0;  ///< Signed.
+  Money value;          ///< What they are worth, positive: at their mark, or their basis without one.
+};
+/// Requirement for option positions and shares. Shorts pair with longs of the
+/// same type on the same underlying that expire with them or later, as verticals:
+/// a put long below or a call long above its short costs the width, one at or
+/// beyond it nothing, and no pair costs more than naked; unpaired shorts are
+/// naked at their buy-back value plus naked_requirement. Every 100 shares are a
+/// cover too, whatever the option expires: long shares make a short call
+/// covered, for nothing more, short shares make a short put covered for its
+/// buy-back value, and a long call caps 100 short shares' requirement at its
+/// strike. The pairing holds the least in total, and verticals whose shorts
+/// expire together hold at most their combined worst loss then. Short puts and
+/// calls it leaves naked pair as Reg T straddles, each holding the greater naked
+/// requirement plus the other side's buy-back value, and a short still naked
+/// takes a vertical's short of the other type when a straddle saves more than
+/// the vertical did. Positions that expire together may instead need their
+/// worst loss at expiry, when that is bounded (no net short calls). Each
+/// underlying needs the least of pairing across expiries, with straddles and
+/// without, and taking each expiry on its own (the lesser of its verticals and
+/// worst loss, shares covering nothing). Longs need nothing: their premium is
+/// paid in full, as long shares are; short shares hold their value and half again.
+[[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks = {});
+enum class MarginPartKind {
+  Naked,            ///< A short option alone: its buy-back value plus its naked requirement.
+  Vertical,         ///< A short with the long of its type that covers it: the width, at most naked.
+  Covered,          ///< A short call against 100 long shares (nothing), or a short put against 100 short shares (its buy-back value).
+  Straddle,         ///< A short put with a short call: the greater naked requirement plus the other's buy-back value.
+  ShortShares,      ///< Short shares: their value and half again.
+  ProtectedShares,  ///< 100 short shares with a long call: at most its strike.
+  WorstLoss,        ///< Positions that expire together, held at their worst loss at expiry.
+  Long,             ///< A long option or long shares that nothing else needs: paid in full.
+};
+/// One part of an underlying's requirement: which positions hold what.
+struct MarginPart {
+  MarginPartKind kind = MarginPartKind::Naked;
+  /// OSI symbols, or the underlying for shares, with the signed contracts or
+  /// shares the part takes; a position can be split between parts.
+  std::vector<std::pair<std::string, Quantity>> legs;
+  Money requirement;
+};
+/// Where a portfolio-margin scan loses most, and the minimum under it.
+struct PortfolioScan {
+  Money loss;  ///< The largest loss over the scan points; zero when none loses.
+  double spot_percent = 0;
+  double vol_points = 0;
+  Money minimum;  ///< $0.375 times the multiplier for every option contract.
+};
+/// One underlying's requirement and what makes it up: strategy margin's parts,
+/// or a portfolio-margin scan.
+struct MarginUnderlying {
+  std::string underlying;
+  Money requirement;
+  std::vector<MarginPart> parts;
+  std::optional<PortfolioScan> scan;
+};
+/// margin_requirement by underlying, with the parts that hold it: every position
+/// is in one or more of them, and they add up to it.
+[[nodiscard]] std::vector<MarginUnderlying> margin_breakdown(const std::vector<MarginLeg>& legs,
+    const std::vector<MarginStock>& stocks = {});
 /// Portfolio margin (Cboe Rule 12.4, FINRA Rule 4210(g)): per underlying, the
 /// largest Black-76 loss over 11 evenly spaced price shocks, -8% to +6% for index
 /// products and -15% to +15% otherwise, or $0.375 times the multiplier for every
 /// option contract if that is larger. Shares move linearly. No result if the scan
 /// lacks fresh valuations or share prices.
 [[nodiscard]] std::optional<Money> portfolio_margin_requirement(const std::vector<MarginLeg>& legs,
+    const Valuations& valuations, Timestamp now, Timestamp max_age,
+    const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {});
+/// portfolio_margin_requirement by underlying, each with its scan.
+[[nodiscard]] std::optional<std::vector<MarginUnderlying>> portfolio_margin_breakdown(const std::vector<MarginLeg>& legs,
     const Valuations& valuations, Timestamp now, Timestamp max_age,
     const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {});
 /// Short contracts that no long covers: each short pairs with a long of the same

@@ -431,16 +431,19 @@ void trade(MarginBook& book, const std::string& symbol, Quantity change, Money p
   }
   book[symbol] = {next, next_value};
 }
-/// Short shares hold 150% of their value, as a short sale does; long shares are paid for.
-Money stock_requirement(const State& s) {
-  Money total;
+/// Shares for strategy margin, at their last mark or their basis without one:
+/// short shares hold 150% of their value, as a short sale does, long shares are
+/// paid for, and either can cover options.
+std::vector<MarginStock> margin_stocks(const State& s) {
+  std::vector<MarginStock> stocks;
   for (const auto& [symbol, stock] : s.ledger.stocks()) {
-    if (stock.shares >= 0) continue;
+    if (stock.shares == 0) continue;
     const auto mark = s.stock_marks.find(symbol);
-    const Money value = mark == s.stock_marks.end() ? -stock.basis : mark->second.price * -stock.shares;
-    total = total + value.prorate(3, 2);
+    const Money value = mark == s.stock_marks.end() ? (stock.basis < Money{} ? -stock.basis : stock.basis)
+                                                    : mark->second.price * magnitude(stock.shares);
+    stocks.push_back({symbol, stock.shares, value});
   }
-  return total;
+  return stocks;
 }
 struct Margin {
   Money requirement;  ///< What the book requires, as reported.
@@ -477,7 +480,7 @@ Margin margin_of(const State& s, const MarginBook& book) {
     for (const auto& leg : legs)
       minimum = minimum + Money::from_double(0.375 * leg.contract.multiplier) * magnitude(leg.quantity);
   }
-  const auto strategy = margin_requirement(legs) + stock_requirement(s) + minimum;
+  const auto strategy = margin_requirement(legs, margin_stocks(s)) + minimum;
   return {strategy, strategy};
 }
 Money requirement(const State& s, const MarginBook& book) { return margin_of(s, book).held; }
@@ -3220,6 +3223,15 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
     if (const auto d = account_check(s, true); !d.ok()) return CommandResult{d, {}, 0};
     if (const auto d = share_close_check(s, symbol); !d.ok()) return CommandResult{d, {}, 0};
     const auto price = stock_price(s, symbol);
+    // Shares can cover options: selling the ones a short call is written against
+    // leaves it naked, which may need more than the sale frees.
+    if (s.config.rules.buying_power) {
+      State projected = s;
+      trade_shares(projected, symbol, signed_shares, *price, StockSource::Trade);
+      if (free_power(projected) < free_power(s) && buying_power(projected).total.available < Money{})
+        return CommandResult{{Reason::BUYING_POWER, "These shares cover a short option that would need more buying power "
+                              "than the account has available; buy the option back first", std::nullopt, std::nullopt, symbol}, {}, 0};
+    }
     const auto realised_before = s.ledger.account().realised;
     trade_shares(s, symbol, signed_shares, *price, StockSource::Trade);
     if (s.config.guardrails.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -s.config.guardrails.cooldown_loss)
