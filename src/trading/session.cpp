@@ -1722,6 +1722,7 @@ BreachRisk breach_of(const State& s, const std::map<std::string, double>& close_
     for (auto& underlying : result.underlyings) {
       underlying.complete = false;
       underlying.down.reset(); underlying.up.reset();
+      underlying.soft_down.reset(); underlying.soft_up.reset();
     }
   }
   return result;
@@ -1776,8 +1777,13 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
   for (const auto& leg : legs)
     if (leg.ratio <= 0 || leg.ratio > kMaxRatio || request.quantity > std::numeric_limits<Quantity>::max() / (100 * leg.ratio) ||
         !before.contracts.contains(leg.symbol) || !quote_check(before, leg.symbol).ok()) return projection;
+  // Held exits rest as a bracket's exits do, holding only their fees, until one fills:
+  // buying power after them is what their acceptance leaves.
+  if (request.exits_only && request.bracket)
+    after.orders.mut_back().role = request.bracket->take_profit ? OrderRole::TakeProfit : OrderRole::StopLoss;
   const auto power = buying_power(after, candidate.id);
   result.buying_power_required = power.focus_reservation;
+  if (request.exits_only) result.buying_power_after = power.total.available;
   auto& filled = after.orders.mut_back();
   filled.status = OrderStatus::Filled;
   filled.filled_quantity = request.quantity;
@@ -1788,7 +1794,7 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
     attach_exits(after, candidate.id, ignored);
   }
   const auto projected = snapshot_of(after);
-  result.buying_power_after = projected.buying_power.available;
+  if (!request.exits_only) result.buying_power_after = projected.buying_power.available;
   if (snapshot.risk.complete && projected.risk.complete) {
     const auto& a = snapshot.risk.aggregate.position;
     const auto& b = projected.risk.aggregate.position;
@@ -1818,6 +1824,99 @@ PreviewProjection project_order(const State& before, OrderRequest request, const
     if (snapshot.soft_floor) result.breaches_soft_floor = *result.equity_at_max_loss <= *snapshot.soft_floor;
   }
   return projection;
+}
+
+struct Sizing {
+  std::optional<Quantity> units;
+  std::optional<Quantity> buying_power;
+  std::optional<Quantity> floor;
+};
+/// How many units of an order fit (OrderPreview's max_units and its parts):
+/// `sized` projects a number of units, `upper` is the most the order-size limit
+/// allows, and `room` the nearer floor's room, of which `floor_share` may go.
+Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Quantity upper,
+                  std::optional<Money> room, double floor_share) {
+  Sizing out;
+  const auto none = [&] {
+    out.units = out.buying_power = 0;
+    if (room) out.floor = 0;
+    return out;
+  };
+  if (upper < 1) return none();
+  const auto fits_limits = [&](Quantity quantity) {
+    const auto& value = sized(quantity);
+    return value.decision.ok() && value.buying_power_after && value.max_loss;
+  };
+  // Convert the requested share once to millionths; floor sizing then compares
+  // fixed-point dollars. Touching either floor is never an admissible size.
+  const auto share = static_cast<std::int64_t>(std::floor(floor_share * 1'000'000));
+  const auto fits_floor = [&](Quantity quantity) {
+    const auto& loss = sized(quantity).max_loss;
+    return loss && (!room || (room->micros() > 0 && *loss <= room->prorate(share, 1'000'000) && *loss < *room));
+  };
+  if (!fits_limits(1)) {
+    // Buying power and the risk limits refuse a larger order too, so none fits. Any
+    // other refusal, or a loss that cannot be projected, leaves sizing unavailable.
+    const auto code = sized(1).decision.code;
+    if (code == Reason::BUYING_POWER || code == Reason::DELTA_LIMIT || code == Reason::VEGA_LIMIT ||
+        code == Reason::MAX_ORDER_CONTRACTS) return none();
+    return out;
+  }
+  Quantity low = 1, high = upper;
+  // Pre-trade reservations include both the held position and the candidate,
+  // so increasing size cannot repair an already excessive reachable exposure.
+  while (low < high) {
+    const auto middle = low + (high - low) / 2 + (high - low) % 2;
+    if (fits_limits(middle)) low = middle; else high = middle - 1;
+  }
+  upper = low;
+  // Scenario losses can first fall as an order hedges the book, then rise.
+  // Their maximum of linear per-cell losses is convex: find its minimum before
+  // searching the upper feasible edge, rather than assuming one unit fits.
+  const auto floor_fit = [&](Quantity from, Quantity to) -> Quantity {
+    Quantity a = from, b = to;
+    while (a < b) {
+      const auto middle = a + (b - a) / 2;
+      const auto& left = sized(middle).max_loss;
+      const auto& right = sized(middle + 1).max_loss;
+      if (left && right && *left > *right) a = middle + 1; else b = middle;
+    }
+    if (!fits_floor(a)) return 0;
+    b = to;
+    while (a < b) {
+      const auto middle = a + (b - a) / 2 + (b - a) % 2;
+      if (fits_floor(middle)) a = middle; else b = middle - 1;
+    }
+    return a;
+  };
+  if (room) out.floor = floor_fit(1, upper);
+  // Free buying power can improve while a hedge closes shorts, then decline as
+  // it starts a long position. Find its feasible interval before sizing to loss.
+  low = 1; high = upper;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2;
+    if (*sized(middle).buying_power_after < *sized(middle + 1).buying_power_after) low = middle + 1;
+    else high = middle;
+  }
+  const auto best_power = low;
+  if (*sized(best_power).buying_power_after < Money{}) {
+    out.units = out.buying_power = 0;
+    return out;
+  }
+  low = 1; high = best_power;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2;
+    if (*sized(middle).buying_power_after >= Money{}) high = middle; else low = middle + 1;
+  }
+  const auto lower = low;
+  low = best_power; high = upper;
+  while (low < high) {
+    const auto middle = low + (high - low) / 2 + (high - low) % 2;
+    if (*sized(middle).buying_power_after >= Money{}) low = middle; else high = middle - 1;
+  }
+  out.buying_power = low;
+  out.units = floor_fit(lower, low);
+  return out;
 }
 
 /// Accept or reject one new order; once accepted, arm it or match it at once.
@@ -2438,70 +2537,17 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
     catch (const TradingError& error) { value.decision = failure(error.code(), error.what()); }
     return sized_previews.emplace(quantity, std::move(value)).first->second;
   };
-  const auto fits_limits = [&](Quantity quantity) {
-    const auto& value = sized_preview(quantity);
-    return value.decision.ok() && value.buying_power_after && value.max_loss;
-  };
-  // Convert the requested share once to millionths; floor sizing then compares
-  // fixed-point dollars. Touching either floor is never an admissible size.
-  const auto share = static_cast<std::int64_t>(std::floor(floor_share * 1'000'000));
-  const auto fits_floor = [&](Quantity quantity) {
-    const auto& loss = sized_preview(quantity).max_loss;
-    return loss && (!room || (room->micros() > 0 && *loss <= room->prorate(share, 1'000'000) && *loss < *room));
-  };
+  // Held exits follow their position's size, so sizing them means nothing.
+  if (impl_->stopped || request.exits_only) return result;
   Quantity upper = before.config.limits.max_order_contracts;
   for (const auto& leg : request.legs) {
-    if (leg.ratio <= 0) { upper = 0; break; }
+    if (leg.ratio <= 0) return result;
     upper = std::min(upper, before.config.limits.max_order_contracts / leg.ratio);
   }
-  if (upper < 1 || !fits_limits(1) || impl_->stopped) return result;
-  Quantity low = 1, high = upper;
-  // Pre-trade reservations include both the held position and the candidate,
-  // so increasing size cannot repair an already excessive reachable exposure.
-  while (low < high) {
-    const auto middle = low + (high - low) / 2 + (high - low) % 2;
-    if (fits_limits(middle)) low = middle; else high = middle - 1;
-  }
-  upper = low;
-  // Free buying power can improve while a hedge closes shorts, then decline as
-  // it starts a long position. Find its feasible interval before sizing to loss.
-  low = 1; high = upper;
-  while (low < high) {
-    const auto middle = low + (high - low) / 2;
-    if (*sized_preview(middle).buying_power_after < *sized_preview(middle + 1).buying_power_after) low = middle + 1;
-    else high = middle;
-  }
-  const auto best_power = low;
-  if (*sized_preview(best_power).buying_power_after < Money{}) return result;
-  low = 1; high = best_power;
-  while (low < high) {
-    const auto middle = low + (high - low) / 2;
-    if (*sized_preview(middle).buying_power_after >= Money{}) high = middle; else low = middle + 1;
-  }
-  const auto lower = low;
-  low = best_power; high = upper;
-  while (low < high) {
-    const auto middle = low + (high - low) / 2 + (high - low) % 2;
-    if (*sized_preview(middle).buying_power_after >= Money{}) low = middle; else high = middle - 1;
-  }
-  upper = low;
-  // Scenario losses can first fall as an order hedges the book, then rise.
-  // Their maximum of linear per-cell losses is convex: find its minimum before
-  // searching the upper feasible edge, rather than assuming one unit fits.
-  low = lower; high = upper;
-  while (low < high) {
-    const auto middle = low + (high - low) / 2;
-    const auto& a = sized_preview(middle).max_loss;
-    const auto& b = sized_preview(middle + 1).max_loss;
-    if (a && b && *a > *b) low = middle + 1; else high = middle;
-  }
-  if (!fits_floor(low)) return result;
-  high = upper;
-  while (low < high) {
-    const auto middle = low + (high - low) / 2 + (high - low) % 2;
-    if (fits_floor(middle)) low = middle; else high = middle - 1;
-  }
-  result.max_units = low;
+  const auto sizing = size_order(sized_preview, upper, room, floor_share);
+  result.max_units = sizing.units;
+  result.max_units_buying_power = sizing.buying_power;
+  result.max_units_floor = sizing.floor;
   return result;
 }
 CommandResult TradingSession::cancel(OrderId id, Timestamp time) {

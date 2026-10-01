@@ -489,11 +489,12 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
         const double share = sizing.value("floor_share", 1.0);
         if (sizing.contains("floor_share") && !current->snapshot->soft_floor && current->config.rules.max_drawdown <= Money{}) invalid("Floor-share sizing needs a plan or personal floor");
         const auto projection = preview(order, share);
-        if (projection.max_units < 1) invalid(projection.decision.ok() ? "No units fit buying power, limits and floor room" : projection.decision.message);
-        order.quantity = sizing.contains("units") ? std::min(projection.max_units, sizing.at("units").get<Quantity>()) : projection.max_units;
+        const auto units = projection.max_units.value_or(0);
+        if (units < 1) invalid(projection.decision.ok() ? "No units fit buying power, limits and floor room" : projection.decision.message);
+        order.quantity = sizing.contains("units") ? std::min(units, sizing.at("units").get<Quantity>()) : units;
         const auto final_preview = preview(order, share);
         if (!final_preview.decision.ok()) invalid(final_preview.decision.message);
-        order.note = json{{"playbook", playbook_tag(definition)}, {"max_units", projection.max_units}, {"floor_share", share},
+        order.note = json{{"playbook", playbook_tag(definition)}, {"max_units", units}, {"floor_share", share},
             {"close_by", md::format_timestamp(playbook_deadline(definition, now))},
             {"automatic", mode == "auto"}, {"max_loss", final_preview.max_loss ? json(final_preview.max_loss->str()) : json(nullptr)}}.dump();
         // The stage keeps its ID while the same contracts are selected, so a send

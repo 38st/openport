@@ -74,6 +74,10 @@ struct UnderlyingBreach {
   std::optional<double> close_sigma;
   std::optional<BreachLevel> down;
   std::optional<BreachLevel> up;
+  /// Where equity would reach the personal soft floor, which liquidates first
+  /// when it is nearer than the plan floor; the same as down/up without a plan floor.
+  std::optional<BreachLevel> soft_down;
+  std::optional<BreachLevel> soft_up;
   bool complete = false;
 };
 struct BreachRisk {
@@ -83,7 +87,8 @@ struct BreachRisk {
   std::vector<UnderlyingBreach> underlyings;
 };
 /// Every held underlying, with levels where equity reaches the plan floor, or the
-/// soft floor on an account without one; with neither floor there are no levels.
+/// soft floor on an account without one, and separately the soft floor's levels;
+/// with neither floor there are no levels.
 /// One underlying moves at a time, today's vol and remaining option life held
 /// fixed. Search to -99.75% / +1000%, then bisect the first crossing. Missing
 /// ATM vol leaves the driftless log-return reflection estimate absent.

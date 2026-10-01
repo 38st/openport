@@ -113,6 +113,8 @@ struct OrderPreview {
   Decision decision;
   Money buying_power_required;
   Money buying_power_before;
+  /// Available once the order has filled in full at the projected price; for an
+  /// exits-only pair, which rests until one exit fills, once it is accepted.
   std::optional<Money> buying_power_after;
   std::optional<Exposure> exposure_change;
   std::optional<Money> max_loss;
@@ -120,7 +122,17 @@ struct OrderPreview {
   std::optional<Money> equity_at_max_loss;
   std::optional<bool> breaches_floor;
   std::optional<bool> breaches_soft_floor;
-  Quantity max_units = 0;
+  /// Units that fit buying power, the pre-trade limits and the floor share; zero
+  /// when none do. Empty when sizing is unavailable: an identical retry, a stopped
+  /// account, an order refused at any size for another reason, or a loss that
+  /// cannot be projected.
+  std::optional<Quantity> max_units;
+  /// The same sizing with buying power and the limits alone, floor room aside.
+  std::optional<Quantity> max_units_buying_power;
+  /// The same sizing with the floor share and the pre-trade checks alone: without
+  /// the fit to available buying power, though a plan's buying-power rule still
+  /// refuses. Empty without a plan or soft floor.
+  std::optional<Quantity> max_units_floor;
   BreachRisk breach;
 };
 

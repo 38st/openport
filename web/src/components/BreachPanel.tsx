@@ -7,8 +7,10 @@ function level(value: BreachLevel | null) {
 }
 export function BreachPanel({ breach }: { breach?: Breach }) {
   if (!breach) return null
-  // Levels reach the plan floor, or the soft floor on an account without one.
+  // Levels reach the plan floor, or the soft floor on an account without one. With both,
+  // the soft floor's own levels follow: it liquidates first when it is nearer.
   const target = breach.room != null ? "floor" : breach.soft_room != null ? "soft floor" : null
+  const soft = breach.room != null && breach.soft_room != null
   return <section aria-label="Breach risk" className="space-y-2 text-xs">
     <div className="flex flex-wrap gap-x-5 gap-y-1 tabular">
       <span>Room above floor <strong>{formatMoney(breach.room)}</strong></span>
@@ -20,6 +22,10 @@ export function BreachPanel({ breach }: { breach?: Breach }) {
       <strong>{item.underlying}</strong>{item.complete ? <dl className="mt-1 space-y-1 tabular">
         <div><dt className="inline text-muted">Down to {target}: </dt><dd className="inline">{level(item.down)}</dd></div>
         <div><dt className="inline text-muted">Up to {target}: </dt><dd className="inline">{level(item.up)}</dd></div>
+        {soft && item.soft_down !== undefined && <>
+          <div><dt className="inline text-muted">Down to soft floor: </dt><dd className="inline">{level(item.soft_down ?? null)}</dd></div>
+          <div><dt className="inline text-muted">Up to soft floor: </dt><dd className="inline">{level(item.soft_up ?? null)}</dd></div>
+        </>}
       </dl> : <p className="text-muted">Scenario inputs unavailable.</p>}
     </div>)}
     {target && !!breach.underlyings.length && <p className="text-faint">Model estimates to today's close at unchanged volatility, one underlying moving at a time. Search: −99.75% to +1000%. These are simulated scenarios, not forecasts.</p>}

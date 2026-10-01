@@ -243,18 +243,22 @@ BreachRisk breach_risk(const Ledger& ledger, const Valuations& valuations,
       item.close_sigma = std::sqrt(variance->second);
     ScenarioConfig scan;
     scan.vol_points = {0};
+    // The plan and soft floors' scans visit the same moves; each is valued once.
+    std::map<double, std::optional<double>> valued;
     const auto pnl = [&](double percent) -> std::optional<double> {
+      const auto [it, added] = valued.try_emplace(percent);
+      if (!added) return it->second;
       scan.spot_percent = {percent};
       const auto grid = scenario_grid(subset, valuations, scan, now, max_age, stock_prices);
-      if (!grid.complete) return {};
-      return grid.cells.front().pnl;
+      if (grid.complete) it->second = grid.cells.front().pnl;
+      return it->second;
     };
     item.complete = item.spot > 0 && pnl(0).has_value();
     result.complete &= item.complete;
     if (item.complete && target) {
-      const auto solve = [&](bool up) -> std::optional<BreachLevel> {
+      const auto solve = [&](bool up, Money reach) -> std::optional<BreachLevel> {
         double prior = 0;
-        const double room = (equity - *target).dollars();
+        const double room = (equity - reach).dollars();
         double crossing = 0;
         bool found = room <= 0;
         for (double distance = 0.25; !found && distance <= (up ? 1000 : 99.75); distance += distance < 100 ? 0.25 : 1) {
@@ -279,8 +283,15 @@ BreachRisk breach_risk(const Ledger& ledger, const Valuations& valuations,
         else if (item.close_sigma) level.touch_probability = 0;  // no session left today
         return level;
       };
-      item.down = solve(false);
-      item.up = solve(true);
+      item.down = solve(false, *target);
+      item.up = solve(true, *target);
+      if (floor && soft_floor) {
+        item.soft_down = solve(false, *soft_floor);
+        item.soft_up = solve(true, *soft_floor);
+      } else if (soft_floor) {
+        item.soft_down = item.down;
+        item.soft_up = item.up;
+      }
     }
     result.underlyings.push_back(std::move(item));
   }
