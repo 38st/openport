@@ -279,6 +279,29 @@ TEST(DeskEquity, ARolloverLiquidationIsStoredUnderTheRatchetedFloor) {
   EXPECT_EQ(liquidation->tomorrow_floor, liquidation->floor);
 }
 
+TEST(DeskPlans, EveryPresetIsValidAndTheObjectivePresetsNameTheirFloors) {
+  for (const auto& plan : server::plan_presets()) {
+    EXPECT_NO_THROW(trading::validate_rules(plan.rules)) << plan.id;
+    EXPECT_TRUE(server::follows_plan(plan, plan.initial_cash, plan.rules)) << plan.id;
+  }
+  const auto* fixed = server::find_plan("static-25k");
+  const auto* locking = server::find_plan("locking-25k");
+  ASSERT_TRUE(fixed && locking);
+  EXPECT_EQ(fixed->rules.drawdown_mode, trading::DrawdownMode::Static);
+  EXPECT_EQ(fixed->rules.max_drawdown, Money::parse("2000"));
+  EXPECT_EQ(fixed->rules.day_end_minutes, 18 * 60);
+  EXPECT_TRUE(locking->rules.lock_at_start);
+  EXPECT_EQ(locking->rules.lock_balance, Money{});
+  EXPECT_EQ(locking->rules.daily_loss_action, trading::BreachAction::Lock);
+  // A static floor sits below the start from the first moment; a locking one trails to it.
+  bool locked = false;
+  EXPECT_EQ(trading::evaluation_floor(fixed->rules, Money::parse("30000"), locked, fixed->initial_cash), Money::parse("23000"));
+  EXPECT_TRUE(locked);
+  locked = false;
+  EXPECT_EQ(trading::evaluation_floor(locking->rules, Money::parse("26500"), locked, locking->initial_cash), Money::parse("25000"));
+  EXPECT_TRUE(locked);
+}
+
 TEST(DeskEquity, OnlyAPassOfThePresetItselfUnlocksItsFundedPlan) {
   // B36: custom rules that only borrowed the name "Intraday 25K" unlocked funded-intraday-25k.
   const auto* evaluation = server::find_plan("intraday-25k");
