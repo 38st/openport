@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Order, Position } from "../api/trading-types"
-import { order, portfolio } from "../test/trading-fixtures"
-import { changeText, checkCode, closingAction, orderTimeline, editable, editableFields, flattenPlan, orderChange, orderDraft, outcome, reasonEvidence, underlyingsOf } from "./orders"
+import { fill, order, portfolio } from "../test/trading-fixtures"
+import { changeText, checkCode, closingAction, orderTimeline, editable, editableFields, fillBook, flattenPlan, orderChange, orderDraft, outcome, reasonEvidence, underlyingsOf } from "./orders"
 
 const stop: Order = { ...order, id: "9", status: "armed", role: "stop_loss", side: "sell", type: "market", time_in_force: "ioc",
   limit_price: null, quantity: 2, filled_quantity: 0, remaining_quantity: 2, trigger: { source: "option", direction: "at_or_below", level: "3.50" } }
@@ -112,5 +112,15 @@ describe("an order's history", () => {
       .toBe("limit $1.20 cr → $1.10 cr")
     // Older servers send no changes or end time.
     expect(orderTimeline({ ...order, status: "filled" }).at(-1)).toMatchObject({ time: null, text: "Filled" })
+  })
+})
+
+describe("fill quotes", () => {
+  it("show the book a fill took, the paper size left on its side and how old the quote was", () => {
+    expect(fillBook(fill)).toBeNull()
+    const quote = { observation: "7", bid: "4.50", ask: "4.60", bid_size: 10, ask_size: 3, size_left: 2, quoted_at: fill.time, age_seconds: 75 }
+    expect(fillBook({ ...fill, quote })).toEqual({ book: "$4.50 × $4.60", detail: "10 × 3 · 2 of 3 left · quoted 1m 15s before" })
+    expect(fillBook({ ...fill, side: "sell", quote: { ...quote, bid: null, age_seconds: 0 } }))
+      .toEqual({ book: "— × $4.60", detail: "10 × 3 · 2 of 10 left · quoted 0s before" })
   })
 })

@@ -206,6 +206,18 @@ struct TradeReview {
   std::optional<Money> planned_risk;
   bool finished = false;
 };
+/// The book a fill traded against, as the account held it: both sides and their
+/// displayed sizes, what was left of the taken side's paper budget before the
+/// fill (below zero once simulated impact depth is in use), and when the quote
+/// was first given (`Fill::quote_time` is when it was last confirmed current).
+struct FillQuote {
+  std::optional<Money> bid;
+  std::optional<Money> ask;
+  Quantity bid_size = 0;
+  Quantity ask_size = 0;
+  Quantity left = 0;
+  Timestamp quoted = 0;
+};
 struct Fill {
   std::uint64_t id = 0;
   OrderId order_id = 0;
@@ -219,6 +231,8 @@ struct Fill {
   Timestamp time = 0;
   std::optional<FillContext> context = std::nullopt;
   std::string actor = "unknown";
+  /// Absent on fills recorded before the book was kept with them.
+  std::optional<FillQuote> quote = std::nullopt;
 };
 
 /// Observation numbers strictly increase per OSI. Repeated/older observations
@@ -232,6 +246,12 @@ struct QuoteObservation {
   std::optional<Money> ask;
   Quantity bid_size = 0;
   Quantity ask_size = 0;
+  /// When the quote was first given, if before `time`: a snapshot feed vouches
+  /// for an unchanged quote at later times. Zero means `time`. A confirmation of
+  /// the same observation at a later time keeps the first time here.
+  Timestamp quoted = 0;
+  /// When the quote was first given.
+  [[nodiscard]] Timestamp first_time() const { return quoted > 0 ? quoted : time; }
 };
 
 /// One coherent caller valuation at strike smile IV. Greeks are per unit:

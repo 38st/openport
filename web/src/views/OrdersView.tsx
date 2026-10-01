@@ -3,6 +3,7 @@ import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTradingSession } from "../api/trading"
 import type { Fill, Order, TradingStatus } from "../api/trading-types"
+import { FillBook } from "../components/FillBook"
 import { CancelAllDialog, EditOrderDialog } from "../components/OrderActions"
 import { OrderDetailDialog } from "../components/OrderDetail"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
@@ -174,15 +175,16 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
 
 function FillsTable({ fills }: { fills: Fill[] }) {
   if (!fills.length) return <p className="text-sm text-muted">No fills yet.</p>
-  return <Table label="Fills" left={2} headers={["Time", "Contract", "Side", "Qty", "Price", "Fee", "Order"]}>
+  return <Table label="Fills" left={2} headers={["Time", "Contract", "Side", "Qty", "Price", "Quote", "Fee", "Order"]}>
     {groupByDay(fills, (f) => f.time).flatMap((group) => [
-      <tr key={`day-${group.day}`} className="bg-raised/40"><td colSpan={7} className="!py-1 text-[10px] uppercase tracking-wide text-muted">{group.label}</td></tr>,
+      <tr key={`day-${group.day}`} className="bg-raised/40"><td colSpan={8} className="!py-1 text-[10px] uppercase tracking-wide text-muted">{group.label}</td></tr>,
       ...group.items.map((fill) => <tr key={fill.id}>
         <td className="text-muted">{Number.isFinite(Date.parse(fill.time)) ? timeFormat.format(Date.parse(fill.time)) : "—"}</td>
         <td className="!text-left font-medium">{osiLabel(fill.symbol, fill.underlying)}</td>
         <td className={fill.side === "buy" ? "text-bullish" : "text-bearish"}>{fill.side.toUpperCase()}</td>
-        <td>{fill.quantity}</td><td>{formatMoney(fill.price)}</td><td>{formatMoney(fill.fee)}</td><td>#{fill.order_id}<div className="text-[10px] text-faint">{fill.actor ?? "unknown"}</div></td>
+        <td>{fill.quantity}</td><td>{formatMoney(fill.price)}</td><td><FillBook fill={fill} /></td><td>{formatMoney(fill.fee)}</td><td>#{fill.order_id}<div className="text-[10px] text-faint">{fill.actor ?? "unknown"}</div></td>
       </tr>),
     ])}
   </Table>
 }
+

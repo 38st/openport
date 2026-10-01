@@ -958,9 +958,10 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         const bool quoted = option && option->has_quote && option->quote_ts >= 0;
         const bool fresh = current(underlying);
         if (quoted && (fresh || open(underlying, option->quote_ts))) {
-          quotes.push_back({symbol, observations_[symbol], fresh ? offered(underlying, option->quote_ts) : option->quote_ts,
-                            quote_price(option->bid), quote_price(option->ask),
-                            whole_size(option->bid_size), whole_size(option->ask_size)});
+          // A vouched quote offered later than the provider gave it keeps that first time.
+          const auto time = fresh ? offered(underlying, option->quote_ts) : option->quote_ts;
+          quotes.push_back({symbol, observations_[symbol], time, quote_price(option->bid), quote_price(option->ask),
+                            whole_size(option->bid_size), whole_size(option->ask_size), std::min(option->quote_ts, time)});
         }
         auto valuation = valuation_for(symbol, definition->second, metrics(underlying));
         if (fresh && valuation.time > 0) valuation.time = market_time_;
@@ -1101,7 +1102,8 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         const auto complete = snapshots_.find(underlying);
         const bool current = complete != snapshots_.end() && acceptance(underlying).ok();
         if (option->has_quote) market.quotes.push_back({symbol, observations_[symbol], current ? market_time_ : option->quote_ts,
-            quote_price(option->bid), quote_price(option->ask), whole_size(option->bid_size), whole_size(option->ask_size)});
+            quote_price(option->bid), quote_price(option->ask), whole_size(option->bid_size), whole_size(option->ask_size),
+            std::clamp<md::Timestamp>(option->quote_ts, 0, current ? market_time_ : option->quote_ts)});
         auto valuation = valuation_for(symbol, option->contract, metrics(underlying));
         if (current && valuation.time > 0) valuation.time = market_time_;
         market.valuations.push_back(valuation);

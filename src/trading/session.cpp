@@ -301,6 +301,12 @@ void consume_depth(Quantity& left, Quantity quantity) {
   if (__builtin_sub_overflow(left, quantity, &left))
     throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Liquidity budget exceeds quantity range");
 }
+/// The book a fill on `side` takes, before it takes it: the quote as held and
+/// what is left of that side's budget.
+FillQuote fill_quote(const detail::Book& book, Side side) {
+  const auto& q = book.quote;
+  return {q.bid, q.ask, q.bid_size, q.ask_size, side == Side::Buy ? book.ask_left : book.bid_left, q.first_time()};
+}
 /// Slippage and simulated depth use the displayed price's tick tier. A negative
 /// budget carries depth consumed by earlier orders on this same observation.
 Money execution_price(const State& s, const std::string& symbol, Side side, std::optional<Money> limit = {}, Quantity offset = 0) {
@@ -1353,6 +1359,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto realised_before = s.ledger.account().realised;
   const bool opening = quantity > capacity;
   const auto quote = book.quote;
+  const auto taken = fill_quote(book, side);
   fill_position(s, symbol, side == Side::Buy ? quantity : -quantity, price, fee);
   if (!given) {
     auto& left = s.books[symbol];
@@ -1364,7 +1371,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   order.status = order.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
   if (order.status == OrderStatus::Filled) order.ended_at = s.time;
   Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, symbol, side,
-            quantity, price, fee, quote.observation, quote.time, s.time, context, order.actor};
+            quantity, price, fee, quote.observation, quote.time, s.time, context, order.actor, taken};
   s.fills.push_back(fill);
   event(events, "fill", fill);
   on_fill(s, id, events);
@@ -1428,6 +1435,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   for (const auto& slice : slices) {
     const auto context = fill_context(s, slice.symbol, before);
     const auto quote = s.books.at(slice.symbol).quote;
+    const auto taken = fill_quote(s.books.at(slice.symbol), slice.side);
     const auto contracts = slice.side == Side::Buy ? slice.quantity : -slice.quantity;
     const auto size = magnitude(contracts);
     const Money price = slice.price;
@@ -1437,7 +1445,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     auto& book = s.books[slice.symbol];
     if (!slice.given) consume_depth(slice.side == Side::Buy ? book.ask_left : book.bid_left, size);
     Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, slice.symbol, slice.side,
-              size, price, fee, quote.observation, quote.time, s.time, context, actor};
+              size, price, fee, quote.observation, quote.time, s.time, context, actor, taken};
     s.fills.push_back(fill);
     event(events, "fill", fill);
   }
@@ -2244,7 +2252,9 @@ State prepared(const State& state, Timestamp time, const PreviewMarket& market) 
     const auto prior = before.books.find(quote.symbol);
     if (prior != before.books.end() && prior->second.quote.observation == quote.observation) {
       auto& book = before.books[quote.symbol];
+      const auto first = book.quote.first_time();
       book.quote = quote;
+      if (first < quote.time) book.quote.quoted = first;
     } else {
       before.books[quote.symbol] = {quote, valid_quote(quote) ? quote.bid_size : 0, markable_quote(quote) ? quote.ask_size : 0};
     }
@@ -3401,15 +3411,19 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     std::set<std::string> seen;
     std::set<std::string> changed;
     std::set<std::string> offered_again;
-    for (const auto& quote : quotes) {
+    for (auto quote : quotes) {
       if (!s.contracts.contains(quote.symbol)) throw TradingError(Reason::UNKNOWN_CONTRACT, "Quote references unregistered OSI");
       if (quote.time < 0 || quote.time > time) throw TradingError(Reason::INVALID_TIME, "Quote is future-dated or negative");
+      if (quote.quoted < 0 || quote.quoted > quote.time) throw TradingError(Reason::INVALID_TIME, "Quote was first given after its time");
+      if (quote.quoted == quote.time) quote.quoted = 0;
       if (!seen.insert(quote.symbol).second) throw TradingError(Reason::INVALID_QUOTE, "One observation per contract per batch is required");
       auto& book = s.books[quote.symbol];
       if (quote.observation == book.quote.observation && quote.time >= book.quote.time) {
         // The same quote, confirmed current at a later time: it and its mark stay
-        // fresh, and it keeps what is left of its displayed size.
+        // fresh, and it keeps what is left of its displayed size and when it was
+        // first given.
         if (quote.time > book.quote.time) {
+          book.quote.quoted = book.quote.first_time();
           book.quote.time = quote.time;
           if (markable_quote(book.quote)) s.marks[quote.symbol] = {mark_of(book.quote), quote.time};
         }

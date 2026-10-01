@@ -29,7 +29,7 @@ these routes, so anything it does can be scripted:
 
 | Route | Does |
 | --- | --- |
-| `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders and fills with actors, risk, warnings and breach estimates, rules and progress, and its round trips |
+| `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders and fills with actors (each fill with the bid, ask and sizes it took and the quote's age), risk, warnings and breach estimates, rules and progress, and its round trips |
 | `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to buying power and to floor and projected breach risk |
 | `POST /api/orders/what-if` | Up to six candidate adjustments of up to four orders each, filled on a private copy of the account and compared on buying power, Greeks, grid loss and floor room |
 | `POST /api/orders/{id}/preview` | The same preview of a change to a resting order, as `PUT /api/orders/{id}` would make it, without making it |
