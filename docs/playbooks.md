@@ -178,7 +178,8 @@ fills without that evidence may not be scoreable. This is a trading review, not 
 authentication check on clients supplying their own tags or notes.
 
 Adherence is passed rules divided by measured rules. Closed trades report win
-rate (wins divided by all closed trades), average positive and negative net P&L,
+rate (wins divided by decided trades, wins and losses: a breakeven is neither, as in
+the Journal and backtests), average positive and negative net P&L,
 expectancy (mean net P&L), profit factor (total wins divided by total losses), and
 average R over trades with positive planned risk. Net includes fees. No losses
 with wins displays infinity; no observations display missing. Separate summaries
@@ -341,8 +342,9 @@ including pending checks. No trades means null expectancy and win rate.
 
 Share round trips are reported separately from strategy expectancy. Trade expectancy
 is mean net P&L per closed opening strategy in the independent
-daily pass. Win rate counts strictly profitable closed strategies; breakevens stay
-in the denominator. Daily P&L and drawdown distributions contain sorted decimal
+daily pass. Win rate is strictly profitable closed strategies over decided ones
+(profitable or losing); breakevens are left out, as in the Journal and the playbook
+report. Day win rate likewise divides profitable days by days with a profit or loss. Daily P&L and drawdown distributions contain sorted decimal
 values, min, lower-index quartiles, max and an exact-money mean. Daily P&L statistics
 exclude incomplete final marks. Worst days are up to ten day indices sorted by P&L,
 with input order breaking ties. Pass rate is passed / (passed + failed) attempts;

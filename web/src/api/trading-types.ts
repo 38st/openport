@@ -220,6 +220,8 @@ export interface Trade {
   status: "open" | "closed"
   opened: string
   closed: string | null
+  /** The engine's trading date of the close, market holidays known; null while open, absent from older servers. */
+  trading_day?: string | null
   duration_seconds: number | null
   quantity: number
   max_quantity: number
@@ -236,11 +238,17 @@ export interface Trade {
   mark: Money | null
   unrealised: Money | null
   closure: "settlement" | "reset" | "exercise" | "assignment" | null
+  /** What closed it: the closure, or its last reducing fill's order. Null while open; absent from older servers. */
+  closed_by?: TradeExit | null
+  /** Why the reducer liquidated it when closed_by is "system": "target", "drawdown", "soft_floor" or "expiry". */
+  system_reason?: string | null
   fills: string[]
   /** The trader's note ("" for none) and tags; absent from older servers. */
   note?: string
   tags?: string[]
 }
+/** How a round trip ended: the trader's own order, a bracket exit, a flatten, a playbook's close, a reducer liquidation, or a closure. */
+export type TradeExit = "order" | "stop_loss" | "take_profit" | "flatten" | "playbook" | "system" | "settlement" | "exercise" | "assignment" | "reset"
 export interface TradeNote {
   note: string
   tags: string[]
@@ -261,6 +269,7 @@ export interface ShareTrade {
   status: "open" | "closed"
   opened: string
   closed: string | null
+  trading_day?: string | null
   duration_seconds: number | null
   /** Signed shares held now; zero once closed. */
   shares: number
@@ -283,6 +292,7 @@ export interface ShareTrade {
   option: string | null
   closed_by: ShareSource | null
   closing_option: string | null
+  /** Stock fill IDs, "s"-prefixed ("s3"); older servers sent bare numbers. */
   fills: string[]
   /** The trader's note ("" for none) and tags, as on option trades; absent from older servers. */
   note?: string
@@ -301,7 +311,11 @@ export interface TradesResponse {
   /** Every change in shares and every dividend, oldest first; absent from older servers. */
   stock_fills?: StockFill[]
   dividends?: DividendPaid[]
+  /** The replay run these trades come from; null for a live account, absent from older servers. */
+  run?: RunIdentity | null
 }
+/** A replay run: its id and what it replayed (a scenario and seed, or a recording). */
+export interface RunIdentity { id: string | null; scenario: string | null; seed: string | null; recording: string | null; date: string | null }
 export interface Plan {
   id: string
   name: string
@@ -384,6 +398,8 @@ export interface Fill {
   context?: FillContext | null
   id: string
   order_id: string
+  /** The attempt it belongs to; absent from older servers. */
+  attempt?: number
   symbol: string
   underlying: string
   side: Side

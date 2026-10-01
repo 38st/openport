@@ -4,6 +4,7 @@
 #include "openport/server/plans.hpp"
 
 #include "openport/pricing/black.hpp"
+#include "openport/server/run.hpp"
 #include "run_json.hpp"
 
 #include <algorithm>
@@ -607,6 +608,7 @@ void Desk::publish_trading() {
       view->config = session.config();
       view->contracts = session.contracts();
       view->valuations = session.valuations();
+      view->run = run_;
       // Each underlying's own data time tells whether its feed has stalled. Until this
       // run has seen any (just after a restart), the account's last quotes stand in.
       for (const auto& [symbol, contract] : view->contracts) {
@@ -1274,6 +1276,7 @@ Desk::Desk(std::string provider, md::Capabilities capabilities, md::Subscription
       subscription_.underlyings.end() ? "SPX" : "SPY";
   trading_status_.fee_per_contract = options_.paper.fee_per_contract;
   trading_status_.initial_cash = options_.paper.initial_cash;
+  if (!options_.run_input.empty()) run_ = run_identity(options_.run_input, options_.run_id);
 }
 void Desk::set_dividends(std::vector<trading::Dividend> dividends) {
   dividends_ = std::move(dividends);

@@ -8234,6 +8234,17 @@
               }
             ]
           },
+          "trading_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The engine's trading date the trade closed in (YYYY-MM-DD), market holidays included: a close after 17:00 ET, over a weekend or on a holiday counts toward the next session. Null while open; absent from older servers."
+          },
           "duration_seconds": {
             "anyOf": [
               {
@@ -8333,6 +8344,65 @@
                 "type": "null"
               }
             ]
+          },
+          "closed_by": {
+            "anyOf": [
+              {
+                "const": "order",
+                "type": "string"
+              },
+              {
+                "const": "stop_loss",
+                "type": "string"
+              },
+              {
+                "const": "take_profit",
+                "type": "string"
+              },
+              {
+                "const": "flatten",
+                "type": "string"
+              },
+              {
+                "const": "playbook",
+                "type": "string"
+              },
+              {
+                "const": "system",
+                "type": "string"
+              },
+              {
+                "const": "settlement",
+                "type": "string"
+              },
+              {
+                "const": "exercise",
+                "type": "string"
+              },
+              {
+                "const": "assignment",
+                "type": "string"
+              },
+              {
+                "const": "reset",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What closed the round trip: the closure that ended it, or its last reducing fill's order (the trader's own order, a bracket exit, a flatten, a playbook's close, or a reducer liquidation, `system`). Null while open; absent from older servers."
+          },
+          "system_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For closed_by system, why the reducer closed it: target (a passed attempt's liquidation), drawdown (a failed one's), soft_floor (the personal guardrail) or expiry (the auto-close before expiry). Null otherwise."
           },
           "fills": {
             "type": "array",
@@ -8506,6 +8576,17 @@
               }
             ]
           },
+          "trading_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The engine's trading date the trade closed in (YYYY-MM-DD), market holidays included: a close after 17:00 ET, over a weekend or on a holiday counts toward the next session. Null while open; absent from older servers."
+          },
           "duration_seconds": {
             "anyOf": [
               {
@@ -8623,7 +8704,8 @@
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Stock fill IDs, each with an \"s\" prefix (\"s3\") so they never read as option fill IDs; older servers sent bare numbers."
           },
           "note": {
             "type": "string"
@@ -8765,6 +8847,17 @@
               "$ref": "#/components/schemas/DayNote"
             }
           },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The replay run, or null for a live account. Absent from older servers."
+          },
           "stock_fills": {
             "type": "array",
             "items": {
@@ -8782,6 +8875,69 @@
           "account_version",
           "attempt",
           "trades"
+        ]
+      },
+      "RunIdentity": {
+        "type": "object",
+        "description": "The replay run an account's trades come from; exports repeat it on every row.",
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenario": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recording": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "scenario",
+          "seed",
+          "recording",
+          "date"
         ]
       },
       "Plan": {
@@ -9592,6 +9748,10 @@
           },
           "order_id": {
             "type": "string"
+          },
+          "attempt": {
+            "type": "number",
+            "description": "The attempt the fill belongs to. Absent from older servers."
           },
           "symbol": {
             "type": "string"

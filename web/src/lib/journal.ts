@@ -72,7 +72,7 @@ const newYorkHour = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_Yo
  * ISO timestamp -> the engine's trading date and its weekday (1 = Monday): a weekday's New York date until 17:00,
  * when its curb session ends; after that, and over the weekend, the next weekday, whose overnight session opens that
  * evening. So a Sunday-evening close counts toward Monday. Holidays are unknown here, so the evening before one counts
- * toward it rather than the next session.
+ * toward it rather than the next session; trades from current servers carry the exact `trading_day` instead.
  */
 export function tradingDate(iso: string): { date: string; weekday: number } | null {
   const day = newYorkDate(iso)
@@ -82,6 +82,16 @@ export function tradingDate(iso: string): { date: string; weekday: number } | nu
   while ([0, 6].includes((day.weekday + ahead) % 7)) ahead++
   const date = new Date(Date.parse(`${day.date}T12:00:00Z`) + ahead * 86_400_000).toISOString().slice(0, 10)
   return { date, weekday: (day.weekday + ahead) % 7 }
+}
+
+/**
+ * The trading date a closed trade counts toward and its weekday (1 = Monday): the server's `trading_day`, which knows
+ * market holidays, or else the weekday estimate above for older servers.
+ */
+export function closingDay(trade: JournalTrade): { date: string; weekday: number } | null {
+  if (trade.trading_day && /^\d{4}-\d{2}-\d{2}$/.test(trade.trading_day))
+    return { date: trade.trading_day, weekday: new Date(`${trade.trading_day}T12:00:00Z`).getUTCDay() }
+  return trade.closed ? tradingDate(trade.closed) : null
 }
 
 export interface DayResult { date: string; net: number; trades: number; wins: number }
@@ -133,17 +143,19 @@ export const durationBuckets = [
 const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
-export interface Bucket { label: string; net: number; trades: number; wins: number; winRate: number | null }
+/** `winRate` is wins over decided trades, as everywhere: a breakeven is neither a win nor a loss. */
+export interface Bucket { label: string; net: number; trades: number; wins: number; losses: number; winRate: number | null }
 /** Closed trades grouped by holding time, the weekday or month of the trading date they closed on (an overnight close counts toward the session's day), or tag (a trade counts under each of its tags). Shares count only without a call or put side. */
 export function tradeBuckets(trades: readonly JournalTrade[], dimension: Dimension, side: Side = "all"): Bucket[] {
   const tags = dimension === "tag" ? [...tradeTags(trades), "untagged"] : []
   const labels = dimension === "duration" ? durationBuckets.map((b) => b.label) : dimension === "weekday" ? weekdays : dimension === "month" ? months : tags
-  const out = labels.map((label) => ({ label, net: 0, trades: 0, wins: 0, winRate: null as number | null }))
+  const out = labels.map((label) => ({ label, net: 0, trades: 0, wins: 0, losses: 0, winRate: null as number | null }))
   const count = (bucket: Bucket | undefined, net: number) => {
     if (!bucket) return
     bucket.net += net
     bucket.trades++
     if (net > 0) bucket.wins++
+    else if (net < 0) bucket.losses++
   }
   for (const trade of trades) {
     if (trade.status !== "closed" || !trade.closed || (side !== "all" && (isShares(trade) || trade.type !== side))) continue
@@ -157,13 +169,13 @@ export function tradeBuckets(trades: readonly JournalTrade[], dimension: Dimensi
       const seconds = trade.duration_seconds ?? 0
       index = durationBuckets.findIndex((b) => seconds < b.max)
     } else {
-      const day = tradingDate(trade.closed)
+      const day = closingDay(trade)
       if (!day) continue
       index = dimension === "weekday" ? day.weekday - 1 : Number(day.date.slice(5, 7)) - 1
     }
     count(out[index], tradeNet(trade))
   }
-  for (const bucket of out) bucket.winRate = bucket.trades ? bucket.wins / bucket.trades : null
+  for (const bucket of out) bucket.winRate = bucket.wins + bucket.losses ? bucket.wins / (bucket.wins + bucket.losses) : null
   return out
 }
 
@@ -220,6 +232,20 @@ export function shareSourceLabel(source: ShareSource | null, option: string | nu
     case "rule": return "Closed by the evaluation"
     case "reset": return "Account reset"
     default: return "—"
+  }
+}
+
+/** How a closed option trade ended when the trader's own order did not close it: "stop", "liquidated: drawdown", "settlement"... */
+export function exitLabel(trade: Trade): string | null {
+  switch (trade.closed_by ?? trade.closure) {
+    case "stop_loss": return "stop"
+    case "take_profit": return "target"
+    case "flatten": return "flatten"
+    case "playbook": return "playbook"
+    case "system": return trade.system_reason === "expiry" ? "auto-closed before expiry"
+      : trade.system_reason === "soft_floor" ? "liquidated: soft floor" : `liquidated${trade.system_reason ? `: ${trade.system_reason}` : ""}`
+    case "settlement": case "exercise": case "assignment": case "reset": return trade.closed_by ?? trade.closure
+    default: return null
   }
 }
 

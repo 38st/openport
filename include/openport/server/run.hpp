@@ -10,6 +10,8 @@ namespace openport::server {
 
 [[nodiscard]] std::string recording_input(const std::filesystem::path& file);
 [[nodiscard]] std::string scenario_input(const providers::Scenario& scenario, md::Date date, std::uint64_t seed);
+/// The run a recording_input or scenario_input describes, under the run's history id.
+[[nodiscard]] RunIdentity run_identity(std::string_view input, std::string id);
 
 struct RunVerification {
   bool matched = false;

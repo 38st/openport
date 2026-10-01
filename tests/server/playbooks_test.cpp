@@ -416,6 +416,34 @@ TEST(Playbooks, AutomaticEntriesTradeTheBookOfTheirOwnMarketInstant) {
     EXPECT_EQ(fill.price, fill.side == trading::Side::Buy ? ask : bid) << fill.symbol;
   }
 }
+TEST(Playbooks, WinRateLeavesBreakevenTradesOutAsTheJournalDoes) {
+  test::ScriptedMarket market;
+  trading::SessionConfig config;
+  config.fee_per_contract = Money{};
+  config.limits.aggregate = {1e9, 1e9}; config.limits.per_underlying = {1e9, 1e9};
+  trading::TradingSession session(config, market.time);
+  auto setup = definition(); setup["management"] = {{"close_by", "11:30"}};
+  setup["guardrails"]["max_entries_per_day"] = 10;
+  setup["guardrails"]["cooldown_minutes"] = 0;
+  server::Playbooks store;
+  store.change({{"action", "create"}, {"definition", setup}}, "main", false);
+  // A win, a loss and a breakeven: bought at the 4.20 ask, sold at 5.20, 3.20 and 4.20 bids.
+  for (const auto& [bid, ask] : {std::pair{"5.20", "5.40"}, std::pair{"3.20", "3.40"}, std::pair{"4.20", "4.40"}}) {
+    market.seed(session);
+    auto entry = market.market(std::string("entry ") + bid);
+    entry.tags = {"playbook:morning@v1"};
+    ASSERT_TRUE(session.submit(entry, market.time).decision.ok());
+    market.next();
+    session.on_quotes({market.quote(bid, ask)}, {market.valuation()}, market.time);
+    ASSERT_TRUE(session.submit(market.market(std::string("close ") + bid, 1, trading::Side::Sell), market.time).decision.ok());
+    market.next();
+  }
+  server::TradingView view; view.snapshot = session.snapshot(); view.contracts = session.contracts(); view.config = config;
+  const auto report = server::playbook_report(store.catalogue(), view).at("morning");
+  EXPECT_EQ(report.at("all").at("trades"), 3);
+  EXPECT_EQ(report.at("trades")[2].at("net"), "0.00");
+  EXPECT_DOUBLE_EQ(report.at("all").at("win_rate").get<double>(), .5);
+}
 TEST(Playbooks, ExpectancyAndRuleSplitsUseWholeStrategies) {
   test::ScriptedMarket market;
   trading::SessionConfig config;

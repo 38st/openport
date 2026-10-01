@@ -191,7 +191,7 @@ json aggregate(const json& days, const json& attempts) {
   std::vector<Money> pnls, drawdowns;
   std::vector<std::size_t> worst;
   Money net;
-  std::size_t trades = 0, wins = 0, day_wins = 0, passed = 0, failed = 0;
+  std::size_t trades = 0, wins = 0, losses = 0, day_wins = 0, day_losses = 0, passed = 0, failed = 0;
   for (std::size_t index = 0; index < days.size(); ++index) {
     const auto& day = days[index];
     if (day.is_null()) continue;
@@ -199,6 +199,7 @@ json aggregate(const json& days, const json& attempts) {
       const auto pnl = Money::parse(day.at("pnl").get<std::string>());
       pnls.push_back(pnl);
       if (pnl > Money{}) ++day_wins;
+      if (pnl < Money{}) ++day_losses;
       worst.push_back(index);
     }
     drawdowns.push_back(Money::parse(day.at("max_drawdown").get<std::string>()));
@@ -206,6 +207,7 @@ json aggregate(const json& days, const json& attempts) {
       const auto profit = Money::parse(trade.at("net").get<std::string>());
       net = net + profit; ++trades;
       if (profit > Money{}) ++wins;
+      if (profit < Money{}) ++losses;
     }
   }
   std::stable_sort(worst.begin(), worst.end(), [&](std::size_t left, std::size_t right) {
@@ -220,8 +222,9 @@ json aggregate(const json& days, const json& attempts) {
   return {{"daily_pnl", distribution(pnls)}, {"daily_drawdown", distribution(drawdowns)}, {"worst_days", worst},
       {"completed_days", drawdowns.size()}, {"marked_days", pnls.size()}, {"trades", trades},
       {"expectancy", trades ? json(net.prorate(1, static_cast<std::int64_t>(trades)).str()) : json(nullptr)},
-      {"win_rate", trades ? json(static_cast<double>(wins) / static_cast<double>(trades)) : json(nullptr)},
-      {"day_win_rate", pnls.empty() ? json(nullptr) : json(static_cast<double>(day_wins) / static_cast<double>(pnls.size()))},
+      // Win rates count decided trades and days: breakeven ones are neither wins nor losses.
+      {"win_rate", wins + losses ? json(static_cast<double>(wins) / static_cast<double>(wins + losses)) : json(nullptr)},
+      {"day_win_rate", day_wins + day_losses ? json(static_cast<double>(day_wins) / static_cast<double>(day_wins + day_losses)) : json(nullptr)},
       {"attempts", attempts.size()}, {"passed", passed}, {"failed", failed}, {"open", attempts.size() - decided},
       {"pass_rate", decided ? json(static_cast<double>(passed) / static_cast<double>(decided)) : json(nullptr)}};
 }

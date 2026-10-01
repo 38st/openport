@@ -130,10 +130,109 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
   EXPECT_EQ(csv_record(rows[0], rows[1])["prices"], "price provenance unrecorded; simulated trading");
   EXPECT_EQ(server::csv_quote("a\rb"), "\"a\rb\"");
   const std::vector<std::string> fill_columns = {"account", "account_version", "provider", "prices", "new_york_date",
-      "id", "order_id", "actor", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time", "context.spot",
+      "run_id", "scenario", "seed", "recording", "id", "attempt", "order_id", "actor", "symbol", "underlying", "side", "quantity", "price", "fee", "quote_time", "time", "context.spot",
       "context.spot_source", "context.iv", "context.delta", "context.years", "context.equity", "context.floor_room", "context.buying_power"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
-  EXPECT_EQ(server::paper_csv_columns(false).size(), 86U);
+  EXPECT_EQ(server::paper_csv_columns(false).size(), 92U);
+}
+TEST(TradeReviewApi, ExportsNameTheirRunAttemptAndClosingTradingDay) {
+  test::ScriptedMarket f;
+  trading::TradingSession s({}, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("first"), f.time).decision.ok());
+  ASSERT_TRUE(s.reset_account(Money::parse("100000"), {}, "again", f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.market("second"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("close", 1, trading::Side::Sell), f.time).decision.ok());
+  ReviewSource source; source.publish(s);
+  source.view->run = server::RunIdentity{"reversal-2026-09-22-7", "reversal", "7", "", "2026-09-22"};
+  const auto body = json::parse(server::handle_api({"GET", "/api/trades?attempt=all"}, source).body);
+  EXPECT_EQ(body["run"], json({{"id", "reversal-2026-09-22-7"}, {"scenario", "reversal"}, {"seed", "7"}, {"recording", nullptr},
+                               {"date", "2026-09-22"}}));
+  ASSERT_EQ(body["trades"].size(), 2U);
+  EXPECT_EQ(body["trades"][0]["trading_day"], "2026-09-22");
+  EXPECT_EQ(body["trades"][1]["trading_day"], "2026-09-22");  // the reset closed it
+  const auto fills = json::parse(server::handle_api({"GET", "/api/fills"}, source).body)["fills"];
+  ASSERT_EQ(fills.size(), 3U);
+  EXPECT_EQ(fills[0]["attempt"], 2); EXPECT_EQ(fills[2]["attempt"], 1);
+  const auto rows = csv_rows(server::handle_api({"GET", "/api/fills.csv"}, source).body);
+  ASSERT_EQ(rows.size(), 4U);
+  const auto newest = csv_record(rows[0], rows[1]), oldest = csv_record(rows[0], rows[3]);
+  EXPECT_EQ(newest["attempt"], "2"); EXPECT_EQ(oldest["attempt"], "1");
+  EXPECT_EQ(newest["run_id"], "reversal-2026-09-22-7"); EXPECT_EQ(newest["scenario"], "reversal");
+  EXPECT_EQ(newest["seed"], "7"); EXPECT_EQ(newest["recording"], "");
+  const auto trades = csv_rows(server::handle_api({"GET", "/api/trades.csv"}, source).body);
+  EXPECT_EQ(csv_record(trades[0], trades[1])["trading_day"], "2026-09-22");
+  EXPECT_EQ(csv_record(trades[0], trades[1])["seed"], "7");
+  // A live account leaves the run columns empty.
+  source.view->run.reset();
+  const auto live = csv_rows(server::handle_api({"GET", "/api/trades.csv"}, source).body);
+  EXPECT_EQ(csv_record(live[0], live[1])["run_id"], "");
+  EXPECT_TRUE(json::parse(server::handle_api({"GET", "/api/trades"}, source).body)["run"].is_null());
+}
+TEST(TradeReviewApi, ClosedTradesSayWhetherAStopAFlattenOrALiquidationClosedThem) {
+  test::ScriptedMarket f, g; g.contract.strike += 10;
+  trading::SessionConfig config;
+  config.initial_cash = Money::parse("10000");
+  config.limits.aggregate = {1e9, 1e9}; config.limits.per_underlying = {1e9, 1e9};
+  config.rules.plan = "test"; config.rules.profit_target = Money::parse("1000"); config.rules.max_drawdown = Money::parse("300");
+  trading::TradingSession s(config, f.time); f.seed(s); g.seed(s, "2.00", "2.20");
+  const auto stopped = [&](std::string client) {
+    auto order = f.market(std::move(client));
+    order.bracket = trading::Bracket{trading::ExitSpec{trading::Trigger{trading::TriggerSource::Option,
+        trading::TriggerDirection::AtOrBelow, Money::parse("3.95")}, {}}, {}};
+    return order;
+  };
+  ASSERT_TRUE(s.submit(stopped("flattened with its stop"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(g.market("flattened"), f.time).decision.ok());
+  ASSERT_TRUE(s.close_positions(std::string("SPX"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("manual"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("manual close", 1, trading::Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("liquidated", 5), f.time).decision.ok());
+  f.next(); g.next();
+  s.on_quotes({f.quote("3.40", "3.50"), g.quote("2.00", "2.20")}, {f.valuation(), g.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->evaluation.status, trading::EvaluationStatus::Failed);
+  ASSERT_TRUE(s.snapshot()->positions.empty());
+  ReviewSource source; source.publish(s);
+  const auto trades = json::parse(server::handle_api({"GET", "/api/trades?status=closed"}, source).body)["trades"];
+  ASSERT_EQ(trades.size(), 4U);  // newest first
+  EXPECT_EQ(trades[0]["closed_by"], "system"); EXPECT_EQ(trades[0]["system_reason"], "drawdown");
+  EXPECT_EQ(trades[1]["closed_by"], "order"); EXPECT_TRUE(trades[1]["system_reason"].is_null());
+  EXPECT_EQ(trades[2]["closed_by"], "flatten"); EXPECT_EQ(trades[3]["closed_by"], "flatten");
+  ASSERT_TRUE(s.reset_account(Money::parse("10000"), config.rules, "again", f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(stopped("stopped"), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote("3.90", "4.00")}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.snapshot()->positions.empty());
+  ASSERT_TRUE(s.submit(f.market("reset"), f.time).decision.ok());
+  ASSERT_TRUE(s.reset_account(Money::parse("10000"), config.rules, "third", f.time).decision.ok());
+  source.publish(s);
+  const auto later = json::parse(server::handle_api({"GET", "/api/trades?status=closed&attempt=all"}, source).body)["trades"];
+  ASSERT_EQ(later.size(), 6U);
+  EXPECT_EQ(later[0]["closed_by"], "reset"); EXPECT_EQ(later[0]["closure"], "reset");
+  EXPECT_EQ(later[1]["closed_by"], "stop_loss"); EXPECT_TRUE(later[1]["system_reason"].is_null());
+  EXPECT_TRUE(json::parse(server::handle_api({"GET", "/api/trades?status=open"}, source).body)["trades"].empty());
+}
+TEST(TradeReviewApi, AnEveningCloseBeforeAHolidayCountsTowardTheNextSession) {
+  test::ScriptedMarket f;
+  f.time = md::new_york_to_utc({2026, 11, 25}, 10, 0);
+  f.contract = *md::parse_osi("SPXW261127C05000000");
+  trading::TradingSession s({}, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("scaled"), f.time).decision.ok());
+  // 16:10 ET still trades for Wednesday; at 20:30 ET the overnight session trades for Friday, as
+  // Thursday is Thanksgiving. A weekday count without holidays would say Thursday.
+  f.time = md::new_york_to_utc({2026, 11, 25}, 16, 10); f.next();
+  s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.market("close", 1, trading::Side::Sell), f.time).decision.ok());
+  f.time = md::new_york_to_utc({2026, 11, 25}, 20, 30); f.next();
+  s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  const auto overnight = s.submit(f.limit("overnight close", 1, "4.00", trading::Side::Sell), f.time);
+  ASSERT_TRUE(overnight.decision.ok()) << overnight.decision.message;
+  ReviewSource source; source.publish(s);
+  const auto trades = json::parse(server::handle_api({"GET", "/api/trades"}, source).body)["trades"];
+  ASSERT_EQ(trades.size(), 1U);
+  EXPECT_EQ(trades[0]["status"], "closed");
+  EXPECT_EQ(trades[0]["trading_day"], "2026-11-27");
 }
 TEST(TradeReviewApi, PnlByGreekPartsAddUpToTheTotalInCents) {
   const auto cents = [](const json& value) { return std::llround(value.get<double>() * 100); };

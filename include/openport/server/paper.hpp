@@ -76,6 +76,16 @@ struct TradingStatus {
   std::string evaluation;  ///< active/passed/failed with a target or drawdown rule, else empty.
 };
 
+/// The replay run an account belongs to, so exports from several runs can be told
+/// apart: its history id and what it replayed. Live accounts have none.
+struct RunIdentity {
+  std::string id;         ///< The run's id, as replay state and history name it.
+  std::string scenario;   ///< The scenario's id; empty for a recording.
+  std::string seed;       ///< The scenario's seed, in decimal; empty for a recording.
+  std::string recording;  ///< The recording's file name; empty for a scenario.
+  std::string date;       ///< The replayed session's New York date, YYYY-MM-DD.
+};
+
 /// The reducer snapshot and its pricing inputs are published together so HTTP
 /// readers never combine portfolio state with a different risk frame.
 struct TradingView {
@@ -91,6 +101,7 @@ struct TradingView {
   std::vector<EquitySample> equity_samples;
   std::string equity_error;
   std::string playbooks_json;  ///< Immutable catalogue and transient stages for this account.
+  std::optional<RunIdentity> run;  ///< The replay run, for replay accounts.
 };
 
 /// The market's implied variance of an underlying's log price from its analytics'

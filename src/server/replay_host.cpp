@@ -295,6 +295,7 @@ class ArchivedReplay final : public MetricsSource {
         const auto& input = event.at("payload");
         if (input.at("kind") == "start") {
           playbooks = std::make_unique<Playbooks>(std::filesystem::path{}, input.value("playbooks", json(nullptr)));
+          view_->run = run_identity(input.at("input").dump(), file.stem().string());
         } else if (input.at("kind") == "command" && playbooks) {
           const auto& request = input.at("command");
           if (request.at("kind").get<int>() != static_cast<int>(TradingCommand::Kind::Playbook)) continue;
@@ -826,6 +827,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         engine.replay = true;
         engine.initial_actor = request.actor;
         engine.run_input = demo ? scenario_input(*day, date, seed) : recording_input(path);
+        engine.run_id = session->id;
         engine.paper_accounts.clear();
         engine.paper_sink.reset();
         engine.record_file.clear();

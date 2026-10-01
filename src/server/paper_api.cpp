@@ -210,8 +210,20 @@ json day_notes_json(const TradingSnapshot& s) {
     notes[day] = {{"plan", note.plan}, {"review", note.review}, {"time", md::format_timestamp(note.time)}};
   return notes;
 }
+/// The attempt an option fill belongs to: each attempt's fills start at its first_fill.
+std::uint64_t fill_attempt(const TradingSnapshot& s, std::uint64_t fill) {
+  if (fill >= s.evaluation.first_fill) return s.evaluation.attempt;
+  for (auto it = s.attempts.rbegin(); it != s.attempts.rend(); ++it)
+    if (fill >= it->first_fill) return it->attempt;
+  return 1;
+}
+/// The trading date a trade closed in, holidays included; null while it is open.
+json trading_day(const std::optional<Timestamp>& closed) {
+  return closed ? json(md::format_date(md::trading_date(*closed))) : json(nullptr);
+}
 json fill_json(const Fill& f, const TradingView& view) {
   return {{"id", std::to_string(f.id)}, {"order_id", std::to_string(f.order_id)}, {"actor", f.actor},
+          {"attempt", fill_attempt(*view.snapshot, f.id)},
           {"symbol", f.symbol}, {"underlying", underlying(view, f.symbol)},
           {"side", f.side == Side::Buy ? "buy" : "sell"}, {"quantity", f.quantity},
           {"price", f.price.str()}, {"fee", f.fee.str()}, {"context", context_json(f.context)},
@@ -373,22 +385,44 @@ json stock_fill_json(const StockFill& fill) {
           {"price", fill.price.str()}, {"time", md::format_timestamp(fill.time)}, {"source", share_source(fill)},
           {"option", nullable(fill.option)}};
 }
+const char* closure_name(ClosureKind kind) {
+  return kind == ClosureKind::Settlement ? "settlement" : kind == ClosureKind::Exercise ? "exercise"
+       : kind == ClosureKind::Assignment ? "assignment" : "reset";
+}
+/// What closed a round trip, and for a reducer liquidation why: the closure that ended
+/// it, or its last reducing fill's order. A system order's client ID is system:<why>:<id>.
+std::pair<json, json> closed_by(const TradingSnapshot& s, const Lifecycle& t) {
+  if (!t.closed) return {nullptr, nullptr};
+  if (t.closure) return {closure_name(*t.closure), nullptr};
+  if (t.exit_order == 0 || t.exit_order > s.recent_orders.size()) return {nullptr, nullptr};
+  const auto& order = s.recent_orders[t.exit_order - 1];
+  const auto& client = order.request.client_order_id;
+  if (order.system) {
+    const auto first = client.find(':'), last = client.rfind(':');
+    return {"system", first != std::string::npos && last > first ? json(client.substr(first + 1, last - first - 1)) : json(nullptr)};
+  }
+  if (order.role == OrderRole::StopLoss) return {"stop_loss", nullptr};
+  if (order.role == OrderRole::TakeProfit) return {"take_profit", nullptr};
+  if (client.starts_with("openport-close-")) return {"flatten", nullptr};
+  if (client.starts_with("pb-close:")) return {"playbook", nullptr};
+  return {"order", nullptr};
+}
+/// The replay run behind an account's trades, or null for a live account.
+json run_json(const std::optional<RunIdentity>& run) {
+  if (!run) return nullptr;
+  return {{"id", nullable(run->id)}, {"scenario", nullable(run->scenario)}, {"seed", nullable(run->seed)},
+          {"recording", nullable(run->recording)}, {"date", nullable(run->date)}};
+}
 json trades_json(const TradingView& view, std::string_view status, bool current_only) {
   const auto& s = *view.snapshot;
   const auto& e = s.evaluation;
-  auto attempt_of = [&](std::uint64_t first_fill) {
-    if (first_fill >= e.first_fill) return e.attempt;
-    for (auto it = s.attempts.rbegin(); it != s.attempts.rend(); ++it)
-      if (first_fill >= it->first_fill) return it->attempt;
-    return std::uint64_t{1};
-  };
   const auto all = lifecycles(s.recent_fills, s.closures, view.contracts);
   json trades = json::array();
   for (auto it = all.rbegin(); it != all.rend(); ++it) {
     const auto& t = *it;
     const bool open = !t.closed;
     if ((status == "open" && !open) || (status == "closed" && open)) continue;
-    const auto attempt = attempt_of(t.first_fill);
+    const auto attempt = fill_attempt(s, t.first_fill);
     if (current_only && attempt != e.attempt) continue;
     const auto& c = t.contract;
     const Money cost = t.open_notional * 100;
@@ -404,6 +438,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     json fills = json::array();
     for (const auto id : t.fills) fills.push_back(std::to_string(id));
     const auto a = s.annotations.find(std::to_string(t.first_fill));
+    const auto exit = closed_by(s, t);
     const auto review = s.trade_reviews.find(std::to_string(t.first_fill));
     const auto order_id = s.recent_fills.at(t.first_fill - 1).order_id;
     const auto strategy = s.strategy_reviews.find(std::to_string(order_id));
@@ -423,7 +458,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"type", c.type == pricing::OptionType::Call ? "call" : "put"},
         {"direction", t.direction > 0 ? "long" : "short"}, {"status", open ? "open" : "closed"},
         {"opened", md::format_timestamp(t.opened)},
-        {"closed", open ? json(nullptr) : json(md::format_timestamp(*t.closed))},
+        {"closed", open ? json(nullptr) : json(md::format_timestamp(*t.closed))}, {"trading_day", trading_day(t.closed)},
         {"duration_seconds", open ? json(nullptr) : json((*t.closed - t.opened) / md::kNanosPerSecond)},
         {"quantity", t.quantity}, {"max_quantity", t.max_quantity},
         {"opened_contracts", t.opened_contracts}, {"closed_contracts", t.closed_contracts},
@@ -432,9 +467,8 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"cost", cost.str()}, {"gross", t.gross.str()}, {"fees", t.fees.str()}, {"net", net.str()},
         {"return", open || cost == Money{} ? json(nullptr) : number(net.dollars() / cost.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
-        {"closure", !t.closure ? json(nullptr) : json(*t.closure == ClosureKind::Settlement ? "settlement"
-                                                        : *t.closure == ClosureKind::Exercise ? "exercise"
-                                                        : *t.closure == ClosureKind::Assignment ? "assignment" : "reset")},
+        {"closure", !t.closure ? json(nullptr) : json(closure_name(*t.closure))},
+        {"closed_by", exit.first}, {"system_reason", exit.second},
         {"fills", fills},
         {"note", a == s.annotations.end() ? std::string{} : a->second.note},
         {"tags", a == s.annotations.end() ? json::array() : json(a->second.tags)}});
@@ -470,15 +504,16 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         unrealised = money(held.unrealised);
       }
     }
+    // Stock fill IDs carry the "s" of the share trade IDs, apart from option fills'.
     json fills = json::array();
-    for (const auto id : t.fills) fills.push_back(std::to_string(id));
+    for (const auto id : t.fills) fills.push_back("s" + std::to_string(id));
     const auto first = t.fills.front();
     const auto last = open ? std::uint64_t{0} : t.fills.back();
     const auto note = s.annotations.find("s" + std::to_string(first));
     share_trades.push_back({{"kind", "shares"}, {"id", "s" + std::to_string(first)}, {"attempt", attempt},
         {"symbol", t.symbol}, {"direction", t.direction > 0 ? "long" : "short"}, {"status", open ? "open" : "closed"},
         {"opened", md::format_timestamp(t.opened)},
-        {"closed", open ? json(nullptr) : json(md::format_timestamp(*t.closed))},
+        {"closed", open ? json(nullptr) : json(md::format_timestamp(*t.closed))}, {"trading_day", trading_day(t.closed)},
         {"duration_seconds", open ? json(nullptr) : json((*t.closed - t.opened) / md::kNanosPerSecond)},
         {"shares", t.shares}, {"max_shares", t.max_shares},
         {"opened_shares", t.opened_shares}, {"closed_shares", t.closed_shares},
@@ -501,7 +536,8 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     dividends.push_back({{"symbol", d.symbol}, {"ex_date", md::format_date(d.ex_date)}, {"per_share", d.per_share.str()},
         {"shares", d.shares}, {"amount", d.amount.str()}, {"time", md::format_timestamp(d.time)}});
   return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades},
-          {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}, {"day_notes", day_notes_json(s)}};
+          {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}, {"day_notes", day_notes_json(s)},
+          {"run", run_json(view.run)}};
 }
 json plans_json() {
   json plans = json::array();
@@ -1269,7 +1305,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
       for (const auto& row : trades.at("share_trades")) rows.push_back(row);
     }
     return ApiResponse{200, paper_csv(rows, fills, account.empty() ? std::string(kMainAccount) : account,
-                                    source.status().provider, s.account_version, from, to),
+                                    source.status().provider, s.account_version, from, to, view->run),
                        "text/csv; charset=utf-8", fills ? "fills.csv" : "trades.csv"};
   }
   json body{{"account_version", std::to_string(s.account_version)}};

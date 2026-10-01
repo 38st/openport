@@ -2,13 +2,13 @@ import { Fragment, useMemo, useState } from "react"
 import { api, downloadCsv } from "../api/client"
 import { marketNow, useLive } from "../api/live"
 import { useAllOrders, useFills, useRefreshTrading, useTrades, useTradingSession } from "../api/trading"
-import type { DayNote, Fill, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
+import type { DayNote, Fill, RunIdentity, ShareTrade, Trade, TradingStatus } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Empty, PageHeader, Panel, Segmented, Tile, toneOf, toneText } from "../components/ui"
 import { signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
-import { contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, parseTags, shareSourceLabel, strategyResults, tradeBuckets, tradeNet, tradeTags, type Dimension, type JournalTrade, type Side } from "../lib/journal"
+import { contractLabel, dailyResults, exitLabel, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, parseTags, shareSourceLabel, strategyResults, tradeBuckets, tradeNet, tradeTags, type Dimension, type JournalTrade, type Side } from "../lib/journal"
 import { tradeGroups, type TradeGroup } from "../lib/positions"
 import { formatMoney, signedMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -18,6 +18,12 @@ import { netLabel } from "./OrdersView"
 const usd = (value: number) => signedMoney(value.toFixed(2))
 const monthName = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" })
 const short = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
+
+/** " · replay reversal seed 7" for a replay account, which its exports name on every row too. */
+function runLabel(run: RunIdentity | null | undefined): string {
+  if (!run) return ""
+  return run.scenario ? ` · replay ${run.scenario}${run.seed ? ` seed ${run.seed}` : ""}` : run.recording ? ` · replay ${run.recording}` : " · replay"
+}
 
 export function JournalView() {
   const { trading, accountScope } = useLive()
@@ -46,7 +52,7 @@ function Journal({ trading }: { trading: TradingStatus }) {
   const pf = stats.profitFactor
   return (
     <div className="min-w-0 space-y-4">
-      <PageHeader title="Journal" subtitle={`${stats.trades} closed trade${stats.trades === 1 ? "" : "s"} · ${scope === "current" ? `attempt ${trades.data.attempt}` : "all attempts"}${tag ? ` · tagged ${tag}` : ""}`}>
+      <PageHeader title="Journal" subtitle={`${stats.trades} closed trade${stats.trades === 1 ? "" : "s"} · ${scope === "current" ? `attempt ${trades.data.attempt}` : "all attempts"}${tag ? ` · tagged ${tag}` : ""}${runLabel(trades.data.run)}`}>
         {(playbooks.length > 0 || playbook) && <label className="flex items-center gap-2 text-xs text-muted">Playbook
           <select className="trade-input !w-auto !py-1" aria-label="Playbook" value={playbook} onChange={(event) => setPlaybook(event.target.value)}>
             <option value="">All playbooks</option>{playbooks.map((id) => <option key={id} value={id}>{id} · all versions</option>)}
@@ -227,7 +233,7 @@ function TradeRow({ trade: t, expanded, onToggle }: { trade: Trade; expanded: bo
     <td className="px-2 py-2 text-left">
       <span className={`mr-2 inline-block h-3 w-0.5 align-middle ${t.status === "open" ? "bg-accent" : tradeNet(t) >= 0 ? "bg-bullish" : "bg-bearish"}`} />
       <span className="font-medium">{contractLabel(t)}</span>
-      {t.closure && <span className="ml-1 text-[10px] text-muted">({t.closure})</span>}
+      {exitLabel(t) && <span className={`ml-1 text-[10px] ${t.closed_by === "system" ? "text-warn" : "text-muted"}`}>({exitLabel(t)})</span>}
       <Tags trade={t} />
     </td>
     <td className={`px-2 py-2 ${t.direction === "long" ? "text-bullish" : "text-bearish"}`}>{t.direction}</td>
@@ -416,6 +422,8 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
           <td className="px-2 py-1">{f.quantity}</td><td className="px-2 py-1">{formatMoney(f.price)}</td><td className="px-2 py-1">{formatMoney(f.fee)}</td>
         </tr>)}
         {trade.closure && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left" colSpan={6}>Closed by {trade.closure} at {formatMoney(trade.average_close)}</td></tr>}
+        {trade.closed_by === "system" && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left text-warn" colSpan={6}>
+          {trade.system_reason === "expiry" ? "Closed by the simulator before expiry, not by your order." : `Closed by the simulator's ${trade.system_reason === "soft_floor" ? "soft-floor" : trade.system_reason === "target" ? "profit-target" : trade.system_reason === "drawdown" ? "drawdown" : ""} liquidation, not by your order.`}</td></tr>}
         </tbody>
       </table>
     </div>
