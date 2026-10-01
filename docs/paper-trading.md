@@ -419,11 +419,23 @@ IOC). Armed orders last until the nearest contract’s last trade or auto-close,
 their `day_end` reports. Once triggered, a DAY order lasts the session it activated in,
 like any DAY order; a GTC order stays good until that deadline.
 
+A limit order with a trigger is a **stop-limit**. Its limit is set against its stop, not
+against today's market, so when it is accepted or changed the price band is measured
+around an option (or combo) trigger's level instead of the mid: a protective sell at
+2.90 with its stop at bid 3.00 is accepted while the market is at 4.10, and one at 1.00
+is not. An underlying trigger's limit is still banded around the mid. Once triggered,
+the band applies only to the price it fills at, so a market that gaps through the
+limit leaves the order working at its limit rather than cancelling it: it never fills
+worse.
+
 A **bracket** `{stop_loss, take_profit}` on an entry creates exits as the entry fills.
-Each exit takes exactly one of a trigger (a stop: market IOC when reached) or a limit
-price (a resting take-profit). Exits take the opposite side and are sized to the entry's
+Each exit takes a trigger (a stop: market IOC when reached), a limit price (a resting
+take-profit), or both (a stop-limit: armed until its trigger is reached, then a GTC
+limit at its price, which a gap through it leaves waiting rather than filled at a worse
+price). Exits take the opposite side and are sized to the entry's
 filled quantity; later entry fills grow them. Client IDs are the entry's with `:stop` or
-`:target`. The stop is market IOC and the take-profit a GTC limit; both last, and report
+`:target`. A stop is market IOC, and a take-profit or a triggered stop-limit a GTC limit
+on the tier tick; all last, and report
 in `day_end`, until the nearest contract's last trade or auto-close, and a stop already
 reached when the entry fills fires at once. The two exits are linked: when one fills
 completely it cancels the other with `OCO_FILLED`, and a partial fill of one leaves the
@@ -451,7 +463,8 @@ tick among the legs ($0.05 for SPX-class roots, $0.01 for XSP and equities).
 
 Checks run per leg where they apply: registration, expiry, the session, a fresh
 executable book, and `units * ratio` within `max_order_contracts`. The net price must lie
-in the price band around the net mid, where the band is as wide as the one for the legs'
+in the price band around the net mid (a closing stop-limit's, around its combo trigger
+level), where the band is as wide as the one for the legs'
 gross premium (`max(absolute, relative * sum of ratio * mid)`). Buy-only plans reject
 opening multi-leg orders (`BUY_ONLY`); inside the pre-expiry cutoff only closing
 orders are accepted (`EXPIRY_CUTOFF`), and daily loss, exposure and buying power apply to the whole order.
@@ -496,7 +509,8 @@ spread's stop or target back; a plain triggered combo, which is not an exit, sti
 needs a two-sided quote on every leg. Underlying levels must be positive
 and read the first leg's fresh valuation. On reaching the inclusive direction, the
 stop sends a closing market IOC combo with normal slippage and displayed-size
-limits. A partial stop fill re-arms the stop for the units still held and shrinks the
+limits; a stop-limit (a trigger and a signed net `limit_price`) rests instead as a
+closing GTC combo limit at that net, on the combo tick, and fills only at it or better. A partial stop fill re-arms the stop for the units still held and shrinks the
 target to them, as for a single contract. Missing data never triggers. Plain triggered
 combos are accepted only when every leg reduces holdings, including other manual
 closing orders' claims. Opening combos cannot carry triggers.
@@ -504,7 +518,8 @@ closing orders' claims. Opening combos cannot carry triggers.
 To attach exits to a held spread, submit its **closing** legs with `exits_only: true`
 and `bracket`. No entry fill is generated. The submitted order is the take-profit
 (or the stop if there is no target); its `type`, `limit_price` or `trigger` must match
-that exit. Use GTC for its limit or IOC for its triggered market order. Both exits
+that exit. Use GTC for its limit (a stop-limit's included, with its trigger) or IOC for
+its triggered market order. Both exits
 last until the nearest leg's last trade or auto-close. They can be attached in any
 session, and outside the regular session they wait for it. Every leg must oppose a held
 position, and `quantity * ratio` must fit the holding. For example:

@@ -775,6 +775,43 @@ TEST(TradingMultiLeg, TargetWaitsUntilTheSlippedNetFitsAndDebitEntriesReceiveCre
   }
 }
 
+TEST(TradingMultiLeg, AComboStopLimitRestsAtItsNetOnceReached) {
+  for (const bool held : {false, true}) {
+    Chain f;
+    TradingSession s(config(), f.time);
+    f.define(s, {P4900, P4890});
+    f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    // Stop when the displayed closing net reaches 2.00, paying at most 2.20 for it.
+    const ExitSpec stop_limit{Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("2.00")}, m("2.20")};
+    auto entry = combo("entry", credit_legs(), 2, "-0.80");
+    if (!held) entry.bracket = Bracket{stop_limit, {}};
+    ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+    OrderId stop = 2;
+    if (held) {
+      // A held spread's stop-limit: the submitted order is that stop, a GTC limit with its trigger.
+      auto exits = combo("exits", close_legs(), 2, "2.20", TimeInForce::Gtc);
+      exits.trigger = stop_limit.trigger;
+      exits.exits_only = true;
+      exits.bracket = Bracket{stop_limit, {}};
+      const auto placed = s.submit(exits, f.time);
+      ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+      stop = *placed.order_id;
+    }
+    const auto order = [&] { return s.snapshot()->recent_orders.at(static_cast<std::size_t>(stop - 1)); };
+    EXPECT_EQ(order().role, OrderRole::StopLoss);
+    EXPECT_EQ(order().status, OrderStatus::Armed);
+    EXPECT_EQ(order().request.type, OrderType::Limit);
+    // The net gaps to 3.10: the stop triggers and waits at its 2.20 limit.
+    f.quote(s, {{P4900, "6.90", "7.10", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(order().status, OrderStatus::Working);
+    EXPECT_EQ(s.snapshot()->positions.size(), 2U);
+    f.quote(s, {{P4900, "6.00", "6.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+    EXPECT_EQ(order().status, OrderStatus::Filled);
+    EXPECT_EQ(order().filled_notional, m("4.40"));  // a net of 2.20 for each of two units
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+  }
+}
+
 TEST(TradingMultiLeg, HeldExitsValidateHoldingsAndCanModifyCancelAndCloseUnderKill) {
   Chain f;
   auto c = config();

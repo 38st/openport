@@ -740,8 +740,8 @@ ExitSpec parse_exit(const json& j) {
   ExitSpec exit;
   if (j.contains("trigger")) exit.trigger = parse_trigger(j.at("trigger"));
   if (j.contains("limit_price")) exit.limit_price = decimal_field(j, "limit_price");
-  if (exit.trigger.has_value() == exit.limit_price.has_value())
-    throw std::invalid_argument("A bracket exit takes either a trigger or a limit_price");
+  if (!exit.trigger && !exit.limit_price)
+    throw std::invalid_argument("A bracket exit takes a trigger, a limit_price, or both for a stop-limit");
   return exit;
 }
 bool boolean_field(const json& j, const char* key) {

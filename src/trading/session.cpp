@@ -106,13 +106,15 @@ bool ask_only(const State& s, const Order& o, const Leg& leg) {
 }
 /// An exit's long leg that nobody bids for: sold at zero, without displayed size.
 bool given_away(const State& s, const Order& o, const Leg& leg) { return leg.side == Side::Sell && ask_only(s, o, leg); }
-Decision price_check(const State& s, const QuoteObservation& q, Money price) {
-  const auto middle = mid(q);
+/// The price band around the quote's mid, or around `center` (a stop-limit's trigger level).
+Decision price_check(const State& s, const QuoteObservation& q, Money price, std::optional<Money> center = {}) {
+  const auto middle = center ? *center : mid(q);
   const long double difference = std::abs(static_cast<long double>(price.micros()) - static_cast<long double>(middle.micros()));
   const long double band = std::max(static_cast<long double>(s.config.limits.price_band_absolute.micros()),
       static_cast<long double>(s.config.limits.price_band_relative) * static_cast<long double>(middle.micros()));
   if (difference > band)
-    return {Reason::PRICE_BAND, "Price is outside the configured band around mid",
+    return {Reason::PRICE_BAND, center ? "Limit is outside the configured band around the trigger level"
+                                       : "Price is outside the configured band around mid",
             static_cast<double>(difference / 1'000'000), static_cast<double>(band / 1'000'000), q.symbol};
   return {};
 }
@@ -992,11 +994,23 @@ Decision account_check(const State& s, bool reducing = false) {
         "; reset the account to start a new attempt");
   return {};
 }
+/// When an order is checked: as it is accepted or changed, as its trigger is
+/// reached, or as it fills. A stop-limit's limit is set against its stop rather
+/// than the market: it is banded around an option or combo trigger's level when
+/// accepted, and once triggered only the price it fills at is banded, so a market
+/// that gaps through the limit leaves it working instead of cancelled.
+enum class Stage { Accept, Activate, Fill };
+/// The level an untriggered stop-limit's limit is banded around, if it has one.
+std::optional<Money> stop_level(const Order& o) {
+  const auto& t = o.request.trigger;
+  if (!t || o.triggered_at > 0 || t->source == TriggerSource::Underlying) return std::nullopt;
+  return t->level;
+}
 /// Checks a multi-leg order like a single-leg one, per leg where it applies:
 /// contracts, sessions, size and quotes on every leg; the net price on the
 /// smallest leg tick and inside the band around the net mid (as wide as the
 /// band for the legs' gross premium); then rules, exposure and buying power.
-Decision combo_check(const State& s, const Order& o, bool at_fill) {
+Decision combo_check(const State& s, const Order& o, Stage stage) {
   const auto& r = o.request;
   const auto& rules = s.config.rules;
   const bool shape = r.legs.size() >= 2 && r.legs.size() <= kMaxLegs && r.symbol.empty() && r.side == Side::Buy &&
@@ -1032,11 +1046,11 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
         (t->direction == TriggerDirection::AtOrAbove || t->direction == TriggerDirection::AtOrBelow));
   };
   const auto exit_ok = [&](const std::optional<ExitSpec>& e) {
-    return !e || (e->trigger.has_value() != e->limit_price.has_value() && trigger_ok(e->trigger));
+    return !e || ((e->trigger || e->limit_price) && trigger_ok(e->trigger));
   };
   if (!trigger_ok(r.trigger) || (r.bracket && ((!r.bracket->stop_loss && !r.bracket->take_profit) ||
       !exit_ok(r.bracket->stop_loss) || !exit_ok(r.bracket->take_profit))))
-    return failure(Reason::INVALID_ORDER, "Combo exits need a signed net limit or a combo/underlying trigger");
+    return failure(Reason::INVALID_ORDER, "Combo exits need a combo/underlying trigger, a signed net limit, or both");
   const auto on_tick = [&](const std::optional<ExitSpec>& e) {
     return !e || !e->limit_price || e->limit_price->micros() % tick.micros() == 0;
   };
@@ -1079,19 +1093,23 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
     middle = leg.side == Side::Buy ? middle + value : middle - value;
     gross = gross + value;
   }
-  const auto price = !at_fill && r.limit_price ? *r.limit_price : net;
-  const long double difference = std::abs(static_cast<long double>(price.micros()) - static_cast<long double>(middle.micros()));
+  const bool limited = stage != Stage::Fill && r.limit_price;
+  const auto level = limited ? stop_level(o) : std::nullopt;
+  const auto price = limited ? *r.limit_price : net;
+  const auto center = level ? *level : middle;
+  const long double difference = std::abs(static_cast<long double>(price.micros()) - static_cast<long double>(center.micros()));
   const long double band = std::max(static_cast<long double>(s.config.limits.price_band_absolute.micros()),
       static_cast<long double>(s.config.limits.price_band_relative) * static_cast<long double>(gross.micros()));
-  if (difference > band)
-    return {Reason::PRICE_BAND, "Net price is outside the configured band around the net mid",
+  if (!(limited && stage == Stage::Activate) && difference > band)
+    return {Reason::PRICE_BAND, level ? "Net limit is outside the configured band around the trigger level"
+                                      : "Net price is outside the configured band around the net mid",
             static_cast<double>(difference / 1'000'000), static_cast<double>(band / 1'000'000), first->underlying};
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
-  if (rules.buying_power && !at_fill) {
+  if (rules.buying_power && stage != Stage::Fill) {
     const auto power = buying_power(s, o.id);
     if (power.focus_uses && power.total.available < Money{} && !fill_frees_power(s, o))
       return {Reason::BUYING_POWER, power.focus_opening > 0 ? "Order needs more buying power than the account has available"
@@ -1100,11 +1118,11 @@ Decision combo_check(const State& s, const Order& o, bool at_fill) {
   }
   return {};
 }
-Decision order_check(const State& s, const Order& o, bool at_fill = false) {
+Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept) {
   if (const auto d = account_check(s, closing_only(s, o)); !d.ok()) return d;
   try { (void)clean_annotation(o.request.note, o.request.tags); }
   catch (const TradingError& e) { return failure(e.code(), e.what()); }
-  if (multi_leg(o.request)) return combo_check(s, o, at_fill);
+  if (multi_leg(o.request)) return combo_check(s, o, stage);
   const auto& rules = s.config.rules;
   const auto& request = o.request;
   const auto c = s.contracts.find(request.symbol);
@@ -1125,8 +1143,7 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
     return failure(Reason::INVALID_TICK, "Limit price is not a positive multiple of the product tier tick");
   const auto positive = [](const std::optional<Trigger>& t) { return !t || t->level > Money{}; };
   const auto exit_ok = [&](const std::optional<ExitSpec>& e) {
-    return !e || (e->trigger.has_value() != e->limit_price.has_value() && positive(e->trigger) &&
-                  (!e->limit_price || *e->limit_price > Money{}));
+    return !e || ((e->trigger || e->limit_price) && positive(e->trigger) && (!e->limit_price || *e->limit_price > Money{}));
   };
   const auto& bracket = request.bracket;
   if (request.exits_only || (request.trigger && request.trigger->source == TriggerSource::Combo) ||
@@ -1134,7 +1151,7 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
                    (bracket->take_profit && bracket->take_profit->trigger && bracket->take_profit->trigger->source == TriggerSource::Combo))) ||
       !positive(request.trigger) ||
       (bracket && (!exit_ok(bracket->stop_loss) || !exit_ok(bracket->take_profit) || (!bracket->stop_loss && !bracket->take_profit))))
-    return failure(Reason::INVALID_ORDER, "Trigger levels and exit prices must be positive; each exit takes either a trigger or a limit price");
+    return failure(Reason::INVALID_ORDER, "Trigger levels and exit prices must be positive; each exit takes a trigger, a limit price or both");
   const auto on_tick = [&](const std::optional<ExitSpec>& e) {
     return !e || !e->limit_price || e->limit_price->micros() % tick_size(c->second.root, *e->limit_price).micros() == 0;
   };
@@ -1148,15 +1165,17 @@ Decision order_check(const State& s, const Order& o, bool at_fill = false) {
     return failure(Reason::EXPIRY_CUTOFF, "Contract is inside the pre-expiry cutoff; only closing orders are accepted");
   if (const auto d = quote_check(s, request.symbol); !d.ok()) return d;
   const auto& quote = s.books.at(request.symbol).quote;
-  const auto price = !at_fill && request.limit_price ? *request.limit_price
-      : execution_price(s, request.symbol, request.side, request.limit_price);
-  if (const auto d = price_check(s, quote, price); !d.ok()) return d;
+  if (stage == Stage::Fill || !request.limit_price) {
+    if (const auto d = price_check(s, quote, execution_price(s, request.symbol, request.side, request.limit_price)); !d.ok()) return d;
+  } else if (stage == Stage::Accept) {
+    if (const auto d = price_check(s, quote, *request.limit_price, stop_level(o)); !d.ok()) return d;
+  }
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
-  if (rules.buying_power && !at_fill) {
+  if (rules.buying_power && stage != Stage::Fill) {
     // Orders that free buying power are always allowed, including one whose fill
     // lowers other working orders' reservations; fills recheck against the
     // projected ledger instead.
@@ -1232,7 +1251,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   // System orders and bracket exits only ever reduce a position (exits are kept
   // within it), so they skip the price band and loss projection when executing.
   const bool reducing = o.system || o.role != OrderRole::Normal;
-  auto decision = reducing ? system_check(s, o) : order_check(s, o, true);
+  auto decision = reducing ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
   if (!decision.ok()) {
     decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
@@ -1311,7 +1330,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   const auto net = executable_net(s, o);
   if (!net || (o.request.limit_price && *net > *o.request.limit_price)) return;
   const bool exit = o.role != OrderRole::Normal;
-  auto decision = exit ? system_check(s, o) : order_check(s, o, true);
+  auto decision = exit ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
   Quantity units = s.config.rules.impact_ticks > 0 ? 1 : o.remaining();
   if (s.config.rules.impact_ticks == 0) for (const auto& leg : o.request.legs) {
@@ -1456,8 +1475,10 @@ void sync_exits(State& s, const std::string& symbol, Events& events) {
   }
 }
 /// Create a bracket's exits on the entry's first fill and grow them with later
-/// fills. A stop is armed until reached, a limit take-profit (GTC) rests; both are
-/// good until expiry, sized to the filled quantity, and cancel each other on a fill.
+/// fills. A stop is armed until reached, then trades at market (IOC); a limit
+/// take-profit rests (GTC); a stop-limit is armed until reached, then rests as a
+/// GTC limit. All are good until expiry and sized to the filled quantity, and one
+/// filling completely cancels the other.
 void attach_exits(State& s, OrderId entry_id, Events& events) {
   const auto entry = s.orders.at(static_cast<std::size_t>(entry_id - 1));  // pushes below invalidate references
   const auto& bracket = *entry.request.bracket;
@@ -1468,7 +1489,7 @@ void attach_exits(State& s, OrderId entry_id, Events& events) {
     exit.id = static_cast<OrderId>(s.orders.size() + 1);
     exit.request = {entry.request.client_order_id + (role == OrderRole::StopLoss ? ":stop" : ":target"),
                     entry.request.symbol, entry.request.side == Side::Buy ? Side::Sell : Side::Buy,
-                    spec.trigger ? OrderType::Market : OrderType::Limit, spec.trigger ? TimeInForce::Ioc : TimeInForce::Gtc,
+                    spec.limit_price ? OrderType::Limit : OrderType::Market, spec.limit_price ? TimeInForce::Gtc : TimeInForce::Ioc,
                     entry.filled_quantity, spec.limit_price, spec.trigger, {}, {}};
     if (multi_leg(entry.request)) {
       exit.request.side = Side::Buy;
@@ -1549,7 +1570,7 @@ bool reached(const State& s, const Order& o) {
 void activate(State& s, OrderId id, Events& events) {
   {
     const auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
-    auto d = o.role != OrderRole::Normal ? system_check(s, o) : order_check(s, o);
+    auto d = o.role != OrderRole::Normal ? system_check(s, o) : order_check(s, o, Stage::Activate);
     if (data_gap(d.code) || d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY) return;
     if (!d.ok()) {
       d.message = std::string(to_string(d.code)) + ": " + d.message;
@@ -1964,8 +1985,8 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
       stop.request.exits_only = false;
       stop.request.limit_price = bracket.stop_loss->limit_price;
       stop.request.trigger = bracket.stop_loss->trigger;
-      stop.request.type = stop.request.trigger ? OrderType::Market : OrderType::Limit;
-      stop.request.tif = stop.request.trigger ? TimeInForce::Ioc : TimeInForce::Gtc;
+      stop.request.type = stop.request.limit_price ? OrderType::Limit : OrderType::Market;
+      stop.request.tif = stop.request.limit_price ? TimeInForce::Gtc : TimeInForce::Ioc;
       stop.status = stop.request.trigger ? OrderStatus::Armed : OrderStatus::Working;
       stop.role = OrderRole::StopLoss;
       stop.oco = id;
@@ -2042,7 +2063,7 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
         (!multi_leg(order.request) && limit && *limit <= Money{}))
       decision = failure(Reason::INVALID_ORDER, "Trigger levels and exit prices must be positive");
     else if (limit && limit->micros() % tick_size(root, multi_leg(order.request) ? Money{} : *limit).micros() != 0)
-      decision = failure(Reason::INVALID_TICK, "Take-profit price is not a positive multiple of the product tier tick");
+      decision = failure(Reason::INVALID_TICK, "An exit's limit price is not a positive multiple of the product tier tick");
   } else {
     decision = order_check(s, order);
     if (decision.ok()) decision = open_orders_risk_check(s, order);
@@ -2759,7 +2780,9 @@ CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
     for (const auto id : open_ids(s)) {
       const auto& order = s.orders[id - 1];
       if (!order.open()) continue;
-      auto d = order.system || order.role != OrderRole::Normal ? system_check(s, order) : order_check(s, order);
+      // A triggered stop-limit keeps its limit beyond the band, as it may after a gap.
+      auto d = order.system || order.role != OrderRole::Normal ? system_check(s, order)
+          : order_check(s, order, order.triggered_at > 0 ? Stage::Activate : Stage::Accept);
       if (persistent(order) && (data_gap(d.code) || d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY)) continue;
       if (!d.ok()) {
         d.message = std::string(to_string(d.code)) + ": " + d.message;
