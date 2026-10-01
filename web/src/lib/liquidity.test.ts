@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { liquidity, liquidityDetail, spreadShare, volumeOiRatio } from "./liquidity"
+import type { PreviewLiquidity } from "../api/trading-types"
+import { displayedSizeNotes, liquidity, liquidityDetail, quoteIssueText, spreadShare, volumeOiRatio } from "./liquidity"
 
 const quote = { bid: 9, ask: 11, volume: 100, oi: 500 }
 describe("liquidity cues", () => {
@@ -29,5 +30,29 @@ describe("liquidity cues", () => {
     expect(volumeOiRatio({ ...quote, oi: 0 })).toBeNull()
     expect(volumeOiRatio({ ...quote, oi: null })).toBeNull()
     expect(liquidityDetail(quote)).toContain("Spread 20.0% · Volume 100 · OI 500")
+  })
+})
+
+describe("executable quotes and displayed size", () => {
+  it("say why a quote cannot fill paper orders", () => {
+    expect(quoteIssueText({ executable: true, quote_issue: null })).toBeNull()
+    expect(quoteIssueText({})).toBeNull()  // an older server
+    expect(quoteIssueText({ executable: false, quote_issue: "no_bid" })).toBe("One-sided: no bid")
+    expect(quoteIssueText({ executable: false, quote_issue: "zero_size" })).toBe("A side shows no displayed size")
+  })
+  it("show the displayed size this account has used, and what the rest of an order does", () => {
+    const leg: PreviewLiquidity = { symbol: "A", side: "buy", contracts: 10, executable: true, reason: null, displayed: 10, size_left: 4 }
+    const label = () => "4900 put"
+    expect(displayedSizeNotes([leg], label, { ioc: true, impact: false })).toEqual([
+      "4900 put: 4 of the 10 displayed at the ask left for your paper orders until a new quote.",
+      "4900 put: only 4 of 10 contracts can fill on this quote; the rest cancels (IOC).",
+    ])
+    expect(displayedSizeNotes([{ ...leg, side: "sell", contracts: 3 }], label, { ioc: false, impact: false }))
+      .toEqual(["4900 put: 4 of the 10 displayed at the bid left for your paper orders until a new quote."])
+    expect(displayedSizeNotes([{ ...leg, size_left: 10 }], label, { ioc: false, impact: false })).toEqual([])
+    expect(displayedSizeNotes([{ ...leg, size_left: 10, contracts: 12 }], label, { ioc: false, impact: true }))
+      .toEqual(["4900 put: 12 contracts against 10 left; the rest fills at simulated depth prices, within any limit."])
+    expect(displayedSizeNotes([{ ...leg, executable: false, reason: { code: "INVALID_QUOTE", message: "No bid: the quote is one-sided" } }], label, { ioc: true, impact: false }))
+      .toEqual(["4900 put: No bid: the quote is one-sided; new orders on it are refused until it can fill."])
   })
 })

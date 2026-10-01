@@ -968,6 +968,44 @@ TEST_F(PaperEngine, FractionalSizesNeverRoundUpAndCachedObservationsDoNotRefill)
   ASSERT_TRUE(wait_for([&] { return engine->trading_view()->snapshot->recent_fills.size() == 2; }));
 }
 
+TEST_F(PaperEngine, ChainsAndPreviewsShowExecutableQuotesAndTheDisplayedSizeAnAccountTook) {
+  seed("4.00", "4.20", 3);
+  auto take = order(market, "take", "4.20");
+  take["quantity"] = 2;
+  take["time_in_force"] = "ioc";
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", take).status, 201);
+  const auto call = read(*engine, "/api/underlyings/SPX/chain")["strikes"][0]["call"];
+  EXPECT_EQ(call["executable"], true);
+  EXPECT_TRUE(call["quote_issue"].is_null());
+  const auto used = read(*engine, "/api/portfolio")["liquidity_used"];
+  ASSERT_EQ(used.size(), 1U);
+  EXPECT_EQ(used[0], (json{{"symbol", market.symbol()}, {"bid_size", 3}, {"ask_size", 3}, {"bid_left", 3}, {"ask_left", 1}}));
+  auto more = order(market, "preview", "4.20");
+  more["quantity"] = 3;
+  const auto preview = write(*engine, "POST", "/api/orders/preview", more);
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  const auto leg = json::parse(preview.body)["liquidity"][0];
+  EXPECT_EQ(leg["symbol"], market.symbol());
+  EXPECT_EQ(leg["side"], "buy");
+  EXPECT_EQ(leg["contracts"], 3);
+  EXPECT_EQ(leg["executable"], true);
+  EXPECT_EQ(leg["displayed"], 3);
+  EXPECT_EQ(leg["size_left"], 1);
+  // A new observation refreshes the size; a one-sided one cannot fill at all.
+  market.next(); quote("0.00", "4.20", 3);
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/portfolio")["liquidity_used"].empty(); }));
+  const auto one_sided = read(*engine, "/api/underlyings/SPX/chain")["strikes"][0]["call"];
+  EXPECT_EQ(one_sided["executable"], false);
+  EXPECT_EQ(one_sided["quote_issue"], "no_bid");
+  more["side"] = "sell";
+  more["limit_price"] = "4.00";
+  const auto refused = json::parse(write(*engine, "POST", "/api/orders/preview", more).body)["liquidity"][0];
+  EXPECT_EQ(refused["executable"], false);
+  EXPECT_EQ(refused["reason"]["code"], "INVALID_QUOTE");
+  EXPECT_EQ(refused["reason"]["message"], "No bid: the quote is one-sided");
+  EXPECT_EQ(refused["displayed"], 0);
+}
+
 TEST_F(PaperEngine, EligibilityUsesTheDefinitionAndRecordsRejection) {
   // An American contract on a European index root is not listed.
   market.contract.style = pricing::ExerciseStyle::American;

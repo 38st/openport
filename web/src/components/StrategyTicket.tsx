@@ -303,7 +303,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           </div>}
           {exitable && <div className="col-span-2">{exits.fields}</div>}
         </fieldset>
-        <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} market={type === "market"} legs={legs.map((leg) => ({ label: `${leg.expiry} ${leg.strike} ${leg.type}`, quote: leg.quote, side: leg.side, quantity: q * leg.ratio }))} />
+        <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} impact={!!rules?.impact_ticks} market={type === "market"}
+          preview={preview.data?.liquidity} ioc={type === "market" || tif === "ioc"} legs={legs.map((leg) => ({ label: `${leg.expiry} ${leg.strike} ${leg.type}`, quote: leg.quote, side: leg.side, quantity: q * leg.ratio }))} />
         <p role="status" className={`rounded-md border px-3 py-2 text-xs ${marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>
           {type === "limit" && tif === "gtc" && extended ? "GTC waits for the regular session, even if the current quote crosses its limit."
             : quote.ask == null ? "Every leg needs a two-sided quote before the strategy can fill."

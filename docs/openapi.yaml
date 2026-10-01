@@ -4805,6 +4805,21 @@
               }
             ]
           },
+          "executable": {
+            "type": "boolean",
+            "description": "Whether paper orders can fill against this displayed quote: positive, uncrossed bid and ask with at least one whole contract on each side."
+          },
+          "quote_issue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuoteIssue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the quote is not executable; null when it is."
+          },
           "eep": {
             "$ref": "#/components/schemas/Num"
           },
@@ -4866,6 +4881,31 @@
           "oi",
           "vendor_iv"
         ]
+      },
+      "QuoteIssue": {
+        "anyOf": [
+          {
+            "const": "no_quote",
+            "type": "string"
+          },
+          {
+            "const": "no_bid",
+            "type": "string"
+          },
+          {
+            "const": "no_ask",
+            "type": "string"
+          },
+          {
+            "const": "crossed",
+            "type": "string"
+          },
+          {
+            "const": "zero_size",
+            "type": "string"
+          }
+        ],
+        "description": "Why a displayed quote cannot fill paper orders: no quote, a one-sided quote, a crossed one, or a side without a whole contract of displayed size."
       },
       "ChainRow": {
         "type": "object",
@@ -10510,6 +10550,12 @@
           },
           "attribution": {
             "$ref": "#/components/schemas/Attribution"
+          },
+          "liquidity_used": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LiquidityUsed"
+            }
           }
         },
         "required": [
@@ -10525,6 +10571,34 @@
           "valuation_complete",
           "quality_flags",
           "positions"
+        ]
+      },
+      "LiquidityUsed": {
+        "type": "object",
+        "description": "A current quote whose displayed size this account's orders have taken some of: what is left on each side for further paper orders until a new quote arrives.",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "bid_size": {
+            "type": "number"
+          },
+          "ask_size": {
+            "type": "number"
+          },
+          "bid_left": {
+            "type": "number"
+          },
+          "ask_left": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "symbol",
+          "bid_size",
+          "ask_size",
+          "bid_left",
+          "ask_left"
         ]
       },
       "RiskCaps": {
@@ -11910,6 +11984,12 @@
           "execution": {
             "$ref": "#/components/schemas/PreviewExecution"
           },
+          "liquidity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PreviewLiquidity"
+            }
+          },
           "simulated": {
             "const": true,
             "type": "boolean"
@@ -11931,7 +12011,63 @@
           "max_units_floor",
           "breach",
           "execution",
-          "simulated"
+          "simulated",
+          "liquidity"
+        ]
+      },
+      "PreviewLiquidity": {
+        "type": "object",
+        "description": "The quote one leg would trade against: whether paper orders can fill on it now (reason gives INVALID_QUOTE or STALE_QUOTE), the displayed size on the leg's side, and size_left, what this account's orders have left of that observation.",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/Side"
+          },
+          "contracts": {
+            "type": "number"
+          },
+          "executable": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "code",
+                  "message"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayed": {
+            "type": "number"
+          },
+          "size_left": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "symbol",
+          "side",
+          "contracts",
+          "executable",
+          "reason",
+          "displayed",
+          "size_left"
         ]
       },
       "EquitySample": {

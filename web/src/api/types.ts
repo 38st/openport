@@ -193,6 +193,7 @@ export interface Summary {
   coverage?: Coverage | null
 }
 
+export type QuoteIssue = "no_quote" | "no_bid" | "no_ask" | "crossed" | "zero_size"
 export interface OptionQuote {
   // Absent on servers predating paper trading.
   symbol?: string
@@ -200,6 +201,10 @@ export interface OptionQuote {
   ask_size?: Num
   tradable?: boolean
   untradable_reason?: string | null
+  /** Whether paper orders can fill on this displayed quote; absent on older servers. */
+  executable?: boolean
+  /** Why they cannot, when executable is false. */
+  quote_issue?: QuoteIssue | null
   eep?: Num
   bid: Num
   ask: Num

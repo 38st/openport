@@ -130,8 +130,31 @@ json exposure_summary(const UnderlyingMetrics& m) {
   };
 }
 
+/// Why paper orders cannot fill against a displayed quote, or null when they can:
+/// the simulator trades only a positive, uncrossed two-sided quote with at least
+/// one whole contract on each side (trading::valid_quote), as the Desk offers it.
+json quote_issue(const analytics::OptionMetrics& o) {
+  const auto money = [](double value) -> std::optional<trading::Money> {
+    if (!std::isfinite(value) || value <= 0) return std::nullopt;
+    try {
+      const auto price = trading::Money::from_double(value);
+      return price > trading::Money{} ? std::optional(price) : std::nullopt;
+    } catch (const trading::TradingError&) { return std::nullopt; }
+  };
+  const auto bid = money(o.bid);
+  const auto ask = money(o.ask);
+  if (!bid && !ask) return "no_quote";
+  if (!bid) return "no_bid";
+  if (!ask) return "no_ask";
+  if (*ask < *bid) return "crossed";
+  const auto whole = [](double size) { return std::isfinite(size) && size >= 1; };
+  if (!whole(o.bid_size) || !whole(o.ask_size)) return "zero_size";
+  return nullptr;
+}
+
 json option_json(const analytics::OptionMetrics& o) {
   if (o.id == analytics::kNoInstrument) return nullptr;
+  auto issue = quote_issue(o);
   return {
       {"symbol", o.contract.osi_symbol()},
       {"bid_size", std::isfinite(o.bid_size) && o.bid_size >= 0 && o.bid_size < 9223372036854775808.0
@@ -140,6 +163,8 @@ json option_json(const analytics::OptionMetrics& o) {
           ? json(static_cast<std::int64_t>(std::floor(o.ask_size))) : json(nullptr)},
       {"tradable", trading::eligible(o.contract).ok()},
       {"untradable_reason", trading::eligible(o.contract).ok() ? json(nullptr) : json(trading::to_string(trading::eligible(o.contract).code))},
+      {"executable", issue.is_null()},
+      {"quote_issue", std::move(issue)},
       {"bid", price(o.bid)},
       {"ask", price(o.ask)},
       {"mid", price(o.mid)},

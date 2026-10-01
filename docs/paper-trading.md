@@ -198,7 +198,10 @@ rejection) and records nothing. Other terms under that ID reject with `DUPLICATE
 Tickets show liquidity warnings for thin or absent two-sided quotes, including
 spread percentage, session volume and OI, without blocking submission. Strategy
 tickets check each leg. Market tickets show each executable side's displayed size
-and requested contracts. Optional latency and impact can change the simulated fill,
+and requested contracts. The chain marks a quote paper orders cannot fill on (one-sided,
+crossed or without displayed size) and, on the account's quotes, the displayed size
+its orders have already taken; tickets show both, and say from the server preview how
+much of an order can fill on the current quote and what happens to the rest. Optional latency and impact can change the simulated fill,
 as described below.
 The [liquidity rules](runtime.md#chain-volume-and-liquidity) are browser cues, not
 new reducer checks or journal fields.
@@ -910,7 +913,13 @@ The response contains `decision` (`ok` or a reason code), `reason`, `buying_powe
 (`required`, `before`, `working`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
 vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
 `breaches_floor`, `breaches_soft_floor`, `max_units`, `max_units_buying_power`,
-`max_units_floor`, projected `breach` and `execution`. Missing
+`max_units_floor`, projected `breach`, `execution` and
+`liquidity`: for each leg, its `symbol`, `side` and `contracts`, whether paper orders
+can fill on its quote now (`executable`, with the `INVALID_QUOTE` or `STALE_QUOTE`
+`reason` when not, and a one-sided, crossed or sizeless quote named in its message),
+the `displayed` size on the side it takes and `size_left`, what this account's orders
+have left of it on that observation. Orders beyond `size_left` wait for a new quote,
+or cancel as `IOC_REMAINDER`, unless impact supplies simulated depth. Missing
 inputs produce null analytical values. `simulated: true` labels the projection.
 Market orders use slipped far sides, through the impact blocks a fill would walk; limit
 orders use their limit debit or credit.
@@ -1791,7 +1800,11 @@ Versions are decimal strings and `write` is `open`, `token`, or `disabled` (see
 [write protection](#write-protection)). Clients refetch
 portfolio, orders and risk when the version changes. Chain option objects include
 canonical padded `symbol`, whole `bid_size`/`ask_size` (null when unavailable),
-`tradable` and `untradable_reason`, using the core eligibility policy.
+`tradable` and `untradable_reason`, using the core eligibility policy, and
+`executable`: whether paper orders can fill on the displayed quote, a positive,
+uncrossed bid and ask with at least one whole contract on each side. When it is false,
+`quote_issue` says why (`no_quote`, `no_bid`, `no_ask`, `crossed` or `zero_size`); a
+contract can be tradable with a quote that is not executable.
 
 Each `/api/status` and tick `underlyings[]` entry includes
 `paper: {accepting: boolean, reason: code|null, message: string|null, session}`, where
@@ -1942,10 +1955,10 @@ focus at the top of the ticket.
 | --- | --- |
 | `POST /api/positions/exercise` | Canonical `symbol` and positive `quantity` of long equity or ETF contracts to exercise early; returns the portfolio |
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
-| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover) |
+| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
-| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule |
+| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, and each leg's quote `liquidity` |
 | `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |

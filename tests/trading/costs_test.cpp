@@ -164,5 +164,41 @@ TEST(FillAudit, TheFirstQuotedTimeSurvivesRecoveryAndOlderFillsLoadWithoutIt) {
   EXPECT_EQ(nlohmann::json(fill).contains("quote"), false);
 }
 
+TEST(QuoteLiquidity, PreviewsShowEachLegsQuoteAndTheDisplayedSizeTheAccountLeft) {
+  Chain chain;
+  TradingSession session(config(), chain.time);
+  chain.define(session, {P4900, P4890});
+  chain.quote(session, {{P4900, "2.00", "2.20"}, {P4890, "1.50", "1.65"}}, 6);
+  ASSERT_TRUE(session.submit(vertical("credit", 2, std::nullopt), chain.time).decision.ok());
+  const auto left = session.sizes_left();
+  ASSERT_EQ(left.size(), 2U);
+  EXPECT_EQ(left.at(P4900).bid, 4);
+  EXPECT_EQ(left.at(P4900).ask, 6);
+  EXPECT_EQ(left.at(P4890).ask, 4);
+  EXPECT_EQ(left.at(P4890).observation, chain.observation);
+  auto preview = session.preview(vertical("more", 5, "-0.30"), chain.time);
+  ASSERT_EQ(preview.liquidity.size(), 2U);
+  EXPECT_EQ(preview.liquidity[0].symbol, P4900);
+  EXPECT_EQ(preview.liquidity[0].side, Side::Sell);
+  EXPECT_EQ(preview.liquidity[0].contracts, 5);
+  EXPECT_TRUE(preview.liquidity[0].quote.ok());
+  EXPECT_EQ(preview.liquidity[0].displayed, 6);
+  EXPECT_EQ(preview.liquidity[0].left, 4);
+  EXPECT_EQ(preview.liquidity[1].left, 4);
+  // A new observation refreshes the budget; a one-sided quote cannot fill.
+  ++chain.observation;
+  chain.time += md::kNanosPerSecond;
+  QuoteObservation one_sided{P4900, chain.observation, chain.time, std::nullopt, m("2.20"), 0, 6};
+  QuoteObservation refreshed{P4890, chain.observation, chain.time, m("1.50"), m("1.65"), 6, 6};
+  session.on_quotes({one_sided, refreshed}, {}, chain.time);
+  EXPECT_TRUE(session.sizes_left().empty());
+  preview = session.preview(vertical("again", 1, "-0.30"), chain.time);
+  ASSERT_EQ(preview.liquidity.size(), 2U);
+  EXPECT_EQ(preview.liquidity[0].quote.code, Reason::INVALID_QUOTE);
+  EXPECT_EQ(preview.liquidity[0].quote.message, "No bid: the quote is one-sided");
+  EXPECT_EQ(preview.liquidity[0].displayed, 0);
+  EXPECT_EQ(preview.liquidity[1].left, 6);
+}
+
 }  // namespace
 }  // namespace openport::trading
