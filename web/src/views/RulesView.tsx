@@ -62,8 +62,8 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         {e.day_lock && <> <strong className="text-foreground">Today is locked.</strong></>}
         {" "}It is the plan's own rule, apart from your personal daily loss limit below.</> }] : []),
     ...(objectives.length ? [{ title: "Objectives to pass", body: <>
-        {objectives.join("; ")}. A trading day counts once one of your own orders executes on it; holding a position over a day does not count.
-        Days follow the plan's trading day and the profit {balance ? "you close each day (net realised P&L after fees)" : "of each day's equity change"}.
+        {objectives.join("; ")}. A trading day counts once one of your own orders executes on it, or you sell or buy back delivered shares; holding a position over a day, or an exercise, does not count.
+        Days follow the plan's trading day, and a day's profit is {balance ? "what you close that day (net realised P&L after fees)" : "its change in equity"}.
         {r.consistency_percent ? <> The consistency rule never fails the attempt: while the best day is too large a share, the pass waits, as if the target were higher{e.consistency_target ? <> (the best day so far needs {formatMoney(e.consistency_target)} of profit)</> : null}, or for more profitable days.</> : null}</> }] : []),
     ...(p ? [{ title: "Payouts", body: <>
         A payout needs <strong className="text-foreground">{p.qualifying_days} qualifying days</strong> since the previous one: days that end with at least {formatMoney(p.qualifying_profit)} of net realised profit, after fees.

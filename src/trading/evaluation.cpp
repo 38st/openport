@@ -82,7 +82,7 @@ std::vector<Objective> objectives_with(const Evaluation& e, const AccountRules& 
     const auto required = static_cast<std::uint64_t>(rules.min_trading_days);
     out.push_back({Reason::MIN_TRADING_DAYS, stats.trading_days >= required, static_cast<double>(stats.trading_days),
                    static_cast<double>(required), std::to_string(stats.trading_days) + " of " + days_text(required) +
-                   " with a trade; a day counts once your own order executes on it"});
+                   " with a trade; a day counts once one of your own orders, or a share sale, executes on it"});
   }
   if (rules.min_profitable_days > 0) {
     const auto required = static_cast<std::uint64_t>(rules.min_profitable_days);
