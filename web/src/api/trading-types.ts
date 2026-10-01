@@ -317,8 +317,8 @@ export type ResetRequest = { reason: string; fill_model?: FillModel } & ({ plan:
 export type Side = "buy" | "sell"
 /** Option triggers compare the order's executable side; underlying ones compare spot. */
 export interface Trigger { source: "option" | "underlying" | "combo"; direction: "at_or_below" | "at_or_above"; level: Money }
-/** A stop takes a trigger (then trades at market); a take-profit takes a limit or a trigger. */
-export type ExitSpec = { trigger: Trigger; limit_price?: never } | { limit_price: Money; trigger?: never }
+/** A trigger (a stop: market when reached), a limit (a resting take-profit), or both (a stop-limit: a GTC limit once reached). */
+export type ExitSpec = { trigger: Trigger; limit_price?: Money } | { limit_price: Money; trigger?: Trigger }
 export interface Bracket { stop_loss?: ExitSpec; take_profit?: ExitSpec }
 /** One leg of a multi-leg order: `ratio` contracts per unit. */
 export interface OrderLeg { symbol: string; side: Side; ratio: number }

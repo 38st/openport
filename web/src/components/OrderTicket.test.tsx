@@ -148,6 +148,20 @@ describe("order ticket interaction", () => {
       },
     })
   })
+  it("sends a stop-limit exit: the stop's trigger with the limit it then rests at", async () => {
+    await render({ ...trading, fee_per_contract: "0.65" })
+    await act(async () => (host.querySelector('input[aria-label="Bracket"]') as HTMLInputElement).click())
+    const stopLimit = [...host.querySelectorAll("label")].find((label) => label.textContent === "Stop-limit")!.querySelector("input")!
+    await act(async () => stopLimit.click())
+    // It starts at the stop's own price.
+    expect(field("Stop loss limit price").value).toBe("3.50")
+    await setField("Stop loss limit price", "3.40")
+    expect(host.textContent).toContain("When bid ≤ $3.50, rests as a $3.40 limit to sell")
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({
+      bracket: { stop_loss: { trigger: { source: "option", direction: "at_or_below", level: "3.50" }, limit_price: "3.40" } },
+    })
+  })
   it("blocks submission until conditional and bracket levels are entered", async () => {
     await render({ ...trading, fee_per_contract: "0.65" })
     await choose("Condition", "When SPX crosses")

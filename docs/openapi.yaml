@@ -8943,27 +8943,23 @@
         ]
       },
       "ExitSpec": {
+        "type": "object",
+        "description": "A trigger (a stop: market IOC when reached), a limit_price (a resting take-profit), or both (a stop-limit: armed until the trigger is reached, then a GTC limit at limit_price).",
+        "properties": {
+          "trigger": {
+            "$ref": "#/components/schemas/Trigger"
+          },
+          "limit_price": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
         "anyOf": [
           {
-            "type": "object",
-            "properties": {
-              "trigger": {
-                "$ref": "#/components/schemas/Trigger"
-              },
-              "limit_price": false
-            },
             "required": [
               "trigger"
             ]
           },
           {
-            "type": "object",
-            "properties": {
-              "limit_price": {
-                "$ref": "#/components/schemas/Money"
-              },
-              "trigger": false
-            },
             "required": [
               "limit_price"
             ]

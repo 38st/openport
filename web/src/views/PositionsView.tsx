@@ -69,7 +69,7 @@ function protection(position: Position, orders: Order[]): string | null {
     (o.status === "working" || o.status === "partially_filled" || o.status === "armed"))
   if (!exits.length) return null
   return exits.map((o) => `${o.role === "stop_loss" ? "Stop" : "Target"} ${o.trigger ? describeTrigger(o.trigger, o.side ?? "sell", o.underlying)
-    : formatMoney(o.limit_price)}`).join(" · ")
+    + (o.limit_price != null ? `, limit ${formatMoney(o.limit_price)}` : "") : formatMoney(o.limit_price)}`).join(" · ")
 }
 function Positions({ positions, onClose, onExercise, onSettle, orders = [], selected, onSelect, groups = [] }: {
   positions: Position[]; onClose?: (position: Position) => void; onExercise?: (position: Position) => void

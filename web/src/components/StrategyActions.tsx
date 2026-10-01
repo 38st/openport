@@ -167,8 +167,9 @@ export function SpreadExitsDialog({ group, trading, onClose }: { group: Strategy
     const request: NewOrder = {
       client_order_id: clientId, legs: plan.legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })),
       quantity: plan.units, exits_only: true, bracket,
-      ...(primary.trigger ? { type: "market", time_in_force: "ioc", trigger: primary.trigger }
-        : { type: "limit", time_in_force: "gtc", limit_price: primary.limit_price }),
+      // The primary is the target, or the stop when there is none: a stop-limit is a GTC limit with its trigger.
+      ...(primary.limit_price != null ? { type: "limit", time_in_force: "gtc", limit_price: primary.limit_price, ...(primary.trigger ? { trigger: primary.trigger } : {}) }
+        : { type: "market", time_in_force: "ioc", trigger: primary.trigger }),
     }
     await write.run(() => api.submitOrder(request, trading.write), onClose)
   }
@@ -178,7 +179,8 @@ export function SpreadExitsDialog({ group, trading, onClose }: { group: Strategy
     <TradingError error={write.error ?? orders.error} />
     {active.length ? <>
       {active.map((order) => <div className="flex items-center justify-between gap-3 text-sm" key={order.id}>
-        <span>{order.role === "stop_loss" ? "Stop loss" : "Take profit"} · #{order.id} · {order.trigger?.level ?? order.limit_price}</span>
+        <span>{order.role === "stop_loss" ? "Stop loss" : "Take profit"} · #{order.id} · {order.trigger
+          ? `${order.trigger.level}${order.limit_price != null ? `, limit ${order.limit_price}` : ""}` : order.limit_price}</span>
         <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => setEditing(order)}>Change</button>
       </div>)}
       <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => void write.run(async () => {

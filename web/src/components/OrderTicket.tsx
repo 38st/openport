@@ -102,7 +102,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const [chosenType, setType] = useState<"limit" | "market">("limit")
   const type = extended ? "limit" : chosenType
   const [tif, setTif] = useState<"day" | "gtc" | "ioc">("day")
-  const [quantity, setQuantity] = useState(String(selection.quantity ?? 1))
+  const [quantity,setQuantity] = useState(String(selection.quantity ?? 1))
   const [limitPrice, setLimitPrice] = useState(() => limitPriceText(selection.price))
   const [fee, setFee] = useState("")
   // Conditional entry and bracket exits.
@@ -117,6 +117,9 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const [stopOn, setStopOn] = useState(true)
   const [stopSource, setStopSource] = useState<"option" | "underlying">("option")
   const [stopLevel, setStopLevel] = useState("")
+  // A stop-limit: once triggered, a GTC limit at this price instead of a market order.
+  const [stopLimitOn, setStopLimitOn] = useState(false)
+  const [stopLimit, setStopLimit] = useState("")
   const [targetOn, setTargetOn] = useState(true)
   const [targetSource, setTargetSource] = useState<"option" | "underlying">("option")
   const [targetLevel, setTargetLevel] = useState("")
@@ -156,12 +159,14 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const trigger: Trigger | undefined = condition === "cross" && validMoney(crossLevel) && Number(crossLevel) > 0
     ? { source: "underlying", direction: crossDirection(Number(crossLevel), spot), level: crossLevel } : undefined
   const exitLevel = (value: string) => validMoney(value) && Number(value) > 0
+  const stopValid = exitLevel(stopLevel) && (!stopLimitOn || exitLevel(stopLimit))
   const bracket: Bracket | undefined = protect ? {
-    ...(stopOn && exitLevel(stopLevel) ? { stop_loss: { trigger: { source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel } } } : {}),
+    ...(stopOn && stopValid ? { stop_loss: { trigger: { source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel },
+      ...(stopLimitOn ? { limit_price: stopLimit } : {}) } } : {}),
     ...(targetOn && exitLevel(targetLevel) ? { take_profit: targetSource === "option" ? { limit_price: targetLevel }
       : { trigger: { source: "underlying" as const, direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel } } } : {}),
   } : undefined
-  const bracketValid = !protect || ((stopOn || targetOn) && (!stopOn || exitLevel(stopLevel)) && (!targetOn || exitLevel(targetLevel)))
+  const bracketValid = !protect || ((stopOn || targetOn) && (!stopOn || stopValid) && (!targetOn || exitLevel(targetLevel)))
   const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee)) &&
     (condition === "now" || trigger != null) && bracketValid
   const untradable = quote?.tradable !== true || quote.symbol !== selection.symbol
@@ -234,6 +239,17 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     if (on && !stopLevel) setStopLevel(suggest("stop", stopSource))
     if (on && !targetLevel) setTargetLevel(suggest("target", targetSource))
   }
+  // A stop-limit starts at its option stop's own price, or at the suggested stop price.
+  const enableStopLimit = (on: boolean) => {
+    setStopLimitOn(on)
+    if (on && !stopLimit) setStopLimit(stopSource === "option" && exitLevel(stopLevel) ? stopLevel : suggest("stop", "option"))
+  }
+  const exitSide = side === "buy" ? "sell" : "buy"
+  const stopText = describeTrigger({ source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel }, exitSide, selection.underlying)
+  const stopHint = !exitLevel(stopLevel) ? "Enter a stop level."
+    : !stopLimitOn ? `${side === "buy" ? "Sells" : "Buys"} at market when ${stopText}.`
+    : !exitLevel(stopLimit) ? "Enter the stop-limit's price."
+    : `When ${stopText}, rests as a ${formatMoney(stopLimit)} limit to ${exitSide}: it fills at that price or better, and keeps waiting if the market gaps through it.`
   const stepQuantity = (delta: number) => setQuantity(String(Math.max(1, (Number.isSafeInteger(q) ? q : 1) + delta)))
 
   return <>
@@ -323,8 +339,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           </label>
           {protect && <>
             <ExitRow label="Stop loss" on={stopOn} setOn={setStopOn} source={stopSource} setSource={(next) => { setStopSource(next); setStopLevel(suggest("stop", next)) }}
-              level={stopLevel} setLevel={setStopLevel} underlying={selection.underlying}
-              hint={exitLevel(stopLevel) ? `${side === "buy" ? "Sells" : "Buys"} at market when ${describeTrigger({ source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel }, side === "buy" ? "sell" : "buy", selection.underlying)}.` : "Enter a stop level."} />
+              level={stopLevel} setLevel={setStopLevel} underlying={selection.underlying} hint={stopHint}
+              limit={{ on: stopLimitOn, setOn: enableStopLimit, price: stopLimit, setPrice: setStopLimit }} />
             <ExitRow label="Take profit" on={targetOn} setOn={setTargetOn} source={targetSource} setSource={(next) => { setTargetSource(next); setTargetLevel(suggest("target", next)) }}
               level={targetLevel} setLevel={setTargetLevel} underlying={selection.underlying}
               hint={!exitLevel(targetLevel) ? "Enter a target." : targetSource === "option" ? `Rests as a ${formatMoney(targetLevel)} limit to ${side === "buy" ? "sell" : "buy"}.`
@@ -364,9 +380,11 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   </>
 }
 
-function ExitRow({ label, on, setOn, source, setSource, level, setLevel, underlying, hint }: {
+function ExitRow({ label, on, setOn, source, setSource, level, setLevel, underlying, hint, limit }: {
   label: string; on: boolean; setOn: (on: boolean) => void; source: "option" | "underlying"; setSource: (source: "option" | "underlying") => void
   level: string; setLevel: (level: string) => void; underlying: string; hint: string
+  /** A stop's optional limit price, which makes it a stop-limit. */
+  limit?: { on: boolean; setOn: (on: boolean) => void; price: string; setPrice: (price: string) => void }
 }) {
   return <div className="space-y-1.5">
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -376,6 +394,11 @@ function ExitRow({ label, on, setOn, source, setSource, level, setLevel, underly
     {on && <>
       <label className="trade-label">{label} {source === "option" ? "price ($)" : `${underlying} level`}
         <input className="trade-input" inputMode="decimal" value={level} onChange={(e) => setLevel(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
+      {limit && <>
+        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={limit.on} onChange={(e) => limit.setOn(e.target.checked)} className="accent-[var(--accent)]" />Stop-limit</label>
+        {limit.on && <label className="trade-label">{label} limit price ($)
+          <input className="trade-input" inputMode="decimal" value={limit.price} onChange={(e) => limit.setPrice(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>}
+      </>}
       <span className="text-[11px] text-muted">{hint}</span>
     </>}
   </div>

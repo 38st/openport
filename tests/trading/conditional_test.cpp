@@ -190,6 +190,59 @@ TEST(TradingConditional, APartialTargetFillShrinksTheStopInsteadOfCancellingIt) 
   EXPECT_TRUE(s.snapshot()->positions.empty());
 }
 
+TEST(TradingConditional, AStopLimitExitRestsAtItsLimitOnceReachedAndWaitsThroughAGap) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ExitSpec stop_limit{trigger(TriggerSource::Option, TriggerDirection::AtOrBelow, "3.50"), m("3.40")};
+  ASSERT_TRUE(s.submit(with_bracket(f.limit("entry", 2, "4.20"), stop_limit, target_at("5.00")), f.time).decision.ok());
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, 2).request.type, OrderType::Limit);
+  EXPECT_EQ(order(s, 2).request.tif, TimeInForce::Gtc);
+  // The bid gaps through the stop and its limit: the stop triggers and rests at 3.40, far
+  // below the band around the mid, rather than sell at 3.00 or cancel.
+  quote(s, f, "3.00", "3.20");
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Working);
+  EXPECT_EQ(order(s, 2).triggered_at, f.time);
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 1U);
+  EXPECT_TRUE(order(s, 3).open());
+  // Back at its limit, it sells, and the target is cancelled.
+  quote(s, f, "3.40", "3.60");
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("3.40"));
+  EXPECT_EQ(order(s, 3).reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  // Its limit, like a take-profit's, takes the product tick.
+  ExitSpec off_tick{trigger(TriggerSource::Option, TriggerDirection::AtOrBelow, "3.50"), m("3.42")};
+  EXPECT_EQ(s.submit(with_bracket(f.limit("tick", 1, "3.60"), off_tick, {}), f.time).decision.code, Reason::INVALID_TICK);
+}
+
+TEST(TradingConditional, AStopLimitOrderIsBandedAroundItsStopAndKeepsWorkingThroughAGap) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("long", 1, "4.20"), f.time).decision.ok());
+  // A protective stop-limit well below the market: its limit is 1.20 from the mid
+  // (beyond the 0.82 band there) but 0.10 from its stop, which is what it is set against.
+  auto protect = f.limit("protect", 1, "2.90", Side::Sell, TimeInForce::Gtc);
+  protect.trigger = trigger(TriggerSource::Option, TriggerDirection::AtOrBelow, "3.00");
+  ASSERT_TRUE(s.submit(protect, f.time).decision.ok());
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  // A limit far from its own stop is still refused.
+  auto far = f.limit("far", 1, "1.00", Side::Sell, TimeInForce::Gtc);
+  far.trigger = trigger(TriggerSource::Option, TriggerDirection::AtOrBelow, "3.00");
+  EXPECT_EQ(s.submit(far, f.time).decision.code, Reason::PRICE_BAND);
+  // The market gaps to 2.10: the order triggers and keeps working at 2.90 instead of
+  // being cancelled for a limit outside the band around the new mid.
+  quote(s, f, "2.00", "2.20");
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Working);
+  EXPECT_EQ(order(s, 2).triggered_at, f.time);
+  quote(s, f, "2.90", "3.10");
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("2.90"));
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 TEST(TradingConditional, ExitsGrowWithEntryFillsAndShrinkOrCancelWithManualCloses) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

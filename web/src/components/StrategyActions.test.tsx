@@ -93,6 +93,21 @@ it("sets exits on the held closing legs under the reduce-only latch", async () =
   }), trading.write)
 }, renderTimeout)
 
+it("sets a held spread's stop-limit alone as its GTC limit with the trigger", async () => {
+  await render(<SpreadExitsDialog group={spread} trading={trading} onClose={() => {}} />)
+  await check("Take profit")
+  await setField("Stop level", "4.00")
+  await check("Stop-limit")
+  await setField("Closing net limit", "4.20")
+  await waitForRender(() => expect([...host.querySelectorAll("button")].find((button) => button.textContent === "Set exits")?.disabled).toBe(false))
+  await click("Set exits")
+  const trigger = { source: "combo", direction: "at_or_above", level: "4.00" }
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({
+    exits_only: true, type: "limit", time_in_force: "gtc", limit_price: "4.20", trigger,
+    bracket: { stop_loss: { trigger, limit_price: "4.20" } },
+  }), trading.write)
+}, renderTimeout)
+
 it("changes a signed combo stop and cancels the held OCO exits", async () => {
   const legs = closingPlan(spread).legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio }))
   const stop: Order = { ...entry, id: "6", filled_quantity: 0, remaining_quantity: 2, legs, role: "stop_loss", status: "armed", type: "market",

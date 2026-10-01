@@ -36,7 +36,8 @@ simulation's limits.
   underlying (one-minute to daily, backfilled from Cboe's free history) showing your
   strikes, armed triggers and the selected expiry's expected move.
 - **Orders**: day and GTC limits, market orders, orders that wait for a price level,
-  and brackets whose stop-loss and take-profit cancel each other. GTC orders wait
+  stop-limits, and brackets whose stop-loss (a stop or a stop-limit) and take-profit
+  cancel each other, keeping a partly filled position protected. GTC orders wait
   outside the regular session and last until the contract's last trade or auto-close.
   Working orders change in place: size, limit or trigger level. Entry notes and tags
   follow the trades into the Journal. Tickets warn on thin liquidity without blocking;
@@ -256,3 +257,5 @@ the simulation's limits.
 - [x] Current model-free IV, ATM/skew, realized volatility, cones and implied session moves
 - [x] Local volatility history, IV rank and percentile, labelled index proxies and ex-post VRP
 - [x] Morning brief with market levels, account allowance, day notes and chart overlays
+- [x] Stop-limit exits on single contracts and spreads, banded around their stop, and
+      exits that re-arm or shrink so a partly filled position stays protected

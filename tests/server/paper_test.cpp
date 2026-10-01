@@ -2606,8 +2606,22 @@ TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
   auto bad = order(market, "empty-bracket", "4.20");
   bad["bracket"] = json::object();
   expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
-  bad["bracket"] = {{"stop_loss", {{"trigger", stop}, {"limit_price", "3.00"}}}};
+  bad["bracket"] = {{"stop_loss", json::object()}};
   expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  // A stop with a limit price is a stop-limit: armed, then a GTC limit once reached.
+  auto stop_limit = order(market, "stop-limit", "4.20");
+  stop_limit["bracket"] = {{"stop_loss", {{"trigger", stop}, {"limit_price", "3.40"}}}};
+  const auto limited = write(*engine, "POST", "/api/orders", stop_limit);
+  ASSERT_EQ(limited.status, 201) << limited.body;
+  const auto exit_id = json::parse(limited.body)["order"]["stop_loss_order"];
+  for (const auto& item : read(*engine, "/api/orders?status=open")["orders"]) {
+    if (item["id"] != exit_id) continue;
+    EXPECT_EQ(item["type"], "limit");
+    EXPECT_EQ(item["time_in_force"], "gtc");
+    EXPECT_EQ(item["status"], "armed");
+    EXPECT_EQ(item["limit_price"], "3.40");
+    EXPECT_EQ(item["trigger"], stop);
+  }
   bad["bracket"] = {{"stop_loss", {{"trigger", {{"source", "spot"}, {"direction", "at_or_below"}, {"level", "1"}}}}}};
   expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
 
