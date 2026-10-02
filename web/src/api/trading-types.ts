@@ -406,7 +406,7 @@ export type NewOrder = { tags?: string[]; note?: string } & ({
   quantity: number
   trigger?: Trigger
   bracket?: Bracket
-  /** A whole trade to join, by one of its open round trips' IDs (an adjustment). */
+  /** A whole trade to join, by its ID or one of its open round trips' IDs (an adjustment). */
   group?: string
   legs?: never
 } | {
@@ -416,7 +416,7 @@ export type NewOrder = { tags?: string[]; note?: string } & ({
   trigger?: Trigger
   bracket?: Bracket
   exits_only?: boolean
-  /** A whole trade to join, by one of its open round trips' IDs (an adjustment). */
+  /** A whole trade to join, by its ID or one of its open round trips' IDs (an adjustment). */
   group?: string
   /** Units of the strategy. */
   quantity: number

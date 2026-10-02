@@ -1499,14 +1499,16 @@ is in a whole trade, named by a round trip's ID and carried as its `group`: its 
 or for a strategy's legs the first leg's. A multi-leg order that closes or adds to
 another order's round trip at the instant it opens new ones, a roll or an
 adjustment, joins the round trips it opens to that trade; so does any order that
-names a trade in `group`, by one of its open round trips' IDs (an order naming no
-open round trip on its underlying, or attaching held exits, is refused with
-`INVALID_GROUP`). `POST /api/trades/group` joins the trades of two or more open
-round trips into one, named by the oldest, so legs entered one by one become one
-trade; `POST /api/trades/ungroup` takes each listed round trip out of its trade into
-one of its own. Both refuse closed round trips and mixed underlyings
-(`INVALID_GROUP`) and unknown ones (`UNKNOWN_TRADE`), are journaled, and change
-nothing else.
+names a trade in `group`, by its ID or one of its open round trips' (an order naming
+no trade holding an open round trip on its underlying, or attaching held exits, is
+refused with `INVALID_GROUP`). `POST /api/trades/group` joins the trades of two or
+more open round trips into one, named by the oldest, so legs entered one by one
+become one trade. A closed round trip can name its whole trade for grouping while
+that trade still holds an open round trip. `POST /api/trades/ungroup` takes each
+listed open round trip out of its trade into one of its own; it still refuses
+closed round trips. Both refuse fully closed trades and mixed underlyings
+(`INVALID_GROUP`) and unknown round trips (`UNKNOWN_TRADE`), are journaled, and
+change nothing else.
 
 A trade with more than one entry has a whole-trade review. A roll's starts as the
 trade's review was before it (its first strategy's, or its first round trip's), so
@@ -1851,7 +1853,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
 | `INVALID_NOTE`, `UNKNOWN_TRADE` | An order or trade note or tag past its limits, or a note on a fill that opens no trade |
-| `INVALID_GROUP` | An order's `group` names no open round trip on its underlying, or a trade grouping names a closed round trip, mixed underlyings or too few round trips |
+| `INVALID_GROUP` | An order's `group` names no open round trip or whole trade holding one on its underlying; grouping names a fully closed trade, mixed underlyings or too few round trips; or ungrouping names a closed round trip |
 | `DEFINED_RISK` | A defined-risk plan's order, bracket exit or exercise would leave a short option uncovered, now or once the open orders fill |
 
 ## Engine integration and HTTP API
@@ -2096,7 +2098,7 @@ focus at the top of the ticket.
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target), decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
-| `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, open round trips by trade ID: join their trades into one, or take each out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
+| `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, round trips by trade ID: join their trades into one (a closed round trip can name a whole trade still holding an open one), or take each listed open round trip out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |

@@ -1237,26 +1237,26 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   return {};
 }
 /// An order naming a trade to join: it must open, and name a round trip held now
-/// on its underlying, by the trades view's ID.
+/// on its underlying, or a whole trade holding one, by the trades view's ID.
 Decision group_check(const State& s, const OrderRequest& r) {
   if (r.exits_only) return failure(Reason::INVALID_GROUP, "Held exits open nothing to join to a trade");
   const auto symbols = order_symbols(r);
   const auto contract = s.contracts.find(symbols.front());
   if (contract == s.contracts.end()) return {};
-  const auto check = [&](const std::string& symbol, std::uint64_t trade) -> std::optional<Decision> {
-    if (std::to_string(trade) != r.group) return std::nullopt;
+  const auto check = [&](const std::string& symbol, const Lifecycle& life) -> std::optional<Decision> {
+    if (std::to_string(life.first_fill) != r.group && trade_group(life, s.groups) != r.group) return std::nullopt;
     if (s.contracts.at(symbol).underlying != contract->second.underlying)
       return failure(Reason::INVALID_GROUP, "A trade's round trips share one underlying");
     return Decision{};
   };
   if (s.reviewing.ready) {
     for (const auto& [symbol, open] : s.reviewing.builder.open)
-      if (const auto d = check(symbol, open.life.first_fill)) return *d;
+      if (const auto d = check(symbol, open.life)) return *d;
   } else {
     for (const auto& life : lifecycles(s.fills, s.closures, s.contracts))
-      if (!life.closed) if (const auto d = check(life.symbol, life.first_fill)) return *d;
+      if (!life.closed) if (const auto d = check(life.symbol, life)) return *d;
   }
-  return failure(Reason::INVALID_GROUP, "group must name an open round trip by its trade ID");
+  return failure(Reason::INVALID_GROUP, "group must name an open round trip, or a whole trade holding one, by its trade ID");
 }
 Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept) {
   if (const auto d = account_check(s, closing_only(s, o)); !d.ok()) return d;
