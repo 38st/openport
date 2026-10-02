@@ -192,3 +192,28 @@ it("blocks replay starts and every running control until a required token is hel
   await click("Pause")
   expect(api.controlReplay).toHaveBeenCalledWith({ paused: true }, "token")
 })
+
+it("labels a run's sessions by date and steps to a New York date and time", async () => {
+  const sessions = [
+    { session: "regular" as const, date: "2026-09-16", open: "2026-09-16T13:30:00Z", end: "2026-09-16T20:15:00Z" },
+    { session: "curb" as const, date: "2026-09-16", open: "2026-09-16T20:15:15Z", end: "2026-09-16T20:59:45Z" },
+    { session: "overnight" as const, date: "2026-09-17", open: "2026-09-17T00:15:00Z", end: "2026-09-17T13:25:00Z" },
+  ]
+  const several = { ...listing, demos: [{ ...listing.demos![0]!, sessions, end: sessions[2]!.end }], replay: { ...replay, sessions, end: sessions[2]!.end } }
+  client.setQueryData(["replay-listing"], several)
+  vi.mocked(api.replay).mockResolvedValue(several)
+  vi.spyOn(api, "controlReplay").mockResolvedValue({ replay })
+  await render()
+  expect(host.textContent).toContain("simulated · Wed, Sep 16 regular, curb · Thu, Sep 17 overnight")
+  const marked = host.querySelector('[aria-label="Run sessions"] [aria-current="step"]')
+  expect(marked?.textContent).toBe("Wed, Sep 16 regular")
+  // The field starts at the replay's clock in New York.
+  expect((host.querySelector('[aria-label="Step to"]') as HTMLInputElement).value).toBe("2026-09-16T15:00")
+  await change("Step to", "2026-09-17T02:30")
+  await click("Step")
+  expect(api.controlReplay).toHaveBeenCalledWith({ until: "2026-09-17T02:30" }, "open")
+  // Between sessions the banner names the next one.
+  vi.mocked(useLive).mockReturnValue(liveState(status, null, "open", 0, "main", () => {}, "replay", { ...replay, sessions, time: "2026-09-16T22:00:00Z" }, switchSource))
+  await act(async () => root.render(<QueryClientProvider client={client}><ReplayBanner /></QueryClientProvider>))
+  expect(host.textContent).toContain("closed until the overnight session · 3 of 3")
+})

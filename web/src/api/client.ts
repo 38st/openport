@@ -186,7 +186,7 @@ export const api = {
   startReplay: (source: ReplaySource, speed: number, mode: WriteMode, options: ReplayStart = {}) =>
     write<{ replay: ReplayState }>("/api/replay", "POST", mode, { ...source, speed, ...options }),
   deleteReplay: (id: string, mode: WriteMode) => write<{ deleted: string }>(`/api/replay/history/${encodeURIComponent(id)}`, "DELETE", mode),
-  controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean }, mode: WriteMode) =>
+  controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean; until?: string }, mode: WriteMode) =>
     write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),
   stopReplay: (mode: WriteMode) => write<{ replay: null }>("/api/replay", "DELETE", mode),
   candles: (symbol: string, interval: CandleInterval, limit: number, signal?: AbortSignal) =>

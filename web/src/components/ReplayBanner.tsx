@@ -1,5 +1,5 @@
 import { useLive } from "../api/live"
-import { replayClock, speedLabel, useReplayControls } from "../views/ReplayView"
+import { replayClock, sessionAt, speedLabel, useReplayControls } from "../views/ReplayView"
 import { TradingError } from "./TradingControls"
 import { Badge } from "./ui"
 
@@ -9,11 +9,14 @@ export function ReplayBanner() {
   const controls = useReplayControls()
   const replay = live.replay
   if (live.source === "live" || !replay) return null
+  const sessions = replay.sessions ?? []
+  const at = sessions.length > 1 ? sessionAt(sessions, replay.time) : null
   return (
     <div role="status" aria-label="Replay" className="border-b border-warn/40 bg-warn/10 px-4 py-1.5 text-xs">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <Badge tone={replay.demo ? "accent" : "warn"}>{replay.demo ? "Demo" : "Replay"}</Badge>
         <span className="font-medium tabular">{replayClock(replay.time)}</span>
+        {at && <span className="text-muted">{at.open ? `${sessions[at.index]!.session} session` : `closed until the ${sessions[at.index]!.session} session`} · {at.index + 1} of {sessions.length}</span>}
         <span className="text-muted">{replay.demo ? `${replay.file} · ${replay.seed ? `seed ${replay.seed} · ` : ""}Simulated prices, not market data` : `${replay.file} · recording`}</span>
         <span className="text-muted">{live.source.startsWith("history:") ? "read-only replay" : replay.fast_forwarding ? `Preparing start state… ${Math.round((replay.progress ?? 0) * 100)}%` : replay.stepping ? "Stepping…" : replay.finished ? "finished" : replay.paused ? "paused" : speedLabel(replay.speed)}</span>
         <span className="ml-auto flex flex-wrap gap-1">
