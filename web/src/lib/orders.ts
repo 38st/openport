@@ -16,7 +16,8 @@ export function editable(order: Order): boolean {
  * in force between DAY and GTC (bracket exits are good until expiry).
  */
 export function editableFields(order: Order) {
-  return { quantity: !order.reduce_only, limit: order.type === "limit", trigger: order.status === "armed" && order.trigger != null,
+  return { quantity: !order.reduce_only, limit: order.type === "limit",
+    trigger: order.status === "armed" && order.trigger != null && order.trigger.source !== "time",
     tif: !order.role && order.type === "limit" && (order.time_in_force === "day" || order.time_in_force === "gtc") }
 }
 

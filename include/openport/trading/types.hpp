@@ -66,15 +66,34 @@ enum class OrderStatus { Working, PartiallyFilled, Filled, Cancelled, Rejected, 
 
 /// A price level that activates an order. Option triggers compare the order's
 /// executable side (ask for buys, bid for sells); underlying triggers compare
-/// the spot from the contract's fresh valuation. Levels are inclusive.
-enum class TriggerSource { Option, Underlying, Combo };
+/// the spot from the contract's fresh valuation, or another underlying's price
+/// when they name one. Study triggers compare an underlying's study, and time
+/// triggers the New York time of day. Levels are inclusive.
+enum class TriggerSource { Option, Underlying, Combo, Study, Time };
 enum class TriggerDirection { AtOrBelow, AtOrAbove };
+/// The studies a trigger can watch: 30-day and 7-day implied volatility in vol
+/// points, and the 9-day to 30-day implied volatility ratio.
+inline constexpr std::string_view kTriggerStudies[] = {"iv30", "iv7", "term_ratio"};
 struct Trigger {
   TriggerSource source = TriggerSource::Option;
   TriggerDirection direction = TriggerDirection::AtOrBelow;
-  Money level;
+  Money level;  ///< Zero for a time trigger.
+  /// Underlying and study triggers: the underlying watched, when it is not the
+  /// order's own. Empty watches the order's own underlying.
+  std::string symbol = {};
+  std::string study = {};   ///< Study triggers: one of kTriggerStudies.
+  std::int64_t minute = 0;  ///< Time triggers: minutes after New York midnight.
   bool operator==(const Trigger&) const = default;
 };
+/// A trigger on something other than the order's own market: another
+/// underlying, a study or the clock. Such conditions read Indicators.
+[[nodiscard]] inline bool conditional(const Trigger& t) {
+  return t.source == TriggerSource::Study || t.source == TriggerSource::Time ||
+         (t.source == TriggerSource::Underlying && !t.symbol.empty());
+}
+/// A trigger's own terms: a known source and direction, a positive level (any
+/// sign for a combo's net), a study it knows and a minute within the day.
+[[nodiscard]] bool valid_trigger(const Trigger& t);
 /// A bracket exit: a trigger makes it a market order when reached (a stop); a
 /// limit price makes it a resting limit (a take-profit). Exactly one is set.
 struct ExitSpec {
@@ -318,6 +337,18 @@ struct StockPrice {
   Timestamp time = 0;
   Money price;
 };
+/// A value a conditional trigger watches, supplied by the integration with the
+/// market data: an underlying's price (no study) or one of its studies.
+struct Indicator {
+  std::string symbol;
+  std::string study;
+  Timestamp time = 0;
+  Money value;
+};
+/// The key a trigger's or an indicator's value is kept under: "VIX", "SPX:iv30".
+[[nodiscard]] inline std::string indicator_key(std::string_view symbol, std::string_view study) {
+  return study.empty() ? std::string(symbol) : std::string(symbol) + ":" + std::string(study);
+}
 
 /// P&L explained by the Greeks, in dollars (analytic, not accounting). Each
 /// stretch a position is held at one size is split by the Greeks at its start:

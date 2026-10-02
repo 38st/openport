@@ -175,6 +175,9 @@ describe("conditional orders", () => {
     expect(crossDirection(4990, null)).toBe("at_or_above")
     expect(describeTrigger({ source: "option", direction: "at_or_below", level: "3.5" }, "sell", "SPX")).toBe("bid ≤ $3.50")
     expect(describeTrigger({ source: "underlying", direction: "at_or_above", level: "5010" }, "buy", "SPX")).toBe("SPX ≥ 5,010.00")
+    expect(describeTrigger({ source: "underlying", symbol: "VIX", direction: "at_or_above", level: "20" }, "buy", "SPX")).toBe("VIX ≥ 20.00")
+    expect(describeTrigger({ source: "study", study: "term_ratio", direction: "at_or_above", level: "1" }, "buy", "SPX")).toBe("SPX 9d/30d IV ratio ≥ 1.00")
+    expect(describeTrigger({ source: "time", direction: "at_or_above", level: "0.00", at: "15:30" }, "sell", "SPX")).toBe("it is 15:30 New York time or later")
   })
   it("rounds suggested prices to the root's tier tick", () => {
     expect(roundToTick("SPXW", 6.31)).toBe("6.30")

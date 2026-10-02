@@ -2882,6 +2882,49 @@ TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, OrdersConditionalOnAnotherUnderlyingAStudyOrTheTimeOverHttp) {
+  // F43: the desk supplies the watched underlying's price from its analytics.
+  seed();
+  auto watched = order(market, "watched", "4.20");
+  watched["trigger"] = {{"source", "underlying"}, {"symbol", "SPX"}, {"direction", "at_or_above"}, {"level", "5000"}};
+  const auto placed = write(*engine, "POST", "/api/orders", watched);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  EXPECT_EQ(json::parse(placed.body)["order"]["trigger"]["symbol"], "SPX");
+  quote();
+  engine->synchronize().get();
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"][0]["status"], "filled");
+
+  auto timed = order(market, "timed", "4.10");
+  timed["time_in_force"] = "gtc";
+  timed["trigger"] = {{"source", "time"}, {"at", "15:30"}};
+  const auto armed = write(*engine, "POST", "/api/orders", timed);
+  ASSERT_EQ(armed.status, 201) << armed.body;
+  const auto body = json::parse(armed.body)["order"];
+  EXPECT_EQ(body["status"], "armed");
+  EXPECT_EQ(body["trigger"]["source"], "time");
+  EXPECT_EQ(body["trigger"]["at"], "15:30");
+  EXPECT_EQ(body["trigger"]["direction"], "at_or_above");
+  EXPECT_FALSE(body["trigger"].contains("symbol"));
+
+  auto study = order(market, "study", "4.10");
+  study["trigger"] = {{"source", "study"}, {"study", "iv30"}, {"direction", "at_or_above"}, {"level", "99"}};
+  const auto waiting = write(*engine, "POST", "/api/orders", study);
+  ASSERT_EQ(waiting.status, 201) << waiting.body;
+  EXPECT_EQ(json::parse(waiting.body)["order"]["trigger"]["study"], "iv30");
+
+  for (const auto& trigger : {json{{"source", "study"}, {"study", "iv_rank"}, {"direction", "at_or_above"}, {"level", "1"}},
+                              json{{"source", "study"}, {"direction", "at_or_above"}, {"level", "1"}},
+                              json{{"source", "time"}, {"at", "24:00"}},
+                              json{{"source", "time"}, {"at", "15:30"}, {"level", "1"}},
+                              json{{"source", "underlying"}, {"symbol", "vix"}, {"direction", "at_or_above"}, {"level", "20"}},
+                              json{{"source", "option"}, {"symbol", "VIX"}, {"direction", "at_or_above"}, {"level", "20"}}}) {
+    auto bad = order(market, "bad-condition", "4.10");
+    bad["trigger"] = trigger;
+    expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
+  }
+  engine->stop();
+}
+
 TEST_F(PaperEngine, GtcMetadataAndHeldComboExitsOverHttp) {
   seed();
   auto tagged = order(market, "tagged", "4.10");

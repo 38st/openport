@@ -52,6 +52,13 @@ def test_results_have_market_time_delay_simulation_and_agent_tag(stub):
     assert stub.requests[-1][3]["tags"] == ["agent:research"]
     assert stub.requests[-1][3]["client_order_id"]
     assert "account=practice" in stub.requests[-1][1]
+    # A time trigger is sent without the level and direction it does not have.
+    order["trigger"] = {"source": "time", "at": "15:30"}
+    call(server, "place_order", account="practice", order=order)
+    assert stub.requests[-1][3]["trigger"] == {"source": "time", "at": "15:30"}
+    order["trigger"] = {"source": "underlying", "symbol": "VIX", "direction": "at_or_above", "level": "20"}
+    call(server, "place_order", account="practice", order=order)
+    assert stub.requests[-1][3]["trigger"] == order["trigger"]
 
 
 def test_write_tools_require_token_even_on_loopback(stub):

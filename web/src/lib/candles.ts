@@ -44,7 +44,7 @@ export function chartLevels(underlying: string, positions: readonly Position[], 
     ({ price: strike, label: `${strike} ${parts.join(", ")}`, kind: net < 0 ? "short" : "long" }))
   for (const o of orders) {
     const trigger = o.trigger
-    if (o.underlying !== underlying || o.status !== "armed" || trigger?.source !== "underlying") continue
+    if (o.underlying !== underlying || o.status !== "armed" || trigger?.source !== "underlying" || (trigger.symbol && trigger.symbol !== underlying)) continue
     const level = Number(trigger.level)
     if (!Number.isFinite(level)) continue
     const action = o.role === "stop_loss" ? "Stop" : o.role === "take_profit" ? "Take profit" : o.side === "sell" ? "Sell" : "Buy"

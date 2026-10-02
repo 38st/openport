@@ -38,7 +38,17 @@ template <class T> void added_field(const Json& j, const char* key, T& value) {
   if (const auto it = j.find(key); it != j.end()) it->get_to(value);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Decision, code, message, actual, limit, scope)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Trigger, source, direction, level)
+inline void to_json(Json& j, const Trigger& t) {
+  j = Json{{"source", t.source}, {"direction", t.direction}, {"level", t.level}};
+  // Only conditional triggers record their terms; every other trigger keeps its bytes.
+  if (!t.symbol.empty()) j["symbol"] = t.symbol;
+  if (!t.study.empty()) j["study"] = t.study;
+  if (t.source == TriggerSource::Time) j["minute"] = t.minute;
+}
+inline void from_json(const Json& j, Trigger& t) {
+  j.at("source").get_to(t.source); j.at("direction").get_to(t.direction); j.at("level").get_to(t.level);
+  added_field(j, "symbol", t.symbol); added_field(j, "study", t.study); added_field(j, "minute", t.minute);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExitSpec, trigger, limit_price)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Bracket, stop_loss, take_profit)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Leg, symbol, side, ratio)
@@ -492,6 +502,9 @@ struct State {
   SharedMap<std::string, Attribution> trip_attribution;
   /// The underlyings' latest prices, which mark and trade delivered shares.
   std::map<std::string, Mark> stock_marks;
+  /// The latest values conditional triggers watch, by indicator_key. Entries are
+  /// only replaced, never removed, and the field is journaled once it has one.
+  std::map<std::string, Mark> indicators;
   SharedVector<StockFill> stock_fills;
   SharedVector<DividendPayment> dividends;
   SharedMap<std::string, ClosingPrint> closing_prints;
@@ -542,6 +555,8 @@ inline void to_json(Json& j, const State& s) {
 #undef OPENPORT_STATE_TO
   // Written once used, so accounts that never give an instruction keep their bytes.
   if (!s.do_not_exercise.empty()) j["do_not_exercise"] = s.do_not_exercise;
+  // Absent until a conditional trigger first reads one, so other journals keep their bytes.
+  if (!s.indicators.empty()) j["indicators"] = s.indicators;
 }
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
@@ -560,6 +575,7 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "strategy_reviews", s.strategy_reviews);
   added_field(j, "pending_limits", s.pending_limits); added_field(j, "pending_guardrails", s.pending_guardrails);
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
+  added_field(j, "indicators", s.indicators);
   added_field(j, "do_not_exercise", s.do_not_exercise);
   added_field(j, "trips", s.trips); added_field(j, "trip_attribution", s.trip_attribution);
   added_field(j, "groups", s.groups); added_field(j, "group_reviews", s.group_reviews);

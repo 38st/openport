@@ -68,6 +68,29 @@ Money tick_size(std::string_view root, Money price) {
     return Money::from_micros(below ? 10'000 : 50'000);
   return Money::from_micros(10'000);
 }
+bool valid_trigger(const Trigger& t) {
+  if (t.direction != TriggerDirection::AtOrBelow && t.direction != TriggerDirection::AtOrAbove) return false;
+  // An underlying symbol: 1-12 uppercase letters, digits, dots or underscores.
+  const auto symbol_ok = [](std::string_view symbol) {
+    return symbol.size() <= 12 && std::all_of(symbol.begin(), symbol.end(), [](char c) {
+      return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_';
+    });
+  };
+  switch (t.source) {
+    case TriggerSource::Option:
+      return t.level > Money{} && t.symbol.empty() && t.study.empty() && t.minute == 0;
+    case TriggerSource::Combo:
+      return t.symbol.empty() && t.study.empty() && t.minute == 0;
+    case TriggerSource::Underlying:
+      return t.level > Money{} && symbol_ok(t.symbol) && t.study.empty() && t.minute == 0;
+    case TriggerSource::Study:
+      return t.level > Money{} && symbol_ok(t.symbol) && t.minute == 0 &&
+             std::find(std::begin(kTriggerStudies), std::end(kTriggerStudies), t.study) != std::end(kTriggerStudies);
+    case TriggerSource::Time:
+      return t.level == Money{} && t.symbol.empty() && t.study.empty() && t.minute >= 0 && t.minute < 24 * 60;
+  }
+  return false;
+}
 bool valid_quote(const QuoteObservation& q) {
   return q.observation > 0 && q.bid && q.ask && *q.bid > Money{} && *q.ask >= *q.bid &&
          q.bid_size > 0 && q.ask_size > 0;

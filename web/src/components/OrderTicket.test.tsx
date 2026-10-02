@@ -149,6 +149,38 @@ describe("order ticket interaction", () => {
       },
     })
   })
+  it("sends an order conditional on another underlying, a study or the time of day", async () => {
+    await render({ ...trading, fee_per_contract: "0.65" })
+    await choose("Condition", "When a price or study")
+    expect(button("Submit order").disabled).toBe(true)
+    await setField("Level", "20")
+    expect(host.textContent).toContain("Arms now and activates when VIX ≥ 20.00")
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({
+      trigger: { source: "underlying", symbol: "VIX", direction: "at_or_above", level: "20" },
+    })
+  })
+  it("sends a study trigger on its own underlying without a symbol", async () => {
+    await render({ ...trading, fee_per_contract: "0.65" })
+    await choose("Condition", "When a price or study")
+    await setField("Watch", "iv30")
+    await setField("Underlying", "")
+    await choose("Watch direction", "At or below")
+    await setField("Level", "15")
+    expect(host.textContent).toContain("SPX 30-day IV ≤ 15.00")
+    await click("Submit order")
+    const study = vi.mocked(api.submitOrder).mock.calls[0]![0]
+    expect(study.trigger).toEqual({ source: "study", study: "iv30", direction: "at_or_below", level: "15" })
+  })
+  it("sends a time trigger as a New York minute", async () => {
+    await render({ ...trading, fee_per_contract: "0.65" })
+    await choose("Condition", "At a time")
+    expect(field("New York time").value).toBe("15:30")
+    await setField("New York time", "15:45")
+    expect(host.textContent).toContain("activates at the first update at or after 15:45")
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0].trigger).toEqual({ source: "time", at: "15:45" })
+  })
   it("sends a stop-limit exit: the stop's trigger with the limit it then rests at", async () => {
     await render({ ...trading, fee_per_contract: "0.65" })
     await act(async () => (host.querySelector('input[aria-label="Bracket"]') as HTMLInputElement).click())

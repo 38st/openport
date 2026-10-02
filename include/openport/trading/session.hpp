@@ -420,10 +420,12 @@ class TradingSession {
   /// changes nothing but the clock, so it is not a transaction and nothing is
   /// journaled; the snapshot keeps its time until the next transaction.
   /// `stocks` prices the underlyings: the shares that exercise and assignment
-  /// deliver are marked and traded at them.
+  /// deliver are marked and traded at them. `indicators` are the prices and
+  /// studies conditional triggers watch; older ones than those kept are ignored.
   CommandResult on_quotes(const std::vector<QuoteObservation>& quotes,
                           const std::vector<Valuation>& valuations, Timestamp time,
-                          const std::vector<StockPrice>& stocks = {});
+                          const std::vector<StockPrice>& stocks = {},
+                          const std::vector<Indicator>& indicators = {});
   CommandResult set_limits(Limits limits, Timestamp time);
   CommandResult set_guardrails(Guardrails guardrails, Timestamp time);
   CommandResult trip_kill(std::string reason, Timestamp time);

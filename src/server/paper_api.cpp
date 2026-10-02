@@ -247,9 +247,18 @@ std::string underlying(const TradingView& view, const std::string& symbol) {
 }
 json trigger_json(const std::optional<Trigger>& t) {
   if (!t) return nullptr;
-  return {{"source", t->source == TriggerSource::Option ? "option" : t->source == TriggerSource::Combo ? "combo" : "underlying"},
-          {"direction", t->direction == TriggerDirection::AtOrBelow ? "at_or_below" : "at_or_above"},
-          {"level", t->level.str()}};
+  constexpr const char* sources[] = {"option", "underlying", "combo", "study", "time"};
+  json result{{"source", sources[static_cast<int>(t->source)]},
+              {"direction", t->direction == TriggerDirection::AtOrBelow ? "at_or_below" : "at_or_above"},
+              {"level", t->level.str()}};
+  // Conditional terms appear only on the triggers that have them.
+  if (!t->symbol.empty()) result["symbol"] = t->symbol;
+  if (t->source == TriggerSource::Study) result["study"] = t->study;
+  if (t->source == TriggerSource::Time) {
+    const auto two = [](std::int64_t n) { return std::string{static_cast<char>('0' + n / 10), static_cast<char>('0' + n % 10)}; };
+    result["at"] = two(t->minute / 60 % 24) + ":" + two(t->minute % 60);
+  }
+  return result;
 }
 json exit_json(const std::optional<ExitSpec>& e) {
   if (!e) return nullptr;
@@ -1232,12 +1241,48 @@ Limits parse_limits(const json& j) {
   return limits;
 }
 Trigger parse_trigger(const json& j) {
-  fields(j, {"source", "direction", "level"});
-  const auto source = string_field(j, "source"), direction = string_field(j, "direction");
-  if ((source != "option" && source != "underlying" && source != "combo") || (direction != "at_or_below" && direction != "at_or_above"))
-    throw std::invalid_argument("trigger source must be option, combo or underlying, direction at_or_below or at_or_above");
-  return {source == "option" ? TriggerSource::Option : source == "combo" ? TriggerSource::Combo : TriggerSource::Underlying,
-          direction == "at_or_below" ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove, decimal_field(j, "level")};
+  const auto source = j.is_object() && j.contains("source") && j.at("source").is_string() ? j.at("source").get<std::string>() : "";
+  Trigger t;
+  if (source == "time") {
+    // A time of day: from that New York minute on, or up to it with at_or_below.
+    fields(j, {"source", "at"}, {"direction"});
+    const auto at = string_field(j, "at");
+    const auto digit = [&](std::size_t i, char high) { return at[i] >= '0' && at[i] <= high; };
+    if (at.size() != 5 || at[2] != ':' || !digit(0, '2') || !digit(1, '9') || !digit(3, '5') || !digit(4, '9') ||
+        (at[0] - '0') * 10 + (at[1] - '0') > 23)
+      throw std::invalid_argument("trigger at must be HH:MM New York time");
+    t.source = TriggerSource::Time;
+    t.minute = ((at[0] - '0') * 10 + (at[1] - '0')) * 60 + (at[3] - '0') * 10 + (at[4] - '0');
+    t.direction = TriggerDirection::AtOrAbove;
+  } else {
+    fields(j, {"source", "direction", "level"}, source == "study" ? std::initializer_list<std::string_view>{"symbol", "study"}
+                                               : source == "underlying" ? std::initializer_list<std::string_view>{"symbol"}
+                                                                        : std::initializer_list<std::string_view>{});
+    if (source != "option" && source != "underlying" && source != "combo" && source != "study")
+      throw std::invalid_argument("trigger source must be option, combo, underlying, study or time");
+    t.source = source == "option" ? TriggerSource::Option : source == "combo" ? TriggerSource::Combo
+             : source == "study" ? TriggerSource::Study : TriggerSource::Underlying;
+    t.level = decimal_field(j, "level");
+    if (j.contains("symbol")) t.symbol = string_field(j, "symbol");
+    if (source == "study") {
+      if (!j.contains("study")) throw std::invalid_argument("Missing field: study");
+      t.study = string_field(j, "study");
+    }
+  }
+  if (j.contains("direction")) {
+    const auto direction = string_field(j, "direction");
+    if (direction != "at_or_below" && direction != "at_or_above")
+      throw std::invalid_argument("trigger direction must be at_or_below or at_or_above");
+    t.direction = direction == "at_or_below" ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove;
+  }
+  if (j.contains("symbol") && (t.symbol.empty() || t.symbol.size() > 12 || !std::all_of(t.symbol.begin(), t.symbol.end(), [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_';
+      })))
+    throw std::invalid_argument("trigger symbol must be an underlying of 1-12 uppercase letters, digits, dots or underscores");
+  if (t.source == TriggerSource::Study &&
+      std::find(std::begin(kTriggerStudies), std::end(kTriggerStudies), t.study) == std::end(kTriggerStudies))
+    throw std::invalid_argument("trigger study must be iv30, iv7 or term_ratio");
+  return t;
 }
 ExitSpec parse_exit(const json& j) {
   fields(j, {}, {"trigger", "limit_price"});

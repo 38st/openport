@@ -1310,7 +1310,7 @@ enum class Stage { Accept, Activate, Fill };
 /// The level an untriggered stop-limit's limit is banded around, if it has one.
 std::optional<Money> stop_level(const Order& o) {
   const auto& t = o.request.trigger;
-  if (!t || o.triggered_at > 0 || t->source == TriggerSource::Underlying) return std::nullopt;
+  if (!t || o.triggered_at > 0 || (t->source != TriggerSource::Option && t->source != TriggerSource::Combo)) return std::nullopt;
   return t->level;
 }
 /// Checks a multi-leg order like a single-leg one, per leg where it applies:
@@ -1358,15 +1358,15 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   }
   if (r.limit_price && r.limit_price->micros() % tick.micros() != 0)
     return failure(Reason::INVALID_TICK, "Net price is not a multiple of the legs' smallest tick");
-  const auto trigger_ok = [](const std::optional<Trigger>& t) {
-    return !t || ((t->source == TriggerSource::Combo || t->source == TriggerSource::Underlying) &&
-        (t->source != TriggerSource::Underlying || t->level > Money{}) &&
-        (t->direction == TriggerDirection::AtOrAbove || t->direction == TriggerDirection::AtOrBelow));
+  // A conditional combo may also wait for another underlying, a study or the clock;
+  // its exits watch only its own net or underlying.
+  const auto trigger_ok = [](const std::optional<Trigger>& t, bool exit) {
+    return !t || (t->source != TriggerSource::Option && valid_trigger(*t) && (!exit || !conditional(*t)));
   };
   const auto exit_ok = [&](const std::optional<ExitSpec>& e) {
-    return !e || ((e->trigger || e->limit_price) && trigger_ok(e->trigger));
+    return !e || ((e->trigger || e->limit_price) && trigger_ok(e->trigger, true));
   };
-  if (!trigger_ok(r.trigger) || (r.bracket && ((!r.bracket->stop_loss && !r.bracket->take_profit) ||
+  if (!trigger_ok(r.trigger, false) || (r.bracket && ((!r.bracket->stop_loss && !r.bracket->take_profit) ||
       !exit_ok(r.bracket->stop_loss) || !exit_ok(r.bracket->take_profit))))
     return failure(Reason::INVALID_ORDER, "Combo exits need a combo/underlying trigger, a signed net limit, or both");
   const auto on_tick = [&](const std::optional<ExitSpec>& e) {
@@ -1484,9 +1484,11 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
             static_cast<double>(s.config.limits.max_order_contracts), request.symbol};
   if (request.limit_price && request.limit_price->micros() % tick_size(c->second.root, *request.limit_price).micros() != 0)
     return failure(Reason::INVALID_TICK, "Limit price is not a positive multiple of the product tier tick");
-  const auto positive = [](const std::optional<Trigger>& t) { return !t || t->level > Money{}; };
+  const auto positive = [](const std::optional<Trigger>& t) { return !t || valid_trigger(*t); };
+  // An exit watches its own option or underlying; an order may watch more.
   const auto exit_ok = [&](const std::optional<ExitSpec>& e) {
-    return !e || ((e->trigger || e->limit_price) && positive(e->trigger) && (!e->limit_price || *e->limit_price > Money{}));
+    return !e || ((e->trigger || e->limit_price) && positive(e->trigger) && (!e->trigger || !conditional(*e->trigger)) &&
+                  (!e->limit_price || *e->limit_price > Money{}));
   };
   const auto& bracket = request.bracket;
   if (request.exits_only || (request.trigger && request.trigger->source == TriggerSource::Combo) ||
@@ -2014,7 +2016,14 @@ void on_fill(State& s, OrderId id, Quantity units, Events& events) {
 std::optional<Money> trigger_value(const State& s, const Order& o) {
   const auto& t = *o.request.trigger;
   std::optional<Money> value;
-  if (t.source == TriggerSource::Underlying) {
+  if (t.source == TriggerSource::Time) return std::nullopt;  // reached reads the clock
+  if (conditional(t)) {
+    // Another underlying's price or a study, as the integration last supplied it.
+    const auto symbol = t.symbol.empty() ? s.contracts.at(order_symbols(o.request).front()).underlying : t.symbol;
+    const auto it = s.indicators.find(indicator_key(symbol, t.study));
+    if (it != s.indicators.end() && it->second.time <= s.time && s.time - it->second.time <= s.config.limits.max_valuation_age)
+      value = it->second.price;
+  } else if (t.source == TriggerSource::Underlying) {
     const auto it = s.valuations.find(order_symbols(o.request).front());
     if (it != s.valuations.end() && valid_valuation(it->second) && it->second.time <= s.time &&
         s.time - it->second.time <= s.config.limits.max_valuation_age) {
@@ -2037,6 +2046,10 @@ std::optional<Money> trigger_value(const State& s, const Order& o) {
 }
 bool reached(const State& s, const Order& o) {
   const auto& t = *o.request.trigger;
+  if (t.source == TriggerSource::Time) {
+    const auto minute = md::new_york_time(s.time).seconds / 60;
+    return t.direction == TriggerDirection::AtOrBelow ? minute <= t.minute : minute >= t.minute;
+  }
   const auto value = trigger_value(s, o);
   return value && (t.direction == TriggerDirection::AtOrBelow ? *value <= t.level : *value >= t.level);
 }
@@ -2261,8 +2274,15 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
     if (!extended(r) && !regular(s.contracts.at(symbols.front()), s.time))
       return wait("REGULAR_SESSION", "Armed orders trigger in the regular session only");
     const auto& t = *r.trigger;
+    if (t.source == TriggerSource::Time) {
+      const auto two = [](std::int64_t value) { return std::string(value < 10 ? "0" : "") + std::to_string(value); };
+      return wait("TRIGGER", "Waits for " + two(t.minute / 60) + ":" + two(t.minute % 60) + " ET" +
+                  (t.direction == TriggerDirection::AtOrBelow ? " or earlier" : ""));
+    }
     const auto value = trigger_value(s, o);
-    const std::string source = t.source == TriggerSource::Underlying ? "the underlying" : t.source == TriggerSource::Combo
+    const auto watched = t.symbol.empty() ? std::string("the underlying") : t.symbol;
+    const std::string source = t.source == TriggerSource::Study ? watched + "'s " + t.study
+        : t.source == TriggerSource::Underlying ? watched : t.source == TriggerSource::Combo
         ? "the closing legs' net" : r.side == Side::Buy ? "the ask" : "the bid";
     return wait("TRIGGER", "Waits for " + source + " to reach " + (t.direction == TriggerDirection::AtOrBelow ? "at or below " : "at or above ") +
                 t.level.str() + (value ? " (now " + value->str() + ")" : " (no fresh value now; missing or stale data never triggers)"));
@@ -3068,6 +3088,8 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
     return refuse(failure(Reason::INVALID_ORDER, "Only limit orders have a limit price"));
   if (change.trigger_level && (!r.trigger || order.status != OrderStatus::Armed))
     return refuse(failure(Reason::INVALID_ORDER, "Only armed orders with a trigger have a trigger level"));
+  if (change.trigger_level && r.trigger->source == TriggerSource::Time)
+    return refuse(failure(Reason::INVALID_ORDER, "A time trigger has no level; cancel the order and place it for the new time"));
   if (!rejection.ok()) return refuse(rejection);
   const Order before = order;
   if (!order.submitted) order.submitted = order.request;
@@ -3253,6 +3275,9 @@ Json state_change(const State& before, const State& after) {
   if (auto change = field_change(before.field, after.field)) changes[#field] = std::move(*change);
   OPENPORT_STATE_FIELDS(OPENPORT_STATE_CHANGE)
 #undef OPENPORT_STATE_CHANGE
+  // Indicators are written once there is one, and never emptied again.
+  if (before.indicators.empty() && !after.indicators.empty()) changes["indicators"] = Json{{"v", after.indicators}};
+  else if (auto change = field_change(before.indicators, after.indicators)) changes["indicators"] = std::move(*change);
   // Exercise instructions are written only while there are any (see to_json).
   const bool had = !before.do_not_exercise.empty(), has = !after.do_not_exercise.empty();
   if (has && !had) changes["do_not_exercise"] = Json{{"v", after.do_not_exercise}};
@@ -4085,10 +4110,12 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
   });
 }
 CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quotes,
-    const std::vector<Valuation>& valuations, Timestamp time, const std::vector<StockPrice>& stocks) {
+    const std::vector<Valuation>& valuations, Timestamp time, const std::vector<StockPrice>& stocks,
+    const std::vector<Indicator>& indicators) {
   // An empty batch on an idle account only moves the clock: not a transaction,
   // so nothing is journaled. The next transaction advances the clock itself.
-  if (quotes.empty() && valuations.empty() && stocks.empty() && impl_->idle(time)) return CommandResult{{}, {}, impl_->state.version};
+  if (quotes.empty() && valuations.empty() && stocks.empty() && indicators.empty() && impl_->idle(time))
+    return CommandResult{{}, {}, impl_->state.version};
   return impl_->transact(time, "market", [&](State& s, Events& events) {
     std::set<std::string> seen;
     std::set<std::string> changed;
@@ -4140,6 +4167,16 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
       const auto prior = s.stock_marks.find(price.symbol);
       if (prior != s.stock_marks.end() && price.time < prior->second.time) continue;
       s.stock_marks[price.symbol] = {price.price, price.time};
+    }
+    seen.clear();
+    for (const auto& indicator : indicators) {
+      if (indicator.symbol.empty()) throw TradingError(Reason::INVALID_QUOTE, "An indicator needs a symbol");
+      if (indicator.time < 0 || indicator.time > time) throw TradingError(Reason::INVALID_TIME, "Indicator is future-dated or negative");
+      const auto key = indicator_key(indicator.symbol, indicator.study);
+      if (!seen.insert(key).second) throw TradingError(Reason::INVALID_QUOTE, "One value per indicator per batch is required");
+      const auto prior = s.indicators.find(key);
+      if (prior != s.indicators.end() && indicator.time <= prior->second.time) continue;
+      s.indicators[key] = {indicator.value, indicator.time};
     }
     detail::update_reviews(s);
     monitor_loss(s, events);

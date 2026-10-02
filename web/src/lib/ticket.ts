@@ -1,5 +1,5 @@
 import type { OptionQuote } from "../api/types"
-import type { Side } from "../api/trading-types"
+import type { Side, Trigger, TriggerStudy } from "../api/trading-types"
 import { price as formatPrice } from "./format"
 
 type Kind = "call" | "put"
@@ -63,10 +63,14 @@ export function stopDirection(source: "option" | "underlying", entry: Side, type
 export function crossDirection(level: number, spot: number | null | undefined): Direction {
   return spot != null && Number.isFinite(spot) && level < spot ? "at_or_below" : "at_or_above"
 }
-/** "bid ≤ $3.50" or "SPX ≥ 5,010.00". */
-export function describeTrigger(trigger: { source: "option" | "underlying" | "combo"; direction: Direction; level: string }, side: Side, underlying: string): string {
+/** "bid ≤ $3.50", "SPX ≥ 5,010.00", "VIX ≥ 20.00", "SPX 30-day IV ≤ 15.00" or "it is 15:30 New York time or later". */
+export function describeTrigger(trigger: { source: Trigger["source"]; direction?: Direction; level?: string; symbol?: string; study?: TriggerStudy; at?: string },
+  side: Side, underlying: string): string {
   const sign = trigger.direction === "at_or_below" ? "≤" : "≥"
+  if (trigger.source === "time") return `it is ${trigger.at ?? "?"} New York time${trigger.direction === "at_or_below" ? " or earlier" : " or later"}`
   const level = Number(trigger.level)
-  const text = Number.isFinite(level) ? level.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : trigger.level
-  return trigger.source === "combo" ? `closing net ${sign} $${text}` : trigger.source === "option" ? `${side === "buy" ? "ask" : "bid"} ${sign} $${text}` : `${underlying} ${sign} ${text}`
+  const text = Number.isFinite(level) ? level.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : trigger.level ?? ""
+  const watched = trigger.symbol || underlying
+  if (trigger.source === "study") return `${watched} ${trigger.study === "term_ratio" ? "9d/30d IV ratio" : trigger.study === "iv7" ? "7-day IV" : "30-day IV"} ${sign} ${text}`
+  return trigger.source === "combo" ? `closing net ${sign} $${text}` : trigger.source === "option" ? `${side === "buy" ? "ask" : "bid"} ${sign} $${text}` : `${watched} ${sign} ${text}`
 }
