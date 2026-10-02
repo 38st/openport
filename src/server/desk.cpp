@@ -377,7 +377,9 @@ void Desk::start_trading() {
     try {
       std::shared_ptr<Journal> journal = file.empty() ? options_.paper_sink : nullptr;
       std::optional<JournalRecovery> recovery;
-      if (!file.empty()) std::tie(journal, recovery) = open_journal(file, journal_options(options_));
+      if (!file.empty() && options_.resume && file == options_.paper_journal)
+        journal = resuming_journal(*options_.resume, FileJournal::resume(file.string(), journal_options(options_)));
+      else if (!file.empty()) std::tie(journal, recovery) = open_journal(file, journal_options(options_));
       if (journal) journal = std::make_shared<SettlementJournal>(journal, settlement_source_);
       account.journal = journal;
       if (recovery && !options_.run_input.empty())
@@ -446,6 +448,11 @@ void Desk::start_trading() {
     if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? 4 : 3;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
+    if (options_.resume) {
+      const auto inputs = run_inputs(*options_.resume);
+      resume_inputs_.assign(inputs.begin() + (inputs.empty() ? 0 : 1), inputs.end());
+      replay_recorded();
+    }
   }
   publish_trading();
 }
@@ -1400,6 +1407,13 @@ void Desk::replay_source(const std::string& input, const md::RecordingHeader& he
   publish_trading();
 }
 void Desk::replay_batch(const std::vector<md::Event>& batch, md::Timestamp driver_time, md::Timestamp boundary_time) {
+  if (!resume_inputs_.empty()) {
+    const auto input = nlohmann::json::parse(resume_inputs_.front());
+    if (input.at("kind") != "boundary" || input.at("events").get<std::size_t>() != batch.size() ||
+        input.at("driver_time").get<md::Timestamp>() != driver_time)
+      resume_failed("the recording's batch at " + md::format_timestamp(driver_time) + " is not the one the run recorded");
+    else resume_inputs_.pop_front();
+  }
   for (const auto& event : batch) observe(event);
   market_time_ = std::max(market_time_, boundary_time);
   refresh_analytics();
@@ -1407,7 +1421,29 @@ void Desk::replay_batch(const std::vector<md::Event>& batch, md::Timestamp drive
   update_trading(batch, commands, driver_time);
   record_input(nlohmann::json{{"kind", "boundary"}, {"events", batch.size()}, {"time", market_time_},
       {"driver_time", driver_time}}.dump());
+  replay_recorded();
   publish_trading();
+}
+void Desk::replay_recorded() {
+  while (!resume_inputs_.empty()) {
+    const auto input = nlohmann::json::parse(resume_inputs_.front());
+    const auto kind = input.at("kind").get<std::string>();
+    if (kind == "boundary") return;
+    resume_inputs_.pop_front();
+    if (kind == "command") {
+      command(input.at("command").get<TradingCommand>(), [](TradingReply) {}, input.at("time").get<md::Timestamp>(),
+              input.at("driver_time").get<md::Timestamp>());
+    } else if (kind == "dividends") {
+      set_dividends(input.at("dividends").get<std::vector<trading::Dividend>>());
+    } else {
+      resume_failed("its " + kind + " input cannot be replayed");
+    }
+  }
+}
+void Desk::resume_failed(const std::string& reason) {
+  resume_inputs_.clear();
+  for (auto& account : accounts_)
+    if (account.session && account.failure.empty()) fail_trading(account, "JOURNAL_CORRUPT: The run cannot resume: " + reason);
 }
 void Desk::apply_analytics(std::shared_ptr<const analytics::UnderlyingMetrics> result, md::Timestamp time) {
   if (!result || result->as_of != time) throw std::invalid_argument("Analytics time does not match result");

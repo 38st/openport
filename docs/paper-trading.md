@@ -1890,6 +1890,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `REPLAY_STEPPING` | A lockstep step (`PUT /api/replay {"until"}`) is playing; orders wait for its response and then use the paused market time |
 | `REPLAY_READ_ONLY`, `REPLAY_RUNNING` | A finished run refuses writes; a running run cannot be opened as history or deleted |
 | `RUN_ENDED` | A saved replay run's order that was still working or armed when the run ended: its archive shows it cancelled, as it can no longer fill. The journal keeps it as it was |
+| `REPLAY_NOT_RESUMABLE` | HTTP 409: a saved replay run cannot resume: it has ended, or it was recorded by an older driver, or its recording, scenario or the exchange calendar has changed; the message says which |
 | `REPLAY_HISTORY_FAILED` | A saved replay run's journal cannot be opened, as when it was edited; the message gives the reason |
 | `MARKET_HALTED` | A market-wide circuit breaker has halted trading; the message gives the S&P 500's fall and when trading resumes |
 | `INVALID_REQUEST` | HTTP 400: a malformed body or query, including an order no market could make valid (see the HTTP errors below); nothing is recorded |

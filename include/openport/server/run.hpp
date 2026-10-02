@@ -13,6 +13,15 @@ namespace openport::server {
 /// The run a recording_input or scenario_input describes, under the run's history id.
 [[nodiscard]] RunIdentity run_identity(std::string_view input, std::string id);
 
+/// Every input a run recorded, in order, as its JSON text: its start first.
+[[nodiscard]] std::vector<std::string> run_inputs(const trading::JournalRecovery& journal);
+/// The journal of a saved run that is re-executed to continue it (POST /api/replay
+/// {"resume"}): the transactions `expected` already holds are only compared, through
+/// their hashes, and the first that differs throws without writing anything; the ones
+/// after them append to `file`, which has resumed that same journal.
+[[nodiscard]] std::shared_ptr<trading::Journal> resuming_journal(const trading::JournalRecovery& expected,
+                                                                 std::shared_ptr<trading::Journal> file);
+
 struct RunVerification {
   bool matched = false;
   std::uint64_t transactions = 0;

@@ -45,7 +45,7 @@ with zero. It does not coerce monetary strings into floats.
 | `note`, `day_note`, `export_csv` | Trade/day annotations and fills/trades exports |
 | `group_trades`, `ungroup_trades` | Join open round trips into one whole trade, or take one out |
 | `create_account`, `reset_account`, `payout`, `limits`, `guardrails`, `kill`, `settle`, `exercise`, `close_stock` | Remaining terminal commands |
-| `list_replays`, `start_replay`, `control_replay`, `step_replay(until)`, `stop_replay`, `delete_replay` | Replay controls and history deletion |
+| `list_replays`, `start_replay`, `resume_replay(run_id)`, `control_replay`, `step_replay(until)`, `stop_replay`, `delete_replay` | Replay controls and history deletion |
 
 `client.for_replay("main")` reads and trades the active replay's isolated account.
 `client.for_history(run_id)` reads a finished run. Replay controls always address

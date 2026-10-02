@@ -86,6 +86,9 @@ def test_preview_cancel_and_replay_routing(stub):
     client.for_history("run-1").trades()
     assert stub.requests[-1][1].startswith("/api/replay/history/run-1/trades?")
     client.start_replay(scenario="fixture")
+    client.resume_replay("run-1", speed=0)
+    assert stub.requests[-1][0] == "POST" and stub.requests[-1][1] == "/api/replay"
+    assert stub.requests[-1][3] == {"resume": "run-1", "speed": 0}
     assert client.step_replay("15:00")["settled_through"] == TIME
     assert stub.requests[-1][1] == "/api/replay"
     assert stub.requests[-1][3] == {"until": "15:00"}

@@ -105,6 +105,21 @@ it("shows history result and P&L, opens both views read-only, and confirms delet
   expect(switchSource).toHaveBeenLastCalledWith("live")
 })
 
+it("resumes only an interrupted run, at the starting speed, and switches to it", async () => {
+  await render()
+  expect(host.textContent).not.toContain("interrupted")
+  expect([...host.querySelectorAll("button")].some((b) => b.textContent === "Resume")).toBe(false)
+  const interrupted: ReplayListing = { ...listing, history: listing.history!.map((run) => ({ ...run, interrupted: true })) }
+  client.setQueryData(["replay-listing"], interrupted)
+  vi.mocked(api.replay).mockResolvedValue(interrupted)
+  const resume = vi.spyOn(api, "resumeReplay").mockResolvedValue({ replay })
+  await render()
+  expect(host.textContent).toContain("interrupted")
+  await click("Resume")
+  expect(resume).toHaveBeenCalledWith("saved-run", 10, "open")
+  expect(switchSource).toHaveBeenCalledWith("replay")
+})
+
 it("shows fast-forward progress and repeats the displayed seed", async () => {
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open", 0, "main", () => {}, "replay", { ...replay, fast_forwarding: true, progress: .5 }, switchSource))
   await act(async () => root.render(<QueryClientProvider client={client}><ReplayBanner /></QueryClientProvider>))

@@ -277,6 +277,10 @@ class Client:
     def start_replay(self, **settings) -> ReplayResult:
         return self._request("POST", "/replay", settings, control=True)
 
+    def resume_replay(self, run_id: str, **settings) -> ReplayResult:
+        """Continue a saved run a crash interrupted; settings may give speed and paused."""
+        return self._request("POST", "/replay", {"resume": run_id, **settings}, control=True)
+
     def control_replay(self, **settings) -> ReplayResult:
         return self._request("PUT", "/replay", settings, control=True)
 
