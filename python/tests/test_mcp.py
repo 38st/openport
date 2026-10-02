@@ -17,7 +17,7 @@ def call(server, name, **arguments):
 def test_tool_schemas_name_accounts_and_typed_orders(stub):
     server = create_server(Client(stub.url, "secret"))
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-    assert set(tools) == {"status", "symbols", "summary", "chain", "volatility", "exposure", "account", "positions", "orders", "risk", "preview_order", "place_order", "trade_stock", "preview_stock", "cancel_order", "flatten", "list_scenarios", "start_replay", "step_replay", "stop_replay"}
+    assert set(tools) == {"status", "symbols", "summary", "chain", "volatility", "exposure", "account", "positions", "orders", "risk", "risk_profile", "probability", "preview_order", "place_order", "trade_stock", "preview_stock", "cancel_order", "flatten", "list_scenarios", "start_replay", "step_replay", "stop_replay"}
     for name in ["place_order", "preview_order", "cancel_order", "flatten", "start_replay", "step_replay", "stop_replay"]:
         assert "account" in tools[name].input_schema["required"]
     schema = tools["place_order"].input_schema

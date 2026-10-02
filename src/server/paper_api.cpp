@@ -13,6 +13,7 @@
 #include <set>
 #include <stdexcept>
 
+#include "openport/server/candles.hpp"
 #include "openport/server/plans.hpp"
 #include "openport/trading/history.hpp"
 
@@ -1979,12 +1980,200 @@ bool known_account(const MetricsSource& source, const std::string& account) {
   return std::any_of(accounts.begin(), accounts.end(), [&](const auto& a) { return a.id == account; });
 }
 
+namespace {
+constexpr std::size_t kMaxProfileCurves = 8;
+bool underlying_symbol(std::string_view symbol) {
+  return !symbol.empty() && symbol.size() <= 16 &&
+         std::all_of(symbol.begin(), symbol.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.'; });
+}
+std::vector<std::string_view> split_list(std::string_view text) {
+  std::vector<std::string_view> items;
+  for (std::size_t start = 0;;) {
+    const auto comma = text.find(',', start);
+    items.push_back(text.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start));
+    if (comma == std::string_view::npos) break;
+    start = comma + 1;
+  }
+  return items;
+}
+/// The beta of `underlying` to `reference`, by the first source that has one.
+BetaEstimate profile_beta(const MetricsSource& source, const std::string& underlying, const std::string& reference,
+                          const std::map<std::string, double>& given) {
+  BetaEstimate beta;
+  if (underlying == reference) { beta.beta = 1; beta.source = "reference"; return beta; }
+  if (const auto it = given.find(underlying); it != given.end()) { beta.beta = it->second; beta.source = "given"; return beta; }
+  if (same_index(underlying, reference)) { beta.beta = 1; beta.source = "index"; return beta; }
+  const auto* candles = source.candles();
+  if (!candles) return beta;
+  beta = estimate_beta(candles->daily_history(underlying), candles->daily_history(reference), 252);
+  if (!beta.source.empty() && beta.observations >= 20) { beta.source = "daily"; return beta; }
+  beta = estimate_beta(candles->bars(underlying, BarInterval::FiveMinutes, 2000),
+                       candles->bars(reference, BarInterval::FiveMinutes, 2000), 2000, 5 * md::kNanosPerMinute);
+  if (!beta.source.empty() && beta.observations >= 30) { beta.source = "intraday"; return beta; }
+  return BetaEstimate{0, beta.correlation, beta.observations, ""};
+}
+json level_json(const std::optional<BreachLevel>& value, double spot) {
+  if (!value) return nullptr;
+  return {{"percent", number(value->percent)}, {"points", spot > 0 ? number(value->points) : json(nullptr)},
+          {"price", spot > 0 ? number(spot + value->points) : json(nullptr)},
+          {"touch_probability", value->touch_probability ? number(*value->touch_probability) : json(nullptr)}};
+}
+
+/// GET /api/risk/profile: the held book's value across moves of one underlying, or
+/// of a benchmark with every underlying beta-weighted to it, on several dates.
+ApiResponse risk_profile_response(const std::map<std::string, std::string>& query, const MetricsSource& source) {
+  std::string account, underlying, benchmark = "SPY";
+  std::vector<std::string> days_text{"0", "1"};
+  double vol_points = 0, range = 10;
+  int steps = 41;
+  std::map<std::string, double> given;
+  bool valid = true;
+  for (const auto& [key, value] : query) {
+    if (key == "account" && valid_account(value)) account = value;
+    else if (key == "underlying" && underlying_symbol(value)) underlying = value;
+    else if (key == "benchmark" && (value == "SPY" || value == "SPX")) benchmark = value;
+    else if (key == "days") {
+      days_text.clear();
+      for (const auto item : split_list(value)) days_text.emplace_back(item);
+      valid &= days_text.size() <= kMaxProfileCurves;
+    } else if (key == "iv") valid &= query_decimal(value, vol_points) && std::abs(vol_points) <= 100;
+    else if (key == "range") valid &= query_decimal(value, range) && range > 0 && range <= 99;
+    else if (key == "steps") {
+      const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), steps);
+      valid &= ec == std::errc{} && end == value.data() + value.size() && steps >= 3 && steps <= 201 && steps % 2 == 1;
+    } else if (key == "betas") {
+      for (const auto item : split_list(value)) {
+        const auto colon = item.find(':');
+        double beta = 0;
+        const std::string symbol(item.substr(0, colon));
+        valid &= colon != std::string_view::npos && underlying_symbol(symbol) && !given.contains(symbol) &&
+                 query_decimal(std::string(item.substr(colon + 1)), beta) && std::abs(beta) <= 10;
+        if (valid) given[symbol] = beta;
+      }
+    } else valid = false;
+    if (!valid) break;
+  }
+  if (!valid) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
+  if (!known_account(source, account)) return api_error(404, "UNKNOWN_ACCOUNT", "No paper account " + account);
+  const auto view = source.trading_view(account);
+  if (!view || !view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "Paper trading is disabled or unavailable");
+  const auto& s = *view->snapshot;
+  const auto& reference = underlying.empty() ? benchmark : underlying;
+  // The underlyings in scope: each held contract's and share's.
+  std::set<std::string> held;
+  Timestamp first_expiry = std::numeric_limits<Timestamp>::max();
+  for (const auto& p : s.positions) {
+    if (!underlying.empty() && p.position.contract.underlying != underlying) continue;
+    held.insert(p.position.contract.underlying);
+    if (p.position.contract.expiry_time() > s.time) first_expiry = std::min(first_expiry, p.position.contract.expiry_time());
+  }
+  for (const auto& stock : s.stocks)
+    if (underlying.empty() || stock.position.symbol == underlying) held.insert(stock.position.symbol);
+  ProfileConfig config;
+  config.vol_points = vol_points;
+  config.vol_floor = view->config.scenarios.vol_floor;
+  for (int i = 0; i < steps; ++i) {
+    const int offset = i - steps / 2;
+    config.percent.push_back(offset == 0 ? 0.0 : range * offset / (steps / 2));
+  }
+  config.days.clear();
+  std::vector<std::string> labels;
+  for (const auto& text : days_text) {
+    double days = 0;
+    if (text == "expiry") {
+      if (first_expiry == std::numeric_limits<Timestamp>::max()) continue;  // nothing expires in scope
+      days = std::min(366.0, static_cast<double>(first_expiry - s.time) / static_cast<double>(md::kNanosPerDay));
+    } else if (!query_decimal(text, days) || days < 0 || days > 366) {
+      return api_error(400, "INVALID_REQUEST", "days must be numbers of days from 0 to 366, or expiry");
+    }
+    if (std::find(config.days.begin(), config.days.end(), days) != config.days.end()) continue;
+    config.days.push_back(days);
+    labels.push_back(text == "expiry" ? "expiry" : "");
+  }
+  if (config.days.empty()) {
+    config.days.push_back(0);
+    labels.emplace_back();
+  }
+  // The reference's spot and implied variances come from its analytics; a held
+  // underlying's valuation stands in for a spot it has none of.
+  const auto metrics = source.metrics(reference);
+  double spot = metrics && metrics->spot > 0 && std::isfinite(metrics->spot) ? metrics->spot : 0.0;
+  if (!(spot > 0)) {
+    Timestamp latest = -1;
+    for (const auto& p : s.positions) {
+      const auto v = view->valuations.find(p.position.contract.osi_symbol());
+      if (p.position.contract.underlying == reference && v != view->valuations.end() && v->second.time > latest && v->second.spot > 0) {
+        spot = v->second.spot; latest = v->second.time;
+      }
+    }
+    for (const auto& stock : s.stocks)
+      if (stock.position.symbol == reference && stock.fresh && stock.mark) spot = stock.mark->dollars();
+  }
+  json horizons = json::array();
+  for (const double days : config.days) {
+    const auto target = probability_horizon(s.time, days);
+    const auto variance = metrics ? implied_variance_until(*metrics, target) : std::nullopt;
+    config.variances.push_back(variance);
+    const auto cone = [&](double k) -> json {
+      if (!variance || !(spot > 0)) return nullptr;
+      return {{"low", number(spot * std::exp(-k * std::sqrt(*variance)))}, {"high", number(spot * std::exp(k * std::sqrt(*variance)))}};
+    };
+    horizons.push_back({{"until", md::format_timestamp(target)}, {"sigma", variance ? number(std::sqrt(*variance)) : json(nullptr)},
+                        {"one_sd", cone(1)}, {"two_sd", cone(2)}});
+  }
+  json betas = json::array();
+  double weighted = 0;
+  bool weighted_complete = s.risk.complete;
+  for (const auto& symbol : held) {
+    const auto beta = underlying.empty() ? profile_beta(source, symbol, reference, given) : BetaEstimate{1, analytics::kNaN, 0, "reference"};
+    const auto bucket = s.risk.underlyings.find(symbol);
+    const std::optional<double> dollar_delta = bucket != s.risk.underlyings.end() ? std::optional(bucket->second.position.dollar_delta) : std::nullopt;
+    if (!beta.source.empty()) config.betas[symbol] = beta.beta;
+    if (beta.source.empty() || !dollar_delta) weighted_complete = false;
+    else weighted += *dollar_delta * beta.beta;
+    betas.push_back({{"underlying", symbol}, {"beta", beta.source.empty() ? json(nullptr) : number(beta.beta)},
+                     {"source", nullable(beta.source)}, {"observations", beta.observations},
+                     {"correlation", number(beta.correlation)},
+                     {"dollar_delta", dollar_delta ? number(*dollar_delta) : json(nullptr)},
+                     {"weighted_dollar_delta", dollar_delta && !beta.source.empty() ? number(*dollar_delta * beta.beta) : json(nullptr)}});
+  }
+  const auto profile = snapshot_profile(s, view->config, view->valuations, config, spot, underlying);
+  json prices = json::array();
+  for (const double percent : config.percent) prices.push_back(spot > 0 ? number(spot * (1 + percent / 100)) : json(nullptr));
+  json curves = json::array();
+  for (std::size_t i = 0; i < profile.curves.size(); ++i) {
+    const auto& curve = profile.curves[i];
+    json pnl = json::array();
+    for (const double value : curve.pnl) pnl.push_back(profile.complete ? number(value) : json(nullptr));
+    curves.push_back({{"days", curve.days}, {"label", nullable(labels[i])}, {"time", md::format_timestamp(curve.time)},
+                      {"pnl", pnl}, {"clamped", curve.clamped}, {"horizon", horizons[i]},
+                      {"down", level_json(curve.down, spot)}, {"up", level_json(curve.up, spot)},
+                      {"soft_down", level_json(curve.soft_down, spot)}, {"soft_up", level_json(curve.soft_up, spot)}});
+  }
+  return ApiResponse{200, json{{"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
+      {"underlying", nullable(underlying)}, {"benchmark", underlying.empty() ? json(benchmark) : json(nullptr)},
+      {"reference", reference}, {"spot", spot > 0 ? number(spot) : json(nullptr)}, {"vol_points", vol_points},
+      {"equity", s.equity.str()}, {"room", money(profile.room)}, {"soft_room", money(profile.soft_room)},
+      {"percent", config.percent}, {"prices", prices}, {"curves", curves}, {"betas", betas},
+      {"weighted_dollar_delta", weighted_complete ? number(weighted) : json(nullptr)},
+      {"weighted_delta", weighted_complete && spot > 0 ? number(weighted / spot) : json(nullptr)},
+      {"complete", profile.complete},
+      {"model", "Black-76 on each contract's smile IV plus the offset, sticky strike; remaining life and carry shrink by the days; "
+                "each underlying moves its beta times the reference's percent move"}}.dump()};
+}
+}  // namespace
+
 std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSource& source) {
   const auto question = request.target.find('?');
   const auto path = request.target.substr(0, question);
   if (path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
       path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/account/equity" &&
-      path != "/api/trades" && path != "/api/plans" && path != "/api/accounts") return {};
+      path != "/api/trades" && path != "/api/plans" && path != "/api/accounts" && path != "/api/risk/profile") return {};
+  if (path == "/api/risk/profile") {
+    const auto pairs = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
+    if (!pairs) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
+    return risk_profile_response(*pairs, source);
+  }
   const auto query = question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1);
   // Every route takes account=ID; orders take status=open|all and client_order_id;
   // trades take status=open|closed|all and attempt=current|all. Each key at most once.

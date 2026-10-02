@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -652,6 +653,66 @@ json volatility_json(const std::shared_ptr<const UnderlyingMetrics>& metrics, co
   return response;
 }
 
+/// Where the market's implied volatility says the underlying can be by each horizon:
+/// a one and two standard deviation cone, and the odds of finishing above, below
+/// or touching each price (see price_odds).
+ApiResponse probability_response(const UnderlyingMetrics& m, const std::map<std::string, std::string>& query) {
+  const auto list = [](const std::string& text, std::size_t most, double minimum, double maximum) -> std::optional<std::vector<double>> {
+    std::vector<double> values;
+    std::size_t start = 0;
+    while (true) {
+      const auto comma = text.find(',', start);
+      double value = 0;
+      if (!decimal_number(text.substr(start, comma == std::string::npos ? std::string::npos : comma - start), value) ||
+          value < minimum || value > maximum || values.size() == most) return std::nullopt;
+      if (std::find(values.begin(), values.end(), value) == values.end()) values.push_back(value);
+      if (comma == std::string::npos) return values;
+      start = comma + 1;
+    }
+  };
+  std::vector<double> days{0, 1, 7, 30}, prices;
+  for (const auto& [key, value] : query) {
+    if (key == "days") {
+      const auto parsed = list(value, 8, 0, 366);
+      if (!parsed) return error(400, "days must be at most 8 numbers of days from 0 to 366");
+      days = *parsed;
+    } else if (key == "prices") {
+      const auto parsed = list(value, 20, std::numeric_limits<double>::min(), 1e9);
+      if (!parsed) return error(400, "prices must be at most 20 positive prices");
+      prices = *parsed;
+    } else if (key != "window" && key != "expiries") {
+      return error(400, "unknown query parameter " + key);
+    }
+  }
+  const bool priced = m.spot > 0 && std::isfinite(m.spot);
+  json horizons = json::array();
+  for (const double d : days) {
+    const auto until = probability_horizon(m.as_of, d);
+    const auto variance = priced ? implied_variance_until(m, until) : std::nullopt;
+    const auto cone = [&](double k) -> json {
+      if (!variance) return nullptr;
+      const double spread = k * std::sqrt(*variance);
+      return {{"low", price(m.spot * std::exp(-spread))}, {"high", price(m.spot * std::exp(spread))}};
+    };
+    json odds = json::array();
+    for (const double level : prices) {
+      if (!variance) {
+        odds.push_back({{"price", level}, {"above", nullptr}, {"below", nullptr}, {"touch", nullptr}});
+        continue;
+      }
+      const auto o = price_odds(m.spot, level, *variance);
+      odds.push_back({{"price", level}, {"above", sig(o.above)}, {"below", sig(o.below)}, {"touch", sig(o.touch)}});
+    }
+    horizons.push_back({{"days", d}, {"until", md::format_timestamp(until)},
+                        {"sigma", variance ? sig(std::sqrt(*variance)) : json(nullptr)},
+                        {"one_sd", cone(1)}, {"two_sd", cone(2)}, {"prices", odds}});
+  }
+  return ok({{"symbol", m.symbol}, {"as_of", md::format_timestamp(m.as_of)}, {"spot", priced ? price(m.spot) : json(nullptr)},
+             {"horizons", horizons},
+             {"model", "Lognormal on the at-the-money implied variance to each horizon, forward at spot; "
+                       "touch is the driftless reflection estimate"}});
+}
+
 ApiResponse candles_response(const MetricsSource& source, const std::string& symbol,
                              const std::map<std::string, std::string>& query) {
   const auto symbols = source.symbols();
@@ -674,6 +735,8 @@ ApiResponse candles_response(const MetricsSource& source, const std::string& sym
 }
 
 }  // namespace
+
+bool query_decimal(const std::string& text, double& value) { return decimal_number(text, value); }
 
 ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   if (request.method != "GET") return error(405, "only GET is supported");
@@ -717,6 +780,7 @@ ApiResponse handle_api(const ApiRequest& request, const MetricsSource& source) {
   if (!metrics) return error(404, "no data for " + symbol + " yet");
 
   if (view == "summary") return ok(summary_json(*metrics));
+  if (view == "probability") return probability_response(*metrics, query);
   if (view == "volatility") {
     auto response = volatility_json(metrics, source);
     add_volatility_history(response, source, metrics);

@@ -26,6 +26,7 @@ remain exact integer micro-dollars.
 | `GET /api/underlyings/{symbol}/volatility` | Current model-free IV, ATM/skew, realized vol, cones, implied moves, IV rank/percentile and ex-ante/ex-post VRP, with sources and history counts |
 | `GET /api/underlyings/{symbol}/series?fields=mfiv30,atm30,rr25&from=&to=&interval=1d` | Selected metric history at `1m` or `1d`; bounded date ranges, null gaps and per-value sources ([fields and limits](volatility.md#series-api)) |
 | `GET /api/underlyings/{symbol}/candles?interval=5m` | OHLC bars at 1m, 5m, 15m, 30m, 1h or 1d, oldest first |
+| `GET /api/underlyings/{symbol}/probability?days=0,1,7,30&prices=` | Probability cones (one and two standard deviations) from the at-the-money term structure, and each price's odds of finishing above or below it or touching it by each horizon ([model](paper-trading.md#risk-profile-and-probabilities)) |
 | `WS /ws` | A small tick each second with versions, so clients refetch only what changed; at most 256 open sessions, after which an upgrade gets 503 with `Retry-After: 5` |
 
 Expiry ids are the date plus settlement, for example `2026-10-16AM`.
@@ -54,6 +55,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | Route | Does |
 | --- | --- |
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions with their margin breakdown, orders and fills with actors (each fill with the bid, ask and sizes it took and the quote's age), risk, warnings and breach estimates, rules and progress, and its round trips |
+| `GET /api/risk/profile?underlying=&benchmark=SPY&days=0,1,expiry&iv=&range=10&steps=41&betas=` | The held book's P&L curve across moves of one underlying, or of SPY or SPX with each underlying beta-weighted to it, today and on later dates with a volatility offset; where each curve reaches the floors, with touch odds, and beta-weighted delta ([details](paper-trading.md#risk-profile-and-probabilities)) |
 | `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to buying power and to floor, projected breach risk, and warnings about terms that act at once |
 | `POST /api/orders/what-if` | Up to six candidate adjustments of up to four orders each, filled on a private copy of the account and compared on buying power, Greeks, grid loss and floor room |
 | `POST /api/orders/{id}/preview` | The same preview of a change to a resting order, as `PUT /api/orders/{id}` would make it, without making it |

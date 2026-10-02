@@ -45,7 +45,8 @@ describe("checked API core types", () => {
     }
   })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus",
-    "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule"])("%s matches OpenAPI fields, types and nullability", (name) => {
+    "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
+    "ProfileLevel", "ProfileHorizon"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
     const fields = [...body!.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]

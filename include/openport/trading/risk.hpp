@@ -100,6 +100,51 @@ struct RiskWarning {
   std::optional<double> limit;
 };
 
+/// A risk profile of the held book: its value across moves of a reference price
+/// on several dates. Each held underlying moves `betas[underlying]` times the
+/// reference's percent move (1 for the reference itself), so a book of several
+/// underlyings is weighted to one benchmark.
+struct ProfileConfig {
+  std::vector<double> percent;          ///< The reference's moves, in percent.
+  std::vector<double> days{0};          ///< Each curve's date, in calendar days after `now`.
+  double vol_points = 0;                ///< Added to every contract's smile IV.
+  double vol_floor = 0.0001;
+  std::map<std::string, double> betas;  ///< By underlying; one held without a beta leaves the profile incomplete.
+  /// For each curve, the variance of the reference's log price to the date its levels'
+  /// touch probabilities are measured to; empty or nullopt leaves them out.
+  std::vector<std::optional<double>> variances;
+};
+struct ProfileCurve {
+  double days = 0;
+  Timestamp time = 0;        ///< now + days.
+  std::vector<double> pnl;   ///< By move; analytical dollars from the book's value now. Zero when incomplete.
+  bool clamped = false;      ///< A shocked volatility met the floor.
+  /// Reference levels where equity reaches the plan floor (or the soft floor without
+  /// one), and the soft floor's own, as BreachRisk gives them for today.
+  std::optional<BreachLevel> down;
+  std::optional<BreachLevel> up;
+  std::optional<BreachLevel> soft_down;
+  std::optional<BreachLevel> soft_up;
+};
+struct RiskProfile {
+  std::optional<Money> room;
+  std::optional<Money> soft_room;
+  std::vector<ProfileCurve> curves;
+  bool complete = true;
+};
+void validate_profile(const ProfileConfig& config);
+/// Prices each contract with Black-76 at the curve's date: remaining life
+/// T' = T - days (zero once it has expired, leaving intrinsic value), the forward's
+/// carry over spot shrinking in proportion, F' = (1 + beta x)(S + (F - S) T'/T),
+/// D' = D^(T'/T) and sigma' = max(vol_floor, smile IV + vol_points / 100). Shares
+/// move by beta x. Today's curve with no volatility change is the scenario grid's
+/// zero-volatility column, and its levels are breach_risk's. `reference_spot` turns
+/// percent levels into price points.
+[[nodiscard]] RiskProfile risk_profile(const Ledger& ledger, const Valuations& valuations,
+    const ProfileConfig& config, double reference_spot, Money equity, std::optional<Money> floor,
+    std::optional<Money> soft_floor, Timestamp now, Timestamp max_age,
+    const std::map<std::string, double>& stock_prices = {});
+
 /// Every held underlying, with levels where equity reaches the plan floor, or the
 /// soft floor on an account without one, and separately the soft floor's levels;
 /// with neither floor there are no levels.

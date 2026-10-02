@@ -195,6 +195,35 @@ class Risk(TypedDict):
     scenarios: JSON
 
 
+class RiskProfile(TypedDict):
+    account_version: str
+    time: str
+    underlying: str | None
+    benchmark: str | None
+    reference: str
+    spot: float | None
+    vol_points: float
+    equity: str
+    room: str | None
+    soft_room: str | None
+    percent: list[float]
+    prices: list[float | None]
+    curves: list[JSON]
+    betas: list[JSON]
+    weighted_dollar_delta: float | None
+    weighted_delta: float | None
+    complete: bool
+    model: str
+
+
+class Probability(TypedDict):
+    symbol: str
+    as_of: str
+    spot: float | None
+    horizons: list[JSON]
+    model: str
+
+
 class OrderPreview(TypedDict):
     account_version: str
     decision: str

@@ -10,4 +10,6 @@ nlohmann::json account_ticks_json(const EngineStatus& status);
 std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSource& source);
 /// P&L by Greek in dollars, to the cent, with parts that add up to the total.
 nlohmann::json attribution_json(const trading::Attribution& attribution);
+/// A query parameter's decimal number in strict syntax, finite and in range.
+bool query_decimal(const std::string& text, double& value);
 }

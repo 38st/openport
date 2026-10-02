@@ -1983,6 +1983,78 @@ bounded to 101 values each, spot > -100% and <= +1000%, absolute vol shock <= 10
 points. Missing/expired/nonfinite pricing inputs flag the whole grid incomplete;
 its numeric placeholders are zero and must not be displayed as measured P&L.
 
+## Risk profile and probabilities
+
+`GET /api/risk/profile` draws the held book's P&L across moves of a reference price
+on several dates: where the book, and the room to the floor, will be later today,
+tomorrow or at the first expiry. With `underlying=SYMBOL` it covers that underlying's
+contracts and shares against its own moves. Without one it covers the whole book
+against a benchmark, `benchmark=SPY` (the default) or `SPX`, each underlying moving
+its beta times the benchmark's percent move.
+
+| Parameter | Meaning |
+| --- | --- |
+| `days` | Up to eight comma-separated curve dates, in calendar days after the account's market time (0 to 366, fractions allowed), or `expiry` for the first unexpired held expiry in scope; default `0,1` |
+| `iv` | Vol points added to every contract's smile IV, -100 to 100; default 0 |
+| `range`, `steps` | The moves run evenly from -`range`% to +`range`% (at most 99) in an odd number of `steps` (3 to 201); default 10 and 41 |
+| `betas` | `SYMBOL:BETA` overrides, comma-separated, each within 10 of zero |
+
+```text
+x = the reference's move; each underlying moves beta * x (floored at -99.99%)
+T' = T - days / 365 (0 once the contract has expired by then)
+F' = (1 + beta * x) * (S + (F - S) * T' / T);  D' = D^(T' / T)
+sigma' = max(vol_floor, smile_IV + iv / 100)
+P&L = sum(q * M * (Black76(F', K, T', sigma', D') - Black76(F, K, T, IV, D)))
+    + shares * price * beta * x
+```
+
+Today's curve with no IV change is the scenario grid's zero-volatility column, so
+its levels are the breach estimate's. Later curves lose the time value the days
+take, at the same smile (sticky strike); a contract expired by then is worth its
+intrinsic value at the moved spot. P&L is analytical double dollars from the book's
+model value now, not booked cash. Each curve lists the reference's levels where
+equity reaches the plan floor (`down`, `up`; the soft floor's without a plan floor)
+and the soft floor (`soft_down`, `soft_up`), found as breach levels are, with the
+odds of touching each by the curve's horizon (today's close for today's curve,
+the curve's date otherwise). Its `horizon` holds the reference's implied standard
+deviation of log price to then and the one and two standard deviation cones. A held
+contract without a fresh valuation, an expired one awaiting settlement or an
+underlying without a beta leaves the profile incomplete: every `pnl` is null and no
+level is given.
+
+Betas come from the first source that has one: 1 for the benchmark itself, the
+request's `betas`, 1 for the same index (SPX, SPXW, XSP and SPY; NDX, NDXP, XND and
+QQQ; RUT, RUTW and IWM), the slope of the underlying's daily log returns on the
+benchmark's over at most the last 252 completed closes (at least 20 paired), and
+the same over 5-minute closes within each session (at least 30). Each `betas` row
+gives its source, the returns it used, the correlation, and the underlying's dollar
+delta with its beta-weighted dollar delta; `weighted_dollar_delta` sums them, and
+`weighted_delta` divides that by the benchmark's price: the book's exposure in
+benchmark deltas. Spot and implied variance come from the reference's analytics; a
+held position's valuation stands in for a reference spot the analytics lack, and
+without either the curves run against the percent move alone (`prices` and level
+prices are null).
+
+`GET /api/underlyings/{symbol}/probability?days=0,1,7,30&prices=` gives, for up to
+eight horizons and twenty prices, the underlying's implied standard deviation of
+log price `sigma` to each horizon, the cones `one_sd` and `two_sd` (`S e^(±k sigma)`),
+and each price's odds. A horizon of 0 days ends at today's regular close, any other
+that many calendar days after the analytics' market time. Before today's close the
+variance is today's share of the front expiry's in regular-session time (as the
+breach estimate's); past it, each expiry's at-the-money total variance (IV² times
+its years) is interpolated linearly in calendar time, with flat volatility before
+the first expiry and after the last, and never less than today's.
+
+```text
+v = sigma^2
+above = N((ln(S / K) - v / 2) / sqrt(v))   (lognormal, forward at spot)
+below = 1 - above
+touch = 2 N(-|ln(K / S)| / sqrt(v))        (driftless reflection estimate)
+```
+
+These are the market's risk-neutral odds under one volatility, not a forecast: skew
+and drift are left out, and touch odds overstate a level reached only on paper.
+
 ## Expiry and explicit settlement
 
 At `OptionContract::expiry_time()` orders cancel and open positions become

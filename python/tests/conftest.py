@@ -99,7 +99,8 @@ class Stub:
             view = path.rsplit("/", 1)[-1]
             if view == "chain":
                 return 200, self.chain
-            name = {"surface": "Surface", "exposure": "ExposureMatrix", "volatility": "Volatility", "candles": "Candles"}.get(view, "Summary")
+            name = {"surface": "Surface", "exposure": "ExposureMatrix", "volatility": "Volatility", "candles": "Candles",
+                    "probability": "Probability"}.get(view, "Summary")
             value = shaped(name, symbol="SPX", as_of=TIME)
             if name == "Summary":
                 value["expiries"] = [self.expiry]
@@ -129,7 +130,7 @@ class Stub:
         if path.endswith(".csv"):
             return 200, "account,account_version,provider,prices,new_york_date,id,order_id,actor,symbol\n"
         name = {"account": "Account", "portfolio": "Portfolio", "orders": "OrdersResponse", "fills": "FillsResponse",
-                "risk": "Risk", "trades": "TradesResponse", "plans": "PlansResponse", "accounts": "AccountsResponse",
+                "risk": "Risk", "profile": "RiskProfile", "trades": "TradesResponse", "plans": "PlansResponse", "accounts": "AccountsResponse",
                 "equity": "EquityHistory", "close": "ClosePositionsResponse", "cancel": "CancelAllResponse"}.get(path.rsplit("/", 1)[-1])
         if name:
             value = shaped(name)

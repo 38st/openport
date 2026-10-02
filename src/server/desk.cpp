@@ -229,6 +229,118 @@ std::optional<double> implied_variance_to_close(const analytics::UnderlyingMetri
   return iv * iv * front->years * std::min(1.0, static_cast<double>(today) / static_cast<double>(until_expiry));
 }
 
+md::Timestamp probability_horizon(md::Timestamp now, double days) {
+  if (days > 0) return now + std::llround(days * static_cast<double>(md::kNanosPerDay));
+  const auto date = md::trading_date(now);
+  return md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+}
+
+/// Past today's close, each expiry's at-the-money total variance (IV² × years, the
+/// IV's own calendar time) is interpolated linearly in time, with flat volatility
+/// before the first expiry and after the last.
+std::optional<double> implied_variance_until(const analytics::UnderlyingMetrics& metrics, md::Timestamp target) {
+  if (!(metrics.spot > 0)) return {};
+  if (target <= metrics.as_of) return 0.0;
+  const auto to_close = implied_variance_to_close(metrics);
+  const auto date = md::trading_date(metrics.as_of);
+  const auto close = md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+  if (target <= close) {
+    if (!to_close) return {};
+    const auto today = session_time(metrics.as_of, close);
+    return today <= 0 ? 0.0 : *to_close * static_cast<double>(session_time(metrics.as_of, target)) / static_cast<double>(today);
+  }
+  std::vector<std::pair<double, double>> term;  // years, total variance
+  for (const auto& slice : metrics.slices) {
+    if (!(slice.years > 0) || slice.expiry_time <= metrics.as_of) continue;
+    double iv = slice.atm_iv, distance = std::numeric_limits<double>::max();
+    if (!(iv > 0) || !std::isfinite(iv)) {
+      iv = analytics::kNaN;
+      for (const auto& strike : slice.strikes) {
+        if (!(strike.iv > 0) || !std::isfinite(strike.iv)) continue;
+        const auto away = std::abs(strike.strike - metrics.spot);
+        if (away < distance) { iv = strike.iv; distance = away; }
+      }
+    }
+    if (iv > 0 && std::isfinite(iv)) term.emplace_back(slice.years, iv * iv * slice.years);
+  }
+  if (term.empty()) return {};
+  std::sort(term.begin(), term.end());
+  const double years = md::years_between(metrics.as_of, target);
+  double variance = 0;
+  if (years <= term.front().first) variance = term.front().second / term.front().first * years;
+  else if (years >= term.back().first) variance = term.back().second / term.back().first * years;
+  else {
+    const auto upper = std::lower_bound(term.begin(), term.end(), std::pair{years, -1.0});
+    const auto lower = std::prev(upper);
+    variance = lower->second + (upper->second - lower->second) * (years - lower->first) / (upper->first - lower->first);
+  }
+  return std::max(variance, to_close.value_or(0.0));
+}
+
+PriceOdds price_odds(double spot, double price, double variance) {
+  PriceOdds odds{price, 0, 0, 0};
+  if (!(spot > 0) || !(price > 0) || !(variance >= 0)) return odds;
+  const double distance = std::log(spot / price);
+  if (variance == 0) {
+    odds.above = distance > 0 ? 1 : 0;
+    odds.below = 1 - odds.above;
+    odds.touch = distance == 0 ? 1 : 0;
+    return odds;
+  }
+  const double sd = std::sqrt(variance);
+  odds.above = std::clamp(0.5 * std::erfc(-(distance - variance / 2) / (sd * std::sqrt(2.0))), 0.0, 1.0);
+  odds.below = 1 - odds.above;
+  odds.touch = std::clamp(std::erfc(std::abs(distance) / (sd * std::sqrt(2.0))), 0.0, 1.0);
+  return odds;
+}
+
+BetaEstimate estimate_beta(const std::vector<md::Bar>& asset, const std::vector<md::Bar>& benchmark,
+                           std::size_t max_returns, md::Timestamp max_gap) {
+  std::map<md::Timestamp, double> closes;
+  for (const auto& bar : benchmark) if (bar.close > 0 && std::isfinite(bar.close)) closes[bar.start] = bar.close;
+  std::vector<std::pair<double, double>> pairs;
+  for (std::size_t i = 1; i < asset.size(); ++i) {
+    const auto& before = asset[i - 1];
+    const auto& after = asset[i];
+    if (!(before.close > 0) || !(after.close > 0) || !std::isfinite(before.close) || !std::isfinite(after.close) ||
+        after.start <= before.start || (max_gap > 0 && after.start - before.start > max_gap)) continue;
+    const auto from = closes.find(before.start);
+    const auto to = closes.find(after.start);
+    if (from == closes.end() || to == closes.end() || std::next(from) != to) continue;
+    pairs.emplace_back(std::log(after.close / before.close), std::log(to->second / from->second));
+  }
+  if (pairs.size() > max_returns) pairs.erase(pairs.begin(), pairs.end() - static_cast<std::ptrdiff_t>(max_returns));
+  BetaEstimate estimate;
+  estimate.observations = pairs.size();
+  if (pairs.size() < 2) return estimate;
+  double mean_a = 0, mean_b = 0;
+  for (const auto& [a, b] : pairs) { mean_a += a; mean_b += b; }
+  mean_a /= static_cast<double>(pairs.size());
+  mean_b /= static_cast<double>(pairs.size());
+  double covariance = 0, variance_a = 0, variance_b = 0;
+  for (const auto& [a, b] : pairs) {
+    covariance += (a - mean_a) * (b - mean_b);
+    variance_a += (a - mean_a) * (a - mean_a);
+    variance_b += (b - mean_b) * (b - mean_b);
+  }
+  if (!(variance_b > 0)) return estimate;
+  estimate.beta = covariance / variance_b;
+  if (variance_a > 0) estimate.correlation = covariance / std::sqrt(variance_a * variance_b);
+  if (!std::isfinite(estimate.beta)) estimate.beta = 0;
+  else estimate.source = "estimated";
+  return estimate;
+}
+
+bool same_index(std::string_view a, std::string_view b) {
+  const auto family = [](std::string_view symbol) {
+    if (symbol == "SPX" || symbol == "SPXW" || symbol == "XSP" || symbol == "SPY") return 1;
+    if (symbol == "NDX" || symbol == "NDXP" || symbol == "XND" || symbol == "QQQ") return 2;
+    if (symbol == "RUT" || symbol == "RUTW" || symbol == "IWM") return 3;
+    return 0;
+  };
+  return a == b || (family(a) != 0 && family(a) == family(b));
+}
+
 std::optional<MarketHalt> circuit_breaker(double reference, double price, md::Timestamp time, int tripped) {
   if (!(reference > 0) || !(price > 0) || !std::isfinite(reference) || !std::isfinite(price)) return std::nullopt;
   if (!md::market_session(time).open) return std::nullopt;  // the regular session only
