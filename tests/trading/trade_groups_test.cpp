@@ -155,6 +155,82 @@ TEST(TradeGroups, ARecoveredSessionGroupsARollAsTheLiveOneDoes) {
   EXPECT_EQ(again.snapshot_json(), s.snapshot_json());
 }
 
+TEST(TradeGroups, AClosedRootNamesTheSameTradeBeforeAndAfterRecovery) {
+  GroupDirectory directory;
+  Calls m;
+  auto live_journal = FileJournal::create(directory.file("live"));
+  auto repeated_journal = FileJournal::create(directory.file("repeated"));
+  auto recovered_journal = FileJournal::create(directory.file("recovered"));
+  TradingSession live({}, m.a.time, live_journal);
+  TradingSession repeated({}, m.a.time, repeated_journal);
+  TradingSession recovered({}, m.a.time, recovered_journal);
+  for (auto* s : {&live, &repeated, &recovered}) {
+    m.seed(*s);
+    ASSERT_TRUE(s->submit(m.open(), m.a.time).decision.ok());
+    ASSERT_TRUE(s->submit(m.roll(), m.a.time).decision.ok());
+  }
+  recovered = TradingSession::recover(FileJournal::read(directory.file("recovered")), recovered_journal);
+  // The live session uses the incremental review builder; recovery checks the
+  // complete history before its first command rebuilds that cache.
+  auto hedge = m.a.market("hedge");
+  hedge.group = "1";
+  for (auto* s : {&live, &repeated, &recovered}) {
+    ASSERT_TRUE(s->submit(hedge, m.a.time).decision.ok());
+    EXPECT_EQ(trades_by_symbol(*s).at(m.a.symbol()), "1");
+    const auto trips = lifecycles(s->snapshot()->recent_fills, s->snapshot()->closures, s->contracts());
+    ASSERT_TRUE(trips.front().closed);
+    const auto hedge_id = trips.back().first_fill;
+    // The closed root can name the whole trade for grouping, but cannot leave it.
+    EXPECT_EQ(s->group_trades({1}, false, m.a.time).decision.code, Reason::INVALID_GROUP);
+    ASSERT_TRUE(s->group_trades({hedge_id}, false, m.a.time).decision.ok());
+    ASSERT_TRUE(s->group_trades({1, hedge_id}, true, m.a.time).decision.ok());
+    EXPECT_EQ(trades_by_symbol(*s).at(m.a.symbol()), "1");
+    ASSERT_TRUE(s->snapshot()->group_reviews.at("1").since);
+    EXPECT_EQ(*s->snapshot()->group_reviews.at("1").since, m.a.time);
+  }
+  EXPECT_EQ(live_journal->head(), repeated_journal->head());
+  EXPECT_EQ(live.snapshot_json(), recovered.snapshot_json());
+  EXPECT_EQ(live_journal->sequence(), recovered_journal->sequence());
+  // Recovery deliberately writes a checkpoint on the next command. Expanding
+  // both histories compares every recorded state and event regardless of that.
+  auto live_expanded = FileJournal::create(directory.file("live-expanded"));
+  auto recovered_expanded = FileJournal::create(directory.file("recovered-expanded"));
+  TradingSession::expand(FileJournal::read(directory.file("live")), *live_expanded);
+  TradingSession::expand(FileJournal::read(directory.file("recovered")), *recovered_expanded);
+  EXPECT_EQ(live_expanded->head(), recovered_expanded->head());
+  const auto again = TradingSession::recover(FileJournal::read(directory.file("recovered")));
+  EXPECT_EQ(again.snapshot_json(), live.snapshot_json());
+}
+
+TEST(TradeGroups, ClosedMembersOnlyNameTradesThatStillHoldTheSameUnderlying) {
+  Calls m;
+  TradingSession s({}, m.a.time);
+  m.seed(s);
+  ScriptedMarket other;
+  other.contract = *md::parse_osi("SPY261022C00500000");
+  other.seed(s);
+  ASSERT_TRUE(s.submit(m.open(), m.a.time).decision.ok());
+  ASSERT_TRUE(s.submit(m.roll(), m.a.time).decision.ok());
+  auto wrong = other.market("wrong underlying");
+  wrong.group = "1";
+  EXPECT_EQ(s.submit(wrong, m.a.time).decision.code, Reason::INVALID_GROUP);
+  ASSERT_TRUE(s.submit(other.market("other"), m.a.time).decision.ok());
+  const auto other_id = s.snapshot()->recent_fills.back().id;
+  EXPECT_EQ(s.group_trades({1, other_id}, true, m.a.time).decision.code, Reason::INVALID_GROUP);
+  // Any closed member can identify its whole trade for manual grouping.
+  ASSERT_TRUE(s.submit(m.a.market("separate"), m.a.time).decision.ok());
+  const auto separate_id = s.snapshot()->recent_fills.back().id;
+  ASSERT_TRUE(s.group_trades({2, separate_id}, true, m.a.time).decision.ok());
+  EXPECT_EQ(trades_by_symbol(s).at(m.a.symbol()), "1");
+  EXPECT_EQ(s.group_trades({2}, false, m.a.time).decision.code, Reason::INVALID_GROUP);
+  ASSERT_TRUE(s.submit(m.a.market("close separate", 1, Side::Sell), m.a.time).decision.ok());
+  ASSERT_TRUE(s.submit(m.order("close", {{m.c.symbol(), Side::Sell, 1}, {m.d.symbol(), Side::Buy, 1}}), m.a.time).decision.ok());
+  auto late = m.a.market("late");
+  late.group = "1";
+  EXPECT_EQ(s.submit(late, m.a.time).decision.code, Reason::INVALID_GROUP);
+  EXPECT_EQ(s.group_trades({1, other_id}, true, m.a.time).decision.code, Reason::INVALID_GROUP);
+}
+
 TEST(TradeGroups, ReturnOnBuyingPowerDividesByWhatTheEntryNeeded) {
   Calls m;
   TradingSession s({}, m.a.time);

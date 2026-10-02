@@ -1146,7 +1146,7 @@
       ],
       "post": {
         "summary": "POST /api/trades/group",
-        "description": "Joins the trades of at least two open round trips into one whole trade, named by the oldest; its review restarts now. Closed round trips, mixed underlyings or one round trip are INVALID_GROUP (422); an unknown one is UNKNOWN_TRADE (404). Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "description": "Joins the trades of at least two open round trips into one whole trade, named by the oldest; its review restarts now. A closed round trip can name its whole trade while that holds an open one. Fully closed trades, mixed underlyings or too few round trips are INVALID_GROUP (422); an unknown round trip is UNKNOWN_TRADE (404). Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
         "x-scope": "trade",
         "responses": {
           "200": {
@@ -9905,7 +9905,7 @@
           },
           "group": {
             "type": "string",
-            "description": "Join the round trips this order opens to a whole trade, named by one of its open round trips' IDs (an adjustment). A multi-leg order that closes or adds to another order's round trip joins that trade without it (a roll). An order that names no open round trip on its underlying, or attaches held exits, is refused with INVALID_GROUP."
+            "description": "Join the round trips this order opens to a whole trade, named by its ID or one of its open round trips' IDs (an adjustment). A multi-leg order that closes or adds to another order's round trip joins that trade without it (a roll). An order naming no trade holding an open round trip on its underlying, or attaching held exits, is refused with INVALID_GROUP."
           }
         },
         "required": [
@@ -15940,7 +15940,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Open round trips, by trade ID."
+            "description": "Open round trips, by trade ID; to group, a closed round trip names its whole trade while that holds an open one."
           }
         },
         "required": [

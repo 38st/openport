@@ -361,9 +361,16 @@ Decision regroup(State& s, const std::vector<std::uint64_t>& trades, bool togeth
   const auto all = lifecycles(s.fills, s.closures, s.contracts);
   std::vector<const Lifecycle*> listed;
   for (const auto id : trades) {
-    const auto it = std::find_if(all.begin(), all.end(), [&](const Lifecycle& life) { return life.first_fill == id; });
+    auto it = std::find_if(all.begin(), all.end(), [&](const Lifecycle& life) { return life.first_fill == id; });
     if (it == all.end()) return refuse(Reason::UNKNOWN_TRADE, "No trade opens with fill " + std::to_string(id));
-    if (it->closed) return refuse(Reason::INVALID_GROUP, "Round trip " + std::to_string(id) + " is closed; only open round trips change trades");
+    if (it->closed && together) {
+      // A closed round trip names its whole trade, when that still holds an open one.
+      const auto trade = trade_group(*it, s.groups);
+      const auto open = std::find_if(all.begin(), all.end(), [&](const Lifecycle& life) { return !life.closed && trade_group(life, s.groups) == trade; });
+      if (open == all.end()) return refuse(Reason::INVALID_GROUP, "Trade " + std::to_string(id) + " is closed; only open trades join");
+      it = open;
+    }
+    if (it->closed) return refuse(Reason::INVALID_GROUP, "Round trip " + std::to_string(id) + " is closed; only open round trips leave a trade");
     if (!listed.empty() && it->contract.underlying != listed.front()->contract.underlying)
       return refuse(Reason::INVALID_GROUP, "A trade's round trips share one underlying");
     if (std::find(listed.begin(), listed.end(), &*it) == listed.end()) listed.push_back(&*it);
