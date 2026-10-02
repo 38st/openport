@@ -2230,6 +2230,27 @@ void check_floor_share(double floor_share) {
     throw TradingError(Reason::INVALID_ORDER, "floor_share must be greater than zero and at most one");
 }
 
+/// The account in `s` as a what-if shows it, against `base_equity`, today's.
+WhatIfAccount what_if_account(const State& s, Money base_equity, const std::map<std::string, double>& close_variances) {
+  WhatIfAccount out;
+  const auto snapshot = snapshot_of(s);
+  out.equity = snapshot.equity;
+  out.buying_power = snapshot.buying_power.available;
+  if (snapshot.risk.complete) out.exposure = snapshot.risk.aggregate.position;
+  out.scenarios = snapshot.scenarios;
+  const double cost = (snapshot.equity - base_equity).dollars();
+  for (auto& cell : out.scenarios.cells) cell.pnl += cost;
+  if (snapshot.valuation_complete && snapshot.scenarios.complete) {
+    double worst = 0;
+    for (const auto& cell : snapshot.scenarios.cells) worst = std::min(worst, cell.pnl);
+    out.max_loss = std::max(Money{}, base_equity - snapshot.equity - Money::from_double(worst));
+    out.equity_at_max_loss = base_equity - *out.max_loss;
+    if (s.config.rules.max_drawdown > Money{}) out.breaches_floor = *out.equity_at_max_loss <= s.evaluation.floor;
+    if (snapshot.soft_floor) out.breaches_soft_floor = *out.equity_at_max_loss <= *snapshot.soft_floor;
+  }
+  out.breach = breach_of(s, close_variances);
+  return out;
+}
 /// What order `id` did in `trial`, a private copy of `before` that took it or a
 /// change to it: its state and the fills it got there, beside `execution`'s
 /// full-size schedule. Fills from before the copy do not count.
@@ -3020,6 +3041,71 @@ OrderPreview TradingSession::preview_change(OrderId id, const OrderChange& chang
   result.max_units = sizing.units;
   result.max_units_buying_power = sizing.buying_power;
   result.max_units_floor = sizing.floor;
+  return result;
+}
+WhatIf TradingSession::what_if(const std::vector<std::vector<OrderRequest>>& candidates, Timestamp time,
+    const std::vector<std::vector<Decision>>& rejections, const std::map<std::string, double>& close_variances,
+    const PreviewMarket& market) const {
+  WhatIf result;
+  const auto before = prepared(impl_->state, time, market);
+  const auto base = measure(before).equity;
+  result.current = what_if_account(before, base, close_variances);
+  for (std::size_t c = 0; c < candidates.size(); ++c) {
+    WhatIfCandidate candidate;
+    State state = before;
+    bool projected = true;
+    for (std::size_t i = 0; i < candidates[c].size(); ++i) {
+      const auto rejection = c < rejections.size() && i < rejections[c].size() ? rejections[c][i] : Decision{};
+      const auto id = static_cast<OrderId>(state.orders.size() + 1);
+      PreviewProjection projection{{}, state};
+      try {
+        projection = project_order(state, candidates[c][i], rejection);
+      } catch (const TradingError& error) {
+        projection.result.decision = failure(error.code(), error.what());
+      }
+      if (impl_->stopped) projection.result.decision = failure(Reason::JOURNAL_IO, "Trading stopped after journal failure");
+      // An order without a contract or a quote cannot be projected, so the account after it is unknown.
+      const auto& orders = projection.projected.orders;
+      projected &= orders.size() >= id && orders.at(static_cast<std::size_t>(id - 1)).status == OrderStatus::Filled;
+      if (!projection.result.decision.ok() && candidate.decision.ok()) candidate.decision = projection.result.decision;
+      candidate.orders.push_back(projection.result.decision);
+      state = std::move(projection.projected);
+    }
+    if (projected) candidate.after = what_if_account(state, base, close_variances);
+    candidate.after.projected = projected;
+    result.candidates.push_back(std::move(candidate));
+  }
+  return result;
+}
+FlattenPreview TradingSession::preview_close_positions(std::optional<std::string> underlying, Timestamp time,
+    const std::map<std::string, Decision>& rejections, const std::map<std::string, double>& close_variances,
+    const PreviewMarket& market) const {
+  if (impl_->stopped) throw TradingError(Reason::JOURNAL_IO, "Trading stopped after journal failure; recover first");
+  // The flatten itself, on a journal-less copy, so the dry run does what it would.
+  auto copy = std::make_unique<Impl>();
+  copy->state = prepared(impl_->state, time, market);
+  copy->actor = impl_->actor;
+  copy->snapshot = std::make_shared<TradingSnapshot>(snapshot_of(copy->state));
+  const State before = copy->state;
+  TradingSession trial(std::move(copy));
+  FlattenPreview result;
+  const auto base = measure(before).equity;
+  result.current = what_if_account(before, base, close_variances);
+  const auto closed = trial.close_positions(underlying, time, rejections);
+  const auto& after = trial.impl_->state;
+  result.decision = closed.decision;
+  result.kept_stocks = closed.kept_stocks;
+  for (const auto id : open_ids(before))
+    if (after.orders.at(static_cast<std::size_t>(id - 1)).status == OrderStatus::Cancelled) result.cancelled.push_back(id);
+  for (auto i = before.orders.size(); i < after.orders.size(); ++i) result.orders.push_back(after.orders[i]);
+  for (auto i = before.fills.size(); i < after.fills.size(); ++i) result.fills.push_back(after.fills[i]);
+  for (auto i = before.stock_fills.size(); i < after.stock_fills.size(); ++i) result.stock_fills.push_back(after.stock_fills[i]);
+  const auto in_scope = [&](const std::string& name) { return !underlying || name == *underlying; };
+  for (const auto& [symbol, position] : after.ledger.positions())
+    if (position.quantity != 0 && in_scope(after.contracts.at(symbol).underlying)) result.remaining[symbol] = position.quantity;
+  for (const auto& [symbol, stock] : after.ledger.stocks())
+    if (stock.shares != 0 && in_scope(symbol)) result.remaining_shares[symbol] = stock.shares;
+  result.after = what_if_account(after, base, close_variances);
   return result;
 }
 CommandResult TradingSession::cancel(OrderId id, Timestamp time) {

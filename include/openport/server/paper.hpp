@@ -128,7 +128,7 @@ struct AccountStatus {
 struct TradingCommand {
   /// Recorded runs keep a kind's number: new kinds append.
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
-                    Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox, PreviewChange };
+                    Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox, PreviewChange, WhatIf, PreviewClose };
   Kind kind = Kind::Submit;
   std::string actor = "unknown";
   trading::OrderRequest order;
@@ -147,7 +147,7 @@ struct TradingCommand {
   std::string required_pass;
   trading::Money amount;         ///< Payout: the withdrawal.
   trading::OrderChange change;   ///< Modify: the order's new terms.
-  std::string underlying;        ///< CancelAll and ClosePositions: one underlying, or empty for all.
+  std::string underlying;        ///< CancelAll, ClosePositions and PreviewClose: one underlying, or empty for all.
   std::string account;           ///< The account it acts on; empty for the main account.
   std::string name;              ///< CreateAccount: the new account's display name.
   std::uint64_t trade = 0;        ///< Annotate: the trade, by its opening fill's ID.
@@ -159,11 +159,15 @@ struct TradingCommand {
   std::vector<std::string> tags;  ///< Annotate: the trade's tags.
   /// Exercise: contracts of `symbol`; CloseStock: shares of `symbol` to close, 0 for all.
   trading::Quantity quantity = 0;
+  /// WhatIf: each candidate's orders, and its name. Never recorded.
+  std::vector<std::vector<trading::OrderRequest>> candidates = {};
+  std::vector<std::string> candidate_names = {};
 };
 
 /// Previews and dry runs: answered from a private copy of the account, never recorded.
 [[nodiscard]] inline bool dry_run(TradingCommand::Kind kind) {
-  return kind == TradingCommand::Kind::Preview || kind == TradingCommand::Kind::PreviewChange;
+  return kind == TradingCommand::Kind::Preview || kind == TradingCommand::Kind::PreviewChange || kind == TradingCommand::Kind::WhatIf ||
+         kind == TradingCommand::Kind::PreviewClose;
 }
 
 struct TradingReply {
@@ -178,6 +182,8 @@ struct TradingReply {
   std::string account;  ///< The account the command acted on (a new account's ID for CreateAccount).
   bool replayed = false;  ///< A retried order answered as first submitted.
   std::optional<trading::OrderPreview> preview;
+  std::optional<trading::WhatIf> what_if;
+  std::optional<trading::FlattenPreview> flatten;
   std::string playbook_result;
 };
 using TradingCompletion = std::function<void(TradingReply)>;

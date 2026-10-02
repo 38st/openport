@@ -12,6 +12,7 @@ import { OrderTicket } from "../components/OrderTicket"
 import { CloseSharesDialog, ExerciseDialog, SettleDialog, SharesTable } from "../components/StockActions"
 import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
+import { WhatIfPanel } from "../components/WhatIfPanel"
 import { ScenarioGrid } from "../components/ScenarioGrid"
 import { TradingError, WriteAccess } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
@@ -193,6 +194,8 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
       <TradingError error={risk.error} />{risk.data ? <RiskPanel risk={risk.data} /> : <p className="text-sm text-muted">{trading.enabled ? "Loading risk…" : "Risk unavailable"}</p>}
     </Panel>
     {risk.data && <Panel title="Spot × volatility scenarios"><ScenarioGrid scenarios={risk.data.scenarios} /></Panel>}
+    {trading.enabled && <Panel title="What-if"><WhatIfPanel positions={data?.positions ?? []}
+      picked={data?.positions.filter((p) => picked.has(p.symbol)) ?? []} trading={trading} /></Panel>}
     <Panel title="Kill switch"><KillSwitch kill={risk.data?.kill ?? { latched: trading.kill_latched, reason: null }} trading={trading} /></Panel>
     {editing && <LimitsEditor initial={editing} trading={trading} onClose={() => setEditing(null)} />}
     {closing && <CloseTicket position={closing} trading={trading} onClose={() => setClosing(null)} />}

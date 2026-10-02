@@ -11,7 +11,8 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from .types import (JSON, Account, Chain, Fills, OrderResult, Orders, Portfolio,
                     ReplayListing, ReplayResult, Status, Summary, Surface, Trades,
                     Exposure, Volatility, Candles, Risk, OrderPreview, SubmitResult,
-                    Plans, Accounts, EquityHistory, CancelAllResult, FlattenResult)
+                    Plans, Accounts, EquityHistory, CancelAllResult, FlattenResult,
+                    WhatIfResult, FlattenPreview)
 
 
 class ApiError(Exception):
@@ -183,6 +184,10 @@ class Client:
         """Preview a change to a resting order (quantity, limit_price, trigger_level, floor_share) without making it."""
         return self._request("POST", "/orders/" + quote(str(order_id), safe="") + "/preview", change, scoped=True)
 
+    def what_if(self, candidates: list[JSON]) -> WhatIfResult:
+        """Compare candidate adjustments, each {"name", "orders": [order, ...]}, against the held book without trading."""
+        return self._request("POST", "/orders/what-if", {"candidates": candidates}, scoped=True)
+
     def modify_order(self, order_id: str, **change) -> SubmitResult:
         return self._request("PUT", "/orders/" + quote(str(order_id), safe=""), change, scoped=True)
 
@@ -194,6 +199,10 @@ class Client:
 
     def flatten(self, underlying: str | None = None) -> FlattenResult:
         return self._request("POST", "/positions/close", {"underlying": underlying} if underlying else {}, scoped=True)
+
+    def preview_flatten(self, underlying: str | None = None) -> FlattenPreview:
+        """What flatten would cancel and close now, and the account after it, without doing it."""
+        return self._request("POST", "/positions/close/preview", {"underlying": underlying} if underlying else {}, scoped=True)
 
     def note(self, trade_id: str, note: str = "", tags: list[str] | None = None) -> JSON:
         return self._request("PUT", "/trades/" + quote(str(trade_id), safe="") + "/note",

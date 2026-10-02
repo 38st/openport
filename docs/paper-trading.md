@@ -622,6 +622,20 @@ close stay, listed in the response's `kept_stocks`. When nothing in scope can cl
 close), the flatten itself is refused with the first such reason, its `scope` the
 underlying, and changes nothing.
 
+A flatten has a dry run, `POST /api/positions/close/preview`, with the same optional
+`underlying`. It runs the flatten on a private copy of the account at the current quotes,
+as a preview does: it writes no journal, allocates no IDs and takes no displayed size. It
+answers 200 with `decision` (`ok`, or the reason the flatten would be refused, with
+`reason`), the open orders it would cancel (`cancelled_orders`), its closing `orders`
+without IDs (symbol, underlying, side, quantity, filled quantity, average fill price,
+status and reason: `working` for a close that waits for fill latency, `rejected` with the
+reason for a refused one), their `fills` now, the shares it would close (`stock_fills`) and
+keep (`kept_stocks`), what would still be held in scope (`remaining` contracts and
+`remaining_shares`), and the account before and after it (`current` and `after`, as in a
+[what-if](#what-if)). A close waiting for a later quote is shown working, so the account
+after it still holds that position. Flatten in the terminal shows the dry run before
+the flatten is confirmed.
+
 ## Accounting, marks and equity
 
 Let `q` be signed contracts, `M = 100`, `p` fill premium per unit and `f` the fill fee:
@@ -955,6 +969,36 @@ an IV it is null. These are simulated scenarios and
 model estimates, not observed market outcomes. Dashboard, Risk and both ticket
 previews label them accordingly. Tickets debounce previews, offer **Size to floor**,
 and show an explicit failure without guessing when the endpoint is unavailable.
+
+### What-if
+
+`POST /api/orders/what-if` compares candidate adjustments against the held book before
+any is sent. It takes `candidates`, one to six, each with an optional `name` (at most 64
+bytes) and `orders`: one to four orders as `POST /api/orders` takes them, a client ID
+optional. A candidate's orders are checked in turn as submission checks them, each after
+the ones before it have filled, and filled in full at the preview's projected prices:
+slipped far sides through the impact blocks for market orders, the limit for limit
+orders, fees included. Closing the tested side and opening a new spread is one candidate
+of two orders. It runs on a private copy of the account, like a preview: it writes no
+journal, allocates no IDs, takes no displayed size, and the normal write protections apply.
+
+The response has `current`, the account as it is, and `candidates`, each with its
+`name`, its `decision` (`ok`, or the first order's refusal, with `reason`), each order's
+`decision` and `reason` in `orders`, and `after`, the account once every order has
+filled, which is null when an order cannot be projected (an unknown contract, or no
+quote). A refused candidate is still projected, so its risk shows beside the reason it
+would be refused. Each account has `equity`, available `buying_power`, the book's
+`exposure` (dollar delta, dollar gamma per 1%, vega and theta; null while risk is
+incomplete), `max_loss` (the worst cell of the configured spot × volatility grid, from
+today's equity, so a candidate's cost to trade counts), `equity_at_max_loss`,
+`breaches_floor` and `breaches_soft_floor`, `scenarios` (each cell's P&L from today's
+equity, spot-major, in the grid of `GET /api/risk`) and `breach` as above. The grid is
+finite and the values are simulated estimates, not execution promises.
+
+Positions (What-if) lists candidates built from a ticket's preview (Add to what-if, into a
+new candidate or one picked to take them) or from closing picked positions, compares
+them in a table with each one's change in Greeks, and shows P&L by spot move at unchanged
+volatility. The list is kept in the browser, per account.
 
 ### Risk warnings
 
@@ -1847,11 +1891,13 @@ focus at the top of the ticket.
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule |
+| `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
 | `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope and closes its positions at market, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the delivered shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
+| `POST /api/positions/close/preview` | Optional `underlying`; the flatten's dry run on a private copy: `decision` and `reason`, `cancelled_orders`, the closing `orders` without IDs and their `fills`, `stock_fills`, `kept_stocks`, `remaining` and `remaining_shares` in scope, and the account `current` and `after`; `simulated: true`, nothing recorded ([flattening](#changing-cancelling-and-flattening)) |
 | `GET /api/fills` | Version and fills, newest first, with pre-execution `context` (null on older fills) |
 | `GET /api/trades.csv`, `GET /api/fills.csv` | CSV downloads with `account`, inclusive New York `from`/`to` dates, fixed columns and exact money; see [CSV downloads](#csv-downloads) |
 | `PUT /api/days/{YYYY-MM-DD}/note` | Required `plan` and `review` strings replace the day note; returns version, `day` and `note`. Invalid text returns `INVALID_NOTE` (422); invalid dates return 400 |

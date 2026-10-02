@@ -73,6 +73,11 @@ def test_preview_cancel_and_replay_routing(stub):
     assert stub.requests[-1][3] == {"limit_price": "4.20"}
     client.cancel_order("1")
     assert stub.requests[-1][3] is None
+    assert client.what_if([{"name": "close", "orders": [{"symbol": "X", "side": "sell"}]}])["simulated"]
+    assert stub.requests[-1][1].startswith("/api/orders/what-if?")
+    assert client.preview_flatten("SPX")["simulated"]
+    assert stub.requests[-1][1].startswith("/api/positions/close/preview?")
+    assert stub.requests[-1][3] == {"underlying": "SPX"}
     client.for_replay().orders()
     assert stub.requests[-1][1].startswith("/api/replay/orders?")
     assert "account=main" in stub.requests[-1][1]

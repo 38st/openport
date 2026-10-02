@@ -61,16 +61,22 @@ export function ExecutionSummary({ execution: e }: { execution: PreviewExecution
   </section>
 }
 /** `what` names what is previewed: a new order, or a change to a resting one, whose sizes count the units still to work. */
-export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "order" }: {
+export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "order", onWhatIf }: {
   preview: { data?: OrderPreview; error: unknown; loading: boolean }; onSize: (size: number) => void; disabled?: boolean; what?: "order" | "change"
+  /** Adds the order to Positions' what-if comparison; false when there is no room. */
+  onWhatIf?: () => boolean
 }) {
   const p = preview.data
+  const [added, setAdded] = useState<string | null>(null)
   // Without a plan or soft floor, size follows buying power and the limits alone.
   const floorless = p != null && p.max_units_floor === null && p.breach.room == null && p.breach.soft_room == null
   return <section aria-label="Order preview" className="space-y-2 rounded-md border border-border p-3 text-xs">
     <div className="flex items-center justify-between gap-2"><span className="font-medium">Simulated order preview</span>
+      {onWhatIf && <button type="button" className="trade-button ml-auto" disabled={!p}
+        onClick={() => setAdded(onWhatIf() ? "Added to What-if on Positions." : "What-if is full: six candidates of up to four orders.")}>Add to what-if</button>}
       <button type="button" className="trade-button" disabled={disabled || preview.loading || !p || p.max_units == null || p.max_units < 1 || !!preview.error}
         onClick={() => { if (p?.max_units) onSize(p.max_units) }}>{floorless ? "Size to buying power" : "Size to floor"}</button></div>
+    {added && <p role="status" className="text-muted">{added}</p>}
     {preview.loading ? <p className="text-muted">Checking order…</p>
       : preview.error ? <p role="status" className="text-warn">Preview failed. Buying power and floor risk are unavailable. You can still submit for the server's checks.</p>
       : !p ? <p className="text-muted">{what === "change" ? "Change a term to preview the order on its new terms." : "Complete the order to preview its risk."}</p> : <>

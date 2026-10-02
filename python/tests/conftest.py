@@ -112,6 +112,10 @@ class Stub:
             return 200, shaped("PassOdds", seed="81723")
         if path == "/api/strategy-template":
             return 200, shaped("TemplateResult")
+        if path == "/api/orders/what-if":
+            return 200, shaped("WhatIfResponse", simulated=True)
+        if path == "/api/positions/close/preview":
+            return 200, shaped("FlattenPreview", simulated=True)
         if path == "/api/orders/preview" or (path.startswith("/api/orders/") and path.endswith("/preview")):
             return 200, shaped("OrderPreview", simulated=True)
         if path == "/api/orders" and method == "POST":

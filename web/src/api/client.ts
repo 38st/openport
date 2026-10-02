@@ -4,7 +4,7 @@ import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { isSandboxToken, writeToken } from "../lib/write-token"
@@ -129,6 +129,10 @@ export const api = {
     return get<TemplateResult>(`/api/strategy-template?${query}`, signal)
   },
   previewOrder: (order: NewOrder, mode: WriteMode, floor_share = 0.5) => write<OrderPreview>(scoped("/api/orders/preview"), "POST", mode, { ...order, floor_share }),
+  whatIf: (candidates: readonly { name: string; orders: readonly NewOrder[] }[], mode: WriteMode) =>
+    write<WhatIfResponse>(scoped("/api/orders/what-if"), "POST", mode, { candidates: candidates.map(({ name, orders }) => ({
+      name, orders: orders.map((order) => Object.fromEntries(Object.entries(order).filter(([key]) => key !== "client_order_id"))),
+    })) }),
   previewChange: (id: string, change: OrderChange, mode: WriteMode, floor_share = 0.5) =>
     write<OrderPreview>(scoped(`/api/orders/${encodeURIComponent(id)}/preview`), "POST", mode, { ...change, floor_share }),
   equity: (signal?: AbortSignal) => get<EquityHistory>(scoped("/api/account/equity"), signal),
@@ -141,6 +145,7 @@ export const api = {
   cancelOrder: (id: string, mode: WriteMode) => write<OrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "DELETE", mode),
   modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "PUT", mode, change),
   cancelAllOrders: (underlying: string | null, mode: WriteMode) => write<CancelAllResponse>(scoped("/api/orders/cancel"), "POST", mode, underlying ? { underlying } : {}),
+  previewFlatten: (underlying: string | null, mode: WriteMode) => write<FlattenPreview>(scoped("/api/positions/close/preview"), "POST", mode, underlying ? { underlying } : {}),
   closePositions: (underlying: string | null, mode: WriteMode) => write<ClosePositionsResponse>(scoped("/api/positions/close"), "POST", mode, underlying ? { underlying } : {}),
   journalCsvUrl: (kind: "trades" | "fills", from = "", to = "", attempt: "current" | "all" = "all") => {
     const query = new URLSearchParams()
