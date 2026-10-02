@@ -165,6 +165,8 @@ TEST(TradingJournalSchema, OptionalExecutionRulesRoundTripAndOlderRulesKeepTheir
     SessionConfig config;
     config.rules.slippage_ticks = 2;
     config.rules.margin = MarginMode::Portfolio;
+    config.rules.house_margin_percent = 25;
+    config.rules.pm_vol_shock = 5;
     TradingSession s(config, f.time, FileJournal::create(source));
     f.seed(s);
     ASSERT_TRUE(s.submit(f.market("buy"), f.time).decision.ok());
@@ -173,6 +175,8 @@ TEST(TradingJournalSchema, OptionalExecutionRulesRoundTripAndOlderRulesKeepTheir
   auto recovered = TradingSession::recover(FileJournal::read(source));
   EXPECT_EQ(recovered.snapshot_json(), expected);
   EXPECT_EQ(recovered.config().rules.slippage_ticks, 2);
+  EXPECT_EQ(recovered.config().rules.house_margin_percent, 25);
+  EXPECT_EQ(recovered.config().rules.pm_vol_shock, 5);
   EXPECT_EQ(recovered.config().rules.margin, MarginMode::Portfolio);
   EXPECT_EQ(recovered.snapshot()->recent_fills.front().price, Money::parse("4.40"));
   f.next();
@@ -251,6 +255,8 @@ TEST(TradingJournalSchema, DisabledFillModelsOmitFieldsAndOldRecordsKeepExactByt
   for (const auto& record : recovery.records) {
     EXPECT_EQ(record.payload.find("fill_latency_ms"), std::string::npos);
     EXPECT_EQ(record.payload.find("impact_ticks"), std::string::npos);
+    for (const auto* key : {"account_type", "house_margin_percent", "pm_vol_shock"})
+      EXPECT_EQ(record.payload.find(key), std::string::npos);
   }
   const auto older = TradingSession::recover(recovery);
   EXPECT_EQ(older.config().rules.fill_latency_ms, 0);
@@ -260,7 +266,10 @@ TEST(TradingJournalSchema, DisabledFillModelsOmitFieldsAndOldRecordsKeepExactByt
   const auto legacy = TradingSession::recover(FileJournal::read(std::string(OPENPORT_TEST_DATA_DIR) + "/kill-before-reduce-only.jsonl"));
   EXPECT_EQ(legacy.config().rules.fill_latency_ms, 0);
   EXPECT_EQ(legacy.config().rules.impact_ticks, 0);
-  for (const auto* key : {"fill_latency_ms", "impact_ticks"}) {
+  EXPECT_EQ(legacy.config().rules.account_type, AccountType::Margin);
+  EXPECT_EQ(legacy.config().rules.house_margin_percent, 0);
+  EXPECT_EQ(legacy.config().rules.pm_vol_shock, 0);
+  for (const auto* key : {"fill_latency_ms", "impact_ticks", "house_margin_percent", "pm_vol_shock"}) {
     for (const auto& value : {Json(-1), Json(60'001), Json(1.5), Json(true), Json(nullptr)}) {
       expect_corrupt([&] {
         const auto bad = rewritten(directory, std::string(key) + value.dump() + ".jsonl", path, [&](std::size_t index, Json& payload) {

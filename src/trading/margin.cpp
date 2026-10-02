@@ -23,9 +23,10 @@ Money intrinsic(const md::OptionContract& c, std::int64_t spot) {
   const auto amount = std::max<std::int64_t>(0, c.type == OptionType::Call ? spot - strike : strike - spot);
   return Money::from_micros(amount * 1000) * 100;
 }
-/// `shares` of a short stock position hold their value and half again, as a short sale does.
-Money short_shares(const MarginStock& stock, Quantity shares) {
-  return stock.value.prorate(shares, magnitude(stock.shares)).prorate(3, 2);
+/// `shares` of a short stock position hold their value and half again, as a
+/// short sale does, the half raised by any house percentage.
+Money short_shares(const MarginStock& stock, Quantity shares, std::int64_t house) {
+  return stock.value.prorate(shares, magnitude(stock.shares)).prorate(300 + house, 200);
 }
 /// A position as strategy margin pairs it: an option leg, or whole lots of 100
 /// shares. Long shares cover a short call and short shares a short put, whatever
@@ -37,13 +38,16 @@ struct Unit {
   Quantity size = 0;                   ///< Contracts, or lots.
   Money requirement_one;               ///< An option short's naked requirement for one contract, without its value.
   Money naked_one;                     ///< What one contract or lot of a short holds unpaired.
+  Money secured_one;                   ///< A cash account's or IRA's short put: its strike, held in cash instead.
+  std::int64_t house = 0;              ///< Short shares: the house percentage on their margin.
 };
 /// The buy-back value of `n` of a short option's contracts.
 Money value(const Unit& u, Quantity n) { return u.leg->value.prorate(n, -u.leg->quantity); }
 /// What `n` contracts or lots of a short hold unpaired: an option its buy-back
 /// value plus its naked requirement, shares their value and half again.
 Money naked(const Unit& u, Quantity n) {
-  if (u.stock) return short_shares(*u.stock, n * kLot);
+  if (u.stock) return short_shares(*u.stock, n * kLot, u.house);
+  if (u.secured_one > Money{}) return u.secured_one * n;
   return value(u, n) + u.requirement_one * n;
 }
 /// What `n` of short `s` hold with the long or shares that cover them: a put
@@ -97,13 +101,14 @@ Money cost(const Pair& p) {
 struct Book {
   std::vector<Unit> short_puts, long_calls, short_calls, long_puts;
 };
-Book book_of(const std::vector<const MarginLeg*>& legs, const MarginStock* stock) {
+Book book_of(const std::vector<const MarginLeg*>& legs, const MarginStock* stock, const MarginPolicy& policy) {
   Book book;
   for (const auto* leg : legs) {
-    Unit u{leg, nullptr, magnitude(leg->quantity), {}, {}};
+    Unit u{leg, nullptr, magnitude(leg->quantity), {}, {}, {}, policy.house_percent};
     const bool put = leg->contract.type == OptionType::Put;
     if (leg->quantity < 0) {
-      u.requirement_one = naked_requirement(leg->contract, leg->spot);
+      u.requirement_one = naked_requirement(leg->contract, leg->spot).prorate(100 + policy.house_percent, 100);
+      if (put && policy.account != AccountType::Margin) u.secured_one = Money::from_micros(milli(leg->contract.strike) * 1000) * 100;
       u.naked_one = naked(u, 1);
       (put ? book.short_puts : book.short_calls).push_back(u);
     } else {
@@ -111,13 +116,13 @@ Book book_of(const std::vector<const MarginLeg*>& legs, const MarginStock* stock
     }
   }
   if (stock && magnitude(stock->shares) >= kLot) {
-    Unit lots{nullptr, stock, magnitude(stock->shares) / kLot, {}, {}};
+    Unit lots{nullptr, stock, magnitude(stock->shares) / kLot, {}, {}, {}, policy.house_percent};
     if (stock->shares > 0) {
       book.long_calls.push_back(lots);
     } else {
       lots.naked_one = naked(lots, 1);
       book.short_calls.push_back(lots);
-      book.long_puts.push_back(lots);
+      if (policy.account == AccountType::Margin) book.long_puts.push_back(lots);
     }
   }
   return book;
@@ -131,8 +136,8 @@ struct Pairing {
 /// contract a pair covers saves its short's naked cost less the pair's cost.
 /// Any short may take any cover that lasts as long, so a greedy pass that lets
 /// one short take the cover another needed (across expiries, or on equal
-/// strikes) cannot happen.
-Pairing verticals(std::span<const Unit> shorts, std::span<const Unit> longs) {
+/// strikes) cannot happen. Without `spreads`, only shares cover.
+Pairing verticals(std::span<const Unit> shorts, std::span<const Unit> longs, bool spreads) {
   // Nodes: source, shorts, longs, sink. Edge i's reverse is i ^ 1.
   struct Edge { std::size_t to; Quantity capacity; std::int64_t cost; };
   std::vector<Edge> edges;
@@ -149,7 +154,7 @@ Pairing verticals(std::span<const Unit> shorts, std::span<const Unit> longs) {
     link(source, 1 + i, shorts[i].size, 0);
     const auto naked_one = shorts[i].naked_one.micros();
     for (std::size_t j = 0; j < longs.size(); ++j) {
-      if (!covers(longs[j], shorts[i])) continue;
+      if (!covers(longs[j], shorts[i]) || (!spreads && longs[j].leg && shorts[i].leg)) continue;
       const auto saving = naked_one - std::min(naked_one, covered(shorts[i], longs[j], 1).micros());
       if (saving <= 0) continue;
       matches.push_back(edges.size());
@@ -261,10 +266,10 @@ void add_straddles(Pairing& pairing) {
     for (const auto& entry : *side)
       if (entry.second > 0) pairing.unpaired_shorts.push_back(entry);
 }
-/// Pairs each type's shorts as verticals.
-Pairing pair_units(const Book& book) {
-  auto result = verticals(book.short_puts, book.long_puts);
-  auto calls = verticals(book.short_calls, book.long_calls);
+/// Pairs each type's shorts as verticals, or only with shares without `spreads`.
+Pairing pair_units(const Book& book, bool spreads) {
+  auto result = verticals(book.short_puts, book.long_puts, spreads);
+  auto calls = verticals(book.short_calls, book.long_calls, spreads);
   result.pairs.insert(result.pairs.end(), calls.pairs.begin(), calls.pairs.end());
   result.unpaired_shorts.insert(result.unpaired_shorts.end(), calls.unpaired_shorts.begin(), calls.unpaired_shorts.end());
   result.unpaired_longs.insert(result.unpaired_longs.end(), calls.unpaired_longs.begin(), calls.unpaired_longs.end());
@@ -308,6 +313,8 @@ std::optional<Money> worst_loss(const std::vector<const MarginLeg*>& group) {
   return -worst;
 }
 using Parts = std::vector<MarginPart>;
+/// An unpaired short option: naked, or a cash account's or IRA's put secured with its strike.
+MarginPartKind unpaired_kind(const Unit& u) { return u.secured_one > Money{} ? MarginPartKind::CashSecured : MarginPartKind::Naked; }
 std::pair<std::string, Quantity> shares_leg(const MarginStock& stock, Quantity shares) {
   return {stock.underlying, stock.shares < 0 ? -shares : shares};
 }
@@ -327,7 +334,7 @@ void add_longs(Parts* parts, const std::vector<std::pair<const Unit*, Quantity>>
     if (unit->leg) add(parts, MarginPartKind::Long, {leg_of(*unit, n)}, {});
 }
 /// Shares that no pair takes: short ones hold their value and half again, long ones are paid for.
-Money other_shares(const MarginStock* stock, Quantity lots_taken, Parts* parts) {
+Money other_shares(const MarginStock* stock, Quantity lots_taken, std::int64_t house, Parts* parts) {
   if (!stock) return {};
   const auto shares = magnitude(stock->shares) - lots_taken * kLot;
   if (shares <= 0) return {};
@@ -335,14 +342,14 @@ Money other_shares(const MarginStock* stock, Quantity lots_taken, Parts* parts) 
     add(parts, MarginPartKind::Long, {shares_leg(*stock, shares)}, {});
     return {};
   }
-  const auto requirement = short_shares(*stock, shares);
+  const auto requirement = short_shares(*stock, shares, house);
   add(parts, MarginPartKind::ShortShares, {shares_leg(*stock, shares)}, requirement);
   return requirement;
 }
 /// What the book holds when its shorts pair across expiries (`pairing`): each
 /// pair its cost, the verticals whose shorts expire together at most their
 /// combined worst loss then, and unpaired shorts naked.
-Money across(const Pairing& pairing, const MarginStock* stock, Parts* parts) {
+Money across(const Pairing& pairing, const MarginStock* stock, std::int64_t house, Parts* parts) {
   Money total;
   Quantity lots_taken = 0;  // Short shares a long call protects, or long shares a call is written against.
   std::map<Timestamp, std::pair<std::vector<const Pair*>, std::vector<std::pair<const Unit*, Quantity>>>> by_expiry;
@@ -387,22 +394,22 @@ Money across(const Pairing& pairing, const MarginStock* stock, Parts* parts) {
     if (unit->stock) continue;  // Short shares hold below.
     const auto requirement = naked(*unit, n);
     total = total + requirement;
-    add(parts, MarginPartKind::Naked, {leg_of(*unit, n)}, requirement);
+    add(parts, unpaired_kind(*unit), {leg_of(*unit, n)}, requirement);
   }
-  return total + other_shares(stock, lots_taken, parts);
+  return total + other_shares(stock, lots_taken, house, parts);
 }
 /// What the book holds when each expiry stands on its own: its verticals and
 /// naked shorts, or its worst loss at expiry when that is bounded and less.
 /// Shares expire with none of them, so here they cover nothing.
-Money separate(const std::vector<const MarginLeg*>& all, const MarginStock* stock, Parts* parts) {
+Money separate(const std::vector<const MarginLeg*>& all, const MarginStock* stock, const MarginPolicy& policy, Parts* parts) {
   std::map<Timestamp, std::vector<const MarginLeg*>> expiries;
   for (const auto* leg : all) expiries[leg->contract.expiry_time()].push_back(leg);
   Money total;
   for (const auto& [expiry, group] : expiries) {
-    const auto book = book_of(group, nullptr);
+    const auto book = book_of(group, nullptr, policy);
     Parts own;
     Parts* explain = parts ? &own : nullptr;
-    const auto pairing = pair_units(book);
+    const auto pairing = pair_units(book, true);
     Money requirement;
     for (const auto& p : pairing.pairs) {
       requirement = requirement + cost(p);
@@ -410,7 +417,7 @@ Money separate(const std::vector<const MarginLeg*>& all, const MarginStock* stoc
     }
     for (const auto& [unit, n] : pairing.unpaired_shorts) {
       requirement = requirement + naked(*unit, n);
-      add(explain, MarginPartKind::Naked, {leg_of(*unit, n)}, naked(*unit, n));
+      add(explain, unpaired_kind(*unit), {leg_of(*unit, n)}, naked(*unit, n));
     }
     add_longs(explain, pairing.unpaired_longs);
     if (const auto loss = worst_loss(group); loss && *loss < requirement) {
@@ -423,36 +430,41 @@ Money separate(const std::vector<const MarginLeg*>& all, const MarginStock* stoc
     total = total + requirement;
     if (parts) parts->insert(parts->end(), own.begin(), own.end());
   }
-  return total + other_shares(stock, 0, parts);
+  return total + other_shares(stock, 0, policy.house_percent, parts);
 }
 /// One underlying's requirement: the least of pairing across expiries, as
 /// verticals and, when that leaves a short option naked, with straddles too (a
 /// condor's shared worst loss may still hold less without them), and taking
-/// each expiry on its own.
-Money underlying_requirement(const std::vector<const MarginLeg*>& all, const MarginStock* stock, Parts* parts) {
-  const auto book = book_of(all, stock);
-  const auto pairing = pair_units(book);
+/// each expiry on its own. A cash account pairs shorts only with shares, and
+/// neither it nor an IRA pairs straddles.
+Money underlying_requirement(const std::vector<const MarginLeg*>& all, const MarginStock* stock, const MarginPolicy& policy,
+                             Parts* parts) {
+  const bool spreads = policy.account != AccountType::Cash;
+  const auto book = book_of(all, stock, policy);
+  const auto pairing = pair_units(book, spreads);
   Parts best_parts, candidate;
   Parts* explain = parts ? &candidate : nullptr;
-  auto best = across(pairing, stock, explain);
+  auto best = across(pairing, stock, policy.house_percent, explain);
   best_parts.swap(candidate);
   const auto consider = [&](Money requirement) {
     if (requirement < best) { best = requirement; best_parts.swap(candidate); }
     candidate.clear();
   };
   const auto option = [](const auto& entry) { return entry.first->leg != nullptr; };
-  if (!book.short_puts.empty() && std::any_of(book.short_calls.begin(), book.short_calls.end(), [](const Unit& u) { return u.leg != nullptr; }) &&
+  if (policy.account == AccountType::Margin && !book.short_puts.empty() && std::any_of(book.short_calls.begin(), book.short_calls.end(), [](const Unit& u) { return u.leg != nullptr; }) &&
       std::any_of(pairing.unpaired_shorts.begin(), pairing.unpaired_shorts.end(), option)) {
     auto straddled = pairing;
     add_straddles(straddled);
-    consider(across(straddled, stock, explain));
+    consider(across(straddled, stock, policy.house_percent, explain));
   }
-  consider(separate(all, stock, explain));
+  // Without spreads, an expiry on its own pairs nothing that pairing across expiries did not.
+  if (spreads) consider(separate(all, stock, policy, explain));
   if (parts) *parts = std::move(best_parts);
   return best;
 }
 /// Strategy margin by underlying, shares joining their own.
-std::vector<MarginUnderlying> strategy(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks, bool explain) {
+std::vector<MarginUnderlying> strategy(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks,
+                                       const MarginPolicy& policy, bool explain) {
   std::map<std::string, std::pair<std::vector<const MarginLeg*>, const MarginStock*>> underlyings;
   for (const auto& leg : legs)
     if (leg.quantity != 0) underlyings[leg.contract.underlying].first.push_back(&leg);
@@ -462,7 +474,7 @@ std::vector<MarginUnderlying> strategy(const std::vector<MarginLeg>& legs, const
   for (const auto& [underlying, group] : underlyings) {
     MarginUnderlying item;
     item.underlying = underlying;
-    item.requirement = underlying_requirement(group.first, group.second, explain ? &item.parts : nullptr);
+    item.requirement = underlying_requirement(group.first, group.second, policy, explain ? &item.parts : nullptr);
     result.push_back(std::move(item));
   }
   return result;
@@ -494,19 +506,46 @@ Quantity naked_shorts(const std::vector<MarginLeg>& legs) {
   return naked;
 }
 
-Money margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks) {
+MarginPolicy margin_policy(const AccountRules& rules) {
+  return {rules.account_type, rules.house_margin_percent, rules.pm_vol_shock};
+}
+
+Quantity disallowed_shorts(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks, AccountType account) {
+  if (account == AccountType::Margin) return 0;
+  std::map<std::string, std::vector<MarginLeg>> calls;
+  for (const auto& leg : legs)
+    if (leg.quantity != 0 && leg.contract.type == OptionType::Call) calls[leg.contract.underlying].push_back(leg);
+  std::map<std::string, Quantity> shares;
+  for (const auto& stock : stocks) shares[stock.underlying] += stock.shares;
+  Quantity count = 0;
+  for (const auto& [underlying, group] : calls) {
+    // Shares cover any call, so long calls cover what they can first.
+    Quantity naked = 0;
+    if (account == AccountType::Ira) naked = naked_shorts(group);
+    else for (const auto& leg : group) naked += std::max<Quantity>(0, -leg.quantity);
+    const auto held = shares.contains(underlying) ? shares.at(underlying) : 0;
+    count += std::max<Quantity>(0, naked - std::max<Quantity>(0, held) / kLot);
+  }
+  for (const auto& [underlying, held] : shares)
+    if (held < 0) count += (-held + kLot - 1) / kLot;
+  return count;
+}
+
+Money margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks, const MarginPolicy& policy) {
   Money total;
-  for (const auto& item : strategy(legs, stocks, false)) total = total + item.requirement;
+  for (const auto& item : strategy(legs, stocks, policy, false)) total = total + item.requirement;
   return total;
 }
 
-std::vector<MarginUnderlying> margin_breakdown(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks) {
-  return strategy(legs, stocks, true);
+std::vector<MarginUnderlying> margin_breakdown(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks,
+                                               const MarginPolicy& policy) {
+  return strategy(legs, stocks, policy, true);
 }
 
 std::optional<std::vector<MarginUnderlying>> portfolio_margin_breakdown(const std::vector<MarginLeg>& legs,
     const Valuations& valuations, Timestamp now, Timestamp max_age,
-    const std::map<std::string, StockPosition>& stocks, const std::map<std::string, double>& stock_prices) {
+    const std::map<std::string, StockPosition>& stocks, const std::map<std::string, double>& stock_prices,
+    const MarginPolicy& policy) {
   struct Group {
     std::map<std::string, Position> options;
     std::map<std::string, StockPosition> stocks;
@@ -526,6 +565,10 @@ std::optional<std::vector<MarginUnderlying>> portfolio_margin_breakdown(const st
     ScenarioConfig scan;
     scan.spot_percent.clear();
     scan.vol_points = {0};
+    if (policy.vol_shock > 0) {
+      const auto shock = static_cast<double>(policy.vol_shock);
+      scan.vol_points = {-shock, 0, shock};
+    }
     // The account's display grid cannot narrow the margin scan.
     const bool index = md::is_index_underlying(underlying);
     const double low = index ? -8.0 : -15.0;
@@ -549,7 +592,7 @@ std::optional<std::vector<MarginUnderlying>> portfolio_margin_breakdown(const st
     MarginUnderlying item;
     item.underlying = underlying;
     // The minimum is a floor under the scanned loss, not an addition to it.
-    item.requirement = std::max(worst.loss, group.minimum);
+    item.requirement = std::max(worst.loss, group.minimum).prorate(100 + policy.house_percent, 100);
     item.scan = worst;
     result.push_back(std::move(item));
   }
@@ -558,8 +601,9 @@ std::optional<std::vector<MarginUnderlying>> portfolio_margin_breakdown(const st
 
 std::optional<Money> portfolio_margin_requirement(const std::vector<MarginLeg>& legs,
     const Valuations& valuations, Timestamp now, Timestamp max_age,
-    const std::map<std::string, StockPosition>& stocks, const std::map<std::string, double>& stock_prices) {
-  const auto groups = portfolio_margin_breakdown(legs, valuations, now, max_age, stocks, stock_prices);
+    const std::map<std::string, StockPosition>& stocks, const std::map<std::string, double>& stock_prices,
+    const MarginPolicy& policy) {
+  const auto groups = portfolio_margin_breakdown(legs, valuations, now, max_age, stocks, stock_prices, policy);
   if (!groups) return std::nullopt;
   Money total;
   for (const auto& item : *groups) total = total + item.requirement;
