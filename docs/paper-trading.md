@@ -911,7 +911,20 @@ attempts retain their existing restrictions.
 `reset_kill` requires a nonblank reason, records the reset, and immediately re-trips
 if the loss still breaches. The account remains reduce-only while latched. A new
 trading day's baseline permits a reset; rollover alone does not clear a manual or
-daily-loss latch.
+daily-loss latch. While latched, the snapshot's `kill_reset` says why a reset could
+not clear it now and when it can: `DAILY_LOSS` with the marked loss and the limit
+while the loss still exceeds it (a reset works once it is back within the limit, or
+from the next trading day's baseline), or a personal guardrail's code until it
+expires. A refused reset answers with the same decision. Orders the latch refuses
+or cancels say why: `KILL_SWITCH` with the manual reason, or that the daily loss
+latch is set with the limit, and a personal guardrail's reason with its numbers.
+
+Every trip, reset and release of the latch stays in the state's `kill_history`, oldest
+first, with its market time and actor: a `trip` (with the reason it replaced, as when a
+manual trip lands on a daily-loss latch, which its `kill_trip` event also names), a
+`reset` (a kill-switch or account reset, with its reason and the latch reason it
+cleared) or a `release` (a personal guardrail that expired at rollover or its cooldown
+end).
 A reset cannot make stale data tradable.
 
 `roll_day` is an explicit command on a later trading date. It closes the finished day
@@ -949,7 +962,9 @@ uses the same quotes, displayed liquidity and regular-session restrictions as a 
 floor breach, and retries remaining positions on later updates. It does not itself
 fail the attempt. `TRADE_LIMIT` and `PROFIT_LOCK` leave positions open and cancel
 opening orders. Working opening orders cancelled by a guardrail carry its code and
-message, as new ones refused by it do, not `KILL_SWITCH`. All three last until
+message, as new ones refused by it do, not `KILL_SWITCH`: `TRADE_LIMIT` with the day's
+opening trades against the limit, `PROFIT_LOCK` and `SOFT_FLOOR` with the level, and
+`COOLDOWN` with the time it ends. All three last until
 rollover. `COOLDOWN` lasts until the journaled `cooldown_until`, including across rollover; wall time does not shorten it. A later stop restarts it, and a longer
 cooldown setting extends one already active. Closing orders, Flatten and exits keep
 working under all four reasons. Manual reset cannot bypass an active guardrail.
@@ -963,7 +978,8 @@ trip again after rollover. The existing kill latch is shared; a manual or daily-
 trip still requires its own reset after the personal rule expires.
 
 `GET /api/risk` includes active and pending settings, `pending_effective`
-(`next_trading_day` or null), the last `pending_applied_at`/`pending_applied_day`, and
+(`next_trading_day` or null), the last `pending_applied_at`/`pending_applied_day` (a
+rollover's, or an account reset's that applied pending settings), and
 `guardrail_state`: opening count, latched reasons, effective soft floor, cooldown end
 and market-time seconds left. Rules and Risk show pending values beside active ones.
 
@@ -2102,7 +2118,7 @@ focus at the top of the ticket.
 | `GET /api/risk` | Version, active/pending limits and guardrails, guardrail progress, pending activation, daily loss, kill state, aggregate/underlying buckets, scenario matrices and `breach` |
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; tighter fields apply now, looser evaluation fields are pending until rollover; 200 returns the risk view, 409 `LIMITS_REVISION` if the revision changed (refetch it and retry) |
 | `PUT /api/risk/guardrails` | `expected_revision` string and complete `guardrails`; tighter fields apply now, looser fields wait for rollover on all accounts; returns the risk view, or 409 `LIMITS_REVISION` as for limits |
-| `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
+| `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs. The kill state here and in `GET /api/risk` is `{latched, reason, reset_blocked, history}`: why a reset could not clear the latch now (a decision, or null) and its last 50 trips, resets and releases (`{time, action, reason, previous, actor}`) |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target), decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |

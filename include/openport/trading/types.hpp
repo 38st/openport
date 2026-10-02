@@ -353,6 +353,17 @@ struct Guardrails {
   Money profit_lock;
   bool operator==(const Guardrails&) const = default;
 };
+/// One change of the account's kill latch: `trip` (latched, or a new reason
+/// replacing `previous`), `reset` (cleared by a reset, or an account reset, with
+/// its reason; `previous` is the reason it cleared) or `release` (a personal
+/// guardrail that held it, `previous`, expired at rollover or its cooldown end).
+struct KillChange {
+  Timestamp time = 0;
+  std::string action;
+  std::string reason;
+  std::string previous;
+  std::string actor;
+};
 struct GuardrailState {
   bool owns_kill = false;  ///< This rule, rather than a manual/daily-loss trip, owns the shared latch.
   Quantity opening_trades = 0;

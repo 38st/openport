@@ -144,6 +144,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExposureLimits, dollar_delta, vega)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Limits, max_order_contracts, price_band_absolute, price_band_relative, aggregate, per_underlying, underlying_overrides, max_daily_loss, max_quote_age, max_valuation_age)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Guardrails, soft_floor, soft_floor_percent, max_opening_trades, cooldown_loss, cooldown_minutes, profit_lock)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(GuardrailState, opening_trades, cooldown_until, latched, owns_kill)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(KillChange, time, action, reason, previous, actor)
 inline void from_json(const Json& j, GuardrailState& g) {
   added_field(j, "opening_trades", g.opening_trades); added_field(j, "cooldown_until", g.cooldown_until);
   added_field(j, "latched", g.latched); added_field(j, "owns_kill", g.owns_kill);
@@ -337,6 +338,8 @@ struct State {
   SharedSet<std::string> settled;
   bool kill = false;
   std::string kill_reason;
+  /// Every trip, reset and release of the kill latch, oldest first.
+  std::vector<KillChange> kill_history;
   Evaluation evaluation;
   std::optional<Limits> pending_limits;
   std::optional<Guardrails> pending_guardrails;
@@ -407,7 +410,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
 /// change finder (state_change) both come from this list.
 #define OPENPORT_STATE_FIELDS(X) \
   X(config) X(time) X(version) X(limits_revision) X(ledger) X(start_equity) X(day) X(contracts) X(books) \
-  X(marks) X(valuations) X(orders) X(fills) X(settled) X(kill) X(kill_reason) X(evaluation) X(attempts) \
+  X(marks) X(valuations) X(orders) X(fills) X(settled) X(kill) X(kill_reason) X(kill_history) X(evaluation) X(attempts) \
   X(closures) X(annotations) X(references) X(explained) X(stock_marks) X(stock_fills) X(dividends) \
   X(closing_prints) X(day_notes) X(trade_reviews) X(strategy_reviews) X(pending_limits) \
   X(pending_guardrails) X(guardrails) X(pending_applied_at) X(trips) X(trip_attribution) X(groups) X(group_reviews) X(grouped)
@@ -425,6 +428,7 @@ inline void from_json(const Json& j, State& s) {
   j.at("books").get_to(s.books); j.at("marks").get_to(s.marks); j.at("valuations").get_to(s.valuations);
   j.at("orders").get_to(s.orders); j.at("fills").get_to(s.fills); j.at("settled").get_to(s.settled);
   j.at("kill").get_to(s.kill); j.at("kill_reason").get_to(s.kill_reason);
+  added_field(j, "kill_history", s.kill_history);
   added_field(j, "evaluation", s.evaluation); added_field(j, "attempts", s.attempts);
   added_field(j, "closures", s.closures); added_field(j, "annotations", s.annotations);
   added_field(j, "references", s.references); added_field(j, "explained", s.explained);

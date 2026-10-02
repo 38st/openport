@@ -645,7 +645,15 @@ export interface Bucket {
   delta_utilisation: Num
   vega_utilisation: Num
 }
-export interface KillState { latched: boolean; reason: string | null }
+/** One change of the kill latch; previous is the reason it replaced, cleared or released. */
+export interface KillChange { time: string; action: "trip" | "reset" | "release"; reason: string | null; previous: string | null; actor: string }
+export interface KillState {
+  latched: boolean
+  reason: string | null
+  /** While latched, why a reset could not clear it now and when it can; absent on older servers, as is the history. */
+  reset_blocked?: Decision | null
+  history?: KillChange[]
+}
 export interface Scenarios {
   spot_percent: number[]
   vol_points: number[]
