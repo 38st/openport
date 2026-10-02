@@ -166,20 +166,38 @@ TEST(DemoFeed, DatesUseNewYorkWeekendsHolidaysAndRepeatableSeeds) {
   EXPECT_NO_THROW(providers::write_scenario_recording(file.path, shortened, {2026, 11, 27}, seed));
 }
 
-TEST(DemoFeed, RecoveredTimeSelectsTheFollowingTradingDate) {
+TEST(DemoFeed, RecoveredTimeResumesItsDateOrSelectsTheFollowingOne) {
   providers::DemoProvider provider(settings());
+  // Christmas Eve closes at 13:00: by 13:15 its last snapshot has played.
   provider.start_after(md::new_york_to_utc({2026, 12, 24}, 13, 15));
   EXPECT_EQ(provider.first_date(), (md::Date{2026, 12, 28}));
   EXPECT_EQ(provider.time(), md::new_york_to_utc({2026, 12, 28}, 9, 30));
-  // After 17:00 ET the saved trading date is already Monday.
+  EXPECT_EQ(provider.resumed_after(), 0);
+  // After 17:00 ET the saved trading date is already Monday, none of which has played.
   provider.start_after(md::new_york_to_utc({2026, 12, 24}, 18, 0));
-  EXPECT_EQ(provider.first_date(), (md::Date{2026, 12, 29}));
+  EXPECT_EQ(provider.first_date(), (md::Date{2026, 12, 28}));
+  EXPECT_EQ(provider.time(), md::new_york_to_utc({2026, 12, 28}, 9, 30));
+  EXPECT_EQ(provider.resumed_after(), 0);
   // A saved date before startup also resumes on its following trading date.
   provider.start_after(md::new_york_to_utc({2026, 7, 2}, 16, 15));
   EXPECT_EQ(provider.first_date(), (md::Date{2026, 7, 6}));
   EXPECT_EQ(provider.time(), md::new_york_to_utc({2026, 7, 6}, 9, 30));
+  // F69: a crash part way through a date resumes that date after the saved time,
+  // rather than skipping the rest of it.
+  const auto saved = md::new_york_to_utc({2026, 9, 18}, 11, 0, 7);
+  provider.start_after(saved);
+  EXPECT_EQ(provider.first_date(), (md::Date{2026, 9, 18}));
+  EXPECT_EQ(provider.time(), saved);
+  EXPECT_EQ(provider.resumed_after(), saved);
   EXPECT_EQ(provider.days()[0].id, "trend");
   EXPECT_EQ(provider.days()[1].id, "reversal");
+  // Each date plays the same day whenever the feed starts, so a resumed date is the
+  // one that was playing.
+  EXPECT_EQ(provider.day_on({2026, 9, 18}), 0U);
+  EXPECT_EQ(provider.day_on({2026, 9, 21}), 1U);
+  EXPECT_EQ(provider.day_on({2026, 9, 22}), 0U);
+  EXPECT_EQ(provider.day_on({2025, 12, 31}), 1U);
+  EXPECT_EQ(provider.day_on({2026, 1, 2}), 0U);
 }
 
 TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
@@ -196,6 +214,7 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
   std::vector<double> opens;
   md::Timestamp previous = 0;
   std::size_t overlapping = 0;
+  std::vector<md::Date> closes;
   provider.set_driver([&](providers::ReplayBatch batch) {
     const std::lock_guard lock(mutex);
     EXPECT_GE(batch.time, previous);
@@ -215,9 +234,11 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
       } else if (const auto* spot = std::get_if<md::UnderlyingQuote>(&event)) {
         const auto date = md::new_york_time(spot->ts).date;
         if (dates.empty() || dates.back() != date) { dates.push_back(date); opens.push_back(spot->last); }
-      } else if (std::holds_alternative<md::UnderlyingClose>(event)) {
-        // The feed keeps the close each day printed, not the one its scenario starts from.
-        ADD_FAILURE() << "a scenario's previous close reached the feed";
+      } else if (const auto* close = std::get_if<md::UnderlyingClose>(&event)) {
+        // The feed keeps the close each day printed, not the one its scenario starts
+        // from; only the first day's previous close, from the date before it, is sent.
+        closes.push_back(close->date);
+        EXPECT_GT(close->price, 0);
       }
     }
     std::promise<void> done; done.set_value(); return done.get_future();
@@ -245,6 +266,7 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
   EXPECT_THROW(provider.start({{"SPX"}}, sink), std::logic_error);
   EXPECT_THROW(provider.start_after(0), std::logic_error);
   EXPECT_EQ(dates, (std::vector<md::Date>{{2026, 9, 18}, {2026, 9, 21}, {2026, 9, 22}}));
+  EXPECT_EQ(closes, (std::vector<md::Date>{{2026, 9, 17}}));
   ASSERT_GE(titles.size(), 3U);
   EXPECT_NE(titles[0].find(provider.days()[0].title), std::string::npos);
   EXPECT_NE(titles[1].find(provider.days()[1].title), std::string::npos);
@@ -348,6 +370,52 @@ TEST(DemoFeed, RestartAfterLatestMainOrNamedJournalStillFills) {
     md::RecordingReader recording(options.record_file);
     EXPECT_EQ(recording.header().started, first);
   }
+}
+
+// F69: a restart part way through a date played the next date instead, skipping the
+// rest of the day, and left the circuit breakers with no previous close to measure from.
+TEST(DemoFeed, RestartPartWayThroughADateResumesItAfterTheSavedTime) {
+  test::RecordingFile journals;
+  server::Engine::Options options;
+  options.paper_journal = journals.directory / "paper.jsonl";
+  options.journal_io.sync = [](int) { return true; };
+  options.paper.rules.expiry_cutoff = 0;
+  const auto saved = md::new_york_to_utc({2026, 9, 18}, 11, 0, 7);
+  {
+    trading::FileJournal::Options journal_options;
+    journal_options.hooks = options.journal_io;
+    trading::TradingSession session({}, 0, trading::FileJournal::create(options.paper_journal.string(), journal_options));
+    ASSERT_TRUE(session.roll_day(saved).decision.ok());
+  }
+  auto clock = std::make_shared<DemoClock>();
+  providers::DemoProvider provider(settings(clock));
+  server::Engine engine(provider, {{"SPX"}}, options);
+  engine.start();
+  EXPECT_EQ(provider.first_date(), (md::Date{2026, 9, 18}));
+  EXPECT_EQ(engine.status().started, saved);
+  clock->through(60s);
+  const auto next = md::new_york_to_utc({2026, 9, 18}, 11, 0, 15);
+  // An idle account's clock moves with its transactions, so watch the feed's: it plays
+  // a batch once the engine has taken the one before.
+  ASSERT_TRUE(eventually([&] { return provider.time() > next; }));
+  EXPECT_LT(provider.time(), md::new_york_to_utc({2026, 9, 18}, 11, 2));
+  // The first snapshot after the saved time carries the whole chain, so every contract trades.
+  server::TradingCommand order;
+  order.order.client_order_id = "after-restart";
+  order.order.symbol = md::parse_osi("SPXW260918C06000000")->osi_symbol();
+  order.order.quantity = 1;
+  order.order.type = trading::OrderType::Market;
+  order.order.tif = trading::TimeInForce::Ioc;
+  const auto filled = submit(engine, order);
+  ASSERT_TRUE(filled.decision.ok()) << filled.decision.message;
+  EXPECT_GE(filled.view->snapshot->recent_fills.front().time, next);
+  EXPECT_EQ(filled.view->snapshot->evaluation.day, (md::Date{2026, 9, 18}));
+  // The breakers measure from the close the feed would have printed the day before.
+  const auto breaker = engine.status().circuit_breaker;
+  ASSERT_TRUE(breaker.previous_close.has_value());
+  EXPECT_EQ(breaker.previous_close->date, (md::Date{2026, 9, 17}));
+  EXPECT_GT(breaker.previous_close->price, 0);
+  engine.stop();
 }
 
 TEST(DemoFeed, ConsecutiveDaysFillRollAndSettleWithLivePaperAccounts) {

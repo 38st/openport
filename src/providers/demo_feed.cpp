@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "openport/md/recording.hpp"
 #include "openport/providers/factory.hpp"
 
 namespace openport::providers {
@@ -31,6 +32,65 @@ class DayStatus final : public md::EventSink {
  private:
   md::EventSink& sink_;
 };
+
+/// What the batches a restart's accounts already saw left in the book: every
+/// definition, and each contract's and underlying's latest values. The first batch
+/// after them carries these, so the book is whole again from it on.
+class CatchUp {
+ public:
+  void absorb(std::vector<md::Event>& events) {
+    for (auto& event : events) {
+      std::visit([&](auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, md::ContractDefinition>) definitions_.emplace_back(std::move(value));
+        else if constexpr (std::is_same_v<T, md::OpenInterest>) interest_[value.id] = value;
+        else if constexpr (std::is_same_v<T, md::OptionQuote>) quotes_[value.id] = value;
+        else if constexpr (std::is_same_v<T, md::OptionVolume>) volumes_[value.id] = value;
+        else if constexpr (std::is_same_v<T, md::UnderlyingQuote>) spots_[value.symbol] = std::move(value);
+      }, event);
+    }
+  }
+  /// Leads `events` with what they do not themselves bring up to date.
+  void lead(std::vector<md::Event>& events) {
+    if (definitions_.empty()) return;
+    for (const auto& event : events) {
+      std::visit([&](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, md::OpenInterest>) interest_.erase(value.id);
+        else if constexpr (std::is_same_v<T, md::OptionQuote>) quotes_.erase(value.id);
+        else if constexpr (std::is_same_v<T, md::OptionVolume>) volumes_.erase(value.id);
+        else if constexpr (std::is_same_v<T, md::UnderlyingQuote>) spots_.erase(value.symbol);
+      }, event);
+    }
+    std::vector<md::Event> lead(std::make_move_iterator(definitions_.begin()), std::make_move_iterator(definitions_.end()));
+    for (auto& [id, value] : interest_) lead.emplace_back(std::move(value));
+    for (auto& [symbol, value] : spots_) lead.emplace_back(std::move(value));
+    for (auto& [id, value] : quotes_) lead.emplace_back(std::move(value));
+    for (auto& [id, value] : volumes_) lead.emplace_back(std::move(value));
+    events.insert(events.begin(), std::make_move_iterator(lead.begin()), std::make_move_iterator(lead.end()));
+    *this = {};
+  }
+
+ private:
+  std::vector<md::Event> definitions_;
+  std::map<md::InstrumentId, md::OpenInterest> interest_;
+  std::map<md::InstrumentId, md::OptionQuote> quotes_;
+  std::map<md::InstrumentId, md::OptionVolume> volumes_;
+  std::map<std::string, md::UnderlyingQuote> spots_;
+};
+
+/// The closes a generated day printed at its regular close, as that date's official ones.
+std::vector<md::Event> closes_of(const std::filesystem::path& file, md::Date date, const std::vector<std::string>& symbols) {
+  const auto close = md::new_york_to_utc(date, md::regular_close_hour(date), 0);
+  std::vector<md::Event> closes;
+  md::RecordingReader reader(file);
+  while (const auto record = reader.next()) {
+    const auto* spot = std::get_if<md::UnderlyingQuote>(&record->event);
+    if (spot && spot->ts == close && std::find(symbols.begin(), symbols.end(), spot->symbol) != symbols.end())
+      closes.emplace_back(md::UnderlyingClose{spot->symbol, close, date, spot->last});
+  }
+  return closes;
+}
 }
 
 DemoProvider::DemoProvider(Options options) : options_(std::move(options)) {
@@ -53,7 +113,7 @@ DemoProvider::DemoProvider(Options options) : options_(std::move(options)) {
       if (std::find(symbols_.begin(), symbols_.end(), symbol) == symbols_.end()) symbols_.push_back(symbol);
   const auto started = options_.started != 0 ? options_.started : md::now();
   first_date_ = md::previous_business_day(md::new_york_time(started).date);
-  time_ = scenario_open(days_.front(), first_date_);
+  time_ = scenario_open(days_[day_on(first_date_)], first_date_);
 }
 DemoProvider::~DemoProvider() { stop(); }
 md::Capabilities DemoProvider::capabilities() const noexcept {
@@ -64,6 +124,15 @@ md::Capabilities DemoProvider::capabilities() const noexcept {
 }
 md::Date DemoProvider::next_date(md::Date date) {
   return md::trading_date(md::new_york_to_utc(date, 18, 0));
+}
+std::size_t DemoProvider::day_on(md::Date date) const {
+  // Trading dates from the first of 2026, signed: a short count either way.
+  constexpr md::Date origin{2026, 1, 2};
+  std::int64_t count = 0;
+  for (auto day = origin; day < date; day = next_date(day)) ++count;
+  for (auto day = origin; date < day; day = md::previous_business_day(day)) --count;
+  const auto size = static_cast<std::int64_t>(days_.size());
+  return static_cast<std::size_t>((count % size + size) % size);
 }
 std::uint64_t DemoProvider::seed(std::string_view id, md::Date date) {
   // FNV-1a has specified bytes and arithmetic; std::hash is not stable across builds.
@@ -102,8 +171,20 @@ void DemoProvider::set_driver(ReplayProvider::Driver driver) {
 void DemoProvider::start_after(md::Timestamp recovered_time) {
   if (started_) throw std::logic_error("demo: select first date before start");
   if (recovered_time <= 0) return;
-  first_date_ = next_date(md::trading_date(recovered_time));
-  time_ = scenario_open(days_.front(), first_date_);
+  const auto date = md::trading_date(recovered_time);
+  const auto& day = days_[day_on(date)];
+  const auto open = scenario_open(day, date);
+  if (recovered_time >= scenario_close(day, date) + 15 * md::kNanosPerMinute) {
+    // That date played to its last snapshot: the next one starts at its open.
+    first_date_ = next_date(date);
+    resume_after_ = 0;
+    time_ = scenario_open(days_[day_on(first_date_)], first_date_);
+    return;
+  }
+  // The rest of the date plays on; before its open, all of it.
+  first_date_ = date;
+  resume_after_ = recovered_time >= open ? recovered_time : 0;
+  time_ = std::max(recovered_time, open);
 }
 void DemoProvider::start(const md::Subscription& subscription, md::EventSink& sink) {
   if (started_) throw std::logic_error("DemoProvider::start may be called only once");
@@ -128,31 +209,47 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
   try {
     std::map<std::string, md::InstrumentId> ids;
     std::set<md::InstrumentId> prior;
-    const auto prepare = [&](std::size_t index, md::Date date) {
-      const auto day = on_date(days_[index], date);
+    const auto prepare = [&](md::Date date) {
+      const auto day = on_date(days_[day_on(date)], date);
       const auto path = directory_ / (md::format_date(date) + ".oprec");
       return std::async(std::launch::async, [day, path, date] {
         write_scenario_recording(path, day, date, seed(day.id, date));
         return path;
       });
     };
-    std::size_t index = 0;
     auto date = first_date_;
-    auto pending = prepare(index, date);
+    // The trading date before the first one, as the feed would have played it: its
+    // closes are the first day's previous closes, which circuit breakers measure from.
+    const auto before = md::previous_business_day(date);
+    auto previous = prepare(before);
+    auto pending = prepare(date);
+    std::vector<md::Event> closes;
+    try {
+      const auto path = previous.get();
+      closes = closes_of(path, before, subscription.underlyings);
+      std::filesystem::remove(path);
+    } catch (const std::exception&) {
+      // Without them the first day has no breaker reference, as before a close is seen.
+      closes.clear();
+    }
+    bool resuming = resume_after_ > 0;
     while (!stopping_.load()) {
       const auto path = pending.get();
       if (stopping_.load()) break;
-      const auto next_index = (index + 1) % days_.size();
       const auto following = next_date(date);
-      pending = prepare(next_index, following);
+      pending = prepare(following);
       ReplayProvider::Options playback;
       playback.file = path;
       playback.speed = options_.speed;
       playback.clock = options_.clock;
+      // A restart plays the batches its accounts already saw unpaced, and the first one
+      // after them brings the book up to date: the day goes on where it stopped.
+      if (resuming) playback.start_at = resume_after_;
       auto replay = std::make_shared<ReplayProvider>(std::move(playback));
       std::unordered_map<md::InstrumentId, md::InstrumentId> remap;
       bool first_batch = true;
-      const auto title = "demo: " + days_[index].title + " · simulated prices";
+      CatchUp caught;
+      const auto title = "demo: " + days_[day_on(date)].title + " · simulated prices";
       replay->set_driver([&, title](ReplayBatch batch) {
         // A day's recording opens with the previous close its scenario starts from; the
         // feed keeps the close the day before it actually printed.
@@ -187,6 +284,21 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
           prior = std::move(current);
           first_batch = false;
         }
+        std::promise<void> done;
+        done.set_value();
+        if (resuming) {
+          if (batch.time <= resume_after_) {
+            caught.absorb(batch.events);
+            return done.get_future();
+          }
+          caught.lead(batch.events);
+          resuming = false;
+        }
+        if (!closes.empty()) {
+          for (auto& close : closes) std::get<md::UnderlyingClose>(close).ts = batch.time;
+          batch.events.insert(batch.events.begin(), closes.begin(), closes.end());
+          closes.clear();
+        }
         // SnapshotComplete precedes the generator's status; publish health in the
         // same batch so the next day's first snapshot is immediately healthy.
         if (!batch.events.empty()) {
@@ -196,8 +308,6 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
         time_ = batch.received;
         if (driver_) return driver_(std::move(batch));
         for (auto& event : batch.events) sink.publish(std::move(event));
-        std::promise<void> done;
-        done.set_value();
         return done.get_future();
       });
       DayStatus status(sink);
@@ -209,7 +319,8 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
       replay->stop();
       std::filesystem::remove(path);
       if (status.failed) break;
-      index = next_index;
+      // A day played to its end before the time a restart resumed after leaves nothing.
+      resuming = false;
       date = following;
     }
   } catch (const std::exception& error) {

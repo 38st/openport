@@ -7,6 +7,7 @@
 namespace openport::providers {
 
 /// An endless rotation of simulated regular sessions, on successive trading dates.
+/// A restart resumes the date its accounts stopped on, after their latest market time.
 class DemoProvider final : public md::Provider {
  public:
   struct Options {
@@ -22,9 +23,16 @@ class DemoProvider final : public md::Provider {
   void start(const md::Subscription& subscription, md::EventSink& sink) override;
   void stop() override;
   void set_driver(ReplayProvider::Driver driver);
-  /// Start on the trading date after recovered market time; zero keeps the default.
-  /// May only be called before start().
+  /// Resume after recovered market time: the rest of its trading date, or the next
+  /// trading date once that date has played to its last snapshot; zero keeps the
+  /// default. May only be called before start().
   void start_after(md::Timestamp recovered_time);
+  /// The market time a restart resumes after, or zero to start at the first date's open.
+  [[nodiscard]] md::Timestamp resumed_after() const noexcept { return resume_after_; }
+  /// The day `date` plays, as an index into days(): successive trading dates play
+  /// successive days, counted from a fixed date, so a date plays the same day whenever
+  /// the feed starts.
+  [[nodiscard]] std::size_t day_on(md::Date date) const;
   [[nodiscard]] md::Timestamp time() const noexcept { return time_.load(); }
   [[nodiscard]] const std::vector<std::string>& symbols() const { return symbols_; }
   [[nodiscard]] const std::vector<Scenario>& days() const { return days_; }
@@ -43,6 +51,7 @@ class DemoProvider final : public md::Provider {
   std::vector<Scenario> days_;
   std::vector<std::string> symbols_;
   md::Date first_date_;
+  md::Timestamp resume_after_ = 0;
   std::filesystem::path directory_;
   ReplayProvider::Driver driver_;
   std::thread thread_;
