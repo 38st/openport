@@ -527,8 +527,8 @@ recordings. Imported days appear beside live recordings with their provider name
 `POST /api/replay` starts `{file: NAME}` or `{scenario: ID}`; `demo: ID` and
 `demo: true` remain accepted, and `scenario: true`, like `demo: true`, plays the
 default scenario. Optional fields are `plan` (default `practice`),
-`speed` (0, 1, 2, 5, 10, 30, 60, 120 or 300), `start_at` (`HH:MM` New York) and
-`paused`. Scenarios also accept a trading `date` and `seed`: omit it for a fresh
+`speed` (0, 1, 2, 5, 10, 30, 60, 120 or 300), `start_at` (`HH:MM` New York, or a
+date and time such as `2026-09-17T10:30`) and `paused`. Scenarios also accept a trading `date` and `seed`: omit it for a fresh
 seed, use `"scenario"` for the file's seed, or supply a uint64 decimal string.
 `PUT` changes speed or pause, skips a gap, or advances through `until`; `DELETE` stops playback.
 
@@ -539,10 +539,14 @@ true` then permits trading at that prepared state. Evening overnight times are
 on the calendar date before the session date; morning times are on the session
 date. Recorded feeds retain their original delay and market timestamps.
 
-The demo market has fourteen built-in scenarios, compiled from `scenarios/*.json`,
+The demo market has eighteen built-in scenarios, compiled from `scenarios/*.json`,
 plus `--scenario-dir` additions and overrides. No built-in files need installing
 or locating at runtime. They include the
-five original days, gaps, crushes, pins and reversals. All are simulations, never
+five original days, gaps, crushes, pins and reversals, and four runs of several
+sessions: held through the curb and overnight sessions, over a weekend, across three
+days and from an overnight session into the open. A run of several sessions plays
+on one account, with the rollover, end-of-day ratchet, GTC carry, gaps, early
+assignment and dividends between them, and its state lists its `sessions`. All are simulations, never
 historical reconstructions. Status keeps `provider.simulated`; the terminal shows
 the scenario and seed with the simulated label. Generated recordings are cached by
 scenario, date and seed, with four completed entries retained. Generation uses
@@ -569,8 +573,11 @@ seed guarantees and history routes.
 ### Lockstep stepping
 
 `PUT /api/replay {"until":"10:30:00"}` runs as fast as possible through that New York
-time on the session date, then pauses. An ISO timestamp with a UTC offset also works.
-For overnight sessions, evening times refer to the preceding calendar date. `until`
+time on the session date, then pauses. A date and time such as `2026-09-17T10:30`
+(seconds optional) is New York's unless it ends in `Z` or a UTC offset.
+For overnight sessions, evening times refer to the preceding calendar date. In a
+scenario of several sessions a bare time is its next occurrence in the run's sessions,
+and a time that falls between them returns 400; give a date and time to step to a later day. `until`
 is the only field in that control request. Streams require a whole-second target;
 a fractional ISO target is rejected rather than reporting an unsettled partial batch.
 It cannot move backwards. A target past the recording's last batch returns 400

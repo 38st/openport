@@ -269,6 +269,8 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
            {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"scenarios", 2}}, "seed is required"},
            {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", {{{"seed", "1"}}}}}, "day scenario is required"},
            {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", {{{"scenario", "reversal"}}}}}, "day seed is required"},
+           {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", {{{"scenario", "hold-overnight"}, {"seed", "1"}}}}},
+            "Scenario hold-overnight plays several sessions, and a backtest day is one; play it in Replay"},
            {{{"playbook", "batch@1"}, {"plan", "eod-50k"}, {"days", {{{"scenario", "reversal"}, {"seed", "1"}, {"date", 20260916}}}}}, "date must be YYYY-MM-DD"},
            {{{"playbook", "batch@1"}, {"plan", {{"initial_cash", "1000"}, {"rules", {{"profit_target", 100}}}}}, {"scenarios", 1}, {"seed", 0}},
             "plan rules profit_target must be a decimal string"},

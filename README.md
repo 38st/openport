@@ -44,9 +44,10 @@ pass (over 23 passes) and the Cboe comparison on live data during the session, a
 2026-09-24. [How the numbers are made](docs/methods.md).
 
 No market open, or no data? The **demo market** plays simulated trading days you can
-trade: fourteen scenarios in SPX, SPY and QQQ options, from a reversal or a selloff to
-an afternoon waterfall or a pin into the close, each run on a fresh or repeatable seed,
-with generated prices labelled as simulated on every page:
+trade: eighteen scenarios in SPX, SPY and QQQ options, from a reversal or a selloff to
+an afternoon waterfall, a pin into the close or a position held overnight and over a
+weekend, each run on a fresh or repeatable seed, with generated prices labelled as
+simulated on every page:
 
 ![The demo market: five of its simulated days, then SPX and QQQ trading one of them at 120 times real time](docs/screenshots/demo-market.gif)
 

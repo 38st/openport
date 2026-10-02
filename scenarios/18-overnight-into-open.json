@@ -1,0 +1,52 @@
+{
+  "id": "overnight-into-open",
+  "title": "Overnight into the open",
+  "description": "SPX options trade through a quiet overnight session that turns higher before dawn, then the regular session opens with a small gap.",
+  "goal": "Carry overnight positions and orders into the regular open and its first minutes.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "date": "2026-09-17",
+  "seed": 81741,
+  "generator": 1,
+  "volatility": 0.09,
+  "iv_shift": 0.005,
+  "spot_vol": -2,
+  "sessions": [
+    {
+      "session": "overnight",
+      "drift": [
+        [
+          0.4,
+          -0.003
+        ],
+        [
+          1,
+          0.003
+        ]
+      ]
+    },
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.2,
+          -0.002
+        ],
+        [
+          1,
+          0.003
+        ]
+      ],
+      "volatility": 0.11,
+      "events": [
+        {
+          "type": "gap",
+          "move": 0.002
+        }
+      ]
+    }
+  ]
+}

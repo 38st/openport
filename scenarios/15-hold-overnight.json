@@ -1,0 +1,88 @@
+{
+  "id": "hold-overnight",
+  "title": "Hold through the night",
+  "description": "SPX firms into the close, eases through the curb and overnight sessions, and opens the next day lower before recovering.",
+  "goal": "Hold a position across the close: the end-of-day ratchet, curb limit orders, overnight risk and the gap at the open.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "date": "2026-09-16",
+  "seed": 81738,
+  "generator": 1,
+  "volatility": 0.11,
+  "iv_shift": 0,
+  "spot_vol": -2,
+  "sessions": [
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.6,
+          0.002
+        ],
+        [
+          1,
+          0.005
+        ]
+      ]
+    },
+    {
+      "session": "curb",
+      "drift": [
+        [
+          1,
+          -0.001
+        ]
+      ],
+      "volatility": 0.06
+    },
+    {
+      "session": "overnight",
+      "drift": [
+        [
+          0.5,
+          -0.003
+        ],
+        [
+          1,
+          -0.005
+        ]
+      ],
+      "volatility": 0.08,
+      "events": [
+        {
+          "type": "spike",
+          "at": "02:30",
+          "move": -0.003,
+          "iv": 0.015
+        }
+      ]
+    },
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.3,
+          0.003
+        ],
+        [
+          1,
+          0.005
+        ]
+      ],
+      "events": [
+        {
+          "type": "gap",
+          "move": -0.003
+        },
+        {
+          "type": "crush",
+          "at": "10:30",
+          "iv": -0.012
+        }
+      ]
+    }
+  ]
+}

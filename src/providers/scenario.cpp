@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace openport::providers {
 namespace {
@@ -60,6 +61,119 @@ md::Timestamp scenario_close(const Scenario& scenario, md::Date date) {
   return scenario.overnight ? scenario_time("09:25", date, true) : md::new_york_to_utc(date, md::regular_close_hour(date), 0);
 }
 
+namespace {
+/// A session's snapshots on its trading date: overnight from 20:15 the evening
+/// before to 09:25 each minute; regular from 09:30 to the 16:15 last trade (13:15 on
+/// an early close) every 15 seconds; and curb after the regular session's last
+/// snapshot until before 17:00, when the trading date turns, every 15 seconds.
+ScenarioWindow session_window(const std::string& session, md::Date date) {
+  ScenarioWindow w{session, date};
+  constexpr md::Timestamp quarter = 15 * md::kNanosPerSecond;
+  if (session == "overnight") {
+    const auto evening = md::date_from_days(md::days_since_epoch(date) - 1);
+    w.first = md::new_york_to_utc(evening, 20, 15);
+    w.close = w.last = md::new_york_to_utc(date, 9, 25);
+    w.step = 60 * md::kNanosPerSecond;
+  } else if (session == "curb") {
+    w.first = md::new_york_to_utc(date, 16, 15) + quarter;
+    w.close = w.last = md::new_york_to_utc(date, 17, 0) - quarter;
+    w.step = quarter;
+  } else {
+    const int hour = md::regular_close_hour(date);
+    w.first = md::new_york_to_utc(date, 9, 30);
+    w.close = md::new_york_to_utc(date, hour, 0);
+    w.last = md::new_york_to_utc(date, hour, 15);
+    w.step = quarter;
+  }
+  return w;
+}
+std::vector<std::pair<double, double>> drift_of(const json& value, const std::string& field) {
+  require(value.is_array() && !value.empty() && value.size() <= 100, field, "expected 1 to 100 waypoints");
+  std::vector<std::pair<double, double>> drift;
+  double previous = 0;
+  for (const auto& point : value) {
+    require(point.is_array() && point.size() == 2, field, "expected [fraction, cumulative log return]");
+    const double until = number(point[0], field + ".fraction", 0, 1);
+    require(until > previous, field + ".fraction", "must be strictly increasing, starting above zero");
+    drift.emplace_back(until, number(point[1], field + ".move", -0.2, 0.2));
+    previous = until;
+  }
+  require(previous == 1, field, "last fraction must be 1");
+  return drift;
+}
+std::vector<ScenarioEvent> events_of(const json& value, const std::string& field, const ScenarioWindow& window) {
+  require(value.is_array() && value.size() <= 32, field, "expected at most 32 events");
+  // A curb session opens at 16:15, a step before its first snapshot.
+  const auto opens = window.session == "curb" ? window.first - window.step : window.first;
+  std::vector<ScenarioEvent> events;
+  std::set<std::string> unique;
+  for (const auto& e : value) {
+    require(e.is_object() && e.contains("type"), field + ".type", "required field is missing");
+    ScenarioEvent event;
+    event.type = text(e.at("type"), field + ".type");
+    if (event.type == "gap") keys(e, {"type", "move"}, field);
+    else if (event.type == "crush") keys(e, {"type", "at", "iv"}, field);
+    else if (event.type == "spike") keys(e, {"type", "at", "move", "iv"}, field);
+    else if (event.type == "pin") keys(e, {"type", "at", "strike"}, field);
+    else require(false, field + ".type", "expected gap, crush, spike or pin");
+    if (event.type != "gap") {
+      require(e.contains("at"), field + ".at", "required field is missing");
+      event.at = text(e.at("at"), field + ".at");
+      md::Timestamp at = 0;
+      try { at = scenario_time(event.at, window.date, window.session == "overnight"); }
+      catch (const std::invalid_argument& error) { throw std::invalid_argument(field + ".at: " + std::string(error.what())); }
+      require(at >= opens && at < window.close, field + ".at", "must be inside the session before its close");
+    }
+    require(unique.insert(event.type + event.at).second, field, "duplicate event type and time");
+    if (event.type == "gap" || event.type == "spike") {
+      require(e.contains("move"), field + ".move", "required field is missing");
+      event.move = number(e.at("move"), field + ".move", -0.1, 0.1);
+    }
+    if (event.type == "crush" || event.type == "spike") {
+      require(e.contains("iv"), field + ".iv", "required field is missing");
+      event.iv = number(e.at("iv"), field + ".iv", event.type == "crush" ? -0.3 : 0, event.type == "crush" ? -0.0001 : 0.3);
+    }
+    if (event.type == "pin") {
+      require(window.session == "regular", field + ".pin", "pin requires a regular session");
+      require(e.contains("strike"), field + ".strike", "required field is missing");
+      event.strike = number(e.at("strike"), field + ".strike", 5400, 6600);
+    }
+    events.push_back(event);
+  }
+  return events;
+}
+}  // namespace
+
+std::vector<ScenarioWindow> scenario_windows(const Scenario& scenario, md::Date date) {
+  if (scenario.sessions.empty()) return {session_window(scenario.overnight ? "overnight" : "regular", date)};
+  std::vector<ScenarioWindow> windows;
+  for (std::size_t i = 0; i < scenario.sessions.size(); ++i) {
+    const auto& session = scenario.sessions[i].session;
+    const auto field = "sessions[" + std::to_string(i) + "].session";
+    auto day = date;
+    if (windows.empty()) {
+      require(session != "curb", field, "the first session must be regular or overnight");
+    } else {
+      const auto& prior = windows.back();
+      if (prior.session == "overnight") {
+        require(session == "regular", field, "an overnight session leads into its date's regular session");
+        day = prior.date;
+      } else if (session == "curb") {
+        require(prior.session == "regular", field, "a curb session follows its date's regular session");
+        day = prior.date;
+      } else {
+        // After 17:00 the trading date is the next business day.
+        day = md::trading_date(md::new_york_to_utc(prior.date, 18, 0));
+      }
+    }
+    require(session != "curb" || md::regular_close_hour(day) == 16, field,
+            "an early close on " + md::format_date(day) + " has no curb session");
+    windows.push_back(session_window(session, day));
+  }
+  return windows;
+}
+md::Timestamp scenario_end(const Scenario& scenario, md::Date date) { return scenario_windows(scenario, date).back().last; }
+
 Scenario read_scenario(const std::filesystem::path& file) {
   std::string source;
   try {
@@ -78,9 +192,17 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
   try {
     require(source.size() <= 64 * 1024, "$", "file exceeds 64 KiB");
     const auto j = json::parse(source);
-    keys(j, {"id", "title", "description", "goal", "symbols", "session", "date", "seed", "generator", "drift", "volatility", "iv_shift", "spot_vol", "events"}, "$");
-    for (const auto* field : {"id", "title", "description", "symbols", "session", "date", "seed", "generator", "drift", "volatility", "iv_shift", "spot_vol"})
+    keys(j, {"id", "title", "description", "goal", "symbols", "session", "date", "seed", "generator", "drift", "volatility", "iv_shift", "spot_vol", "events", "sessions"}, "$");
+    const bool several = j.contains("sessions");
+    for (const auto* field : {"id", "title", "description", "symbols", "date", "seed", "generator"})
       require(j.contains(field), field, "required field is missing");
+    if (several) {
+      for (const auto* field : {"session", "drift", "events"})
+        require(!j.contains(field), field, "give it in each of the sessions instead");
+    } else {
+      for (const auto* field : {"session", "drift", "volatility", "iv_shift", "spot_vol"})
+        require(j.contains(field), field, "required field is missing");
+    }
     Scenario s;
     s.source = source;
     s.source_file = std::filesystem::absolute(file);
@@ -91,17 +213,48 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
     s.title = text(j.at("title"), "title", 100);
     s.description = text(j.at("description"), "description");
     if (j.contains("goal")) s.goal = text(j.at("goal"), "goal");
-    const auto session = text(j.at("session"), "session");
-    require(session == "regular" || session == "overnight", "session", "expected regular or overnight");
-    s.overnight = session == "overnight";
+    if (several) {
+      const auto& sessions = j.at("sessions");
+      require(sessions.is_array() && !sessions.empty() && sessions.size() <= 24, "sessions", "expected 1 to 24 sessions");
+      for (std::size_t i = 0; i < sessions.size(); ++i) {
+        const auto field = "sessions[" + std::to_string(i) + "]";
+        const auto& value = sessions[i];
+        keys(value, {"session", "drift", "volatility", "iv_shift", "spot_vol", "events", "dividends"}, field);
+        ScenarioSession session;
+        require(value.contains("session"), field + ".session", "required field is missing");
+        session.session = text(value.at("session"), field + ".session");
+        require(session.session == "regular" || session.session == "curb" || session.session == "overnight",
+                field + ".session", "expected regular, curb or overnight");
+        require(value.contains("drift"), field + ".drift", "required field is missing");
+        session.drift = drift_of(value.at("drift"), field + ".drift");
+        // The file's volatility, iv_shift and spot_vol apply to each session that omits its own.
+        const auto setting = [&](const char* name, double low, double high) {
+          require(value.contains(name) || j.contains(name), field + "." + name, "required field is missing");
+          return value.contains(name) ? number(value.at(name), field + "." + name, low, high) : number(j.at(name), name, low, high);
+        };
+        session.volatility = setting("volatility", 0, 1);
+        session.iv_shift = setting("iv_shift", -0.1, 1);
+        session.spot_vol = setting("spot_vol", -10, 0);
+        s.sessions.push_back(std::move(session));
+      }
+      for (const auto& [name, low, high] : {std::tuple{"volatility", 0.0, 1.0}, std::tuple{"iv_shift", -0.1, 1.0}, std::tuple{"spot_vol", -10.0, 0.0}})
+        if (j.contains(name)) (void)number(j.at(name), name, low, high);
+      s.overnight = s.sessions.front().session == "overnight";
+    } else {
+      const auto session = text(j.at("session"), "session");
+      require(session == "regular" || session == "overnight", "session", "expected regular or overnight");
+      s.overnight = session == "overnight";
+    }
+    const bool closed_sessions = std::any_of(s.sessions.begin(), s.sessions.end(), [](const auto& session) { return session.session != "regular"; });
     require(j.at("symbols").is_array() && !j.at("symbols").empty(), "symbols", "expected a nonempty array");
     std::set<std::string> seen;
     for (const auto& value : j.at("symbols")) {
       const auto symbol = text(value, "symbols");
-      require(symbol == "SPX" || (!s.overnight && (symbol == "SPY" || symbol == "QQQ")), "symbols", "supported: SPX, SPY, QQQ; overnight: SPX only");
+      require(symbol == "SPX" || (!(s.overnight && !several) && (symbol == "SPY" || symbol == "QQQ")), "symbols", "supported: SPX, SPY, QQQ; overnight: SPX only");
       require(seen.insert(symbol).second, "symbols", "duplicate symbol");
       s.symbols.push_back(symbol);
     }
+    require(!closed_sessions || seen.contains("SPX"), "symbols", "curb and overnight sessions trade SPX options alone, so list SPX");
     const auto date = text(j.at("date"), "date");
     const auto parsed = md::parse_datetime(date + "T12:00:00", md::Zone::NewYork);
     require(date.size() == 10 && parsed.has_value(), "date", "expected YYYY-MM-DD");
@@ -110,56 +263,54 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
     require(j.at("seed").is_number_unsigned() || (j.at("seed").is_number_integer() && j.at("seed").get<std::int64_t>() >= 0), "seed", "expected uint64");
     s.seed = j.at("seed").get<std::uint64_t>();
     require(j.at("generator").is_number_integer() && j.at("generator") == 1, "generator", "only version 1 is supported");
-    require(j.at("drift").is_array() && !j.at("drift").empty() && j.at("drift").size() <= 100, "drift", "expected 1 to 100 waypoints");
-    double previous = 0;
-    for (const auto& point : j.at("drift")) {
-      require(point.is_array() && point.size() == 2, "drift", "expected [fraction, cumulative log return]");
-      const double until = number(point[0], "drift.fraction", 0, 1);
-      require(until > previous, "drift.fraction", "must be strictly increasing, starting above zero");
-      s.drift.emplace_back(until, number(point[1], "drift.move", -0.2, 0.2));
-      previous = until;
+    if (several) {
+      const auto windows = scenario_windows(s, s.date);
+      for (std::size_t i = 0; i < s.sessions.size(); ++i) {
+        const auto field = "sessions[" + std::to_string(i) + "]";
+        const auto& value = j.at("sessions")[i];
+        auto& session = s.sessions[i];
+        if (value.contains("events")) session.events = events_of(value.at("events"), field + ".events", windows[i]);
+        if (value.contains("dividends")) {
+          const auto& dividends = value.at("dividends");
+          require(dividends.is_array() && dividends.size() <= 2, field + ".dividends", "expected at most 2 dividends");
+          // The account opens on the run's first date, so nothing is held into it.
+          require(dividends.empty() || windows[i].date != windows.front().date, field + ".dividends",
+                  "the run's first date cannot go ex-dividend");
+          std::set<std::string> paying;
+          for (const auto& entry : dividends) {
+            keys(entry, {"symbol", "per_share"}, field + ".dividends");
+            require(entry.contains("symbol") && entry.contains("per_share"), field + ".dividends", "symbol and per_share are required");
+            ScenarioDividend dividend;
+            dividend.symbol = text(entry.at("symbol"), field + ".dividends.symbol");
+            require((dividend.symbol == "SPY" || dividend.symbol == "QQQ") && seen.contains(dividend.symbol),
+                    field + ".dividends.symbol", "expected SPY or QQQ, among the symbols");
+            require(paying.insert(dividend.symbol).second, field + ".dividends.symbol", "duplicate symbol");
+            dividend.per_share = number(entry.at("per_share"), field + ".dividends.per_share", 0, 100);
+            require(dividend.per_share > 0, field + ".dividends.per_share", "must be positive");
+            session.dividends.push_back(std::move(dividend));
+          }
+        }
+        // One ex-date a symbol: an overnight session and the regular one after it share their date.
+        for (std::size_t k = 0; k < i; ++k) {
+          if (windows[k].date != windows[i].date) continue;
+          for (const auto& earlier : s.sessions[k].dividends)
+            for (const auto& later : session.dividends)
+              require(earlier.symbol != later.symbol, field + ".dividends.symbol", "goes ex once a date");
+        }
+      }
+      const auto& first = s.sessions.front();
+      s.drift = first.drift;
+      s.volatility = first.volatility;
+      s.iv_shift = first.iv_shift;
+      s.spot_vol = first.spot_vol;
+      s.events = first.events;
+      return s;
     }
-    require(previous == 1, "drift", "last fraction must be 1");
+    s.drift = drift_of(j.at("drift"), "drift");
     s.volatility = number(j.at("volatility"), "volatility", 0, 1);
     s.iv_shift = number(j.at("iv_shift"), "iv_shift", -0.1, 1);
     s.spot_vol = number(j.at("spot_vol"), "spot_vol", -10, 0);
-    if (j.contains("events")) {
-      require(j.at("events").is_array() && j.at("events").size() <= 32, "events", "expected at most 32 events");
-      std::set<std::string> unique;
-      for (const auto& e : j.at("events")) {
-        require(e.is_object() && e.contains("type"), "events.type", "required field is missing");
-        ScenarioEvent event;
-        event.type = text(e.at("type"), "events.type");
-        if (event.type == "gap") keys(e, {"type", "move"}, "events");
-        else if (event.type == "crush") keys(e, {"type", "at", "iv"}, "events");
-        else if (event.type == "spike") keys(e, {"type", "at", "move", "iv"}, "events");
-        else if (event.type == "pin") keys(e, {"type", "at", "strike"}, "events");
-        else require(false, "events.type", "expected gap, crush, spike or pin");
-        if (event.type != "gap") {
-          require(e.contains("at"), "events.at", "required field is missing");
-          event.at = text(e.at("at"), "events.at");
-          md::Timestamp at = 0;
-          try { at = scenario_time(event.at, s.date, s.overnight); }
-          catch (const std::invalid_argument& error) { throw std::invalid_argument("events.at: " + std::string(error.what())); }
-          require(at >= scenario_open(s, s.date) && at < scenario_close(s, s.date), "events.at", "must be inside the session before its close");
-        }
-        require(unique.insert(event.type + event.at).second, "events", "duplicate event type and time");
-        if (event.type == "gap" || event.type == "spike") {
-          require(e.contains("move"), "events.move", "required field is missing");
-          event.move = number(e.at("move"), "events.move", -0.1, 0.1);
-        }
-        if (event.type == "crush" || event.type == "spike") {
-          require(e.contains("iv"), "events.iv", "required field is missing");
-          event.iv = number(e.at("iv"), "events.iv", event.type == "crush" ? -0.3 : 0, event.type == "crush" ? -0.0001 : 0.3);
-        }
-        if (event.type == "pin") {
-          require(!s.overnight, "events.pin", "pin requires a regular session");
-          require(e.contains("strike"), "events.strike", "required field is missing");
-          event.strike = number(e.at("strike"), "events.strike", 5400, 6600);
-        }
-        s.events.push_back(event);
-      }
-    }
+    if (j.contains("events")) s.events = events_of(j.at("events"), "events", scenario_windows(s, s.date).front());
     return s;
   } catch (const std::exception& error) {
     throw std::invalid_argument(file.string() + ": " + error.what());

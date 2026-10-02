@@ -201,8 +201,10 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
           deadline = options_.clock->now();
         }
         const int measured = speed_.load();
-        if (previous && !seeking_.load())
-          deadline = advance(deadline, *previous, record->received, measured, remainder);
+        if (previous && !seeking_.load()) {
+          const auto from = options_.max_gap > 0 && record->received - *previous > options_.max_gap ? record->received - options_.max_gap : *previous;
+          deadline = advance(deadline, from, record->received, measured, remainder);
+        }
         previous = record->received;
         const bool include = std::visit(
             [&](const auto& e) {
@@ -341,7 +343,10 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
         }
       }
       const int measured = speed_.load();
-      if (previous > 0 && !seeking_.load()) deadline = advance(deadline, previous, next->received, measured, remainder);
+      if (previous > 0 && !seeking_.load()) {
+        const auto from = options_.max_gap > 0 && next->received - previous > options_.max_gap ? next->received - options_.max_gap : previous;
+        deadline = advance(deadline, from, next->received, measured, remainder);
+      }
       if (!preparing_.load() && !pace(deadline, measured)) break;
       if (stopping_.load()) break;
       // An until request may have interrupted the wait before this future batch.

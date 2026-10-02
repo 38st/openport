@@ -283,7 +283,7 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   EXPECT_EQ(listing["demo"]["provider"], "demo");
   EXPECT_EQ(listing["demo"]["symbols"], json::array({"SPX", "SPY", "QQQ"}));
   EXPECT_EQ(listing["demo"]["id"], "reversal");
-  ASSERT_EQ(listing["demos"].size(), 14);
+  ASSERT_EQ(listing["demos"].size(), 18);
   EXPECT_EQ(listing["demos"][4]["id"], "overnight");
   EXPECT_EQ(listing["demos"][4]["symbols"], json::array({"SPX"}));
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"demo": "sideways"})").status, 400);

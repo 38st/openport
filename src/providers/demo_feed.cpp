@@ -38,12 +38,13 @@ DemoProvider::DemoProvider(Options options) : options_(std::move(options)) {
     throw std::invalid_argument("demo: speed must be 1, 2, 5, 10, 30, 60, 120 or 300");
   const auto& builtins = builtin_scenarios();
   if (options_.days.empty()) {
-    for (const auto& day : builtins) if (!day.overnight) days_.push_back(day);
+    for (const auto& day : builtins) if (!day.overnight && day.sessions.empty()) days_.push_back(day);
   } else {
     for (const auto& id : options_.days) {
       const auto it = std::find_if(builtins.begin(), builtins.end(), [&](const auto& day) { return day.id == id; });
       if (it == builtins.end()) throw std::invalid_argument("demo: unknown day " + id);
       if (it->overnight) throw std::invalid_argument("demo: day " + id + " is not a regular session");
+      if (!it->sessions.empty()) throw std::invalid_argument("demo: day " + id + " spans several sessions; play it in Replay");
       days_.push_back(*it);
     }
   }

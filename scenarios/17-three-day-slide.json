@@ -1,0 +1,85 @@
+{
+  "id": "three-day-slide",
+  "title": "Three-day slide",
+  "description": "SPX falls on two consecutive days as implied volatility climbs, then rebounds on the third as it eases; SPY goes ex-dividend on the second.",
+  "goal": "Manage a drawdown across days: the end-of-day ratchet, deep short puts assigned early and an ETF dividend.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "date": "2026-09-14",
+  "seed": 81740,
+  "generator": 1,
+  "spot_vol": -2.5,
+  "sessions": [
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.5,
+          -0.006
+        ],
+        [
+          1,
+          -0.009
+        ]
+      ],
+      "volatility": 0.14,
+      "iv_shift": 0
+    },
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.3,
+          -0.008
+        ],
+        [
+          1,
+          -0.013
+        ]
+      ],
+      "volatility": 0.17,
+      "iv_shift": 0.01,
+      "events": [
+        {
+          "type": "gap",
+          "move": -0.004
+        }
+      ],
+      "dividends": [
+        {
+          "symbol": "SPY",
+          "per_share": 1.75
+        }
+      ]
+    },
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.4,
+          0.004
+        ],
+        [
+          1,
+          0.009
+        ]
+      ],
+      "volatility": 0.15,
+      "iv_shift": 0.01,
+      "events": [
+        {
+          "type": "gap",
+          "move": 0.003
+        },
+        {
+          "type": "crush",
+          "at": "11:00",
+          "iv": -0.02
+        }
+      ]
+    }
+  ]
+}
