@@ -1366,7 +1366,7 @@ bool marketable(const Order& o, const QuoteObservation& q) {
   if (o.request.type == OrderType::Market) return true;
   return o.request.side == Side::Buy ? *q.ask <= *o.request.limit_price : *q.bid >= *o.request.limit_price;
 }
-void on_fill(State& s, OrderId id, Events& events);
+void on_fill(State& s, OrderId id, Quantity units, Events& events);
 void annotate_opening(State& s, const OrderRequest& r, const std::string& symbol, Quantity contracts, Events& events) {
   const auto q = held(s, symbol);
   if ((q != 0 && ((q > 0) == (contracts > 0) || magnitude(contracts) <= magnitude(q))) ||
@@ -1467,7 +1467,7 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
             quantity, price, fee, quote.observation, quote.time, s.time, context, order.actor, taken};
   s.fills.push_back(fill);
   event(events, "fill", fill);
-  on_fill(s, id, events);
+  on_fill(s, id, quantity, events);
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
 }
@@ -1547,7 +1547,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   order.filled_notional = order.filled_notional + *net * units;
   order.status = order.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
   if (order.status == OrderStatus::Filled) order.ended_at = s.time;
-  on_fill(s, id, events);
+  on_fill(s, id, units, events);
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
 }
@@ -1620,6 +1620,14 @@ Quantity exit_capacity(const State& s, const OrderRequest& r) {
   else cap(r.symbol, r.side, 1);
   return capacity;
 }
+void shrink_exit(State& s, OrderId id, Quantity capacity, Events& events) {
+  if (s.orders[id - 1].remaining() <= capacity) return;
+  auto& exit = s.orders.mut(id - 1);
+  // A held spread's exits were submitted; a retry still finds their original terms.
+  if (exit.request.exits_only && !exit.submitted) exit.submitted = exit.request;
+  exit.request.quantity = exit.filled_quantity + capacity;
+  event(events, "order_resized", exit);
+}
 /// Keep bracket exits within the position they protect: shrink them when it
 /// shrinks and cancel them once it is closed, so an exit can never open one.
 void sync_exits(State& s, const std::string& symbol, Events& events) {
@@ -1629,13 +1637,7 @@ void sync_exits(State& s, const std::string& symbol, Events& events) {
     const auto capacity = exit_capacity(s, o.request);
     if (capacity == 0) {
       cancel_order(s, id, failure(Reason::POSITION_CLOSED, "The position this exit protected is closed"), events);
-    } else if (o.remaining() > capacity) {
-      auto& exit = s.orders.mut(id - 1);
-      // A held spread's exits were submitted; a retry of that submission still finds them.
-      if (exit.request.exits_only && !exit.submitted) exit.submitted = exit.request;
-      exit.request.quantity = exit.filled_quantity + capacity;
-      event(events, "order_resized", exit);
-    }
+    } else shrink_exit(s, id, capacity, events);
   }
 }
 /// Create a bracket's exits on the entry's first fill and grow them with later
@@ -1689,15 +1691,23 @@ void attach_exits(State& s, OrderId entry_id, Events& events) {
     s.orders.mut(target - 1).oco = stop;
   }
 }
-void on_fill(State& s, OrderId id, Events& events) {
+void on_fill(State& s, OrderId id, Quantity units, Events& events) {
   detail::update_reviews(s);
   const auto order = s.orders.at(static_cast<std::size_t>(id - 1));
   // One exit filling completely cancels the other; a partial fill leaves it to
   // protect what is still held, shrunk to that by sync_exits below, as does the
   // complete fill of an exit the trader made smaller than the other.
-  if (order.oco != 0 && order.status == OrderStatus::Filled && s.orders.at(static_cast<std::size_t>(order.oco - 1)).open() &&
-      order.request.quantity >= s.orders.at(static_cast<std::size_t>(order.oco - 1)).request.quantity)
-    cancel_order(s, order.oco, failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
+  // Compare this fill with the sibling's remainder: either may have filled before.
+  if (order.oco != 0) {
+    const auto& sibling = s.orders.at(static_cast<std::size_t>(order.oco - 1));
+    if (sibling.open()) {
+      if (order.status == OrderStatus::Filled && units >= sibling.remaining())
+        cancel_order(s, order.oco, failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
+      else
+        // This bracket's remaining protection, even when another entry holds the same contract.
+        shrink_exit(s, order.oco, std::max(order.remaining(), sibling.remaining() - units), events);
+    }
+  }
   if (order.role != OrderRole::Normal && order.parent != 0 && s.orders.at(static_cast<std::size_t>(order.parent - 1)).open())
     cancel_order(s, order.parent, failure(Reason::OCO_FILLED, "An exit filled; the remaining entry is cancelled"), events);
   if (order.request.bracket && !order.request.exits_only) attach_exits(s, id, events);
