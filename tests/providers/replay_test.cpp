@@ -538,6 +538,28 @@ TEST(Replay, SkipCutsAnOvernightGapShortAndTheEndIsReported) {
   replay.stop();
 }
 
+TEST(Replay, AMaximumGapPassesTheClosedMarketBetweenSessionsInOneStep) {
+  const auto file = paced_recording();
+  auto clock = std::make_shared<ManualClock>();
+  providers::ReplayProvider::Options options{file.path, 60, false, clock};
+  options.max_gap = 60 * md::kNanosPerSecond;
+  providers::ReplayProvider replay(options);
+  test::EventCollector sink;
+  replay.start({{"SPX"}}, sink);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_TRUE(clock->waiting_for().has_value());
+    clock->advance(1s);
+    ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == static_cast<std::size_t>(i + 1); }));
+  }
+  // The eight hours wait one minute of receipt time, a second at 60x.
+  const auto now = clock->now();
+  ASSERT_EQ(clock->waiting_for(now + 1s), now + 1s);
+  clock->advance(1s);
+  ASSERT_TRUE(test::recording_eventually([&] { return quotes(sink) == 4; }));
+  EXPECT_EQ(replay.time(), (1'000 + 180 + 8 * 3600) * md::kNanosPerSecond);
+  replay.stop();
+}
+
 TEST(Replay, PlaysVersionOneAndVersionTwoWithVolume) {
   for (const int version : {1, 2}) {
     test::RecordingFile file;

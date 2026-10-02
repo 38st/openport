@@ -4,7 +4,7 @@ Scenarios are generated practice sessions, not market data or reconstructions of
 historical days. Generated prices and volume are labelled simulated. The session date
 sets the calendar and expiries; it does not identify an event being reproduced.
 
-The fourteen built-ins are compiled into the binary from `scenarios/*.json`.
+The eighteen built-ins, four of them [several sessions](#several-sessions) long, are compiled into the binary from `scenarios/*.json`.
 They need no files at runtime. CMake regenerates the embedded library when a source
 file is edited, added or removed; rebuild to change a built-in.
 `--scenario-dir DIR` adds JSON files, in
@@ -35,7 +35,8 @@ same strict parser; diagnostics name the source file and field.
 }
 ```
 
-All fields except `goal` and `events` are required. Unknown fields and generator
+All fields except `goal` and `events` are required, unless `sessions` describes the
+run (see [several sessions](#several-sessions)). Unknown fields and generator
 versions are rejected. Files are limited to 64 KiB.
 
 | Field | Meaning and bounds |
@@ -52,6 +53,7 @@ versions are rejected. Files are limited to 64 KiB.
 | `iv_shift` | Absolute shift to implied volatility, −0.1 to 1; 0.01 is one vol point |
 | `spot_vol` | IV response per unit of spot return, −10 to 0 |
 | `events` | At most 32 events; no repeated type at the same time |
+| `sessions` | 1–24 sessions played one after another as one run, in place of `session`, `drift` and `events`; see below |
 
 Drift is linearly interpolated from zero at the open. A seeded, mean-reverting
 wander keeps each run near its path. Regular sessions run from 09:30 to 16:15 ET
@@ -80,9 +82,80 @@ higher near the money and in the front expiry, with more activity near the open
 and close. Its separate seeded draws leave prices and quoted sizes unchanged.
 Volume events are recorded alongside quotes for built-in and custom scenarios.
 
+## Several sessions
+
+A scenario can span several sessions and days, played as one run on one account:
+hold across the close, through the curb and overnight sessions, over a weekend or
+for a week. The end-of-day ratchet, rollover, GTC carry, early assignment of deep
+shorts, ex-dividend dates and the gap at the next open then happen inside a replay
+you can pause and step, rather than only on the real-time demo feed.
+
+```json
+{
+  "id": "hold-overnight", "title": "Hold through the night",
+  "description": "SPX firms into the close and opens the next day lower.",
+  "symbols": ["SPX", "SPY"], "date": "2026-09-16", "seed": 81738, "generator": 1,
+  "volatility": 0.11, "iv_shift": 0, "spot_vol": -2,
+  "sessions": [
+    {"session": "regular", "drift": [[1, 0.005]]},
+    {"session": "curb", "drift": [[1, -0.001]], "volatility": 0.06},
+    {"session": "overnight", "drift": [[1, -0.005]],
+     "events": [{"type": "spike", "at": "02:30", "move": -0.003, "iv": 0.015}]},
+    {"session": "regular", "drift": [[1, 0.005]], "events": [{"type": "gap", "move": -0.003}],
+     "dividends": [{"symbol": "SPY", "per_share": 1.75}]}
+  ]
+}
+```
+
+With `sessions`, the file omits `session`, `drift` and `events`; its `volatility`,
+`iv_shift` and `spot_vol` apply to each session that does not give its own. Each
+session has:
+
+| Field | Meaning and bounds |
+| --- | --- |
+| `session` | `regular`, `curb` or `overnight` |
+| `drift` | As above, over this session: zero is where the previous session ended |
+| `volatility`, `iv_shift`, `spot_vol` | Optional; as above |
+| `events` | Optional; as above, at times inside this session. A pin needs a regular session |
+| `dividends` | Optional; at most two `{"symbol": "SPY", "per_share": 1.75}`: SPY or QQQ, among `symbols`, going ex on this session's trading date. Not on the run's first date, and once a symbol and date |
+
+`date` is the first session's trading date, and the sessions follow each other in
+time:
+
+- The first session is regular or overnight.
+- An overnight session is followed by its own date's regular session.
+- A curb session follows its date's regular session, from 16:15:15 to 16:59:45
+  every 15 seconds; an early-close date has none.
+- Any other session after a regular or curb one belongs to the next trading date:
+  an overnight session after Friday's regular one runs from Sunday at 20:15 into
+  Monday, skipping weekends and holidays.
+
+A sequence the calendar cannot hold is refused with the session named. Curb and
+overnight sessions trade SPX options alone, so such a scenario lists SPX. SPY and QQQ
+may still be listed: they and their options quote only in regular sessions, and
+their chains report `options closed` in between.
+
+Each session starts where the one before ended, plus its own gap, and its seeded
+wander starts afresh. Crush and spike IV changes last for the rest of the run. Each
+new trading date lists its own expiries, centred on the level it opens at, keeps
+every earlier series until its last trade, moves open interest on with the days to
+expiry and starts session volume again. It also opens with each underlying's
+previous close as the run printed it, which circuit breakers measure against. An
+ETF's price drops by its dividend from the ex-date on, and the run's account pays
+or charges the dividend on shares held into that date, in place of any dividend the
+server knows for the same symbol and date. The recording polls at its slowest
+session's interval, a minute when it has an overnight session.
+
+Multi-session scenarios are generated at revision 2 and later. Single-session
+scenarios produce the same recordings as before, byte for byte. The real-time demo
+feed (`--provider demo`) already carries its account from day to day and plays
+single sessions only, so it skips these scenarios; so do playbook backtests, whose
+days are single sessions.
+
 ## Events
 
-Times are `HH:MM` in New York, within the session and before its close. For
+Times are `HH:MM` in New York, within the session and before its close (a curb
+session's close is its last snapshot, 16:59:45). For
 an overnight session, 20:15–23:59 belongs to the evening before the trading date;
 00:00–09:24 belongs to that date. Events are applied in file order.
 
@@ -135,6 +208,17 @@ readers already playing an evicted file keep their open descriptor. The director
 is removed on clean shutdown. The recording header has no extensible metadata, so
 scenario id, source hash, generator version and revision, date and seed are recorded
 in the account journal. Replay state and the JSON sidecar also retain the display metadata.
+
+`start_at` is New York `HH:MM[:SS]`, or a date and time such as
+`2026-09-17T10:30` (seconds optional), New York unless it ends in `Z` or a UTC
+offset. In a scenario of several sessions, a bare time is its first occurrence in
+any of them; a time between sessions, or a date and time outside the run, is
+refused. Replay state, the listing's `demos` and history entries carry the run's
+`sessions` (each with `session`, `date`, `open` and `end` timestamps) and its `end`;
+a recording has none. Between sessions, paced playback waits at most one polling
+interval of receipt time, so a closed night or weekend passes in a moment at any
+speed, and `PUT {"until": ...}` accepts the same forms, a bare time being its next
+occurrence in the run's sessions.
 
 `start_at` also works with `file: NAME` for a recorded feed. It uses New York wall
 time on the recording's session date, determined from its first receipt. Evening

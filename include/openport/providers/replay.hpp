@@ -37,6 +37,9 @@ class ReplayProvider final : public md::Provider {
     std::shared_ptr<ReplayClock> clock;
     md::Timestamp start_at = 0;
     bool paused = false;
+    /// Paced playback waits at most this much receipt time between batches, so a
+    /// closed market between sessions passes in one step; zero waits every gap out.
+    md::Timestamp max_gap = 0;
     std::function<std::future<void>()> synchronize = {};
   };
 

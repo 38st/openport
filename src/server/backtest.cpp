@@ -301,7 +301,8 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     if (seed > UINT64_MAX - count + 1) throw std::invalid_argument("Scenario seeds overflow");
     std::vector<providers::Scenario> selected;
     for (const auto& scenario : scenarios)
-      if ((!body.contains("scenario") && !scenario.overnight) || (body.contains("scenario") && body.at("scenario") == scenario.id)) selected.push_back(scenario);
+      if ((!body.contains("scenario") && !scenario.overnight && scenario.sessions.empty()) ||
+          (body.contains("scenario") && body.at("scenario") == scenario.id)) selected.push_back(scenario);
     if (selected.empty()) throw std::invalid_argument("No matching scenarios");
     auto date = selected.front().date;
     days = json::array();
@@ -339,6 +340,8 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       const auto& id = required(entry, "scenario", "day scenario");
       for (const auto& scenario : scenarios) if (id == scenario.id) day.scenario = scenario;
       if (!day.scenario) throw std::invalid_argument("Unknown scenario");
+      if (!day.scenario->sessions.empty())
+        throw std::invalid_argument("Scenario " + day.scenario->id + " plays several sessions, and a backtest day is one; play it in Replay");
       day.date = entry.contains("date") ? date_value(entry.at("date")) : day.scenario->date;
       day.seed = seed_value(required(entry, "seed", "day seed"));
     }

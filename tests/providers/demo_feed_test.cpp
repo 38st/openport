@@ -105,7 +105,7 @@ TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
   EXPECT_FALSE(demo->capabilities().realtime);
   EXPECT_EQ(demo->symbols(), (std::vector<std::string>{"SPX", "SPY", "QQQ"}));
   std::vector<std::string> expected, actual;
-  for (const auto& day : providers::builtin_scenarios()) if (!day.overnight) expected.push_back(day.id);
+  for (const auto& day : providers::builtin_scenarios()) if (!day.overnight && day.sessions.empty()) expected.push_back(day.id);
   for (const auto& day : demo->days()) actual.push_back(day.id);
   EXPECT_EQ(actual, expected);
   EXPECT_EQ(actual.size(), 12U);
@@ -149,7 +149,7 @@ TEST(DemoFeed, DatesUseNewYorkWeekendsHolidaysAndRepeatableSeeds) {
   EXPECT_NE(seed, providers::DemoProvider::seed("trend", {2026, 9, 21}));
   EXPECT_NE(seed, providers::DemoProvider::seed("chop", {2026, 9, 18}));
   for (const auto& scenario : providers::builtin_scenarios()) {
-    if (scenario.overnight) continue;
+    if (scenario.overnight || !scenario.sessions.empty()) continue;
     const auto shortened = providers::DemoProvider::on_date(scenario, {2026, 11, 27});
     for (const auto& event : shortened.events) {
       if (event.type != "gap") {

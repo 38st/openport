@@ -70,11 +70,21 @@ json parse_body(const ApiRequest& request, std::initializer_list<std::string_vie
   return body;
 }
 
+/// Each session a scenario run plays: its kind, trading date, first and last snapshot.
+json sessions_json(const std::vector<providers::ScenarioWindow>& windows) {
+  json out = json::array();
+  for (const auto& w : windows)
+    out.push_back({{"session", w.session}, {"date", md::format_date(w.date)},
+                   {"open", md::format_timestamp(w.first)}, {"end", md::format_timestamp(w.last)}});
+  return out;
+}
 json demo_json(const providers::Scenario& d) {
+  const auto windows = providers::scenario_windows(d, d.date);
   return {{"id", d.id}, {"title", d.title}, {"description", d.description}, {"goal", d.goal},
           {"session", d.overnight ? "overnight" : "regular"}, {"date", md::format_date(d.date)},
           {"seed", std::to_string(d.seed)}, {"generator", d.generator}, {"provider", providers::kDemoProvider},
-          {"symbols", d.symbols}, {"started", md::format_timestamp(providers::scenario_open(d, d.date))}};
+          {"symbols", d.symbols}, {"started", md::format_timestamp(providers::scenario_open(d, d.date))},
+          {"sessions", sessions_json(windows)}, {"end", md::format_timestamp(windows.back().last)}};
 }
 const providers::Scenario& default_scenario(const std::vector<providers::Scenario>& scenarios) {
   const auto found = std::find_if(scenarios.begin(), scenarios.end(), [](const auto& s) { return s.id == "reversal"; });
@@ -108,6 +118,35 @@ std::string slug(std::string_view source) {
     out += (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ? c : '-';
   }
   return out.empty() ? "recording" : out;
+}
+
+/// A date and time, "YYYY-MM-DDTHH:MM[:SS]" (or with a space) in New York unless it
+/// carries Z or a UTC offset; empty for a bare "HH:MM[:SS]".
+std::optional<md::Timestamp> dated_time(std::string value, const char* field) {
+  if (value.size() <= 8) return std::nullopt;
+  // Seconds are optional: 2026-09-17T10:30 is 10:30:00.
+  if (value.size() >= 16 && value[13] == ':' && (value.size() == 16 || value[16] != ':')) value.insert(16, ":00");
+  const auto parsed = md::parse_datetime(value, md::Zone::NewYork);
+  if (!parsed) throw std::invalid_argument(std::string(field) + " must be New York HH:MM, or a date and time such as 2026-09-17T10:30");
+  return parsed;
+}
+/// A bare New York "HH:MM[:SS]" in a multi-session run: its first occurrence after
+/// `after` inside one of the run's sessions.
+md::Timestamp session_time(const std::string& value, const std::vector<providers::ScenarioWindow>& windows,
+                           md::Timestamp after, const char* field) {
+  const auto parsed = md::parse_datetime("2000-01-03T" + value + (value.size() == 5 ? ":00" : ""), md::Zone::Utc);
+  if ((value.size() != 5 && value.size() != 8) || !parsed)
+    throw std::invalid_argument(std::string(field) + " must be New York HH:MM, or a date and time such as 2026-09-17T10:30");
+  const auto seconds = static_cast<int>(*parsed % md::kNanosPerDay / md::kNanosPerSecond);
+  for (const auto& w : windows) {
+    // A session spans at most two New York dates.
+    for (const auto day : {md::new_york_time(w.first).date, md::new_york_time(w.last).date}) {
+      const auto candidate = md::new_york_to_utc(day, seconds / 3600, seconds / 60 % 60, seconds % 60);
+      if (candidate != md::kInvalidTimestamp && candidate > after && candidate >= w.first && candidate <= w.last) return candidate;
+    }
+  }
+  throw std::invalid_argument(std::string(field) + " " + value + " falls in none of this run's sessions after " +
+                              md::format_timestamp(after) + "; give a date and time");
 }
 
 void replay_gate(json& message, const providers::ReplayProvider& provider) {
@@ -256,6 +295,8 @@ struct ReplayHost::Session {
   int generator = 0;
   md::Timestamp target = 0;
   bool durable = false;
+  /// A scenario run's sessions; empty for a recording.
+  std::vector<providers::ScenarioWindow> windows;
   // The engine reads the provider, so it is declared after it and stops first.
   std::unique_ptr<providers::ReplayProvider> provider;
   std::unique_ptr<Engine> engine;
@@ -283,6 +324,8 @@ struct ReplayHost::Session {
     const auto settled = provider->settled_through();
     out["settled_through"] = settled > 0 ? json(md::format_timestamp(settled)) : json(nullptr);
     out["time"] = time > 0 ? json(md::format_timestamp(time)) : json(nullptr);
+    out["sessions"] = sessions_json(windows);
+    out["end"] = windows.empty() ? json(nullptr) : json(md::format_timestamp(windows.back().last));
     return out;
   }
 };
@@ -784,8 +827,9 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       session->generator = demo ? day->generator : 0;
       session->plan = plan->id;
       if (body.contains("start_at")) session->start_at = body.at("start_at").get<std::string>();
-      md::Timestamp first = demo ? providers::scenario_open(*day, date) : 0;
-      md::Timestamp last = demo ? providers::scenario_close(*day, date) + (day->overnight ? 0 : 15 * md::kNanosPerMinute) : 0;
+      if (demo) session->windows = providers::scenario_windows(*day, date);
+      md::Timestamp first = demo ? session->windows.front().first : 0;
+      md::Timestamp last = demo ? session->windows.back().last : 0;
       bool overnight = demo && day->overnight;
       if (!demo) {
         md::RecordingReader reader(path);
@@ -803,10 +847,15 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       }
       session->date = md::format_date(date);
       if (body.contains("start_at")) {
-        try { session->target = providers::scenario_time(session->start_at, date, overnight); }
-        catch (const std::invalid_argument& error) { throw std::invalid_argument("start_at: " + std::string(error.what())); }
+        // A bare time is on the session's date, or its first occurrence in a run of several sessions.
+        if (const auto dated = dated_time(session->start_at, "start_at")) session->target = *dated;
+        else if (session->windows.size() > 1) session->target = session_time(session->start_at, session->windows, first - 1, "start_at");
+        else {
+          try { session->target = providers::scenario_time(session->start_at, date, overnight); }
+          catch (const std::invalid_argument& error) { throw std::invalid_argument("start_at: " + std::string(error.what())); }
+        }
         if (session->target < first || session->target > last)
-          throw std::invalid_argument("start_at must be within the recording's session");
+          throw std::invalid_argument(session->windows.size() > 1 ? "start_at must be within the run's sessions" : "start_at must be within the recording's session");
       }
       static std::atomic<unsigned> runs{0};
       session->id = slug(demo ? day->id : name) + "-" + session->date + "-" + (demo ? session->seed : "recording") +
@@ -816,6 +865,9 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       playback.speed = speed;
       playback.start_at = session->target;
       playback.paused = paused;
+      // A run of several sessions passes the closed market between them in a step.
+      if (session->windows.size() > 1)
+        for (const auto& window : session->windows) playback.max_gap = std::max(playback.max_gap, window.step);
       session->provider = std::make_unique<providers::ReplayProvider>(std::move(playback));
       session->demo = providers::simulated_provider(session->provider->header().provider);
       auto engine = [&] {
@@ -823,6 +875,17 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         return options_.engine;
       }();
       session->durable = history_->writable();
+      // A scenario's own dividends go ex on its sessions' dates, in place of any the
+      // server knows for the same symbol and date.
+      if (demo) {
+        for (std::size_t i = 0; i < day->sessions.size(); ++i) {
+          for (const auto& dividend : day->sessions[i].dividends) {
+            const auto ex_date = session->windows[i].date;
+            std::erase_if(engine.dividends, [&](const auto& d) { return d.symbol == dividend.symbol && d.ex_date == ex_date; });
+            engine.dividends.push_back({dividend.symbol, ex_date, trading::Money::from_double(dividend.per_share)});
+          }
+        }
+      }
       engine.paper.rules = plan->rules;
       engine.paper.initial_cash = plan->initial_cash;
       // Copy definitions, never live-feed bindings, into this isolated run.
@@ -892,16 +955,20 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         if (body.size() != 1 || !body.at("until").is_string())
           throw std::invalid_argument("until must be a time string and the only control");
         auto value = body.at("until").get<std::string>();
-        std::optional<md::Timestamp> target;
-        if (value.size() == 5 || value.size() == 8) {
+        // A bare time is on the session's date; in a run of several sessions, its next
+        // occurrence in one of them. A date and time is New York unless it names its zone.
+        std::optional<md::Timestamp> target = dated_time(value, "until");
+        if (!target && session->windows.size() > 1) {
+          target = session_time(value, session->windows, std::max(session->provider->settled_through(), session->provider->market_time()), "until");
+        } else if (!target) {
           const auto date = md::trading_date(session->provider->header().started);
           auto day = date;
           if (md::new_york_time(session->provider->header().started).date < date && value.substr(0, 5) >= "20:15")
             day = md::date_from_days(md::days_since_epoch(date) - 1);
           if (value.size() == 5) value += ":00";
           target = md::parse_datetime(md::format_date(day) + "T" + value, md::Zone::NewYork);
-        } else target = md::parse_datetime(value, md::Zone::Utc);
-        if (!target) throw std::invalid_argument("until must be New York HH:MM[:SS] or an ISO timestamp");
+        }
+        if (!target) throw std::invalid_argument("until must be New York HH:MM[:SS], or a date and time such as 2026-09-17T10:30");
         session->provider->until(*target);
         complete(ok({{"replay", session->state()}, {"settled_through", md::format_timestamp(session->provider->settled_through())}}));
         return;

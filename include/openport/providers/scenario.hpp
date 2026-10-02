@@ -19,19 +19,48 @@ struct ScenarioEvent {
   double strike = 0; ///< SPX strike, pin
 };
 
+/// Shares of an ETF going ex-dividend on a session's trading date.
+struct ScenarioDividend {
+  std::string symbol;    ///< SPY or QQQ
+  double per_share = 0;  ///< dollars
+};
+
+/// One session of a multi-session scenario.
+struct ScenarioSession {
+  std::string session;  ///< regular, curb or overnight
+  std::vector<std::pair<double, double>> drift;  ///< fraction -> cumulative log return
+  double volatility = 0, iv_shift = 0, spot_vol = 0;
+  std::vector<ScenarioEvent> events;
+  std::vector<ScenarioDividend> dividends;
+};
+
 struct Scenario {
   std::string id, title, description, goal;
   std::vector<std::string> symbols;
-  bool overnight = false;
-  md::Date date;
+  bool overnight = false;  ///< The (first) session is overnight.
+  md::Date date;  ///< The (first) session's trading date.
   std::uint64_t seed = 0;
   int generator = 1;
   std::vector<std::pair<double, double>> drift;  ///< fraction -> cumulative log return
   double volatility = 0, iv_shift = 0, spot_vol = 0;
   std::vector<ScenarioEvent> events;
+  /// A multi-session scenario's sessions, played one after another from `date` as
+  /// one run. Empty for a single session, which the fields above describe; for
+  /// several, they repeat the first session's.
+  std::vector<ScenarioSession> sessions;
   std::string source;  ///< Exact parsed bytes, for run provenance.
   std::filesystem::path source_file;
   bool builtin = false;
+};
+
+/// When one session of a scenario runs.
+struct ScenarioWindow {
+  std::string session;      ///< regular, curb or overnight
+  md::Date date;            ///< the trading date it belongs to
+  md::Timestamp first = 0;  ///< its first snapshot
+  md::Timestamp close = 0;  ///< where its drift ends: a regular session's index close
+  md::Timestamp last = 0;   ///< its last snapshot
+  md::Timestamp step = 0;   ///< between snapshots
 };
 
 /// Strict version 1 parser. Errors include the file and field.
@@ -43,7 +72,16 @@ struct Scenario {
     const std::function<void(const std::string&)>& log = {});
 [[nodiscard]] const std::vector<Scenario>& builtin_scenarios();
 [[nodiscard]] md::Timestamp scenario_open(const Scenario& scenario, md::Date date);
+/// The (first) session's close.
 [[nodiscard]] md::Timestamp scenario_close(const Scenario& scenario, md::Date date);
+/// Each session the scenario plays from `date`, in order. A regular session follows
+/// an overnight one on its date; otherwise each session after a regular or curb one
+/// is on the next trading date, except a curb, which follows its date's regular
+/// session. Throws std::invalid_argument naming the session when the dates cannot
+/// hold the sequence (a curb on an early-close date, say).
+[[nodiscard]] std::vector<ScenarioWindow> scenario_windows(const Scenario& scenario, md::Date date);
+/// The last session's last snapshot.
+[[nodiscard]] md::Timestamp scenario_end(const Scenario& scenario, md::Date date);
 /// Overnight HH:MM >= 20:15 belongs to the evening before the trading date.
 [[nodiscard]] md::Timestamp scenario_time(std::string_view time, md::Date date, bool overnight);
 /// The generator's output revision. Revision 1 lists five expiries a chain: the date,

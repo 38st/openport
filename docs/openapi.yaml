@@ -5537,6 +5537,24 @@
               "null"
             ],
             "description": "Last settled receipt-clock boundary; underlying as_of fields carry market quote time."
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReplaySession"
+            },
+            "description": "Each session the scenario run plays, in order; empty for a recording. Absent from older servers."
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A scenario run's last snapshot; null for a recording. Absent from older servers."
           }
         },
         "required": [
@@ -5598,6 +5616,38 @@
           "bytes"
         ]
       },
+      "ReplaySession": {
+        "type": "object",
+        "description": "One session of a scenario run.",
+        "properties": {
+          "session": {
+            "type": "string",
+            "enum": [
+              "regular",
+              "curb",
+              "overnight"
+            ]
+          },
+          "date": {
+            "type": "string",
+            "description": "The trading date the session belongs to (an overnight session's is the morning after its evening)."
+          },
+          "open": {
+            "type": "string",
+            "description": "Its first snapshot."
+          },
+          "end": {
+            "type": "string",
+            "description": "Its last snapshot."
+          }
+        },
+        "required": [
+          "session",
+          "date",
+          "open",
+          "end"
+        ]
+      },
       "ReplayDemo": {
         "type": "object",
         "properties": {
@@ -5614,7 +5664,8 @@
                 "const": "overnight",
                 "type": "string"
               }
-            ]
+            ],
+            "description": "The first session's kind; sessions lists every one."
           },
           "date": {
             "type": "string"
@@ -5645,6 +5696,17 @@
           },
           "started": {
             "type": "string"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReplaySession"
+            },
+            "description": "Each session the scenario plays from its date, in order: one for a single-session scenario."
+          },
+          "end": {
+            "type": "string",
+            "description": "The last session's last snapshot."
           }
         },
         "required": [
@@ -5798,6 +5860,24 @@
           "read_only": {
             "const": true,
             "type": "boolean"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReplaySession"
+            },
+            "description": "Each session the scenario run plays, in order; empty for a recording. Absent from older servers."
+          },
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A scenario run's last snapshot; null for a recording. Absent from older servers."
           }
         },
         "required": [
@@ -12320,7 +12400,8 @@
             "type": "string"
           },
           "start_at": {
-            "type": "string"
+            "type": "string",
+            "description": "New York HH:MM[:SS] on the session date (in a scenario of several sessions, its first occurrence in them), or a date and time such as 2026-09-17T10:30, New York unless it carries Z or a UTC offset."
           },
           "paused": {
             "type": "boolean"
@@ -12352,7 +12433,8 @@
             "type": "boolean"
           },
           "until": {
-            "type": "string"
+            "type": "string",
+            "description": "Play through this market time, then pause: New York HH:MM[:SS] on the session date (in a scenario of several sessions, its next occurrence in them), or a date and time such as 2026-09-17T10:30[:SS], New York unless it carries Z or a UTC offset."
           }
         },
         "required": []

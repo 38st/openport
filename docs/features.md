@@ -113,15 +113,18 @@ simulation's limits.
   second.
 
   - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
-    Step to a market time with `PUT /api/replay {"until":"10:30"}`; check a saved run
-    with `openportd --verify-run JOURNAL`.
+    Step to a market time with `PUT /api/replay {"until":"10:30"}`, or a date and time
+    in the terminal; check a saved run with `openportd --verify-run JOURNAL`.
+  - **Multi-day runs**: scenarios of several regular, curb and overnight sessions over
+    several days play as one steppable run on one account, with the rollover, the
+    end-of-day ratchet, GTC carry, gaps at the open, early assignment and dividends.
 - **Historical days**: import a past trading date from Databento or your local
   Theta Terminal into a private recording, then trade it in Replay. Imported days
   show their provider and an imported label. The importers follow the documented
   APIs and have saved-response tests; they have not yet been run live with a key.
 - **Demo market**: when markets are closed or the feed has stalled, the terminal offers
-  fourteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
-  gaps, volatility changes and overnight sessions. Each run chooses a fresh seed, or
+  eighteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
+  gaps, volatility changes, overnight sessions and runs that span several sessions and days. Each run chooses a fresh seed, or
   repeats one you supply. Add your own JSON files with `--scenario-dir`; generated
   prices stay labelled simulated. `--provider demo` rotates regular scenarios as
   the server's own feed without network services. [Scenario format](scenarios.md).
@@ -262,6 +265,8 @@ the simulation's limits.
 - [x] Scenario library: simulated drills with fresh or repeatable seeds, start times and
       replay journals that are kept
 - [x] Deterministic replay batches, verifiable run journals and synchronous market-time stepping
+- [x] Multi-day and cross-session scenario runs: regular, curb and overnight sessions over
+      several days on one account, steppable to a date and time, with journals that verify
 - [x] Shares in the journal, and early assignment of shorts trading below exercise value
 - [x] Partial, random early assignment, and dividend risk on short calls
 - [x] Market-wide circuit breakers, with a banner and kept across restarts, and Cboe's

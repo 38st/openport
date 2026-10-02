@@ -1,0 +1,66 @@
+{
+  "id": "weekend-carry",
+  "title": "Weekend carry",
+  "description": "A soft Friday ends near its low; Sunday evening's overnight session lifts SPX, and Monday opens with a gap up.",
+  "goal": "Carry positions and GTC orders over a weekend, through Friday's expiries and into Monday's gap.",
+  "symbols": [
+    "SPX",
+    "SPY",
+    "QQQ"
+  ],
+  "date": "2026-09-18",
+  "seed": 81739,
+  "generator": 1,
+  "volatility": 0.12,
+  "iv_shift": 0.005,
+  "spot_vol": -2,
+  "sessions": [
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.5,
+          -0.004
+        ],
+        [
+          1,
+          -0.006
+        ]
+      ]
+    },
+    {
+      "session": "overnight",
+      "drift": [
+        [
+          0.6,
+          0.003
+        ],
+        [
+          1,
+          0.004
+        ]
+      ],
+      "volatility": 0.07
+    },
+    {
+      "session": "regular",
+      "drift": [
+        [
+          0.25,
+          0.002
+        ],
+        [
+          1,
+          0.004
+        ]
+      ],
+      "iv_shift": 0,
+      "events": [
+        {
+          "type": "gap",
+          "move": 0.004
+        }
+      ]
+    }
+  ]
+}
