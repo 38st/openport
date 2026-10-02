@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { quote, shareTrades, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
 import { closingDay, contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, shareSourceLabel, tradeBuckets, tradeTags, tradingDate } from "./journal"
-import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "./ticket"
+import { crossDirection, describeChain, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "./ticket"
 import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
 
 describe("journal analytics", () => {
@@ -184,6 +184,12 @@ describe("conditional orders", () => {
       .toBe("ask ≥ $4.50, trailing 3 ticks")
     expect(describeTrigger({ source: "combo", direction: "at_or_above", level: "0.90", reference: "mark", trail: { unit: "percent", value: "10" } }, "buy", "SPX"))
       .toBe("closing mark net ≥ $0.90, trailing 10%")
+    const then = { symbol: "SPXW  261022C05000000", side: "sell" as const, legs: null, type: "limit" as const, time_in_force: "gtc" as const, quantity: 2,
+      limit_price: "4.30", trigger: null, bracket: null, then: null, oco: null }
+    expect(describeChain({ role: null, oco: "2", then, chained_order: null, chained_from: null, underlying: "SPX" }))
+      .toBe("one cancels other with #2 · when filled, places sell 2 @ $4.30 GTC")
+    expect(describeChain({ role: null, oco: null, then, chained_order: "3", chained_from: "1", underlying: "SPX" })).toBe("placed by #1 · placed #3 when filled")
+    expect(describeChain({ role: "stop_loss", oco: "4", then: null, chained_order: null, chained_from: null, underlying: "SPX" })).toBe("")
   })
   it("rounds suggested prices to the root's tier tick", () => {
     expect(roundToTick("SPXW", 6.31)).toBe("6.30")

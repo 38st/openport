@@ -61,6 +61,18 @@ def test_results_have_market_time_delay_simulation_and_agent_tag(stub):
     assert stub.requests[-1][3]["trigger"] == order["trigger"]
 
 
+def test_orders_chain_and_trail(stub):
+    server = create_server(Client(stub.url, "secret"), "research")
+    stop = {"source": "option", "direction": "at_or_below", "level": "0.02", "reference": "mid", "trail": {"unit": "ticks", "value": 2}}
+    target = {"quantity": 1, "type": "limit", "time_in_force": "gtc", "symbol": "SPXW  261022P05000000", "side": "sell", "limit_price": "0.10",
+              "oco": {"quantity": 1, "type": "market", "time_in_force": "ioc", "symbol": "SPXW  261022P05000000", "side": "sell", "trigger": stop}}
+    order = {"quantity": 1, "type": "limit", "time_in_force": "gtc", "symbol": "SPXW  261022P05000000", "side": "buy", "limit_price": "0.05", "then": target}
+    call(server, "place_order", account="practice", order=order)
+    sent = stub.requests[-1][3]
+    assert sent["then"]["oco"]["trigger"] == stop
+    assert "client_order_id" not in sent["then"] and "tags" not in sent["then"]
+
+
 def test_write_tools_require_token_even_on_loopback(stub):
     server = create_server(Client(stub.url))
     result = call(server, "flatten", account="main")

@@ -21,6 +21,7 @@ import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
 import { useStopTrail } from "./TrailFields"
+import { useChainedOrder } from "./ChainFields"
 import { Segmented } from "./ui"
 import { goodTillTimestamp, TimeInForceField } from "./TimeInForceField"
 
@@ -199,10 +200,12 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     ...(targetOn && exitLevel(targetLevel) ? { take_profit: targetSource === "option" ? { limit_price: targetLevel }
       : { trigger: { source: "underlying" as const, direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel } } } : {}),
   } : undefined
+  // A second order chained to this one: placed once it fills, or cancelling each other.
+  const chain = useChainedOrder({ symbol: selection.symbol, side, quantity: Number.isSafeInteger(q) && q > 0 ? q : 1, underlying: selection.underlying, spot })
   const bracketValid = !protect || ((stopOn || targetOn) && (!stopOn || stopValid) && (!targetOn || exitLevel(targetLevel)))
   const walk = useWalk(type === "limit" && condition === "now" && ["day", "gtc"].includes(effectiveTif), limitPrice, side === "buy", "0.10", String(marketPrice ?? ""))
   const valid = walk.valid && /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee)) &&
-    (condition === "now" || trigger != null) && bracketValid && (effectiveTif !== "gtd" || good_till != null)
+    (condition === "now" || trigger != null) && bracketValid && (effectiveTif !== "gtd" || good_till != null) && chain.valid
   const untradable = quote?.tradable !== true || quote.symbol !== selection.symbol
   const notice = paperNotice(selection.underlying, underlying)
   const limitOnly = notice ? null : limitOnlyNotice(selection.underlying, underlying)
@@ -246,7 +249,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         ...(type === "market" ? { type, time_in_force: effectiveTif as "ioc" | "exto" | "gtc_exto" | "gtd" } : { type, time_in_force: effectiveTif, limit_price: limitPrice }),
         ...(effectiveTif === "gtd" ? { good_till } : {}),
         ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
-        ...(walk.walk ? { walk: walk.walk } : {}),
+        ...(walk.walk ? { walk: walk.walk } : {}), ...chain.terms,
         ...(tags ? { tags } : {}), ...(note ? { note } : {}),
       }
       setSubmitted(true)
@@ -420,6 +423,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
             <p className="text-[11px] text-muted">Exits are placed as the entry fills, sized to the fill. One filling completely cancels the other; a stop that fills only in part re-arms for the rest. Both are good until expiry.</p>
           </>}
         </div>}
+        <div className="col-span-2 rounded-md border border-border p-3">{chain.fields}</div>
       </fieldset>
       <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} impact={!!rules?.impact_ticks} market={type === "market"}
         preview={preview.data?.liquidity} ioc={type === "market" || tif === "ioc"} legs={[{ label: `${selection.strike} ${selection.optionType}`, quote, side, quantity: q }]} />

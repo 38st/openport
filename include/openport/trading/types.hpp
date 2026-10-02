@@ -214,8 +214,15 @@ struct OrderRequest {
   /// GTD only: explicit market-time deadline, at most 366 days after acceptance.
   std::optional<Timestamp> good_till = {};
   std::optional<Walk> walk = {};
+  /// One-triggers-other: the order placed, as `<client_order_id>:then`, when this
+  /// one fills completely. At most one; it may carry its own chain.
+  std::vector<OrderRequest> then = {};
+  /// One-cancels-other: the order accepted with this one, as `<client_order_id>:oco`;
+  /// the first fill of either cancels the other. At most one.
+  std::vector<OrderRequest> oco = {};
   bool operator==(const OrderRequest&) const = default;
 };
+inline constexpr std::size_t kMaxChain = 4;  ///< Orders in one request, its chained orders included.
 [[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }
 /// Every contract an order trades: its symbol, or each leg's.
 [[nodiscard]] std::vector<std::string> order_symbols(const OrderRequest& request);
@@ -257,6 +264,8 @@ struct Order {
   OrderId oco = 0;            ///< Bracket exits: the other exit, cancelled when this one fills.
   OrderId stop_loss = 0;      ///< Bracket entries: their stop-loss exit, once created.
   OrderId take_profit = 0;    ///< Bracket entries: their take-profit exit, once created.
+  OrderId chained = 0;        ///< One-triggers-other: the order its complete fill placed.
+  OrderId chained_from = 0;   ///< One-triggers-other: the order whose complete fill placed it.
   std::string actor = "unknown"; ///< Originating actor; absent in older journals.
   Timestamp triggered_at = 0; ///< When an armed order activated.
   /// The request as submitted, once a change or resize replaced its terms, so a

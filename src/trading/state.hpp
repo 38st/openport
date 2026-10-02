@@ -78,6 +78,9 @@ inline void to_json(Json& j, const OrderRequest& r) {
   if (!r.group.empty()) j["group"] = r.group;
   if (r.good_till) j["good_till"] = *r.good_till;
   if (r.walk) j["walk"] = *r.walk;
+  // Chains came later: written only when used, so other requests keep their bytes.
+  if (!r.then.empty()) j["then"] = r.then;
+  if (!r.oco.empty()) j["oco"] = r.oco;
 }
 inline void from_json(const Json& j, OrderRequest& r) {
   j.at("client_order_id").get_to(r.client_order_id); j.at("symbol").get_to(r.symbol); j.at("side").get_to(r.side);
@@ -88,6 +91,7 @@ inline void from_json(const Json& j, OrderRequest& r) {
   added_field(j, "group", r.group);
   added_field(j, "good_till", r.good_till);
   added_field(j, "walk", r.walk);
+  added_field(j, "then", r.then); added_field(j, "oco", r.oco);
 }
 inline void to_json(Json& j, const OrderChangeRecord& c) {
   j = Json{{"time", c.time}, {"actor", c.actor}, {"previous_quantity", c.previous_quantity}};
@@ -126,6 +130,9 @@ inline void to_json(Json& j, const Order& o) {
   if (o.reduce_only) j["reduce_only"] = true;
   if (o.limit_ticks) j["limit_ticks"] = *o.limit_ticks;
   if (o.walked_at != 0) j["walked_at"] = o.walked_at;
+  // And a chained order's links.
+  if (o.chained != 0) j["chained"] = o.chained;
+  if (o.chained_from != 0) j["chained_from"] = o.chained_from;
 }
 inline void from_json(const Json& j, Order& o) {
   j.at("id").get_to(o.id); j.at("request").get_to(o.request); j.at("status").get_to(o.status);
@@ -138,6 +145,7 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "ended_at", o.ended_at); added_field(j, "changes", o.changes);
   added_field(j, "limit_ticks", o.limit_ticks);
   added_field(j, "walked_at", o.walked_at);
+  added_field(j, "chained", o.chained); added_field(j, "chained_from", o.chained_from);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)

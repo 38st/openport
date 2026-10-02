@@ -10,7 +10,7 @@ import { TradingError, WriteAccess, writeBlocked } from "../components/TradingCo
 import { Badge, Empty, PageHeader, Panel, Segmented, type Tone } from "../components/ui"
 import { newYorkDate, orderLabel, osiLabel } from "../lib/journal"
 import { editable, isOpen, reasonEvidence } from "../lib/orders"
-import { describeTrigger } from "../lib/ticket"
+import { describeChain, describeTrigger } from "../lib/ticket"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Table } from "./PositionsView"
@@ -130,6 +130,7 @@ function OrdersTable({ orders, trading, empty, onDone }: { orders: Order[]; trad
               {order.trigger ? ` · when ${describeTrigger(order.trigger, order.side ?? "buy", order.underlying)}` : ""}
               {order.triggered_at ? " · triggered" : ""}
               {order.note?.startsWith("Playbook automatic ") ? ` · ${order.note}` : ""}
+              {describeChain(order) ? ` · ${describeChain(order)}` : ""}
               {order.changes?.length ? ` · changed ${order.changes.filter((c) => c.applied).length}×${order.changes.some((c) => !c.applied) ? `, ${order.changes.filter((c) => !c.applied).length} refused` : ""}` : ""}</div></td>
           <td className={order.side === "buy" ? "text-bullish" : order.side === "sell" ? "text-bearish" : "text-accent"}>{order.side ? order.side.toUpperCase() : "NET"}</td>
           <td>{order.type} · {order.time_in_force.toUpperCase()}</td>

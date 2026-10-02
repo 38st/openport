@@ -722,6 +722,136 @@ TEST(TradingConditional, ATrailedLevelSurvivesRecovery) {
   std::filesystem::remove_all(directory);
 }
 
+/// `request` with `next` placed when it fills completely.
+OrderRequest then(OrderRequest request, OrderRequest next) {
+  next.client_order_id.clear();
+  request.then = {std::move(next)};
+  return request;
+}
+/// `request` with `other` accepted beside it, the first fill of either cancelling the other.
+OrderRequest or_else(OrderRequest request, OrderRequest other) {
+  other.client_order_id.clear();
+  request.oco = {std::move(other)};
+  return request;
+}
+
+TEST(TradingConditional, AnOrderPlacesItsNextOrderOnlyOnceItFillsCompletely) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  const auto placed = s.submit(then(f.limit("scale", 2, "3.90"), f.limit("", 2, "4.30", Side::Sell, TimeInForce::Gtc)), f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), 1U);
+  quote(s, f, "3.80", "3.90", 1);
+  EXPECT_EQ(order(s, 1).status, OrderStatus::PartiallyFilled);
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), 1U);  // not yet
+  quote(s, f, "3.80", "3.90");
+  ASSERT_EQ(s.snapshot()->recent_orders.size(), 2U);
+  EXPECT_EQ(order(s, 1).chained, 2U);
+  const auto& next = order(s, 2);
+  EXPECT_EQ(next.chained_from, 1U);
+  EXPECT_EQ(next.request.client_order_id, "scale:then");
+  EXPECT_EQ(next.status, OrderStatus::Working);
+  EXPECT_EQ(next.accepted_at, f.time);
+  EXPECT_TRUE(s.submit(then(f.limit("scale", 2, "3.90"), f.limit("", 2, "4.30", Side::Sell, TimeInForce::Gtc)), f.time).replayed);
+  quote(s, f, "4.30", "4.50");
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingConditional, AChainedOrderIsCheckedWhenPlacedAndAnUnfilledOrderPlacesNone) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  // Off the tick: refused when its turn comes, and recorded so.
+  ASSERT_TRUE(s.submit(then(f.limit("entry", 1, "4.20"), f.limit("", 1, "5.03", Side::Sell, TimeInForce::Gtc)), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->recent_orders.size(), 2U);
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Rejected);
+  EXPECT_EQ(order(s, 2).reason.code, Reason::INVALID_TICK);
+  EXPECT_EQ(order(s, 1).chained, 2U);
+  // Cancelled without a fill: nothing follows.
+  const auto resting = *s.submit(then(f.limit("resting", 1, "3.50"), f.limit("", 1, "5.00", Side::Sell)), f.time).order_id;
+  ASSERT_TRUE(s.cancel(resting, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), 3U);
+  EXPECT_EQ(order(s, resting).chained, 0U);
+}
+
+TEST(TradingConditional, TwoOrdersThatCancelEachOtherEndOnTheFirstFill) {
+  for (const bool breakout : {false, true}) {
+    ScriptedMarket f;
+    TradingSession s(roomy(), f.time);
+    f.seed(s);
+    auto up = f.market("");
+    up.trigger = trigger(TriggerSource::Underlying, TriggerDirection::AtOrAbove, "5010");
+    const auto placed = s.submit(or_else(f.limit("dip", 1, "3.90"), up), f.time);
+    ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+    ASSERT_EQ(s.snapshot()->recent_orders.size(), 2U);
+    EXPECT_EQ(order(s, 1).oco, 2U);
+    EXPECT_EQ(order(s, 2).oco, 1U);
+    EXPECT_EQ(order(s, 2).request.client_order_id, "dip:oco");
+    EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+    if (breakout) quote(s, f, "4.40", "4.60", 10, 5010);
+    else quote(s, f, "3.80", "3.90");
+    const auto filled = breakout ? 2U : 1U, cancelled = breakout ? 1U : 2U;
+    EXPECT_EQ(order(s, filled).status, OrderStatus::Filled);
+    EXPECT_EQ(order(s, cancelled).status, OrderStatus::Cancelled);
+    EXPECT_EQ(order(s, cancelled).reason.code, Reason::OCO_FILLED);
+    EXPECT_EQ(s.snapshot()->positions.front().position.quantity, 1);
+  }
+}
+
+TEST(TradingConditional, TwoOrdersThatCancelEachOtherAreAcceptedTogetherOrNotAtAll) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  const auto refused = s.submit(or_else(f.limit("pair", 1, "3.90"), f.limit("", 1, "3.53")), f.time);
+  EXPECT_EQ(refused.decision.code, Reason::INVALID_TICK);
+  ASSERT_EQ(s.snapshot()->recent_orders.size(), 1U);  // the order, refused for the other; the other not recorded
+  EXPECT_EQ(order(s, 1).status, OrderStatus::Rejected);
+  EXPECT_EQ(order(s, 1).reason.message.rfind("The order that cancels it: ", 0), 0U);
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, Money{});
+  // An oco takes no oco, and a chain is at most four orders.
+  EXPECT_EQ(s.submit(or_else(f.limit("nested", 1, "3.90"), or_else(f.limit("", 1, "3.80"), f.limit("", 1, "3.70"))), f.time).decision.code,
+            Reason::INVALID_ORDER);
+  auto chain = f.limit("", 1, "3.10");
+  for (const auto* price : {"3.20", "3.30", "3.40"}) chain = then(f.limit("", 1, price), chain);
+  chain = then(f.limit("long", 1, "3.50"), chain);
+  EXPECT_EQ(s.submit(chain, f.time).decision.code, Reason::INVALID_ORDER);
+  // One that fills on acceptance cancels the other at once.
+  const auto now = s.submit(or_else(f.limit("now", 1, "4.20"), f.limit("", 1, "3.80")), f.time);
+  ASSERT_TRUE(now.decision.ok()) << now.decision.message;
+  EXPECT_EQ(order(s, *now.order_id).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, *now.order_id + 1).reason.code, Reason::OCO_FILLED);
+}
+
+TEST(TradingConditional, APendingChainSurvivesRecovery) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-chain-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(directory);
+  std::filesystem::create_directories(directory);
+  const auto path = (directory / "journal.jsonl").string();
+  ScriptedMarket f;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(path);
+    TradingSession s(roomy(), f.time, journal);
+    f.seed(s);
+    s.submit(then(f.limit("scale", 1, "3.90"), or_else(f.limit("", 1, "3.50"), f.limit("", 1, "4.30", Side::Sell))), f.time);
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(path, head), FileJournal::resume(path));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  quote(recovered, f, "3.80", "3.90");
+  // The fill places the next order and the one that cancels it, together.
+  ASSERT_EQ(recovered.snapshot()->recent_orders.size(), 3U);
+  EXPECT_EQ(order(recovered, 2).request.client_order_id, "scale:then");
+  EXPECT_EQ(order(recovered, 3).request.client_order_id, "scale:then:oco");
+  EXPECT_EQ(order(recovered, 2).oco, 3U);
+  EXPECT_EQ(order(recovered, 2).chained_from, 1U);
+  std::filesystem::remove_all(directory);
+}
+
 TEST(TradingConditional, TriggersWaitForTheRegularSessionAndSurviveRecovery) {
   const auto directory = std::filesystem::temp_directory_path() / ("openport-conditional-" + std::to_string(::getpid()));
   std::filesystem::remove_all(directory);

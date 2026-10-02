@@ -18,6 +18,12 @@ class Leg:
 
 
 @dataclass
+class Trail:
+    unit: Literal["amount", "percent", "ticks"]
+    value: str | int
+
+
+@dataclass
 class Trigger:
     """A level to arm an order until reached. underlying may name another underlying
     (symbol); study watches iv30, iv7 or term_ratio; time takes at ("15:30") and no level."""
@@ -27,6 +33,8 @@ class Trigger:
     symbol: str | None = None
     study: Literal["iv30", "iv7", "term_ratio"] | None = None
     at: str | None = None
+    reference: Literal["bid_ask", "mid", "mark"] | None = None
+    trail: Trail | None = None
 
 
 @dataclass
@@ -57,6 +65,8 @@ class Order:
     tags: list[str] | None = None
     exits_only: bool | None = None
     good_till: str | None = None
+    then: Order | None = None
+    oco: Order | None = None
 
 
 def _body(value):
