@@ -60,8 +60,8 @@ export interface Decision { code: string; message: string; actual?: number | nul
 /** `requirement` is `short_requirement` under a name that fits portfolio margin too; absent on older servers. */
 export interface BuyingPower { available: Money; reserved: Money; short_requirement: Money; requirement?: Money }
 /**
- * P&L explained by the Greeks, in dollars: each stretch a position is held at one
- * size, split by its Greeks at the start. `other` is what they leave unexplained;
+ * P&L explained by the Greeks, in dollars to the micro-dollar (older servers: to the cent): each stretch a
+ * position is held at one size, split by its Greeks at the start. `other` is what they leave unexplained;
  * `costs` are the spread paid against the mark at each fill, and fees.
  */
 export interface Attribution {
@@ -72,7 +72,13 @@ export interface Attribution {
   other: number
   costs: number
   total: number
+  /** Some of it is `other` because a stretch moved without valuations at both ends; absent from older servers. */
+  fallback?: boolean
 }
+/** Every round trip in a holding this attempt, the open one included. */
+export interface Lifetime { round_trips: number; realised: Money; fees: Money; net: Money }
+/** A contract or shares traded today and no longer held, with the day's P&L by Greek. */
+export interface ClosedAttribution { symbol: string; kind: "option" | "shares"; underlying: string; attribution: Attribution }
 export interface EvaluationDay {
   low_equity?: Money | null
   high_equity?: Money | null
@@ -258,6 +264,8 @@ export interface Trade {
   closed_by?: TradeExit | null
   /** Why the reducer liquidated it when closed_by is "system": "target", "drawdown", "soft_floor" or "expiry". */
   system_reason?: string | null
+  /** Its P&L by Greek over its life; null for one open from before they were kept, absent from older servers. */
+  attribution?: Attribution | null
   fills: string[]
   /** The trader's note ("" for none) and tags; absent from older servers. */
   note?: string
@@ -308,6 +316,8 @@ export interface ShareTrade {
   option: string | null
   closed_by: ShareSource | null
   closing_option: string | null
+  /** Its P&L by Greek over its life (all delta, dividends in other); absent from older servers. */
+  attribution?: Attribution | null
   /** Stock fill IDs, "s"-prefixed ("s3"); older servers sent bare numbers. */
   fills: string[]
   /** The trader's note ("" for none) and tags, as on option trades; absent from older servers. */
@@ -495,6 +505,9 @@ export interface Position {
   greeks: { delta: Num; gamma: Num; vega: Num; theta: Num; dollar_delta: Num; dollar_gamma_1pct: Num; vega_dollars: Num; theta_dollars: Num }
   /** Today's P&L by Greek for this contract; null until its first fill or rollover on this server. */
   attribution?: Attribution | null
+  /** The round trip in progress (its realised and fees are this row's) and every round trip in the contract this attempt; absent from older servers. */
+  trade?: string | null
+  lifetime?: Lifetime | null
 }
 /** Shares of an underlying, delivered by exercise and assignment. */
 export interface StockHolding {
@@ -510,6 +523,8 @@ export interface StockHolding {
   fees: Money
   fresh: boolean
   attribution: Attribution | null
+  trade?: string | null
+  lifetime?: Lifetime | null
 }
 export interface Portfolio {
   account_version: string
@@ -533,6 +548,8 @@ export interface Portfolio {
   attribution?: Attribution
   /** Current quotes whose displayed size this account's orders have taken some of; absent from older servers. */
   liquidity_used?: LiquidityUsed[]
+  /** Contracts and shares traded today and no longer held; absent from older servers. */
+  closed?: ClosedAttribution[]
 }
 /** An OSI symbol, or the underlying for shares, with the signed contracts or shares a part takes. */
 export interface MarginLeg { symbol: string; quantity: number }

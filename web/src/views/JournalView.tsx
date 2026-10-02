@@ -13,7 +13,7 @@ import { contractLabel, dailyResults, exitLabel, formatDuration, journalLabel, j
 import { tradeGroups, type TradeGroup } from "../lib/positions"
 import { formatMoney, signedMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
-import { ContextCard, ReviewMetrics, TradeChart } from "./TradeReview"
+import { ContextCard, ReviewMetrics, TradeChart, TripAttribution } from "./TradeReview"
 import { netLabel } from "./OrdersView"
 
 const usd = (value: number) => signedMoney(value.toFixed(2))
@@ -431,6 +431,7 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
   </div>
   <div className="grid gap-3 md:grid-cols-2"><ContextCard title="Entry context" context={trade.entry_context} /><ContextCard title="Exit context" context={trade.exit_context} /></div>
   <ReviewMetrics review={trade.review} />
+  <TripAttribution attribution={trade.attribution} open={trade.status === "open"} />
   <TradeChart trade={trade} />
   <NoteEditor key={trade.id} trades={[trade]} trading={trading} />
   </div>

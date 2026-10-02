@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query"
 import { api } from "../api/client"
 import { marketNow, useLive } from "../api/live"
-import type { FillContext, Trade, TradeReview } from "../api/trading-types"
+import type { Attribution, FillContext, Trade, TradeReview } from "../api/trading-types"
 import { LineChart, type Marker, type Series } from "../charts/LineChart"
+import { attributionParts } from "../lib/attribution"
 import { timestampET } from "../lib/freshness"
-import { formatMoney } from "../lib/trading"
+import { formatMoney, signedMoney } from "../lib/trading"
 
 const chartTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
 const number = (value: number | null | undefined, digits = 2) => value == null ? "—" : value.toFixed(digits)
@@ -36,6 +37,20 @@ export function ReviewMetrics({ review, label = "Trade excursions" }: { review?:
       <div><div className="text-muted">Heat / R</div><div className="tabular">{r?.heat == null ? "—" : `${(r.heat * 100).toFixed(1)}%`} / {r?.r_multiple == null ? "—" : `${r.r_multiple.toFixed(2)}R`}</div></div>
     </div>
     <p className="mt-2 text-[11px] text-muted">{r?.planned_risk == null ? "Planned risk unavailable: no option-price stop or measurable defined-risk structure." : `Planned risk ${formatMoney(r.planned_risk)}.`} Excursions include fees and resolve to the marking cadence, about 15 s on Cboe delayed data.</p>
+  </section>
+}
+
+/** A round trip's P&L by Greek over its life; nothing for one from before they were kept. */
+export function TripAttribution({ attribution: a, open }: { attribution?: Attribution | null; open: boolean }) {
+  if (!a) return null
+  return <section aria-label="P&L by Greek">
+    <h3 className="mb-2 text-xs font-medium">P&L by Greek{open ? " so far" : ""}</h3>
+    <div className="grid gap-3 text-xs sm:grid-cols-4 lg:grid-cols-7">
+      {attributionParts.map((part) => <div key={part.key} title={part.title}><div className="text-muted">{part.label}</div>
+        <div className="tabular">{signedMoney(a[part.key].toFixed(2))}</div></div>)}
+      <div><div className="text-muted">Total</div><div className="tabular">{signedMoney(a.total.toFixed(2))}</div></div>
+    </div>
+    {a.fallback && <p className="mt-2 text-[11px] text-warn">Part of it is other: Greeks were missing at one end of a stretch whose mark moved.</p>}
   </section>
 }
 

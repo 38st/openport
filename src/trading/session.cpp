@@ -169,16 +169,45 @@ Attribution explain(const md::OptionContract& c, const detail::Reference& r, Mon
     a.gamma = size * 0.5 * v.gamma * move * move;
     a.vega = size * v.vega * (now->smile_iv - v.smile_iv) * 100;
     a.theta = size * v.theta * (v.years - now->years) * 365;
+  } else {
+    a.fallback = value != r.mark;
   }
   a.other = size * (value - r.mark).dollars() - a.delta - a.gamma - a.vega - a.theta;
   return a;
+}
+/// Books part of today's explanation to `symbol`, and to the round trip it is in.
+void explain_part(State& s, const std::string& symbol, const Attribution& part) {
+  s.explained[symbol] += part;
+  if (const auto trip = s.trips.find(symbol); trip != s.trips.end()) s.trip_attribution[trip->second] += part;
 }
 /// End a held contract's stretch at `value` per unit, into today's explanation.
 void end_stretch(State& s, const std::string& symbol, Money value, const Valuation* now) {
   const auto it = s.references.find(symbol);
   if (it == s.references.end()) return;
-  s.explained[symbol] += explain(s.contracts.at(symbol), it->second, value, now);
+  explain_part(s, symbol, explain(s.contracts.at(symbol), it->second, value, now));
   s.references.erase(it);
+}
+/// A fill's costs, from `before` held to `before + change`, go to the round trip
+/// it trades in: a fill from flat opens one as `trade`, and one that reverses the
+/// holding books its closing part to the round trip it ends and the rest to the
+/// one it opens. A holding that becomes flat leaves its round trip.
+void book_costs(State& s, const std::string& symbol, Quantity before, Quantity change, double costs, const std::string& trade) {
+  Attribution part;
+  part.costs = costs;
+  s.explained[symbol] += part;
+  const auto after = before + change;
+  if (before == 0 || (after != 0 && (after > 0) != (before > 0))) {
+    if (before != 0) {
+      const double closing = costs * static_cast<double>(before < 0 ? -before : before) / static_cast<double>(change < 0 ? -change : change);
+      if (const auto trip = s.trips.find(symbol); trip != s.trips.end()) s.trip_attribution[trip->second].costs += closing;
+      part.costs = costs - closing;
+    }
+    s.trips[symbol] = trade;
+    s.trip_attribution[trade] += part;
+  } else if (const auto trip = s.trips.find(symbol); trip != s.trips.end()) {
+    s.trip_attribution[trip->second] += part;
+  }
+  if (after == 0) s.trips.erase(symbol);
 }
 /// Start a stretch at the contract's size, mark and valuation now.
 void start_stretch(State& s, const std::string& symbol) {
@@ -195,8 +224,12 @@ void fill_position(State& s, const std::string& symbol, Quantity signed_quantity
   const auto mark = s.marks.find(symbol);
   const Money value = mark == s.marks.end() ? price : mark->second.price;
   end_stretch(s, symbol, value, valuation_of(s, symbol));
+  const auto before = held(s, symbol);
   s.ledger.fill(contract, signed_quantity, price, fee);
-  s.explained[symbol].costs += static_cast<double>(signed_quantity) * contract.multiplier * (value - price).dollars() - fee.dollars();
+  // A fill that opens a round trip is the next fill recorded.
+  book_costs(s, symbol, before, signed_quantity,
+             static_cast<double>(signed_quantity) * contract.multiplier * (value - price).dollars() - fee.dollars(),
+             std::to_string(s.fills.size() + 1));
   start_stretch(s, symbol);
   if (held(s, symbol) <= 0 && s.do_not_exercise.contains(symbol)) s.do_not_exercise.erase(symbol);
 }
@@ -241,11 +274,13 @@ void trade_shares(State& s, const std::string& symbol, Quantity signed_shares, M
   const auto mark = s.stock_marks.find(symbol);
   const Money value = mark == s.stock_marks.end() ? price : mark->second.price;
   if (const auto it = s.references.find(symbol); it != s.references.end()) {
-    s.explained[symbol] += explain_stock(it->second, value);
+    explain_part(s, symbol, explain_stock(it->second, value));
     s.references.erase(it);
   }
+  const auto before = shares_held(s, symbol);
   s.ledger.trade_stock(symbol, signed_shares, price, Money{});
-  s.explained[symbol].costs += static_cast<double>(signed_shares) * (value - price).dollars();
+  book_costs(s, symbol, before, signed_shares, static_cast<double>(signed_shares) * (value - price).dollars(),
+             "s" + std::to_string(s.stock_fills.size() + 1));
   s.stock_fills.push_back({s.stock_fills.size() + 1, symbol, signed_shares, price, s.time, source, option});
   start_stock_stretch(s, symbol);
 }
@@ -826,14 +861,22 @@ TradingSnapshot snapshot_of(const State& s) {
   out.trade_reviews = s.trade_reviews;
   out.strategy_reviews = s.strategy_reviews;
   // Today's P&L by Greek: the finished stretches, and the open ones to the marks now.
+  // Each round trip's, from its start: its finished stretches and the open one.
   out.attributions = s.explained;
+  out.trip_attributions = s.trip_attribution;
   for (const auto& [symbol, reference] : s.references) {
+    Attribution open;
     if (s.contracts.contains(symbol)) {
-      if (const auto mark = s.marks.find(symbol); mark != s.marks.end())
-        out.attributions[symbol] += explain(s.contracts.at(symbol), reference, mark->second.price, valuation_of(s, symbol));
+      const auto mark = s.marks.find(symbol);
+      if (mark == s.marks.end()) continue;
+      open = explain(s.contracts.at(symbol), reference, mark->second.price, valuation_of(s, symbol));
     } else if (const auto mark = s.stock_marks.find(symbol); mark != s.stock_marks.end()) {
-      out.attributions[symbol] += explain_stock(reference, mark->second.price);
+      open = explain_stock(reference, mark->second.price);
+    } else {
+      continue;
     }
+    out.attributions[symbol] += open;
+    if (const auto trip = s.trips.find(symbol); trip != s.trips.end()) out.trip_attributions[trip->second] += open;
   }
   for (const auto& [symbol, attribution] : out.attributions) out.attribution += attribution;
   return out;
@@ -3626,6 +3669,7 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     }
     end_stretch(s, symbol, intrinsic, at_expiry ? &*at_expiry : nullptr);
     s.ledger.settle(symbol, intrinsic);
+    s.trips.erase(symbol);
     s.settled.insert(symbol);
     s.settling[symbol] = settlement;
     s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
@@ -3719,7 +3763,9 @@ void pay_dividends(State& s, const std::vector<Dividend>& dividends, Events& eve
     if (shares == 0 || paid || d.per_share <= Money{}) continue;
     const Money amount = d.per_share * shares;
     s.ledger.receive_dividend(d.symbol, amount);
-    s.explained[d.symbol].other += amount.dollars();
+    Attribution part;
+    part.other = amount.dollars();
+    explain_part(s, d.symbol, part);
     s.dividends.push_back({d.symbol, d.ex_date, d.per_share, shares, amount, s.time, s.stock_fills.size()});
     event(events, "dividend", Json{{"symbol", d.symbol}, {"ex_date", d.ex_date}, {"per_share", d.per_share},
                                    {"shares", shares}, {"amount", amount}});
@@ -3799,7 +3845,18 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
     e.day_close_equity = snapshot.equity;
     s.start_equity = snapshot.equity;
     s.day = day;
-    // The new day's P&L by Greek runs from these marks.
+    // Each round trip keeps its stretches to the close; the new day's P&L by
+    // Greek runs from these marks.
+    for (const auto& [symbol, reference] : s.references) {
+      const auto trip = s.trips.find(symbol);
+      if (trip == s.trips.end()) continue;
+      if (s.contracts.contains(symbol)) {
+        if (const auto mark = s.marks.find(symbol); mark != s.marks.end())
+          s.trip_attribution[trip->second] += explain(s.contracts.at(symbol), reference, mark->second.price, valuation_of(s, symbol));
+      } else if (const auto mark = s.stock_marks.find(symbol); mark != s.stock_marks.end()) {
+        s.trip_attribution[trip->second] += explain_stock(reference, mark->second.price);
+      }
+    }
     s.explained.clear();
     s.references.clear();
     for (const auto& [symbol, position] : s.ledger.positions()) start_stretch(s, symbol);
@@ -3873,6 +3930,7 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.explained.clear();
     s.references.clear();
     s.do_not_exercise = {};
+    s.trips.clear();
     s.start_equity = initial_cash;
     s.kill = false;
     s.kill_reason.clear();

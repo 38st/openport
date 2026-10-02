@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -348,6 +349,18 @@ std::uint64_t fill_attempt(const TradingSnapshot& s, std::uint64_t fill) {
     if (fill >= it->first_fill) return it->attempt;
   return 1;
 }
+/// The attempt a share round trip belongs to, by the time it opened.
+std::uint64_t time_attempt(const TradingSnapshot& s, Timestamp time) {
+  if (time >= s.evaluation.started) return s.evaluation.attempt;
+  for (auto it = s.attempts.rbegin(); it != s.attempts.rend(); ++it)
+    if (time >= it->started) return it->attempt;
+  return 1;
+}
+/// A round trip's P&L by Greek over its life; null for one open from before they were kept.
+json trip_attribution_json(const TradingSnapshot& s, const std::string& trade) {
+  const auto it = s.trip_attributions.find(trade);
+  return it == s.trip_attributions.end() ? json(nullptr) : attribution_json(it->second);
+}
 /// The trading date a trade closed in, holidays included; null while it is open.
 json trading_day(const std::optional<Timestamp>& closed) {
   return closed ? json(md::format_date(md::trading_date(*closed))) : json(nullptr);
@@ -427,8 +440,43 @@ json liquidity_used_json(const TradingView& view) {
                     {"bid_left", std::max<Quantity>(0, left.bid)}, {"ask_left", std::max<Quantity>(0, left.ask)}});
   return used;
 }
+/// A holding's round trip in progress, whose numbers its row shows, and every round
+/// trip in it this attempt: how many, and their realised P&L and fees together.
+struct Lifetime {
+  std::string trade;
+  Timestamp opened = 0;
+  std::size_t round_trips = 0;
+  Money realised, fees;
+};
+json lifetime_json(const Lifetime& l) {
+  return {{"round_trips", l.round_trips}, {"realised", l.realised.str()}, {"fees", l.fees.str()}, {"net", (l.realised - l.fees).str()}};
+}
 json portfolio_json(const TradingView& view) {
   const auto& s = *view.snapshot;
+  std::map<std::string, Lifetime> lifetimes;
+  for (const auto& t : lifecycles(s.recent_fills, s.closures, view.contracts)) {
+    if (fill_attempt(s, t.first_fill) != s.evaluation.attempt) continue;
+    auto& l = lifetimes[t.symbol];
+    ++l.round_trips;
+    l.realised = l.realised + t.gross;
+    l.fees = l.fees + t.fees;
+    if (!t.closed) { l.trade = std::to_string(t.first_fill); l.opened = t.opened; }
+  }
+  for (const auto& t : share_lifecycles(s.stock_fills, s.dividends)) {
+    if (time_attempt(s, t.opened) != s.evaluation.attempt) continue;
+    auto& l = lifetimes[t.symbol];
+    ++l.round_trips;
+    l.realised = l.realised + t.gross + t.dividends;
+    if (!t.closed) { l.trade = "s" + std::to_string(t.fills.front()); l.opened = t.opened; }
+  }
+  const auto trade_of = [&](const std::string& symbol) {
+    const auto it = lifetimes.find(symbol);
+    return it == lifetimes.end() || it->second.trade.empty() ? json(nullptr) : json(it->second.trade);
+  };
+  const auto lifetime_of = [&](const std::string& symbol) {
+    const auto it = lifetimes.find(symbol);
+    return it == lifetimes.end() ? json(nullptr) : lifetime_json(it->second);
+  };
   json positions = json::array();
   for (const auto& p : s.positions) {
     const auto& position = p.position;
@@ -453,7 +501,8 @@ json portfolio_json(const TradingView& view) {
                s.time < md::new_york_to_utc(c.expiry, md::regular_close_hour(c.expiry), 0) + kLastPrintWait)
                 ? json("closing_print") : json("manual")},
         {"greeks", position_greeks(p, view)},
-        {"attribution", s.attributions.contains(c.osi_symbol()) ? attribution_json(s.attributions.at(c.osi_symbol())) : json(nullptr)}});
+        {"attribution", s.attributions.contains(c.osi_symbol()) ? attribution_json(s.attributions.at(c.osi_symbol())) : json(nullptr)},
+        {"trade", trade_of(c.osi_symbol())}, {"lifetime", lifetime_of(c.osi_symbol())}});
   }
   json stocks = json::array();
   for (const auto& held : s.stocks) {
@@ -464,7 +513,20 @@ json portfolio_json(const TradingView& view) {
         {"mark", money(held.mark)}, {"mark_time", held.mark ? json(md::format_timestamp(held.mark_time)) : json(nullptr)},
         {"market_value", money(held.market_value)}, {"unrealised", money(held.unrealised)},
         {"realised", p.realised.str()}, {"fees", p.fees.str()}, {"fresh", held.fresh},
-        {"attribution", s.attributions.contains(p.symbol) ? attribution_json(s.attributions.at(p.symbol)) : json(nullptr)}});
+        {"attribution", s.attributions.contains(p.symbol) ? attribution_json(s.attributions.at(p.symbol)) : json(nullptr)},
+        {"trade", trade_of(p.symbol)}, {"lifetime", lifetime_of(p.symbol)}});
+  }
+  // Contracts and shares traded today and no longer held keep their P&L by Greek.
+  std::set<std::string> held;
+  for (const auto& p : s.positions) held.insert(p.position.contract.osi_symbol());
+  for (const auto& p : s.stocks) held.insert(p.position.symbol);
+  json closed = json::array();
+  for (const auto& [symbol, attribution] : s.attributions) {
+    if (held.contains(symbol)) continue;
+    const auto contract = view.contracts.find(symbol);
+    closed.push_back({{"symbol", symbol}, {"kind", contract == view.contracts.end() ? "shares" : "option"},
+        {"underlying", contract == view.contracts.end() ? symbol : contract->second.underlying},
+        {"attribution", attribution_json(attribution)}});
   }
   json flags = json::array();
   for (auto code : s.quality_flags) flags.push_back(to_string(code));
@@ -475,7 +537,7 @@ json portfolio_json(const TradingView& view) {
           {"valuation_complete", s.valuation_complete}, {"quality_flags", flags}, {"positions", positions}, {"stocks", stocks},
           {"buying_power", buying_power_json(s.buying_power)}, {"margin", margin_json(s.margin)},
           {"attribution", attribution_json(s.attribution)},
-          {"liquidity_used", liquidity_used_json(view)}};
+          {"liquidity_used", liquidity_used_json(view)}, {"closed", closed}};
 }
 json account_json(const TradingView& view) {
   const auto& s = *view.snapshot;
@@ -639,17 +701,13 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"mark", mark}, {"unrealised", unrealised},
         {"closure", !t.closure ? json(nullptr) : json(closure_name(*t.closure))},
         {"closed_by", exit.first}, {"system_reason", exit.second},
+        {"attribution", trip_attribution_json(s, std::to_string(t.first_fill))},
         {"fills", fills},
         {"note", a == s.annotations.end() ? std::string{} : a->second.note},
         {"tags", a == s.annotations.end() ? json::array() : json(a->second.tags)}});
   }
   // Shares from exercise and assignment, round trip by round trip, newest first.
-  auto attempt_at = [&](Timestamp time) {
-    if (time >= e.started) return e.attempt;
-    for (auto it = s.attempts.rbegin(); it != s.attempts.rend(); ++it)
-      if (time >= it->started) return it->attempt;
-    return std::uint64_t{1};
-  };
+  const auto attempt_at = [&](Timestamp time) { return time_attempt(s, time); };
   const auto source = [&](std::uint64_t id) -> json {
     if (id == 0 || id > s.stock_fills.size()) return nullptr;
     return share_source(s.stock_fills[id - 1]);
@@ -694,7 +752,8 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"return", open || t.open_notional == Money{} ? json(nullptr) : number((t.gross + t.dividends).dollars() / t.open_notional.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
         {"opened_by", source(first)}, {"option", option_of(first)},
-        {"closed_by", source(last)}, {"closing_option", option_of(last)}, {"fills", fills},
+        {"closed_by", source(last)}, {"closing_option", option_of(last)},
+        {"attribution", trip_attribution_json(s, "s" + std::to_string(first))}, {"fills", fills},
         {"note", note == s.annotations.end() ? std::string{} : note->second.note},
         {"tags", note == s.annotations.end() ? json::array() : json(note->second.tags)}});
   }
@@ -1379,32 +1438,34 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
 }
 }  // namespace
 
-/// P&L by Greek in dollars, to the cent. The parts add up to the total exactly:
-/// each is its value rounded down or up, the cents rounding down leaves go to the
-/// parts it cut most (largest remainder, the earlier part on a tie).
+/// P&L by Greek in dollars, to the micro-dollar as the account's money is. The
+/// parts add up to the total exactly: each is its value rounded down or up, the
+/// micro-dollars rounding down leaves go to the parts it cut most (largest
+/// remainder, the earlier part on a tie).
 json attribution_json(const trading::Attribution& a) {
+  constexpr double scale = 1'000'000;
   const std::array<double, 6> parts{a.delta, a.gamma, a.vega, a.theta, a.other, a.costs};
   std::array<double, 6> dollars{};
-  const double total = std::round(a.total() * 100);
+  const double total = std::round(a.total() * scale);
   if (std::all_of(parts.begin(), parts.end(), [](double x) { return std::isfinite(x); }) && std::isfinite(total)) {
     std::array<double, 6> remainders{};
     double left = total;
     for (std::size_t i = 0; i < parts.size(); ++i) {
-      dollars[i] = std::floor(parts[i] * 100);
-      remainders[i] = parts[i] * 100 - dollars[i];
+      dollars[i] = std::floor(parts[i] * scale);
+      remainders[i] = parts[i] * scale - dollars[i];
       left -= dollars[i];
     }
     std::array<std::size_t, 6> order{0, 1, 2, 3, 4, 5};
     std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) { return remainders[x] > remainders[y]; });
     for (std::size_t k = 0; left >= 1; ++k, --left) ++dollars[order[k % order.size()]];
     for (std::size_t k = 0; left <= -1; ++k, ++left) --dollars[order[order.size() - 1 - k % order.size()]];
-    for (auto& part : dollars) part /= 100;
+    for (auto& part : dollars) part /= scale;
   } else {
-    for (std::size_t i = 0; i < parts.size(); ++i) dollars[i] = std::round(parts[i] * 100) / 100;
+    for (std::size_t i = 0; i < parts.size(); ++i) dollars[i] = std::round(parts[i] * scale) / scale;
   }
   return {{"delta", number(dollars[0])}, {"gamma", number(dollars[1])}, {"vega", number(dollars[2])},
           {"theta", number(dollars[3])}, {"other", number(dollars[4])}, {"costs", number(dollars[5])},
-          {"total", number(total / 100)}};
+          {"total", number(total / scale)}, {"fallback", a.fallback}};
 }
 
 ApiResponse api_error(int status, std::string code, std::string message, const Decision& evidence) {

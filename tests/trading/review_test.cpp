@@ -196,6 +196,34 @@ TEST(TradeReview, StrategySamplesCombinedPnlAndExactDefinedRisk) {
   EXPECT_EQ(s.snapshot()->strategy_reviews.at("1").worst->pnl, dollars("-142.60"));
 }
 
+TEST(TradeReview, AStrategysComboStopAndACoveredCalendarPlanTheirRisk) {
+  // A debit vertical with a combo stop: 2.20 paid a unit, closed at a 1.00 credit.
+  ScriptedMarket a, b; b.contract.strike += 10;
+  TradingSession s({}, a.time); a.seed(s); b.seed(s, "2.00", "2.20");
+  OrderRequest vertical; vertical.client_order_id = "vertical"; vertical.type = OrderType::Market; vertical.tif = TimeInForce::Ioc;
+  vertical.quantity = 2; vertical.legs = {{a.symbol(), Side::Buy, 1}, {b.symbol(), Side::Sell, 1}};
+  vertical.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, dollars("-1.00")}, {}}, {}};
+  const auto placed = s.submit(vertical, a.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  EXPECT_EQ(s.snapshot()->strategy_reviews.at("1").planned_risk, dollars("240"));
+  // A call calendar: sell the near month at 4.00, buy the next at 6.20, a 2.20 debit.
+  ScriptedMarket near, later; later.contract.expiry = {2026, 11, 20};
+  TradingSession c({}, near.time); near.seed(c); later.seed(c, "6.00", "6.20");
+  OrderRequest calendar; calendar.client_order_id = "calendar"; calendar.type = OrderType::Market; calendar.tif = TimeInForce::Ioc;
+  calendar.quantity = 1; calendar.legs = {{near.symbol(), Side::Sell, 1}, {later.symbol(), Side::Buy, 1}};
+  ASSERT_TRUE(c.submit(calendar, near.time).decision.ok());
+  EXPECT_EQ(c.snapshot()->strategy_reviews.at("1").planned_risk, dollars("220"));
+  // A diagonal whose long sits above its short call does not cover it.
+  ScriptedMarket wide; wide.contract.expiry = {2026, 11, 20}; wide.contract.strike += 50;
+  TradingSession d({}, near.time); near.seed(d); wide.seed(d, "3.00", "3.20");
+  OrderRequest diagonal = calendar; diagonal.client_order_id = "diagonal";
+  diagonal.legs = {{near.symbol(), Side::Sell, 1}, {wide.symbol(), Side::Buy, 1}};
+  const auto uncovered = d.submit(diagonal, near.time);
+  if (uncovered.decision.ok()) {
+    EXPECT_FALSE(d.snapshot()->strategy_reviews.at("1").planned_risk);
+  }
+}
+
 TEST(TradeReview, DayNotesValidateClearAndSurviveResetAndRecoveryWithExcursions) {
   ReviewDirectory directory;
   ScriptedMarket f;

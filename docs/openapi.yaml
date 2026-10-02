@@ -7814,7 +7814,7 @@
       },
       "Attribution": {
         "type": "object",
-        "description": "P&L by Greek in dollars, to the cent. Each part is rounded down or up so the parts add up to total exactly.",
+        "description": "P&L by Greek in dollars, to the micro-dollar. Each part is rounded down or up so the parts add up to total exactly.",
         "properties": {
           "delta": {
             "type": "number"
@@ -7836,6 +7836,10 @@
           },
           "total": {
             "type": "number"
+          },
+          "fallback": {
+            "type": "boolean",
+            "description": "Some of it came from a stretch whose mark moved without valid valuations at both ends, so it is all other. Absent from older servers."
           }
         },
         "required": [
@@ -8882,6 +8886,17 @@
             ],
             "description": "For closed_by system, why the reducer closed it: target (a passed attempt's liquidation), drawdown (a failed one's), soft_floor (the personal guardrail) or expiry (the auto-close before expiry). Null otherwise."
           },
+          "attribution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Attribution"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The round trip's P&L by Greek over its life, its open stretch included; null for one open from before they were kept. Absent from older servers."
+          },
           "fills": {
             "type": "array",
             "items": {
@@ -9177,6 +9192,17 @@
                 "type": "null"
               }
             ]
+          },
+          "attribution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Attribution"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The round trip's P&L by Greek over its life, its open stretch included; null for one open from before they were kept. Absent from older servers."
           },
           "fills": {
             "type": "array",
@@ -10550,6 +10576,28 @@
                 "type": "null"
               }
             ]
+          },
+          "trade": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The round trip in progress, by its trades-view ID; its realised P&L and fees are the row's. Absent from older servers."
+          },
+          "lifetime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Lifetime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The holding's round trips this attempt together. Absent from older servers."
           }
         },
         "required": [
@@ -10646,6 +10694,28 @@
                 "type": "null"
               }
             ]
+          },
+          "trade": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The round trip in progress, by its trades-view ID; its realised P&L and fees are the row's. Absent from older servers."
+          },
+          "lifetime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Lifetime"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The holding's round trips this attempt together. Absent from older servers."
           }
         },
         "required": [
@@ -10732,6 +10802,13 @@
             "items": {
               "$ref": "#/components/schemas/LiquidityUsed"
             }
+          },
+          "closed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClosedAttribution"
+            },
+            "description": "Contracts and shares traded today and no longer held. Absent from older servers."
           }
         },
         "required": [
@@ -15348,6 +15425,63 @@
         "required": [
           "code",
           "message"
+        ]
+      },
+      "Lifetime": {
+        "type": "object",
+        "description": "Every round trip in a holding this attempt, the open one included.",
+        "properties": {
+          "round_trips": {
+            "type": "number"
+          },
+          "realised": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "fees": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "net": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "round_trips",
+          "realised",
+          "fees",
+          "net"
+        ]
+      },
+      "ClosedAttribution": {
+        "type": "object",
+        "description": "A contract or shares traded today and no longer held, with the day's P&L by Greek.",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "const": "option",
+                "type": "string"
+              },
+              {
+                "const": "shares",
+                "type": "string"
+              }
+            ]
+          },
+          "underlying": {
+            "type": "string"
+          },
+          "attribution": {
+            "$ref": "#/components/schemas/Attribution"
+          }
+        },
+        "required": [
+          "symbol",
+          "kind",
+          "underlying",
+          "attribution"
         ]
       }
     }
