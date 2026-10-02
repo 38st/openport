@@ -835,6 +835,43 @@
         }
       }
     },
+    "/api/orders/what-if": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/orders/what-if",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WhatIfResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhatIfRequest"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/orders/{id}": {
       "parameters": [
         {
@@ -999,6 +1036,43 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ClosePositionsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/positions/close/preview": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/positions/close/preview",
+        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlattenPreview"
                 }
               }
             }
@@ -2329,6 +2403,9 @@
     "/api/replay/orders/preview": {
       "$ref": "#/paths/~1api~1orders~1preview"
     },
+    "/api/replay/orders/what-if": {
+      "$ref": "#/paths/~1api~1orders~1what-if"
+    },
     "/api/replay/orders/{id}": {
       "$ref": "#/paths/~1api~1orders~1{id}"
     },
@@ -2340,6 +2417,9 @@
     },
     "/api/replay/positions/close": {
       "$ref": "#/paths/~1api~1positions~1close"
+    },
+    "/api/replay/positions/close/preview": {
+      "$ref": "#/paths/~1api~1positions~1close~1preview"
     },
     "/api/replay/trades/{id}/note": {
       "$ref": "#/paths/~1api~1trades~1{id}~1note"
@@ -13925,6 +14005,446 @@
         ],
         "additionalProperties": false
       },
+      "WhatIfOrder": {
+        "type": "object",
+        "properties": {
+          "client_order_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (market orders IOC, a positive quantity, two to four legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/Side"
+          },
+          "legs": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/RequestLeg"
+            }
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "type": {
+            "enum": [
+              "market",
+              "limit"
+            ]
+          },
+          "time_in_force": {
+            "enum": [
+              "ioc",
+              "day",
+              "gtc"
+            ]
+          },
+          "limit_price": {
+            "type": "string"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/Trigger"
+          },
+          "bracket": {
+            "$ref": "#/components/schemas/Bracket"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "note": {
+            "type": "string"
+          },
+          "exits_only": {
+            "type": "boolean",
+            "description": "Multi-leg orders only: attach the bracket to held closing legs instead of submitting an entry."
+          }
+        },
+        "required": [
+          "quantity",
+          "type",
+          "time_in_force"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "symbol",
+              "side"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "legs"
+                  ]
+                },
+                {
+                  "required": [
+                    "exits_only"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "legs"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "symbol"
+                  ]
+                },
+                {
+                  "required": [
+                    "side"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "limit"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "limit_price"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "limit_price"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "market"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "time_in_force": {
+                  "const": "ioc"
+                }
+              }
+            }
+          }
+        ],
+        "description": "An order as POST /api/orders takes it, its client_order_id optional."
+      },
+      "WhatIfRequest": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 6,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "orders": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 4,
+                  "items": {
+                    "$ref": "#/components/schemas/WhatIfOrder"
+                  }
+                }
+              },
+              "required": [
+                "orders"
+              ]
+            }
+          }
+        },
+        "required": [
+          "candidates"
+        ]
+      },
+      "WhatIfAccount": {
+        "type": "object",
+        "description": "An account as a what-if projects it, measured from today's equity.",
+        "properties": {
+          "equity": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "buying_power": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "exposure": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "dollar_delta": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "dollar_gamma_1pct": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "vega": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "theta": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "dollar_delta",
+                  "dollar_gamma_1pct",
+                  "vega",
+                  "theta"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_loss": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "equity_at_max_loss": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "breaches_floor": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "breaches_soft_floor": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scenarios": {
+            "type": "object",
+            "properties": {
+              "spot_percent": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "vol_points": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "pnl": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "complete": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "spot_percent",
+              "vol_points",
+              "pnl",
+              "complete"
+            ]
+          },
+          "breach": {
+            "$ref": "#/components/schemas/Breach"
+          }
+        },
+        "required": [
+          "equity",
+          "buying_power",
+          "exposure",
+          "max_loss",
+          "equity_at_max_loss",
+          "breaches_floor",
+          "breaches_soft_floor",
+          "scenarios",
+          "breach"
+        ]
+      },
+      "WhatIfResponse": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/WhatIfAccount"
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "decision": {
+                  "type": "string"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Decision"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "orders": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "decision": {
+                        "type": "string"
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/Decision"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "decision",
+                      "reason"
+                    ]
+                  }
+                },
+                "after": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/WhatIfAccount"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "decision",
+                "reason",
+                "orders",
+                "after"
+              ]
+            }
+          },
+          "simulated": {
+            "const": true
+          }
+        },
+        "required": [
+          "account_version",
+          "current",
+          "candidates",
+          "simulated"
+        ]
+      },
       "Decision": {
         "type": "object",
         "description": "A reason code with its numeric evidence: actual against limit for a numeric check, and scope, the underlying or aggregate it applies to (null when a check has none). A check on one contract reports its underlying; the journal keeps the contract's OSI.",
@@ -13973,6 +14493,243 @@
           "limit",
           "scope"
         ]
+      },
+      "FlattenPreview": {
+        "type": "object",
+        "description": "A flatten's dry run: what POST /api/positions/close would cancel and close now, on a private copy of the account. Simulated; nothing is recorded and no IDs are allocated.",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "description": "ok, or the reason the flatten would be refused because nothing in scope can close."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cancelled_orders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "orders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": {
+                  "type": "string"
+                },
+                "underlying": {
+                  "type": "string"
+                },
+                "side": {
+                  "$ref": "#/components/schemas/Side"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "filled_quantity": {
+                  "type": "integer"
+                },
+                "average_fill_price": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Money"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "enum": [
+                    "working",
+                    "partially_filled",
+                    "filled",
+                    "cancelled",
+                    "rejected",
+                    "armed"
+                  ]
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Decision"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "symbol",
+                "underlying",
+                "side",
+                "quantity",
+                "filled_quantity",
+                "average_fill_price",
+                "status",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": {
+                  "type": "string"
+                },
+                "side": {
+                  "$ref": "#/components/schemas/Side"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "price": {
+                  "$ref": "#/components/schemas/Money"
+                },
+                "fee": {
+                  "$ref": "#/components/schemas/Money"
+                }
+              },
+              "required": [
+                "symbol",
+                "side",
+                "quantity",
+                "price",
+                "fee"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "stock_fills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": {
+                  "type": "string"
+                },
+                "shares": {
+                  "type": "integer",
+                  "description": "Signed: bought positive."
+                },
+                "price": {
+                  "$ref": "#/components/schemas/Money"
+                }
+              },
+              "required": [
+                "symbol",
+                "shares",
+                "price"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "kept_stocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeptStock"
+            }
+          },
+          "remaining": {
+            "type": "array",
+            "description": "Contracts in scope still held after it, signed.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": {
+                  "type": "string"
+                },
+                "underlying": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "symbol",
+                "underlying",
+                "quantity"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "remaining_shares": {
+            "type": "array",
+            "description": "Shares in scope still held after it, signed.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": {
+                  "type": "string"
+                },
+                "shares": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "symbol",
+                "shares"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WhatIfAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WhatIfAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "simulated": {
+            "const": true
+          }
+        },
+        "required": [
+          "account_version",
+          "decision",
+          "reason",
+          "cancelled_orders",
+          "orders",
+          "fills",
+          "stock_fills",
+          "kept_stocks",
+          "remaining",
+          "remaining_shares",
+          "current",
+          "after",
+          "simulated"
+        ],
+        "additionalProperties": false
       },
       "OrderWait": {
         "type": "object",

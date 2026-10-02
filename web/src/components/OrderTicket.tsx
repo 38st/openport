@@ -9,6 +9,8 @@ import type { Bracket, NewOrder, Order, Side, Trigger, TradingStatus } from "../
 import type { Expiry, OptionQuote, Surface } from "../api/types"
 import { count, days, fixed, isNum, price } from "../lib/format"
 import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
+import { addWhatIfOrder, useWhatIfScope } from "../lib/what-if"
+import { whatIfOrderText } from "./WhatIfPanel"
 import { probabilityOfProfit, probabilitySource, singleLeg, smileDistribution } from "../lib/probability"
 import { crossDirection, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "../lib/ticket"
 import { deliversShares, extendedSession, formatMoney, limitOnlyNotice, limitPriceText, limitPriceTick, paperNotice, roundToTick, sideFromCell, stepLimitPrice, ticketEstimate, validMoney } from "../lib/trading"
@@ -183,11 +185,13 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const fill = type === "limit" && tif === "gtc" && extended
     ? { marketable: false, message: "GTC waits for the regular session, even if the current quote crosses its limit." }
     : marketability(side, type, limitPrice, quote)
-  const preview = useOrderPreview(valid ? {
+  const draft: NewOrder | null = valid ? {
     client_order_id: "preview:single", symbol: selection.symbol, side, quantity: q,
     ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitPrice }),
     ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
-  } : null, trading)
+  } : null
+  const preview = useOrderPreview(draft, trading)
+  const whatIfScope = useWhatIfScope()
   const expiryLabel = `${selection.expiry.expiry} ${selection.expiry.settlement}`
 
   function newOrder() {
@@ -362,7 +366,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           <dd className="text-right tabular">{odds.pop == null ? "—" : `≈ ${(odds.pop * 100).toFixed(0)}%`}{distribution && <span className="block text-[11px] text-muted">{probabilitySource(distribution, [odds.breakeven])}</span>}</dd>
         </>}
       </dl>
-      <OrderPreviewPanel preview={preview} onSize={(size) => setQuantity(String(size))} disabled={submitted || pending} />
+      <OrderPreviewPanel preview={preview} onSize={(size) => setQuantity(String(size))} disabled={submitted || pending}
+        onWhatIf={() => draft != null && addWhatIfOrder(whatIfScope, draft, whatIfOrderText(draft))} />
       {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}
       {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}
       <details className="text-xs">

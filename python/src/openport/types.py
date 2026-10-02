@@ -168,6 +168,29 @@ class OrderPreview(TypedDict):
     simulated: bool
 
 
+class WhatIfResult(TypedDict):
+    account_version: str
+    current: JSON
+    candidates: list[JSON]
+    simulated: bool
+
+
+class FlattenPreview(TypedDict):
+    account_version: str
+    decision: str
+    reason: JSON | None
+    cancelled_orders: list[str]
+    orders: list[JSON]
+    fills: list[JSON]
+    stock_fills: list[JSON]
+    kept_stocks: list[JSON]
+    remaining: list[JSON]
+    remaining_shares: list[JSON]
+    current: JSON | None
+    after: JSON | None
+    simulated: bool
+
+
 class SubmitResult(OrderResult):
     fills: list[Fill]
 

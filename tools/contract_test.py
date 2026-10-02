@@ -205,10 +205,13 @@ class Contract:
             order = {"client_order_id": "contract-" + str(uuid.uuid4()), "symbol": contract["symbol"],
                      "side": "buy", "type": "limit", "time_in_force": "gtc", "quantity": 1, "limit_price": price}
             self.call("POST", "/api/replay/orders/preview?account=main", order, success=True)
+            self.call("POST", "/api/replay/orders/what-if?account=main",
+                      {"candidates": [{"name": "contract", "orders": [{k: v for k, v in order.items() if k != "client_order_id"}]}]}, success=True)
             placed = self.call("POST", "/api/replay/orders?account=main", order, success=True)
             if placed["order"]["status"] != "working":
                 raise ContractMismatch("POST /api/replay/orders: order.status: expected a resting limit")
             self.call("POST", "/api/replay/orders/" + placed["order"]["id"] + "/preview?account=main", {"quantity": 2}, success=True)
+            self.call("POST", "/api/replay/positions/close/preview?account=main", {}, success=True)
             self.call("DELETE", "/api/replay/orders/" + placed["order"]["id"] + "?account=main", success=True)
             self.call("GET", "/api/replay/orders?account=main", success=True)
             self.call("DELETE", "/api/replay", success=True)

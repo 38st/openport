@@ -177,6 +177,45 @@ struct OrderPreview {
   PreviewExecution execution;
 };
 
+/// An account as a what-if projects it, measured from today's equity.
+struct WhatIfAccount {
+  bool projected = true;             ///< False when an order could not be projected: no contract or quote.
+  Money equity;
+  Money buying_power;                ///< Available.
+  std::optional<Exposure> exposure;  ///< The book's Greeks; empty while risk is incomplete.
+  /// The worst loss on the configured spot × volatility grid from today's equity,
+  /// so what a candidate costs to trade counts; empty without complete marks.
+  std::optional<Money> max_loss;
+  std::optional<Money> equity_at_max_loss;
+  std::optional<bool> breaches_floor;
+  std::optional<bool> breaches_soft_floor;
+  ScenarioGrid scenarios;            ///< Each cell's P&L from today's equity.
+  BreachRisk breach;
+};
+struct WhatIfCandidate {
+  Decision decision;            ///< The first order's refusal, or success.
+  std::vector<Decision> orders; ///< Each order's checks, after the ones before it filled.
+  WhatIfAccount after;          ///< Every order filled in full at its projected price.
+};
+struct WhatIf {
+  WhatIfAccount current;
+  std::vector<WhatIfCandidate> candidates;
+};
+/// What a flatten would do now, as close_positions would do it on a private copy.
+struct FlattenPreview {
+  Decision decision;                ///< The refusal when nothing in scope can close.
+  std::vector<OrderId> cancelled;   ///< Open orders it would cancel.
+  std::vector<Order> orders;        ///< Its closing orders as the current quotes would leave them.
+  std::vector<Fill> fills;          ///< What they would fill now.
+  std::vector<StockFill> stock_fills;
+  std::map<std::string, Decision> kept_stocks;
+  /// What would still be held in scope: contracts (OSI) and shares (underlying), signed.
+  std::map<std::string, Quantity> remaining;
+  std::map<std::string, Quantity> remaining_shares;
+  WhatIfAccount current;
+  WhatIfAccount after;
+};
+
 /// New terms for an open order; each field left empty keeps its value.
 struct OrderChange {
   std::optional<Quantity> quantity;    ///< The total, filled contracts (or units) included.
@@ -218,6 +257,21 @@ class TradingSession {
   /// the units it could still work (its filled ones aside); exits have none.
   [[nodiscard]] OrderPreview preview_change(OrderId id, const OrderChange& change, Timestamp time, double floor_share = 0.5,
       Decision rejection = {}, const std::map<std::string, double>& close_variances = {}, const PreviewMarket& market = {}) const;
+  /// Candidate adjustments side by side, each a list of orders checked as
+  /// submission checks them and filled in full at the preview's projected prices
+  /// (slipped far sides for market orders, the limit for limit orders), each after
+  /// the ones before it, on a private copy of the account; beside it the account as
+  /// it is. Allocates no IDs and writes nothing. `rejections` holds the
+  /// integration's gate for each candidate's orders, as for submit.
+  [[nodiscard]] WhatIf what_if(const std::vector<std::vector<OrderRequest>>& candidates, Timestamp time,
+      const std::vector<std::vector<Decision>>& rejections = {}, const std::map<std::string, double>& close_variances = {},
+      const PreviewMarket& market = {}) const;
+  /// A flatten's dry run: close_positions on a private copy of the account with the
+  /// integration's newer market, the account before and after it beside its orders.
+  /// Allocates no IDs and writes nothing.
+  [[nodiscard]] FlattenPreview preview_close_positions(std::optional<std::string> underlying, Timestamp time,
+      const std::map<std::string, Decision>& rejections = {}, const std::map<std::string, double>& close_variances = {},
+      const PreviewMarket& market = {}) const;
   /// `close_variances`: each underlying's implied variance of its log price to today's close.
   [[nodiscard]] BreachRisk breach(const std::map<std::string, double>& close_variances = {}) const;
   /// The held book's warnings, most urgent first: a bucket over its delta or vega

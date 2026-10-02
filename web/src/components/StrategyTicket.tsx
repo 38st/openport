@@ -11,6 +11,8 @@ import { LineChart } from "../charts/LineChart"
 import { expectedMove } from "../lib/candles"
 import { isNum, money, price } from "../lib/format"
 import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
+import { addWhatIfOrder, useWhatIfScope } from "../lib/what-if"
+import { whatIfOrderText } from "./WhatIfPanel"
 import { probabilityOfProfit, probabilitySource, smileDistribution, valueToday } from "../lib/probability"
 import { estimatedProfile, MAX_LEGS, MAX_RATIO, netQuote, riskProfile, roundNet, strategyLabel, strategyPayoff, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { comboTickCents, extendedSession, formatMoney, limitOnlyNotice, paperNotice } from "../lib/trading"
@@ -161,10 +163,12 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
   const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
 
-  const preview = useOrderPreview(valid ? {
+  const draft: NewOrder | null = valid ? {
     client_order_id: "preview:strategy", legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
     ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitText }),
-  } : null, trading)
+  } : null
+  const preview = useOrderPreview(draft, trading)
+  const whatIfScope = useWhatIfScope()
 
   // Frame the strikes and spot with a margin of the strike range or 1% of spot, whichever is
   // wider, and the expected move within a quarter of spot.
@@ -321,7 +325,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           <dd className="text-right tabular">{move == null ? "—" : `±${move.toFixed(2)}`}</dd>
           </>}
         </dl>
-        <OrderPreviewPanel preview={preview} onSize={(size) => setUnits(String(size))} disabled={pending || order != null} />
+        <OrderPreviewPanel preview={preview} onSize={(size) => setUnits(String(size))} disabled={pending || order != null}
+          onWhatIf={() => draft != null && addWhatIfOrder(whatIfScope, draft, whatIfOrderText(draft))} />
         {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}
         {!!rules?.slippage_ticks && <p className="text-xs text-muted">Quoted price estimates exclude slippage; the server preview includes it.</p>}
         {chart && <figure aria-label="Profit and loss at expiry">

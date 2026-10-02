@@ -282,5 +282,99 @@ TEST(TradingPreview, AChangePreviewGivesTheRefusalAndSizesTheUnitsStillWorking) 
   EXPECT_EQ(s.preview_change(id, bigger, f.time).decision.code, Reason::ORDER_TERMINAL);
   EXPECT_THROW((void)s.preview_change(id, bigger, f.time, 0), TradingError);
 }
+TEST(TradingWhatIf, CandidatesAreComparedOnAPrivateCopyAgainstTheBookAsItIs) {
+  ScriptedMarket f, wing; wing.contract.strike = 5010;
+  TradingSession s(config(), f.time); f.seed(s); wing.seed(s, "2", "2.20");
+  ASSERT_TRUE(s.submit(f.market("long", 2), f.time).decision.ok());
+  const auto state = s.snapshot_json();
+  const auto equity = s.snapshot()->equity;
+  // Close the calls; sell the wing against them; buy 22 more, which buying power
+  // refuses alone (9,254.30 against 9,158.70) but takes once the close has filled.
+  const auto close = f.market("close", 2, Side::Sell);
+  const auto more = f.market("more", 22);
+  const auto w = s.what_if({{close}, {wing.market("wing", 2, Side::Sell)}, {more}, {close, more}}, f.time);
+  EXPECT_EQ(w.current.equity, equity);
+  ASSERT_TRUE(w.current.max_loss);
+  ASSERT_TRUE(w.current.exposure);
+  ASSERT_EQ(w.candidates.size(), 4U);
+  // Closing at the 4.00 bid costs 0.10 a contract against the mark and the fees, and
+  // leaves nothing to lose on the grid.
+  const auto& closed = w.candidates[0];
+  EXPECT_TRUE(closed.decision.ok());
+  EXPECT_EQ(closed.after.equity, equity - m("21.30"));
+  EXPECT_EQ(closed.after.max_loss, m("21.30"));
+  EXPECT_EQ(closed.after.equity_at_max_loss, equity - m("21.30"));
+  ASSERT_TRUE(closed.after.exposure);
+  EXPECT_DOUBLE_EQ(closed.after.exposure->dollar_delta, 0);
+  EXPECT_EQ(closed.after.breach.room, equity - m("21.30") - m("9000"));
+  // A call spread loses less than the calls alone.
+  EXPECT_TRUE(w.candidates[1].decision.ok());
+  ASSERT_TRUE(w.candidates[1].after.max_loss);
+  EXPECT_LT(*w.candidates[1].after.max_loss, *w.current.max_loss);
+  EXPECT_LT(w.candidates[1].after.exposure->dollar_delta, w.current.exposure->dollar_delta);
+  // Refused, but still projected beside the reason.
+  EXPECT_EQ(w.candidates[2].decision.code, Reason::BUYING_POWER);
+  ASSERT_EQ(w.candidates[2].orders.size(), 1U);
+  EXPECT_TRUE(w.candidates[2].after.projected);
+  ASSERT_TRUE(w.candidates[2].after.max_loss);
+  // Each order is checked after the ones before it filled.
+  ASSERT_EQ(w.candidates[3].orders.size(), 2U);
+  EXPECT_TRUE(w.candidates[3].orders[0].ok());
+  EXPECT_TRUE(w.candidates[3].orders[1].ok()) << w.candidates[3].orders[1].message;
+  EXPECT_TRUE(w.candidates[3].decision.ok());
+  // Nothing was written.
+  EXPECT_EQ(s.snapshot_json(), state);
+}
+TEST(TradingWhatIf, AnOrderWithoutAContractOrQuoteLeavesTheAccountUnprojected) {
+  ScriptedMarket f, missing; missing.contract.strike = 6000;
+  TradingSession s(config(), f.time); f.seed(s);
+  const auto w = s.what_if({{missing.market("unknown", 1)}, {f.market("known", 1)}}, f.time);
+  ASSERT_EQ(w.candidates.size(), 2U);
+  EXPECT_FALSE(w.candidates[0].decision.ok());
+  EXPECT_FALSE(w.candidates[0].after.projected);
+  EXPECT_TRUE(w.candidates[1].after.projected);
+  // The integration's gate refuses an order as it would a submission.
+  const auto gated = s.what_if({{f.market("gated", 1)}}, f.time, {{Decision{Reason::FEED_STALLED, "Feed stalled", {}, {}, {}}}});
+  EXPECT_EQ(gated.candidates[0].decision.code, Reason::FEED_STALLED);
+}
+TEST(TradingFlattenPreview, AFlattenDryRunCancelsAndClosesOnAPrivateCopy) {
+  ScriptedMarket f; TradingSession s(config(), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long", 2), f.time).decision.ok());
+  const auto resting = s.submit(f.limit("resting", 1, "3.00"), f.time);
+  ASSERT_TRUE(resting.decision.ok());
+  const auto state = s.snapshot_json();
+  const auto equity = s.snapshot()->equity;
+  const auto p = s.preview_close_positions(std::nullopt, f.time);
+  EXPECT_TRUE(p.decision.ok());
+  ASSERT_EQ(p.cancelled.size(), 1U);
+  EXPECT_EQ(p.cancelled.front(), *resting.order_id);
+  // The calls sell at the 4.00 bid: 0.10 a contract below the mark and the fees.
+  ASSERT_EQ(p.orders.size(), 1U);
+  EXPECT_EQ(p.orders.front().status, OrderStatus::Filled);
+  EXPECT_EQ(p.orders.front().request.side, Side::Sell);
+  EXPECT_EQ(p.orders.front().filled_quantity, 2);
+  ASSERT_EQ(p.fills.size(), 1U);
+  EXPECT_EQ(p.fills.front().price, m("4.00"));
+  EXPECT_TRUE(p.remaining.empty());
+  EXPECT_EQ(p.current.equity, equity);
+  EXPECT_EQ(p.after.equity, equity - m("21.30"));
+  ASSERT_TRUE(p.after.exposure);
+  EXPECT_DOUBLE_EQ(p.after.exposure->dollar_delta, 0);
+  // Out of scope, nothing closes or cancels.
+  const auto other = s.preview_close_positions("SPY", f.time);
+  EXPECT_TRUE(other.orders.empty());
+  EXPECT_TRUE(other.cancelled.empty());
+  EXPECT_EQ(other.remaining.size(), 0U);
+  // A gate that refuses every close refuses the flatten, cancelling nothing.
+  const auto gated = s.preview_close_positions(std::nullopt, f.time, {{"SPX", Decision{Reason::FEED_STALLED, "Feed stalled", {}, {}, {}}}});
+  EXPECT_EQ(gated.decision.code, Reason::FEED_STALLED);
+  EXPECT_TRUE(gated.cancelled.empty());
+  EXPECT_EQ(gated.remaining.size(), 1U);
+  // Nothing was written, and the flatten itself still does what its dry run showed.
+  EXPECT_EQ(s.snapshot_json(), state);
+  const auto closed = s.close_positions(std::nullopt, f.time);
+  EXPECT_TRUE(closed.decision.ok());
+  EXPECT_EQ(s.snapshot()->equity, p.after.equity);
+}
 }  // namespace
 }  // namespace openport::trading

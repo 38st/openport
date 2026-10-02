@@ -157,6 +157,38 @@ TEST_F(PaperEngine, AChangePreviewAnswersLikeTheChangeWithoutMakingIt) {
   expect_error(write(*engine, "POST", "/api/orders/" + id + "/preview", {{"limit_price", "4.20"}, {"floor_share", 2}}), 400, "INVALID_REQUEST");
 }
 
+TEST_F(PaperEngine, WhatIfComparesCandidatesWithoutTrading) {
+  seed();
+  auto buy = order(market, "ignored", "4.20");
+  buy.erase("client_order_id");
+  auto sell = buy;
+  sell["side"] = "sell";
+  const json candidates = json::array({{{"name", "Buy one"}, {"orders", json::array({buy})}},
+                                       {{"orders", json::array({buy, sell})}}});
+  const auto response = write(*engine, "POST", "/api/orders/what-if", {{"candidates", candidates}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto result = json::parse(response.body);
+  EXPECT_TRUE(result["simulated"]);
+  EXPECT_TRUE(result["current"]["equity"].is_string());
+  ASSERT_EQ(result["candidates"].size(), 2U);
+  EXPECT_EQ(result["candidates"][0]["name"], "Buy one");
+  EXPECT_EQ(result["candidates"][0]["decision"], "ok");
+  EXPECT_TRUE(result["candidates"][0]["after"]["max_loss"].is_string());
+  EXPECT_EQ(result["candidates"][1]["name"], "Candidate 2");
+  EXPECT_EQ(result["candidates"][1]["orders"].size(), 2U);
+  // A round trip leaves the book as it was, less what it cost.
+  EXPECT_EQ(result["candidates"][1]["after"]["exposure"]["dollar_delta"], 0);
+  EXPECT_TRUE(read(*engine, "/api/orders")["orders"].empty());
+  EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+  expect_error(write(*engine, "POST", "/api/orders/what-if", {{"candidates", json::array()}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/orders/what-if", {{"candidates", json::array({{{"orders", json::array()}}})}}), 400, "INVALID_REQUEST");
+  auto broken = buy;
+  broken.erase("quantity");
+  const auto refused = write(*engine, "POST", "/api/orders/what-if", {{"candidates", json::array({{{"orders", json::array({buy, broken})}}})}});
+  expect_error(refused, 400, "INVALID_REQUEST");
+  EXPECT_NE(json::parse(refused.body)["error"]["message"].get<std::string>().find("candidates[0].orders[1]"), std::string::npos) << refused.body;
+}
+
 TEST_F(PaperEngine, PendingLimitsGuardrailsAndBreachAreExposedWithRevisionChecks) {
   seed();
   ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "eod-25k"}, {"reason", "evaluation"}}).status, 200);
@@ -425,6 +457,22 @@ TEST_F(PaperEngine, OrdersChangeInPlaceAndPositionsCloseOverHttp) {
   EXPECT_EQ(json::parse(cancelled.body)["cancelled_orders"], json::array({"2"}));
   // Flatten: resting orders go first, then each position closes at market.
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "third", "3.90")).status, 201);
+  // Its dry run first: the same cancellations and closes, with nothing changed.
+  const auto dry = write(*engine, "POST", "/api/positions/close/preview", json::object());
+  ASSERT_EQ(dry.status, 200) << dry.body;
+  body = json::parse(dry.body);
+  EXPECT_TRUE(body["simulated"]);
+  EXPECT_EQ(body["decision"], "ok");
+  EXPECT_EQ(body["cancelled_orders"], json::array({"3"}));
+  ASSERT_EQ(body["orders"].size(), 1);
+  EXPECT_EQ(body["orders"][0]["side"], "sell");
+  EXPECT_EQ(body["orders"][0]["status"], "filled");
+  EXPECT_EQ(body["fills"].size(), 1);
+  EXPECT_EQ(body["remaining"], json::array());
+  EXPECT_TRUE(body["after"]["equity"].is_string());
+  const auto after = body["after"]["equity"];
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), 3U);
+  expect_error(write(*engine, "POST", "/api/positions/close/preview", {{"underlying", "spx"}}), 400, "INVALID_REQUEST");
   const auto closed = write(*engine, "POST", "/api/positions/close", json::object());
   ASSERT_EQ(closed.status, 200) << closed.body;
   body = json::parse(closed.body);
@@ -436,6 +484,7 @@ TEST_F(PaperEngine, OrdersChangeInPlaceAndPositionsCloseOverHttp) {
   EXPECT_EQ(body["orders"][0]["status"], "filled");
   EXPECT_EQ(body["fills"].size(), 1);
   EXPECT_EQ(body["stock_fills"], json::array());
+  EXPECT_EQ(read(*engine, "/api/portfolio")["equity"], after);
   EXPECT_EQ(body["kept_stocks"], json::array());
   EXPECT_TRUE(read(*engine, "/api/portfolio")["positions"].empty());
 }
@@ -2829,6 +2878,7 @@ TEST_F(PaperEngine, ContractFixture) {
   const auto placed = capture("POST", "/api/orders", order(market));
   const auto id = placed.at("order").at("id").get<std::string>();
   capture("POST", "/api/orders/" + id + "/preview", {{"quantity", 2}});
+  capture("POST", "/api/orders/what-if", {{"candidates", json::array({{{"name", "Add one"}, {"orders", json::array({order(market, "what-if")})}}})}});
   capture("PUT", "/api/orders/" + id, {{"limit_price", "4.20"}});
   market.next();
   quote();
@@ -2838,6 +2888,7 @@ TEST_F(PaperEngine, ContractFixture) {
     test::capture_contract("paper", "GET", path, server::handle_api({"GET", path}, *engine));
   capture("PUT", "/api/trades/1/note", {{"note", "synthetic trade"}, {"tags", {"test"}}});
   capture("PUT", "/api/days/2026-09-22/note", {{"plan", "test"}, {"review", "test"}});
+  capture("POST", "/api/positions/close/preview", json::object());
   capture("POST", "/api/positions/close", json::object());
   capture("POST", "/api/orders/cancel", json::object());
   capture("POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});

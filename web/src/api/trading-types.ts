@@ -650,6 +650,48 @@ export interface OrderPreview {
   execution?: PreviewExecution
   simulated: true
 }
+/** An account as POST /api/orders/what-if projects it, measured from today's equity. */
+export interface WhatIfAccount {
+  equity: Money
+  buying_power: Money
+  exposure: { dollar_delta: number | null; dollar_gamma_1pct: number | null; vega: number | null; theta: number | null } | null
+  /** The worst loss on the spot × volatility grid from today's equity, trading costs included. */
+  max_loss: Money | null
+  equity_at_max_loss: Money | null
+  breaches_floor: boolean | null
+  breaches_soft_floor: boolean | null
+  /** Each cell's P&L from today's equity, spot-major. */
+  scenarios: { spot_percent: number[]; vol_points: number[]; pnl: (number | null)[][]; complete: boolean }
+  breach: Breach
+}
+export interface WhatIfCandidate {
+  name: string
+  decision: string
+  reason: Decision | null
+  orders: { decision: string; reason: Decision | null }[]
+  /** Null when an order could not be projected (no contract or quote). */
+  after: WhatIfAccount | null
+}
+/** POST /api/positions/close/preview: a flatten's dry run on a private copy of the account. */
+export interface FlattenPreview {
+  account_version: string
+  decision: string
+  reason: Decision | null
+  cancelled_orders: string[]
+  /** Its closing orders as the current quotes would leave them, without IDs. */
+  orders: { symbol: string; underlying: string; side: Side; quantity: number; filled_quantity: number; average_fill_price: Money | null
+    status: Order["status"]; reason: Decision | null }[]
+  fills: { symbol: string; side: Side; quantity: number; price: Money; fee: Money }[]
+  stock_fills: { symbol: string; shares: number; price: Money }[]
+  kept_stocks: KeptStock[]
+  /** What would still be held in scope, signed. */
+  remaining: { symbol: string; underlying: string; quantity: number }[]
+  remaining_shares: { symbol: string; shares: number }[]
+  current: WhatIfAccount | null
+  after: WhatIfAccount | null
+  simulated: true
+}
+export interface WhatIfResponse { account_version: string; current: WhatIfAccount; candidates: WhatIfCandidate[]; simulated: true }
 export interface EquitySample {
   time: string
   day: string

@@ -1,9 +1,10 @@
+import { useQuery } from "@tanstack/react-query"
 import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useRefreshTrading, useTradingSession } from "../api/trading"
-import type { ClosePositionsResponse, Order, Position, StockHolding, TradingStatus } from "../api/trading-types"
-import { contractLabel, orderLabel } from "../lib/journal"
+import type { ClosePositionsResponse, FlattenPreview, Order, Position, StockHolding, TradingStatus } from "../api/trading-types"
+import { contractLabel, orderLabel, osiLabel } from "../lib/journal"
 import { closingAction, editableFields, flattenPlan, isOpen, orderChange, orderDraft, outcome, underlyingsOf } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
 import { extendedSession, formatMoney, paperNotice } from "../lib/trading"
@@ -195,6 +196,42 @@ export function FlattenOutcome({ done, closing = [] }: { done: ClosePositionsRes
  * Flatten: cancel the orders in scope, then close every position in it at market,
  * short positions first. Shows each closing order's outcome afterwards.
  */
+/** A flatten's dry run for `scope`, refetched when the account changes. */
+export function useFlattenPreview(scope: string | null, trading: TradingStatus, enabled: boolean) {
+  const { accountScope } = useLive()
+  const token = useWriteToken()
+  return useQuery({
+    queryKey: ["trading", accountScope, "preview-flatten", scope, trading.account_version, trading.write, token],
+    queryFn: () => api.previewFlatten(scope, trading.write),
+    enabled: enabled && trading.enabled,
+    retry: false,
+  })
+}
+function moneyChange(after: string, before: string) {
+  const change = Number(after) - Number(before)
+  return `${change >= 0 ? "+" : "−"}${formatMoney(Math.abs(change).toFixed(2))}`
+}
+/** What the flatten would do now, from its dry run: fills, what waits or is refused, and the account after it. */
+export function FlattenDryRun({ preview }: { preview: { data?: FlattenPreview; error: unknown; isFetching: boolean } }) {
+  const p = preview.data
+  if (preview.isFetching && !p) return <p className="text-xs text-muted">Checking the flatten at the current quotes…</p>
+  if (preview.error || !p) return preview.error ? <p role="status" className="text-xs text-warn">The dry run failed. You can still flatten for the server's checks.</p> : null
+  if (p.decision !== "ok") return <p role="status" className="text-sm text-warn">The flatten would be refused: {p.reason?.message ?? p.decision}.</p>
+  const filled = p.orders.filter((o) => o.filled_quantity > 0)
+  const waiting = p.orders.filter((o) => o.status === "working" || o.status === "partially_filled")
+  const refused = p.orders.filter((o) => o.status === "rejected" || (o.status === "cancelled" && o.filled_quantity < o.quantity))
+  return <section aria-label="Flatten dry run" className="space-y-1 rounded-md border border-border p-2 text-xs">
+    <p className="font-medium">Simulated dry run at the current quotes</p>
+    {filled.length > 0 && <ul className="space-y-0.5 tabular">{filled.map((o, index) => <li key={index}>
+      {o.side === "buy" ? "Buy" : "Sell"} {o.filled_quantity} {osiLabel(o.symbol, "")}{o.average_fill_price != null ? ` at ${formatMoney(o.average_fill_price)}` : ""}</li>)}</ul>}
+    {waiting.length > 0 && <p className="text-muted">{waiting.length} {waiting.length === 1 ? "close waits" : "closes wait"} for a later quote.</p>}
+    {refused.map((o, index) => <p key={index} className="text-warn">{osiLabel(o.symbol, "")}: {o.reason?.message ?? o.status}</p>)}
+    {p.current && p.after && <p>Equity after {formatMoney(p.after.equity)} ({moneyChange(p.after.equity, p.current.equity)}),
+      buying power {formatMoney(p.after.buying_power)}</p>}
+    {(p.remaining.length > 0 || p.remaining_shares.length > 0) && <p className="text-muted">Still held: {[
+      ...p.remaining.map((r) => `${r.quantity} ${osiLabel(r.symbol, "")}`), ...p.remaining_shares.map((r) => `${r.shares} ${r.symbol} shares`)].join(", ")}</p>}
+  </section>
+}
 export function FlattenDialog({ positions, stocks = [], orders, trading, initial = null, onClose }: {
   positions: readonly Position[]; stocks?: readonly StockHolding[]; orders: readonly Order[]; trading: TradingStatus; initial?: string | null; onClose: () => void
 }) {
@@ -218,6 +255,7 @@ export function FlattenDialog({ positions, stocks = [], orders, trading, initial
     return underlying?.paper && !underlying.paper.accepting ? [{ symbol, notice: (paperNotice(symbol, underlying) ?? "").replace(/\.$/, "") }] : []
   })
   const cancelling = plan.cancelling.filter((o) => !refused.some((r) => r.symbol === o.underlying))
+  const dryRun = useFlattenPreview(scope, trading, done == null && plan.closing.length + shares.length > 0 && !write.pending)
   return (
     <Dialog title={scope ? `Flatten ${scope}` : "Close all positions"} onClose={onClose}>
       {done ? (
@@ -257,6 +295,7 @@ export function FlattenDialog({ positions, stocks = [], orders, trading, initial
           {limitOnly.length > 0 && <p role="status" className="text-sm text-warn">
             {limitOnly.join(", ")} {limitOnly.length === 1 ? "is" : "are"} outside the regular session, which takes limit orders only.
             Close with a limit order from the position's Close button, or flatten once the regular session opens.</p>}
+          {plan.closing.length + shares.length > 0 && <FlattenDryRun preview={dryRun} />}
           <WriteAccess trading={trading} />
           <TradingError error={write.error} />
           <button type="button" className="trade-button" disabled={!(plan.closing.length + shares.length) || limitOnly.length > 0 || refused.length === closingUnderlyings.length || write.pending || write.blocked}

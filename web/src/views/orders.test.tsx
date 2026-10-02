@@ -4,8 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
-import type { Order, Position, StockHolding } from "../api/trading-types"
-import { CancelAllDialog, EditOrderDialog, FlattenDialog, FlattenOutcome } from "../components/OrderActions"
+import type { FlattenPreview, Order, Position, StockHolding, WhatIfAccount } from "../api/trading-types"
+import { CancelAllDialog, EditOrderDialog, FlattenDialog, FlattenDryRun, FlattenOutcome } from "../components/OrderActions"
 import { OrderDetailDialog } from "../components/OrderDetail"
 import { ExerciseDialog } from "../components/StockActions"
 import { account, fill, order, portfolio, risk, status, trading } from "../test/trading-fixtures"
@@ -213,5 +213,33 @@ describe("order details", () => {
     const html = render(<OrderDetailDialog order={cancelled} onClose={() => {}} />)
     expect(html).toContain("878,617 dollar delta against a limit of 700,000 dollar delta · SPX")
     expect(html).toContain("Cancelled (RISK_CHANGED)")
+  })
+})
+
+describe("flatten dry run", () => {
+  const symbol = portfolio.positions[0]!.symbol
+  const account = (equity: string): WhatIfAccount => ({ equity, buying_power: "9978.70", exposure: null, max_loss: null, equity_at_max_loss: null,
+    breaches_floor: null, breaches_soft_floor: null, scenarios: { spot_percent: [], vol_points: [], pnl: [], complete: false },
+    breach: { room: null, soft_room: null, complete: true, model: "reflection estimate", underlyings: [] } })
+  const preview: FlattenPreview = { account_version: "17", decision: "ok", reason: null, cancelled_orders: ["3"],
+    orders: [{ symbol, underlying: "SPX", side: "sell", quantity: 2, filled_quantity: 2, average_fill_price: "4.00", status: "filled", reason: null },
+      { symbol: "SPX   261022P04900000", underlying: "SPX", side: "buy", quantity: 1, filled_quantity: 0, average_fill_price: null, status: "working", reason: null }],
+    fills: [], stock_fills: [], kept_stocks: [], remaining: [{ symbol: "SPX   261022P04900000", underlying: "SPX", quantity: -1 }], remaining_shares: [],
+    current: account("10000.00"), after: account("9978.70"), simulated: true }
+  it("shows what fills now, what waits, what stays and the account after it", () => {
+    const html = render(<FlattenDryRun preview={{ data: preview, error: null, isFetching: false }} />)
+    expect(html).toContain("Simulated dry run at the current quotes")
+    expect(html).toContain("Sell 2 SPX")
+    expect(html).toContain("at $4.00")
+    expect(html).toContain("1 close waits for a later quote")
+    expect(html).toContain("$9,978.70")
+    expect(html).toContain("−$21.30")
+    expect(html).toContain("Still held: -1 SPX")
+  })
+  it("names a refusal, and says when the dry run is unavailable", () => {
+    const refused = render(<FlattenDryRun preview={{ data: { ...preview, decision: "FEED_STALLED", reason: { code: "FEED_STALLED", message: "Feed stalled", actual: null, limit: null, scope: "SPX" } },
+      error: null, isFetching: false }} />)
+    expect(refused).toContain("The flatten would be refused: Feed stalled.")
+    expect(render(<FlattenDryRun preview={{ error: new Error("x"), isFetching: false }} />)).toContain("The dry run failed")
   })
 })

@@ -1111,35 +1111,56 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
       return market;
     };
+    // A new order's gate: every contract it trades (each leg of a multi-leg order)
+    // must be supported, and its underlying's feed current.
+    const auto submission_gate = [&](const OrderRequest& order) {
+      Decision rejection;
+      for (const auto& symbol : order_symbols(order)) {
+        const md::OptionContract* contract = nullptr;
+        const auto id = instruments_.find(symbol);
+        if (id != instruments_.end()) {
+          if (const auto* option = book_.option(id->second)) contract = &option->contract;
+        }
+        if (!contract) {
+          const auto saved = session.contracts().find(symbol);
+          if (saved != session.contracts().end()) contract = &saved->second;
+        }
+        if (!contract) continue;
+        rejection = eligible(*contract);
+        if (rejection.ok()) rejection = acceptance(contract->underlying);
+        if (!rejection.ok()) break;
+      }
+      return rejection;
+    };
     try {
       CommandResult result;
       switch (c.kind) {
         case TradingCommand::Kind::Playbook: playbook_command(c, reply, driver_time); break;
         case TradingCommand::Kind::Preview:
         case TradingCommand::Kind::Submit: {
-          // Every contract the order trades (each leg of a multi-leg order).
-          Decision rejection;
-          for (const auto& symbol : order_symbols(c.order)) {
-            const md::OptionContract* contract = nullptr;
-            const auto id = instruments_.find(symbol);
-            if (id != instruments_.end()) {
-              if (const auto* option = book_.option(id->second)) contract = &option->contract;
-            }
-            if (!contract) {
-              const auto saved = session.contracts().find(symbol);
-              if (saved != session.contracts().end()) contract = &saved->second;
-            }
-            if (!contract) continue;
-            rejection = eligible(*contract);
-            if (rejection.ok()) rejection = acceptance(contract->underlying);
-            if (!rejection.ok()) break;
-          }
+          const auto rejection = submission_gate(c.order);
           if (c.kind == TradingCommand::Kind::Preview) {
             std::map<std::string, double> vols;
             const auto symbols = order_symbols(c.order);
             const auto market = preview_market({symbols.begin(), symbols.end()}, vols);
             reply.preview = session.preview(c.order, market_time_, c.floor_share, rejection, vols, market);
           } else result = session.submit(c.order, market_time_, rejection);
+          break;
+        }
+        case TradingCommand::Kind::WhatIf: {
+          // Each order takes a submission's gate, at the current quotes.
+          std::vector<std::vector<Decision>> rejections;
+          std::set<std::string> symbols;
+          for (const auto& orders : c.candidates) {
+            auto& gates = rejections.emplace_back();
+            for (const auto& order : orders) {
+              gates.push_back(submission_gate(order));
+              for (const auto& symbol : order_symbols(order)) symbols.insert(symbol);
+            }
+          }
+          std::map<std::string, double> vols;
+          const auto market = preview_market(symbols, vols);
+          reply.what_if = session.what_if(c.candidates, market_time_, rejections, vols, market);
           break;
         }
         case TradingCommand::Kind::PreviewChange: {
@@ -1174,6 +1195,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         case TradingCommand::Kind::CancelAll:
           result = session.cancel_all(c.underlying.empty() ? std::nullopt : std::optional(c.underlying), market_time_);
           break;
+        case TradingCommand::Kind::PreviewClose:
         case TradingCommand::Kind::ClosePositions: {
           // Each underlying in scope with options or delivered shares takes the feed gate.
           std::map<std::string, Decision> rejections;
@@ -1183,8 +1205,17 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           };
           for (const auto& p : before->positions) gate(p.position.contract.underlying);
           for (const auto& stock : before->stocks) gate(stock.position.symbol);
-          result = session.close_positions(c.underlying.empty() ? std::nullopt : std::optional(c.underlying),
-                                           market_time_, rejections);
+          const auto scope = c.underlying.empty() ? std::nullopt : std::optional(c.underlying);
+          if (c.kind == TradingCommand::Kind::PreviewClose) {
+            // The dry run closes at the current quotes, as the flatten would.
+            std::set<std::string> symbols;
+            for (const auto& p : before->positions) symbols.insert(p.position.contract.osi_symbol());
+            std::map<std::string, double> vols;
+            const auto market = preview_market(symbols, vols);
+            reply.flatten = session.preview_close_positions(scope, market_time_, rejections, vols, market);
+            break;
+          }
+          result = session.close_positions(scope, market_time_, rejections);
           reply.kept_stocks = result.kept_stocks;
           break;
         }

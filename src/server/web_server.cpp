@@ -332,7 +332,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
   if (replay) path.remove_prefix(11); // leaves /orders, /risk, ...
   else if (path.starts_with("/api/")) path.remove_prefix(4);
   const bool trade = path == "/orders" || path == "/orders/preview" || path == "/orders/cancel" ||
-      path.starts_with("/orders/") || path == "/positions/close" || path == "/positions/exercise" || path == "/stocks/close" ||
+      path.starts_with("/orders/") || path == "/positions/close" || path == "/positions/close/preview" || path == "/positions/exercise" || path == "/stocks/close" ||
       path.starts_with("/playbooks/staged/") ||
       ((path.starts_with("/trades/") || path.starts_with("/days/")) && path.ends_with("/note"));
   const bool permitted = (create_sandbox && sandbox.empty()) || has("admin") || (read ? has("read") || !policy.require_token :

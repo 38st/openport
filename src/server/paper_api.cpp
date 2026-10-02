@@ -20,6 +20,8 @@ using nlohmann::json;
 using namespace trading;
 
 json number(double value) { return std::isfinite(value) ? json(value) : json(nullptr); }
+constexpr std::size_t kMaxWhatIfCandidates = 6;
+constexpr std::size_t kMaxWhatIfOrders = 4;
 json nullable(const std::string& value) { return value.empty() ? json(nullptr) : json(value); }
 json money(const std::optional<Money>& value) { return value ? json(value->str()) : json(nullptr); }
 json positive(Money value) { return value > Money{} ? json(value.str()) : json(nullptr); }
@@ -113,6 +115,43 @@ json execution_json(const PreviewExecution& e) {
           {"reason", e.reason.ok() ? json(nullptr) : json{{"code", to_string(e.reason.code)}, {"message", e.reason.message}}},
           {"fills", preview_fills(e.fills)}, {"average_fill_price", money(e.average_fill_price)},
           {"schedule", preview_fills(e.schedule)}, {"average_price", money(e.average_price)}};
+}
+json exposure_json(const Exposure& e) {
+  return {{"dollar_delta", number(e.dollar_delta)}, {"dollar_gamma_1pct", number(e.dollar_gamma_1pct)},
+          {"vega", number(e.vega)}, {"theta", number(e.theta)}};
+}
+json what_if_account_json(const WhatIfAccount& a, const ScenarioConfig& grid) {
+  if (!a.projected) return nullptr;
+  json pnl = json::array();
+  std::size_t index = 0;
+  for ([[maybe_unused]] double spot : grid.spot_percent) {
+    json row = json::array();
+    for ([[maybe_unused]] double vol : grid.vol_points) {
+      const auto* cell = index < a.scenarios.cells.size() ? &a.scenarios.cells[index] : nullptr;
+      ++index;
+      row.push_back(cell && a.scenarios.complete ? number(cell->pnl) : json(nullptr));
+    }
+    pnl.push_back(std::move(row));
+  }
+  return {{"equity", a.equity.str()}, {"buying_power", a.buying_power.str()},
+          {"exposure", a.exposure ? exposure_json(*a.exposure) : json(nullptr)},
+          {"max_loss", money(a.max_loss)}, {"equity_at_max_loss", money(a.equity_at_max_loss)},
+          {"breaches_floor", a.breaches_floor ? json(*a.breaches_floor) : json(nullptr)},
+          {"breaches_soft_floor", a.breaches_soft_floor ? json(*a.breaches_soft_floor) : json(nullptr)},
+          {"scenarios", {{"spot_percent", grid.spot_percent}, {"vol_points", grid.vol_points}, {"pnl", pnl},
+                         {"complete", a.scenarios.complete}}},
+          {"breach", breach_json(a.breach)}};
+}
+json what_if_json(const WhatIf& w, const std::vector<std::string>& names, const ScenarioConfig& grid) {
+  json candidates = json::array();
+  for (std::size_t i = 0; i < w.candidates.size(); ++i) {
+    const auto& c = w.candidates[i];
+    json orders = json::array();
+    for (const auto& d : c.orders) orders.push_back({{"decision", d.ok() ? "ok" : to_string(d.code)}, {"reason", decision_json(d)}});
+    candidates.push_back({{"name", i < names.size() ? names[i] : std::string()}, {"decision", c.decision.ok() ? "ok" : to_string(c.decision.code)},
+                          {"reason", decision_json(c.decision)}, {"orders", orders}, {"after", what_if_account_json(c.after, grid)}});
+  }
+  return {{"current", what_if_account_json(w.current, grid)}, {"candidates", candidates}, {"simulated", true}};
 }
 json preview_json(const OrderPreview& p) {
   json change = nullptr;
@@ -229,6 +268,39 @@ json order_json(const Order& o, const TradingView& view) {
                                                {"take_profit", exit_json(o.request.bracket->take_profit)}} : json(nullptr)},
           {"role", nullable(roles[static_cast<int>(o.role)])}, {"parent", id_or_null(o.parent)}, {"oco", id_or_null(o.oco)},
           {"stop_loss_order", id_or_null(o.stop_loss)}, {"take_profit_order", id_or_null(o.take_profit)}};
+}
+json flatten_preview_json(const FlattenPreview& f, const TradingView& view) {
+  constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
+  json cancelled = json::array();
+  for (const auto id : f.cancelled) cancelled.push_back(std::to_string(id));
+  // The closing orders, without the IDs a flatten would give them.
+  json orders = json::array();
+  for (const auto& o : f.orders)
+    orders.push_back({{"symbol", o.request.symbol}, {"underlying", underlying(view, o.request.symbol)},
+                      {"side", side_name(o.request.side)}, {"quantity", o.request.quantity}, {"filled_quantity", o.filled_quantity},
+                      {"average_fill_price", o.filled_quantity > 0 ? json(o.filled_notional.prorate(1, o.filled_quantity).str()) : json(nullptr)},
+                      {"status", statuses[static_cast<int>(o.status)]}, {"reason", decision_json(o.reason)}});
+  json fills = json::array();
+  for (const auto& fill : f.fills)
+    fills.push_back({{"symbol", fill.symbol}, {"side", side_name(fill.side)}, {"quantity", fill.quantity},
+                     {"price", fill.price.str()}, {"fee", fill.fee.str()}});
+  json stock_fills = json::array();
+  for (const auto& fill : f.stock_fills) stock_fills.push_back({{"symbol", fill.symbol}, {"shares", fill.shares}, {"price", fill.price.str()}});
+  json kept = json::array();
+  for (const auto& [symbol, decision] : f.kept_stocks) {
+    const auto held = f.remaining_shares.find(symbol);
+    kept.push_back({{"symbol", symbol}, {"shares", held == f.remaining_shares.end() ? 0 : held->second}, {"reason", decision_json(decision)}});
+  }
+  json remaining = json::array();
+  for (const auto& [symbol, quantity] : f.remaining)
+    remaining.push_back({{"symbol", symbol}, {"underlying", underlying(view, symbol)}, {"quantity", quantity}});
+  json shares = json::array();
+  for (const auto& [symbol, held] : f.remaining_shares) shares.push_back({{"symbol", symbol}, {"shares", held}});
+  const auto& grid = view.config.scenarios;
+  return {{"decision", f.decision.ok() ? "ok" : to_string(f.decision.code)}, {"reason", decision_json(f.decision)},
+          {"cancelled_orders", cancelled}, {"orders", orders}, {"fills", fills}, {"stock_fills", stock_fills},
+          {"kept_stocks", kept}, {"remaining", remaining}, {"remaining_shares", shares},
+          {"current", what_if_account_json(f.current, grid)}, {"after", what_if_account_json(f.after, grid)}, {"simulated", true}};
 }
 json context_json(const std::optional<FillContext>& context) {
   if (!context) return nullptr;
@@ -705,6 +777,17 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       break;
     }
     case TradingCommand::Kind::Playbook: body = json::parse(reply.playbook_result); break;
+    case TradingCommand::Kind::PreviewClose:
+      if (!reply.flatten) return api_error(503, "TRADING_UNAVAILABLE", "No flatten preview available");
+      body = flatten_preview_json(*reply.flatten, view);
+      body["account_version"] = std::to_string(s.account_version);
+      break;
+    case TradingCommand::Kind::WhatIf: {
+      if (!reply.what_if) return api_error(503, "TRADING_UNAVAILABLE", "No what-if available");
+      body = what_if_json(*reply.what_if, command.candidate_names, view.config.scenarios);
+      body["account_version"] = std::to_string(s.account_version);
+      break;
+    }
     case TradingCommand::Kind::Preview:
     case TradingCommand::Kind::PreviewChange:
       if (!reply.preview) return api_error(503, "TRADING_UNAVAILABLE", "No preview available");
@@ -951,6 +1034,40 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
   auto body = strict_json(request.body);
+  // POST /api/orders/what-if: candidates, each a list of orders as POST /api/orders takes them.
+  if (path == "/api/orders/what-if") {
+    fields(body, {"candidates"});
+    command.kind = TradingCommand::Kind::WhatIf;
+    const auto& list = body.at("candidates");
+    if (!list.is_array() || list.empty() || list.size() > kMaxWhatIfCandidates)
+      throw std::invalid_argument("candidates must be an array of one to six candidates");
+    for (std::size_t c = 0; c < list.size(); ++c) {
+      const auto where = "candidates[" + std::to_string(c) + "]";
+      fields(list[c], {"orders"}, {"name"});
+      auto name = list[c].contains("name") ? string_field(list[c], "name") : "Candidate " + std::to_string(c + 1);
+      if (name.empty() || name.size() > 64) throw std::invalid_argument(where + ".name must be 1 to 64 bytes");
+      command.candidate_names.push_back(std::move(name));
+      const auto& orders = list[c].at("orders");
+      if (!orders.is_array() || orders.empty() || orders.size() > kMaxWhatIfOrders)
+        throw std::invalid_argument(where + ".orders must be an array of one to four orders");
+      auto& requests = command.candidates.emplace_back();
+      for (std::size_t i = 0; i < orders.size(); ++i) {
+        // Each order is parsed as a submission parses it; a client ID is optional here.
+        auto order = orders[i];
+        if (order.is_object() && !order.contains("client_order_id"))
+          order["client_order_id"] = "what-if-" + std::to_string(c + 1) + "-" + std::to_string(i + 1);
+        ApiRequest single;
+        single.method = "POST";
+        single.body = order.dump();
+        try {
+          requests.push_back(parse_command(single, "/api/orders").order);
+        } catch (const std::invalid_argument& error) {
+          throw std::invalid_argument(where + ".orders[" + std::to_string(i) + "]: " + error.what());
+        }
+      }
+    }
+    return command;
+  }
   // POST /api/orders/{id}/preview: a change's terms, as PUT takes them, and floor_share.
   const bool change_preview = request.method == "POST" && path != "/api/orders/preview" &&
       path.starts_with("/api/orders/") && path.ends_with("/preview");
@@ -1027,8 +1144,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     command.underlying = scope_field(body);
     return command;
   }
-  if (path == "/api/positions/close") {
-    command.kind = TradingCommand::Kind::ClosePositions;
+  if (path == "/api/positions/close" || path == "/api/positions/close/preview") {
+    command.kind = path.ends_with("/preview") ? TradingCommand::Kind::PreviewClose : TradingCommand::Kind::ClosePositions;
     command.underlying = scope_field(body);
     return command;
   }
@@ -1410,9 +1527,9 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   const auto question = request.target.find('?');
   const std::string path = request.target.substr(0, question);
   const auto pairs = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
-  const bool route = (request.method == "POST" && (path == "/api/orders" || path == "/api/orders/preview" ||
+  const bool route = (request.method == "POST" && (path == "/api/orders" || path == "/api/orders/preview" || path == "/api/orders/what-if" ||
       (path.starts_with("/api/orders/") && path.ends_with("/preview")) ||
-      path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/accounts" ||
+      path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/positions/close/preview" || path == "/api/accounts" ||
       path == "/api/positions/exercise" || path == "/api/stocks/close" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout")) ||

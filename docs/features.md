@@ -77,10 +77,13 @@ simulation's limits.
   flatten, so no short is left uncovered. Server order
   previews show buying power, maximum loss, what fills at once and the full size's
   fill schedule, and the size that fits buying power apart from the size that uses at
-  most half the floor room; Edit order previews a change to a resting order the same way.
+  most half the floor room; Edit order previews a change to a resting order the same way,
+  and Flatten shows its dry run, what it would cancel and close and the account after it.
   Warnings name what the held book is close to: a delta or vega limit (by gamma, too),
   the soft floor, tonight's floor ratchet, delivery of in-the-money ETF options at
-  expiry, early assignment and ex-dates. Breach risk shows the spot moves that could reach the floor (the
+  expiry, early assignment and ex-dates. What-if compares candidate adjustments, each
+  of up to four orders, against the held book on buying power, Greeks, grid loss and
+  floor room before any is sent. Breach risk shows the spot moves that could reach the floor (the
   personal soft floor on an account without a plan floor) and labelled model
   estimates of touching it before the close.
 - **Playbooks**: versioned setups with entry windows and conditions, shared strategy
@@ -274,3 +277,6 @@ the simulation's limits.
       holiday-aware weekday reports and one win-rate definition
 - [x] Order history: end times, changes and refusals, what a working order waits for,
       and the numbers behind every rejection or risk cancel
+- [x] Fuller previews: fill schedules, order changes, flatten dry runs and sizing to
+      buying power apart from the floor; held-book risk warnings; what-if comparison of
+      candidate adjustments
