@@ -38,7 +38,8 @@ simulation's limits.
 - **Orders**: DAY, GTC, EXTO, GTC_EXTO and timestamp-bounded GTD limits, market orders, orders that wait for a price level,
   another underlying's price (enter if VIX reaches 20), a study (30-day IV, the 9/30-day
   IV ratio) or a time of day (close at 15:30), stop-limits, and brackets whose stop-loss (a stop or a stop-limit) and take-profit
-  cancel each other, keeping a partly filled position protected. GTC orders wait
+  cancel each other, keeping a partly filled position protected; a contract already
+  held takes the same pair from its Exits dialog. GTC orders wait
   outside the regular session and last until the contract's last trade or auto-close.
   Cancelling one order or all working orders asks for confirmation; the result stays
   visible when the last working order disappears. Working orders change in place: size, limit or trigger level. Each order keeps its
@@ -411,6 +412,7 @@ special opening quotation; live providers keep manual imports.
       exits that re-arm or shrink so a partly filled position stays protected
 - [x] Resumable interrupted replay runs, archived runs' working orders ended with the
       run, and demo restarts that resume the rest of their date with a breaker reference
+- [x] OCO exits for a contract already held, and cancelling an exit pair in one call
 - [x] Exports that name their replay run and attempt, trades that say what closed them,
       holiday-aware weekday reports and one win-rate definition
 - [x] Order history: end times, changes and refusals, what a working order waits for,

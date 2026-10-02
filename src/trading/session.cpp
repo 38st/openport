@@ -1664,7 +1664,7 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
                   (!e->limit_price || *e->limit_price > Money{}));
   };
   const auto& bracket = request.bracket;
-  if (request.exits_only || (request.trigger && request.trigger->source == TriggerSource::Combo) ||
+  if ((request.trigger && request.trigger->source == TriggerSource::Combo) ||
       (bracket && ((bracket->stop_loss && bracket->stop_loss->trigger && bracket->stop_loss->trigger->source == TriggerSource::Combo) ||
                    (bracket->take_profit && bracket->take_profit->trigger && bracket->take_profit->trigger->source == TriggerSource::Combo))) ||
       !positive(request.trigger) ||
@@ -1675,6 +1675,19 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   };
   if (bracket && (!on_tick(bracket->stop_loss) || !on_tick(bracket->take_profit)))
     return failure(Reason::INVALID_TICK, "An exit's limit price is not a positive multiple of the product tier tick");
+  if (request.exits_only) {
+    // A held contract's exits, as a held spread's: they only close, so they take
+    // an exit's checks rather than an entry's.
+    if (!closing_only(s, o))
+      return failure(Reason::INVALID_ORDER, "Held exits must close a held position without exceeding it, after the other "
+                     "working orders that close it");
+    if (!bracket || (request.type == OrderType::Limit && !good_until(request) && !extended(request)))
+      return failure(Reason::INVALID_ORDER, "Held exits require a bracket and GTC for a limit exit");
+    const auto& primary = bracket->take_profit ? *bracket->take_profit : *bracket->stop_loss;
+    if (request.trigger != primary.trigger || request.limit_price != primary.limit_price)
+      return failure(Reason::INVALID_ORDER, "Held exit terms must match the take-profit, or the stop when there is no target");
+    return system_check(s, o, false);
+  }
   if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
     return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
   if (auto d = account_type_check(s, {{request.symbol, request.side == Side::Buy ? o.remaining() : -o.remaining()}}, {}, o.id); !d.ok())
@@ -1714,8 +1727,8 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
 /// Liquidation and expiry auto-close reduce risk, so only the contract,
 /// session and executable-quote gates apply, including under the kill latch;
 /// so do bracket exits and reduce-only closes, which stay within their position.
-/// A held spread's exits are accepted outside the regular session (`now` false)
-/// and trade in the next one.
+/// Held exits are accepted outside the regular session (`now` false) and trade
+/// in the next one.
 Decision system_check(const State& s, const Order& o, bool now) {
   if (multi_leg(o.request)) {
     if (!closing_only(s, o, false)) return failure(Reason::POSITION_CLOSED, "Exit legs no longer fit the held positions");
@@ -1733,7 +1746,7 @@ Decision system_check(const State& s, const Order& o, bool now) {
   const auto c = s.contracts.find(o.request.symbol);
   if (c == s.contracts.end()) return failure(Reason::UNKNOWN_CONTRACT, "Order must reference a registered canonical OSI definition");
   if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "Contract has expired");
-  if (o.system ? !regular(c->second, s.time) : !trades_now(o, c->second, s.time))
+  if (now && (o.system ? !regular(c->second, s.time) : !trades_now(o, c->second, s.time)))
     return failure(Reason::SESSION_CLOSED, "Closing orders the account places itself and bracket exits trade in the regular session only");
   if (!o.system)
     if (auto d = account_type_check(s, {{o.request.symbol, o.request.side == Side::Buy ? o.remaining() : -o.remaining()}}, {}, o.id); !d.ok())
@@ -4368,6 +4381,17 @@ Decision place_close(State& s, OrderRequest request, const Decision& rejection, 
   return {};
 }
 }  // namespace
+CommandResult TradingSession::cancel_orders(const std::vector<OrderId>& ids, Timestamp time) {
+  return impl_->transact(time, "cancel_orders", [&](State& s, Events& events) {
+    if (ids.empty()) return CommandResult{failure(Reason::INVALID_ORDER, "Name at least one order to cancel"), {}, 0};
+    for (const auto id : ids)
+      if (id == 0 || id > s.orders.size()) return CommandResult{failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), id, 0};
+    if (std::none_of(ids.begin(), ids.end(), [&](OrderId id) { return s.orders.at(static_cast<std::size_t>(id - 1)).open(); }))
+      return CommandResult{failure(Reason::ORDER_TERMINAL, "Every listed order is already terminal"), ids.front(), 0};
+    for (const auto id : ids) cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
+    return CommandResult{};
+  });
+}
 CommandResult TradingSession::close_positions(std::optional<std::string> underlying, Timestamp time,
                                               const std::map<std::string, Decision>& rejections, FlattenPricing pricing) {
   if (pricing.limit_ticks < 0 || pricing.limit_ticks > 10 || (!pricing.limit && pricing.limit_ticks != 0))

@@ -3239,6 +3239,38 @@ TEST_F(PaperEngine, GtcMetadataAndHeldComboExitsOverHttp) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, HeldContractExitsAndAPairCancelOverHttp) {
+  seed();
+  auto entry = order(market, "long", "4.20");
+  entry["quantity"] = 2;
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", entry).status, 201);
+  const json stop{{"source", "option"}, {"direction", "at_or_below"}, {"level", "3.50"}};
+  json exits{{"client_order_id", "held"}, {"symbol", market.symbol()}, {"side", "sell"}, {"type", "limit"}, {"quantity", 2},
+             {"limit_price", "5.00"}, {"time_in_force", "gtc"}, {"exits_only", true},
+             {"bracket", {{"take_profit", {{"limit_price", "5.00"}}}, {"stop_loss", {{"trigger", stop}}}}}};
+  const auto placed = write(*engine, "POST", "/api/orders", exits);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  const auto target = json::parse(placed.body)["order"];
+  EXPECT_EQ(target["role"], "take_profit");
+  EXPECT_EQ(target["exits_only"], true);
+  EXPECT_EQ(target["filled_quantity"], 0);
+  const auto stop_id = target["oco"];
+  ASSERT_TRUE(stop_id.is_string());
+  EXPECT_EQ(target["stop_loss_order"], stop_id);
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", exits).status, 200);  // a retry answers once
+  // Both exits cancel in one call; the list is all or nothing.
+  expect_error(write(*engine, "POST", "/api/orders/cancel", {{"orders", {target["id"], "999"}}}), 404, "UNKNOWN_ORDER");
+  expect_error(write(*engine, "POST", "/api/orders/cancel", {{"orders", json::array()}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/orders/cancel", {{"orders", {target["id"], target["id"]}}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/orders/cancel", {{"orders", {target["id"]}}, {"underlying", "SPX"}}), 400, "INVALID_REQUEST");
+  const auto cancelled = write(*engine, "POST", "/api/orders/cancel", {{"orders", {target["id"], stop_id}}});
+  ASSERT_EQ(cancelled.status, 200) << cancelled.body;
+  EXPECT_EQ(json::parse(cancelled.body)["cancelled_orders"], json::array({target["id"], stop_id}));
+  EXPECT_TRUE(read(*engine, "/api/orders?status=open")["orders"].empty());
+  expect_error(write(*engine, "POST", "/api/orders/cancel", {{"orders", {stop_id}}}), 409, "ORDER_TERMINAL");
+  engine->stop();
+}
+
 }  // namespace
 
 // The breach estimate's horizon is the rest of today's session. A same-day expiry's

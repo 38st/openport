@@ -43,6 +43,7 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
   if (c.do_not_exercise) j["do_not_exercise"] = true;
   if (!c.trades.empty()) j["trades"] = c.trades;
   if (c.close_pricing.limit) { j["close_limit"] = true; j["limit_ticks"] = c.close_pricing.limit_ticks; }
+  if (!c.order_ids.empty()) j["order_ids"] = c.order_ids;
 }
 inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("kind").get_to(c.kind);
@@ -85,5 +86,6 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   trading::added_field(j, "trades", c.trades);
   trading::added_field(j, "close_limit", c.close_pricing.limit);
   trading::added_field(j, "limit_ticks", c.close_pricing.limit_ticks);
+  trading::added_field(j, "order_ids", c.order_ids);
 }
 }

@@ -1551,7 +1551,8 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           break;
         }
         case TradingCommand::Kind::CancelAll:
-          result = session.cancel_all(c.underlying.empty() ? std::nullopt : std::optional(c.underlying), market_time_);
+          result = !c.order_ids.empty() ? session.cancel_orders(c.order_ids, market_time_)
+              : session.cancel_all(c.underlying.empty() ? std::nullopt : std::optional(c.underlying), market_time_);
           break;
         case TradingCommand::Kind::PreviewClose:
         case TradingCommand::Kind::ClosePositions: {

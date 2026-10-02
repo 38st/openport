@@ -71,8 +71,8 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `GET /api/account/pass-odds?days=N&samples=M&playbook=ID&seed=S` | Seeded estimate from historical equity days, not a prediction; needs ten days with intraday extremes (422 `PASS_ODDS_UNAVAILABLE` otherwise) |
 | `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | Shared server leg selection for terminal templates and playbooks |
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
-| `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
-| `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
+| `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach exits to a held contract or spread with `exits_only`, change it or cancel it |
+| `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, one underlying's or a listed set (such as an exit pair) together, or flatten one underlying or all |
 | `GET /api/settlements` | Account settlements, newest first across attempts: exact reference, signed quantity and cash, gross realised P&L, fee and nullable source; read scope |
 | `POST /api/settlements` | Import an expired position’s decimal-string reference `{symbol, value}`; admin scope |
 | `POST /api/positions/abandon` | Give up a long at zero without a fee: `{symbol}`, allowed with a fresh ask-only quote or after expiry |

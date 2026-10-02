@@ -41,7 +41,7 @@ with zero. It does not coerce monetary strings into floats.
 | `summary`, `series` | `/api/underlyings/{symbol}/summary`; series are its expiries |
 | `chain`, `exposure`, `surface`, `volatility`, `candles`, `probability` | The corresponding underlying views |
 | `account`, `portfolio`, `orders`, `fills`, `trades`, `risk`, `risk_profile`, `plans`, `accounts`, `equity` | The terminal's paper reads |
-| `place_order`, `preview_order`, `modify_order`, `cancel_order`, `cancel_all`, `flatten` | Paper orders and position closure |
+| `place_order`, `preview_order`, `modify_order`, `cancel_order`, `cancel_all`, `cancel_orders`, `flatten` | Paper orders and position closure |
 | `settlements` | Settlement references, proceeds and provenance, newest first (live, replay or history) |
 | `note`, `day_note`, `export_csv` | Trade/day annotations and fills/trades exports |
 | `group_trades`, `ungroup_trades` | Join open round trips into one whole trade, or take one out |

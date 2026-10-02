@@ -1212,7 +1212,7 @@
       ],
       "post": {
         "summary": "POST /api/orders/cancel",
-        "description": "Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "description": "Cancels every open order, one underlying's, or the listed orders together in one transaction (such as both exits of a pair): an unknown ID is 404 UNKNOWN_ORDER and cancels nothing, a list with none still open 409 ORDER_TERMINAL. Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
         "x-scope": "trade",
         "responses": {
           "200": {
@@ -1234,7 +1234,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ScopeRequest"
+                "$ref": "#/components/schemas/CancelRequest"
               }
             }
           }
@@ -11466,7 +11466,7 @@
           },
           "exits_only": {
             "type": "boolean",
-            "description": "Multi-leg orders only: attach the bracket to held closing legs instead of submitting an entry."
+            "description": "Attach the bracket to a held contract (symbol and the side that closes it) or held closing legs instead of submitting an entry. The order's own terms are the take-profit's, or the stop's when there is no target: GTC for a limit (a stop-limit's with its trigger), market IOC for a stop."
           },
           "group": {
             "type": "string",
@@ -11501,17 +11501,8 @@
               "side"
             ],
             "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "legs"
-                  ]
-                },
-                {
-                  "required": [
-                    "exits_only"
-                  ]
-                }
+              "required": [
+                "legs"
               ]
             }
           },
@@ -15409,6 +15400,31 @@
           }
         },
         "required": []
+      },
+      "CancelRequest": {
+        "type": "object",
+        "description": "Every open order (empty body), one underlying's, or one to sixteen listed orders cancelled together.",
+        "properties": {
+          "underlying": {
+            "type": "string"
+          },
+          "orders": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "underlying",
+            "orders"
+          ]
+        },
+        "additionalProperties": false
       },
       "DeletedReplay": {
         "type": "object",

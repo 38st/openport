@@ -211,6 +211,7 @@ def test_base_url_rejects_ambiguous_credentials(url):
     ("plans", (), "GET", "/api/plans", "PlansResponse"),
     ("equity", (), "GET", "/api/account/equity", "EquityHistory"),
     ("cancel_all", ("SPX",), "POST", "/api/orders/cancel", "CancelAllResponse"),
+    ("cancel_orders", (["7", "8"],), "POST", "/api/orders/cancel", "CancelAllResponse"),
     ("flatten", ("SPX",), "POST", "/api/positions/close", "ClosePositionsResponse"),
     ("note", ("1", "review", ["test"]), "PUT", "/api/trades/1/note", "TradeNoteResponse"),
     ("day_note", ("2026-09-22", "plan", "review"), "PUT", "/api/days/2026-09-22/note", "DayNoteResponse"),

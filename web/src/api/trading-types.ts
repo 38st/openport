@@ -597,6 +597,8 @@ export type NewOrder = { tags?: string[]; note?: string; good_till?: string; wal
   bracket?: Bracket
   /** A whole trade to join, by its ID or one of its open round trips' IDs (an adjustment). */
   group?: string
+  /** Attach the bracket to a held contract instead of opening one: the order closes it. */
+  exits_only?: boolean
   legs?: never
 } | {
   client_order_id: string
@@ -903,6 +905,8 @@ export interface SubmitOrderResponse extends OrderResponse { fills: Fill[] }
 /** `time_in_force` switches a resting limit order between DAY and GTC; absent from older servers' accepted fields. */
 export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money; time_in_force?: "day" | "gtc"; walk?: Walk | null }
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
+/** POST /api/orders/cancel: every open order, one underlying's, or the listed orders together. */
+export type CancelRequest = { underlying?: string; orders?: never } | { orders: string[]; underlying?: never }
 export interface AccountListItem { damaged?: AccountDamage | null; journal_size?: JournalSize; id: string; name: string; archived?: boolean; sandbox_idle_seconds?: number; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
 export type CreateAccountRequest = { name: string; copy_settings_from?: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
