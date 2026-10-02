@@ -505,9 +505,23 @@ export interface Portfolio {
   /** Absent from older servers. */
   stocks?: StockHolding[]
   buying_power?: BuyingPower
+  /** The requirement by underlying with what holds it; absent from older servers. */
+  margin?: MarginUnderlying[]
   /** Today's P&L by Greek; absent from older servers. */
   attribution?: Attribution
 }
+/** An OSI symbol, or the underlying for shares, with the signed contracts or shares a part takes. */
+export interface MarginLeg { symbol: string; quantity: number }
+/** Positions that hold part of an underlying's strategy-margin requirement together. */
+export interface MarginPart {
+  kind: "naked" | "vertical" | "covered" | "straddle" | "short_shares" | "protected_shares" | "worst_loss" | "long"
+  legs: MarginLeg[]
+  requirement: Money
+}
+/** Where a portfolio-margin scan loses most, and the contract minimum under it. */
+export interface MarginScan { loss: Money; spot_percent: number; vol_points: number; minimum: Money }
+/** Strategy margin's parts add up to the requirement; portfolio margin's scan sets it. */
+export interface MarginUnderlying { underlying: string; requirement: Money; parts: MarginPart[]; scan: MarginScan | null }
 export interface RiskCaps { dollar_delta: number; vega: number }
 export interface Limits {
   max_order_contracts: number

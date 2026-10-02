@@ -7,6 +7,7 @@ import type { Order, Position, Risk, StockHolding, TradingStatus } from "../api/
 import { Dialog } from "../components/Dialog"
 import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
+import { MarginBreakdown } from "../components/MarginBreakdown"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
 import { CloseSharesDialog, ExerciseDialog, SettleDialog, SharesTable } from "../components/StockActions"
@@ -188,6 +189,12 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
       {(data.stocks?.length ?? 0) > 0 && <Panel title={`Shares · ${data.stocks!.length}`}>
         <SharesTable stocks={data.stocks!} onClose={trading.enabled ? setClosingShares : undefined} />
         <p className="mt-2 text-[11px] text-muted">From exercise and assignment of equity and ETF options, marked and closed at the underlying's price.</p>
+      </Panel>}
+      {data.margin && (data.positions.length > 0 || (data.stocks?.length ?? 0) > 0) && <Panel title={`Margin requirement · ${formatMoney(data.buying_power?.requirement ?? data.buying_power?.short_requirement)}`}>
+        <MarginBreakdown margin={data.margin} />
+        <p className="mt-2 text-[11px] text-muted">{account?.rules.margin === "portfolio"
+          ? "Portfolio margin: each underlying holds its largest scanned loss, taken from equity."
+          : "Strategy margin: each short pairs with what covers it to hold the least in total; hover a row for its rule."}</p>
       </Panel>}
     </> : trading.enabled && !portfolio.error ? <Empty>Loading positions…</Empty> : null}
     <Panel title="Portfolio risk" actions={<button type="button" className="trade-button" disabled={!risk.data || !trading.enabled} onClick={() => { if (risk.data) setEditing(risk.data) }}>Edit limits</button>}>

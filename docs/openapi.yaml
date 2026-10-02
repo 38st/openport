@@ -7478,6 +7478,140 @@
           "requirement"
         ]
       },
+      "MarginLeg": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "OSI symbol, or the underlying for shares."
+          },
+          "quantity": {
+            "type": "number",
+            "description": "Signed contracts or shares this part takes; a position can be split between parts."
+          }
+        },
+        "required": [
+          "symbol",
+          "quantity"
+        ]
+      },
+      "MarginPart": {
+        "type": "object",
+        "description": "Positions that hold part of an underlying's strategy-margin requirement together.",
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "const": "naked",
+                "type": "string"
+              },
+              {
+                "const": "vertical",
+                "type": "string"
+              },
+              {
+                "const": "covered",
+                "type": "string"
+              },
+              {
+                "const": "straddle",
+                "type": "string"
+              },
+              {
+                "const": "short_shares",
+                "type": "string"
+              },
+              {
+                "const": "protected_shares",
+                "type": "string"
+              },
+              {
+                "const": "worst_loss",
+                "type": "string"
+              },
+              {
+                "const": "long",
+                "type": "string"
+              }
+            ],
+            "description": "naked: a short option alone; vertical: a short with the long that covers it; covered: a short call against 100 long shares or a short put against 100 short shares; straddle: a short put with a short call; short_shares: shares no long call protects; protected_shares: 100 short shares with a long call; worst_loss: positions expiring together at their worst loss at expiry; long: paid in full."
+          },
+          "legs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarginLeg"
+            }
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "kind",
+          "legs",
+          "requirement"
+        ]
+      },
+      "MarginScan": {
+        "type": "object",
+        "description": "Where a portfolio-margin scan loses most.",
+        "properties": {
+          "loss": {
+            "$ref": "#/components/schemas/Money",
+            "description": "The largest loss over the scan points; zero when none loses."
+          },
+          "spot_percent": {
+            "type": "number"
+          },
+          "vol_points": {
+            "type": "number"
+          },
+          "minimum": {
+            "$ref": "#/components/schemas/Money",
+            "description": "$0.375 times the multiplier for every option contract."
+          }
+        },
+        "required": [
+          "loss",
+          "spot_percent",
+          "vol_points",
+          "minimum"
+        ]
+      },
+      "MarginUnderlying": {
+        "type": "object",
+        "description": "One underlying's margin requirement and what makes it up. Under strategy margin the parts add up to it; under portfolio margin the scan sets it (parts empty), and while a scan is incomplete it is strategy margin's parts plus the option minimum, with scan null.",
+        "properties": {
+          "underlying": {
+            "type": "string"
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarginPart"
+            }
+          },
+          "scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarginScan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "underlying",
+          "requirement",
+          "parts",
+          "scan"
+        ]
+      },
       "Attribution": {
         "type": "object",
         "description": "P&L by Greek in dollars, to the cent. Each part is rounded down or up so the parts add up to total exactly.",
@@ -10297,6 +10431,13 @@
           },
           "buying_power": {
             "$ref": "#/components/schemas/BuyingPower"
+          },
+          "margin": {
+            "type": "array",
+            "description": "The positions' margin requirement by underlying, with what holds it; absent from older servers.",
+            "items": {
+              "$ref": "#/components/schemas/MarginUnderlying"
+            }
           },
           "attribution": {
             "$ref": "#/components/schemas/Attribution"
