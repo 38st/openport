@@ -1337,7 +1337,10 @@ side, no buying-power check. All rule money is exact.
 | `fill_latency_ms` | Integer from 0 to 60,000 milliseconds on market time before a quote can execute an order; default 0 |
 | `impact_ticks` | Integer from 0 to 10 extra adverse ticks per additional displayed-size block; 0 keeps the displayed-size cap |
 | `fees` | Optional [itemized fee schedule](#fees) in place of the flat per-contract fee |
-| `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Plans use strategy margin and As displayed fills by default; custom rules can select portfolio margin |
+| `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Plans use strategy margin and As displayed fills by default; custom rules, or a margin override beside a plan, can select portfolio margin |
+| `account_type` | `margin` (default), `cash` or `ira`, what the account may hold (see account types below). A cash account or IRA uses strategy margin and enforces buying power; an order, bracket exit, exercise or share sale that would leave it holding a call no shares (or, in an IRA, no long call) cover, or short shares, rejects with `ACCOUNT_TYPE`, counting open orders as `defined_risk` does |
+| `house_margin_percent` | Integer from 0 to 400: a broker's house margin, raising each naked requirement (beyond its buy-back value) and each short sale's margin (beyond the shares' value) by that percentage under strategy margin, or each underlying's scan under portfolio margin; default 0 |
+| `pm_vol_shock` | Integer from 0 to 50: portfolio margin also takes each price shock with implied volatility this many points up and down; default 0 |
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), every open order on the contract cancels with `EXPIRY_CUTOFF` (DAY, GTC, armed and bracket exits alike, held or not), positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
 | `lock_balance` | Caps the trailing floor: the floor is the lesser of peak − drawdown and the lock, and once peak − drawdown reaches the lock the floor stays there and stops trailing (zero disables). A lock at or below the starting floor (starting balance − drawdown) therefore fixes the floor at the lock from the start: a static floor, which below the starting floor gives more room than `max_drawdown` alone would |
@@ -1440,8 +1443,8 @@ account: cash plus the positions at their marks (shares at their price), less th
 requirement and the reservations. Long options and shares therefore count as
 collateral and the account can borrow against them, so cash may go negative, while a
 short's value is owed out of the credit it brought in. The price scan and the minimum
-follow Cboe Rule 12.4 and FINRA Rule 4210(g); implied volatility is not shocked, and
-there is no broker's house margin on top. The scan reuses the risk snapshot's scenario
+follow Cboe Rule 12.4 and FINRA Rule 4210(g); implied volatility is shocked only with
+`pm_vol_shock`, and a broker's house margin is added only with `house_margin_percent`. The scan reuses the risk snapshot's scenario
 repricing but its grid is fixed, independent of `SessionConfig::scenarios`. If fresh valuations or share prices are missing, the
 snapshot flags incomplete data and uses strategy margin plus the option minimum
 until a complete scan is possible; normal order checks still require fresh data.
@@ -1454,13 +1457,39 @@ requirement, one entry per underlying: `{underlying, requirement, parts, scan}`.
 strategy margin each part names the positions it takes, as `{symbol, quantity}` legs
 (the underlying for shares; a position can be split between parts), with its kind
 (`naked`, `vertical`, `covered`, `straddle`, `short_shares`, `protected_shares`,
-`worst_loss`, or `long` for premium and shares paid in full) and its requirement; the
+`worst_loss`, `cash_secured` for a cash account's or IRA's short put, or `long` for
+premium and shares paid in full) and its requirement; the
 parts add up to the underlying's requirement, and the underlyings to `requirement`.
 Under portfolio margin `parts` is empty and `scan` gives the worst scan point
 (`spot_percent`, `vol_points`), its `loss` and the contract `minimum`; while a scan is
 incomplete, the entry shows strategy margin's parts with `scan` null and a requirement
 that adds the option minimum. The Positions page shows it as the margin requirement
 panel. The breakdown is derived from the positions and is not journaled.
+
+**Account types and house margin.** `account_type` says what the account may hold,
+as a broker's account types do. A `margin` account holds anything its margin allows. A
+`cash` account sells a call only against 100 shares it holds for each contract, never
+sells shares short, secures each short put with its strike in cash (`100 × strike`,
+the `cash_secured` part, instead of the naked requirement), and nets no spreads: a long
+covers nothing, so a credit spread holds its short put's strike and a call spread is
+refused. An `ira` (limited margin) adds spreads: verticals, condors and butterflies net
+as in a margin account, and a long call that expires with a short call or later covers
+it, but short puts are still cash-secured when nothing covers them and no straddle
+pairs. Neither uses portfolio margin, and both enforce buying power. The rule counts
+what the account cannot hold (`disallowed_shorts`) before and after each order,
+bracket exit, exercise (a long put's exercise sells shares) or share sale, with the open
+orders' sells as if filled; one that adds to it rejects with `ACCOUNT_TYPE`, so closing
+is always allowed. Assignment and delivery still happen as they come.
+`house_margin_percent` adds a broker's house requirement on top of Reg T: under
+strategy margin, each naked short's requirement beyond its buy-back value and each
+short sale's margin beyond the shares' value rise by that percentage (25 makes an
+at-the-money naked short hold 25% of spot, and short shares 162.5% of their value), while spreads,
+covered positions and worst losses, which hold only what they can lose, stay as they
+are; under portfolio margin, each underlying's requirement rises by it. `pm_vol_shock`
+widens the portfolio-margin scan to implied volatility up and down by that many points
+at each price shock, as the OCC's TIMS scan does. The terminal's Start a new attempt
+dialog sets all four beside the plan, and they can also stand beside a plan in
+`POST /api/account/reset` and `POST /api/accounts`.
 
 Each working order reserves what filling it now would cost: its fees, plus the change
 in the positions' margin requirement, plus the premium it pays less the premium it
@@ -2136,6 +2165,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `REPLAY_FAST_FORWARD` | The replay is preparing its start state; wait before submitting orders or changing playback |
 | `REPLAY_STEPPING` | A lockstep step (`PUT /api/replay {"until"}`) is playing; orders wait for its response and then use the paused market time |
 | `REPLAY_READ_ONLY`, `REPLAY_RUNNING` | A finished run refuses writes; a running run cannot be opened as history or deleted |
+| `ACCOUNT_TYPE` | A cash account's or IRA's order, bracket exit, exercise or share sale would leave it holding a call no shares (or, in an IRA, no long call) cover, or short shares, now or once the open orders fill |
 | `RUN_ENDED` | A saved replay run's order that was still working or armed when the run ended: its archive shows it cancelled, as it can no longer fill. The journal keeps it as it was |
 | `REPLAY_NOT_RESUMABLE` | HTTP 409: a saved replay run cannot resume: it has ended, or it was recorded by an older driver, or its recording, scenario or the exchange calendar has changed; the message says which |
 | `REPLAY_HISTORY_FAILED` | A saved replay run's journal cannot be opened, as when it was edited; the message gives the reason |
@@ -2426,16 +2456,18 @@ in its query for an account other than the main one (see [accounts](#accounts)).
 demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
-defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, fees, margin, buying_power, expiry_cutoff_seconds,
-lock_at_start, profit_basis, daily_loss_limit, daily_loss_basis, daily_loss_action, consistency_percent,
-consistency_basis, min_trading_days, min_profitable_days, profitable_day_profit, day_end}`.
+defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, fees, margin, account_type, house_margin_percent,
+pm_vol_shock, buying_power, expiry_cutoff_seconds, lock_at_start, profit_basis, daily_loss_limit,
+daily_loss_basis, daily_loss_action, consistency_percent, consistency_basis, min_trading_days,
+min_profitable_days, profitable_day_profit, day_end}`.
 `fees` is the optional [fee schedule](#fees).
-`defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `margin` and every field from `lock_at_start`
-on are optional when creating or resetting an account: `defined_risk` and `lock_at_start` default to false, the
-execution settings, counts and percentages to 0, `margin` to `"strategy"`, `profit_basis` to `"equity"`,
-`daily_loss_basis` to `"equity"`, `daily_loss_action` to `"lock"`, `consistency_basis` to `"total"` and `day_end`
-to `"17:00"`. Older journals missing these fields recover with the same defaults. Money is null for a disabled
-target, drawdown, daily loss limit or profitable-day profit; `drawdown_mode` is `intraday`, `end_of_day` or
+`defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `margin`, `account_type`,
+`house_margin_percent`, `pm_vol_shock` and every field from `lock_at_start` on are optional when creating or
+resetting an account: `defined_risk` and `lock_at_start` default to false, the execution settings, house margin,
+vol shock, counts and percentages to 0, `margin` to `"strategy"`, `account_type` to `"margin"`, `profit_basis` to
+`"equity"`, `daily_loss_basis` to `"equity"`, `daily_loss_action` to `"lock"`, `consistency_basis` to `"total"` and
+`day_end` to `"17:00"`. Older journals missing these fields recover with the same defaults. Money is null for a
+disabled target, drawdown, daily loss limit or profitable-day profit; `drawdown_mode` is `intraday`, `end_of_day` or
 `static`; `profit_basis` `equity` or `balance`; `daily_loss_basis` `equity`, `balance`, `higher` or `peak`;
 `daily_loss_action` `lock` or `fail`; `consistency_basis` `total` or `positive_days`; and `day_end` `HH:MM`
 New York time from `16:15` to `24:00`. Portfolio adds
@@ -2453,7 +2485,12 @@ orders recover their acceptance/trigger clocks and consumed depth.
 `POST /api/account/reset` and `POST /api/accounts` accept optional
 `fill_model: "as_displayed" | "conservative"` beside the plan or custom rules. It
 overrides only latency, impact and slippage for that account's new attempt. Optional
-`fee_model: "flat" | "itemized"` chooses its [fees](#fees).
+`fee_model: "flat" | "itemized"` chooses its [fees](#fees). They also accept `margin`,
+`account_type`, `house_margin_percent` and `pm_vol_shock` beside the plan or custom
+rules, overriding the account's margin the same way (the attempt still counts as the
+plan's own). Invalid rule values return HTTP 400 `INVALID_RULES`. Journals omit the
+account type, house margin and vol shock at their defaults, so existing journals keep
+their bytes.
 
 Money is an exact decimal string, quantities are integers, IDs/versions are strings,
 and timestamps use the same UTC ISO format as `as_of`. Analytical values may be

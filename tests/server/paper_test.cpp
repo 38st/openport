@@ -2196,7 +2196,8 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(intraday["initial_cash"], "100000.00");
   EXPECT_EQ(intraday["rules"], off({{"plan", "Intraday 100K"}, {"phase", "evaluation"}, {"profit_target", "10000.00"},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", nullptr}, {"buy_only", true},
-      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"},
+      {"account_type", "margin"}, {"house_margin_percent", 0}, {"pm_vol_shock", 0}, {"expiry_cutoff_seconds", 300}, {"payouts", nullptr}}));
   const auto funded = plans[9];
   EXPECT_EQ(funded["id"], "funded-intraday-100k");
   EXPECT_EQ(funded["name"], "Funded Intraday 100K");
@@ -2204,7 +2205,8 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(funded["initial_cash"], "100000.00");
   EXPECT_EQ(funded["rules"], off({{"plan", "Funded Intraday 100K"}, {"phase", "funded"}, {"profit_target", nullptr},
       {"max_drawdown", "5000.00"}, {"drawdown_mode", "intraday"}, {"lock_balance", "100000.00"}, {"buy_only", true},
-      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300},
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"},
+      {"account_type", "margin"}, {"house_margin_percent", 0}, {"pm_vol_shock", 0}, {"expiry_cutoff_seconds", 300},
       {"payouts", {{"qualifying_profit", "200.00"}, {"qualifying_days", 8}, {"withdrawal_percent", 50},
                    {"split_percent", 80}, {"minimum", "1000.00"},
                    {"caps", {"2000.00", "3000.00", "4000.00", "6000.00"}}}}}));
@@ -2439,7 +2441,7 @@ TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
   EXPECT_EQ(read(*engine, "/api/account")["rules"]["slippage_ticks"], 0);
   for (const auto& value : {json(-1), json(11)}) {
     rules["slippage_ticks"] = value;
-    expect_error(reset(rules), 422, "INVALID_RULES");
+    expect_error(reset(rules), 400, "INVALID_RULES");
   }
   for (const auto& value : {json(1.5), json("2"), json(true), json(nullptr)}) {
     rules["slippage_ticks"] = value;
@@ -2449,7 +2451,7 @@ TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
   // B59: an out-of-range cutoff is a rule the API understood, not a malformed request.
   for (const auto& value : {json(86'400), json(-1), json(std::numeric_limits<std::int64_t>::max()), json(std::numeric_limits<std::int64_t>::min())}) {
     rules["expiry_cutoff_seconds"] = value;
-    expect_error(reset(rules), 422, "INVALID_RULES");
+    expect_error(reset(rules), 400, "INVALID_RULES");
   }
   rules["expiry_cutoff_seconds"] = 1.5;
   expect_error(reset(rules), 400, "INVALID_REQUEST");
@@ -2458,7 +2460,7 @@ TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
   rules["expiry_cutoff_seconds"] = 0;
   for (const auto& value : {json("other"), json(1), json(nullptr)}) {
     rules["margin"] = value;
-    expect_error(reset(rules), 400, "INVALID_REQUEST");
+    expect_error(reset(rules), 400, "INVALID_RULES");
   }
   rules["margin"] = "portfolio";
   const auto response = reset(rules);
@@ -2467,6 +2469,58 @@ TEST_F(PaperEngine, OptionalExecutionRulesAreValidatedAndPublished) {
   EXPECT_EQ(json::parse(response.body)["rules"]["margin"], "portfolio");
   EXPECT_EQ(read(*engine, "/api/account")["rules"]["margin"], "portfolio");
   engine->stop();
+}
+
+TEST_F(PaperEngine, MarginSettingsStandBesidePlansAndPortfolioShowsTheBreakdown) {
+  engine->stop();
+  const auto journal = paper_path();
+  auto options = paper_options();
+  options.paper_accounts = journal.parent_path() / "accounts";
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  // An evaluation plan keeps its rules, and still counts as the plan's own, on the trader's IRA.
+  const auto reset = write(*engine, "POST", "/api/account/reset",
+      {{"plan", "eod-50k"}, {"reason", "ira"}, {"account_type", "ira"}, {"house_margin_percent", 25}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  const auto rules = json::parse(reset.body)["rules"];
+  EXPECT_EQ(rules["plan"], "End-of-day 50K");
+  EXPECT_EQ(rules["account_type"], "ira");
+  EXPECT_EQ(rules["house_margin_percent"], 25);
+  EXPECT_EQ(rules["pm_vol_shock"], 0);
+  EXPECT_EQ(rules["margin"], "strategy");
+  const auto portfolio = read(*engine, "/api/portfolio");
+  ASSERT_TRUE(portfolio.contains("margin"));
+  EXPECT_EQ(portfolio["margin"], json::array());
+  // A cash account cannot take portfolio margin; nor can an unknown type be named.
+  expect_error(write(*engine, "POST", "/api/account/reset",
+      {{"plan", "practice"}, {"reason", "bad"}, {"account_type", "cash"}, {"margin", "portfolio"}}), 400, "INVALID_RULES");
+  expect_error(write(*engine, "POST", "/api/account/reset",
+      {{"plan", "practice"}, {"reason", "bad"}, {"account_type", "roth"}}), 400, "INVALID_RULES");
+  expect_error(write(*engine, "POST", "/api/account/reset",
+      {{"plan", "practice"}, {"reason", "bad"}, {"pm_vol_shock", 51}}), 400, "INVALID_RULES");
+  for (const auto& [key, values] : std::vector<std::pair<std::string, std::vector<json>>>{
+      {"account_type", {"roth", 1, nullptr}}, {"house_margin_percent", {-1, 401, 1.5, true, "25", nullptr}},
+      {"pm_vol_shock", {-1, 51, 1.5, true, "5", nullptr}}, {"margin", {"unknown", 1, nullptr}}}) {
+    for (const auto& value : values) {
+      expect_error(write(*engine, "POST", "/api/account/reset",
+          {{"plan", "practice"}, {"reason", "bad margin"}, {key, value}}), 400, "INVALID_RULES");
+      expect_error(write(*engine, "POST", "/api/accounts",
+          {{"name", "Bad margin"}, {"plan", "practice"}, {key, value}}), 400, "INVALID_RULES");
+      auto custom = rules;
+      custom["plan"] = "Custom";
+      custom[key] = value;
+      expect_error(write(*engine, "POST", "/api/account/reset",
+          {{"initial_cash", "50000"}, {"rules", custom}, {"reason", "bad margin"}}), 400, "INVALID_RULES");
+    }
+  }
+  const auto created = write(*engine, "POST", "/api/accounts",
+      {{"name", "Portfolio"}, {"plan", "practice"}, {"margin", "portfolio"}, {"pm_vol_shock", 5}});
+  ASSERT_EQ(created.status, 201) << created.body;
+  const auto account = read(*engine, "/api/account?account=portfolio")["rules"];
+  EXPECT_EQ(account["margin"], "portfolio");
+  EXPECT_EQ(account["pm_vol_shock"], 5);
+  EXPECT_EQ(account["account_type"], "margin");
 }
 
 TEST_F(PaperEngine, FillPresetsPreservePlanRulesAndValidateCustomSettings) {
@@ -2510,14 +2564,14 @@ TEST_F(PaperEngine, FillPresetsPreservePlanRulesAndValidateCustomSettings) {
       custom[key] = value;
       const auto response = write(*engine, "POST", "/api/account/reset",
           {{"initial_cash", "100000"}, {"rules", custom}, {"reason", "invalid fill setting"}});
-      expect_error(response, value.is_number_integer() ? 422 : 400,
+      expect_error(response, 400,
                    value.is_number_integer() ? "INVALID_RULES" : "INVALID_REQUEST");
     }
   }
   // B36: a new account's custom rules cannot borrow a preset's name either.
   auto named = rules;
   named["plan"] = "Practice";
-  expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Borrowed"}, {"initial_cash", "10000"}, {"rules", named}}), 422, "INVALID_RULES");
+  expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Borrowed"}, {"initial_cash", "10000"}, {"rules", named}}), 400, "INVALID_RULES");
   const auto same = write(*engine, "POST", "/api/accounts", {{"name", "Same rules"}, {"initial_cash", "100000"}, {"rules", named}});
   EXPECT_EQ(same.status, 201) << same.body;  // the preset's own balance and rules may keep its name
   rules["fill_latency_ms"] = 60'000;
@@ -2581,7 +2635,7 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
                    {"buy_only", false}, {"buying_power", false}, {"expiry_cutoff_seconds", 0}};
   json named = rules;
   named["plan"] = "Intraday 25K";
-  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", named}, {"reason", "eval"}}), 422, "INVALID_RULES");
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", named}, {"reason", "eval"}}), 400, "INVALID_RULES");
   ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", rules}, {"reason", "eval"}}).status, 200);
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "custom", "4.20")).status, 201);
   quote("4.40", "4.60");
@@ -2639,7 +2693,7 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}}), 400, "INVALID_REQUEST");
   custom["payouts"]["qualifying_days"] = 3;
   custom["lock_balance"] = "10000";
-  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}}), 422, "INVALID_RULES");
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}}), 400, "INVALID_RULES");
   custom["profit_target"] = nullptr;
   const auto custom_reset = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}});
   ASSERT_EQ(custom_reset.status, 200) << custom_reset.body;

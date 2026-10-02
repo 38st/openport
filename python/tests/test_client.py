@@ -278,3 +278,19 @@ def test_extended_orders_and_limit_flatten(stub):
                     method(type="limit", limit_ticks=ticks)
             with pytest.raises(ValueError):
                 method(type="market", limit_ticks=0)
+
+
+def test_margin_settings_pass_through_account_requests(stub):
+    from conftest import shaped
+    original = stub.respond
+    def respond(method, target, headers, body):
+        original(method, target, headers, body)
+        return 200, shaped("Account" if "/reset" in target else "CreateAccountResponse")
+    stub.respond = respond
+    client = Client(stub.url)
+    settings = {"plan": "practice", "margin": "portfolio", "account_type": "margin",
+                "house_margin_percent": 25, "pm_vol_shock": 5}
+    client.reset_account("margin test", **settings)
+    assert stub.requests[-1][3] == {"reason": "margin test", **settings}
+    client.create_account("Portfolio", **settings)
+    assert stub.requests[-1][3] == {"name": "Portfolio", **settings}

@@ -11,6 +11,13 @@ sequences, and open-interest refreshes check cancellation between requests.
 System DNS resolution uses synchronous `getaddrinfo`; shutdown cannot interrupt
 it until the operating system returns.
 
+Account margin settings live in each paper account's rules and journal. The terminal's
+new-attempt and new-account dialogs, or the corresponding reset/create API requests,
+select strategy or portfolio margin, margin/cash/IRA account type, house margin and
+portfolio IV shock. These settings preserve a preset's evaluation identity; cash and
+IRA accounts require strategy margin and buying-power enforcement. See
+[account rules](paper-trading.md#account-rules-and-evaluations) for their limits and delivery behavior.
+
 The event queue has a default capacity of 65,536 retained events. Repeated option
 quotes, underlying quotes, vendor Greeks, volume and open interest replace an unconsumed
 update of the same kind in place. A contract definition prevents option updates,

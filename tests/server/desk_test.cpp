@@ -249,8 +249,8 @@ TEST(DeskEquity, APassedAttemptsHistoryHoldsThePassingEquityAndTomorrowsFloorSto
     for (const auto& sample : samples) {
       if (sample.time < pass) continue;
       ++later;
-      if (mode == trading::DrawdownMode::EndOfDay) EXPECT_EQ(sample.tomorrow_floor, sample.floor);
-      else EXPECT_FALSE(sample.tomorrow_floor);
+      if (mode == trading::DrawdownMode::EndOfDay) { EXPECT_EQ(sample.tomorrow_floor, sample.floor); }
+      else { EXPECT_FALSE(sample.tomorrow_floor); }
     }
     EXPECT_GE(later, 3U);  // the passing mark, the liquidation fill and 10:01
   }
@@ -351,6 +351,15 @@ TEST(DeskEquity, OnlyAPassOfThePresetItselfUnlocksItsFundedPlan) {
   auto conservative = evaluation->rules;
   conservative.fill_latency_ms = 1000; conservative.slippage_ticks = 1; conservative.impact_ticks = 1;
   EXPECT_TRUE(server::follows_plan(*evaluation, evaluation->initial_cash, conservative));
+  conservative.margin = trading::MarginMode::Portfolio;
+  conservative.house_margin_percent = 25;
+  conservative.pm_vol_shock = 5;
+  EXPECT_TRUE(server::follows_plan(*evaluation, evaluation->initial_cash, conservative));
+  conservative.margin = trading::MarginMode::Strategy;
+  conservative.account_type = trading::AccountType::Ira;
+  EXPECT_TRUE(server::follows_plan(*evaluation, evaluation->initial_cash, conservative));
+  conservative.buying_power = false;
+  EXPECT_FALSE(server::follows_plan(*evaluation, evaluation->initial_cash, conservative));
   EXPECT_FALSE(server::follows_plan(*evaluation, Money::parse("1000000"), evaluation->rules));
   auto looser = evaluation->rules;
   looser.max_drawdown = Money::parse("5000");
