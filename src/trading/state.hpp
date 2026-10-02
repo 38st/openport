@@ -63,12 +63,15 @@ inline void to_json(Json& j, const OrderChangeRecord& c) {
   if (c.previous_limit_price) j["previous_limit_price"] = *c.previous_limit_price;
   if (c.previous_trigger_level) j["previous_trigger_level"] = *c.previous_trigger_level;
   if (!c.decision.ok()) j["decision"] = c.decision;
+  if (c.time_in_force) j["time_in_force"] = *c.time_in_force;
+  if (c.previous_time_in_force) j["previous_time_in_force"] = *c.previous_time_in_force;
 }
 inline void from_json(const Json& j, OrderChangeRecord& c) {
   j.at("time").get_to(c.time); j.at("actor").get_to(c.actor); j.at("previous_quantity").get_to(c.previous_quantity);
   added_field(j, "quantity", c.quantity); added_field(j, "limit_price", c.limit_price);
   added_field(j, "trigger_level", c.trigger_level); added_field(j, "previous_limit_price", c.previous_limit_price);
   added_field(j, "previous_trigger_level", c.previous_trigger_level); added_field(j, "decision", c.decision);
+  added_field(j, "time_in_force", c.time_in_force); added_field(j, "previous_time_in_force", c.previous_time_in_force);
 }
 inline void to_json(Json& j, const Order& o) {
   j = Json{{"id", o.id}, {"request", o.request}, {"status", o.status}, {"filled_quantity", o.filled_quantity},

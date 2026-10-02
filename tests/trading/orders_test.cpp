@@ -118,7 +118,7 @@ TEST(TradingOrders, AnArmedOrderMovesItsLevelAndActivatesWhenTheNewOneIsReached)
   EXPECT_EQ(order(s, 1).triggered_at, f.time);
 }
 
-TEST(TradingOrders, BracketExitsChangeTheirLevelOrPriceButNotTheirSize) {
+TEST(TradingOrders, BracketExitsChangeTheirLevelOrPriceAndNeverOutgrowTheirPosition) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);
   f.seed(s);
@@ -130,7 +130,7 @@ TEST(TradingOrders, BracketExitsChangeTheirLevelOrPriceButNotTheirSize) {
   ASSERT_EQ(order(s, 3).role, OrderRole::TakeProfit);
   ASSERT_TRUE(s.modify(2, level("3.80"), f.time).decision.ok());
   EXPECT_EQ(order(s, 2).request.trigger->level, m("3.80"));
-  EXPECT_EQ(s.modify(2, size(1), f.time).decision.code, Reason::INVALID_ORDER);
+  EXPECT_EQ(s.modify(2, size(3), f.time).decision.code, Reason::INVALID_ORDER);
   ASSERT_TRUE(s.modify(3, price("4.90"), f.time).decision.ok());
   EXPECT_EQ(order(s, 3).request.limit_price, m("4.90"));
   EXPECT_EQ(s.modify(3, price("4.95"), f.time).decision.code, Reason::INVALID_TICK);
@@ -140,6 +140,48 @@ TEST(TradingOrders, BracketExitsChangeTheirLevelOrPriceButNotTheirSize) {
   s.on_quotes({f.quote("3.80", "4.00")}, {f.valuation()}, f.time);
   EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
   EXPECT_EQ(order(s, 3).status, OrderStatus::Cancelled);
+}
+
+TEST(TradingOrders, ASmallerTargetTakesPartOffAndTheStopKeepsProtectingTheRest) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  auto entry = f.limit("entry", 2, "4.20");
+  entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.50")}, {}},
+                          ExitSpec{{}, m("5.00")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  ASSERT_TRUE(s.modify(3, size(1), f.time).decision.ok());
+  EXPECT_EQ(order(s, 3).request.quantity, 1);
+  // The target sells one at 5.00; the stop stays armed for the one still held.
+  f.next();
+  s.on_quotes({f.quote("5.00", "5.20")}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(s, 3).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, 2).request.quantity, 1);
+  // An exit keeps its time in force.
+  OrderChange gtc;
+  gtc.tif = TimeInForce::Gtc;
+  EXPECT_EQ(s.modify(2, gtc, f.time).decision.code, Reason::INVALID_ORDER);
+}
+
+TEST(TradingOrders, ARestingLimitSwitchesBetweenDayAndGtcInPlace) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("rest", 1, "3.90"), f.time).decision.ok());
+  const auto session_end = order(s, 1).day_end;
+  OrderChange change;
+  change.tif = TimeInForce::Gtc;
+  ASSERT_TRUE(s.modify(1, change, f.time).decision.ok());
+  EXPECT_EQ(order(s, 1).request.tif, TimeInForce::Gtc);
+  EXPECT_GT(order(s, 1).day_end, session_end);
+  change.tif = TimeInForce::Day;
+  ASSERT_TRUE(s.modify(1, change, f.time).decision.ok());
+  EXPECT_EQ(order(s, 1).request.tif, TimeInForce::Day);
+  EXPECT_EQ(order(s, 1).day_end, session_end);
+  // IOC is no resting time in force.
+  change.tif = TimeInForce::Ioc;
+  EXPECT_EQ(s.modify(1, change, f.time).decision.code, Reason::INVALID_ORDER);
 }
 
 TEST(TradingOrders, ARetryOfAChangedOrderStillGetsTheOrderAsItNowStands) {

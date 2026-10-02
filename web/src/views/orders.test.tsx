@@ -83,15 +83,19 @@ describe("working orders", () => {
     expect(html).toContain("Limit price")
     expect(html).toContain('value="4.60"')
     expect(html).not.toContain("Trigger level")
+    // A resting limit switches between DAY and GTC in place.
+    expect(html).toContain("Time in force")
+    expect(html).toContain("GTC: good until expiry")
     expect(html).toContain("No changes</button>")
   })
 
-  it("move a stop's trigger but not its size", () => {
+  it("move a stop's trigger and its size within the position, but not its time in force", () => {
     const html = render(<EditOrderDialog order={stop} trading={trading} onClose={() => {}} onDone={() => {}} />)
     expect(html).toContain("Trigger level: activates when bid ≤ $3.50")
-    expect(html).toContain("A bracket exit&#x27;s size follows the position it protects.")
-    expect(html).not.toContain("Quantity")
+    expect(html).toContain("A bracket exit closes at most the position it protects")
+    expect(html).toContain("Quantity")
     expect(html).not.toContain("Limit price")
+    expect(html).not.toContain("Time in force")
   })
 
   it("warn before cancelling an exit that protects a position", () => {

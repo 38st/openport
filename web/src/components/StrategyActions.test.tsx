@@ -151,6 +151,28 @@ it("rolls the call side of a condor with new strikes as one four-leg order", asy
   ])
 }, renderTimeout)
 
+it("rolls a whole condor as one eight-leg order, and a vertical within its expiry", async () => {
+  const later = { ...selection.expiry, id: "2026-10-23PM", expiry: "2026-10-23" }
+  const current = { ...selection.expiry, id: group.expiry }
+  const rows = (next: boolean): ChainRow[] => [6880, 6890, 6900, 6910, 7100, 7110, 7120, 7130].map((strike) => ({
+    strike, iv: 0.2, gex: null, vex: null,
+    call: { ...quote, symbol: `SPXW  2610${next ? "23" : "16"}C0${strike}000` },
+    put: { ...quote, symbol: `SPXW  2610${next ? "23" : "16"}P0${strike}000` },
+  }))
+  vi.spyOn(api, "summary").mockResolvedValue({ expiries: [current, later] } as Awaited<ReturnType<typeof api.summary>>)
+  vi.spyOn(api, "chain").mockImplementation(async (_underlying, id) => ({
+    expiry: id === later.id ? later : current, spot: 7000, strikes: rows(id === later.id),
+  }) as Chain)
+  await render(<RollDialog group={group} trading={trading} onClose={() => {}} />)
+  await waitForRender(() => expect(host.querySelector("form")).not.toBeNull())
+  await setField("Roll side", "both")
+  await waitForRender(() => expect(host.textContent).toContain("8 legs"))
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  const request = vi.mocked(api.submitOrder).mock.calls[0]![0]
+  expect(request.legs).toHaveLength(8)
+  expect(request.legs!.slice(4).every((leg) => leg.symbol.startsWith("SPXW  261023"))).toBe(true)
+}, renderTimeout)
+
 it("warns for the thin leg and shows per-leg market quantities and displayed sides", async () => {
   const legs = spread.legs.map(({ leg }, index) => ({ ...leg, side: index === 0 ? "sell" as const : "buy" as const,
     ratio: index === 0 ? 1 : 2, quote: { ...quote, bid: 5, ask: index === 0 ? 5.2 : 8, mid: index === 0 ? 5.1 : 6.5,

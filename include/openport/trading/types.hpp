@@ -93,6 +93,9 @@ struct Leg {
   bool operator==(const Leg&) const = default;
 };
 inline constexpr std::size_t kMaxLegs = 4;
+/// A roll may take up to eight legs, as a condor rolls whole: those past four must
+/// close held contracts, so no more than four legs open.
+inline constexpr std::size_t kMaxRollLegs = 8;
 inline constexpr Quantity kMaxRatio = 10;
 
 struct OrderRequest {
@@ -107,7 +110,8 @@ struct OrderRequest {
   std::optional<Trigger> trigger;
   /// Exits created as this entry fills, one cancelling the other.
   std::optional<Bracket> bracket;
-  /// Multi-leg order: two to four legs on one underlying, filled together. The
+  /// Multi-leg order: two to four legs on one underlying, filled together, or up
+  /// to eight for a roll whose legs past four close held contracts. The
   /// symbol is empty and the side Buy; `quantity` counts units and
   /// `limit_price` is the net per unit: positive a debit to pay at most,
   /// negative a credit to receive at least.
@@ -138,6 +142,9 @@ struct OrderChangeRecord {
   std::optional<Money> previous_limit_price;
   std::optional<Money> previous_trigger_level;
   Decision decision;
+  /// A change of time in force, and the one before it; absent for other changes.
+  std::optional<TimeInForce> time_in_force = {};
+  std::optional<TimeInForce> previous_time_in_force = {};
 };
 struct Order {
   OrderId id = 0;  ///< Also the acceptance priority sequence; never reused.
@@ -211,7 +218,7 @@ struct TradeReview {
   bool finished = false;
   /// A whole-trade review that began part way through the trade: its extremes
   /// run from this time (the account grouped its round trips then).
-  std::optional<Timestamp> since;
+  std::optional<Timestamp> since = {};
 };
 /// The book a fill traded against, as the account held it: both sides and their
 /// displayed sizes, what was left of the taken side's paper budget before the

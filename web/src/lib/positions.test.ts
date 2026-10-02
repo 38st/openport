@@ -72,7 +72,13 @@ describe("held strategies", () => {
       "buy 6900 2026-10-16PM", "sell 6890 2026-10-16PM", "sell 6900 2026-10-23PM", "buy 6890 2026-10-23PM"])
     expect(rollPlan(spread!, { id: "2026-10-23PM", strikes: [row(6900)] })).toEqual({ reason: "Oct 23 lists no 6890 put." })
     expect(rollPlan(spread!, { id: "2026-10-23PM", strikes: [row(6890), row(6900, false)] })).toEqual({ reason: "Too far out" })
-    expect(rollPlan(spread!, { id: "2026-10-09PM", strikes: [] })).toEqual({ reason: "Roll to a later expiry." })
+    expect(rollPlan(spread!, { id: "2026-10-09PM", strikes: [] })).toEqual({ reason: "Roll to the same or a later expiry." })
+    // Within the same expiry, a roll moves every strike.
+    const same = (strike: number): ChainRow => ({ ...row(strike), put: { ...row(strike).put!, symbol: `SPXW  261016P0${strike}000` } })
+    expect(rollPlan(spread!, { id: "2026-10-16PM", strikes: [same(6900), same(6890)] })).toEqual({ reason: "Choose new strikes for every leg to roll within the same expiry." })
+    const down = rollPlan(spread!, { id: "2026-10-16PM", strikes: [same(6850), same(6840)] }, undefined, [6850, 6840])
+    expect("legs" in down && down.legs.map((l) => `${l.side} ${l.strike} ${l.expiry}`)).toEqual([
+      "buy 6900 2026-10-16PM", "sell 6890 2026-10-16PM", "sell 6850 2026-10-16PM", "buy 6840 2026-10-16PM"])
   })
 
   it("settle AM contracts at the 09:30 open and PM ones at the 16:00 close, New York time", () => {

@@ -54,8 +54,9 @@ simulation's limits.
   browser. Legs fill together at a net debit or credit. The ticket shows the P&L at
   expiry and today, the expected move, and the probability of profit from the smile's
   risk-neutral distribution, skew included. A held strategy is one row with its net
-  P&L and Greeks, closed or rolled to a later expiry in one order, and a roll or an
-  adjustment stays one whole trade with its own review. Spreads take OCO
+  P&L and Greeks, closed or rolled in one order: to a later expiry, to new strikes in
+  the same expiry, or a whole condor as one eight-leg order. A roll or an adjustment
+  stays one whole trade with its own review. Spreads take OCO
   exits on entry or while held, with stops on the closing net or the underlying, and
   a condor or iron butterfly can roll its put or call vertical as one four-leg order.
 - **Evaluations**: a profit target and a trailing drawdown floor (intraday or end of day)
@@ -309,3 +310,5 @@ the simulation's limits.
       entered one by one grouped into one trade; held strategies over the API
 - [x] Return on buying power for trades, strategies and whole trades, in the Journal,
       playbook reports and backtests
+- [x] Same-expiry strike rolls and whole-condor rolls, exits resized in place and DAY or
+      GTC changed on a resting order

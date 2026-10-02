@@ -134,9 +134,11 @@ export function closingPlan(group: StrategyGroup): { legs: StrategyLeg[]; units:
 }
 
 /**
- * A roll as one order: close the strategy's legs and open the same strikes, types
- * and sides at a later expiry. At most two legs roll together, so the order stays
- * within four legs; the target expiry must list every strike.
+ * A roll as one order: close the strategy's legs and open the same types and sides
+ * at a later expiry or new strikes, the same expiry included. One side of a condor
+ * rolls as a four-leg order, the whole condor as an eight-leg one (the server takes
+ * up to eight legs when no more than four open); the target expiry must list every
+ * strike.
  */
 export function rollSides(group: StrategyGroup): ("put" | "call")[] {
   return (["put", "call"] as const).filter((type) => {
@@ -151,9 +153,9 @@ export function rollPlan(group: StrategyGroup, target: { id: string; strikes: re
     if (!rollSides(group).includes(side)) return { reason: "Choose a held put or call vertical to roll." }
     group = { ...group, legs: group.legs.filter(({ leg }) => leg.type === side) }
   }
-  if (group.legs.length > 2) return { reason: "Choose the put or call side to roll as one four-leg order." }
+  if (group.legs.length > 4) return { reason: "Choose the put or call side to roll." }
   if (new Set(group.legs.map(({ leg }) => leg.expiry)).size > 1) return { reason: "Calendars and diagonals roll leg by leg." }
-  if (group.legs.some(({ leg }) => leg.expiry >= target.id)) return { reason: "Roll to a later expiry." }
+  if (group.legs.some(({ leg }) => leg.expiry > target.id)) return { reason: "Roll to the same or a later expiry." }
   const opening: StrategyLeg[] = []
   for (const [index, { leg }] of group.legs.entries()) {
     const strike = strikes?.[index] ?? leg.strike
@@ -162,6 +164,8 @@ export function rollPlan(group: StrategyGroup, target: { id: string; strikes: re
     if (!quote.tradable) return { reason: quote.untradable_reason ?? `The ${leg.strike} ${leg.type} is not tradable.` }
     opening.push({ ...leg, strike, symbol: quote.symbol, expiry: target.id, quote })
   }
+  if (opening.some((leg, index) => leg.symbol === group.legs[index]!.leg.symbol))
+    return { reason: "Choose new strikes for every leg to roll within the same expiry." }
   return { units: group.units, legs: [...closingPlan(group).legs, ...opening] }
 }
 
