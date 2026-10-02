@@ -374,6 +374,12 @@ TEST(TradingMultiLeg, PortfolioMarginAllowsAStraddleThatStrategyMarginCannotFund
       // Buying power is equity, cash less the shorts' buy-back value, less the requirement.
       EXPECT_EQ(s.snapshot()->buying_power.available, s.snapshot()->equity - *expected);
       EXPECT_GT(s.snapshot()->buying_power.available, Money{});
+      // The snapshot's breakdown carries the scan behind it.
+      const auto& detail = s.snapshot()->margin;
+      ASSERT_EQ(detail.size(), 1U);
+      EXPECT_EQ(detail[0].requirement, *expected);
+      ASSERT_TRUE(detail[0].scan);
+      EXPECT_TRUE(detail[0].parts.empty());
     }
   }
 }
@@ -394,6 +400,13 @@ TEST(TradingMultiLeg, AShortStrangleHoldsItsGreaterSideUnderStrategyMargin) {
   for (const auto& p : snap->positions) values = values + *p.mark * 100;
   EXPECT_EQ(snap->buying_power.short_requirement, m("90000") + values);
   EXPECT_GT(snap->buying_power.available, Money{});
+  // The snapshot names what holds it: one straddle of both shorts.
+  ASSERT_EQ(snap->margin.size(), 1U);
+  EXPECT_EQ(snap->margin[0].requirement, snap->buying_power.short_requirement);
+  EXPECT_FALSE(snap->margin[0].scan);
+  ASSERT_EQ(snap->margin[0].parts.size(), 1U);
+  EXPECT_EQ(snap->margin[0].parts[0].kind, MarginPartKind::Straddle);
+  EXPECT_EQ(snap->margin[0].parts[0].legs.size(), 2U);
 }
 
 TEST(TradingMultiLeg, CreditSpreadFillsBothLegsTogetherAtTheFarSides) {

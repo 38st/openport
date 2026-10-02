@@ -18,7 +18,8 @@ function wireType(schema: Schema): string {
 }
 
 describe("checked API core types", () => {
-  it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus"])("%s matches OpenAPI fields, types and nullability", (name) => {
+  it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus",
+    "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
     const fields = [...body!.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]

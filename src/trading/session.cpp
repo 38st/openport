@@ -464,18 +464,26 @@ Money position_value(const State& s, const MarginBook& book) {
     if (const auto price = stock_price(s, symbol)) value = value + *price * stock.shares;
   return value;
 }
-Margin margin_of(const State& s, const MarginBook& book) {
+std::vector<MarginLeg> margin_legs(const State& s, const MarginBook& book) {
   std::vector<MarginLeg> legs;
   for (const auto& [symbol, entry] : book) legs.push_back({s.contracts.at(symbol), entry.first, entry.second, spot_for(s, symbol)});
+  return legs;
+}
+/// Fresh share prices for the portfolio-margin scan.
+std::map<std::string, double> share_prices(const State& s) {
+  std::map<std::string, double> prices;
+  for (const auto& [symbol, stock] : s.ledger.stocks())
+    if (const auto price = stock_price(s, symbol)) prices[symbol] = price->dollars();
+  return prices;
+}
+Margin margin_of(const State& s, const MarginBook& book) {
+  const auto legs = margin_legs(s, book);
   Money minimum;
   if (s.config.rules.margin == MarginMode::Portfolio) {
-    std::map<std::string, double> prices;
-    for (const auto& [symbol, stock] : s.ledger.stocks())
-      if (const auto price = stock_price(s, symbol)) prices[symbol] = price->dollars();
     // Portfolio margin is taken from equity: cash already holds shorts' credits and
     // paid for longs, so the positions' value is what they are worth on top of it.
     if (const auto scanned = portfolio_margin_requirement(legs, s.valuations, s.time,
-        s.config.limits.max_valuation_age, s.ledger.stocks(), prices))
+        s.config.limits.max_valuation_age, s.ledger.stocks(), share_prices(s)))
       return {*scanned, *scanned - position_value(s, book)};
     // An incomplete scan falls back to strategy margin plus the option minimum.
     // The snapshot flags missing data and user fills require fresh valuations.
@@ -486,6 +494,24 @@ Margin margin_of(const State& s, const MarginBook& book) {
   return {strategy, strategy};
 }
 Money requirement(const State& s, const MarginBook& book) { return margin_of(s, book).held; }
+/// The held positions' requirement by underlying, with what holds it, as
+/// margin_of reckons it: an incomplete portfolio scan falls back to strategy
+/// margin's parts, each underlying adding the option minimum.
+std::vector<MarginUnderlying> margin_detail(const State& s) {
+  const auto legs = margin_legs(s, held_book(s));
+  const bool portfolio = s.config.rules.margin == MarginMode::Portfolio;
+  if (portfolio)
+    if (auto scanned = portfolio_margin_breakdown(legs, s.valuations, s.time, s.config.limits.max_valuation_age,
+        s.ledger.stocks(), share_prices(s)))
+      return std::move(*scanned);
+  auto detail = margin_breakdown(legs, margin_stocks(s));
+  if (portfolio)
+    for (auto& item : detail)
+      for (const auto& leg : legs)
+        if (leg.contract.underlying == item.underlying)
+          item.requirement = item.requirement + Money::from_double(0.375 * leg.contract.multiplier) * magnitude(leg.quantity);
+  return detail;
+}
 /// Buying power that positions do not hold: cash less their margin requirement.
 Money free_power(const State& s) { return s.ledger.account().cash - requirement(s, held_book(s)); }
 struct Use {
@@ -756,6 +782,7 @@ TradingSnapshot snapshot_of(const State& s) {
   out.pending_applied_at = s.pending_applied_at;
   out.soft_floor = m.soft_floor;
   out.buying_power = m.buying_power;
+  out.margin = margin_detail(s);
   out.closures = s.closures;
   out.attempts = s.attempts;
   out.stock_fills = s.stock_fills;

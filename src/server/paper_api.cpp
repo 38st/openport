@@ -380,6 +380,25 @@ Money average_price(const Position& position) {
   const auto rounded = static_cast<std::int64_t>((numerator + denominator / 2) / denominator);
   return Money::from_micros(negative ? -rounded : rounded);
 }
+/// The requirement by underlying: strategy margin's parts, each naming the
+/// positions it takes, or the portfolio-margin scan's worst point.
+json margin_json(const std::vector<MarginUnderlying>& margin) {
+  constexpr const char* kinds[] = {"naked", "vertical", "covered", "straddle", "short_shares", "protected_shares", "worst_loss", "long"};
+  json result = json::array();
+  for (const auto& item : margin) {
+    json parts = json::array();
+    for (const auto& part : item.parts) {
+      json legs = json::array();
+      for (const auto& [symbol, quantity] : part.legs) legs.push_back({{"symbol", symbol}, {"quantity", quantity}});
+      parts.push_back({{"kind", kinds[static_cast<int>(part.kind)]}, {"legs", legs}, {"requirement", part.requirement.str()}});
+    }
+    json scan = nullptr;
+    if (item.scan) scan = {{"loss", item.scan->loss.str()}, {"spot_percent", item.scan->spot_percent},
+                           {"vol_points", item.scan->vol_points}, {"minimum", item.scan->minimum.str()}};
+    result.push_back({{"underlying", item.underlying}, {"requirement", item.requirement.str()}, {"parts", parts}, {"scan", scan}});
+  }
+  return result;
+}
 json portfolio_json(const TradingView& view) {
   const auto& s = *view.snapshot;
   json positions = json::array();
@@ -426,7 +445,8 @@ json portfolio_json(const TradingView& view) {
           {"start_of_day_equity", s.start_of_day_equity.str()}, {"day_pnl", (s.equity - s.start_of_day_equity).str()},
           {"realised", s.account.realised.str()}, {"unrealised", s.unrealised.str()}, {"fees", s.account.fees.str()},
           {"valuation_complete", s.valuation_complete}, {"quality_flags", flags}, {"positions", positions}, {"stocks", stocks},
-          {"buying_power", buying_power_json(s.buying_power)}, {"attribution", attribution_json(s.attribution)}};
+          {"buying_power", buying_power_json(s.buying_power)}, {"margin", margin_json(s.margin)},
+          {"attribution", attribution_json(s.attribution)}};
 }
 json account_json(const TradingView& view) {
   const auto& s = *view.snapshot;

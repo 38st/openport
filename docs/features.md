@@ -185,6 +185,9 @@ it. An order that would use buying power must fit within it;
 anything that frees buying power (closing, buying back a short, buying protection) is
 always allowed, even when the account is short of it. A close whose longs also cover
 other shorts must carry those shorts, like selling a spread's long leg alone.
+The Positions page breaks the requirement down by underlying, naming the positions
+each part holds (a spread, a covered call, a straddle, a naked short) and what it
+needs, or the portfolio scan's worst point.
 Custom plans can instead select portfolio margin, as Cboe's and FINRA's rules set it:
 each underlying holds its largest loss across a price scan (−8% to +6% for index
 products, ±15% for stocks and ETFs), at least $37.50 a contract, and buying power is

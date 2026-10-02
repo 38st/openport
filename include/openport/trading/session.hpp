@@ -69,6 +69,9 @@ struct TradingSnapshot {
   std::optional<Money> soft_floor;
   Timestamp pending_applied_at = 0;
   BuyingPower buying_power;
+  /// The positions' margin requirement by underlying, with the parts that hold
+  /// it. Derived from the positions, so snapshot records do not carry it.
+  std::vector<MarginUnderlying> margin;
   SharedVector<Closure> closures;     ///< Settlements and resets, in sequence.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
   SharedVector<StockFill> stock_fills;    ///< Every change in shares held, oldest first.

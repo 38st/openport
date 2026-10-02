@@ -1150,6 +1150,19 @@ The historical `short_requirement` field carries the whole requirement in portfo
 mode, longs and shares included; `requirement` carries the same amount under a name
 that fits both modes. Strategy mode pairs shares with options as above.
 
+`TradingSnapshot::margin` and the portfolio's `margin` array show what holds the
+requirement, one entry per underlying: `{underlying, requirement, parts, scan}`. Under
+strategy margin each part names the positions it takes, as `{symbol, quantity}` legs
+(the underlying for shares; a position can be split between parts), with its kind
+(`naked`, `vertical`, `covered`, `straddle`, `short_shares`, `protected_shares`,
+`worst_loss`, or `long` for premium and shares paid in full) and its requirement; the
+parts add up to the underlying's requirement, and the underlyings to `requirement`.
+Under portfolio margin `parts` is empty and `scan` gives the worst scan point
+(`spot_percent`, `vol_points`), its `loss` and the contract `minimum`; while a scan is
+incomplete, the entry shows strategy margin's parts with `scan` null and a requirement
+that adds the option minimum. The Positions page shows it as the margin requirement
+panel. The breakdown is derived from the positions and is not journaled.
+
 Each working order reserves what filling it now would cost: its fees, plus the change
 in the positions' margin requirement, plus the premium it pays less the premium it
 receives, and never less than its fees (new shorts are valued at the order's price, or
@@ -1928,7 +1941,8 @@ an account: `defined_risk` defaults to false, the execution settings to 0, and
 fields recover with the same defaults. Money is null for a disabled target or
 drawdown and `drawdown_mode` `intraday` or `end_of_day`. Portfolio adds
 `buying_power: {available, reserved, short_requirement, requirement}` (`requirement`
-is the same amount as `short_requirement`, named for both margin modes); orders add `origin`
+is the same amount as `short_requirement`, named for both margin modes) and `margin`,
+the requirement by underlying with what holds it (see buying power under Account rules); orders add `origin`
 (`user` or `system`), `tags`, `note`, `exits_only` (false when absent in older journals), `status` `armed`, `trigger`, `triggered_at`, `bracket`, `role`
 (`stop_loss`/`take_profit`/null), `parent`, `oco`, `stop_loss_order`,
 `take_profit_order`, `ended_at`, `modified_at`, `changes` and `waiting` (see below); status and ticks add `trading.plan` and `trading.evaluation`
