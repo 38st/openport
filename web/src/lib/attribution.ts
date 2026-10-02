@@ -11,7 +11,8 @@ export const attributionParts = [
 ] as const
 
 const dollars = (value: number) => signedMoney(value.toFixed(2))
-/** "Delta +$12.00 · Gamma +$0.50 · …", for a tooltip. */
+/** "Delta +$12.00 · Gamma +$0.50 · …", for a tooltip; a stretch without Greeks at both ends says it fell back to other. */
 export function describeAttribution(a: Attribution): string {
-  return attributionParts.map((part) => `${part.label} ${dollars(a[part.key])}`).join(" · ")
+  const parts = attributionParts.map((part) => `${part.label} ${dollars(a[part.key])}`).join(" · ")
+  return a.fallback ? `${parts} (part is other: Greeks were missing at one end of a stretch)` : parts
 }

@@ -3,7 +3,7 @@ import { useMemo, useState, type ReactNode } from "react"
 import { api } from "../api/client"
 import { marketNow, useLive } from "../api/live"
 import { useAccount, useAllOrders, useRefreshTrading, useTradingQueries } from "../api/trading"
-import type { Order, Position, Risk, StockHolding, TradingStatus } from "../api/trading-types"
+import type { ClosedAttribution, Lifetime, Order, Position, Risk, StockHolding, TradingStatus } from "../api/trading-types"
 import { Dialog } from "../components/Dialog"
 import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
@@ -19,8 +19,8 @@ import { TradingError, WriteAccess } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { fixed, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
-import { describeAttribution } from "../lib/attribution"
-import { contractLabel } from "../lib/journal"
+import { attributionParts, describeAttribution } from "../lib/attribution"
+import { contractLabel, osiLabel } from "../lib/journal"
 import { strategyGroups, type StrategyGroup } from "../lib/positions"
 import { closingLegs } from "../lib/strategy"
 import { describeTrigger } from "../lib/ticket"
@@ -73,6 +73,15 @@ function protection(position: Position, orders: Order[]): string | null {
   return exits.map((o) => `${o.role === "stop_loss" ? "Stop" : "Target"} ${o.trigger ? describeTrigger(o.trigger, o.side ?? "sell", o.underlying)
     + (o.limit_price != null ? `, limit ${formatMoney(o.limit_price)}` : "") : formatMoney(o.limit_price)}`).join(" · ")
 }
+/** The round trip's realised P&L after fees, and the contract's lifetime this attempt once it has had more than one. */
+export function RealizedCell({ realised, fees, lifetime }: { realised: string; fees: string; lifetime?: Lifetime | null }) {
+  const net = (Number(realised) - Number(fees)).toFixed(2)
+  return <td className={toneText[toneOf(net)]} title={`This round trip: realized ${signedMoney(realised)}, fees ${formatMoney(fees)}${lifetime
+    ? ` · All ${lifetime.round_trips} round trip${lifetime.round_trips === 1 ? "" : "s"} this attempt: net ${signedMoney(lifetime.net)}` : ""}`}>
+    <div>{signedMoney(net)}</div>
+    {lifetime && lifetime.round_trips > 1 && <div className="mt-1 text-[11px] text-muted">lifetime {signedMoney(lifetime.net)}</div>}
+  </td>
+}
 function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInstruct, orders = [], selected, onSelect, groups = [] }: {
   positions: Position[]; onClose?: (position: Position) => void; onExercise?: (position: Position) => void
   onSettle?: (position: Position) => void; orders?: Order[]
@@ -86,7 +95,7 @@ function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInst
   if (!positions.length) return <p className="text-sm text-muted">No open positions. Click a bid or ask on the Trade page to build a ticket.</p>
   const picking = onSelect != null && selected != null
   const underlying = picking ? positions.find((p) => selected.has(p.symbol))?.underlying : undefined
-  return <Table label="Positions" left={picking ? 2 : 1} headers={[...(picking ? ["Pick"] : []), "Contract", "Qty", "Avg price", "Mark / age", "Market value", "Unrealized", "P&L %", "Today", "Dollar delta", "Vega", "Theta", ""]}>
+  return <Table label="Positions" left={picking ? 2 : 1} headers={[...(picking ? ["Pick"] : []), "Contract", "Qty", "Avg price", "Mark / age", "Market value", "Unrealized", "P&L %", "Realized", "Today", "Dollar delta", "Vega", "Theta", ""]}>
     {positions.map((position) => {
       const change = position.unrealised != null ? ratio(position.unrealised, position.basis.replace("-", "")) : null
       return <tr key={position.symbol}>
@@ -109,6 +118,7 @@ function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInst
         <td>{formatMoney(position.market_value)}</td>
         <td className={toneText[toneOf(position.unrealised)]}>{signedMoney(position.unrealised)}</td>
         <td className={toneText[toneOf(change)]}>{signedPercent(change)}</td>
+        <RealizedCell realised={position.realised} fees={position.fees} lifetime={position.lifetime} />
         <td className={toneText[toneOf(position.attribution?.total)]} title={position.attribution ? describeAttribution(position.attribution) : "Explained from this contract's next fill or rollover"}>
           {position.attribution ? signedMoney(position.attribution.total.toFixed(2)) : "—"}</td>
         <td>{fixed(position.greeks.dollar_delta, 2)}</td><td>{fixed(position.greeks.vega_dollars, 2)}</td><td>{fixed(position.greeks.theta_dollars, 2)}</td>
@@ -126,6 +136,17 @@ function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInst
         </div></td>
       </tr>
     })}
+  </Table>
+}
+
+/** Contracts and shares traded today and no longer held, with the day's P&L by Greek, so the rows still add up to the day. */
+export function ClosedToday({ closed }: { closed: ClosedAttribution[] }) {
+  return <Table label="Closed today" headers={["Contract", "Today", ...attributionParts.map((part) => part.label)]}>
+    {closed.map((row) => <tr key={row.symbol}>
+      <td className="font-medium">{row.kind === "shares" ? `${row.symbol} shares` : osiLabel(row.symbol, row.underlying)}</td>
+      <td className={toneText[toneOf(row.attribution.total)]} title={describeAttribution(row.attribution)}>{signedMoney(row.attribution.total.toFixed(2))}</td>
+      {attributionParts.map((part) => <td key={part.key}>{signedMoney(row.attribution[part.key].toFixed(2))}</td>)}
+    </tr>)}
   </Table>
 }
 
@@ -208,6 +229,9 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <p className="mt-2 text-[11px] text-muted">{account?.rules.margin === "portfolio"
           ? "Portfolio margin: each underlying holds its largest scanned loss, taken from equity."
           : "Strategy margin: each short pairs with what covers it to hold the least in total; hover a row for its rule."}</p>
+      </Panel>}
+      {(data.closed?.length ?? 0) > 0 && <Panel title={`Closed today · ${data.closed!.length}`}>
+        <ClosedToday closed={data.closed!} />
       </Panel>}
     </> : trading.enabled && !portfolio.error ? <Empty>Loading positions…</Empty> : null}
     <Panel title="Portfolio risk" actions={<button type="button" className="trade-button" disabled={!risk.data || !trading.enabled} onClick={() => { if (risk.data) setEditing(risk.data) }}>Edit limits</button>}>

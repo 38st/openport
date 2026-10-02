@@ -726,7 +726,11 @@ entire residue. A reversal closes first and opens the excess at the fill price.
 Closed positions disappear; cumulative realised P&L and fees remain in the account.
 Position realised/fees describe the current open lifecycle: after a reversal, the new
 position has realised nothing and carries the excess's share of the reversing fill's
-fee, as the trades view splits it.
+fee, as the trades view splits it. Beside them, each position in `GET /api/portfolio`
+names its round trip in progress (`trade`, the trades view's ID) and gives the
+contract's `lifetime` this attempt: how many `round_trips` it has had, counting the
+open one, and their `realised` P&L, `fees` and `net` together. Delivered shares do the
+same, with dividends in their realised P&L.
 
 ```text
 market value = q * M * mark
@@ -771,11 +775,26 @@ against the mark and the fee are `costs`. Settlement ends the last stretch at
 intrinsic value, at expiry, with the settlement as the underlying's price and the
 volatility unchanged. So the parts add up to the day's P&L exactly (up to floating
 point): equity less the day's baseline. The HTTP API gives the parts and the total to
-the cent, and still adds up exactly: each part is rounded down or up, the parts that
-rounding down cuts most taking the cents it leaves over (largest remainder). Rollover records the finished day's parts in
+the micro-dollar, as the account's money is, and still adds up exactly: each part is
+rounded down or up, the parts that rounding down cuts most taking the micro-dollars it
+leaves over (largest remainder). A stretch whose mark moved without valid valuations at
+both ends cannot be split, so all of it is `other`; `fallback: true` says some of the
+parts came from such a stretch, on the account's, a contract's and a round trip's
+parts alike. Rollover records the finished day's parts in
 its `EvaluationDay` and starts every stretch again from the closing marks; a reset
-starts afresh. Stretches and finished parts are state, journaled and recovered; a
-position held from before an upgrade joins at its next fill or rollover. The parts
+starts afresh. `GET /api/portfolio` gives each held position's parts, and lists the
+contracts and shares traded today and no longer held under `closed` (`symbol`,
+`kind` `option` or `shares`, `underlying` and `attribution`), so the rows still add up
+to the account's parts after a close.
+
+Each round trip also keeps its own parts over its whole life, across days: the
+stretches it was held for and the costs of its fills, the open stretch to the marks
+now included, which add up to its P&L (realised less fees, plus the rest at its mark).
+A reversing fill books its closing part to the round trip it ends and the rest to the
+one it opens. Trades and share trades carry them as `attribution`; a round trip open
+from before an upgrade has none (null). Stretches, finished parts and each round
+trip's are state, journaled and recovered; a position held from before an upgrade
+joins the day's parts at its next fill or rollover. The parts
 are analytic dollars, not accounting: vega is per volatility point and theta per
 calendar day, as in the valuations.
 
@@ -1424,20 +1443,27 @@ excludes fees. A single-contract round trip uses its entry bracket's option-pric
 stop distance from the entry order's average fill price, times every contract
 opened and the multiplier: an add keeps the entry's risk per contract wherever it
 fills, even past the stop. Later changes to the exit do not rewrite that plan. A
-strategy uses its opening debit or credit and the minimum payoff at all strikes and
-zero, if every leg settles at the same instant and the call payoff is bounded below.
+strategy with an entry bracket stop on its combo price plans the same way: the entry
+order's net per unit to the stop level (both signed as order prices, so a unit closed
+at the stop loses their sum), for every unit that order opened, times the multiplier.
+Without one, a strategy uses its opening debit or credit and the minimum payoff at
+all strikes and zero, if every leg settles at the same instant and the call payoff is
+bounded below. A calendar or diagonal whose every short is covered contract for
+contract by longs of its type that expire with it or later, at a strike at least as
+good (a call long at or below its short's strike, a put long at or above), plans its
+debit: the longs are worth at least what the shorts owe when they expire.
 Risk grows with opening quantities, and is not reduced by partial closes. Risk, heat
 and R are null without a positive, measurable planned risk, including underlying-price
-stops, unbounded structures and calendars or diagonals. The option legs of a strategy
+stops, unbounded structures, and calendars or diagonals with an uncovered short or a
+credit. The option legs of a strategy
 carry its `strategy_id` and combined `strategy_review` separately from their own reviews.
 
 Strategy review follows the Journal's grouping by the order that opened each
 contract round trip. It requires all that order's legs to start round trips;
 contracts already shared with another strategy cannot be attributed separately.
 Older round trips without entry context keep null review fields: historical marks
-are not reconstructed. Share trades retain their existing P&L and notes. Greek
-attribution remains per day and contract; its daily stretch baselines do not supply
-an independent attribution for each round trip.
+are not reconstructed. Share trades retain their existing P&L and notes. Each round
+trip's P&L by Greek is its `attribution` (see [P&L by Greek](#pl-by-greek)).
 
 Each closed option trade says what closed it, `closed_by`: the closure that ended it
 (`settlement`, `exercise`, `assignment`, `abandon`, `reset`), or the order of its last reducing
@@ -1515,7 +1541,7 @@ include all attempts. Export dates do not filter the page's other panels.
 Downloads use `text/csv; charset=utf-8`, attachment filenames, a fixed header even
 with no rows, CRLF row endings and RFC 4180 quoting. Commas, quotes and newlines in
 notes are preserved. Money retains micro-dollar precision, with two to six decimal places. Every JSON
-row field is included, with nested context and review fields in dotted columns;
+row field is included, with nested context, review and attribution fields in dotted columns;
 arrays, including tags and fill IDs, join with `;`. Missing values are empty cells.
 Times remain ISO UTC and each row adds `new_york_date`, account, account version,
 current provider and a price-source label. Exports from a replay, running or saved, also

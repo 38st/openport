@@ -141,7 +141,7 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
       "quote.observation", "quote.bid", "quote.ask", "quote.bid_size", "quote.ask_size", "quote.size_left", "quote.quoted_at",
       "quote.age_seconds"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
-  EXPECT_EQ(server::paper_csv_columns(false).size(), 92U);
+  EXPECT_EQ(server::paper_csv_columns(false).size(), 100U);
 }
 TEST(TradeReviewApi, ExportsNameTheirRunAttemptAndClosingTradingDay) {
   test::ScriptedMarket f;
@@ -242,28 +242,73 @@ TEST(TradeReviewApi, AnEveningCloseBeforeAHolidayCountsTowardTheNextSession) {
   EXPECT_EQ(trades[0]["status"], "closed");
   EXPECT_EQ(trades[0]["trading_day"], "2026-11-27");
 }
-TEST(TradeReviewApi, PnlByGreekPartsAddUpToTheTotalInCents) {
-  const auto cents = [](const json& value) { return std::llround(value.get<double>() * 100); };
+TEST(TradeReviewApi, PositionsShowTheirRoundTripBesideTheContractsLifetimeAndClosedContractsKeepTheirDay) {
+  test::ScriptedMarket f;
+  trading::TradingSession s({}, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote("4.60", "4.80")}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.market("close", 2, trading::Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("again"), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote("4.50", "4.70")}, {f.valuation()}, f.time);
+  ReviewSource source; source.publish(s);
+  auto portfolio = json::parse(server::handle_api({"GET", "/api/portfolio"}, source).body);
+  const auto trades = json::parse(server::handle_api({"GET", "/api/trades"}, source).body)["trades"];
+  ASSERT_EQ(trades.size(), 2U);
+  const auto& first = trades[1];
+  const auto& second = trades[0];
+  ASSERT_EQ(portfolio["positions"].size(), 1U);
+  const auto& position = portfolio["positions"][0];
+  // The row's realised and fees are its round trip's; the lifetime adds the earlier one.
+  EXPECT_EQ(position["trade"], second["id"]);
+  EXPECT_EQ(position["fees"], second["fees"]);
+  EXPECT_EQ(position["lifetime"]["round_trips"], 2);
+  EXPECT_EQ(position["lifetime"]["realised"], first["gross"]);
+  EXPECT_EQ(Money::parse(position["lifetime"]["fees"].get<std::string>()),
+            Money::parse(first["fees"].get<std::string>()) + Money::parse(second["fees"].get<std::string>()));
+  // Each round trip's P&L by Greek adds up to its own P&L.
+  EXPECT_NEAR(first["attribution"]["total"].get<double>(), std::stod(first["net"].get<std::string>()), 1e-6);
+  EXPECT_NEAR(second["attribution"]["total"].get<double>(),
+              std::stod(second["net"].get<std::string>()) + std::stod(second["unrealised"].get<std::string>()), 1e-6);
+  EXPECT_TRUE(portfolio["closed"].empty());
+  ASSERT_TRUE(s.submit(f.market("flat", 1, trading::Side::Sell), f.time).decision.ok());
+  source.publish(s);
+  portfolio = json::parse(server::handle_api({"GET", "/api/portfolio"}, source).body);
+  EXPECT_TRUE(portfolio["positions"].empty());
+  // A contract closed today keeps the day's P&L by Greek.
+  ASSERT_EQ(portfolio["closed"].size(), 1U);
+  EXPECT_EQ(portfolio["closed"][0]["symbol"], f.symbol());
+  EXPECT_EQ(portfolio["closed"][0]["kind"], "option");
+  EXPECT_EQ(portfolio["closed"][0]["underlying"], "SPX");
+  EXPECT_EQ(portfolio["closed"][0]["attribution"], portfolio["attribution"]);
+}
+TEST(TradeReviewApi, PnlByGreekPartsAddUpToTheTotalInMicroDollars) {
+  const auto micros = [](const json& value) { return std::llround(value.get<double>() * 1e6); };
   const char* keys[] = {"delta", "gamma", "vega", "theta", "other", "costs"};
   const auto check = [&](const trading::Attribution& a) {
     const auto j = server::attribution_json(a);
     const double exact[] = {a.delta, a.gamma, a.vega, a.theta, a.other, a.costs};
     long long sum = 0;
     for (int i = 0; i < 6; ++i) {
-      sum += cents(j[keys[i]]);
-      EXPECT_LT(std::abs(j[keys[i]].get<double>() - exact[i]), 0.01 + 1e-9) << keys[i];
+      sum += micros(j[keys[i]]);
+      EXPECT_LT(std::abs(j[keys[i]].get<double>() - exact[i]), 1e-6 + 1e-9) << keys[i];
     }
-    EXPECT_EQ(sum, cents(j["total"]));
-    EXPECT_EQ(cents(j["total"]), std::llround(a.total() * 100));
+    EXPECT_EQ(sum, micros(j["total"]));
+    EXPECT_EQ(micros(j["total"]), std::llround(a.total() * 1e6));
     return j;
   };
-  // Rounded one by one, these would be 1.00 three times against a total of 3.01.
-  auto j = check({1.004, 1.004, 1.004, 0, 0, 0});
-  EXPECT_EQ(j["delta"], 1.01); EXPECT_EQ(j["gamma"], 1.0); EXPECT_EQ(j["vega"], 1.0); EXPECT_EQ(j["total"], 3.01);
-  j = check({-1.004, -1.004, -1.004, 0, 0, 0});
-  EXPECT_EQ(j["delta"], -1.0); EXPECT_EQ(j["gamma"], -1.0); EXPECT_EQ(j["vega"], -1.01); EXPECT_EQ(j["total"], -3.01);
-  j = check({-313.504, 43.404, -7.044, -18.224, 0.354, -15.65});
-  EXPECT_EQ(j["costs"], -15.65); EXPECT_EQ(j["total"], -310.66);
+  // Rounded one by one, these would be 1.000001 three times against a total of 3.000004.
+  auto j = check({1.0000013, 1.0000013, 1.0000013, 0, 0, 0});
+  EXPECT_EQ(j["delta"], 1.000002); EXPECT_EQ(j["gamma"], 1.000001); EXPECT_EQ(j["vega"], 1.000001); EXPECT_EQ(j["total"], 3.000004);
+  j = check({-1.0000013, -1.0000013, -1.0000013, 0, 0, 0});
+  EXPECT_EQ(j["delta"], -1.000001); EXPECT_EQ(j["gamma"], -1.000001); EXPECT_EQ(j["vega"], -1.000002); EXPECT_EQ(j["total"], -3.000004);
+  // Sub-cent parts keep their micro-dollars, as the account's money does.
+  j = check({-313.504123, 43.404, -7.044, -18.224, 0.354, -15.666667});
+  EXPECT_EQ(j["delta"], -313.504123); EXPECT_EQ(j["costs"], -15.666667); EXPECT_EQ(j["total"], -310.68079);
+  EXPECT_EQ(j["fallback"], false);
+  trading::Attribution fallback;
+  fallback.other = 5;
+  fallback.fallback = true;
+  EXPECT_EQ(server::attribution_json(fallback)["fallback"], true);
   std::mt19937_64 random(7);
   std::uniform_real_distribution<double> part(-5000, 5000);
   for (int i = 0; i < 2000; ++i) check({part(random), part(random), part(random), part(random), part(random), part(random)});

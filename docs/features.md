@@ -67,12 +67,12 @@ simulation's limits.
   per contract or per strategy, with shares from exercise and assignment as trades of
   their own. Each trade's review shows the market and the account at entry and exit,
   how far it went against you and in your favour (MAE and MFE), what you gave back and
-  its R-multiple, on the underlying's chart, and marks the exits a stop, a flatten or
-  a liquidation forced. Trades take notes and tags, each day a plan and a review, and
+  its R-multiple and its P&L by Greek over its life, on the underlying's chart, and
+  marks the exits a stop, a flatten or a liquidation forced. Trades take notes and tags, each day a plan and a review, and
   trades and fills download as CSV, each row naming its attempt and, from a replay,
   the run, scenario and seed. A new attempt keeps the history.
 - **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
-  (with costs apart), dollar-delta and vega limits, a spot × volatility scenario grid,
+  (with costs apart, and contracts closed today still listed), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
   keep working while opening orders are cancelled. Positions close together as one
   order, or flatten an underlying or the whole account at market: each short closes
@@ -300,3 +300,6 @@ the simulation's limits.
       candidate adjustments
 - [x] Fill audit trail: the bid, ask, sizes, observation and first quote time on every fill
 - [x] Executable-quote flags and the displayed size an account has left, in the chain, tickets and previews
+- [x] P&L by Greek for each round trip and for contracts closed today, to the micro-dollar
+      and flagged where it falls back; planned risk for combo stops and covered calendars;
+      positions with their round trip and the contract's lifetime this attempt

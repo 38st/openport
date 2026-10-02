@@ -169,7 +169,16 @@ inline void from_json(const Json& j, SessionConfig& c) {
   j.at("limits").get_to(c.limits); j.at("scenarios").get_to(c.scenarios);
   added_field(j, "rules", c.rules); added_field(j, "guardrails", c.guardrails);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Attribution, delta, gamma, vega, theta, other, costs)
+inline void to_json(Json& j, const Attribution& a) {
+  j = Json{{"delta", a.delta}, {"gamma", a.gamma}, {"vega", a.vega}, {"theta", a.theta}, {"other", a.other}, {"costs", a.costs}};
+  // Only a fallback is recorded, so parts the Greeks split keep their bytes.
+  if (a.fallback) j["fallback"] = true;
+}
+inline void from_json(const Json& j, Attribution& a) {
+  j.at("delta").get_to(a.delta); j.at("gamma").get_to(a.gamma); j.at("vega").get_to(a.vega);
+  j.at("theta").get_to(a.theta); j.at("other").get_to(a.other); j.at("costs").get_to(a.costs);
+  a.fallback = j.value("fallback", false);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(EvaluationDay, day, open_equity, close_equity, peak, floor, realised, qualifying, attribution, low_equity, high_equity, low_at, high_at)
 inline void from_json(const Json& j, EvaluationDay& d) {
   j.at("day").get_to(d.day); j.at("open_equity").get_to(d.open_equity); j.at("close_equity").get_to(d.close_equity);
@@ -241,7 +250,7 @@ inline void from_json(const Json& j, MarkedPosition& p) {
   added_field(j, "no_bid", p.no_bid); added_field(j, "do_not_exercise", p.do_not_exercise);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedStock, position, mark, mark_time, market_value, unrealised, fresh)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews, pending_limits, pending_guardrails, guardrails, pending_applied_at, soft_floor)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews, pending_limits, pending_guardrails, guardrails, pending_applied_at, soft_floor, trip_attributions)
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
   j.at("equity").get_to(s.equity); j.at("start_of_day_equity").get_to(s.start_of_day_equity);
@@ -260,7 +269,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   added_field(j, "strategy_reviews", s.strategy_reviews);
   added_field(j, "pending_limits", s.pending_limits); added_field(j, "pending_guardrails", s.pending_guardrails);
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
-  added_field(j, "soft_floor", s.soft_floor);
+  added_field(j, "soft_floor", s.soft_floor); added_field(j, "trip_attributions", s.trip_attributions);
 }
 
 namespace detail {
@@ -324,6 +333,12 @@ struct State {
   /// Open stretches by held contract (or stock), and today's finished ones (and costs).
   std::map<std::string, Reference> references;
   std::map<std::string, Attribution> explained;
+  /// The round trip each held contract or stock is in, by trade ID (an option's
+  /// opening fill; "s" and the opening stock fill for shares), as lifecycles() and
+  /// share_lifecycles() number them; and each round trip's P&L by Greek from its
+  /// finished stretches and costs, kept across days.
+  std::map<std::string, std::string> trips;
+  SharedMap<std::string, Attribution> trip_attribution;
   /// The underlyings' latest prices, which mark and trade delivered shares.
   std::map<std::string, Mark> stock_marks;
   SharedVector<StockFill> stock_fills;
@@ -369,7 +384,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
   X(marks) X(valuations) X(orders) X(fills) X(settled) X(kill) X(kill_reason) X(evaluation) X(attempts) \
   X(closures) X(annotations) X(references) X(explained) X(stock_marks) X(stock_fills) X(dividends) \
   X(closing_prints) X(day_notes) X(trade_reviews) X(strategy_reviews) X(pending_limits) \
-  X(pending_guardrails) X(guardrails) X(pending_applied_at)
+  X(pending_guardrails) X(guardrails) X(pending_applied_at) X(trips) X(trip_attribution)
 inline void to_json(Json& j, const State& s) {
 #define OPENPORT_STATE_TO(field) j[#field] = s.field;
   OPENPORT_STATE_FIELDS(OPENPORT_STATE_TO)
@@ -394,6 +409,7 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "pending_limits", s.pending_limits); added_field(j, "pending_guardrails", s.pending_guardrails);
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
   added_field(j, "do_not_exercise", s.do_not_exercise);
+  added_field(j, "trips", s.trips); added_field(j, "trip_attribution", s.trip_attribution);
   s.working.clear();
   s.indexed = 0;
   reindex(s);

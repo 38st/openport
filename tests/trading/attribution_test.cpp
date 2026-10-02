@@ -1,8 +1,10 @@
 #include <filesystem>
+#include <limits>
 #include <gtest/gtest.h>
 #include <unistd.h>
 
 #include "support/scripted_market.hpp"
+#include "openport/trading/history.hpp"
 
 namespace openport::trading {
 namespace {
@@ -140,6 +142,95 @@ TEST(TradingAttribution, WithoutValuationsItIsAllOther) {
   EXPECT_EQ(a.delta, 0);
   EXPECT_EQ(a.vega, 0);
   EXPECT_NEAR(a.other, 100 * (4.60 - 4.10), 1e-6);
+  // It says so, for the account, the contract and the round trip.
+  EXPECT_TRUE(a.fallback);
+  EXPECT_TRUE(s.snapshot()->attributions.at(f.symbol()).fallback);
+  EXPECT_TRUE(s.snapshot()->trip_attributions.at("1").fallback);
+}
+
+TEST(TradingAttribution, AStretchTheGreeksSplitIsNoFallback) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+  tick(s, f, "4.50", "4.70", 5004, 0.2);
+  EXPECT_FALSE(s.snapshot()->attribution.fallback);
+  // Without valuations, a stretch whose mark has not moved leaves nothing to split.
+  ScriptedMarket g;
+  TradingSession t(roomy(), g.time);
+  g.seed(t);
+  ASSERT_TRUE(t.submit(g.market("open"), g.time).decision.ok());
+  g.next();
+  auto invalid = g.valuation();
+  invalid.valid = false;
+  t.on_quotes({g.quote("4.00", "4.20")}, {invalid}, g.time);
+  EXPECT_FALSE(t.snapshot()->attribution.fallback);
+}
+
+/// A round trip's whole P&L: realised, less fees, and the rest at its mark.
+double trip_pnl(const TradingSession& s, const std::string& id) {
+  for (const auto& t : lifecycles(s.snapshot()->recent_fills, s.snapshot()->closures, s.contracts())) {
+    if (std::to_string(t.first_fill) != id) continue;
+    double value = (t.gross - t.fees).dollars();
+    for (const auto& p : s.snapshot()->positions)
+      if (t.quantity != 0 && p.position.contract.osi_symbol() == t.symbol) value += p.unrealised->dollars();
+    return value;
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+TEST(TradingAttribution, EachRoundTripKeepsItsOwnAcrossFillsDaysAndAReversal) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-trip-attribution-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(directory);
+  std::filesystem::create_directories(directory);
+  const auto path = (directory / "journal.jsonl").string();
+  ScriptedMarket f;
+  std::string expected;
+  {
+    TradingSession s(roomy(), f.time, FileJournal::create(path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
+    tick(s, f, "4.50", "4.70", 5006, 0.21);
+    ASSERT_TRUE(s.submit(f.market("trim", 1, Side::Sell), f.time).decision.ok());
+    tick(s, f, "4.70", "4.90", 5009, 0.2);
+    // Across the rollover the round trip keeps its stretches to the close.
+    f.time = md::new_york_to_utc({2026, 9, 23}, 9, 30);
+    ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+    tick(s, f, "4.20", "4.40", 4996, 0.22);
+    EXPECT_NEAR(s.snapshot()->trip_attributions.at("1").total(), trip_pnl(s, "1"), 1e-6);
+    // Selling three ends it and opens a short of two with the same fill.
+    ASSERT_TRUE(s.submit(f.market("reverse", 3, Side::Sell), f.time).decision.ok());
+    const auto reversal = std::to_string(s.snapshot()->recent_fills.size());
+    tick(s, f, "3.80", "4.00", 4990, 0.22);
+    const auto& trips = s.snapshot()->trip_attributions;
+    ASSERT_EQ(trips.size(), 2U);
+    EXPECT_NEAR(trips.at("1").total(), trip_pnl(s, "1"), 1e-6);
+    EXPECT_NEAR(trips.at(reversal).total(), trip_pnl(s, reversal), 1e-6);
+    EXPECT_LT(trips.at("1").costs, 0);
+    EXPECT_NE(trips.at("1").delta, 0);
+    EXPECT_NE(trips.at(reversal).delta, 0);
+    // Today's parts for the contract hold both round trips' since the open.
+    EXPECT_NEAR(s.snapshot()->attribution.total(), day_pnl(s), 1e-6);
+    expected = s.snapshot_json();
+  }
+  const auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  std::filesystem::remove_all(directory);
+}
+
+TEST(TradingAttribution, ASettledRoundTripEndsAtItsSettlement) {
+  ScriptedMarket f;
+  f.contract.expiry = {2026, 9, 22};
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
+  tick(s, f, "4.40", "4.60", 5004, 0.195);
+  f.time = f.contract.expiry_time();
+  s.on_quotes({}, {}, f.time);
+  ASSERT_TRUE(s.settle(f.symbol(), m("5003.50"), f.time).decision.ok());
+  EXPECT_NEAR(s.snapshot()->trip_attributions.at("1").total(), trip_pnl(s, "1"), 1e-6);
+  // A new round trip on the contract would start afresh, not inside the settled one.
+  EXPECT_TRUE(s.snapshot()->positions.empty());
 }
 
 }  // namespace

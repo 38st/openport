@@ -91,6 +91,55 @@ std::optional<Money> structure_risk(const std::vector<const Lifecycle*>& legs) {
   }
   return worst && *worst < Money{} ? std::optional(-*worst) : std::nullopt;
 }
+/// A strategy's entry bracket stop on its combo price: the entry net's distance to
+/// the stop level, per unit, for every unit its entry order opened, times the
+/// multiplier. Both nets are signed as order prices, a debit positive, so a unit
+/// closed at the stop loses their sum.
+std::optional<Money> combo_stop_risk(const std::vector<const Lifecycle*>& legs, const Order& order) {
+  if (!order.request.bracket || !order.request.bracket->stop_loss) return {};
+  const auto& stop = order.request.bracket->stop_loss->trigger;
+  if (!stop || stop->source != TriggerSource::Combo) return {};
+  Money paid;
+  Quantity units = 0;
+  for (const auto* leg : legs) {
+    const auto spec = std::find_if(order.request.legs.begin(), order.request.legs.end(), [&](const Leg& l) { return l.symbol == leg->symbol; });
+    if (spec == order.request.legs.end() || leg->entry_contracts <= 0 || leg->entry_contracts % spec->ratio != 0) return {};
+    const auto leg_units = leg->entry_contracts / spec->ratio;
+    if (units != 0 && leg_units != units) return {};
+    units = leg_units;
+    paid = paid + leg->entry_notional * leg->direction;
+  }
+  const Money risk = (paid + stop->level * units) * legs.front()->contract.multiplier;
+  return risk > Money{} ? std::optional(risk) : std::nullopt;
+}
+/// A calendar's or diagonal's debit, when every short is covered: by longs of its
+/// type that expire with it or later, at a strike at least as good (a call long at
+/// or below its short's strike, a put long at or above), contract for contract.
+/// The longs are then worth at least what the shorts owe when they expire, so the
+/// debit is what the structure can lose, as traders plan a calendar's risk.
+std::optional<Money> covered_debit(const std::vector<const Lifecycle*>& legs) {
+  std::vector<std::pair<const Lifecycle*, Quantity>> longs;
+  Money debit;
+  for (const auto* leg : legs) {
+    debit = debit + (leg->open_notional * leg->contract.multiplier) * leg->direction;
+    if (leg->direction > 0) longs.emplace_back(leg, leg->opened_contracts);
+  }
+  for (const auto* leg : legs) {
+    if (leg->direction > 0) continue;
+    auto owed = leg->opened_contracts;
+    for (auto& [cover, left] : longs) {
+      const auto& c = cover->contract;
+      const bool call = c.type == pricing::OptionType::Call;
+      if (c.type != leg->contract.type || c.expiry_time() < leg->contract.expiry_time() ||
+          (call ? c.strike > leg->contract.strike : c.strike < leg->contract.strike)) continue;
+      const auto used = std::min(owed, left);
+      owed -= used;
+      left -= used;
+    }
+    if (owed > 0) return {};
+  }
+  return debit > Money{} ? std::optional(debit) : std::nullopt;
+}
 /// Samples the reviews of `lives`, given in the order they opened, and of the
 /// multi-leg entries among them. A finished review stays as it is; a missing one
 /// starts now. `unfinished` changes by the change in unfinished reviews.
@@ -119,7 +168,10 @@ void sample_reviews(State& s, const std::vector<const Lifecycle*>& lives, std::i
     if (legs.size() != order.request.legs.size()) continue;
     auto* review = open_review(s.strategy_reviews, std::to_string(id));
     if (!review) continue;
-    review->planned_risk = structure_risk(legs);
+    // The plan's stop when it has one, else what the structure can lose.
+    review->planned_risk = combo_stop_risk(legs, order);
+    if (!review->planned_risk) review->planned_risk = structure_risk(legs);
+    if (!review->planned_risk) review->planned_risk = covered_debit(legs);
     Money total;
     bool complete = true, finished = true;
     std::optional<double> settled;

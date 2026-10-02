@@ -92,6 +92,10 @@ struct TradingSnapshot {
   /// today. Positions held from before an upgrade join at the next fill or rollover.
   Attribution attribution;
   std::map<std::string, Attribution> attributions;
+  /// Each round trip's P&L by Greek over its life, by trade ID (an option's opening
+  /// fill, "s" and the opening stock fill for shares), its open stretch to the marks
+  /// now included. Round trips open from before an upgrade have none.
+  SharedMap<std::string, Attribution> trip_attributions;
 };
 /// A funded account's standing for its next payout: an active, flat account
 /// with the required qualifying days since the last payout. `blocked` is the

@@ -50,6 +50,8 @@ inline std::vector<std::string> paper_csv_columns(bool fills) {
       for (const auto* extreme : {"worst", "best"})
         for (const auto* field : {"pnl", "time", "spot"}) columns.push_back(std::string(prefix) + "." + extreme + "." + field);
     }
+    for (const auto* field : {"delta", "gamma", "vega", "theta", "other", "costs", "total", "fallback"})
+      columns.push_back(std::string("attribution.") + field);
   }
   return columns;
 }

@@ -296,9 +296,13 @@ struct Attribution {
   double theta = 0;
   double other = 0;
   double costs = 0;
+  /// Some of it fell back to `other`: a stretch whose mark moved without valid
+  /// valuations at both ends, so the Greeks could not split it.
+  bool fallback = false;
   [[nodiscard]] double total() const { return delta + gamma + vega + theta + other + costs; }
   Attribution& operator+=(const Attribution& a) {
     delta += a.delta; gamma += a.gamma; vega += a.vega; theta += a.theta; other += a.other; costs += a.costs;
+    fallback = fallback || a.fallback;
     return *this;
   }
 };
