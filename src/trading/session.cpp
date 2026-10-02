@@ -818,6 +818,7 @@ Measures measure(const State& s) {
   return out;
 }
 std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_complete);
+Decision reset_check(const State& s, const Measures& m);
 TradingSnapshot snapshot_of(const State& s) {
   auto m = measure(s);
   TradingSnapshot out;
@@ -835,6 +836,8 @@ TradingSnapshot snapshot_of(const State& s) {
     out.open_orders.push_back(s.orders[id - 1]);
     if (auto wait = waiting_for(s, s.orders[id - 1], data)) out.waiting.emplace(id, std::move(*wait));
   }
+  out.kill_history = s.kill_history;
+  out.kill_reset = reset_check(s, m);
   out.positions = std::move(m.positions);
   out.stocks = std::move(m.stocks);
   out.risk = std::move(m.risk);
@@ -947,18 +950,55 @@ Reason guardrail_reason(const State& s) {
   if (!s.guardrails.latched.empty()) return s.guardrails.latched.front();
   return s.time < s.guardrails.cooldown_until ? Reason::COOLDOWN : Reason::NONE;
 }
+std::string clock_text(Timestamp time);
+/// A latched personal guardrail's reason: what it measured against its setting,
+/// and when opening orders may resume.
+Decision guardrail_decision(const State& s, Reason reason) {
+  const auto& g = s.config.guardrails;
+  switch (reason) {
+    case Reason::COOLDOWN:
+      return failure(reason, "Cooldown after a stop-loss exit or loss until " + clock_text(s.guardrails.cooldown_until));
+    case Reason::TRADE_LIMIT:
+      return {reason, "The day's opening trades reached the limit of " + std::to_string(g.max_opening_trades) +
+              "; opening orders resume next trading day",
+              static_cast<double>(s.guardrails.opening_trades), static_cast<double>(g.max_opening_trades), "aggregate"};
+    case Reason::PROFIT_LOCK:
+      return {reason, "Today's profit reached the lock of " + dollars(g.profit_lock) + "; opening orders resume next trading day",
+              {}, g.profit_lock.dollars(), "aggregate"};
+    case Reason::SOFT_FLOOR: {
+      const auto level = soft_floor_of(s);
+      return {reason, "Equity reached the soft floor" + (level ? " of " + dollars(*level) : std::string()) +
+              "; opening orders resume next trading day if equity is above it", {},
+              level ? std::optional(level->dollars()) : std::nullopt, "aggregate"};
+    }
+    default: return failure(reason, std::string(to_string(reason)));
+  }
+}
 /// Why the kill latch stops an opening order: an active personal guardrail's own code,
 /// otherwise the switch. Orders it refuses and orders it cancels give the same reason.
 Decision kill_decision(const State& s) {
   const auto personal = guardrail_reason(s);
-  return failure(personal != Reason::NONE ? personal : Reason::KILL_SWITCH, s.kill_reason);
+  if (personal != Reason::NONE) return guardrail_decision(s, personal);
+  if (s.kill_reason == "DAILY_LOSS")
+    return {Reason::KILL_SWITCH, "The daily loss latch is set: the marked loss exceeded the limit of " +
+            dollars(s.config.limits.max_daily_loss), {}, s.config.limits.max_daily_loss.dollars(), "aggregate"};
+  return failure(Reason::KILL_SWITCH, "The kill switch is latched: " + s.kill_reason);
+}
+/// Keeps one change of the kill latch in its history.
+void record_kill(State& s, std::string action, std::string reason, std::string previous) {
+  s.kill_history.push_back({s.time, std::move(action), std::move(reason), std::move(previous), s.actor});
 }
 void trip(State& s, const std::string& reason, Events& events) {
   if (!s.kill || (s.guardrails.owns_kill && s.kill_reason != reason)) {
+    // A rule that replaces a personal guardrail's reason names the one it replaced.
+    const auto previous = s.kill ? s.kill_reason : std::string();
     s.kill = true;
     s.kill_reason = reason;
     s.guardrails.owns_kill = personal_reason(reason);
-    event(events, "kill_trip", Json{{"reason", reason}});
+    Json payload{{"reason", reason}};
+    if (!previous.empty()) payload["previous"] = previous;
+    event(events, "kill_trip", payload);
+    record_kill(s, "trip", reason, previous);
   }
   // Remove opening orders first, so they cannot take a close's capacity; then any
   // closes that together exceed the position, newest first, so older ones keep priority.
@@ -977,6 +1017,23 @@ Decision loss_check(const State& s, const Measures& snapshot) {
         snapshot.risk.daily_loss.dollars(), s.config.limits.max_daily_loss.dollars(), "aggregate"};
   return {};
 }
+/// Why reset_kill cannot clear the latch now, and when it can: a personal
+/// guardrail until its expiry, a daily loss until it is back within the limit or
+/// the next trading day's baseline; NONE when a reset would clear it.
+Decision reset_check(const State& s, const Measures& m) {
+  if (!s.kill) return {};
+  if (const auto personal = guardrail_reason(s); personal != Reason::NONE) {
+    if (personal == Reason::COOLDOWN)
+      return failure(personal, "A reset waits for the cooldown to end at " + clock_text(s.guardrails.cooldown_until));
+    return failure(personal, std::string(to_string(personal)) +
+                   " is a personal daily latch; it clears at the next trading day's rollover, not by reset");
+  }
+  if (const auto loss = loss_check(s, m); !loss.ok())
+    return {Reason::DAILY_LOSS, "A reset trips again while the marked loss " + dollars(m.risk.daily_loss) + " exceeds the limit of " +
+            dollars(s.config.limits.max_daily_loss) + "; it clears once the loss is back within the limit, or from the next trading day's baseline",
+            loss.actual, loss.limit, loss.scope};
+  return {};
+}
 void monitor_loss(State& s, Events& events) {
   if (!loss_check(s, measure(s)).ok()) trip(s, "DAILY_LOSS", events);
 }
@@ -992,6 +1049,7 @@ void refresh_guardrail_latch(State& s, Events& events) {
   const auto reason = guardrail_reason(s);
   if (reason != Reason::NONE) trip(s, std::string(to_string(reason)), events);
   else if (s.kill && s.guardrails.owns_kill) {
+    record_kill(s, "release", {}, s.kill_reason);
     s.kill = false;
     s.kill_reason.clear();
     s.guardrails.owns_kill = false;
@@ -3695,7 +3753,15 @@ CommandResult TradingSession::set_guardrails(Guardrails guardrails, Timestamp ti
 CommandResult TradingSession::trip_kill(std::string reason, Timestamp time) {
   require_reason(reason);
   return impl_->transact(time, "kill_trip", [&](State& s, Events& events) {
+    // A manual trip over a daily-loss or earlier manual latch replaces its reason;
+    // its event and the history name the reason it replaced.
+    const bool replaces = s.kill && !s.guardrails.owns_kill && s.kill_reason != reason;
+    const auto previous = s.kill_reason;
     trip(s, reason, events);
+    if (replaces) {
+      event(events, "kill_trip", Json{{"reason", reason}, {"previous", previous}});
+      record_kill(s, "trip", reason, previous);
+    }
     s.kill_reason = reason;
     s.guardrails.owns_kill = false;
     return CommandResult{};
@@ -3704,13 +3770,13 @@ CommandResult TradingSession::trip_kill(std::string reason, Timestamp time) {
 CommandResult TradingSession::reset_kill(std::string reason, Timestamp time) {
   require_reason(reason);
   return impl_->transact(time, "kill_reset", [&](State& s, Events& events) {
-    const auto personal = guardrail_reason(s);
-    if (personal != Reason::NONE) return CommandResult{failure(personal, "Personal guardrail remains active until its market-time expiry"), {}, 0};
+    if (guardrail_reason(s) != Reason::NONE) return CommandResult{reset_check(s, measure(s)), {}, 0};
+    if (s.kill) record_kill(s, "reset", reason, s.kill_reason);
     s.kill = false;
     s.kill_reason.clear();
     event(events, "kill_reset", Json{{"reason", reason}});
     monitor_loss(s, events);
-    if (s.kill) return CommandResult{loss_check(s, measure(s)), {}, 0};
+    if (s.kill) return CommandResult{reset_check(s, measure(s)), {}, 0};
     return CommandResult{};
   });
 }
@@ -4000,12 +4066,15 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.do_not_exercise = {};
     s.trips.clear();
     s.start_equity = initial_cash;
+    if (s.kill) record_kill(s, "reset", reason, s.kill_reason);
     s.kill = false;
     s.kill_reason.clear();
+    // The new attempt starts with any pending settings, and says when they applied.
+    const bool pending = s.pending_limits || s.pending_guardrails;
     if (s.pending_limits) { s.config.limits = *s.pending_limits; s.pending_limits.reset(); ++s.limits_revision; }
     if (s.pending_guardrails) { s.config.guardrails = *s.pending_guardrails; s.pending_guardrails.reset(); ++s.limits_revision; }
     s.guardrails = {};
-    s.pending_applied_at = 0;
+    s.pending_applied_at = pending ? s.time : 0;
     s.day = md::trading_date(s.time);
     s.evaluation = fresh_evaluation(s, attempt);
     event(events, "account_reset", Json{{"reason", reason}, {"attempt", attempt}, {"initial_cash", initial_cash},

@@ -6,7 +6,7 @@ import { ApiError } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import { Header } from "../components/Header"
-import { KillSwitch } from "../components/KillSwitch"
+import { KillSwitch, killChangeText } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderResult, OrderTicket } from "../components/OrderTicket"
@@ -273,6 +273,19 @@ describe("paper trading fixtures", () => {
     expect(killHtml).toContain("LATCHED · reduce-only: closing orders and exits still work")
     expect(killHtml).toContain("Daily loss reached")
     expect(killHtml).toContain("Reset kill switch…")
+    const history = render(<KillSwitch kill={{
+      latched: true, reason: "stepping away",
+      reset_blocked: { code: "DAILY_LOSS", message: "A reset trips again while the marked loss $620.00 exceeds the limit of $100.00", actual: 620, limit: 100, scope: "aggregate" },
+      history: [
+        { time: "2026-09-22T14:00:01Z", action: "trip", reason: "DAILY_LOSS", previous: null, actor: "system" },
+        { time: "2026-09-22T14:00:02Z", action: "trip", reason: "stepping away", previous: "DAILY_LOSS", actor: "trader" },
+      ],
+    }} trading={trading} />)
+    expect(history).toContain("Reset now would not clear it: A reset trips again while the marked loss $620.00 exceeds the limit of $100.00")
+    expect(history).toContain("History · 2")
+    expect(history).toContain("Tripped: stepping away (replaced DAILY_LOSS)")
+    expect(killChangeText({ time: "", action: "reset", reason: "back", previous: "pause", actor: "trader" })).toBe("Reset: back (cleared pause)")
+    expect(killChangeText({ time: "", action: "release", reason: null, previous: "COOLDOWN", actor: "system" })).toBe("Released: COOLDOWN expired")
   })
   it("exposes call and put bid/ask buttons and an untradable reason", () => {
     const html = render(<ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} />)

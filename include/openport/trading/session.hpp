@@ -63,6 +63,12 @@ struct TradingSnapshot {
   SharedVector<Order> recent_orders;  ///< All v1 orders, in acceptance sequence.
   /// Why each open order that is not filling waits, by order ID (see OrderWait).
   std::map<OrderId, OrderWait> waiting;
+  /// The kill latch's trips, resets and releases, oldest first.
+  std::vector<KillChange> kill_history;
+  /// While latched, why reset_kill would not clear it now and when it can (a
+  /// personal guardrail's expiry, or a daily loss back within its limit or the
+  /// next trading day); NONE when a reset would clear it, or nothing is latched.
+  Decision kill_reset;
   SharedVector<Fill> recent_fills;    ///< All v1 fills, in execution sequence.
   RiskSnapshot risk;
   ScenarioGrid scenarios;

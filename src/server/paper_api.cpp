@@ -903,8 +903,17 @@ json bucket_json(const RiskBucket& b) {
                          {"vega_low", b.reachable.vega_low}, {"vega_high", b.reachable.vega_high}}},
           {"limits", exposure_limits(b.limits)}, {"delta_utilisation", b.delta_utilisation}, {"vega_utilisation", b.vega_utilisation}};
 }
-json kill_json(const RiskSnapshot& risk) {
-  return {{"latched", risk.kill_latched}, {"reason", nullable(risk.kill_reason)}};
+/// The latch, why a reset could not clear it now (null when it could), and its
+/// last 50 trips, resets and releases, oldest first.
+json kill_json(const TradingSnapshot& s) {
+  constexpr std::size_t kHistory = 50;
+  json history = json::array();
+  const auto& all = s.kill_history;
+  for (auto i = all.size() > kHistory ? all.size() - kHistory : 0; i < all.size(); ++i)
+    history.push_back({{"time", md::format_timestamp(all[i].time)}, {"action", all[i].action}, {"reason", nullable(all[i].reason)},
+                       {"previous", nullable(all[i].previous)}, {"actor", all[i].actor}});
+  return {{"latched", s.risk.kill_latched}, {"reason", nullable(s.risk.kill_reason)},
+          {"reset_blocked", decision_json(s.kill_reset)}, {"history", std::move(history)}};
 }
 json risk_json(const TradingView& view) {
   const auto& s = *view.snapshot;
@@ -931,7 +940,7 @@ json risk_json(const TradingView& view) {
           {"pending_effective", s.pending_limits || s.pending_guardrails ? json("next_trading_day") : json(nullptr)},
           {"time", md::format_timestamp(s.time)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"complete", s.risk.complete}, {"daily_loss", s.risk.daily_loss.str()},
-          {"kill", kill_json(s.risk)}, {"aggregate", bucket_json(s.risk.aggregate)}, {"underlyings", underlyings},
+          {"kill", kill_json(s)}, {"aggregate", bucket_json(s.risk.aggregate)}, {"underlyings", underlyings},
           {"scenarios", {{"spot_percent", view.config.scenarios.spot_percent}, {"vol_points", view.config.scenarios.vol_points},
                          {"pnl", pnl}, {"clamped", clamped}, {"complete", s.scenarios.complete}}}};
 }
@@ -1021,7 +1030,7 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::Limits: body = risk_json(view); break;
     case TradingCommand::Kind::Trip:
     case TradingCommand::Kind::Reset:
-      body["kill"] = kill_json(s.risk); body["cancelled_orders"] = json::array();
+      body["kill"] = kill_json(s); body["cancelled_orders"] = json::array();
       for (auto id : reply.cancelled_orders) body["cancelled_orders"].push_back(std::to_string(id));
       break;
     case TradingCommand::Kind::Settle: body["position_closed"] = true; break;

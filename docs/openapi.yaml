@@ -11133,11 +11133,77 @@
                 "type": "null"
               }
             ]
+          },
+          "reset_blocked": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Decision"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While latched: a personal guardrail's code until it expires (a cooldown's end, or the next trading day), or DAILY_LOSS with the marked loss and the limit while the loss still exceeds it."
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KillChange"
+            }
           }
         },
         "required": [
           "latched",
-          "reason"
+          "reason",
+          "reset_blocked",
+          "history"
+        ],
+        "description": "The reduce-only kill latch: its reason, why a reset could not clear it now and when it can (null when a reset would clear it, or nothing is latched), and its last 50 trips, resets and releases, oldest first."
+      },
+      "KillChange": {
+        "type": "object",
+        "description": "One change of the kill latch: trip (latched, or a new reason replacing previous), reset (a kill-switch or account reset, with its reason; previous is the reason it cleared) or release (the personal guardrail in previous expired).",
+        "properties": {
+          "time": {
+            "type": "string"
+          },
+          "action": {
+            "enum": [
+              "trip",
+              "reset",
+              "release"
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "time",
+          "action",
+          "reason",
+          "previous",
+          "actor"
         ]
       },
       "Scenarios": {

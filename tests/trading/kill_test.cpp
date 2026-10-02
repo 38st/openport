@@ -239,5 +239,137 @@ TEST(TradingKill, ClosingStillChecksDefinedRiskAndEvaluation) {
   // still refuses user orders even if they would otherwise reduce it.
   EXPECT_EQ(s.submit(a.market("decided", 1, Side::Sell), a.time).decision.code, Reason::EVALUATION_CLOSED);
 }
+
+TEST(TradingKill, TheLatchKeepsItsHistoryAndSaysWhenAResetCanClearIt) {
+  ScriptedMarket f;
+  TradingSession s(config(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long", 2), f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->kill_history.empty());
+  EXPECT_TRUE(s.snapshot()->kill_reset.ok()) << "nothing latched, nothing to clear";
+  // The marks fall 620 against a 100 allowance: the latch trips.
+  f.next();
+  s.on_quotes({f.quote("1", "1.20")}, {f.valuation()}, f.time);
+  const auto tripped = f.time;
+  auto snap = s.snapshot();
+  ASSERT_TRUE(snap->risk.kill_latched);
+  ASSERT_EQ(snap->kill_history.size(), 1u);
+  EXPECT_EQ(snap->kill_history[0].action, "trip");
+  EXPECT_EQ(snap->kill_history[0].reason, "DAILY_LOSS");
+  EXPECT_EQ(snap->kill_history[0].time, tripped);
+  EXPECT_EQ(snap->kill_reset.code, Reason::DAILY_LOSS);
+  EXPECT_NE(snap->kill_reset.message.find("back within the limit, or from the next trading day"), std::string::npos)
+      << snap->kill_reset.message;
+  EXPECT_EQ(snap->kill_reset.limit, 100.0);
+  ASSERT_TRUE(snap->kill_reset.actual);
+  EXPECT_GT(*snap->kill_reset.actual, 100.0);
+  // Opening orders say which latch refused them.
+  const auto refused = s.submit(f.market("more"), f.time).decision;
+  EXPECT_EQ(refused.code, Reason::KILL_SWITCH);
+  EXPECT_EQ(refused.message, "The daily loss latch is set: the marked loss exceeded the limit of $100.00");
+  EXPECT_EQ(refused.limit, 100.0);
+  // A manual trip over it names the reason it replaced, and a reset that trips
+  // again answers why, as the snapshot said it would.
+  f.next();
+  s.set_actor("trader");
+  ASSERT_TRUE(s.trip_kill("stepping away", f.time).decision.ok());
+  snap = s.snapshot();
+  ASSERT_EQ(snap->kill_history.size(), 2u);
+  EXPECT_EQ(snap->kill_history[1].action, "trip");
+  EXPECT_EQ(snap->kill_history[1].reason, "stepping away");
+  EXPECT_EQ(snap->kill_history[1].previous, "DAILY_LOSS");
+  EXPECT_EQ(snap->kill_history[1].actor, "trader");
+  EXPECT_EQ(s.submit(f.market("manual"), f.time).decision.message, "The kill switch is latched: stepping away");
+  s.set_actor("trader");
+  const auto reset = s.reset_kill("back", f.time).decision;
+  EXPECT_EQ(reset.code, Reason::DAILY_LOSS);
+  EXPECT_EQ(reset.message, s.snapshot()->kill_reset.message);
+  snap = s.snapshot();
+  ASSERT_EQ(snap->kill_history.size(), 4u) << "the reset, then the loss tripping it again";
+  EXPECT_EQ(snap->kill_history[2].action, "reset");
+  EXPECT_EQ(snap->kill_history[2].reason, "back");
+  EXPECT_EQ(snap->kill_history[2].previous, "stepping away");
+  EXPECT_EQ(snap->kill_history[3].reason, "DAILY_LOSS");
+  // Once the loss is back within the limit a reset clears it.
+  f.next();
+  s.on_quotes({f.quote("4.10", "4.20")}, {f.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->kill_reset.ok()) << s.snapshot()->kill_reset.message;
+  ASSERT_TRUE(s.reset_kill("recovered", f.time).decision.ok());
+  EXPECT_FALSE(s.snapshot()->risk.kill_latched);
+  EXPECT_EQ(s.snapshot()->kill_history.back().action, "reset");
+}
+
+TEST(TradingKill, AGuardrailSaysWhatItMeasuredAndWhenItEnds) {
+  ScriptedMarket f;
+  auto c = config();
+  c.limits.max_daily_loss = m("10000");
+  c.guardrails.max_opening_trades = 1;
+  TradingSession s(c, f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("first"), f.time).decision.ok());
+  const auto refused = s.submit(f.market("second"), f.time).decision;
+  EXPECT_EQ(refused.code, Reason::TRADE_LIMIT);
+  EXPECT_EQ(refused.message, "The day's opening trades reached the limit of 1; opening orders resume next trading day");
+  EXPECT_EQ(refused.actual, 1.0);
+  EXPECT_EQ(refused.limit, 1.0);
+  EXPECT_EQ(refused.scope, "aggregate");
+  const auto snap = s.snapshot();
+  EXPECT_EQ(snap->kill_reset.code, Reason::TRADE_LIMIT);
+  EXPECT_NE(snap->kill_reset.message.find("next trading day's rollover"), std::string::npos) << snap->kill_reset.message;
+  EXPECT_EQ(s.reset_kill("try", f.time).decision.message, snap->kill_reset.message);
+  ASSERT_EQ(snap->kill_history.size(), 1u);
+  EXPECT_EQ(snap->kill_history[0].reason, "TRADE_LIMIT");
+}
+
+TEST(TradingKill, ACooldownSaysWhenItEndsAndItsReleaseIsKept) {
+  ScriptedMarket f;
+  auto c = config();
+  c.limits.max_daily_loss = m("10000");
+  c.guardrails.cooldown_minutes = 30;
+  c.guardrails.cooldown_loss = m("50");
+  TradingSession s(c, f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long"), f.time).decision.ok());
+  f.next();
+  s.on_quotes({f.quote("3.00", "3.20")}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.market("out", 1, Side::Sell), f.time).decision.ok());
+  const auto refused = s.submit(f.market("again"), f.time).decision;
+  EXPECT_EQ(refused.code, Reason::COOLDOWN);
+  EXPECT_EQ(refused.message, "Cooldown after a stop-loss exit or loss until 10:30:01 ET");
+  EXPECT_EQ(s.snapshot()->kill_reset.message, "A reset waits for the cooldown to end at 10:30:01 ET");
+  // It releases on market time, and the history keeps the release.
+  f.time += 30 * md::kNanosPerMinute;
+  ++f.observation;
+  s.on_quotes({f.quote("3.00", "3.20")}, {f.valuation()}, f.time);
+  const auto snap = s.snapshot();
+  EXPECT_FALSE(snap->risk.kill_latched);
+  ASSERT_EQ(snap->kill_history.size(), 2u);
+  EXPECT_EQ(snap->kill_history[1].action, "release");
+  EXPECT_EQ(snap->kill_history[1].previous, "COOLDOWN");
+}
+
+TEST(TradingKill, AnAccountResetThatAppliesPendingSettingsSaysWhen) {
+  ScriptedMarket f;
+  auto c = config();
+  c.guardrails.max_opening_trades = 3;
+  TradingSession s(c, f.time);
+  f.seed(s);
+  auto looser = c.guardrails;
+  looser.max_opening_trades = 5;
+  ASSERT_TRUE(s.set_guardrails(looser, f.time).decision.ok());
+  ASSERT_TRUE(s.snapshot()->pending_guardrails);
+  EXPECT_EQ(s.snapshot()->pending_applied_at, 0);
+  f.next();
+  ASSERT_TRUE(s.trip_kill("pause", f.time).decision.ok());
+  ASSERT_TRUE(s.reset_account(m("100000"), {}, "fresh start", f.time).decision.ok());
+  const auto snap = s.snapshot();
+  EXPECT_FALSE(snap->pending_guardrails);
+  EXPECT_EQ(s.config().guardrails.max_opening_trades, 5);
+  EXPECT_EQ(snap->pending_applied_at, f.time);
+  EXPECT_EQ(snap->kill_history.back().action, "reset");
+  EXPECT_EQ(snap->kill_history.back().reason, "fresh start");
+  EXPECT_EQ(snap->kill_history.back().previous, "pause");
+}
+
 }  // namespace
 }  // namespace openport::trading

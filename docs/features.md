@@ -77,7 +77,8 @@ simulation's limits.
 - **Risk**: Greeks per position, today's P&L split by delta, gamma, vega and theta
   (with costs apart, and contracts closed today still listed), dollar-delta and vega limits, a spot × volatility scenario grid,
   a daily loss limit and a reduce-only kill switch: closing orders and bracket exits
-  keep working while opening orders are cancelled. Positions close together as one
+  keep working while opening orders are cancelled. The latch keeps the history of its
+  trips, resets and releases, and says when a reset can clear it. Positions close together as one
   order, or flatten an underlying or the whole account at market: each short closes
   together with the long that covers it, so no short is left naked; closes larger than
   the order limit split, what a thin quote leaves works on later quotes until flat,
