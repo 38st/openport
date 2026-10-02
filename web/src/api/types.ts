@@ -380,6 +380,8 @@ export interface ReplayHistory extends ReplayState {
   pnl: string | null
   valuation_complete?: boolean
   error?: string
+  /** A crash interrupted the run: POST /api/replay {resume} continues it. Absent from older servers. */
+  interrupted?: boolean
   read_only: true
 }
 export interface ReplayListing {

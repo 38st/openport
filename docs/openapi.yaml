@@ -6061,6 +6061,10 @@
               }
             ],
             "description": "A scenario run's last snapshot; null for a recording. Absent from older servers."
+          },
+          "interrupted": {
+            "type": "boolean",
+            "description": "True for a run a crash interrupted, whose metadata still holds its start state: POST /api/replay {\"resume\": id} continues it. False once a run played to its end or was stopped. Absent from older servers."
           }
         },
         "required": [
@@ -12894,6 +12898,10 @@
           },
           "paused": {
             "type": "boolean"
+          },
+          "resume": {
+            "type": "string",
+            "description": "A saved run's id: continue a run a crash interrupted (its history entry has interrupted true). It re-executes the run's recorded inputs against its journal, unpaced, then continues from the last market time it recorded, paused unless paused is false; only speed and paused may accompany it. A run that has ended, was recorded by an older driver or changed its recording part way, or whose recording, scenario or exchange calendar changed, returns 409 REPLAY_NOT_RESUMABLE. A run whose re-executed inputs differ from its journal stops trading and writes nothing."
           }
         },
         "required": []

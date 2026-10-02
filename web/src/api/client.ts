@@ -191,6 +191,8 @@ export const api = {
   replay: (signal?: AbortSignal) => get<ReplayListing>("/api/replay", signal),
   startReplay: (source: ReplaySource, speed: number, mode: WriteMode, options: ReplayStart = {}) =>
     write<{ replay: ReplayState }>("/api/replay", "POST", mode, { ...source, speed, ...options }),
+  /** Continues a saved run a crash interrupted, paused where it stopped. */
+  resumeReplay: (id: string, speed: number, mode: WriteMode) => write<{ replay: ReplayState }>("/api/replay", "POST", mode, { resume: id, speed }),
   deleteReplay: (id: string, mode: WriteMode) => write<{ deleted: string }>(`/api/replay/history/${encodeURIComponent(id)}`, "DELETE", mode),
   controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean; until?: string }, mode: WriteMode) =>
     write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),

@@ -23,6 +23,7 @@ namespace openport::server {
 ///
 ///   GET    /api/replay   recordings, scenarios, history and the replay running
 ///   POST   /api/replay   {file | scenario, speed?, plan?, seed?, start_at?, paused?}
+///                        or {resume: a saved run's id, speed?, paused?}: continue it
 ///   PUT    /api/replay   {speed?, paused?, skip? | until}: control it
 ///   DELETE /api/replay   stop it
 ///   *      /api/replay/X the live route /api/X, on the replay
@@ -67,6 +68,7 @@ class ReplayHost {
   class History;
   void stop_session();  // control_mutex_ held
   void control(const ApiRequest& request, const ApiCompletion& complete);
+  void resume(const std::string& id, int speed, bool paused, const ApiCompletion& complete);
   void history(const ApiRequest& request, const ApiCompletion& complete);
   /// Queues a change for the control thread, which runs each under control_mutex_.
   void enqueue(const ApiRequest& request, const ApiCompletion& complete);

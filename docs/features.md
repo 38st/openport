@@ -114,6 +114,7 @@ simulation's limits.
 - **Replay**: record every session and trade any recorded day again beside the live
   feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
   at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
+  Resume a run a crash interrupted, on the same journal, where it stopped.
   Finished runs open read-only in Journal and Dashboard. Replay journals sync to disk
   every 250 ms rather than every record, so a power cut can lose their last quarter
   second.
@@ -295,6 +296,8 @@ the simulation's limits.
 - [x] Morning brief with market levels, account allowance, day notes and chart overlays
 - [x] Stop-limit exits on single contracts and spreads, banded around their stop, and
       exits that re-arm or shrink so a partly filled position stays protected
+- [x] Resumable interrupted replay runs, archived runs' working orders ended with the
+      run, and demo restarts that resume the rest of their date with a breaker reference
 - [x] Exports that name their replay run and attempt, trades that say what closed them,
       holiday-aware weekday reports and one win-rate definition
 - [x] Order history: end times, changes and refusals, what a working order waits for,

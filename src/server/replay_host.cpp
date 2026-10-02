@@ -19,6 +19,7 @@
 #include "openport/server/plans.hpp"
 #include "openport/server/run.hpp"
 #include "openport/server/playbooks.hpp"
+#include "run_json.hpp"
 
 namespace openport::server {
 namespace {
@@ -428,6 +429,19 @@ class ReplayHost::History {
     std::filesystem::rename(staged, file, ec);
     if (ec) std::filesystem::remove(staged, ec);
   }
+  /// A saved run's metadata as its last start or retirement wrote it, or null.
+  json metadata(const std::string& id) const {
+    if (directory_.empty() || !plain_name(id)) return nullptr;
+    std::ifstream file(directory_ / (id + ".json"));
+    if (!file) return nullptr;
+    return json::parse(file, nullptr, false);
+  }
+  /// Removes what a resumed run rebuilds as it re-executes: its equity history and
+  /// playbook catalogue, which would otherwise hold the later state it reaches again.
+  void rebuild(const std::string& id) const {
+    std::error_code ignored;
+    for (const auto* suffix : {".playbooks.json", ".jsonl.equity.csv"}) std::filesystem::remove(directory_ / (id + suffix), ignored);
+  }
   /// A saved run's journal, or empty when there is none by that id.
   std::filesystem::path journal(const std::string& id) const {
     if (directory_.empty() || !plain_name(id)) return {};
@@ -495,6 +509,9 @@ class ReplayHost::History {
         item["paused"] = true;
         item["settled_through"] = item.value("time", json(nullptr));
       }
+      // A run a crash interrupted, whose metadata still holds its start state, can
+      // continue: POST /api/replay {"resume"}. A stopped or replaced run has ended.
+      item["interrupted"] = !finalized && !item.contains("error");
       item["finished"] = true;
       item["read_only"] = true;
       out.push_back(std::move(item));
@@ -752,6 +769,139 @@ void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complet
   } catch (const std::exception& error) { complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what())); }
 }
 
+void ReplayHost::resume(const std::string& id, int speed, bool paused, const ApiCompletion& complete) {
+  const auto refuse = [&](const std::string& message) { complete(api_error(409, "REPLAY_NOT_RESUMABLE", message)); };
+  try {
+    if (const auto running = current(); running && running->id == id) {
+      if (!running->provider->finished()) complete(api_error(409, "REPLAY_RUNNING", "This run is already playing"));
+      else refuse("The run has ended: it played to its end or was stopped");
+      return;
+    }
+    const auto file = history_->journal(id);
+    if (file.empty()) {
+      complete(api_error(404, "NOT_FOUND", "No saved replay run " + id));
+      return;
+    }
+    if (!history_->writable()) {
+      complete(api_error(403, "WRITE_DISABLED", "Replay history is read-only"));
+      return;
+    }
+    const auto metadata = history_->metadata(id);
+    if (!metadata.is_object()) return refuse("The run's metadata is missing or unreadable");
+    if (metadata.value("finished", false)) return refuse("The run has ended: it played to its end or was stopped");
+    auto recovery = trading::FileJournal::read(file.string());
+    // A crash part way through a write leaves a torn last line; the repair keeps a copy.
+    if (recovery.truncated_final_line) {
+      (void)trading::FileJournal::repair(file.string());
+      recovery = trading::FileJournal::read(file.string());
+    }
+    if (recovery.records.empty()) return refuse("The run's journal holds no transaction");
+    std::vector<json> inputs;
+    for (const auto& input : run_inputs(recovery)) inputs.push_back(json::parse(input));
+    if (inputs.empty() || inputs.front().at("kind") != "start") return refuse("The journal has no reproducible-run metadata");
+    const auto& start = inputs.front();
+    // The run re-executes on this build's driver; one recorded on an older driver would differ.
+    if (start.value("driver", 1) != 4) return refuse("The run was recorded by an older build's driver; verify it with --verify-run");
+    md::Timestamp target = 0;
+    for (const auto& input : inputs) {
+      if (input.at("kind") == "source") return refuse("A run that changed its recording part way cannot resume yet");
+      if (input.at("kind") == "boundary") target = input.at("driver_time").get<md::Timestamp>();
+    }
+    if (start.value("calendar", json::array()) != json(md::scheduled_days()))
+      return refuse("The exchange calendar has changed since the run started");
+    const auto& input = start.at("input");
+    const providers::Scenario* day = nullptr;
+    std::filesystem::path recording;
+    md::Date date;
+    std::uint64_t seed = 0;
+    if (input.at("kind") == "scenario") {
+      if (!options_.demo) {
+        complete(api_error(404, "NOT_FOUND", "The demo market is off on this server"));
+        return;
+      }
+      for (const auto& scenario : scenarios_) if (scenario.id == input.at("id").get<std::string>()) day = &scenario;
+      if (!day) return refuse("The run's scenario is no longer listed");
+      date = input.at("date").get<md::Date>();
+      seed = input.at("seed").get<std::uint64_t>();
+      if (json::parse(scenario_input(*day, date, seed)) != input) return refuse("The scenario or its generator has changed since the run started");
+    } else {
+      recording = input.at("file").get<std::string>();
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(recording, ec) || json::parse(recording_input(recording)) != input)
+        return refuse("The run's recording has changed or moved");
+    }
+    auto session = std::make_shared<Session>();
+    session->id = id;
+    session->file = metadata.value("file", id);
+    session->scenario = day ? day->id : "";
+    session->seed = day ? std::to_string(seed) : "";
+    session->generator = day ? day->generator : 0;
+    session->plan = metadata.value("plan", std::string("practice"));
+    session->date = metadata.value("date", std::string());
+    session->start_at = metadata.value("start_at", std::string());
+    session->target = target;
+    providers::ReplayProvider::Options playback;
+    playback.file = day ? demos_->get(*day, date, seed) : recording;
+    playback.speed = speed;
+    // The recorded batches replay unpaced, and playback continues from the last one.
+    playback.start_at = target;
+    playback.paused = paused;
+    session->provider = std::make_unique<providers::ReplayProvider>(std::move(playback));
+    session->demo = providers::simulated_provider(session->provider->header().provider);
+    session->durable = true;
+    auto engine = [&] {
+      const std::lock_guard lock(mutex_);
+      return options_.engine;
+    }();
+    const auto first = json::parse(recovery.records.front().payload);
+    // Every option the run's start recorded comes from the run, not from this server's flags.
+    engine.paper = first.at("state").at("config").get<trading::SessionConfig>();
+    engine.initial_actor = first.value("actor", std::string("system"));
+    engine.initial_playbooks = start.contains("playbooks") && !start.at("playbooks").is_null() ? start.at("playbooks").dump() : "";
+    engine.analytics = start.at("analytics").get<analytics::AnalyticsOptions>();
+    engine.dividends = start.at("dividends").get<std::vector<trading::Dividend>>();
+    engine.resume = std::make_shared<const trading::JournalRecovery>(std::move(recovery));
+    std::unique_lock handoff(handoff_mutex_);
+    history_->rebuild(id);
+    engine.paper_journal = file;
+    engine.replay = true;
+    engine.run_input = input.dump();
+    engine.run_id = id;
+    engine.paper_accounts.clear();
+    engine.paper_sink.reset();
+    engine.record_file.clear();
+    engine.candles = std::make_shared<CandleStore>();
+    auto* provider = session->provider.get();
+    engine.clock = [provider] { return provider->time(); };
+    const auto& header = provider->header();
+    session->engine = std::make_unique<Engine>(*provider, md::Subscription{header.subscription.underlyings, 0, 0.0}, engine);
+    session->engine->start();
+    if (!session->engine->status().trading.enabled) {
+      // The journal is as it was: nothing appends until every recorded transaction matched.
+      const auto reason = session->engine->status().trading.reason;
+      session->engine->stop();
+      return refuse(reason);
+    }
+    std::shared_ptr<Session> old;
+    {
+      const std::lock_guard lock(mutex_);
+      old = std::exchange(session_, session);
+    }
+    if (old) {
+      old->engine->stop();
+      history_->finish(*old);
+    }
+    // Its metadata now reads as a run playing again, as a crash would leave it.
+    history_->finish(*session);
+    handoff.unlock();
+    old.reset();
+    complete(ok({{"replay", session->state()}}, 201));
+  } catch (const trading::TradingError& error) {
+    if (error.code() == trading::Reason::JOURNAL_LOCKED) complete(api_error(409, "REPLAY_RUNNING", "Another openportd is still writing this run"));
+    else refuse(error.what());
+  } catch (const std::exception& error) { refuse(error.what()); }
+}
+
 void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complete) {
   if (request.target != "/api/replay") {
     complete(api_error(400, "INVALID_REQUEST", "/api/replay takes no query parameters"));
@@ -770,7 +920,16 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
     } else if (options_.engine.write_mode == "disabled") {
       complete(api_error(403, "WRITE_DISABLED", "Replay writes are disabled"));
     } else if (request.method == "POST") {
-      const auto body = parse_body(request, {"file", "demo", "scenario", "speed", "plan", "seed", "date", "start_at", "paused"});
+      const auto body = parse_body(request, {"file", "demo", "scenario", "speed", "plan", "seed", "date", "start_at", "paused", "resume"});
+      if (body.contains("resume")) {
+        for (const auto& [key, value] : body.items())
+          if (key != "resume" && key != "speed" && key != "paused") throw std::invalid_argument("resume takes only speed and paused besides it");
+        if (!body.at("resume").is_string()) throw std::invalid_argument("resume must be a saved run's id");
+        if (body.contains("paused") && !body.at("paused").is_boolean()) throw std::invalid_argument("paused must be true or false");
+        resume(body.at("resume").get<std::string>(), body.contains("speed") ? speed_field(body) : 1,
+               body.value("paused", true), complete);
+        return;
+      }
       // demo: true plays the default day; a day's id plays that one.
       const providers::Scenario* day = nullptr;
       if (body.contains("demo") && body.contains("scenario")) throw std::invalid_argument("Give demo or scenario, not both");

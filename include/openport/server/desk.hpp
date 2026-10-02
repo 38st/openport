@@ -56,6 +56,11 @@ class Desk {
     std::vector<trading::Dividend> dividends;
     std::vector<analytics::EventLabel> events;
     std::shared_ptr<trading::Journal> paper_sink;  ///< Optional in-process test/simulation sink.
+    /// A saved replay run to continue, read from paper_journal: the main account starts
+    /// afresh and re-executes the run's recorded inputs in order, each batch's boundary
+    /// checked against the batch the driver delivers, and its transactions are compared
+    /// with the journal's until they reach its end, after which they append to it.
+    std::shared_ptr<const trading::JournalRecovery> resume;
     trading::FileJournal::Hooks journal_io;  ///< Injectable I/O only; replay selects the sync policy.
     std::string write_mode = "open";
     analytics::AnalyticsOptions analytics;
@@ -120,6 +125,11 @@ class Desk {
   /// Whether a reproducible run records `command` as an input: every one a trader sends but a preview.
   [[nodiscard]] bool recorded_input(const TradingCommand& command) const;
   void record_command(const TradingCommand& command, md::Timestamp driver_time);
+  /// Re-executes a resumed run's recorded inputs up to its next boundary.
+  void replay_recorded();
+  /// Stops every account of a resumed run whose inputs no longer match its recording.
+  void resume_failed(const std::string& reason);
+  std::deque<std::string> resume_inputs_;  ///< A resumed run's inputs still to re-execute.
   [[nodiscard]] bool inputs_first() const {
     return options_.instant_batches && options_.closing_rollover && options_.inputs_first;
   }

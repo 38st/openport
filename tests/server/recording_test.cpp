@@ -14,6 +14,7 @@
 #include "openport/server/engine.hpp"
 #include "openport/server/equity.hpp"
 #include "openport/server/replay_host.hpp"
+#include "openport/server/run.hpp"
 #include "openport/server/sandboxes.hpp"
 
 namespace {
@@ -669,6 +670,130 @@ TEST(ReplayHost, FinishedRunsListTheirFinalPlaybackStateAndPlanId) {
   history = json::parse(call(restarted, "GET", "/api/replay").body)["history"];
   ASSERT_EQ(history.size(), 1U);
   check(history[0]);
+}
+
+// F69: a run a crash interrupted could only be opened read-only. Resuming re-executes
+// its recorded inputs against its journal and continues it, so the journal ends as if
+// the run had never stopped.
+TEST(ReplayHost, AnInterruptedRunResumesWhereItStoppedWithTheSameJournal) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  const auto replays = file.directory / "replays";
+  const auto crashed = file.directory / "crashed";
+  std::filesystem::create_directories(crashed / "replays");
+  std::string id;
+  std::string uninterrupted;
+  {
+    server::ReplayHost host({file.directory, base, false});
+    const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","paused":true,"speed":0})");
+    ASSERT_EQ(started.status, 201) << started.body;
+    id = json::parse(started.body)["replay"]["id"];
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+    ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"10:00"})").status, 200);
+    const json order{{"client_order_id", "before-crash"}, {"symbol", md::parse_osi("SPXW261022C06000000")->osi_symbol()},
+                     {"side", "buy"}, {"type", "limit"}, {"limit_price", "100.00"}, {"quantity", 1}, {"time_in_force", "gtc"}};
+    const auto placed = call(host, "POST", "/api/replay/orders", order.dump());
+    ASSERT_EQ(placed.status, 201) << placed.body;
+    const json bought{{"client_order_id", "bought"}, {"symbol", md::parse_osi("SPXW261022P06000000")->osi_symbol()},
+                      {"side", "buy"}, {"type", "market"}, {"quantity", 2}, {"time_in_force", "ioc"}};
+    ASSERT_EQ(call(host, "POST", "/api/replay/orders", bought.dump()).status, 201);
+    ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"10:30"})").status, 200);
+    // What a crash here leaves: the journal so far and the metadata written at the start.
+    std::filesystem::copy_file(replays / (id + ".jsonl"), crashed / "replays" / (id + ".jsonl"));
+    { std::ofstream out(crashed / "replays" / (id + ".json")); out << json::parse(started.body)["replay"].dump() << '\n'; }
+    ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"11:00"})").status, 200);
+    host.stop();
+    std::ifstream in(replays / (id + ".jsonl"));
+    uninterrupted.assign(std::istreambuf_iterator<char>(in), {});
+  }
+  server::Engine::Options other = base;
+  other.paper_journal = crashed / "main.jsonl";
+  server::ReplayHost host({file.directory, other, false});
+  auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(history.size(), 1U);
+  EXPECT_EQ(history[0]["interrupted"], true) << history[0];
+  EXPECT_EQ(call(host, "POST", "/api/replay", json{{"resume", id}, {"plan", "practice"}}.dump()).status, 400);
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"resume":"no-such-run"})").status, 404);
+  const auto resumed = call(host, "POST", "/api/replay", json{{"resume", id}, {"speed", 0}}.dump());
+  ASSERT_EQ(resumed.status, 201) << resumed.body;
+  EXPECT_EQ(json::parse(resumed.body)["replay"]["id"], id);
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  const auto state = json::parse(call(host, "GET", "/api/replay").body)["replay"];
+  EXPECT_EQ(state["paused"], true) << state;
+  EXPECT_EQ(state["time"], "2026-09-16T14:30:00.000Z");
+  // The account is the one the run had: its position and resting order are back.
+  const auto account = json::parse(call(host, "GET", "/api/replay/orders?status=open").body)["orders"];
+  ASSERT_EQ(account.size(), 1U) << account;
+  EXPECT_EQ(account[0]["client_order_id"], "before-crash");
+  EXPECT_EQ(call(host, "POST", "/api/replay", json{{"resume", id}}.dump()).status, 409);
+  ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"11:00"})").status, 200);
+  host.stop();
+  std::string continued;
+  { std::ifstream in(crashed / "replays" / (id + ".jsonl")); continued.assign(std::istreambuf_iterator<char>(in), {}); }
+  EXPECT_EQ(continued, uninterrupted);
+  EXPECT_TRUE(server::verify_run(crashed / "replays" / (id + ".jsonl")).matched);
+  history = json::parse(call(host, "GET", "/api/replay").body)["history"];
+  ASSERT_EQ(history.size(), 1U);
+  // A stopped run has ended, as one that played to its end has.
+  EXPECT_EQ(history[0]["interrupted"], false);
+  const auto ended = call(host, "POST", "/api/replay", json{{"resume", id}}.dump());
+  EXPECT_EQ(ended.status, 409) << ended.body;
+  EXPECT_EQ(json::parse(ended.body)["error"]["code"], "REPLAY_NOT_RESUMABLE");
+}
+
+// A run whose recorded inputs no longer match its recording stops trading as it
+// resumes, and its journal is left as it was.
+TEST(ReplayHost, AResumedRunThatDiffersFromItsRecordingStopsAndWritesNothing) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  const auto replays = file.directory / "replays";
+  server::ReplayHost host({file.directory, base, false});
+  const auto started = call(host, "POST", "/api/replay", R"({"file":"session.oprec","paused":true,"speed":0})");
+  ASSERT_EQ(started.status, 201) << started.body;
+  const std::string id = json::parse(started.body)["replay"]["id"];
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"10:00"})").status, 200);
+  host.stop();
+  // A boundary that names another batch than the recording's: re-executing reaches it.
+  auto recovery = trading::FileJournal::read((replays / (id + ".jsonl")).string());
+  const auto changed = file.directory / "changed.jsonl";
+  {
+    auto journal = trading::FileJournal::create(changed.string());
+    int boundaries = 0;
+    for (const auto& record : recovery.records) {
+      auto payload = json::parse(record.payload);
+      if (record.type == "run_input") {
+        for (auto& event : payload.at("events")) {
+          auto& input = event.at("payload");
+          if (event.at("type") == "run_input" && input.at("kind") == "boundary" && ++boundaries == 3)
+            input["events"] = input.at("events").get<std::size_t>() + 1;
+        }
+      }
+      journal->append(record.time, record.type, payload.dump());
+    }
+    ASSERT_GE(boundaries, 3);
+  }
+  std::filesystem::rename(changed, replays / (id + ".jsonl"));
+  std::string before;
+  { std::ifstream in(replays / (id + ".jsonl")); before.assign(std::istreambuf_iterator<char>(in), {}); }
+  // The metadata a crash leaves.
+  { std::ofstream out(replays / (id + ".json"), std::ios::trunc); out << json::parse(started.body)["replay"].dump() << '\n'; }
+  const auto resumed = call(host, "POST", "/api/replay", json{{"resume", id}, {"speed", 0}}.dump());
+  ASSERT_EQ(resumed.status, 201) << resumed.body;
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  const auto status = json::parse(call(host, "GET", "/api/replay/status").body);
+  EXPECT_EQ(status["trading"]["enabled"], false);
+  EXPECT_NE(status["trading"]["reason"].get<std::string>().find("cannot resume"), std::string::npos) << status["trading"];
+  host.stop();
+  std::string after;
+  { std::ifstream in(replays / (id + ".jsonl")); after.assign(std::istreambuf_iterator<char>(in), {}); }
+  EXPECT_EQ(after, before);
 }
 
 TEST(ReplayHost, PaperDisabledAndReadOnlyNeverCreateReplayJournals) {

@@ -73,6 +73,7 @@ export function useReplayControls() {
     step: (until: string) => run(() => api.controlReplay({ until }, mode)),
     stop: () => run(() => api.stopReplay(mode)),
     start: (source: ReplaySource, speed: number, then: () => void, options?: ReplayStart) => run(async () => { await api.startReplay(source, speed, mode, options); then() }),
+    resume: (id: string, speed: number, then: () => void) => run(async () => { await api.resumeReplay(id, speed, mode); then() }),
     remove: (id: string, then: () => void) => run(async () => { await api.deleteReplay(id, mode); then() }),
   }
 }
@@ -248,7 +249,9 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
           <Badge tone={run.result === "pass" ? "positive" : run.result === "fail" ? "warn" : "neutral"}>{run.result}</Badge>
           <span>P&amp;L {run.pnl === null ? "—" : formatMoney(run.pnl)}{run.valuation_complete === false ? " (incomplete marks)" : ""}</span>
           {run.error && <span className="text-warn">{run.error}</span>}
-          <span className="ml-auto flex gap-2">{(["journal", "dashboard"] as const).map((view) => <button key={view} type="button" className="trade-button" disabled={!!run.error}
+          {run.interrupted && <Badge tone="warn">interrupted</Badge>}
+          <span className="ml-auto flex gap-2">{run.interrupted && <button type="button" className="trade-button" disabled={controls.blocked || controls.pending}
+            title="Replay its recorded orders and continue, paused where it stopped" onClick={() => void controls.resume(run.id, speed, started)}>Resume</button>}{(["journal", "dashboard"] as const).map((view) => <button key={view} type="button" className="trade-button" disabled={!!run.error}
             onClick={() => { live.switchSource(`history:${run.id}`); onNavigate?.(view) }}>Open {view}</button>)}
             <button type="button" className="trade-button" disabled={controls.blocked || controls.pending} onClick={() => setDeleting(run.id)}>Delete</button></span>
         </div>)}

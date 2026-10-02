@@ -106,6 +106,53 @@ class ComparisonJournal final : public trading::Journal {
   std::uint64_t sequence_ = 0;
   std::string head_ = std::string(64, '0');
 };
+class ResumingJournal final : public trading::Journal {
+ public:
+  ResumingJournal(const trading::JournalRecovery& expected, std::shared_ptr<trading::Journal> file)
+      : file_(std::move(file)) {
+    for (const auto& record : expected.records) hashes_.push_back(record.hash);
+  }
+  void append(md::Timestamp time, std::string_view type, std::string_view payload) override {
+    if (sequence_ >= hashes_.size()) {
+      file_->append(time, type, payload);
+      sequence_ = file_->sequence();
+      head_ = file_->head();
+      return;
+    }
+    json line{{"seq", sequence_ + 1}, {"time", time}, {"type", type}, {"payload", json::parse(payload)}, {"prev_hash", head_}};
+    const auto hash = hash_text(line.dump());
+    if (hashes_[sequence_] != hash)
+      throw std::runtime_error("The resumed run differs from its journal at transaction " + std::to_string(sequence_ + 1) +
+                               " (" + std::string(type) + "); nothing was written");
+    head_ = hash;
+    ++sequence_;
+  }
+  void flush() override { file_->flush(); }
+  std::uint64_t sequence() const override { return sequence_; }
+  std::string head() const override { return head_; }
+ private:
+  std::shared_ptr<trading::Journal> file_;
+  std::vector<std::string> hashes_;
+  std::uint64_t sequence_ = 0;
+  std::string head_ = std::string(64, '0');
+};
+}
+
+std::vector<std::string> run_inputs(const trading::JournalRecovery& journal) {
+  std::vector<std::string> inputs;
+  for (const auto& record : journal.records) {
+    if (record.type != "run_input") continue;
+    const auto payload = json::parse(record.payload);
+    for (const auto& event : payload.at("events"))
+      if (event.at("type") == "run_input") inputs.push_back(event.at("payload").dump());
+  }
+  return inputs;
+}
+std::shared_ptr<trading::Journal> resuming_journal(const trading::JournalRecovery& expected,
+                                                   std::shared_ptr<trading::Journal> file) {
+  if (file->sequence() != expected.records.size() || file->head() != expected.head)
+    throw std::invalid_argument("The resumed journal is not the one its run recorded");
+  return std::make_shared<ResumingJournal>(expected, std::move(file));
 }
 
 std::string recording_input(const std::filesystem::path& file) {
