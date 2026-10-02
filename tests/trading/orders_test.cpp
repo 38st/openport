@@ -247,6 +247,69 @@ TEST(TradingOrders, ARetryOfAChangedOrderStillGetsTheOrderAsItNowStands) {
   std::filesystem::remove_all(directory);
 }
 
+TEST(TradingOrders, AnIocRemainderSaysWhetherItsLimitWasShortOrTheBookWasUsedUp) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s, "4.50", "4.70", 42);
+  auto ioc = f.limit("short", 1, "4.60", Side::Buy, TimeInForce::Ioc);
+  ASSERT_TRUE(s.submit(ioc, f.time).decision.ok());
+  auto reason = s.snapshot()->recent_orders.back().reason;
+  EXPECT_EQ(reason.code, Reason::IOC_REMAINDER);
+  EXPECT_EQ(reason.message, "IOC limit 4.60 did not reach the ask, 4.70; nothing more was marketable");
+  ioc = f.limit("deep", 50, "4.70", Side::Buy, TimeInForce::Ioc);
+  ASSERT_TRUE(s.submit(ioc, f.time).decision.ok());
+  reason = s.snapshot()->recent_orders.back().reason;
+  EXPECT_EQ(s.snapshot()->recent_orders.back().filled_quantity, 42);
+  EXPECT_EQ(reason.message, "IOC exhausted available displayed liquidity");
+}
+
+TEST(TradingOrders, AClientIdNamesOneOrderPerAttempt) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-client-ids-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(directory);
+  std::filesystem::create_directories(directory);
+  const auto path = (directory / "journal.jsonl").string();
+  ScriptedMarket f;
+  std::string expected;
+  {
+    TradingSession s(roomy(), f.time, FileJournal::create(path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("c1"), f.time).decision.ok());
+    // Conflicting reuses are refused, name the order holding the ID, and record nothing.
+    const auto version = s.snapshot()->account_version;
+    for (int i = 0; i < 3; ++i) {
+      const auto conflict = s.submit(f.market("c1", 2), f.time);
+      EXPECT_EQ(conflict.decision.code, Reason::DUPLICATE_CLIENT_ID);
+      EXPECT_EQ(conflict.order_id, 1u);
+      EXPECT_FALSE(conflict.replayed);
+      EXPECT_NE(conflict.decision.message.find("order 1"), std::string::npos) << conflict.decision.message;
+    }
+    EXPECT_EQ(s.snapshot()->recent_orders.size(), 1u);
+    EXPECT_EQ(s.snapshot()->account_version, version);
+    // After an account reset the ID is free: the same terms place a new order,
+    // not the earlier attempt's filled one.
+    f.next();
+    ASSERT_TRUE(s.reset_account(m("100000"), {}, "again", f.time).decision.ok());
+    s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+    const auto again = s.submit(f.market("c1"), f.time);
+    ASSERT_TRUE(again.decision.ok());
+    EXPECT_FALSE(again.replayed);
+    EXPECT_EQ(again.order_id, 2u);
+    // Within the new attempt it is a retry again.
+    const auto retry = s.submit(f.market("c1"), f.time);
+    EXPECT_TRUE(retry.replayed);
+    EXPECT_EQ(retry.order_id, 2u);
+    EXPECT_EQ(s.submit(f.market("c1", 3), f.time).order_id, 2u);
+    expected = s.snapshot_json();
+  }
+  // Recovery rebuilds the same map: the ID names the new attempt's order.
+  auto recovered = TradingSession::recover(FileJournal::read(path));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  const auto retry = recovered.submit(f.market("c1"), f.time);
+  EXPECT_TRUE(retry.replayed);
+  EXPECT_EQ(retry.order_id, 2u);
+  std::filesystem::remove_all(directory);
+}
+
 TEST(TradingOrders, CancelAllTakesEveryOpenOrderOrOneUnderlyings) {
   ScriptedMarket f;
   const auto xsp = beside(f, "XSP261022C00500000");

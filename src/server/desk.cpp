@@ -600,7 +600,9 @@ void Desk::publish_trading() {
           published = {playbooks_->revision(), playbooks_->publication(account.id, options_.replay).dump()};
         view->playbooks_json = published.second;
       }
-      if (options_.replay && market_time_ > view->snapshot->time) {
+      // An idle account's publication is as of the feed's market time, not its last
+      // transaction: batches that change nothing are not transactions.
+      if (market_time_ > view->snapshot->time) {
         auto clocked = std::make_shared<trading::TradingSnapshot>(*view->snapshot);
         clocked->time = market_time_;
         view->snapshot = std::move(clocked);

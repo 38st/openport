@@ -484,12 +484,13 @@ TEST(TradingBuyingPower, AMarketOrderOnAOneSidedBookReservesTheSideItWouldTake) 
   auto armed = f.market("armed");
   armed.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrAbove, m("50")};
   ASSERT_TRUE(s.submit(armed, f.time).decision.ok());
-  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("420.65"));
-  // Nobody bids now, and the ask is 0.10: the buy still reserves that ask.
+  // An armed buy stop holds its level, the least it pays once the ask reaches it.
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("5000.65"));
+  // Nobody bids now, and the ask is 0.10: it still holds its level.
   f.next();
   s.on_quotes({{f.symbol(), f.observation, f.time, std::nullopt, m("0.10"), 0, 27}}, {f.valuation()}, f.time);
   EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Armed);
-  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("10.65"));
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("5000.65"));
 }
 TEST(TradingBreach, SolvesUpAndDownWithReflectionAndKeepsMissingInputsAbsent) {
   const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);

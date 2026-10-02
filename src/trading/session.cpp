@@ -125,7 +125,7 @@ bool ask_only(const State& s, const Order& o, const Leg& leg) {
 }
 /// An exit's long leg that nobody bids for: sold at zero, without displayed size.
 bool given_away(const State& s, const Order& o, const Leg& leg) { return leg.side == Side::Sell && ask_only(s, o, leg); }
-bool closing_only(const State& s, const Order& o, bool include_working);
+bool closing_only(const State& s, const Order& o, bool include_working = true, bool include_armed = true);
 /// The same for a single contract: a buy that only closes a short takes an ask-only
 /// quote within its size (a short quoted 0.00/0.05 can be bought back), and a
 /// reduce-only market close gives a long nobody bids for away at zero.
@@ -300,7 +300,7 @@ bool shadowed(const State& s, const Order& o) {
 /// Every leg must oppose its holding and fit within it after the other working
 /// user orders on that side. Bracket exits shrink after each fill and system
 /// closes are immediate IOC, so neither reserves a manual close's capacity.
-bool closing_only(const State& s, const Order& o, bool include_working = true, bool include_armed = true) {
+bool closing_only(const State& s, const Order& o, bool include_working, bool include_armed) {
   const auto closes = [&](const std::string& symbol, Side side, Quantity ratio) {
     const auto q = held(s, symbol);
     if (q == 0 || (side != Side::Buy && side != Side::Sell) ||
@@ -592,9 +592,9 @@ struct Use {
 /// in the margin requirement from `before` to `after`, plus the premium it pays
 /// (`cash`, negative when it receives premium). An order that releases more
 /// than it costs reserves only its fees.
+Use use_from(Money change, Money fees) { return {fees + std::max(Money{}, change), fees + change > Money{}}; }
 Use use_of(const State& s, const MarginBook& before, const MarginBook& after, Money cash, Money fees) {
-  const auto change = requirement(s, after) - requirement(s, before) + cash;
-  return {fees + std::max(Money{}, change), fees + change > Money{}};
+  return use_from(requirement(s, after) - requirement(s, before) + cash, fees);
 }
 /// A multi-leg order on the held positions: legs sold short at their marks,
 /// and the net debit (or credit) per unit at its limit or the current far sides.
@@ -634,11 +634,24 @@ struct PowerDetail {
 /// less the contracts earlier orders already claim to close, in acceptance
 /// order, so two sells cannot both claim the same long. Bracket exits stay
 /// within their position and reserve only fees. Orders without a limit use
-/// market_slices.
+/// market_slices; a marketable buy limit reserves its expected fill there, without
+/// fill latency, and an armed buy stop at least its trigger level.
 PowerDetail buying_power(const State& s, OrderId focus = 0) {
   PowerDetail out;
   const auto book = held_book(s);
   const auto margin = margin_of(s, book);
+  // A single-leg order's books differ from the held one in its own contract alone,
+  // so the requirement of each such book is computed once: a ladder of working
+  // orders on one contract costs one margin computation, not one per order.
+  std::map<std::tuple<std::string, Quantity, std::int64_t>, Money> requirements;
+  std::map<std::string, bool> quotable;
+  const auto requirement_with = [&](const MarginBook& changed, const std::string& symbol) {
+    const auto it = changed.find(symbol);
+    const auto key = it == changed.end() ? std::tuple<std::string, Quantity, std::int64_t>{symbol, 0, 0}
+                                         : std::tuple<std::string, Quantity, std::int64_t>{symbol, it->second.first, it->second.second.micros()};
+    if (const auto saved = requirements.find(key); saved != requirements.end()) return saved->second;
+    return requirements.emplace(key, requirement(s, changed)).first->second;
+  };
   std::map<std::string, std::pair<Quantity, Quantity>> capacity;
   Money reserved;
   for (const auto id : open_ids(s)) {
@@ -661,14 +674,29 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
       const auto q = held(s, symbol);
       auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Quantity>(q, 0), std::max<Quantity>(-q, 0)).first->second;
       const bool buy = o.request.side == Side::Buy;
-      const Money premium = o.request.limit_price ? (*o.request.limit_price * 100) * remaining
-                                                  : market_premium(s, symbol, o.request.side, remaining);
       const Money fees = s.config.fee_per_contract * remaining;
       if (kept_within(o)) {
         // Bracket exits and reduce-only closes stay within the position, so they only
         // ever close; they leave closing capacity to ordinary orders such as a manual close.
         use = {fees, false};
       } else {
+        Money premium = o.request.limit_price ? (*o.request.limit_price * 100) * remaining
+                                              : market_premium(s, symbol, o.request.side, remaining);
+        if (buy && o.status == OrderStatus::Armed) {
+          // An armed buy stop pays at least its level once the ask reaches it.
+          const auto& t = *o.request.trigger;
+          if (!o.request.limit_price && t.source == TriggerSource::Option && t.direction == TriggerDirection::AtOrAbove)
+            premium = std::max(premium, (t.level * 100) * remaining);
+        } else if (buy && o.request.limit_price && s.config.rules.fill_latency_ms == 0) {
+          // A marketable buy limit pays the expected fill, not its limit; one below
+          // the ask rests and pays its limit.
+          const auto quoted = s.books.find(symbol);
+          if (quoted != s.books.end() && quoted->second.quote.ask && *o.request.limit_price >= *quoted->second.quote.ask) {
+            auto usable = quotable.find(symbol);
+            if (usable == quotable.end()) usable = quotable.emplace(symbol, quote_check(s, symbol).ok()).first;
+            if (usable->second) premium = std::min(premium, market_premium(s, symbol, o.request.side, remaining));
+          }
+        }
         auto before = book;
         if (q > 0 && !buy) trade(before, symbol, long_left - q, {});
         if (q < 0 && buy) trade(before, symbol, -q - short_left, {});
@@ -678,7 +706,7 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
         opening = remaining - closing;
         auto after = before;
         trade(after, symbol, buy ? remaining : -remaining, premium.prorate(1, 100 * remaining));
-        use = use_of(s, before, after, buy ? premium : -premium, fees);
+        use = use_from(requirement_with(after, symbol) - requirement_with(before, symbol) + (buy ? premium : -premium), fees);
       }
     }
     reserved = reserved + use.reservation;
@@ -809,9 +837,9 @@ Measures measure(const State& s) {
     if (const auto price = stock_price(s, symbol)) out.stock_prices[symbol] = price->dollars();
   // Reachable exposure counts each open bracket pair once: the pair's later exit
   // is left out while both are open.
-  std::vector<Order> working;
+  std::vector<const Order*> working;
   for (const auto id : open_ids(s))
-    if (const auto& o = s.orders[id - 1]; !shadowed(s, o)) working.push_back(o);
+    if (const auto& o = s.orders[id - 1]; !shadowed(s, o)) working.push_back(&o);
   out.risk = portfolio_risk(s.ledger, working, s.contracts, s.valuations, s.config.limits, s.time, out.stock_prices);
   out.risk.daily_loss = std::max(Money{}, s.start_equity - out.equity);
   out.risk.kill_latched = s.kill;
@@ -1150,9 +1178,9 @@ Decision open_orders_risk_check(const State& s, const Order& o) {
 /// that is already over a limit can still close, hedge and trade elsewhere.
 Decision exposure_check(const State& s, const Order& o, const Measures& snapshot) {
   if (!snapshot.risk.complete) return check_exposure(snapshot.risk);
-  std::vector<Order> working;
+  std::vector<const Order*> working;
   for (const auto id : open_ids(s))
-    if (const auto& other = s.orders[id - 1]; other.id != o.id && !shadowed(s, other)) working.push_back(other);
+    if (const auto& other = s.orders[id - 1]; other.id != o.id && !shadowed(s, other)) working.push_back(&other);
   const auto without = portfolio_risk(s.ledger, working, s.contracts, s.valuations, s.config.limits, s.time, snapshot.stock_prices);
   return check_exposure(snapshot.risk, without);
 }
@@ -1613,6 +1641,23 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
 }
+/// Why an IOC's remainder found nothing more to fill: no fresh two-sided quote, a
+/// limit short of the executable price, or else the liquidity it could use was used
+/// up (`exhausted`).
+std::string ioc_remainder_message(const State& s, const Order& o, std::string exhausted) {
+  const auto& r = o.request;
+  if (multi_leg(r) || !s.books.contains(r.symbol)) return exhausted;
+  if (!quote_check(s, r.symbol).ok()) return "IOC found no fresh two-sided quote to fill against";
+  if (r.limit_price) {
+    const bool buy = r.side == Side::Buy;
+    const auto price = execution_price(s, r.symbol, r.side);
+    const bool slipped = s.config.rules.slippage_ticks > 0 || s.config.rules.impact_ticks > 0;
+    if (buy ? *r.limit_price < price : *r.limit_price > price)
+      return "IOC limit " + r.limit_price->str() + " did not reach the " + (buy ? "ask" : "bid") +
+             (slipped ? " after slippage, " : ", ") + price.str() + "; nothing more was marketable";
+  }
+  return exhausted;
+}
 /// An IOC's unfilled remainder cancels, except a stop exit's: a thin book, or one
 /// other orders have used up, re-arms it for what it still protects, and it fires
 /// again on the next quote that reaches its level, so no remainder is left bare.
@@ -1625,7 +1670,7 @@ void end_ioc(State& s, OrderId id, std::string message, Events& events) {
     event(events, "order_rearmed", stop);
     return;
   }
-  cancel_order(s, id, failure(Reason::IOC_REMAINDER, std::move(message)), events);
+  cancel_order(s, id, failure(Reason::IOC_REMAINDER, ioc_remainder_message(s, o, std::move(message))), events);
 }
 /// Sweep successive simulated tiers, retaining the original one-fill path when
 /// impact is off. A delayed IOC gets its one attempt on an eligible quote.
@@ -1871,7 +1916,8 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   event(events, "order_accepted", order);
   match_symbols(s, {symbol}, events, order.id);
   if (s.config.rules.fill_latency_ms == 0 && s.orders.at(static_cast<std::size_t>(order.id - 1)).open())
-    cancel_order(s, order.id, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+    cancel_order(s, order.id, failure(Reason::IOC_REMAINDER, ioc_remainder_message(s, s.orders.at(static_cast<std::size_t>(order.id - 1)),
+                 "IOC exhausted available displayed liquidity")), events);
 }
 /// Why shares cannot trade now: they need the stock market's regular session and
 /// the underlying's fresh price.
@@ -2728,7 +2774,7 @@ CommandResult place_order(State& s, OrderRequest request, Timestamp time, const 
   match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
   const auto& accepted = s.orders.at(static_cast<std::size_t>(id - 1));
   if (s.config.rules.fill_latency_ms == 0 && accepted.open() && accepted.request.tif == TimeInForce::Ioc)
-    cancel_order(s, id, failure(Reason::IOC_REMAINDER, "IOC exhausted available displayed liquidity"), events);
+    cancel_order(s, id, failure(Reason::IOC_REMAINDER, ioc_remainder_message(s, accepted, "IOC exhausted available displayed liquidity")), events);
   // A bracket stop the entry's fills created may already be reached.
   check_triggers(s, events);
   return CommandResult{{}, id, 0};
@@ -4037,15 +4083,24 @@ void assign_early(State& s, const std::vector<Dividend>& dividends, Timestamp cl
                                      {"underlying", contract.underlying}, {"shares", shares}, {"price", *price}});
   }
 }
+/// A payment in whole cents, as brokers pay one: nearest cent, ties away from zero.
+Money nearest_cent(Money amount) {
+  constexpr std::int64_t cent = 10'000;
+  const auto micros = amount.micros();
+  const auto rest = micros % cent;
+  auto rounded = micros - rest;
+  if (2 * (rest < 0 ? -rest : rest) >= cent) rounded += micros < 0 ? -cent : cent;
+  return Money::from_micros(rounded);
+}
 /// On an ex-date the shares held into it are paid the dividend, and short shares
-/// pay it: once per symbol and date, into the new day's P&L as other.
+/// pay it, in whole cents: once per symbol and date, into the new day's P&L as other.
 void pay_dividends(State& s, const std::vector<Dividend>& dividends, Events& events) {
   for (const auto& d : dividends) {
     const auto shares = shares_held(s, d.symbol);
     const bool paid = std::any_of(s.dividends.begin(), s.dividends.end(),
         [&](const DividendPayment& p) { return p.symbol == d.symbol && p.ex_date == d.ex_date; });
     if (shares == 0 || paid || d.per_share <= Money{}) continue;
-    const Money amount = d.per_share * shares;
+    const Money amount = nearest_cent(d.per_share * shares);
     s.ledger.receive_dividend(d.symbol, amount);
     Attribution part;
     part.other = amount.dollars();

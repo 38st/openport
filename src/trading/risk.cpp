@@ -68,16 +68,24 @@ Timestamp observation_time(const md::OptionContract& contract, Timestamp now) {
   const auto session = md::trading_session(contract.root, now);
   return session.open || session.market_time == md::kInvalidTimestamp ? now : std::min(now, session.market_time);
 }
-RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orders,
+RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<const Order*>& orders,
     const Contracts& contracts,
     const Valuations& valuations, const Limits& limits, Timestamp now,
     const std::map<std::string, double>& stock_prices) {
   RiskSnapshot result;
   result.aggregate.limits = limits.aggregate;
-  auto exposure_of = [&](const md::OptionContract& c, Quantity q) -> std::optional<Exposure> {
-    const auto it = valuations.find(c.osi_symbol());
-    if (now >= c.expiry_time() || it == valuations.end() || !fresh(it->second, c, now, limits.max_valuation_age)) return std::nullopt;
-    const auto e = exposure(q, it->second);
+  // Each contract's fresh valuation, looked up once however many orders trade it.
+  std::map<std::string, std::optional<Valuation>, std::less<>> usable;
+  auto exposure_of = [&](const std::string& symbol, const md::OptionContract& c, Quantity q) -> std::optional<Exposure> {
+    auto saved = usable.find(symbol);
+    if (saved == usable.end()) {
+      const auto it = valuations.find(symbol);
+      std::optional<Valuation> value;
+      if (now < c.expiry_time() && it != valuations.end() && fresh(it->second, c, now, limits.max_valuation_age)) value = it->second;
+      saved = usable.emplace(symbol, std::move(value)).first;
+    }
+    if (!saved->second) return std::nullopt;
+    const auto e = exposure(q, *saved->second);
     if (!finite(e)) return std::nullopt;
     return e;
   };
@@ -95,13 +103,14 @@ RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orde
     bucket = next_bucket;
     result.aggregate = next_aggregate;
   };
-  for (const auto& [symbol, p] : ledger.positions()) add_exposure(p.contract.underlying, exposure_of(p.contract, p.quantity), false);
+  for (const auto& [symbol, p] : ledger.positions()) add_exposure(p.contract.underlying, exposure_of(symbol, p.contract, p.quantity), false);
   for (const auto& [symbol, stock] : ledger.stocks()) {
     const auto price = stock_prices.find(symbol);
     add_exposure(symbol, price == stock_prices.end() ? std::nullopt
         : std::optional<Exposure>(Exposure{static_cast<double>(stock.shares) * price->second, 0, 0, 0}), false);
   }
-  for (const auto& o : orders) {
+  for (const auto* pending : orders) {
+    const auto& o = *pending;
     if (!o.open()) continue;
     if (multi_leg(o.request)) {
       // The legs fill together, so a multi-leg order is one pending exposure.
@@ -112,7 +121,7 @@ RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orde
         if (it == contracts.end()) { sum.reset(); break; }
         underlying = it->second.underlying;
         const auto q = o.remaining() * leg.ratio;
-        const auto e = exposure_of(it->second, leg.side == Side::Buy ? q : -q);
+        const auto e = exposure_of(leg.symbol, it->second, leg.side == Side::Buy ? q : -q);
         if (!e) { sum.reset(); break; }
         sum->dollar_delta += e->dollar_delta;
         sum->dollar_gamma_1pct += e->dollar_gamma_1pct;
@@ -126,7 +135,7 @@ RiskSnapshot portfolio_risk(const Ledger& ledger, const std::vector<Order>& orde
     const auto it = contracts.find(o.request.symbol);
     if (it == contracts.end()) { result.complete = false; continue; }
     const auto q = o.request.side == Side::Buy ? o.remaining() : -o.remaining();
-    add_exposure(it->second.underlying, exposure_of(it->second, q), true);
+    add_exposure(it->second.underlying, exposure_of(o.request.symbol, it->second, q), true);
   }
   finish(result.aggregate);
   for (auto& [name, bucket] : result.underlyings) finish(bucket);

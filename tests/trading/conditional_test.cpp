@@ -298,6 +298,102 @@ TEST(TradingConditional, BuyOnlyAndBuyingPowerCountTheBracketOnceAndNeverBlockMa
   EXPECT_EQ(s.submit(f.limit("extra", 1, "4.40", Side::Sell), f.time).decision.code, Reason::BUY_ONLY);
 }
 
+TEST(TradingConditional, OnABuyOnlyPlanAManualCloseSupersedesItsOwnArmedStop) {
+  ScriptedMarket f;
+  AccountRules rules;
+  rules.buy_only = true;
+  TradingSession s(roomy(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long", 3), f.time).decision.ok());
+  // Two plain stop sells cover the 3 held: one for 2, then one for 1.
+  auto stop = f.market("stop-2", 2, Side::Sell);
+  stop.trigger = trigger(TriggerSource::Option, TriggerDirection::AtOrBelow, "3.00");
+  ASSERT_TRUE(s.submit(stop, f.time).decision.ok());
+  stop.client_order_id = "stop-1";
+  stop.quantity = 1;
+  ASSERT_TRUE(s.submit(stop, f.time).decision.ok());
+  // A close of 1 needs only the newer stop's contract: preview and submit agree,
+  // and the older stop keeps protecting the rest.
+  quote(s, f, "4.00", "4.20");
+  EXPECT_TRUE(s.preview(f.market("close-1", 1, Side::Sell), f.time).decision.ok());
+  const auto close = s.submit(f.market("close-1", 1, Side::Sell), f.time);
+  ASSERT_TRUE(close.decision.ok()) << close.decision.message;
+  EXPECT_EQ(order(s, 3).status, OrderStatus::Cancelled);
+  EXPECT_EQ(order(s, 3).reason.code, Reason::POSITION_CLOSED);
+  EXPECT_EQ(order(s, 3).reason.message, "Manual close order 4 superseded this stop on a buy-only plan");
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  // A sell beyond what is held is still refused, and leaves the stop in place.
+  EXPECT_EQ(s.submit(f.market("too-many", 3, Side::Sell), f.time).decision.code, Reason::BUY_ONLY);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  // A close refused for another reason leaves it too.
+  s.trip_kill("pause", f.time);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  EXPECT_EQ(s.submit(f.limit("off-tick", 2, "4.01", Side::Sell), f.time).decision.code, Reason::INVALID_TICK);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  // Under the latch a close still works, and takes over the stop.
+  ASSERT_TRUE(s.submit(f.limit("all", 2, "4.40", Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(order(s, 2).reason.code, Reason::POSITION_CLOSED);
+}
+
+TEST(TradingConditional, PreviewWarnsOfExitsAndTriggersThatActAtOnce) {
+  ScriptedMarket f;
+  AccountRules rules;
+  rules.slippage_ticks = 10;
+  auto c = roomy(rules);
+  c.limits.price_band_absolute = m("0.50");
+  c.limits.price_band_relative = 0.2;
+  TradingSession s(c, f.time);
+  f.seed(s, "3.00", "3.20");
+  const auto codes = [&](const OrderRequest& r) {
+    std::vector<std::string> out;
+    for (const auto& w : s.preview(r, f.time).warnings) out.push_back(w.code);
+    return out;
+  };
+  // A stop given as a limit price below the bid closes the long at once.
+  const auto as_limit = s.preview(with_bracket(f.limit("a", 1, "3.20"), target_at("2.00"), {}), f.time).warnings;
+  ASSERT_EQ(as_limit.size(), 1u);
+  EXPECT_EQ(as_limit[0].code, "STOP_AS_LIMIT");
+  EXPECT_EQ(as_limit[0].message, "The stop_loss has a limit price and no trigger, so it rests as a limit exit at 2.00, not a stop; "
+            "the closing price now, 3.00, already reaches it, so it closes the position as soon as the entry fills. Give the stop a trigger instead.");
+  // A stop already reached, and a take-profit already marketable.
+  EXPECT_EQ(codes(with_bracket(f.limit("b", 1, "3.20"), stop_at("3.10"), target_at("2.90"))),
+            (std::vector<std::string>{"STOP_REACHED", "TARGET_REACHED"}));
+  EXPECT_TRUE(codes(with_bracket(f.limit("c", 1, "3.20"), stop_at("2.50"), target_at("4.00"))).empty());
+  // A conditional order whose level is already reached activates at once.
+  auto armed = f.limit("d", 1, "3.20");
+  armed.trigger = trigger(TriggerSource::Option, TriggerDirection::AtOrBelow, "3.50");
+  EXPECT_EQ(codes(armed), (std::vector<std::string>{"TRIGGER_REACHED"}));
+  // Ten slippage ticks of 0.10 put the market buy at 4.20, outside the 0.62 band around 3.10.
+  const auto slipped = s.preview(f.market("e"), f.time);
+  EXPECT_EQ(slipped.decision.code, Reason::PRICE_BAND);
+  ASSERT_EQ(slipped.warnings.size(), 1u);
+  EXPECT_EQ(slipped.warnings[0].code, "SLIPPAGE_BAND");
+  EXPECT_NE(slipped.warnings[0].message.find("price this order at 4.20"), std::string::npos) << slipped.warnings[0].message;
+}
+
+TEST(TradingConditional, AMarketableLimitReservesItsFillAndAnArmedBuyStopItsLevel) {
+  ScriptedMarket f;
+  AccountRules rules;
+  rules.buying_power = true;
+  auto c = roomy(rules);
+  c.initial_cash = m("100000");
+  c.limits.price_band_absolute = m("5");
+  TradingSession s(c, f.time);
+  f.seed(s, "41.60", "41.70", 30);
+  // A protective limit above the ask: 22 at 45.50 would hold 100,100, but it pays 41.70.
+  const auto protective = f.limit("protective", 22, "45.50");
+  EXPECT_EQ(s.preview(protective, f.time).buying_power_required, m("91740") + c.fee_per_contract * 22);
+  ASSERT_TRUE(s.submit(protective, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("41.70"));
+  // An armed buy stop holds at least its level, not today's ask.
+  TradingSession t(c, f.time);
+  f.seed(t, "8.90", "9.00");
+  auto stop = f.market("breakout");
+  stop.trigger = trigger(TriggerSource::Option, TriggerDirection::AtOrAbove, "50.00");
+  ASSERT_TRUE(t.submit(stop, f.time).decision.ok());
+  EXPECT_EQ(t.snapshot()->buying_power.reserved, m("5000") + c.fee_per_contract);
+}
+
 TEST(TradingConditional, AnOffTickExitPriceIsAnInvalidTick) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

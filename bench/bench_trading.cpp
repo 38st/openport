@@ -68,6 +68,23 @@ void BM_TradingSubmit(benchmark::State& state) {
 // timed iterations and the idempotent retry shortcut is never measured.
 BENCHMARK(BM_TradingSubmit)->Arg(10)->Arg(1000)->Arg(10000)->Iterations(1)->Repetitions(3)->Unit(benchmark::kMicrosecond);
 
+// A submit beside many working orders, as a script that keeps a ladder of resting bids.
+void BM_TradingSubmitWorking(benchmark::State& state) {
+  test::ScriptedMarket market;
+  trading::SessionConfig config;
+  config.initial_cash = trading::Money::parse("1000000000");
+  config.limits.aggregate = {1e15, 1e15};
+  config.limits.per_underlying = {1e15, 1e15};
+  trading::TradingSession session(config, market.time);
+  market.seed(session);
+  for (std::int64_t i = 0; i < state.range(0); ++i)
+    if (!session.submit(market.limit("rest-" + std::to_string(i), 1, "3.70"), market.time).decision.ok())
+      throw std::runtime_error("A resting order was refused");
+  std::int64_t next = 0;
+  for (auto _ : state) benchmark::DoNotOptimize(session.submit(market.limit("measured-" + std::to_string(next++), 1, "3.70"), market.time));
+}
+BENCHMARK(BM_TradingSubmitWorking)->Arg(10)->Arg(100)->Arg(700)->Unit(benchmark::kMicrosecond);
+
 struct ScenarioFile {
   std::filesystem::path directory;
   std::filesystem::path file;
