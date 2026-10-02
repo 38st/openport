@@ -15,7 +15,7 @@ import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
 import { WhatIfPanel } from "../components/WhatIfPanel"
 import { ScenarioGrid } from "../components/ScenarioGrid"
-import { TradingError, WriteAccess } from "../components/TradingControls"
+import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { fixed, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
@@ -25,6 +25,7 @@ import { strategyGroups, type StrategyGroup } from "../lib/positions"
 import { closingLegs } from "../lib/strategy"
 import { describeTrigger } from "../lib/ticket"
 import { deliversShares, formatMoney, paperNotice, ratio, signedMoney } from "../lib/trading"
+import { useWriteToken } from "../lib/write-token"
 
 /** Right-aligned numeric table; the first `left` columns are labels, aligned left. */
 export function Table({ label, headers, children, left = 1 }: { label: string; headers: string[]; children: ReactNode; left?: number }) {
@@ -139,6 +140,34 @@ function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInst
   </Table>
 }
 
+/** Joins the picked positions' round trips into one whole trade, so legs entered one by one review as one. */
+export function GroupButton({ positions, trading, onDone }: { positions: Position[]; trading: TradingStatus; onDone: () => void }) {
+  const token = useWriteToken()
+  const refresh = useRefreshTrading()
+  const [error, setError] = useState<unknown>()
+  const [pending, setPending] = useState(false)
+  const trades = positions.flatMap((p) => p.trade ? [p.trade] : [])
+  async function group() {
+    setPending(true)
+    setError(undefined)
+    try {
+      await api.groupTrades(trades, true, trading.write)
+      onDone()
+    } catch (failure) {
+      setError(failure)
+    } finally {
+      setPending(false)
+      void refresh()
+    }
+  }
+  return <>
+    <button type="button" className="trade-button" title="Review the picked legs as one whole trade in the Journal"
+      disabled={trades.length < 2 || trades.length !== positions.length || pending || writeBlocked(trading, token)} onClick={() => void group()}>
+      {pending ? "Grouping…" : "Group as one trade"}</button>
+    <TradingError error={error} />
+  </>
+}
+
 /** Contracts and shares traded today and no longer held, with the day's P&L by Greek, so the rows still add up to the day. */
 export function ClosedToday({ closed }: { closed: ClosedAttribution[] }) {
   return <Table label="Closed today" headers={["Contract", "Today", ...attributionParts.map((part) => part.label)]}>
@@ -209,6 +238,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
           <span className="text-[11px] text-muted">{picked.size ? `${picked.size} picked` : "Pick positions to close them in one order"}</span>
           {picked.size > 0 && <button type="button" className="trade-button" onClick={() => setPicked(new Set())}>Clear</button>}
           <button type="button" className="trade-button" disabled={picked.size < 2} onClick={() => setTogether(true)}>Close together</button>
+          <GroupButton positions={data.positions.filter((p) => picked.has(p.symbol))} trading={trading} onDone={() => setPicked(new Set())} />
         </>}
         <button type="button" className="trade-button" onClick={() => setFlatten({ underlying: null })}>Close all</button>
       </> : undefined}>

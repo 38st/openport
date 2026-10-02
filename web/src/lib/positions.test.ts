@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
-import type { Fill, Order, Position, Trade } from "../api/trading-types"
+import type { Fill, Order, Position, Trade, WholeTrade } from "../api/trading-types"
 import type { ChainRow } from "../api/types"
 import { order, portfolio, quote, trades } from "../test/trading-fixtures"
+import { wholeEntries } from "./journal"
 import { closingPlan, rollPlan, settlementTime, strategyGroups, tradeGroups } from "./positions"
 
 const base = portfolio.positions[0]!
@@ -98,6 +99,37 @@ describe("strategies in the journal", () => {
     expect(groups[0]!.unrealised).toBe(15)
     expect(groups[1]!.order).toBeNull()
     expect(groups[1]!.net).toBe(-40)
+  })
+
+  it("group a rolled trade's round trips as one whole trade, and count it once", () => {
+    const spread = combo("7", [[6900, "sell"], [6890, "buy"]], 1, "-1.20")
+    const roll = combo("8", [[6900, "buy"], [6890, "sell"], [6850, "sell"], [6840, "buy"]], 1, "-0.40")
+    const list = [
+      { ...leg("d", 6840, "long", "f6", "closed", "-10.00"), group: "a", trading_day: "2026-09-24" },
+      { ...leg("c", 6850, "short", "f5", "closed", "60.00"), group: "a", trading_day: "2026-09-24" },
+      { ...leg("b", 6890, "long", "f2", "closed", "-30.00"), group: "a", trading_day: "2026-09-23" },
+      { ...leg("a", 6900, "short", "f1", "closed", "-20.00"), group: "a", trading_day: "2026-09-23" },
+      { ...leg("e", 6800, "long", "f7", "closed", "5.00"), group: "e" },
+    ]
+    const whole: WholeTrade = { id: "a", attempt: 1, underlying: "SPX", status: "closed", opened: list[3]!.opened, closed: "2026-09-24T17:00:00Z",
+      trading_day: "2026-09-24", round_trips: ["a", "b", "c", "d"], entries: 2, gross: "2.60", fees: "2.60", net: "0.00", unrealised: null,
+      review: null, review_since: null }
+    const fills = [fill("f1", "7"), fill("f2", "7"), fill("f5", "8"), fill("f6", "8"), fill("f7", "9")]
+    const groups = tradeGroups(list, fills, [spread, roll, { ...order, id: "9" }], [whole])
+    expect(groups.map((g) => g.key)).toEqual(["whole-a", "trade-e"])
+    expect(groups[0]!.whole).toBe(whole)
+    expect(groups[0]!.order).toBeNull()
+    expect(groups[0]!.trades).toHaveLength(4)
+    expect(groups[0]!.label).toBe("Whole trade · SPX Oct 16 6900/6890/6850/6840 P")
+    // Older servers list no whole trades: the strategies stay apart.
+    expect(tradeGroups(list, fills, [spread, roll, { ...order, id: "9" }]).map((g) => g.key)).toEqual(["order-8", "order-7", "trade-e"])
+    const entries = wholeEntries(groups)
+    expect(entries).toHaveLength(2)
+    expect(entries[0]!.id).toBe("a")
+    expect(entries[0]!.net).toBe("0.00")
+    expect(entries[0]!.status).toBe("closed")
+    expect(entries[0]!.trading_day).toBe("2026-09-24")
+    expect(entries[1]).toBe(list[4])
   })
 })
 

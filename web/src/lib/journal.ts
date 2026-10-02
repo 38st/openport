@@ -1,4 +1,5 @@
 import type { ShareSource, ShareTrade, Trade } from "../api/trading-types"
+import type { TradeGroup } from "./positions"
 
 /** A closed or open trade in the journal: an option contract's, or shares from exercise and assignment. */
 export type JournalTrade = Trade | ShareTrade
@@ -267,4 +268,32 @@ export function strategyResults(trades: readonly Trade[], filledUnits?: number):
   const close = trades.reduce((sum, t) => sum + (t.direction === "long" ? -1 : 1) * Number(t.average_close) * t.closed_contracts, 0)
   const cost = Math.abs(trades.reduce((sum, t) => sum + (t.direction === "long" ? 1 : -1) * Number(t.cost), 0))
   return { close: units ? close / units : null, return: cost ? trades.reduce((sum, t) => sum + tradeNet(t), 0) / cost : null }
+}
+
+/**
+ * Each strategy or whole trade as one journal entry, for headline stats and reports
+ * counted by trade rather than by round trip: its legs' P&L and fees together, from
+ * its first opening to its last close, closed only once every leg is. Single round
+ * trips pass through as they are.
+ */
+export function wholeEntries(groups: readonly TradeGroup[]): Trade[] {
+  return groups.map((group) => {
+    const [first, ...rest] = group.trades
+    if (!first || (!rest.length && !group.whole)) return first!
+    const sum = (pick: (t: Trade) => string | null | undefined) => group.trades.reduce((total, t) => total + dollars(pick(t)), 0).toFixed(6)
+    const open = group.trades.some((t) => t.status === "open")
+    const closed = open ? null : group.trades.map((t) => t.closed ?? "").sort().at(-1) ?? null
+    const opened = group.trades.map((t) => t.opened).sort()[0]!
+    const days = group.trades.map((t) => t.trading_day ?? "").filter(Boolean).sort()
+    return {
+      ...first, id: group.whole?.id ?? first.id, status: open ? "open" : "closed", opened, closed,
+      trading_day: open ? null : days.at(-1) ?? first.trading_day,
+      duration_seconds: closed ? (Date.parse(closed) - Date.parse(opened)) / 1000 : null,
+      opened_contracts: group.trades.reduce((total, t) => total + t.opened_contracts, 0),
+      closed_contracts: group.trades.reduce((total, t) => total + t.closed_contracts, 0),
+      gross: group.whole?.gross ?? sum((t) => t.gross), fees: group.whole?.fees ?? sum((t) => t.fees),
+      net: group.whole?.net ?? sum((t) => t.net), return: null,
+      tags: [...new Set(group.trades.flatMap((t) => t.tags ?? []))],
+    }
+  })
 }

@@ -258,6 +258,7 @@ json order_json(const Order& o, const TradingView& view) {
           {"type", o.request.type == OrderType::Limit ? "limit" : "market"},
           {"time_in_force", o.request.tif == TimeInForce::Day ? "day" : o.request.tif == TimeInForce::Gtc ? "gtc" : "ioc"},
           {"tags", o.request.tags}, {"note", o.request.note}, {"exits_only", o.request.exits_only},
+          {"group", nullable(o.request.group)},
           {"quantity", o.request.quantity}, {"filled_quantity", o.filled_quantity},
           {"remaining_quantity", o.remaining()}, {"limit_price", money(o.request.limit_price)},
           {"average_fill_price", o.filled_quantity > 0
@@ -454,7 +455,8 @@ json lifetime_json(const Lifetime& l) {
 json portfolio_json(const TradingView& view) {
   const auto& s = *view.snapshot;
   std::map<std::string, Lifetime> lifetimes;
-  for (const auto& t : lifecycles(s.recent_fills, s.closures, view.contracts)) {
+  const auto trips = lifecycles(s.recent_fills, s.closures, view.contracts);
+  for (const auto& t : trips) {
     if (fill_attempt(s, t.first_fill) != s.evaluation.attempt) continue;
     auto& l = lifetimes[t.symbol];
     ++l.round_trips;
@@ -516,6 +518,34 @@ json portfolio_json(const TradingView& view) {
         {"attribution", s.attributions.contains(p.symbol) ? attribution_json(s.attributions.at(p.symbol)) : json(nullptr)},
         {"trade", trade_of(p.symbol)}, {"lifetime", lifetime_of(p.symbol)}});
   }
+  // Held strategies: the open positions by the whole trade each is in, with every
+  // round trip of that trade, closed ones included, in its realised P&L and fees.
+  std::map<std::string, std::vector<const Lifecycle*>> whole;
+  for (const auto& t : trips) whole[trade_group(t, s.groups)].push_back(&t);
+  json strategies = json::array();
+  for (const auto& [id, members] : whole) {
+    json legs = json::array();
+    Money realised, fees;
+    std::optional<Money> unrealised = Money{};
+    std::set<OrderId> entries;
+    for (const auto* t : members) {
+      realised = realised + t->gross;
+      fees = fees + t->fees;
+      entries.insert(t->entry_order);
+      if (t->closed) continue;
+      std::optional<Money> part;
+      for (const auto& p : s.positions)
+        if (p.position.contract.osi_symbol() == t->symbol) part = p.unrealised;
+      if (unrealised) unrealised = part ? std::optional(*unrealised + *part) : std::nullopt;
+      legs.push_back({{"symbol", t->symbol}, {"quantity", t->quantity}, {"trade", std::to_string(t->first_fill)}});
+    }
+    if (legs.empty()) continue;
+    strategies.push_back({{"id", id}, {"underlying", members.front()->contract.underlying},
+        {"opened", md::format_timestamp(members.front()->opened)}, {"legs", legs},
+        {"round_trips", members.size()}, {"entries", entries.size()},
+        {"realised", realised.str()}, {"fees", fees.str()}, {"unrealised", money(unrealised)},
+        {"net", unrealised ? json((realised - fees + *unrealised).str()) : json(nullptr)}});
+  }
   // Contracts and shares traded today and no longer held keep their P&L by Greek.
   std::set<std::string> held;
   for (const auto& p : s.positions) held.insert(p.position.contract.osi_symbol());
@@ -537,7 +567,7 @@ json portfolio_json(const TradingView& view) {
           {"valuation_complete", s.valuation_complete}, {"quality_flags", flags}, {"positions", positions}, {"stocks", stocks},
           {"buying_power", buying_power_json(s.buying_power)}, {"margin", margin_json(s.margin)},
           {"attribution", attribution_json(s.attribution)},
-          {"liquidity_used", liquidity_used_json(view)}, {"closed", closed}};
+          {"liquidity_used", liquidity_used_json(view)}, {"closed", closed}, {"strategies", strategies}};
 }
 json account_json(const TradingView& view) {
   const auto& s = *view.snapshot;
@@ -702,9 +732,64 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"closure", !t.closure ? json(nullptr) : json(closure_name(*t.closure))},
         {"closed_by", exit.first}, {"system_reason", exit.second},
         {"attribution", trip_attribution_json(s, std::to_string(t.first_fill))},
+        {"group", trade_group(t, s.groups)},
         {"fills", fills},
         {"note", a == s.annotations.end() ? std::string{} : a->second.note},
         {"tags", a == s.annotations.end() ? json::array() : json(a->second.tags)}});
+  }
+  // Whole trades: the round trips of a trade with more than one entry (a roll, an
+  // adjustment or legs the account grouped), newest first.
+  struct Whole {
+    std::vector<const Lifecycle*> members;
+    std::set<OrderId> entries;
+  };
+  std::map<std::string, Whole> wholes;
+  for (const auto& t : all) {
+    auto& whole = wholes[trade_group(t, s.groups)];
+    whole.members.push_back(&t);
+    whole.entries.insert(t.entry_order);
+  }
+  std::vector<std::pair<std::string, const Whole*>> listed;
+  for (const auto& [id, whole] : wholes)
+    if (whole.entries.size() > 1 || s.group_reviews.contains(id)) listed.emplace_back(id, &whole);
+  std::sort(listed.begin(), listed.end(), [](const auto& a, const auto& b) {
+    return a.second->members.front()->first_fill > b.second->members.front()->first_fill;
+  });
+  json groups = json::array();
+  for (const auto& [id, whole] : listed) {
+    const auto& first = *whole->members.front();
+    const bool open = std::any_of(whole->members.begin(), whole->members.end(), [](const Lifecycle* t) { return !t->closed; });
+    if ((status == "open" && !open) || (status == "closed" && open)) continue;
+    const auto attempt = fill_attempt(s, first.first_fill);
+    if (current_only && attempt != e.attempt) continue;
+    Money gross, fees;
+    std::optional<Money> unrealised = Money{};
+    Timestamp closed = 0;
+    json members = json::array();
+    for (const auto* t : whole->members) {
+      gross = gross + t->gross;
+      fees = fees + t->fees;
+      if (t->closed) closed = std::max(closed, *t->closed);
+      members.push_back(std::to_string(t->first_fill));
+      if (t->closed || !unrealised) continue;
+      std::optional<Money> part;
+      for (const auto& p : s.positions)
+        if (p.position.contract.osi_symbol() == t->symbol) part = p.unrealised;
+      unrealised = part ? std::optional(*unrealised + *part) : std::nullopt;
+    }
+    const Money net = gross - fees;
+    const auto review = s.group_reviews.find(id);
+    groups.push_back({{"id", id}, {"attempt", attempt}, {"underlying", first.contract.underlying},
+        {"status", open ? "open" : "closed"}, {"opened", md::format_timestamp(first.opened)},
+        {"closed", open ? json(nullptr) : json(md::format_timestamp(closed))},
+        {"trading_day", open ? json(nullptr) : trading_day(closed)},
+        {"round_trips", members}, {"entries", whole->entries.size()},
+        {"gross", gross.str()}, {"fees", fees.str()}, {"net", net.str()},
+        {"unrealised", open && unrealised ? json(unrealised->str()) : json(nullptr)},
+        {"review", review == s.group_reviews.end() ? json(nullptr)
+                   : review_json(&review->second, open ? std::nullopt : std::optional(net))},
+        {"review_since", review == s.group_reviews.end() || !review->second.since ? json(nullptr)
+                         : json(md::format_timestamp(*review->second.since))}});
   }
   // Shares from exercise and assignment, round trip by round trip, newest first.
   const auto attempt_at = [&](Timestamp time) { return time_attempt(s, time); };
@@ -765,7 +850,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     dividends.push_back({{"symbol", d.symbol}, {"ex_date", md::format_date(d.ex_date)}, {"per_share", d.per_share.str()},
         {"shares", d.shares}, {"amount", d.amount.str()}, {"time", md::format_timestamp(d.time)}});
   return {{"account_version", std::to_string(s.account_version)}, {"attempt", e.attempt}, {"trades", trades},
-          {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}, {"day_notes", day_notes_json(s)},
+          {"groups", groups}, {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}, {"day_notes", day_notes_json(s)},
           {"run", run_json(view.run)}};
 }
 json plans_json() {
@@ -925,6 +1010,16 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       const auto key = md::format_date(command.day);
       body["day"] = key;
       body["note"] = day_notes_json(s).value(key, json{{"plan", ""}, {"review", ""}, {"time", nullptr}});
+      break;
+    }
+    case TradingCommand::Kind::Group:
+    case TradingCommand::Kind::Ungroup: {
+      // The trades the round trips are in now.
+      json trades = json::object();
+      for (const auto& t : lifecycles(s.recent_fills, s.closures, view.contracts))
+        if (std::find(command.trades.begin(), command.trades.end(), t.first_fill) != command.trades.end())
+          trades[std::to_string(t.first_fill)] = trade_group(t, s.groups);
+      body["groups"] = trades;
       break;
     }
     case TradingCommand::Kind::Annotate: {
@@ -1213,6 +1308,19 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     command.review = string_field(body, "review");
     return command;
   }
+  if (request.method == "POST" && (path == "/api/trades/group" || path == "/api/trades/ungroup")) {
+    // The round trips, by trade ID, whose trades join or which leave theirs.
+    fields(body, {"trades"});
+    command.kind = path == "/api/trades/group" ? TradingCommand::Kind::Group : TradingCommand::Kind::Ungroup;
+    const auto& trades = body.at("trades");
+    if (!trades.is_array() || trades.empty() || trades.size() > 16)
+      throw std::invalid_argument("trades must be an array of 1 to 16 trade IDs");
+    for (const auto& id : trades) {
+      if (!id.is_string()) throw std::invalid_argument("trades must be trade ID strings");
+      command.trades.push_back(identifier(id.get<std::string>()));
+    }
+    return command;
+  }
   if (request.method == "PUT" && path.starts_with("/api/trades/")) {
     // PUT /api/trades/{id}/note: the note and tags replace the trade's.
     fields(body, {}, {"note", "tags"});
@@ -1316,8 +1424,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     }
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
-    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only"});
-    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note"});
+    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group"});
+    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group"});
     // A body no market could make a valid order is malformed: 400, and nothing is
     // recorded, so its client_order_id stays free. The reducer's own checks (422,
     // recorded) are those that depend on the account and the market.
@@ -1363,6 +1471,11 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       order.side = side == "buy" ? Side::Buy : Side::Sell;
     }
     if (body.contains("exits_only")) order.exits_only = boolean_field(body, "exits_only");
+    if (body.contains("group")) {
+      // A trade ID: the opening fill of one of the account's round trips.
+      order.group = string_field(body, "group");
+      (void)identifier(order.group);
+    }
     if (body.contains("note")) order.note = string_field(body, "note");
     if (body.contains("tags")) {
       const auto& tags = body.at("tags");
@@ -1663,7 +1776,8 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       path == "/api/positions/exercise" || path == "/api/stocks/close" ||
       path == "/api/positions/abandon" || path == "/api/positions/instruction" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
-      path == "/api/account/reset" || path == "/api/account/payout")) ||
+      path == "/api/account/reset" || path == "/api/account/payout" ||
+      path == "/api/trades/group" || path == "/api/trades/ungroup")) ||
       (request.method == "PUT" && (path == "/api/risk/limits" || path == "/api/risk/guardrails" || path.starts_with("/api/orders/") ||
                                    ((path.starts_with("/api/trades/") || path.starts_with("/api/days/")) && path.ends_with("/note")))) ||
       (request.method == "DELETE" && path.starts_with("/api/orders/"));

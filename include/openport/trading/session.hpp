@@ -96,6 +96,10 @@ struct TradingSnapshot {
   /// fill, "s" and the opening stock fill for shares), its open stretch to the marks
   /// now included. Round trips open from before an upgrade have none.
   SharedMap<std::string, Attribution> trip_attributions;
+  /// The trade each round trip is in where it is not its root's (see trade_group),
+  /// and whole-trade reviews of trades with more than one entry, by trade ID.
+  SharedMap<std::string, std::string> groups;
+  SharedMap<std::string, TradeReview> group_reviews;
 };
 /// A funded account's standing for its next payout: an active, flat account
 /// with the required qualifying days since the last payout. `blocked` is the
@@ -420,6 +424,14 @@ class TradingSession {
   /// The same for a share round trip, named by the stock fill that opened it; its
   /// note is kept under "s" and that fill's ID.
   CommandResult annotate_shares(std::uint64_t first_fill, std::string note, std::vector<std::string> tags, Timestamp time);
+  /// Joins the trades of the listed open round trips, by their trades-view IDs, into
+  /// one whole trade named by the oldest (`together`), or takes each listed round
+  /// trip out of its trade into one of its own: legs entered one by one become one
+  /// trade, and a leg can leave a roll. A trade it changes that still holds more
+  /// than one entry restarts its whole-trade review now. Unknown round trips return
+  /// UNKNOWN_TRADE; closed ones, mixed underlyings or too few round trips return
+  /// INVALID_GROUP. Allowed whatever the account's state or session.
+  CommandResult group_trades(std::vector<std::uint64_t> trades, bool together, Timestamp time);
   /// Plan and review for a New York date, each at most 2,000 bytes. Empty clears it.
   CommandResult annotate_day(md::Date day, std::string plan, std::string review, Timestamp time);
   /// Exercise `contracts` of a long, in-the-money American equity or ETF option

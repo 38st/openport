@@ -2,6 +2,7 @@
 
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +36,9 @@ struct Lifecycle {
   OrderId entry_order = 0;          ///< The opening fill's order.
   Quantity entry_contracts = 0;     ///< Contracts that order opened in this round trip.
   Money entry_notional;             ///< Their opening price * contracts, per unit.
+  /// The first round trip its entry order opened (its own ID for that one): the
+  /// trade it is in, unless the account moved it to another (see trade_group).
+  std::uint64_t root = 0;
 };
 
 /// One round trip in an underlying's shares, from flat to flat, or still open.
@@ -64,10 +68,28 @@ class LifecycleBuilder {
     Lifecycle life;
     Ledger ledger;
   };
+  /// What a fill did to a round trip: opened it, or reduced or added to it.
+  struct Effect {
+    OrderId order = 0;
+    Timestamp time = 0;
+    std::uint64_t trade = 0;  ///< The round trip's ID.
+    OrderId entry = 0;        ///< Its entry order.
+    bool opened = false;
+  };
   void fill(const Fill& fill, const Contracts& contracts);
   void closure(const Closure& closure, const Contracts& contracts);
   std::map<std::string, Open> open;
   std::vector<std::pair<std::uint64_t, Lifecycle>> closed;
+  /// The effects of each fill after `record_from`, in order, while `record` is
+  /// set; the caller clears them.
+  bool record = false;
+  std::uint64_t record_from = 0;
+  std::vector<Effect> effects;
+  /// Orders that added to a round trip another order opened, so the contracts
+  /// they share cannot be attributed to their strategy alone.
+  std::set<OrderId> shared;
+  /// Each order's first round trip, the root of the others it opens.
+  std::map<OrderId, std::uint64_t> roots;
 
  private:
   void start(const Fill& fill, const md::OptionContract& contract, Quantity signed_quantity);
@@ -81,7 +103,12 @@ class LifecycleBuilder {
 /// lifecycle and opens the next at the same price, splitting its fee pro rata.
 /// Closures apply after the fills they follow; unknown contracts are skipped.
 [[nodiscard]] std::vector<Lifecycle> lifecycles(const SharedVector<Fill>& fills,
-    const SharedVector<Closure>& closures, const Contracts& contracts);
+    const SharedVector<Closure>& closures, const Contracts& contracts, std::set<OrderId>* shared = nullptr);
+
+/// The trade a round trip is in, by trade ID: its entry in `groups` (a roll or an
+/// adjustment joined to the trade it continues, or the account's own grouping),
+/// else its root's. A multi-leg order's legs share their first leg's ID.
+[[nodiscard]] std::string trade_group(const Lifecycle& life, const SharedMap<std::string, std::string>& groups);
 
 /// The same for shares, from the account's stock fills: a fill that reverses the
 /// holding closes one round trip and opens the next at its price. Each dividend

@@ -32,6 +32,8 @@ void LifecycleBuilder::start(const Fill& fill, const md::OptionContract& contrac
   life.first_fill = fill.id;
   life.entry_order = fill.order_id;
   life.entry_context = fill.context;
+  life.root = roots.emplace(fill.order_id, fill.id).first->second;
+  if (record && fill.id > record_from) effects.push_back({fill.order_id, fill.time, fill.id, fill.order_id, true});
   open[fill.symbol] = std::move(entry);
 }
 void LifecycleBuilder::finish(const std::string& symbol, Timestamp time) {
@@ -54,6 +56,10 @@ void LifecycleBuilder::fill(const Fill& fill, const Contracts& contracts) {
   }
   auto* life = &it->second.life;
   const auto held = life->quantity;
+  if (held != 0) {
+    if ((held > 0) == (signed_quantity > 0) && fill.order_id != life->entry_order) shared.insert(fill.order_id);
+    if (record && fill.id > record_from) effects.push_back({fill.order_id, fill.time, life->first_fill, life->entry_order, false});
+  }
   if (held == 0 || (held > 0) == (signed_quantity > 0)) {
     it->second.ledger.fill(contract->second, signed_quantity, fill.price, fill.fee);
     life->quantity = held + signed_quantity;
@@ -128,7 +134,7 @@ void LifecycleBuilder::closure(const Closure& closure, const Contracts& contract
 }
 
 std::vector<Lifecycle> lifecycles(const SharedVector<Fill>& fills, const SharedVector<Closure>& closures,
-                                  const Contracts& contracts) {
+                                  const Contracts& contracts, std::set<OrderId>* shared) {
   LifecycleBuilder builder;
   std::size_t next_closure = 0;
   auto closures_until = [&](std::uint64_t executed) {
@@ -141,6 +147,7 @@ std::vector<Lifecycle> lifecycles(const SharedVector<Fill>& fills, const SharedV
     closures_until(i + 1);
   }
   while (next_closure < closures.size()) builder.closure(closures[next_closure++], contracts);
+  if (shared) *shared = std::move(builder.shared);
   // In the order they opened, as the account traded them.
   auto started = std::move(builder.closed);
   for (auto& [symbol, entry] : builder.open) started.emplace_back(entry.started, std::move(entry.life));
@@ -149,6 +156,11 @@ std::vector<Lifecycle> lifecycles(const SharedVector<Fill>& fills, const SharedV
   out.reserve(started.size());
   for (auto& entry : started) out.push_back(std::move(entry.second));
   return out;
+}
+
+std::string trade_group(const Lifecycle& life, const SharedMap<std::string, std::string>& groups) {
+  const auto it = groups.find(std::to_string(life.first_fill));
+  return it == groups.end() ? std::to_string(life.root) : it->second;
 }
 
 std::vector<ShareLifecycle> share_lifecycles(const SharedVector<StockFill>& fills,

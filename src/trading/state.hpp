@@ -40,13 +40,20 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Trigger, source, direction, level)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExitSpec, trigger, limit_price)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Bracket, stop_loss, take_profit)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Leg, symbol, side, ratio)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(OrderRequest, client_order_id, symbol, side, type, tif, quantity, limit_price, trigger, bracket, legs, tags, note, exits_only)
+inline void to_json(Json& j, const OrderRequest& r) {
+  j = Json{{"client_order_id", r.client_order_id}, {"symbol", r.symbol}, {"side", r.side}, {"type", r.type}, {"tif", r.tif},
+           {"quantity", r.quantity}, {"limit_price", r.limit_price}, {"trigger", r.trigger}, {"bracket", r.bracket},
+           {"legs", r.legs}, {"tags", r.tags}, {"note", r.note}, {"exits_only", r.exits_only}};
+  // Only an order naming a trade records it, so every other order keeps its bytes.
+  if (!r.group.empty()) j["group"] = r.group;
+}
 inline void from_json(const Json& j, OrderRequest& r) {
   j.at("client_order_id").get_to(r.client_order_id); j.at("symbol").get_to(r.symbol); j.at("side").get_to(r.side);
   j.at("type").get_to(r.type); j.at("tif").get_to(r.tif); j.at("quantity").get_to(r.quantity);
   j.at("limit_price").get_to(r.limit_price);
   added_field(j, "trigger", r.trigger); added_field(j, "bracket", r.bracket); added_field(j, "legs", r.legs);
   added_field(j, "tags", r.tags); added_field(j, "note", r.note); added_field(j, "exits_only", r.exits_only);
+  added_field(j, "group", r.group);
 }
 inline void to_json(Json& j, const OrderChangeRecord& c) {
   j = Json{{"time", c.time}, {"actor", c.actor}, {"previous_quantity", c.previous_quantity}};
@@ -87,7 +94,14 @@ inline void from_json(const Json& j, Order& o) {
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TradeReview, worst, best, planned_risk, finished)
+inline void to_json(Json& j, const TradeReview& r) {
+  j = Json{{"worst", r.worst}, {"best", r.best}, {"planned_risk", r.planned_risk}, {"finished", r.finished}};
+  if (r.since) j["since"] = *r.since;
+}
+inline void from_json(const Json& j, TradeReview& r) {
+  j.at("worst").get_to(r.worst); j.at("best").get_to(r.best); j.at("planned_risk").get_to(r.planned_risk);
+  j.at("finished").get_to(r.finished); added_field(j, "since", r.since);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DayNote, plan, review, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillQuote, bid, ask, bid_size, ask_size, left, quoted)
 inline void to_json(Json& j, const Fill& f) {
@@ -250,7 +264,7 @@ inline void from_json(const Json& j, MarkedPosition& p) {
   added_field(j, "no_bid", p.no_bid); added_field(j, "do_not_exercise", p.do_not_exercise);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedStock, position, mark, mark_time, market_value, unrealised, fresh)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews, pending_limits, pending_guardrails, guardrails, pending_applied_at, soft_floor, trip_attributions)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews, pending_limits, pending_guardrails, guardrails, pending_applied_at, soft_floor, trip_attributions, groups, group_reviews)
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
   j.at("equity").get_to(s.equity); j.at("start_of_day_equity").get_to(s.start_of_day_equity);
@@ -270,6 +284,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   added_field(j, "pending_limits", s.pending_limits); added_field(j, "pending_guardrails", s.pending_guardrails);
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
   added_field(j, "soft_floor", s.soft_floor); added_field(j, "trip_attributions", s.trip_attributions);
+  added_field(j, "groups", s.groups); added_field(j, "group_reviews", s.group_reviews);
 }
 
 namespace detail {
@@ -330,6 +345,14 @@ struct State {
   SharedMap<std::string, DayNote> day_notes;
   SharedMap<std::string, TradeReview> trade_reviews;
   SharedMap<std::string, TradeReview> strategy_reviews;
+  /// The trade each round trip is in, by trade ID, where it is not its root's
+  /// (see trade_group); and whole-trade reviews of trades with more than one entry.
+  SharedMap<std::string, std::string> groups;
+  SharedMap<std::string, TradeReview> group_reviews;
+  /// The fills whose round trips have joined their trades: those recorded when an
+  /// execution last opened one. A journal from before trades were grouped joins
+  /// none of its earlier fills.
+  std::uint64_t grouped = 0;
   /// Open stretches by held contract (or stock), and today's finished ones (and costs).
   std::map<std::string, Reference> references;
   std::map<std::string, Attribution> explained;
@@ -384,7 +407,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
   X(marks) X(valuations) X(orders) X(fills) X(settled) X(kill) X(kill_reason) X(evaluation) X(attempts) \
   X(closures) X(annotations) X(references) X(explained) X(stock_marks) X(stock_fills) X(dividends) \
   X(closing_prints) X(day_notes) X(trade_reviews) X(strategy_reviews) X(pending_limits) \
-  X(pending_guardrails) X(guardrails) X(pending_applied_at) X(trips) X(trip_attribution)
+  X(pending_guardrails) X(guardrails) X(pending_applied_at) X(trips) X(trip_attribution) X(groups) X(group_reviews) X(grouped)
 inline void to_json(Json& j, const State& s) {
 #define OPENPORT_STATE_TO(field) j[#field] = s.field;
   OPENPORT_STATE_FIELDS(OPENPORT_STATE_TO)
@@ -410,6 +433,9 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
   added_field(j, "do_not_exercise", s.do_not_exercise);
   added_field(j, "trips", s.trips); added_field(j, "trip_attribution", s.trip_attribution);
+  added_field(j, "groups", s.groups); added_field(j, "group_reviews", s.group_reviews);
+  s.grouped = s.fills.size();
+  added_field(j, "grouped", s.grouped);
   s.working.clear();
   s.indexed = 0;
   reindex(s);

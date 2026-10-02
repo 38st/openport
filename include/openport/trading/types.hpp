@@ -28,10 +28,11 @@ enum class Reason {
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
   OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED,
   LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE, DEFINED_RISK, MARKET_HALTED, SOFT_FLOOR, TRADE_LIMIT, COOLDOWN, PROFIT_LOCK,
-  RUN_ENDED
+  RUN_ENDED,
+  INVALID_GROUP
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::RUN_ENDED;
+inline constexpr Reason kLastReason = Reason::INVALID_GROUP;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -115,6 +116,9 @@ struct OrderRequest {
   std::string note = {};
   /// Attach the bracket to held closing legs instead of submitting an entry.
   bool exits_only = false;
+  /// The trade the round trips it opens join, named by one of its open round
+  /// trips' IDs (an adjustment); empty for their own, or a roll's.
+  std::string group = {};
   bool operator==(const OrderRequest&) const = default;
 };
 [[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }
@@ -205,6 +209,9 @@ struct TradeReview {
   std::optional<Excursion> best;
   std::optional<Money> planned_risk;
   bool finished = false;
+  /// A whole-trade review that began part way through the trade: its extremes
+  /// run from this time (the account grouped its round trips then).
+  std::optional<Timestamp> since;
 };
 /// The book a fill traded against, as the account held it: both sides and their
 /// displayed sizes, what was left of the taken side's paper budget before the
