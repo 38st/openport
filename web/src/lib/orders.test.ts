@@ -17,8 +17,9 @@ describe("order edits", () => {
     expect(editable({ ...order, time_in_force: "ioc" })).toBe(false)
     expect(editable({ ...order, type: "market", limit_price: null })).toBe(false)
     expect(editable({ ...order, origin: "system" })).toBe(false)
-    expect(editableFields(order)).toEqual({ quantity: true, limit: true, trigger: false })
-    expect(editableFields(stop)).toEqual({ quantity: false, limit: false, trigger: true })
+    expect(editableFields(order)).toEqual({ quantity: true, limit: true, trigger: false, tif: true })
+    // A bracket exit resizes up to its position and keeps its time in force.
+    expect(editableFields(stop)).toEqual({ quantity: true, limit: false, trigger: true, tif: false })
   })
 
   it("send only what changed, and explain what cannot", () => {
@@ -36,6 +37,11 @@ describe("order edits", () => {
     // A multi-leg order's net limit is negative for a credit.
     expect(orderChange(spread, { ...orderDraft(spread), limit_price: "-1.10" })).toEqual({ change: { limit_price: "-1.10" } })
     expect(orderChange(spread, { ...orderDraft(spread), quantity: "x" })).toEqual({ error: "Enter a whole number of units" })
+    // A resting limit switches between DAY and GTC in place.
+    expect(orderChange(order, { ...draft, time_in_force: "gtc" })).toEqual({ change: { time_in_force: "gtc" } })
+    expect(orderChange(order, { ...draft, time_in_force: "day" })).toEqual({ unchanged: true })
+    expect(changeText({ time: "", actor: "web", quantity: null, limit_price: null, trigger_level: null, time_in_force: "gtc",
+      previous: { quantity: 1, limit_price: "3.90", trigger_level: null, time_in_force: "day" }, applied: true, reason: null })).toBe("DAY → GTC")
   })
 })
 

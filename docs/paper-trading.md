@@ -487,7 +487,10 @@ exits never count against buy-only sells, so a manual close is always possible.
 
 An order with **legs** trades two to four contracts together: each leg names a
 registered contract, a side and a ratio from 1 to 10, all on one underlying (expiries may
-differ, so calendars and diagonals are allowed). The order has no symbol or side;
+differ, so calendars and diagonals are allowed). A roll may take up to eight legs, so
+an iron condor rolls whole in one order: past four legs, every leg but four must close
+held contracts in full for its units, or the order is refused (`INVALID_ORDER`, with
+the opening legs counted against four). The order has no symbol or side;
 its `quantity` counts units, and `limit_price` is the net per unit, positive
 for a debit paid at most and negative for a credit received at least (zero is even).
 Market orders are IOC as usual. The net must be a multiple of the smallest lower-tier
@@ -591,10 +594,15 @@ with a trigger. The changed order takes every pre-trade check a new one would, w
 its own reservation released first, and a failure leaves it exactly as it was. A
 limit that becomes marketable trades against the cached fresh quote, subject to
 any configured fill latency, and an armed order whose new level is reached activates in the regular session. Bracket
-exits change only their level or take-profit price (a signed net on the combo tick
-for spreads, positive on the tier tick for a single contract);
-their size follows the position. Time in force cannot change in place; cancel and
-submit again to change DAY/GTC. The engine applies a new order's feed gate
+exits change their level or take-profit price (a signed net on the combo tick
+for spreads, positive on the tier tick for a single contract), and their size: at
+most the position they protect, so a target can take part off while the stop keeps
+protecting the rest (a smaller exit that fills completely leaves the other working,
+shrunk to what is still held). They follow the position down as it shrinks, and a
+later fill of their entry grows them back to its filled size. A resting limit
+entry changes its time in force between DAY and GTC (`time_in_force`): a DAY order
+then ends with the current session, a GTC one at expiry; an armed order keeps its
+expiry until it triggers. Bracket exits are good until expiry and keep it. The engine applies a new order's feed gate
 (`FEED_STALLED`) before a change, because a change can trade.
 
 Every change asked of an open order stays on it in `Order::changes`, oldest first,
@@ -2069,7 +2077,7 @@ focus at the top of the ticket.
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, and each leg's quote `liquidity` |
 | `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
@@ -2135,7 +2143,7 @@ Unknown fields, duplicate JSON keys, missing required fields, wrong types and
 noncanonical OSIs return 400 `INVALID_REQUEST`. So does an order no market could make
 valid, whichever field breaks it: an empty, overlong or control-character client ID,
 a quantity below one, a market order that is not IOC, a single contract's limit that
-is not positive, fewer than two or more than four legs, two legs naming one contract,
+is not positive, fewer than two or more than eight legs, two legs naming one contract,
 or a ratio outside 1 to 10. Nothing is recorded and the client ID stays free. Business
 rejections, which depend on the account and the market, return 422 and remain recorded
 as rejected orders; unknown contracts/orders return 404,

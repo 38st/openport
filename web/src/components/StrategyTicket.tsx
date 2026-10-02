@@ -229,7 +229,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     </OrderResult>}
     <div>
       <div className="text-base font-semibold">{underlying} <span className="font-normal text-muted">{closing ? "Close" : roll ? "Roll" : label}</span></div>
-      <div className="mt-1 text-sm">{known.length === 1 ? `${known[0]!.expiry} ${known[0]!.settlement}` : known.map((e) => shortDate(e.expiry)).join(" / ")} · {legs.length} of {MAX_LEGS} legs</div>
+      <div className="mt-1 text-sm">{known.length === 1 ? `${known[0]!.expiry} ${known[0]!.settlement}` : known.map((e) => shortDate(e.expiry)).join(" / ")} · {legs.length}{legs.length > MAX_LEGS ? "" : ` of ${MAX_LEGS}`} legs</div>
       {(feedStatus?.provider.simulated || (source === "replay" && replay?.demo)) && <p className="mt-1 text-xs text-warn">Demo market · simulated prices and volume</p>}
       {template && <p className="mt-1 text-xs text-muted">Template tag: <span className="tabular">{template.tag}</span> · Width: {template.widths.join(" / ")} points</p>}
       {legs.length < 2 && <p className="mt-1 text-xs text-muted">Click another bid or ask on the chain to add a leg: an ask buys, a bid sells.</p>}

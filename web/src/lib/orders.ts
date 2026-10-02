@@ -10,15 +10,21 @@ export function editable(order: Order): boolean {
     (order.status === "armed" || (order.type === "limit" && order.time_in_force !== "ioc"))
 }
 
-/** The terms an order can change: a bracket exit's size follows its position; only armed orders move their trigger. */
+/**
+ * The terms an order can change: its size (a bracket exit's up to the position it
+ * protects), its limit, an armed order's trigger, and a resting limit entry's time
+ * in force between DAY and GTC (bracket exits are good until expiry).
+ */
 export function editableFields(order: Order) {
-  return { quantity: !order.role, limit: order.type === "limit", trigger: order.status === "armed" && order.trigger != null }
+  return { quantity: true, limit: order.type === "limit", trigger: order.status === "armed" && order.trigger != null,
+    tif: !order.role && order.type === "limit" && order.time_in_force !== "ioc" }
 }
 
-export interface OrderDraft { quantity: string; limit_price: string; trigger_level: string }
+export interface OrderDraft { quantity: string; limit_price: string; trigger_level: string; time_in_force?: "day" | "gtc" }
 
 export function orderDraft(order: Order): OrderDraft {
-  return { quantity: String(order.quantity), limit_price: order.limit_price ?? "", trigger_level: order.trigger?.level ?? "" }
+  return { quantity: String(order.quantity), limit_price: order.limit_price ?? "", trigger_level: order.trigger?.level ?? "",
+    time_in_force: order.time_in_force === "gtc" ? "gtc" : order.time_in_force === "day" ? "day" : undefined }
 }
 
 const decimalText = /^-?\d+(\.\d{1,6})?$/
@@ -46,6 +52,7 @@ export function orderChange(order: Order, draft: OrderDraft): { change: OrderCha
     if (!decimalText.test(text) || (order.trigger?.source !== "combo" && Number(text) <= 0)) return { error: order.trigger?.source === "combo" ? "Enter a signed combo net level" : "Enter a positive trigger level" }
     if (compareMoney(text, order.trigger?.level) !== 0) change.trigger_level = text
   }
+  if (fields.tif && draft.time_in_force && draft.time_in_force !== order.time_in_force) change.time_in_force = draft.time_in_force
   return Object.keys(change).length ? { change } : { unchanged: true }
 }
 
@@ -126,6 +133,7 @@ export function changeText(change: OrderChangeRecord, multi = false): string {
   if (change.limit_price != null) parts.push(`limit ${termPrice(change.previous.limit_price, multi)} → ${termPrice(change.limit_price, multi)}`)
   if (change.trigger_level != null)
     parts.push(`trigger ${termPrice(change.previous.trigger_level, multi)} → ${termPrice(change.trigger_level, multi)}`)
+  if (change.time_in_force) parts.push(`${(change.previous.time_in_force ?? "?").toUpperCase()} → ${change.time_in_force.toUpperCase()}`)
   return parts.length ? parts.join(", ") : "no new terms"
 }
 function ending(order: Order): string {

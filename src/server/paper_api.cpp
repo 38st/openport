@@ -221,17 +221,27 @@ json exit_json(const std::optional<ExitSpec>& e) {
   return {{"trigger", trigger_json(e->trigger)}, {"limit_price", money(e->limit_price)}};
 }
 json id_or_null(OrderId id) { return id == 0 ? json(nullptr) : json(std::to_string(id)); }
+json tif_or_null(const std::optional<TimeInForce>& tif) {
+  return !tif ? json(nullptr) : json(*tif == TimeInForce::Day ? "day" : *tif == TimeInForce::Gtc ? "gtc" : "ioc");
+}
 /// Each change asked of an order: the terms requested (null where kept), the terms
 /// before it, and whether it was applied or refused, and why.
 json order_changes_json(const Order& o) {
   json changes = json::array();
-  for (const auto& c : o.changes)
-    changes.push_back({{"time", md::format_timestamp(c.time)}, {"actor", c.actor},
+  for (const auto& c : o.changes) {
+    json change{{"time", md::format_timestamp(c.time)}, {"actor", c.actor},
         {"quantity", c.quantity ? json(*c.quantity) : json(nullptr)}, {"limit_price", money(c.limit_price)},
         {"trigger_level", money(c.trigger_level)},
         {"previous", {{"quantity", c.previous_quantity}, {"limit_price", money(c.previous_limit_price)},
                       {"trigger_level", money(c.previous_trigger_level)}}},
-        {"applied", c.decision.ok()}, {"reason", decision_json(c.decision)}});
+        {"applied", c.decision.ok()}, {"reason", decision_json(c.decision)}};
+    // A change of time in force says so, beside the one before it.
+    if (c.time_in_force) {
+      change["time_in_force"] = tif_or_null(c.time_in_force);
+      change["previous"]["time_in_force"] = tif_or_null(c.previous_time_in_force);
+    }
+    changes.push_back(std::move(change));
+  }
   return changes;
 }
 /// When the order's terms last changed, or null.
@@ -1297,8 +1307,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   const bool change_preview = request.method == "POST" && path != "/api/orders/preview" &&
       path.starts_with("/api/orders/") && path.ends_with("/preview");
   if ((request.method == "PUT" && path.starts_with("/api/orders/")) || change_preview) {
-    if (change_preview) fields(body, {}, {"quantity", "limit_price", "trigger_level", "floor_share"});
-    else fields(body, {}, {"quantity", "limit_price", "trigger_level"});
+    if (change_preview) fields(body, {}, {"quantity", "limit_price", "trigger_level", "time_in_force", "floor_share"});
+    else fields(body, {}, {"quantity", "limit_price", "trigger_level", "time_in_force"});
     command.kind = change_preview ? TradingCommand::Kind::PreviewChange : TradingCommand::Kind::Modify;
     auto id = path.substr(std::string_view("/api/orders/").size());
     if (change_preview) id = id.substr(0, id.size() - std::string_view("/preview").size());
@@ -1310,7 +1320,12 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     if (body.contains("quantity")) command.change.quantity = integer_field(body, "quantity");
     if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
     if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
-    if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price or trigger_level");
+    if (body.contains("time_in_force")) {
+      const auto tif = string_field(body, "time_in_force");
+      if (tif != "day" && tif != "gtc") throw std::invalid_argument("time_in_force changes to day or gtc");
+      command.change.tif = tif == "day" ? TimeInForce::Day : TimeInForce::Gtc;
+    }
+    if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price, trigger_level or time_in_force");
     return command;
   }
   if (request.method == "PUT" && path.starts_with("/api/days/") && path.ends_with("/note")) {
@@ -1462,8 +1477,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     if (body.contains("limit_price")) order.limit_price = decimal_field(body, "limit_price");
     if (legs) {
       const auto& list = body.at("legs");
-      if (!list.is_array() || list.size() < 2 || list.size() > kMaxLegs)
-        throw std::invalid_argument("legs must be an array of two to four legs");
+      if (!list.is_array() || list.size() < 2 || list.size() > kMaxRollLegs)
+        throw std::invalid_argument("legs must be an array of two to four legs, or up to eight for a roll");
       std::set<std::string> symbols;
       for (const auto& item : list) {
         fields(item, {"symbol", "side"}, {"ratio"});

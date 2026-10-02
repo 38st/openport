@@ -49,14 +49,16 @@ export function RollDialog({ group, trading, onClose }: { group: StrategyGroup; 
     queryKey: ["summary", group.underlying, version(group.underlying)],
     queryFn: ({ signal }) => api.summary(group.underlying, signal),
   })
-  const later = (summary.data?.expiries ?? []).filter((e) => e.id > group.expiry)
+  // The same expiry rolls to new strikes; later ones keep them unless changed.
+  const later = (summary.data?.expiries ?? []).filter((e) => e.id >= group.expiry)
   const sides = rollSides(group)
+  const whole = group.legs.length === 4 && sides.length === 2
   const [side, setSide] = useState<"put" | "call" | undefined>(group.legs.length > 2 ? sides[0] : undefined)
   const [strikes, setStrikes] = useState<number[] | undefined>()
   const selected = side ? group.legs.filter(({ leg }) => leg.type === side) : group.legs
   const [choice, setChoice] = useState<string | null>(null)
-  const target = choice ?? later[0]?.id ?? null
-  const { chains, ready, error } = useChains(group.underlying, target ? [group.expiry, target] : [group.expiry])
+  const target = choice ?? later.find((e) => e.id > group.expiry)?.id ?? later[0]?.id ?? null
+  const { chains, ready, error } = useChains(group.underlying, target && target !== group.expiry ? [group.expiry, target] : [group.expiry])
   const [edited, setEdited] = useState<{ target: string; legs: StrategyLeg[] } | null>(null)
   const targetChain = chains.find((c) => c.expiry.id === target)
   const plan = targetChain ? rollPlan(group, { id: targetChain.expiry.id, strikes: targetChain.strikes }, side, strikes) : null
@@ -68,15 +70,18 @@ export function RollDialog({ group, trading, onClose }: { group: StrategyGroup; 
         <div className="text-xs text-muted">{group.units} unit{group.units === 1 ? "" : "s"}, opened at {group.cost == null ? "—" : `${formatMoney(Math.abs(group.cost).toFixed(2))} ${group.cost < 0 ? "credit" : "debit"}`}</div>
       </div>
       {group.legs.length > 2 && <label className="trade-label">Roll side
-        <select className="trade-input" value={side} onChange={(e) => { setSide(e.target.value as "put" | "call"); setStrikes(undefined); setEdited(null) }}>
+        <select className="trade-input" value={side ?? "both"} onChange={(e) => {
+          setSide(e.target.value === "both" ? undefined : e.target.value as "put" | "call"); setStrikes(undefined); setEdited(null)
+        }}>
           {sides.map((value) => <option key={value} value={value}>{value === "put" ? "Put vertical" : "Call vertical"}</option>)}
+          {whole && <option value="both">Whole condor (eight legs)</option>}
         </select>
       </label>}
       <label className="flex items-center gap-2 text-sm">
         <span className="text-muted">Roll to</span>
         <select className="trade-input !w-auto !py-1" value={target ?? ""} disabled={!later.length}
           onChange={(e) => { setChoice(e.target.value); setStrikes(undefined); setEdited(null) }}>
-          {later.map((e) => <option key={e.id} value={e.id}>{expiryLabel(e.id, true)} · {days(e.days)}</option>)}
+          {later.map((e) => <option key={e.id} value={e.id}>{expiryLabel(e.id, true)} · {e.id === group.expiry ? "same expiry, new strikes" : days(e.days)}</option>)}
         </select>
       </label>
       {targetChain && selected.map(({ leg }, index) => <label className="trade-label" key={leg.symbol}>New {leg.type} strike ({leg.side})
@@ -88,7 +93,7 @@ export function RollDialog({ group, trading, onClose }: { group: StrategyGroup; 
         </select>
       </label>)}
       <TradingError error={summary.error ?? error} />
-      {summary.data && !later.length && <p className="text-sm text-muted">No later expiry is listed.</p>}
+      {summary.data && !later.length && <p className="text-sm text-muted">No expiry is listed.</p>}
       {plan && "reason" in plan && <p className="text-sm text-warn">{plan.reason}</p>}
       {ready && plan && "legs" in plan && target && (
         <StrategyTicket variant="bare" roll title={title} legs={withQuotes(edited?.target === target ? edited.legs : plan.legs, chains)}
@@ -132,7 +137,7 @@ export function Strategies({ groups, trading, now = Date.now() }: { groups: read
               <td><div className="flex justify-end gap-1">
                 <button type="button" className="trade-button" disabled={!trading.enabled} aria-label={`Close ${group.label} ${group.title}`} onClick={() => setClosing(group)}>Close</button>
                 <button type="button" className="trade-button" disabled={!trading.enabled || (group.legs.length > 2 && !rollSides(group).length)} aria-label={`Roll ${group.label} ${group.title}`}
-                  title={group.legs.length > 2 ? "Roll the put or call vertical" : "Close and reopen at a later expiry"} onClick={() => setRolling(group)}>Roll</button>
+                  title={group.legs.length > 2 ? "Roll the put or call vertical, or the whole condor" : "Close and reopen at new strikes or a later expiry"} onClick={() => setRolling(group)}>Roll</button>
                 <button type="button" className="trade-button" disabled={!trading.enabled} aria-label={`Exits for ${group.label} ${group.title}`} onClick={() => setExiting(group)}>Exits…</button>
               </div></td>
             </tr>

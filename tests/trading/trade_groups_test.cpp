@@ -175,5 +175,42 @@ TEST(TradeGroups, ReturnOnBuyingPowerDividesByWhatTheEntryNeeded) {
   EXPECT_EQ(peak_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}), entry_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}));
 }
 
+TEST(TradeGroups, ACondorRollsWholeInOneEightLegOrderThatOpensNoMoreThanFour) {
+  const auto at = [](std::string_view osi) {
+    ScriptedMarket m;
+    m.contract = *md::parse_osi(osi);
+    return m;
+  };
+  std::vector<ScriptedMarket> held{at("SPXW261022P04950000"), at("SPXW261022P04960000"), at("SPXW261022C05040000"), at("SPXW261022C05050000")};
+  std::vector<ScriptedMarket> next{at("SPXW261022P04900000"), at("SPXW261022P04910000"), at("SPXW261022C05090000"), at("SPXW261022C05100000")};
+  TradingSession s({}, held[0].time);
+  for (const auto* group : {&held, &next})
+    for (const auto& m : *group) m.seed(s, "1.00", "1.10");
+  const auto legs = [](const std::vector<ScriptedMarket>& m, bool open) {
+    const auto side = [&](bool buy) { return buy == open ? Side::Buy : Side::Sell; };
+    return std::vector<Leg>{{m[0].symbol(), side(true), 1}, {m[1].symbol(), side(false), 1},
+                            {m[2].symbol(), side(false), 1}, {m[3].symbol(), side(true), 1}};
+  };
+  Calls helper;
+  ASSERT_TRUE(s.submit(helper.order("condor", legs(held, true)), held[0].time).decision.ok());
+  // Five legs that open: refused, the opening legs counted.
+  auto five = legs(next, true);
+  five.push_back({held[0].symbol(), Side::Buy, 1});
+  five.push_back({held[1].symbol(), Side::Buy, 1});
+  five.push_back({held[2].symbol(), Side::Buy, 1});
+  const auto refused = s.submit(helper.order("too many", five), held[0].time).decision;
+  EXPECT_EQ(refused.code, Reason::INVALID_ORDER);
+  EXPECT_EQ(refused.actual, 5);
+  // Close all four and open four: one order, and one whole trade.
+  auto roll = legs(held, false);
+  for (const auto& leg : legs(next, true)) roll.push_back(leg);
+  const auto placed = s.submit(helper.order("roll", roll), held[0].time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  const auto trades = trades_by_symbol(s);
+  for (const auto& m : next) EXPECT_EQ(trades.at(m.symbol()), "1") << m.symbol();
+  EXPECT_EQ(s.snapshot()->positions.size(), 4U);
+  EXPECT_TRUE(s.snapshot()->group_reviews.contains("1"));
+}
+
 }  // namespace
 }  // namespace openport::trading

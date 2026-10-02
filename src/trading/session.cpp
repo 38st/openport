@@ -1121,13 +1121,23 @@ std::optional<Money> stop_level(const Order& o) {
 Decision combo_check(const State& s, const Order& o, Stage stage) {
   const auto& r = o.request;
   const auto& rules = s.config.rules;
-  const bool shape = r.legs.size() >= 2 && r.legs.size() <= kMaxLegs && r.symbol.empty() && r.side == Side::Buy &&
+  const bool shape = r.legs.size() >= 2 && r.legs.size() <= kMaxRollLegs && r.symbol.empty() && r.side == Side::Buy &&
       !r.client_order_id.empty() && r.quantity > 0 &&
       ((r.type == OrderType::Market && r.tif == TimeInForce::Ioc && !r.limit_price) ||
        (r.type == OrderType::Limit && r.limit_price && (r.tif == TimeInForce::Day || r.tif == TimeInForce::Ioc || r.tif == TimeInForce::Gtc)));
   if (!shape)
-    return failure(Reason::INVALID_ORDER, "Multi-leg orders take two to four legs, a unit quantity and a net limit "
+    return failure(Reason::INVALID_ORDER, "Multi-leg orders take two to four legs (eight for a roll), a unit quantity and a net limit "
                    "(negative for a credit) or market IOC");
+  if (r.legs.size() > kMaxLegs) {
+    // Past four legs, a roll: every leg but four closes held contracts, in full for its units.
+    const auto opening = std::count_if(r.legs.begin(), r.legs.end(), [&](const Leg& leg) {
+      const auto q = held(s, leg.symbol);
+      return q == 0 || (q > 0) == (leg.side == Side::Buy) || magnitude(q) < o.remaining() * leg.ratio;
+    });
+    if (static_cast<std::size_t>(opening) > kMaxLegs)
+      return {Reason::INVALID_ORDER, "Orders past four legs are rolls: at most four legs may open, the rest close held contracts",
+              static_cast<double>(opening), static_cast<double>(kMaxLegs), {}};
+  }
   std::set<std::string> seen;
   const md::OptionContract* first = nullptr;
   Money tick;
@@ -1598,19 +1608,25 @@ void match_symbols(State& s, const std::set<std::string>& symbols, Events& event
   }
   for (const auto id : combos) match_order(s, id, events, incoming);
 }
+/// The units an exit's closing legs can still close: the least the position holds
+/// against any leg, in its ratio.
+Quantity exit_capacity(const State& s, const OrderRequest& r) {
+  auto capacity = std::numeric_limits<Quantity>::max();
+  const auto cap = [&](const std::string& leg_symbol, Side side, Quantity ratio) {
+    const auto q = held(s, leg_symbol);
+    capacity = std::min(capacity, (side == Side::Sell ? std::max<Quantity>(q, 0) : std::max<Quantity>(-q, 0)) / ratio);
+  };
+  if (multi_leg(r)) for (const auto& leg : r.legs) cap(leg.symbol, leg.side, leg.ratio);
+  else cap(r.symbol, r.side, 1);
+  return capacity;
+}
 /// Keep bracket exits within the position they protect: shrink them when it
 /// shrinks and cancel them once it is closed, so an exit can never open one.
 void sync_exits(State& s, const std::string& symbol, Events& events) {
   for (const auto id : open_ids(s)) {
     const auto& o = s.orders[id - 1];
     if (!o.open() || !kept_within(o) || !touches(o.request, symbol)) continue;
-    auto capacity = std::numeric_limits<Quantity>::max();
-    const auto cap = [&](const std::string& leg_symbol, Side side, Quantity ratio) {
-      const auto q = held(s, leg_symbol);
-      capacity = std::min(capacity, (side == Side::Sell ? std::max<Quantity>(q, 0) : std::max<Quantity>(-q, 0)) / ratio);
-    };
-    if (multi_leg(o.request)) for (const auto& leg : o.request.legs) cap(leg.symbol, leg.side, leg.ratio);
-    else cap(o.request.symbol, o.request.side, 1);
+    const auto capacity = exit_capacity(s, o.request);
     if (capacity == 0) {
       cancel_order(s, id, failure(Reason::POSITION_CLOSED, "The position this exit protected is closed"), events);
     } else if (o.remaining() > capacity) {
@@ -1677,8 +1693,10 @@ void on_fill(State& s, OrderId id, Events& events) {
   detail::update_reviews(s);
   const auto order = s.orders.at(static_cast<std::size_t>(id - 1));
   // One exit filling completely cancels the other; a partial fill leaves it to
-  // protect what is still held, shrunk to that by sync_exits below.
-  if (order.oco != 0 && order.status == OrderStatus::Filled && s.orders.at(static_cast<std::size_t>(order.oco - 1)).open())
+  // protect what is still held, shrunk to that by sync_exits below, as does the
+  // complete fill of an exit the trader made smaller than the other.
+  if (order.oco != 0 && order.status == OrderStatus::Filled && s.orders.at(static_cast<std::size_t>(order.oco - 1)).open() &&
+      order.request.quantity >= s.orders.at(static_cast<std::size_t>(order.oco - 1)).request.quantity)
     cancel_order(s, order.oco, failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
   if (order.role != OrderRole::Normal && order.parent != 0 && s.orders.at(static_cast<std::size_t>(order.parent - 1)).open())
     cancel_order(s, order.parent, failure(Reason::OCO_FILLED, "An exit filled; the remaining entry is cancelled"), events);
@@ -2242,7 +2260,7 @@ PreviewProjection project_working(const State& before, State after_state, OrderI
   request.quantity = after.orders.at(static_cast<std::size_t>(id - 1)).remaining();
   auto legs = request.legs;
   if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
-  if (request.quantity <= 0 || legs.size() > kMaxLegs) return projection;
+  if (request.quantity <= 0 || legs.size() > kMaxRollLegs) return projection;
   for (const auto& leg : legs)
     if (leg.ratio <= 0 || leg.ratio > kMaxRatio || request.quantity > std::numeric_limits<Quantity>::max() / (100 * leg.ratio) ||
         !before.contracts.contains(leg.symbol) || !quote_check(before, leg.symbol).ok()) return projection;
@@ -2327,6 +2345,7 @@ void change_terms(State& s, OrderId id, const OrderChange& change) {
   if (change.quantity) order.request.quantity = *change.quantity;
   if (change.limit_price && order.request.type == OrderType::Limit) order.request.limit_price = *change.limit_price;
   if (change.trigger_level && order.request.trigger) order.request.trigger->level = *change.trigger_level;
+  if (change.tif) order.request.tif = *change.tif;
 }
 /// The account a preview starts from: the current one with the integration's newer
 /// market for contracts it may not hold yet, at the market time, its daily loss checked.
@@ -2591,6 +2610,10 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   const auto& r = order.request;
   OrderChangeRecord record{s.time, s.actor, change.quantity, change.limit_price, change.trigger_level, r.quantity, r.limit_price,
                            r.trigger ? std::optional(r.trigger->level) : std::nullopt, {}};
+  if (change.tif) {
+    record.time_in_force = change.tif;
+    record.previous_time_in_force = r.tif;
+  }
   const auto refuse = [&](Decision decision) {
     record.decision = decision;
     order.changes.push_back(record);
@@ -2600,9 +2623,14 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   const bool resting = order.status == OrderStatus::Armed || (r.type == OrderType::Limit && r.tif != TimeInForce::Ioc);
   if (order.system || !resting)
     return refuse(failure(Reason::INVALID_ORDER, "Only resting orders change: DAY/GTC limit orders, armed orders and bracket exits"));
-  if (change.empty()) return refuse(failure(Reason::INVALID_ORDER, "Give a new quantity, limit price or trigger level"));
-  if (change.quantity && exit)
-    return refuse(failure(Reason::INVALID_ORDER, "A bracket exit's size follows its position; change its level or price instead"));
+  if (change.empty()) return refuse(failure(Reason::INVALID_ORDER, "Give a new quantity, limit price, trigger level or time in force"));
+  // An exit may close part of what it protects, or all of it again, never more.
+  if (change.quantity && exit && *change.quantity > order.filled_quantity + exit_capacity(s, r))
+    return refuse({Reason::INVALID_ORDER, "A bracket exit closes at most the position it protects",
+                   static_cast<double>(*change.quantity), static_cast<double>(order.filled_quantity + exit_capacity(s, r)), {}});
+  if (change.tif && (exit || r.type != OrderType::Limit || r.tif == TimeInForce::Ioc ||
+                     (*change.tif != TimeInForce::Day && *change.tif != TimeInForce::Gtc)))
+    return refuse(failure(Reason::INVALID_ORDER, "Only resting limit orders change between DAY and GTC; bracket exits are good until expiry"));
   if (change.quantity && *change.quantity <= order.filled_quantity)
     return refuse({Reason::INVALID_ORDER, "The new quantity must exceed the filled quantity; cancel the order instead",
                    static_cast<double>(*change.quantity), static_cast<double>(order.filled_quantity), {}});
@@ -2616,6 +2644,7 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   if (change.quantity) order.request.quantity = *change.quantity;
   if (change.limit_price) order.request.limit_price = *change.limit_price;
   if (change.trigger_level) order.request.trigger->level = *change.trigger_level;
+  if (change.tif) order.request.tif = *change.tif;
   Decision decision;
   if (exit) {
     // Exits only ever reduce a position, so they skip the entry checks; their terms must still be valid.
@@ -2634,6 +2663,9 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
     order = before;
     return refuse(decision);
   }
+  // A new time in force sets when a working order ends; an armed one keeps expiry.
+  if (change.tif && order.status != OrderStatus::Armed)
+    order.day_end = order.request.tif == TimeInForce::Gtc ? order_expiry(s, order.request) : day_deadline(s, order.request, s.time);
   order.changes.push_back(record);
   event(events, "order_modified", order);
   const auto symbols = order_symbols(order.request);

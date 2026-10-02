@@ -435,7 +435,9 @@ export interface OrderChangeRecord {
   quantity: number | null
   limit_price: Money | null
   trigger_level: Money | null
-  previous: { quantity: number; limit_price: Money | null; trigger_level: Money | null }
+  /** A change of time in force; absent from older servers. */
+  time_in_force?: "day" | "gtc" | "ioc" | null
+  previous: { quantity: number; limit_price: Money | null; trigger_level: Money | null; time_in_force?: "day" | "gtc" | "ioc" | null }
   applied: boolean
   reason: Decision | null
 }
@@ -678,7 +680,8 @@ export interface FillsResponse { account_version: string; fills: Fill[] }
 export interface OrderResponse { account_version: string; order: Order }
 export interface SubmitOrderResponse extends OrderResponse { fills: Fill[] }
 /** New terms for a resting order; omitted fields keep their value. */
-export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money }
+/** `time_in_force` switches a resting limit order between DAY and GTC; absent from older servers' accepted fields. */
+export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money; time_in_force?: "day" | "gtc" }
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
 export interface AccountListItem { id: string; name: string; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }

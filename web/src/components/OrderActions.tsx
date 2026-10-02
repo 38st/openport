@@ -75,7 +75,7 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
       <div className="text-sm">
         <div className="font-medium">{orderLabel(order)}</div>
         <div className="mt-0.5 text-xs text-muted">
-          {order.side ? order.side.toUpperCase() : "NET"} · {order.type} · {order.time_in_force.toUpperCase()} (time in force cannot change) · filled {order.filled_quantity} of {order.quantity}
+          {order.side ? order.side.toUpperCase() : "NET"} · {order.type} · {order.time_in_force.toUpperCase()} · filled {order.filled_quantity} of {order.quantity}
           {order.role && <> · <Badge tone={order.role === "stop_loss" ? "negative" : "positive"}>{order.role === "stop_loss" ? "Stop" : "Target"}</Badge></>}
         </div>
       </div>
@@ -105,7 +105,16 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
               onChange={(e) => setDraft({ ...draft, trigger_level: e.target.value })} />
           </label>
         )}
-        {order.role && <p className="text-xs text-muted">A bracket exit's size follows the position it protects.</p>}
+        {fields.tif && (
+          <label className="block space-y-1 text-sm">
+            <span className="text-muted">Time in force</span>
+            <select className="trade-input" aria-label="Time in force" value={draft.time_in_force ?? order.time_in_force}
+              onChange={(e) => setDraft({ ...draft, time_in_force: e.target.value as "day" | "gtc" })}>
+              <option value="day">DAY: ends with this session</option><option value="gtc">GTC: good until expiry</option>
+            </select>
+          </label>
+        )}
+        {order.role && <p className="text-xs text-muted">A bracket exit closes at most the position it protects: make it smaller to take part off, and the other exit keeps protecting the rest.</p>}
         {"error" in result && <p className="text-xs text-warn" role="status">{result.error}</p>}
         {"change" in result && <OrderPreviewPanel what="change" preview={preview} disabled={!fields.quantity}
           onSize={(size) => setDraft({ ...draft, quantity: String(order.filled_quantity + size) })} />}

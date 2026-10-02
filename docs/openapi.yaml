@@ -9847,7 +9847,7 @@
             "minLength": 1,
             "maxLength": 128,
             "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (market orders IOC, a positive quantity, two to four legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
+            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (market orders IOC, a positive quantity, two to eight legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
           },
           "symbol": {
             "type": "string"
@@ -9858,10 +9858,11 @@
           "legs": {
             "type": "array",
             "minItems": 2,
-            "maxItems": 4,
+            "maxItems": 8,
             "items": {
               "$ref": "#/components/schemas/RequestLeg"
-            }
+            },
+            "description": "Two to four legs, or up to eight for a roll: past four, every leg but four must close held contracts (INVALID_ORDER otherwise), as a condor rolls whole."
           },
           "quantity": {
             "type": "integer",
@@ -11380,13 +11381,21 @@
           "quantity": {
             "type": "integer",
             "minimum": 1,
-            "description": "The new total, filled contracts (or units) included; it must exceed the filled quantity."
+            "description": "The new total, filled contracts (or units) included; it must exceed the filled quantity. A bracket exit's may not exceed what it protects."
           },
           "limit_price": {
             "$ref": "#/components/schemas/Money"
           },
           "trigger_level": {
             "$ref": "#/components/schemas/Money"
+          },
+          "time_in_force": {
+            "type": "string",
+            "enum": [
+              "day",
+              "gtc"
+            ],
+            "description": "A resting limit order's new time in force: day ends it with the current session, gtc at expiry. Bracket exits keep theirs."
           }
         }
       },
@@ -11455,6 +11464,22 @@
                     "type": "null"
                   }
                 ]
+              },
+              "time_in_force": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "day",
+                      "gtc",
+                      "ioc"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The time in force before a change of it, on such a change only."
               }
             },
             "required": [
@@ -11475,6 +11500,22 @@
                 "type": "null"
               }
             ]
+          },
+          "time_in_force": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "day",
+                  "gtc",
+                  "ioc"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The time in force asked for, on a change of it only."
           }
         },
         "required": [
