@@ -6,7 +6,7 @@ import { Dialog } from "../components/Dialog"
 import { formatMoney } from "../lib/trading"
 import type { View } from "../lib/route"
 import { useLive } from "../api/live"
-import type { ReplayRecording, ReplayState } from "../api/types"
+import type { ReplayRecording, ReplaySession, ReplayState } from "../api/types"
 import { TradingError, WriteAccess } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented } from "../components/ui"
 import { joinList } from "../lib/format"
@@ -17,6 +17,34 @@ export const speedLabel = (speed: number) => (speed === 0 ? "Max" : `${speed}×`
 const clockFormat = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
 /** The replay's clock in New York time, "Tue, Sep 22, 15:04:31 ET". */
 export const replayClock = (time: string | null) => (time && Number.isFinite(Date.parse(time)) ? `${clockFormat.format(Date.parse(time))} ET` : "Not started")
+const dateFormat = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" })
+const sessionName = (session: ReplaySession["session"]) => (session === "regular" ? "regular" : session === "curb" ? "curb" : "overnight")
+/** A run's sessions grouped by trading date: "Wed, Sep 16 regular, curb · Thu, Sep 17 overnight, regular". */
+export function sessionsLabel(sessions: ReplaySession[]) {
+  const days: { date: string; names: string[] }[] = []
+  for (const s of sessions) {
+    const last = days.at(-1)
+    if (last?.date === s.date) last.names.push(sessionName(s.session))
+    else days.push({ date: s.date, names: [sessionName(s.session)] })
+  }
+  return days.map((d) => `${Number.isFinite(Date.parse(d.date)) ? dateFormat.format(Date.parse(d.date)) : d.date} ${d.names.join(", ")}`).join(" · ")
+}
+/** Where a run's clock is: inside one of its sessions, or the closed market before the next. */
+export function sessionAt(sessions: ReplaySession[], time: string | null) {
+  const now = time ? Date.parse(time) : NaN
+  if (!Number.isFinite(now)) return null
+  const index = sessions.findIndex((s) => now <= Date.parse(s.end))
+  if (index < 0) return null
+  return { index, open: now >= Date.parse(sessions[index]!.open) }
+}
+const nyParts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+/** A time as a New York "YYYY-MM-DDTHH:MM", the value a datetime-local input holds. */
+export function newYorkInput(time: string | null) {
+  const at = time ? Date.parse(time) : NaN
+  if (!Number.isFinite(at)) return ""
+  const part = Object.fromEntries(nyParts.formatToParts(at).map((p) => [p.type, p.value]))
+  return `${part.year}-${part.month}-${part.day}T${part.hour}:${part.minute}`
+}
 const size = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} KB`
 
 /** Speed, pause, skip and stop for the running replay, from the page or the banner. */
@@ -42,6 +70,7 @@ export function useReplayControls() {
     speed: (speed: number) => run(() => api.controlReplay({ speed }, mode)),
     pause: (paused: boolean) => run(() => api.controlReplay({ paused }, mode)),
     skip: () => run(() => api.controlReplay({ skip: true }, mode)),
+    step: (until: string) => run(() => api.controlReplay({ until }, mode)),
     stop: () => run(() => api.stopReplay(mode)),
     start: (source: ReplaySource, speed: number, then: () => void, options?: ReplayStart) => run(async () => { await api.startReplay(source, speed, mode, options); then() }),
     remove: (id: string, then: () => void) => run(async () => { await api.deleteReplay(id, mode); then() }),
@@ -50,6 +79,8 @@ export function useReplayControls() {
 
 function Controls({ replay }: { replay: ReplayState }) {
   const controls = useReplayControls()
+  const [until, setUntil] = useState("")
+  const idle = controls.pending || controls.blocked || replay.finished || replay.fast_forwarding || replay.stepping
   return <div className="space-y-3">
     <div className="flex flex-wrap items-center gap-2">
       <fieldset disabled={controls.pending || controls.blocked}>
@@ -62,8 +93,27 @@ function Controls({ replay }: { replay: ReplayState }) {
         title="Play the next event now, skipping a closed market" onClick={() => void controls.skip()}>Skip gap</button>
       <button type="button" className="trade-button" disabled={controls.pending || controls.blocked} onClick={() => void controls.stop()}>Stop</button>
     </div>
+    <form className="flex flex-wrap items-end gap-2 text-xs" onSubmit={(event) => { event.preventDefault(); const target = until || newYorkInput(replay.time); if (target) void controls.step(target) }}>
+      <label>Step to (New York)<input aria-label="Step to" type="datetime-local" className="trade-input" value={until || newYorkInput(replay.time)}
+        onChange={(event) => setUntil(event.target.value)} /></label>
+      <button type="submit" className="trade-button" disabled={idle} title="Play as fast as possible through this date and time, then pause">Step</button>
+    </form>
     <TradingError error={controls.error} />
   </div>
+}
+
+/** A run of several sessions: each one by date, the one playing marked. */
+function RunSessions({ sessions, time }: { sessions: ReplaySession[]; time: string | null }) {
+  const at = sessionAt(sessions, time)
+  return <ol aria-label="Run sessions" className="mb-3 flex flex-wrap gap-1 text-[11px]">
+    {sessions.map((s, index) => {
+      const current = at?.index === index
+      return <li key={`${s.date}-${s.session}`} className={`rounded border px-1.5 py-0.5 ${current && at.open ? "border-accent text-foreground" : "border-border text-muted"}`}
+        aria-current={current && at.open ? "step" : undefined}>
+        {sessionsLabel([s])}{current && !at.open ? " · next" : ""}
+      </li>
+    })}
+  </ol>
 }
 
 /** What is playing: the demo's simulated day, or a recording from a provider. */
@@ -114,7 +164,8 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
         {seedMode === "typed" && <label>Seed<input aria-label="Seed" inputMode="numeric" className="trade-input" value={seed} onChange={(event) => setSeed(event.target.value)} /></label>}
         <label className="flex items-center gap-2"><input type="checkbox" checked={paused} onChange={(event) => setPaused(event.target.checked)} />Pause at start</label>
       </div>
-      <p className="mt-2 text-xs text-muted">Leave the time blank for the open. Overnight times from 20:15 belong to the evening before the session date; morning times belong to that date.</p>
+      <p className="mt-2 text-xs text-muted">Leave the time blank for the open. Overnight times from 20:15 belong to the evening before the session date; morning times belong to that date.
+        A scenario of several sessions starts at the time’s first occurrence in them; step to a later day once it runs.</p>
       {badSeed && <p className="mt-2 text-xs text-warn">Enter a whole seed from 0 to 18446744073709551615.</p>}
       {controls.pending && <p role="status" className="mt-2 text-xs text-muted">Preparing replay…</p>}
       <TradingError error={controls.error} />
@@ -128,6 +179,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
           <span className="text-sm text-muted">{replayTitle(replay)}</span>
           {replay.finished ? <Badge tone="neutral">finished</Badge> : replay.paused ? <Badge tone="warn">paused</Badge> : <Badge tone="positive">{speedLabel(replay.speed)}</Badge>}
         </div>
+        {replay.sessions && replay.sessions.length > 1 && <RunSessions sessions={replay.sessions} time={replay.time} />}
         {replay.stepping && <div role="status" className="mb-3 text-sm">Stepping to the requested time; orders wait until it settles.</div>}
         {replay.fast_forwarding && <div role="status" className="mb-3 text-sm">Preparing start state… {Math.round((replay.progress ?? 0) * 100)}%<progress className="ml-2" max={1} value={replay.progress ?? 0} aria-label="Fast-forward progress" /></div>}
         <Controls replay={replay} />
@@ -146,7 +198,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
               <span className="font-medium">{d.title ?? "Demo market"}</span>
               <span className="text-[11px] text-muted">{d.symbols.join(", ")}</span>
             </div>
-            <span className="text-[11px] text-muted">simulated · {d.session === "overnight" ? "overnight" : "regular session"}</span>
+            <span className="text-[11px] text-muted">simulated · {d.sessions && d.sessions.length > 1 ? sessionsLabel(d.sessions) : d.session === "overnight" ? "overnight" : "regular session"}</span>
             {d.goal && <p className="text-xs">Goal: {d.goal}</p>}
             {d.description && <p className="text-xs text-muted">{d.description}</p>}
             <button type="button" className="trade-button mt-auto self-start border-accent text-foreground" disabled={controls.pending || controls.blocked || badSeed}

@@ -352,7 +352,13 @@ export interface ReplayState {
   finished: boolean
   /** The replay's clock: when the latest event it played was first received. */
   time: string | null
+  /** A scenario run's sessions in order; empty for a recording. Absent from older servers. */
+  sessions?: ReplaySession[]
+  /** A scenario run's last snapshot; null for a recording. Absent from older servers. */
+  end?: string | null
 }
+/** One session of a scenario run: its kind, trading date, and first and last snapshot. */
+export interface ReplaySession { session: "regular" | "curb" | "overnight"; date: string; open: string; end: string }
 export interface ReplayRecording {
   imported?: boolean
   simulated?: boolean
@@ -365,7 +371,7 @@ export interface ReplayRecording {
   error?: string
 }
 /** A simulated day the demo market plays, in these symbols. */
-export interface ReplayDemo { goal?: string; session?: "regular" | "overnight"; date?: string; seed?: string; generator?: number; id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string }
+export interface ReplayDemo { goal?: string; session?: "regular" | "overnight"; date?: string; seed?: string; generator?: number; id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string; sessions?: ReplaySession[]; end?: string }
 export interface ReplayHistory extends ReplayState {
   id: string
   /** The plan's display name; plan is its id. Absent from older servers. */
