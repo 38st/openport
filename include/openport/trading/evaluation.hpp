@@ -290,6 +290,13 @@ struct MarginStock {
   Quantity shares = 0;  ///< Signed.
   Money value;          ///< What they are worth, positive: at their mark, or their basis without one.
 };
+/// What the account type and the broker add to margin (AccountRules).
+struct MarginPolicy {
+  AccountType account = AccountType::Margin;
+  std::int64_t house_percent = 0;  ///< On top of the naked and short-sale requirements, or of the scan.
+  std::int64_t vol_shock = 0;      ///< Portfolio margin's implied-volatility shock, in points.
+};
+[[nodiscard]] MarginPolicy margin_policy(const AccountRules& rules);
 /// Requirement for option positions and shares. Shorts pair with longs of the
 /// same type on the same underlying that expire with them or later, as verticals:
 /// a put long below or a call long above its short costs the width, one at or
@@ -309,7 +316,13 @@ struct MarginStock {
 /// without, and taking each expiry on its own (the lesser of its verticals and
 /// worst loss, shares covering nothing). Longs need nothing: their premium is
 /// paid in full, as long shares are; short shares hold their value and half again.
-[[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks = {});
+/// A house percentage raises each naked requirement (beyond the buy-back value)
+/// and each short sale's margin (beyond the shares' value) by that much. A cash
+/// account or an IRA secures each short put no 100 short shares cover with its
+/// strike in cash, pairs no straddles, and a cash account nets no spreads either:
+/// its shorts pair only with shares.
+[[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks = {},
+    const MarginPolicy& policy = {});
 enum class MarginPartKind {
   Naked,            ///< A short option alone: its buy-back value plus its naked requirement.
   Vertical,         ///< A short with the long of its type that covers it: the width, at most naked.
@@ -319,6 +332,7 @@ enum class MarginPartKind {
   ProtectedShares,  ///< 100 short shares with a long call: at most its strike.
   WorstLoss,        ///< Positions that expire together, held at their worst loss at expiry.
   Long,             ///< A long option or long shares that nothing else needs: paid in full.
+  CashSecured,      ///< A cash account's or IRA's short put alone: its strike, in cash.
 };
 /// One part of an underlying's requirement: which positions hold what.
 struct MarginPart {
@@ -346,22 +360,31 @@ struct MarginUnderlying {
 /// margin_requirement by underlying, with the parts that hold it: every position
 /// is in one or more of them, and they add up to it.
 [[nodiscard]] std::vector<MarginUnderlying> margin_breakdown(const std::vector<MarginLeg>& legs,
-    const std::vector<MarginStock>& stocks = {});
+    const std::vector<MarginStock>& stocks = {}, const MarginPolicy& policy = {});
 /// Portfolio margin (Cboe Rule 12.4, FINRA Rule 4210(g)): per underlying, the
 /// largest Black-76 loss over 11 evenly spaced price shocks, -8% to +6% for index
 /// products and -15% to +15% otherwise, or $0.375 times the multiplier for every
-/// option contract if that is larger. Shares move linearly. No result if the scan
-/// lacks fresh valuations or share prices.
+/// option contract if that is larger. Shares move linearly. With a vol shock,
+/// each price shock is also taken with implied volatility that many points up
+/// and down; a house percentage raises each underlying's requirement by that
+/// much. No result if the scan lacks fresh valuations or share prices.
 [[nodiscard]] std::optional<Money> portfolio_margin_requirement(const std::vector<MarginLeg>& legs,
     const Valuations& valuations, Timestamp now, Timestamp max_age,
-    const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {});
+    const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {},
+    const MarginPolicy& policy = {});
 /// portfolio_margin_requirement by underlying, each with its scan.
 [[nodiscard]] std::optional<std::vector<MarginUnderlying>> portfolio_margin_breakdown(const std::vector<MarginLeg>& legs,
     const Valuations& valuations, Timestamp now, Timestamp max_age,
-    const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {});
+    const std::map<std::string, StockPosition>& stocks = {}, const std::map<std::string, double>& stock_prices = {},
+    const MarginPolicy& policy = {});
 /// Short contracts that no long covers: each short pairs with a long of the same
 /// type on the same underlying that expires with it or later, whatever the
 /// strikes, as a defined-risk rule counts it.
 [[nodiscard]] Quantity naked_shorts(const std::vector<MarginLeg>& legs);
+/// What an account type cannot hold: short calls no 100 long shares cover (or,
+/// in an IRA, no long call either, as naked_shorts pairs them), and each started
+/// 100 short shares. Nothing under a margin account.
+[[nodiscard]] Quantity disallowed_shorts(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks,
+    AccountType account);
 
 }  // namespace openport::trading

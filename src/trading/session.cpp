@@ -636,14 +636,14 @@ Margin margin_of(const State& s, const MarginBook& book) {
     // Portfolio margin is taken from equity: cash already holds shorts' credits and
     // paid for longs, so the positions' value is what they are worth on top of it.
     if (const auto scanned = portfolio_margin_requirement(legs, s.valuations, s.time,
-        s.config.limits.max_valuation_age, s.ledger.stocks(), share_prices(s)))
+        s.config.limits.max_valuation_age, s.ledger.stocks(), share_prices(s), margin_policy(s.config.rules)))
       return {*scanned, *scanned - position_value(s, book)};
     // An incomplete scan falls back to strategy margin plus the option minimum.
     // The snapshot flags missing data and user fills require fresh valuations.
     for (const auto& leg : legs)
       minimum = minimum + Money::from_double(0.375 * leg.contract.multiplier) * magnitude(leg.quantity);
   }
-  const auto strategy = margin_requirement(legs, margin_stocks(s)) + minimum;
+  const auto strategy = margin_requirement(legs, margin_stocks(s), margin_policy(s.config.rules)) + minimum;
   return {strategy, strategy};
 }
 Money requirement(const State& s, const MarginBook& book) { return margin_of(s, book).held; }
@@ -655,9 +655,9 @@ std::vector<MarginUnderlying> margin_detail(const State& s) {
   const bool portfolio = s.config.rules.margin == MarginMode::Portfolio;
   if (portfolio)
     if (auto scanned = portfolio_margin_breakdown(legs, s.valuations, s.time, s.config.limits.max_valuation_age,
-        s.ledger.stocks(), share_prices(s)))
+        s.ledger.stocks(), share_prices(s), margin_policy(s.config.rules)))
       return std::move(*scanned);
-  auto detail = margin_breakdown(legs, margin_stocks(s));
+  auto detail = margin_breakdown(legs, margin_stocks(s), margin_policy(s.config.rules));
   if (portfolio)
     for (auto& item : detail)
       for (const auto& leg : legs)
@@ -1242,42 +1242,82 @@ Quantity uncovered(const State& s, const std::vector<std::pair<std::string, Quan
     if (q != 0) legs.push_back({s.contracts.at(symbol), q, {}, std::nullopt});
   return naked_shorts(legs);
 }
+/// What the account type cannot hold (disallowed_shorts), after the account
+/// takes `extra` contracts and `shares` (signed, by underlying).
+Quantity disallowed(const State& s, const std::vector<std::pair<std::string, Quantity>>& extra,
+                    const std::map<std::string, Quantity>& shares) {
+  std::map<std::string, Quantity> held;
+  for (const auto& [symbol, p] : s.ledger.positions()) held[symbol] = p.quantity;
+  for (const auto& [symbol, q] : extra) held[symbol] += q;
+  std::vector<MarginLeg> legs;
+  for (const auto& [symbol, q] : held)
+    if (q != 0) legs.push_back({s.contracts.at(symbol), q, {}, std::nullopt});
+  std::map<std::string, Quantity> held_shares;
+  for (const auto& [symbol, stock] : s.ledger.stocks()) held_shares[symbol] = stock.shares;
+  for (const auto& [symbol, q] : shares) held_shares[symbol] += q;
+  std::vector<MarginStock> stocks;
+  for (const auto& [symbol, q] : held_shares)
+    if (q != 0) stocks.push_back({symbol, q, {}});
+  return disallowed_shorts(legs, stocks, s.config.rules.account_type);
+}
+/// A cash account or IRA refuses additional uncovered calls or short shares.
+/// Pending orders' sells reserve their covers, just as for defined risk.
+std::vector<std::pair<std::string, Quantity>> pending_sells(const State& s, OrderId except,
+    std::vector<std::pair<std::string, Quantity>> extra);
+Decision account_type_check(const State& s, const std::vector<std::pair<std::string, Quantity>>& order,
+                            const std::map<std::string, Quantity>& shares = {}, OrderId except = 0) {
+  const auto type = s.config.rules.account_type;
+  if (type == AccountType::Margin) return {};
+  if (disallowed(s, order, shares) > disallowed(s, {}, {}))
+    return failure(Reason::ACCOUNT_TYPE, type == AccountType::Cash
+        ? "A cash account sells a call only against 100 shares it holds for each contract, and never sells shares short"
+        : "An IRA cannot hold a naked call or short shares: cover each short call with 100 shares, or with a long call of "
+          "the same underlying that expires with it or later");
+  if (disallowed(s, pending_sells(s, except, order), shares) > disallowed(s, pending_sells(s, except, {}), {}))
+    return failure(Reason::ACCOUNT_TYPE, "With your open orders filled, this would leave a call uncovered or shares short: "
+                   "cancel the order that needs its cover first, or trade the spread as one order");
+  return {};
+}
 /// A defined-risk plan refuses an order that would leave more shorts uncovered.
 Decision defined_risk_check(const State& s, const std::vector<std::pair<std::string, Quantity>>& order,
                             std::string_view message = "This plan allows defined risk only: cover each short option with a "
                                                        "long of the same type that expires with it or later, or open the "
                                                        "spread as one order") {
-  if (!s.config.rules.defined_risk || uncovered(s, order) <= uncovered(s, {})) return {};
-  return failure(Reason::DEFINED_RISK, std::string(message));
+  if (s.config.rules.defined_risk && uncovered(s, order) > uncovered(s, {})) return failure(Reason::DEFINED_RISK, std::string(message));
+  return {};
 }
-/// Shorts left uncovered once every open order but `except` has sold all it
-/// offers and bought nothing; a multi-leg order fills whole, and a bracket's two
-/// exits sell its position once.
-Quantity uncovered_if_sold(const State& s, OrderId except, std::vector<std::pair<std::string, Quantity>> extra) {
+/// Contracts once every open order but `except` has
+/// sold all it offers and bought nothing; a multi-leg order fills whole, and a
+/// bracket's two exits sell its position once.
+std::vector<std::pair<std::string, Quantity>> pending_sells(const State& s, OrderId except,
+    std::vector<std::pair<std::string, Quantity>> extra) {
   for (const auto id : open_ids(s)) {
     const auto& o = s.orders[id - 1];
-    if (o.id == except || shadowed(s, o)) continue;
+    if (o.id == except || (except != 0 && o.oco == except) || shadowed(s, o)) continue;
     if (multi_leg(o.request)) {
       for (const auto& leg : o.request.legs) extra.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
     } else if (o.request.side == Side::Sell) {
       extra.emplace_back(o.request.symbol, -o.remaining());
     }
   }
-  return uncovered(s, extra);
+  return extra;
 }
 /// A new or changed order must not leave more shorts uncovered with the open
-/// orders filled either, so a working sell never takes the long a short needs.
+/// orders filled either, so a working sell never takes the long a short needs;
+/// nor, in a cash account or IRA, more calls it cannot hold.
 Decision open_orders_risk_check(const State& s, const Order& o) {
-  if (!s.config.rules.defined_risk) return {};
+  const bool account = s.config.rules.account_type != AccountType::Margin;
+  if (!s.config.rules.defined_risk && !account) return {};
   std::vector<std::pair<std::string, Quantity>> order;
   if (multi_leg(o.request)) {
     for (const auto& leg : o.request.legs) order.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
   } else {
     order.emplace_back(o.request.symbol, o.request.side == Side::Buy ? o.remaining() : -o.remaining());
   }
-  if (uncovered_if_sold(s, o.id, order) <= uncovered_if_sold(s, o.id, {})) return {};
-  return failure(Reason::DEFINED_RISK, "With your open orders filled, this would leave a short option uncovered: cancel "
-                 "the order that sells its long, or that opens the short, first, or trade the spread as one order");
+  if (s.config.rules.defined_risk && uncovered(s, pending_sells(s, o.id, order)) > uncovered(s, pending_sells(s, o.id, {})))
+    return failure(Reason::DEFINED_RISK, "With your open orders filled, this would leave a short option uncovered: cancel "
+                   "the order that sells its long, or that opens the short, first, or trade the spread as one order");
+  return account_type_check(s, order, {}, o.id);
 }
 /// Exposure limits guard what pending orders could add: an order is refused only
 /// when it raises a bucket's worst reachable exposure above its limit, so a book
@@ -1397,6 +1437,7 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
       const auto q = o.remaining() * leg.ratio;
       legs.emplace_back(leg.symbol, leg.side == Side::Buy ? q : -q);
     }
+    if (auto d = account_type_check(s, legs, {}, o.id); !d.ok()) return d;
     if (auto d = defined_risk_check(s, legs); !d.ok()) return d;
   }
   for (const auto& leg : r.legs) {
@@ -1504,6 +1545,8 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
     return failure(Reason::INVALID_TICK, "An exit's limit price is not a positive multiple of the product tier tick");
   if (rules.buy_only && request.side == Side::Sell && !closing_only(s, o))
     return failure(Reason::BUY_ONLY, "This plan is buy-only: sells may only close contracts you already hold");
+  if (auto d = account_type_check(s, {{request.symbol, request.side == Side::Buy ? o.remaining() : -o.remaining()}}, {}, o.id); !d.ok())
+    return d;
   if (auto d = defined_risk_check(s, {{request.symbol, request.side == Side::Buy ? o.remaining() : -o.remaining()}}); !d.ok())
     return d;
   if (rules.expiry_cutoff > 0 && s.time >= c->second.last_trade_time() - rules.expiry_cutoff && !closing_only(s, o))
@@ -1549,6 +1592,7 @@ Decision system_check(const State& s, const Order& o, bool now) {
       if (auto d = quote_check(s, leg.symbol); !d.ok() && !ask_only(s, o, leg)) return d;
       legs.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
     }
+    if (auto d = account_type_check(s, legs, {}, o.id); !d.ok()) return d;
     return defined_risk_check(s, legs);
   }
   const auto c = s.contracts.find(o.request.symbol);
@@ -1556,6 +1600,9 @@ Decision system_check(const State& s, const Order& o, bool now) {
   if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "Contract has expired");
   if (o.system ? !regular(c->second, s.time) : !trades_now(o, c->second, s.time))
     return failure(Reason::SESSION_CLOSED, "Closing orders the account places itself and bracket exits trade in the regular session only");
+  if (!o.system)
+    if (auto d = account_type_check(s, {{o.request.symbol, o.request.side == Side::Buy ? o.remaining() : -o.remaining()}}, {}, o.id); !d.ok())
+      return d;
   // A bracket exit keeps a defined-risk plan's shorts covered; the account's own closing orders need not.
   if (!o.system && o.request.side == Side::Sell)
     if (auto d = defined_risk_check(s, {{o.request.symbol, -o.remaining()}},
@@ -4694,6 +4741,8 @@ CommandResult TradingSession::exercise(const std::string& symbol, Quantity contr
                                           "Exercising this long would leave a short option uncovered; close the short first");
         !d.ok())
       return CommandResult{d, {}, 0};
+    if (const auto d = account_type_check(s, {{symbol, -contracts}}, {{contract.underlying, delivered(contract, contracts)}}); !d.ok())
+      return CommandResult{d, {}, 0};
     const auto price = stock_price(s, contract.underlying);
     if (!price) return CommandResult{failure(Reason::STALE_QUOTE, "Exercise needs a fresh price for " + contract.underlying), {}, 0};
     const Money strike = Money::from_double(contract.strike);
@@ -4783,6 +4832,7 @@ CommandResult TradingSession::instruct_exercise(const std::string& symbol, bool 
 CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time) {
   if (signed_shares == 0) throw TradingError(Reason::INVALID_ORDER, "Trade a nonzero number of shares");
   return impl_->transact(time, "stock_trade", [&](State& s, Events& events) {
+    if (const auto d = account_type_check(s, {}, {{symbol, signed_shares}}); !d.ok()) return CommandResult{d, {}, 0};
     const auto shares = shares_held(s, symbol);
     const bool reduces = shares != 0 && (shares > 0) != (signed_shares > 0) &&
                          (shares > 0 ? -signed_shares <= shares : signed_shares <= -shares);

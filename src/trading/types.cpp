@@ -24,7 +24,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(SOFT_FLOOR); CASE(TRADE_LIMIT); CASE(COOLDOWN); CASE(PROFIT_LOCK);
     CASE(RUN_ENDED); CASE(INVALID_GROUP); CASE(GTD_END);
     CASE(PROFIT_TARGET); CASE(DRAWDOWN_FLOOR); CASE(DAILY_LOSS_LIMIT); CASE(MIN_TRADING_DAYS);
-    CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY);
+    CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY); CASE(ACCOUNT_TYPE);
   }
 #undef CASE
   return "UNKNOWN";
@@ -132,11 +132,15 @@ void validate_rules(const AccountRules& r) {
       r.slippage_ticks < 0 || r.slippage_ticks > 10 ||
       r.fill_latency_ms < 0 || r.fill_latency_ms > 60'000 || r.impact_ticks < 0 || r.impact_ticks > 10 ||
       (r.margin != MarginMode::Strategy && r.margin != MarginMode::Portfolio) ||
+      (r.account_type != AccountType::Margin && r.account_type != AccountType::Cash && r.account_type != AccountType::Ira) ||
+      r.house_margin_percent < 0 || r.house_margin_percent > 400 || r.pm_vol_shock < 0 || r.pm_vol_shock > 50 ||
+      (r.account_type != AccountType::Margin && (r.margin != MarginMode::Strategy || !r.buying_power)) ||
       (r.phase == Phase::Funded && (r.profit_target > Money{} || p.qualifying_days < 1)))
     throw TradingError(Reason::INVALID_RULES,
         "Rule amounts must be nonnegative, percentages 0-100, caps positive, the expiry cutoff under one day and the plan name "
         "at most 64 bytes; slippage and impact are 0-10 ticks, fill latency is 0-60000 ms and margin is strategy or portfolio; "
-        "a funded phase has no profit target and at least one qualifying day");
+        "house margin is 0-400%, the portfolio vol shock 0-50 points, and a cash or IRA account uses strategy margin and "
+        "enforces buying power; a funded phase has no profit target and at least one qualifying day");
   if (r.drawdown_mode == DrawdownMode::Static && (r.lock_at_start || r.lock_balance > Money{}))
     throw TradingError(Reason::INVALID_RULES, "A static floor never trails, so it takes no lock");
   if (r.lock_at_start && r.lock_balance > Money{})

@@ -31,10 +31,11 @@ enum class Reason {
   RUN_ENDED, INVALID_GROUP, GTD_END,
   // Plan decisions and objectives: what decided an attempt, what locked its day,
   // and what a pass still waits for.
-  PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY
+  PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
+  ACCOUNT_TYPE
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::CONSISTENCY;
+inline constexpr Reason kLastReason = Reason::ACCOUNT_TYPE;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -457,6 +458,12 @@ enum class BreachAction { Lock, Fail };
 enum class ConsistencyBasis { Total, PositiveDays };
 /// The default trading day ends at 17:00 New York time (md::trading_date).
 inline constexpr std::int64_t kDayEndMinutes = 17 * 60;
+/// What the account may hold. A margin account holds anything its margin
+/// allows. A cash account sells calls only against shares it holds, secures
+/// each short put with its strike in cash and nets no spreads; an IRA (limited
+/// margin) also nets spreads and lets a long call cover a short one. Neither
+/// sells short or uses portfolio margin.
+enum class AccountType { Margin, Cash, Ira };
 
 /// Funded-account withdrawals. A qualifying day ends with at least
 /// `qualifying_profit` of net realised profit; each payout needs
@@ -502,6 +509,12 @@ struct AccountRules {
   std::int64_t fill_latency_ms = 0; ///< Market-time delay before execution, from 0 to 60,000 ms.
   std::int64_t impact_ticks = 0;    ///< Extra adverse ticks per displayed-size block, from 0 to 10.
   MarginMode margin = MarginMode::Strategy;
+  AccountType account_type = AccountType::Margin;  ///< Cash and IRA accounts enforce buying power under strategy margin.
+  /// A broker's house margin, in percent on top of Reg T's naked requirement and
+  /// a short sale's margin (strategy) or of the scan (portfolio), from 0 to 400.
+  std::int64_t house_margin_percent = 0;
+  /// Portfolio margin also scans implied volatility this many points up and down, from 0 to 50.
+  std::int64_t pm_vol_shock = 0;
   bool buying_power = false;  ///< Enforce cash buying power under the selected margin mode.
   Timestamp expiry_cutoff = 0;  ///< Auto-close this long before a contract's last trade; zero disables.
   Phase phase = Phase::Evaluation;

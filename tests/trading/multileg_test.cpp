@@ -184,6 +184,76 @@ TEST(TradingMargin, CombinedStructuresHoldNoMoreThanEachAlone) {
                                     margin(osi("SPXW261023C04990000"), 1)};
   EXPECT_EQ(margin_requirement(book), Money{});
 }
+TEST(TradingMargin, CashAccountsSecurePutsAndPairOnlyWithShares) {
+  const MarginPolicy cash{AccountType::Cash, 0, 0};
+  const MarginPolicy ira{AccountType::Ira, 0, 0};
+  const std::vector<MarginLeg> put{margin(P4900, -1, "500")};
+  const std::vector<MarginLeg> spread{margin(P4900, -1, "500"), margin(P4890, 1)};
+  // A short put alone holds its strike in cash, in a cash account or an IRA.
+  EXPECT_EQ(margin_requirement(put, {}, cash), m("490000"));
+  EXPECT_EQ(margin_requirement(put, {}, ira), m("490000"));
+  const auto secured = margin_breakdown(put, {}, cash);
+  ASSERT_EQ(secured.size(), 1U);
+  ASSERT_EQ(secured[0].parts.size(), 1U);
+  EXPECT_EQ(secured[0].parts[0].kind, MarginPartKind::CashSecured);
+  // An IRA nets a spread to its width; a cash account nets none, so its long is paid and its short secured.
+  EXPECT_EQ(margin_requirement(spread, {}, ira), m("1000"));
+  EXPECT_EQ(margin_requirement(spread, {}, cash), m("490000"));
+  // A condor in an IRA holds its wider wing, as in a margin account.
+  const std::vector<MarginLeg> condor{margin(P4900, -1, "500"), margin(P4890, 1), margin(C5100, -1, "300"), margin(C5110, 1)};
+  EXPECT_EQ(margin_requirement(condor, {}, ira), m("1000"));
+  // Neither pairs a straddle: the put is secured and the call naked.
+  const std::vector<MarginLeg> strangle{margin(P4900, -1, "500"), margin(C5100, -1, "300")};
+  EXPECT_EQ(margin_requirement(strangle, {}, ira), m("490000") + m("300") + naked_requirement(*md::parse_osi(C5100), 5000.0));
+  // Forced delivery can leave short shares, but they never replace a put's cash collateral.
+  const MarginLeg spy_put{*md::parse_osi("SPY261022P00490000"), -1, m("300"), 500.0};
+  for (const auto policy : {cash, ira})
+    EXPECT_EQ(margin_requirement({spy_put}, {{"SPY", -100, m("50000")}}, policy), m("124000"));
+  // Shares still cover calls in a cash account.
+  const MarginLeg covered{*md::parse_osi("SPY261022C00510000"), -1, m("300"), 500.0};
+  EXPECT_EQ(margin_requirement({covered}, {{"SPY", 100, m("50000")}}, cash), Money{});
+}
+TEST(TradingMargin, HouseMarginRaisesNakedAndShortSaleRequirements) {
+  const MarginPolicy house{AccountType::Margin, 25, 0};
+  // 25% on the naked part only: the buy-back value stays as it is.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500")}, {}, house), m("500") + m("90000").prorate(125, 100));
+  // A spread's width is what it can lose, so the house adds nothing.
+  EXPECT_EQ(margin_requirement({margin(P4900, -1, "500"), margin(P4890, 1)}, {}, house), m("1000"));
+  // Short shares: their value plus the half raised by 25%.
+  EXPECT_EQ(margin_requirement({}, {{"SPY", -100, m("50000")}}, house), m("50000") + m("31250"));
+  EXPECT_EQ(margin_requirement({}, {{"SPY", -100, m("50000")}}, {}), m("75000"));
+}
+TEST(TradingMargin, AccountTypesCountTheShortsTheyCannotHold) {
+  const auto call = [](Quantity q) { return MarginLeg{*md::parse_osi("SPY261022C00510000"), q, {}, 500.0}; };
+  const auto later = [](Quantity q) { return MarginLeg{*md::parse_osi("SPY261023C00520000"), q, {}, 500.0}; };
+  EXPECT_EQ(disallowed_shorts({call(-2)}, {}, AccountType::Margin), 0);
+  EXPECT_EQ(disallowed_shorts({call(-2)}, {}, AccountType::Cash), 2);
+  // 150 shares cover one call.
+  EXPECT_EQ(disallowed_shorts({call(-2)}, {{"SPY", 150, {}}}, AccountType::Cash), 1);
+  // A long call covers in an IRA when it lasts as long, never in a cash account.
+  EXPECT_EQ(disallowed_shorts({call(-1), later(1)}, {}, AccountType::Ira), 0);
+  EXPECT_EQ(disallowed_shorts({call(-1), later(1)}, {}, AccountType::Cash), 1);
+  EXPECT_EQ(disallowed_shorts({call(1), later(-1)}, {}, AccountType::Ira), 1);
+  // Short shares count by the started hundred; puts are never disallowed.
+  EXPECT_EQ(disallowed_shorts({margin(P4900, -3)}, {{"SPY", -150, {}}}, AccountType::Ira), 2);
+}
+TEST(TradingMargin, PortfolioVolShockAndHouseMarginRaiseTheScan) {
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto c = *md::parse_osi("SPXW261120C05000000");
+  const auto symbol = c.osi_symbol();
+  const Valuation v{symbol, now, 0.5, 0, 0, 0, 5000, 5000, 1, md::years_between(now, c.expiry_time()), 0.2, true};
+  // A long call's worst loss is the price falling; volatility falling deepens it.
+  const std::vector<MarginLeg> legs{{c, 1, {}, 5000.0}};
+  const auto plain = portfolio_margin_breakdown(legs, {{symbol, v}}, now, md::kNanosPerMinute);
+  const auto shocked = portfolio_margin_breakdown(legs, {{symbol, v}}, now, md::kNanosPerMinute, {}, {}, {AccountType::Margin, 0, 5});
+  ASSERT_TRUE(plain && shocked);
+  EXPECT_EQ((*plain)[0].scan->vol_points, 0);
+  EXPECT_EQ((*shocked)[0].scan->vol_points, -5);
+  EXPECT_GT((*shocked)[0].requirement, (*plain)[0].requirement);
+  const auto house = portfolio_margin_requirement(legs, {{symbol, v}}, now, md::kNanosPerMinute, {}, {}, {AccountType::Margin, 10, 0});
+  ASSERT_TRUE(house);
+  EXPECT_EQ(*house, (*plain)[0].requirement.prorate(110, 100));
+}
 TEST(TradingMargin, TheBreakdownNamesWhatHoldsEachShortAndAddsUp) {
   const auto spy = [](std::string_view compact, Quantity quantity, std::string_view value) {
     return MarginLeg{*md::parse_osi(compact), quantity, m(value), 500.0};
@@ -669,6 +739,136 @@ TEST(TradingDefinedRisk, OpenOrdersCountAsIfTheirSellsFilled) {
   ASSERT_TRUE(s.submit(combo("spread", {leg(P4890, Side::Sell), leg(LATER_4900, Side::Buy)}, 1, "1.00"), f.time).decision.ok());
   const auto sold = s.submit(single("sell a long now", LATER, Side::Sell), f.time);
   EXPECT_TRUE(sold.decision.ok()) << sold.decision.message;
+}
+
+TEST(TradingAccountType, ACashAccountSecuresPutsAndSellsNoNakedCalls) {
+  Chain f;
+  AccountRules rules;
+  rules.account_type = AccountType::Cash;
+  rules.buying_power = true;
+  TradingSession s(config("600000", rules), f.time);
+  f.define(s, {P4900, P4890, C5100, C5110});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}, {C5100, "3.00", "3.20", 0.25},
+              {C5110, "2.00", "2.20", 0.22}});
+  const auto naked = s.submit(single("call", C5100, Side::Sell), f.time).decision;
+  EXPECT_EQ(naked.code, Reason::ACCOUNT_TYPE);
+  EXPECT_NE(naked.message.find("cash account"), std::string::npos) << naked.message;
+  // A call spread's long covers nothing in a cash account.
+  EXPECT_EQ(s.submit(combo("call spread", {leg(C5100, Side::Sell), leg(C5110, Side::Buy)}, 1, {}), f.time).decision.code,
+            Reason::ACCOUNT_TYPE);
+  // A short put holds its strike: one fits in 600,000, a second does not, even as a spread.
+  ASSERT_TRUE(s.submit(single("put", P4900, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("490000"));
+  ASSERT_EQ(s.snapshot()->margin.size(), 1U);
+  EXPECT_EQ(s.snapshot()->margin[0].parts.at(0).kind, MarginPartKind::CashSecured);
+  EXPECT_EQ(s.submit(combo("put spread", {leg(P4900, Side::Sell), leg(P4890, Side::Buy)}, 1, {}), f.time).decision.code,
+            Reason::BUYING_POWER);
+}
+
+TEST(TradingAccountType, AnIraNetsSpreadsButHoldsNoNakedCall) {
+  Chain f;
+  AccountRules rules;
+  rules.account_type = AccountType::Ira;
+  rules.buying_power = true;
+  TradingSession s(config("100000", rules), f.time);
+  f.define(s, {C5100, C5110});
+  f.quote(s, {{C5100, "3.00", "3.20", 0.25}, {C5110, "2.00", "2.20", 0.22}});
+  ASSERT_TRUE(s.submit(combo("call spread", {leg(C5100, Side::Sell), leg(C5110, Side::Buy)}, 1, {}), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, m("1000"));
+  // Selling the long alone would leave the short call naked.
+  EXPECT_EQ(s.submit(single("sell long", C5110, Side::Sell), f.time).decision.code, Reason::ACCOUNT_TYPE);
+  // Closing both together, or the short first, is allowed.
+  ASSERT_TRUE(s.submit(single("buy back", C5100, Side::Buy), f.time).decision.ok());
+  // A working sell of the long keeps a new short from leaning on it.
+  ASSERT_TRUE(s.submit(single("sell long later", C5110, Side::Sell, "2.50"), f.time).decision.ok());
+  const auto refused = s.submit(single("short", C5100, Side::Sell), f.time).decision;
+  EXPECT_EQ(refused.code, Reason::ACCOUNT_TYPE);
+  EXPECT_NE(refused.message.find("open orders"), std::string::npos) << refused.message;
+}
+
+TEST(TradingAccountType, IraBracketExitsReserveTheirLongOnlyOnce) {
+  Chain f;
+  AccountRules rules;
+  rules.account_type = AccountType::Ira;
+  rules.buying_power = true;
+  TradingSession s(config("100000", rules), f.time);
+  f.define(s, {C5100, C5110});
+  f.quote(s, {{C5100, "3.00", "3.20", 0.25}, {C5110, "2.00", "2.20", 0.22}});
+  auto entry = single("bracketed", C5110, Side::Buy);
+  entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("1.00")}, {}},
+                          ExitSpec{{}, m("3.00")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 2U);
+  EXPECT_EQ(s.submit(single("uncovered", C5100, Side::Sell), f.time).decision.code, Reason::ACCOUNT_TYPE);
+  ASSERT_TRUE(s.submit(single("plain", C5110, Side::Buy), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(single("covered", C5100, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.submit(single("extra", C5100, Side::Sell), f.time).decision.code, Reason::ACCOUNT_TYPE);
+  // The target sells only the spare long; the other keeps the short covered.
+  f.quote(s, {{C5110, "3.00", "3.20", 0.22}});
+  EXPECT_EQ(s.snapshot()->positions.size(), 2U);
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+}
+
+TEST(TradingAccountType, HouseAndVolShocksReachSessionBuyingPower) {
+  const auto compare = [](MarginMode mode, std::int64_t house, std::int64_t shock) {
+    Chain f;
+    AccountRules rules;
+    rules.buying_power = true;
+    rules.margin = mode;
+    rules.house_margin_percent = house;
+    rules.pm_vol_shock = shock;
+    TradingSession s(config("1000000", rules), f.time);
+    f.define(s, {C5100});
+    f.quote(s, {{C5100, "3.00", "3.20", 0.25}});
+    EXPECT_TRUE(s.submit(single("short", C5100, Side::Sell), f.time).decision.ok());
+    return s.snapshot()->buying_power.short_requirement;
+  };
+  EXPECT_EQ(compare(MarginMode::Strategy, 25, 0), m("310") + m("90000").prorate(125, 100));
+  const auto plain = compare(MarginMode::Portfolio, 0, 0);
+  EXPECT_GT(compare(MarginMode::Portfolio, 0, 5), plain);
+  EXPECT_EQ(compare(MarginMode::Portfolio, 25, 0), plain.prorate(125, 100));
+}
+
+TEST(TradingAccountType, RulesKeepCashAndIraOnStrategyMarginWithBuyingPower) {
+  AccountRules rules;
+  rules.account_type = AccountType::Cash;
+  EXPECT_THROW(validate_rules(rules), TradingError);  // Buying power is not enforced.
+  rules.buying_power = true;
+  EXPECT_NO_THROW(validate_rules(rules));
+  rules.margin = MarginMode::Portfolio;
+  EXPECT_THROW(validate_rules(rules), TradingError);
+  rules = {};
+  rules.house_margin_percent = 401;
+  EXPECT_THROW(validate_rules(rules), TradingError);
+  rules.house_margin_percent = 400;
+  rules.pm_vol_shock = 51;
+  EXPECT_THROW(validate_rules(rules), TradingError);
+}
+
+TEST(TradingAccountType, AccountSettingsSurviveRecovery) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-account-type-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "ira.jsonl").string();
+  Chain f;
+  AccountRules rules;
+  rules.account_type = AccountType::Ira;
+  rules.buying_power = true;
+  rules.house_margin_percent = 30;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(path);
+    TradingSession s(config("600000", rules), f.time, journal);
+    f.define(s, {C5100});
+    f.quote(s, {{C5100, "3.00", "3.20", 0.25}});
+    EXPECT_EQ(s.submit(single("call", C5100, Side::Sell), f.time).decision.code, Reason::ACCOUNT_TYPE);
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  auto s = TradingSession::recover(FileJournal::read(path, head), FileJournal::resume(path));
+  EXPECT_EQ(s.snapshot_json(), expected);
+  EXPECT_EQ(s.config().rules, rules);
+  std::filesystem::remove_all(directory);
 }
 
 TEST(TradingDefinedRisk, ABracketsExitsSellTheLongOnce) {

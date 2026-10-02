@@ -96,6 +96,63 @@ TEST(TradingDelivery, SharesCoverCallsWrittenAgainstThem) {
             naked_requirement(higher, f.spot));
 }
 
+TEST(TradingDelivery, CashAndIraKeepSharesBehindHeldAndWorkingCalls) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  const auto higher = *md::parse_osi("SPY261022C00520000");
+  const auto put = *md::parse_osi("SPY261022P00520000");
+  for (const auto type : {AccountType::Cash, AccountType::Ira}) {
+    AccountRules rules;
+    rules.account_type = type;
+    rules.buying_power = true;
+    Spy f;
+    TradingSession s(roomy(rules), f.time);
+    for (const auto& c : {call, higher, put}) f.define(s, c);
+    f.quote(s, call, "10.00", "10.20");
+    f.quote(s, higher, "3.00", "3.20");
+    f.quote(s, put, "10.00", "10.20");
+    EXPECT_EQ(s.trade_stock("SPY", -1, f.time).decision.code, Reason::ACCOUNT_TYPE);
+    EXPECT_EQ(s.submit(f.market("naked", higher, 1, Side::Sell), f.time).decision.code, Reason::ACCOUNT_TYPE);
+    ASSERT_TRUE(s.submit(f.market("open", call, 1), f.time).decision.ok());
+    ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+    ASSERT_TRUE(s.submit(f.market("put", put, 1), f.time).decision.ok());
+    ASSERT_TRUE(s.submit(f.market("covered", higher, 1, Side::Sell), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->buying_power.short_requirement, Money{});
+    EXPECT_EQ(s.trade_stock("SPY", -1, f.time).decision.code, Reason::ACCOUNT_TYPE);
+    EXPECT_EQ(s.exercise(put.osi_symbol(), 1, f.time).decision.code, Reason::ACCOUNT_TYPE);
+    ASSERT_TRUE(s.submit(f.market("cover", higher, 1), f.time).decision.ok());
+    auto resting = f.market("resting", higher, 1, Side::Sell);
+    resting.type = OrderType::Limit;
+    resting.tif = TimeInForce::Day;
+    resting.limit_price = m("3.50");
+    const auto order = s.submit(resting, f.time);
+    ASSERT_TRUE(order.decision.ok()) << order.decision.message;
+    EXPECT_EQ(s.trade_stock("SPY", -100, f.time).decision.code, Reason::ACCOUNT_TYPE);
+    EXPECT_EQ(s.exercise(put.osi_symbol(), 1, f.time).decision.code, Reason::ACCOUNT_TYPE);
+    ASSERT_TRUE(s.cancel(*order.order_id, f.time).decision.ok());
+    ASSERT_TRUE(s.trade_stock("SPY", -100, f.time).decision.ok());
+    EXPECT_EQ(s.exercise(put.osi_symbol(), 1, f.time).decision.code, Reason::ACCOUNT_TYPE);
+  }
+}
+
+TEST(TradingDelivery, IraExerciseReplacesALongCallsCoverWithShares) {
+  const auto call = *md::parse_osi("SPY261022C00500000");
+  const auto higher = *md::parse_osi("SPY261022C00520000");
+  AccountRules rules;
+  rules.account_type = AccountType::Ira;
+  rules.buying_power = true;
+  Spy f;
+  TradingSession s(roomy(rules), f.time);
+  for (const auto& c : {call, higher}) f.define(s, c);
+  f.quote(s, call, "10.00", "10.20");
+  f.quote(s, higher, "3.00", "3.20");
+  ASSERT_TRUE(s.submit(f.market("long", call, 1), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("short", higher, 1, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  ASSERT_NE(stock(s, "SPY"), nullptr);
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, Money{});
+}
+
 TEST(TradingDelivery, SellingSharesThatCoverACallNeedsWhatTheNakedCallHolds) {
   const auto call = *md::parse_osi("SPY261022C00500000");
   const auto deep = *md::parse_osi("SPY261022C00100000");
