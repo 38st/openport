@@ -132,8 +132,14 @@ or removed payments refreshing analytics even without new quotes; see
 `roll_day(time, dividends)` takes those going ex after the last trading date and
 on or before the new one (`dividends_due`, so a server that was down
 across an ex-date still pays it), after the night's assignments: shares held into the
-ex-date receive `per_share * shares` in cash and realised P&L, and short shares pay
-it, once per symbol and date. Each is a `DividendPayment` in
+ex-date receive `per_share * shares`, rounded to the nearest cent (ties away from
+zero) as brokers pay it, in cash and realised P&L, and short shares pay it, once per
+symbol and date. The record moment is that rollover, not the ex-date's midnight:
+17:00 ET the business day before the ex-date on a live feed (or the first batch after
+it), and the ex-date's 09:30 open on the demo feed. Shares held at the rollover are
+paid; shares an exercise delivers after it are not, although OCC's 17:30 exercise
+cutoff would capture them. Analytics, by contrast, treat the ex-date as effective from
+00:00 New York. Each is a `DividendPayment` in
 `TradingSnapshot::dividends`, today's P&L by Greek counts it as other, and the share
 round trip holding the shares adds it to its net. The payment keeps the number of
 stock fills before it (`after_stock_fill`), so the round trip takes it even when the
@@ -234,7 +240,10 @@ the displayed far side is no worse than its limit, including equality: buys fill
 Bracket exits, liquidation and expiry auto-close use the same slippage. Exercise,
 settlement and share trades keep their existing prices. Without impact, market orders
 never sweep undisplayed depth.
-Unfilled DAY and GTC limits rest; unfilled IOC quantity cancels with `IOC_REMAINDER`.
+Unfilled DAY and GTC limits rest; unfilled IOC quantity cancels with `IOC_REMAINDER`,
+whose message says why nothing more filled: a limit that did not reach the executable
+price (named, after slippage when it applies), no fresh two-sided quote, or used-up
+displayed (or, with latency, eligible) liquidity.
 `filled_quantity` remains separate from terminal state: cancelled orders may have
 fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
 
@@ -1331,7 +1340,12 @@ the order now would cost the account's buying power. Market orders reserve
 what they would trade at now: the slipped far side, through the impact blocks a fill
 would walk when the account uses impact; the displayed far side, slipped, when only
 that side is quoted; and a buy with no ask at all, its last mark. Limit orders reserve
-at their limits. Fees are unchanged.
+at their limits, except a marketable buy limit on an account without fill latency, which
+reserves what it would pay now, as a market buy does, when that is less: a protective
+limit above the ask holds the ask, not its limit (a fill that later costs more is
+rechecked as every fill is). An armed buy stop without a limit reserves at least its
+trigger level, which is the least it can pay once the ask reaches it, rather than
+today's ask. Fees are unchanged.
 
 An order or a fill that would reduce free buying power (cash less the positions'
 requirement) must leave available buying power nonnegative, otherwise `BUYING_POWER`
@@ -1940,7 +1954,13 @@ commands in ingress order. HTTP threads enqueue
 and return; completions are posted onto the requesting Beast session executor.
 A full inbox or stopping engine returns 503 `TRADING_UNAVAILABLE` with
 `Retry-After: 1`: the inbox drains as the engine applies commands, and an order sent
-again with the same client ID and terms is answered once.
+again with the same client ID and terms is answered once. A command's cost grows with
+the account's open orders, since every check counts what each working order reserves
+and could add: working orders on one contract share their margin and valuation
+lookups, so a ladder of hundreds of resting bids costs a few milliseconds a command
+(`BM_TradingSubmitWorking` in `bench/bench_trading.cpp` measures it). A script that
+keeps many orders working should send them at a pace the inbox can drain, and retry
+503s after `Retry-After` with the same client IDs.
 
 Every referenced listed contract is registered before its first quote batch. Held
 positions, open orders and pending-command symbols receive quotes from ChainBook
@@ -2120,7 +2140,7 @@ focus at the top of the ticket.
 | `POST /api/positions/abandon` | Canonical `symbol` of a long nobody bids for, or one awaiting settlement, to give up at zero without a fee ([disposal](#disposing-of-worthless-positions)); returns the portfolio |
 | `POST /api/positions/instruction` | Canonical `symbol` of a long option and boolean `do_not_exercise`: true makes it expire worthless at settlement, false withdraws that; returns the portfolio, whose positions carry `do_not_exercise` and `no_bid` |
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
-| `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
+| `GET /api/portfolio` | `time`: the market time the publication is as of, the feed's latest even while the account is idle (as in `GET /api/risk` and `GET /api/account`). Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, each leg's quote `liquidity`, and `warnings` about stops, targets and triggers already reached, a stop given only a limit price, or slippage that pushes a market order outside the band |

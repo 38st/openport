@@ -34,9 +34,10 @@ struct RiskSnapshot {
 [[nodiscard]] Timestamp observation_time(const md::OptionContract& contract, Timestamp now);
 
 /// Shares count at their dollar delta, at `stock_prices` (fresh prices by
-/// underlying); a holding without one leaves the result incomplete.
+/// underlying); a holding without one leaves the result incomplete. `orders` are
+/// the pending orders, by pointer so that a book of many need not be copied.
 [[nodiscard]] RiskSnapshot portfolio_risk(
-    const Ledger& ledger, const std::vector<Order>& orders, const Contracts& contracts,
+    const Ledger& ledger, const std::vector<const Order*>& orders, const Contracts& contracts,
     const Valuations& valuations, const Limits& limits, Timestamp now,
     const std::map<std::string, double>& stock_prices = {});
 [[nodiscard]] Decision check_exposure(const RiskSnapshot& risk);

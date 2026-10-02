@@ -90,6 +90,27 @@ TEST(TradingDividends, SharesHeldIntoTheExDateReceiveItAndItJoinsTheirRoundTrip)
   EXPECT_EQ(trips[0].gross, m("-180"));  // bought at 520, sold at 519.10
 }
 
+TEST(TradingDividends, APaymentIsWholeCents) {
+  Held f;
+  TradingSession s(roomy(), f.time);
+  ASSERT_TRUE(s.define(f.call, f.time).decision.ok());
+  f.quote(s, 520);
+  ASSERT_TRUE(s.submit({"calls", f.call.osi_symbol(), Side::Buy, OrderType::Market, TimeInForce::Ioc, 2, {}, {}, {}, {}}, f.time).decision.ok());
+  ASSERT_TRUE(s.exercise(f.call.osi_symbol(), 2, f.time).decision.ok());  // 200 SPY
+  ASSERT_TRUE(s.trade_stock("SPY", -137, f.time).decision.ok());          // 63 left
+  const auto cash = s.snapshot()->account.cash;
+  f.time = md::new_york_to_utc({2026, 12, 17}, 16, 0);
+  f.quote(s, 521);
+  const auto night = md::new_york_to_utc({2026, 12, 17}, 18, 0);
+  s.on_quotes({}, {}, night);
+  // 0.123457 x 63 = 7.777791 is paid as 7.78.
+  ASSERT_TRUE(s.roll_day(night, {{"SPY", {2026, 12, 18}, m("0.123457")}}).decision.ok());
+  const auto snap = s.snapshot();
+  ASSERT_EQ(snap->dividends.size(), 1U);
+  EXPECT_EQ(snap->dividends[0].amount, m("7.78"));
+  EXPECT_EQ(snap->account.cash, cash + m("7.78"));
+}
+
 TEST(TradingDividends, SharesSoldAtTheRolloversOwnMarketTimeKeepItInTheirRoundTrip) {
   // B42: the round trip took the dividend only after the fills before its time, so a
   // sale at the rollover's own market time closed the trip first and lost it.
