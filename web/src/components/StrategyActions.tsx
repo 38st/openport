@@ -194,9 +194,7 @@ export function SpreadExitsDialog({ group, trading, onClose }: { group: Strategy
       {confirmCancel ? <div className="space-y-2">
         <p className="text-sm text-warn">Cancel {active.length} exits? The position stays open without their protection.</p>
         <button className="trade-button mr-2" disabled={write.pending} onClick={() => setConfirmCancel(false)}>Keep exits</button>
-        <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => void write.run(async () => {
-        for (const order of active) await api.cancelOrder(order.id, trading.write)
-        }, onClose)}>{write.pending ? "Cancelling…" : "Confirm cancel exits"}</button>
+        <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => void write.run(() => api.cancelOrders(active.map((order) => order.id), trading.write), onClose)}>{write.pending ? "Cancelling…" : "Confirm cancel exits"}</button>
       </div> : <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => setConfirmCancel(true)}>Cancel exits</button>}
     </> : <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); void submit() }}>
       <fieldset disabled={write.pending}>{exits.fields}</fieldset>

@@ -37,7 +37,7 @@ the caller. All subsequent references use its **canonical padded OSI**, never a
 provider's dense instrument ID. Re-registering identical terms is harmless;
 conflicting terms under one OSI reject.
 
-Reducer commands are `define`, `submit`, `modify`, `cancel`, `cancel_all`,
+Reducer commands are `define`, `submit`, `modify`, `cancel`, `cancel_all`, `cancel_orders`,
 `close_positions`, `on_quotes`, `set_limits`, `trip_kill`, `reset_kill`, `settle`,
 `roll_day`, `reset_account`, `request_payout`, `annotate`, `exercise` and `trade_stock`. Every completed command, including
 a business rejection, increments `account_version`. Business failures return a
@@ -510,7 +510,7 @@ date, and in the **curb** session, 16:15 to 17:00 ET after a full day (see
 [runtime notes](runtime.md#product-sessions-and-cboe-clocks)). As on Cboe, the overnight and curb
 sessions accept limit executions only. Plain DAY/IOC limits trade there; DAY ends with
 the session it entered (`DAY_END`). Legacy DAY/GTC triggers and bracket exits still
-wait for regular hours. GTC limits and held-spread exits may be accepted between
+wait for regular hours. GTC limits and held exits may be accepted between
 sessions with fresh data, but do not trade outside regular hours.
 
 **EXTO** trades all product sessions of its trading date, ending at the last session
@@ -707,6 +707,20 @@ exits never count against buy-only sells, so a manual close is always possible. 
 stop sells do count, but a manual close supersedes them on a buy-only plan (see
 `buy_only` under plan rules).
 
+A contract already held, opened without a bracket, takes the same pair: submit the
+order that closes it (`symbol` and the closing side, `quantity` at most the holding
+less what other working closing orders claim) with `exits_only: true` and a `bracket`.
+No entry fill is generated. The order itself is the take-profit, or the stop when
+there is no target, and its terms must match that exit: a GTC limit at the target (or
+at a stop-limit's price, with its trigger), or a market IOC with the stop's trigger.
+The exits are those a bracket creates (`oco`, `stop_loss_order` and
+`take_profit_order` name them, client IDs `:stop` for the second), linked and
+re-armed alike, and they count once in exposure and buying power. They take an
+exit's checks, not an entry's, so they are accepted under the kill switch and in
+any session, waiting outside the regular one. Positions' **Exits…** dialog sets,
+changes and cancels them; `POST /api/orders/cancel` with `orders` cancels both in
+one transaction.
+
 ## Multi-leg orders
 
 An order with **legs** trades two to four contracts together: each leg names a
@@ -861,7 +875,9 @@ matching reads them, never journaled):
 An order with nothing visible holding it back has no entry.
 
 `cancel_all` cancels every open order, armed ones and bracket exits included, or
-only one underlying's. `close_positions` flattens the account or one underlying and
+only one underlying's. `cancel_orders` cancels the listed orders still open in one
+transaction, such as both exits of a pair, so neither is left working alone.
+`close_positions` flattens the account or one underlying and
 works until it is flat. It cancels the open orders in scope but the bracket exits,
 then closes each unexpired position in scope with market orders under the account's
 fill model:
@@ -2753,13 +2769,13 @@ focus at the top of the ticket.
 | `POST /api/stocks/close` | `symbol` of shares held (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | `time`: the market time the publication is as of, the feed's latest even while the account is idle (as in `GET /api/risk` and `GET /api/account`). Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, opened or delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`/`exto`/`gtc_exto`/`gtd`), `good_till` timestamp required only for GTD, optional `tags`, `note` and `walk` (see [walking limits](#walking-limits-f46)), optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`/`exto`/`gtc_exto`/`gtd`), `good_till` timestamp required only for GTD, optional `tags`, `note` and `walk` (see [walking limits](#walking-limits-f46)), optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to a held contract (with `symbol` and the closing `side`) or to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, each leg's quote `liquidity`, and `warnings` about stops, targets and triggers already reached, a stop given only a limit price, or slippage that pushes a market order outside the band |
 | `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`, DAY/GTC `time_in_force`, and optional `walk` (null removes it); 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
-| `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
+| `POST /api/orders/cancel` | Optional `underlying`, or `orders` (one to sixteen distinct order IDs, not with `underlying`); cancels every open order, that underlying's, or those listed that are still open, together in one transaction, and returns version and `cancelled_orders`. An unknown listed ID is 404 `UNKNOWN_ORDER` and a list with none open 409 `ORDER_TERMINAL`; neither cancels anything |
 | `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope but the bracket exits and closes its positions at market with reduce-only orders that keep working until filled, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason), and each position still open (`residuals`: symbol, underlying, signed `quantity`, the contracts still `working` and the `reason` the rest are not, or null). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
 | `POST /api/positions/close/preview` | Optional `underlying`; the flatten's dry run on a private copy: `decision` and `reason`, `cancelled_orders`, the closing `orders` without IDs and their `fills`, `stock_fills`, `kept_stocks`, `remaining` and `remaining_shares` in scope, and the account `current` and `after`; `simulated: true`, nothing recorded ([flattening](#changing-cancelling-and-flattening)) |
 | `GET /api/fills` | Version and fills, newest first, with pre-execution `context` and the `quote` each took: `observation`, `bid`, `ask`, `bid_size`, `ask_size`, `size_left` (displayed size still free for paper orders before the fill), `quoted_at` (when the quote was first given) and `age_seconds` (both null on older fills) |

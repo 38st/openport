@@ -10,6 +10,7 @@ import { LimitsEditor } from "../components/LimitsEditor"
 import { MarginBreakdown } from "../components/MarginBreakdown"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
+import { PositionExitsDialog } from "../components/PositionExits"
 import { AbandonDialog, CloseSharesDialog, ExerciseDialog, ExerciseInstructionDialog, SettleDialog, SharesTable, TradeSharesDialog } from "../components/StockActions"
 import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
@@ -84,8 +85,10 @@ export function RealizedCell({ realised, fees, lifetime }: { realised: string; f
     {lifetime && lifetime.round_trips > 1 && <div className="mt-1 text-[11px] text-muted">lifetime {signedMoney(lifetime.net)}</div>}
   </td>
 }
-function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInstruct, orders = [], selected, onSelect, groups = [] }: {
+function Positions({ positions, onClose, onExits, onExercise, onSettle, onAbandon, onInstruct, orders = [], selected, onSelect, groups = [] }: {
   positions: Position[]; onClose?: (position: Position) => void; onExercise?: (position: Position) => void
+  /** Set, change or cancel a held contract's stop-loss and take-profit. */
+  onExits?: (position: Position) => void
   onSettle?: (position: Position) => void; orders?: Order[]
   /** Give up a long nobody bids for; instruct or withdraw do-not-exercise on a long option. */
   onAbandon?: (position: Position) => void; onInstruct?: (position: Position) => void
@@ -137,6 +140,7 @@ function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInst
           {onAbandon && position.quantity > 0 && position.no_bid &&
             <button type="button" className="trade-button" aria-label={`Abandon ${position.symbol}`} onClick={() => onAbandon(position)}>Abandon</button>}
           {onClose && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Close ${position.symbol}`} onClick={() => onClose(position)}>Close</button>}
+          {onExits && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Exits for ${position.symbol}`} onClick={() => onExits(position)}>Exits…</button>}
           {onSettle && position.awaiting_settlement && (position.settle_by === "manual" || position.settle_by === "opening_print") &&
             <button type="button" className="trade-button" aria-label={`Settle ${position.symbol}`} onClick={() => onSettle(position)}>Settle</button>}
         </div></td>
@@ -198,6 +202,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const allOrders = useAllOrders().data?.orders
   const [editing, setEditing] = useState<Risk | null>(null)
   const [closing, setClosing] = useState<Position | null>(null)
+  const [exiting, setExiting] = useState<Position | null>(null)
   const [exercising, setExercising] = useState<Position | null>(null)
   const [settling, setSettling] = useState<Position | null>(null)
   const [abandoning, setAbandoning] = useState<Position | null>(null)
@@ -249,6 +254,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <button type="button" className="trade-button" onClick={() => setFlatten({ underlying: null })}>Close all</button>
       </> : undefined}>
         <Positions positions={data.positions} orders={allOrders} groups={groups} onClose={trading.enabled ? setClosing : undefined}
+          onExits={trading.enabled ? setExiting : undefined}
           onExercise={trading.enabled ? setExercising : undefined}
           onSettle={trading.enabled ? setSettling : undefined}
           onAbandon={trading.enabled ? setAbandoning : undefined}
@@ -285,6 +291,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
     <Panel title="Kill switch"><KillSwitch kill={risk.data?.kill ?? { latched: trading.kill_latched, reason: null }} trading={trading} /></Panel>
     {editing && <LimitsEditor initial={editing} trading={trading} onClose={() => setEditing(null)} />}
     {closing && <CloseTicket position={closing} trading={trading} onClose={() => setClosing(null)} />}
+    {exiting && <PositionExitsDialog position={exiting} trading={trading} onClose={() => setExiting(null)} />}
     {exercising && <ExerciseDialog position={exercising} trading={trading} onClose={() => setExercising(null)} />}
     {settling && <SettleDialog position={settling} trading={trading} onClose={() => setSettling(null)} />}
     {abandoning && <AbandonDialog position={abandoning} trading={trading} onClose={() => setAbandoning(null)} />}

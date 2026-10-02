@@ -423,6 +423,10 @@ class TradingSession {
   CommandResult modify(OrderId id, OrderChange change, Timestamp time, Decision rejection = {});
   /// Cancel every open order, or every open order on one underlying.
   CommandResult cancel_all(std::optional<std::string> underlying, Timestamp time);
+  /// Cancel the listed orders together, such as both exits of a pair: those still
+  /// open are cancelled in one transaction. An unknown ID changes nothing
+  /// (UNKNOWN_ORDER), nor does a list with none still open (ORDER_TERMINAL).
+  CommandResult cancel_orders(const std::vector<OrderId>& ids, Timestamp time);
   /// Flatten the account, or one underlying: cancel the open orders in scope but
   /// the bracket exits, then close each unexpired position in scope with
   /// reduce-only market DAY orders under the account's fill model. Limit pricing

@@ -229,6 +229,10 @@ class Client:
     def cancel_all(self, underlying: str | None = None) -> CancelAllResult:
         return self._request("POST", "/orders/cancel", {"underlying": underlying} if underlying else {}, scoped=True)
 
+    def cancel_orders(self, order_ids: list[str]) -> CancelAllResult:
+        """Cancel the listed orders together in one transaction, such as both exits of a pair."""
+        return self._request("POST", "/orders/cancel", {"orders": [str(i) for i in order_ids]}, scoped=True)
+
     @staticmethod
     def _flatten_body(underlying, type, limit_ticks):
         if type not in ("market", "limit"):

@@ -223,6 +223,8 @@ struct TradingCommand {
   trading::Money amount;         ///< Payout: the withdrawal.
   trading::OrderChange change;   ///< Modify: the order's new terms.
   std::string underlying;        ///< CancelAll, ClosePositions and PreviewClose: one underlying, or empty for all.
+  /// CancelAll: the orders to cancel together instead of an underlying's or all.
+  std::vector<trading::OrderId> order_ids;
   std::string account;           ///< The account it acts on; empty for the main account.
   std::string name;              ///< CreateAccount: the new account's display name.
   std::optional<bool> archived;   ///< UpdateAccount: freeze or resume the account.

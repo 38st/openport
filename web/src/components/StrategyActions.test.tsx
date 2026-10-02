@@ -116,6 +116,7 @@ it("changes a signed combo stop and cancels the held OCO exits", async () => {
   vi.mocked(api.orders).mockResolvedValue({ account_version: "17", orders: [stop, target] })
   vi.spyOn(api, "modifyOrder").mockResolvedValue({ account_version: "18", order: stop, fills: [] })
   vi.spyOn(api, "cancelOrder").mockResolvedValue({ account_version: "19", order: stop })
+  vi.spyOn(api, "cancelOrders").mockResolvedValue({ account_version: "19", cancelled_orders: ["6", "7"] })
   await render(<SpreadExitsDialog group={spread} trading={trading} onClose={() => {}} />)
   await waitForRender(() => expect(host.textContent).toContain("Cancel exits"))
   await click("Change")
@@ -129,8 +130,9 @@ it("changes a signed combo stop and cancels the held OCO exits", async () => {
   expect(api.cancelOrder).not.toHaveBeenCalled()
   await click("Cancel exits")
   await click("Confirm cancel exits")
-  expect(api.cancelOrder).toHaveBeenCalledWith("6", trading.write)
-  expect(api.cancelOrder).toHaveBeenCalledWith("7", trading.write)
+  // Both exits cancel in one call, so neither is left alone in between.
+  expect(api.cancelOrders).toHaveBeenCalledWith(["6", "7"], trading.write)
+  expect(api.cancelOrder).not.toHaveBeenCalled()
 }, renderTimeout)
 
 it("rolls the call side of a condor with new strikes as one four-leg order", async () => {

@@ -489,6 +489,117 @@ TEST(TradingConditional, ArmedOrdersAndExitsReportTheLastTradeOrAutoCloseAsTheir
   }
 }
 
+/// A held contract's exits: a sell (or buy) that closes it, carrying the bracket,
+/// whose own terms are the take-profit's, or the stop's when there is no target.
+OrderRequest held_exits(const ScriptedMarket& f, std::string client, Quantity quantity, std::optional<ExitSpec> stop,
+                        std::optional<ExitSpec> target, Side side = Side::Sell) {
+  const auto& primary = target ? *target : *stop;
+  auto request = primary.limit_price ? f.limit(std::move(client), quantity, primary.limit_price->str(), side, TimeInForce::Gtc)
+                                     : f.market(std::move(client), quantity, side);
+  request.trigger = primary.trigger;
+  request.exits_only = true;
+  return with_bracket(std::move(request), std::move(stop), std::move(target));
+}
+
+TEST(TradingConditional, AHeldContractTakesAStopAndTargetThatCancelEachOther) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("entry", 2, "4.20"), f.time).decision.ok());
+  const auto placed = s.submit(held_exits(f, "exits", 2, stop_at("3.50"), target_at("5.00")), f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  EXPECT_TRUE(s.submit(held_exits(f, "exits", 2, stop_at("3.50"), target_at("5.00")), f.time).replayed);
+  const auto& target = order(s, *placed.order_id);
+  EXPECT_EQ(target.role, OrderRole::TakeProfit);
+  EXPECT_EQ(target.status, OrderStatus::Working);
+  EXPECT_EQ(target.filled_quantity, 0);
+  EXPECT_EQ(target.day_end, f.contract.expiry_time());
+  const auto& stop = order(s, target.oco);
+  EXPECT_EQ(stop.role, OrderRole::StopLoss);
+  EXPECT_EQ(stop.status, OrderStatus::Armed);
+  EXPECT_EQ(stop.request.client_order_id, "exits:stop");
+  EXPECT_EQ(stop.request.type, OrderType::Market);
+  EXPECT_EQ(stop.oco, target.id);
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 1U);  // no entry of their own
+  // They count once and hold only their fees, like a bracket's exits.
+  EXPECT_EQ(s.snapshot()->buying_power.reserved, m("1.30"));
+  quote(s, f, "3.50", "3.70");
+  EXPECT_EQ(order(s, target.oco).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, target.id).reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingConditional, HeldContractExitsMustCloseItAndMatchTheirPrimaryExit) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  EXPECT_EQ(s.submit(held_exits(f, "nothing-held", 1, stop_at("3.50"), target_at("5.00")), f.time).decision.code,
+            Reason::INVALID_ORDER);
+  ASSERT_TRUE(s.submit(f.limit("entry", 2, "4.20"), f.time).decision.ok());
+  EXPECT_EQ(s.submit(held_exits(f, "oversize", 3, stop_at("3.50"), target_at("5.00")), f.time).decision.code, Reason::INVALID_ORDER);
+  EXPECT_EQ(s.submit(held_exits(f, "adds", 2, stop_at("3.50"), target_at("5.00"), Side::Buy), f.time).decision.code,
+            Reason::INVALID_ORDER);
+  auto mismatch = held_exits(f, "mismatch", 2, stop_at("3.50"), target_at("5.00"));
+  mismatch.limit_price = m("5.10");
+  EXPECT_EQ(s.submit(mismatch, f.time).decision.code, Reason::INVALID_ORDER);
+  auto day = held_exits(f, "day", 2, stop_at("3.50"), target_at("5.00"));
+  day.tif = TimeInForce::Day;
+  EXPECT_EQ(s.submit(day, f.time).decision.code, Reason::INVALID_ORDER);
+  auto bare = held_exits(f, "bare", 2, stop_at("3.50"), target_at("5.00"));
+  bare.bracket.reset();
+  EXPECT_EQ(s.submit(bare, f.time).decision.code, Reason::INVALID_ORDER);
+  // A working manual close holds one of the two contracts.
+  ASSERT_TRUE(s.submit(f.limit("close-one", 1, "4.50", Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.submit(held_exits(f, "beside-close", 2, stop_at("3.50"), target_at("5.00")), f.time).decision.code,
+            Reason::INVALID_ORDER);
+  // A stop alone is the triggered market IOC itself, and is accepted under the kill latch.
+  ASSERT_TRUE(s.trip_kill("reduce only", f.time).decision.ok());
+  const auto stop = s.submit(held_exits(f, "stop-only", 1, stop_at("3.50"), {}), f.time);
+  ASSERT_TRUE(stop.decision.ok()) << stop.decision.message;
+  EXPECT_EQ(order(s, *stop.order_id).role, OrderRole::StopLoss);
+  EXPECT_EQ(order(s, *stop.order_id).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, *stop.order_id).oco, 0U);
+}
+
+TEST(TradingConditional, HeldContractExitsAreAcceptedAfterTheCloseAndWaitForTheRegularSession) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("entry", 1, "4.20"), f.time).decision.ok());
+  f.time = md::new_york_to_utc({2026, 9, 22}, 16, 30);  // the curb session
+  ++f.observation;
+  s.on_quotes({f.quote("3.00", "3.20")}, {f.valuation()}, f.time);
+  // A stop-limit as the only exit: its own terms are the GTC limit with the trigger.
+  const auto placed = s.submit(held_exits(f, "late", 1, ExitSpec{stop_at("3.50").trigger, m("3.30")}, {}), f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  EXPECT_EQ(order(s, *placed.order_id).status, OrderStatus::Armed);
+  f.time = md::new_york_to_utc({2026, 9, 23}, 9, 31);
+  ++f.observation;
+  s.on_quotes({f.quote("3.40", "3.60")}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(s, *placed.order_id).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("3.40"));
+}
+
+TEST(TradingConditional, CancellingAPairTakesBothExitsInOneTransaction) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("entry", 2, "4.20"), f.time).decision.ok());
+  const auto target = *s.submit(held_exits(f, "exits", 2, stop_at("3.50"), target_at("5.00")), f.time).order_id;
+  const auto stop = order(s, target).oco;
+  const auto version = s.snapshot()->account_version;
+  EXPECT_EQ(s.cancel_orders({target, 99}, f.time).decision.code, Reason::UNKNOWN_ORDER);
+  EXPECT_EQ(order(s, target).status, OrderStatus::Working);
+  ASSERT_TRUE(s.cancel_orders({target, stop}, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->account_version, version + 2);  // the refused list, then both cancels together
+  for (const auto id : {target, stop}) {
+    EXPECT_EQ(order(s, id).status, OrderStatus::Cancelled);
+    EXPECT_EQ(order(s, id).reason.code, Reason::USER_CANCEL);
+  }
+  EXPECT_EQ(s.cancel_orders({target, stop}, f.time).decision.code, Reason::ORDER_TERMINAL);
+  EXPECT_EQ(s.snapshot()->positions.size(), 1U);
+}
+
 TEST(TradingConditional, TriggersWaitForTheRegularSessionAndSurviveRecovery) {
   const auto directory = std::filesystem::temp_directory_path() / ("openport-conditional-" + std::to_string(::getpid()));
   std::filesystem::remove_all(directory);

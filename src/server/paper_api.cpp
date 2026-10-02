@@ -1812,6 +1812,21 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (path == "/api/orders/cancel") {
     command.kind = TradingCommand::Kind::CancelAll;
+    // Named orders, such as both exits of a pair, cancel together in one transaction.
+    if (body.is_object() && body.contains("orders")) {
+      fields(body, {"orders"});
+      const auto& list = body.at("orders");
+      if (!list.is_array() || list.empty() || list.size() > 16)
+        throw std::invalid_argument("orders must be an array of one to sixteen order IDs");
+      for (const auto& item : list) {
+        if (!item.is_string()) throw std::invalid_argument("orders must be order ID strings");
+        const auto id = identifier(item.get<std::string>());
+        if (std::find(command.order_ids.begin(), command.order_ids.end(), id) != command.order_ids.end())
+          throw std::invalid_argument("orders must not repeat an order ID");
+        command.order_ids.push_back(id);
+      }
+      return command;
+    }
     command.underlying = scope_field(body);
     return command;
   }
@@ -1879,7 +1894,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
     if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till", "walk"});
-    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group", "good_till", "walk"});
+    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till", "walk"});
     // A body no market could make a valid order is malformed: 400, and nothing is
     // recorded, so its client_order_id stays free. The reducer's own checks (422,
     // recorded) are those that depend on the account and the market.
