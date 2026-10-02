@@ -600,6 +600,128 @@ TEST(TradingConditional, CancellingAPairTakesBothExitsInOneTransaction) {
   EXPECT_EQ(s.snapshot()->positions.size(), 1U);
 }
 
+/// A trailing stop on an option, reading `reference`.
+ExitSpec trailing(TriggerDirection direction, std::string_view level, TrailUnit unit, std::string_view value,
+                  TriggerReference reference = TriggerReference::BidAsk, std::optional<std::string_view> limit = {}) {
+  Trigger t{.source = TriggerSource::Option, .direction = direction, .level = m(level), .reference = reference, .trail = Trail{unit, m(value)}};
+  return {t, limit ? std::optional(m(*limit)) : std::nullopt};
+}
+
+TEST(TradingConditional, ATrailingStopFollowsTheBidByAnAmountAndNeverMovesBack) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("entry", 1, "4.20"), f.time).decision.ok());
+  // Its level starts loose; the bid of 4.00 at once lifts it to 3.50.
+  const auto placed = s.submit(held_exits(f, "trail", 1, trailing(TriggerDirection::AtOrBelow, "1.00", TrailUnit::Amount, "0.50"), {}), f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  const auto id = *placed.order_id;
+  EXPECT_EQ(order(s, id).request.trigger->level, m("3.50"));
+  EXPECT_TRUE(s.submit(held_exits(f, "trail", 1, trailing(TriggerDirection::AtOrBelow, "1.00", TrailUnit::Amount, "0.50"), {}), f.time).replayed);
+  quote(s, f, "4.60", "4.80");
+  EXPECT_EQ(order(s, id).request.trigger->level, m("4.10"));
+  quote(s, f, "4.30", "4.50");
+  EXPECT_EQ(order(s, id).request.trigger->level, m("4.10"));
+  EXPECT_EQ(order(s, id).status, OrderStatus::Armed);
+  quote(s, f, "4.10", "4.30");
+  EXPECT_EQ(order(s, id).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("4.10"));
+}
+
+TEST(TradingConditional, ATrailingStopLimitOnTheMidMovesItsLimitOnTheTick) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("entry", 1, "4.20"), f.time).decision.ok());
+  const auto stop = trailing(TriggerDirection::AtOrBelow, "3.00", TrailUnit::Percent, "10", TriggerReference::Mid, "2.90");
+  const auto placed = s.submit(held_exits(f, "trail", 1, stop, {}), f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  const auto id = *placed.order_id;
+  // Mid 4.10 less 10% is 3.69; the limit moves as far on the 0.10 tick, 0.60, and so does the level.
+  EXPECT_EQ(order(s, id).request.trigger->level, m("3.60"));
+  EXPECT_EQ(order(s, id).request.limit_price, m("3.50"));
+  quote(s, f, "5.00", "5.20");
+  EXPECT_EQ(order(s, id).request.trigger->level, m("4.50"));
+  EXPECT_EQ(order(s, id).request.limit_price, m("4.40"));
+  quote(s, f, "4.40", "4.60");  // mid 4.50 reaches it, and the limit sells at the bid
+  EXPECT_EQ(order(s, id).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("4.40"));
+}
+
+TEST(TradingConditional, ATrailingBuyStopFollowsTheAskDownByTicks) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("short", 1, "4.00", Side::Sell), f.time).decision.ok());
+  const auto placed = s.submit(held_exits(f, "trail", 1, trailing(TriggerDirection::AtOrAbove, "9.00", TrailUnit::Ticks, "3"), {},
+                                          Side::Buy), f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  const auto id = *placed.order_id;
+  EXPECT_EQ(order(s, id).request.trigger->level, m("4.50"));  // ask 4.20 plus three 0.10 ticks
+  quote(s, f, "3.00", "3.20");
+  EXPECT_EQ(order(s, id).request.trigger->level, m("3.50"));
+  quote(s, f, "2.60", "2.80");  // below 3.00 the tick is 0.05
+  EXPECT_EQ(order(s, id).request.trigger->level, m("2.95"));
+  quote(s, f, "2.80", "2.95");
+  EXPECT_EQ(order(s, id).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("2.95"));
+}
+
+TEST(TradingConditional, TrailsAndReferencesMustFitTheirTrigger) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.limit("entry", 1, "4.20"), f.time).decision.ok());
+  const auto rejects = [&](std::string client, Trigger t) {
+    auto request = f.market(std::move(client), 1, Side::Sell);
+    request.trigger = t;
+    return s.submit(request, f.time).decision.code == Reason::INVALID_ORDER;
+  };
+  const auto spot = [](TriggerReference reference, std::optional<Trail> trail) {
+    return Trigger{.source = TriggerSource::Underlying, .direction = TriggerDirection::AtOrBelow, .level = m("4990"), .reference = reference, .trail = trail};
+  };
+  const auto option = [](Trail trail) { return Trigger{.source = TriggerSource::Option, .direction = TriggerDirection::AtOrBelow, .level = m("3.00"), .trail = trail}; };
+  EXPECT_TRUE(rejects("spot-mid", spot(TriggerReference::Mid, {})));
+  EXPECT_TRUE(rejects("spot-ticks", spot(TriggerReference::BidAsk, Trail{TrailUnit::Ticks, m("2")})));
+  EXPECT_TRUE(rejects("whole", option({TrailUnit::Percent, m("100")})));
+  EXPECT_TRUE(rejects("zero", option({TrailUnit::Amount, m("0")})));
+  EXPECT_TRUE(rejects("half-tick", option({TrailUnit::Ticks, m("1.5")})));
+  // An underlying trail in dollars is accepted and follows spot.
+  auto request = f.market("spot-trail", 1, Side::Sell);
+  request.trigger = spot(TriggerReference::BidAsk, Trail{TrailUnit::Amount, m("5")});
+  const auto placed = s.submit(request, f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  EXPECT_EQ(order(s, *placed.order_id).request.trigger->level, m("4995.00"));
+  quote(s, f, "4.00", "4.20", 10, 5012.345);
+  EXPECT_EQ(order(s, *placed.order_id).request.trigger->level, m("5007.34"));
+}
+
+TEST(TradingConditional, ATrailedLevelSurvivesRecovery) {
+  const auto directory = std::filesystem::temp_directory_path() / ("openport-trail-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(directory);
+  std::filesystem::create_directories(directory);
+  const auto path = (directory / "journal.jsonl").string();
+  ScriptedMarket f;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(path);
+    TradingSession s(roomy(), f.time, journal);
+    f.seed(s);
+    s.submit(with_bracket(f.limit("entry", 1, "4.20"), trailing(TriggerDirection::AtOrBelow, "3.00", TrailUnit::Amount, "0.40",
+                                                                  TriggerReference::Mark), target_at("6.00")), f.time);
+    quote(s, f, "4.80", "5.00");
+    EXPECT_EQ(order(s, 2).request.trigger->level, m("4.50"));  // mark 4.90 less 0.40
+    EXPECT_EQ(order(s, 2).request.trigger->reference, TriggerReference::Mark);
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(path, head), FileJournal::resume(path));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  quote(recovered, f, "5.20", "5.40");
+  EXPECT_EQ(order(recovered, 2).request.trigger->level, m("4.90"));
+  std::filesystem::remove_all(directory);
+}
+
 TEST(TradingConditional, TriggersWaitForTheRegularSessionAndSurviveRecovery) {
   const auto directory = std::filesystem::temp_directory_path() / ("openport-conditional-" + std::to_string(::getpid()));
   std::filesystem::remove_all(directory);

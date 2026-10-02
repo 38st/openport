@@ -529,19 +529,29 @@ export interface MarginModel {
 export type ResetRequest = { reason: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export type Side = "buy" | "sell"
 /**
- * Option triggers compare the order's executable side; underlying ones compare spot, or
- * another underlying's price when they name `symbol`; study ones an underlying's iv30
- * or iv7 (vol points) or term_ratio; time ones the New York time of day `at` (level zero).
+ * Option triggers compare the order's executable side, or its mid or mark; underlying ones
+ * compare spot, or another underlying's price when they name `symbol`; study ones an
+ * underlying's iv30 or iv7 (vol points) or term_ratio; time ones the New York time of day
+ * `at` (level zero).
  */
 export interface Trigger {
   source: "option" | "underlying" | "combo" | "study" | "time"
   direction: "at_or_below" | "at_or_above"
+  /** Where it activates; a trailing trigger's moves as it trails. */
   level: Money
   symbol?: string
   study?: TriggerStudy
   at?: string
+  /** Default bid_ask; absent from older servers. */
+  reference?: TriggerReference
+  /** A trailing stop's distance; null or absent when it does not trail. */
+  trail?: Trail | null
 }
 export type TriggerStudy = "iv30" | "iv7" | "term_ratio"
+/** What an option or combo trigger reads: the executable side, the mid or the mark. Underlying triggers read spot. */
+export type TriggerReference = "bid_ask" | "mid" | "mark"
+/** A trailing distance: dollars or a percentage (decimal strings), or whole ticks. */
+export type Trail = { unit: "amount" | "percent"; value: Money } | { unit: "ticks"; value: number }
 /** A time trigger is sent without a level: `{source: "time", at: "15:30"}`. */
 export type TriggerRequest = Trigger | { source: "time"; at: string; direction?: "at_or_below" | "at_or_above" }
 /** A trigger (a stop: market when reached), a limit (a resting take-profit), or both (a stop-limit: a GTC limit once reached). */

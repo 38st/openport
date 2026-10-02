@@ -20,6 +20,7 @@ import { deliversShares, extendedSession, formatMoney, limitOnlyNotice, limitPri
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
+import { useStopTrail } from "./TrailFields"
 import { Segmented } from "./ui"
 import { goodTillTimestamp, TimeInForceField } from "./TimeInForceField"
 
@@ -138,6 +139,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   // A stop-limit: once triggered, a GTC limit at this price instead of a market order.
   const [stopLimitOn, setStopLimitOn] = useState(false)
   const [stopLimit, setStopLimit] = useState("")
+  // What the stop reads, and whether it trails.
+  const stopTrail = useStopTrail(stopSource)
   const [targetOn, setTargetOn] = useState(true)
   const [targetSource, setTargetSource] = useState<"option" | "underlying">("option")
   const [targetLevel, setTargetLevel] = useState("")
@@ -189,9 +192,9 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     : condition === "time" ? (/^([01]\d|2[0-3]):[0-5]\d$/.test(timeAt) ? { source: "time", at: timeAt } : undefined)
     : undefined
   const exitLevel = (value: string) => validMoney(value) && Number(value) > 0
-  const stopValid = exitLevel(stopLevel) && (!stopLimitOn || exitLevel(stopLimit))
+  const stopValid = exitLevel(stopLevel) && (!stopLimitOn || exitLevel(stopLimit)) && stopTrail.valid
   const bracket: Bracket | undefined = protect ? {
-    ...(stopOn && stopValid ? { stop_loss: { trigger: { source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel },
+    ...(stopOn && stopValid ? { stop_loss: { trigger: { source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel, ...stopTrail.terms },
       ...(stopLimitOn ? { limit_price: stopLimit } : {}) } } : {}),
     ...(targetOn && exitLevel(targetLevel) ? { take_profit: targetSource === "option" ? { limit_price: targetLevel }
       : { trigger: { source: "underlying" as const, direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel } } } : {}),
@@ -283,7 +286,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     if (on && !stopLimit) setStopLimit(stopSource === "option" && exitLevel(stopLevel) ? stopLevel : suggest("stop", "option"))
   }
   const exitSide = side === "buy" ? "sell" : "buy"
-  const stopText = describeTrigger({ source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel }, exitSide, selection.underlying)
+  const stopText = describeTrigger({ source: stopSource, direction: stopDirection(stopSource, side, selection.optionType), level: stopLevel, ...stopTrail.terms }, exitSide, selection.underlying)
   const stopHint = !exitLevel(stopLevel) ? "Enter a stop level."
     : !stopLimitOn ? `${side === "buy" ? "Sells" : "Buys"} at market when ${stopText}.`
     : !exitLevel(stopLimit) ? "Enter the stop-limit's price."
@@ -409,7 +412,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           {protect && <>
             <ExitRow label="Stop loss" on={stopOn} setOn={setStopOn} source={stopSource} setSource={(next) => { setStopSource(next); setStopLevel(suggest("stop", next)) }}
               level={stopLevel} setLevel={setStopLevel} underlying={selection.underlying} hint={stopHint}
-              limit={{ on: stopLimitOn, setOn: enableStopLimit, price: stopLimit, setPrice: setStopLimit }} />
+              limit={{ on: stopLimitOn, setOn: enableStopLimit, price: stopLimit, setPrice: setStopLimit }} extra={stopTrail.fields} />
             <ExitRow label="Take profit" on={targetOn} setOn={setTargetOn} source={targetSource} setSource={(next) => { setTargetSource(next); setTargetLevel(suggest("target", next)) }}
               level={targetLevel} setLevel={setTargetLevel} underlying={selection.underlying}
               hint={!exitLevel(targetLevel) ? "Enter a target." : targetSource === "option" ? `Rests as a ${formatMoney(targetLevel)} limit to ${side === "buy" ? "sell" : "buy"}.`
@@ -453,11 +456,13 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   </>
 }
 
-function ExitRow({ label, on, setOn, source, setSource, level, setLevel, underlying, hint, limit }: {
+function ExitRow({ label, on, setOn, source, setSource, level, setLevel, underlying, hint, limit, extra }: {
   label: string; on: boolean; setOn: (on: boolean) => void; source: "option" | "underlying"; setSource: (source: "option" | "underlying") => void
   level: string; setLevel: (level: string) => void; underlying: string; hint: string
   /** A stop's optional limit price, which makes it a stop-limit. */
   limit?: { on: boolean; setOn: (on: boolean) => void; price: string; setPrice: (price: string) => void }
+  /** More of the exit's terms, such as a stop's reference and trail. */
+  extra?: ReactNode
 }) {
   return <div className="space-y-1.5">
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -472,6 +477,7 @@ function ExitRow({ label, on, setOn, source, setSource, level, setLevel, underly
         {limit.on && <label className="trade-label">{label} limit price ($)
           <input className="trade-input" inputMode="decimal" value={limit.price} onChange={(e) => limit.setPrice(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>}
       </>}
+      {extra}
       <span className="text-[11px] text-muted">{hint}</span>
     </>}
   </div>

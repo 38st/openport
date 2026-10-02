@@ -1174,6 +1174,33 @@ TEST(TradingMultiLeg, AComboStopLimitRestsAtItsNetOnceReached) {
   }
 }
 
+TEST(TradingMultiLeg, ATrailingComboStopFollowsTheClosingMidDown) {
+  Chain f;
+  TradingSession s(config(), f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(combo("entry", credit_legs(), 1, {}), f.time).decision.ok());
+  // The stop alone: a closing market IOC that buys the spread back when its mid rises 0.50 off its low.
+  auto exits = combo("trail", close_legs(), 1, {});
+  const Trigger stop{.source = TriggerSource::Combo, .direction = TriggerDirection::AtOrAbove, .level = m("9.00"),
+                     .reference = TriggerReference::Mid, .trail = Trail{TrailUnit::Amount, m("0.50")}};
+  exits.trigger = stop;
+  exits.bracket = Bracket{ExitSpec{stop, {}}, {}};
+  exits.exits_only = true;
+  const auto placed = s.submit(exits, f.time);
+  ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+  const auto level = [&] { return s.snapshot()->recent_orders.at(static_cast<std::size_t>(*placed.order_id - 1)).request.trigger->level; };
+  EXPECT_EQ(level(), m("1.50"));  // closing mid 5.10 - 4.10, plus 0.50
+  f.quote(s, {{P4900, "4.40", "4.60", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_EQ(level(), m("0.90"));
+  f.quote(s, {{P4900, "4.50", "4.70", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_EQ(level(), m("0.90"));
+  EXPECT_FALSE(s.snapshot()->positions.empty());
+  f.quote(s, {{P4900, "4.90", "5.10", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders.at(static_cast<std::size_t>(*placed.order_id - 1)).filled_notional, m("1.10"));
+}
+
 TEST(TradingMultiLeg, HeldExitsValidateHoldingsAndCanModifyCancelAndCloseUnderKill) {
   Chain f;
   auto c = config();

@@ -3107,7 +3107,11 @@ TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
   EXPECT_EQ(open[1]["role"], "stop_loss");
   EXPECT_EQ(open[1]["status"], "armed");
   EXPECT_EQ(open[1]["parent"], "1");
-  EXPECT_EQ(open[1]["trigger"], stop);
+  // Orders report the trigger's reference and trail too: the executable side, no trail.
+  auto reported = stop;
+  reported["reference"] = "bid_ask";
+  reported["trail"] = nullptr;
+  EXPECT_EQ(open[1]["trigger"], reported);
   EXPECT_EQ(open[1]["day_end"], md::format_timestamp(market.contract.expiry_time()));
 
   auto bad = order(market, "empty-bracket", "4.20");
@@ -3128,7 +3132,7 @@ TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
     EXPECT_EQ(item["time_in_force"], "gtc");
     EXPECT_EQ(item["status"], "armed");
     EXPECT_EQ(item["limit_price"], "3.40");
-    EXPECT_EQ(item["trigger"], stop);
+    EXPECT_EQ(item["trigger"], reported);
   }
   bad["bracket"] = {{"stop_loss", {{"trigger", {{"source", "spot"}, {"direction", "at_or_below"}, {"level", "1"}}}}}};
   expect_error(write(*engine, "POST", "/api/orders", bad), 400, "INVALID_REQUEST");
@@ -3236,6 +3240,45 @@ TEST_F(PaperEngine, GtcMetadataAndHeldComboExitsOverHttp) {
   const auto open = read(*engine, "/api/orders?status=open")["orders"];
   ASSERT_EQ(open.size(), 2U);
   EXPECT_EQ(open[0]["trigger"]["source"], "combo");
+  engine->stop();
+}
+
+TEST_F(PaperEngine, TrailingTriggersAndTheirReferenceOverHttp) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "long", "4.20")).status, 201);
+  json stop{{"source", "option"}, {"direction", "at_or_below"}, {"level", "1.00"}, {"reference", "mid"},
+            {"trail", {{"unit", "amount"}, {"value", "0.50"}}}};
+  json exits{{"client_order_id", "trail"}, {"symbol", market.symbol()}, {"side", "sell"}, {"type", "market"}, {"quantity", 1},
+             {"time_in_force", "ioc"}, {"trigger", stop}, {"exits_only", true}, {"bracket", {{"stop_loss", {{"trigger", stop}}}}}};
+  const auto placed = write(*engine, "POST", "/api/orders", exits);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  const auto trigger = json::parse(placed.body)["order"]["trigger"];
+  EXPECT_EQ(trigger["level"], "3.60");  // the mid 4.10 less 0.50
+  EXPECT_EQ(trigger["reference"], "mid");
+  EXPECT_EQ(trigger["trail"], json({{"unit", "amount"}, {"value", "0.50"}}));
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", exits).status, 200);  // a retry still finds it
+  // Plain triggers report the executable side and no trail.
+  auto plain = order(market, "plain", "4.00");
+  plain["trigger"] = {{"source", "option"}, {"direction", "at_or_below"}, {"level", "3.80"}};
+  const auto plain_placed = write(*engine, "POST", "/api/orders", plain);
+  ASSERT_EQ(plain_placed.status, 201) << plain_placed.body;
+  const auto armed = json::parse(plain_placed.body)["order"]["trigger"];
+  EXPECT_EQ(armed["reference"], "bid_ask");
+  EXPECT_TRUE(armed["trail"].is_null());
+  // Malformed trails are 400 and record nothing.
+  const auto refused = [&](json t) {
+    auto body = order(market, "bad", "4.00");
+    body["trigger"] = std::move(t);
+    expect_error(write(*engine, "POST", "/api/orders", body), 400, "INVALID_REQUEST");
+  };
+  const auto with = [](json base, const json& patch) { base.update(patch); return base; };
+  const json spot{{"source", "underlying"}, {"direction", "at_or_below"}, {"level", "4990.00"}};
+  refused(with(spot, {{"reference", "mid"}}));
+  refused(with(spot, {{"trail", {{"unit", "ticks"}, {"value", 2}}}}));
+  refused(with(stop, {{"trail", {{"unit", "percent"}, {"value", "100.00"}}}}));
+  refused(with(stop, {{"trail", {{"unit", "ticks"}, {"value", 0}}}}));
+  refused(with(stop, {{"trail", {{"unit", "feet"}, {"value", "1.00"}}}}));
+  refused(with(stop, {{"reference", "last"}}));
   engine->stop();
 }
 

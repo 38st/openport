@@ -6,6 +6,7 @@ import { describeTrigger, stopDirection } from "../lib/ticket"
 import { formatMoney, roundToTick, validMoney } from "../lib/trading"
 import { Dialog } from "./Dialog"
 import { EditOrderDialog, useWrite } from "./OrderActions"
+import { useStopTrail } from "./TrailFields"
 import { TradingError, WriteAccess } from "./TradingControls"
 
 /** A held contract's open exits: the stop-loss and take-profit orders that close it. */
@@ -50,9 +51,10 @@ export function PositionExitsDialog({ position, trading, onClose }: { position: 
   const [level, setLevel] = useState(() => roundToTick(root, basis * (long ? 0.75 : 1.25)) ?? "")
   const [limitOn, setLimitOn] = useState(false)
   const [limit, setLimit] = useState("")
+  const stopTrail = useStopTrail(source)
   if (editing) return <EditOrderDialog order={editing} trading={trading} onClose={() => setEditing(null)} onDone={() => setEditing(null)} />
-  const trigger = { source, direction: stopDirection(source, opened, position.type), level }
-  const stopValid = positive(level) && (!limitOn || positive(limit))
+  const trigger = { source, direction: stopDirection(source, opened, position.type), level, ...stopTrail.terms }
+  const stopValid = positive(level) && (!limitOn || positive(limit)) && stopTrail.valid
   const valid = (targetOn || stopOn) && (!targetOn || positive(target)) && (!stopOn || stopValid)
   const bracket: Bracket | null = valid ? {
     ...(targetOn ? { take_profit: { limit_price: target } } : {}),
@@ -86,6 +88,7 @@ export function PositionExitsDialog({ position, trading, onClose }: { position: 
           <label className="trade-label">{source === "option" ? "Stop price ($)" : `${position.underlying} level`}<input className="trade-input" inputMode="decimal" value={level} onChange={(e) => setLevel(e.target.value)} /></label>
           <label className="flex items-center gap-2"><input type="checkbox" checked={limitOn} onChange={(e) => { setLimitOn(e.target.checked); if (e.target.checked && !limit && source === "option") setLimit(level) }} />Stop-limit</label>
           {limitOn && <label className="trade-label">Stop limit price ($)<input className="trade-input" inputMode="decimal" value={limit} onChange={(e) => setLimit(e.target.value)} /></label>}
+          {stopTrail.fields}
           <span className="text-muted">{!positive(level) ? "Enter a stop level." : !limitOn ? `${long ? "Sells" : "Buys"} at market when ${stopText}.`
             : positive(limit) ? `When ${stopText}, rests as a ${formatMoney(limit)} limit to ${exitSide}, and keeps waiting if the market gaps through it.` : "Enter the stop-limit's price."}</span>
         </>}

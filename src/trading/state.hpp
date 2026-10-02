@@ -38,16 +38,20 @@ template <class T> void added_field(const Json& j, const char* key, T& value) {
   if (const auto it = j.find(key); it != j.end()) it->get_to(value);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Decision, code, message, actual, limit, scope)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Trail, unit, value)
 inline void to_json(Json& j, const Trigger& t) {
   j = Json{{"source", t.source}, {"direction", t.direction}, {"level", t.level}};
   // Only conditional triggers record their terms; every other trigger keeps its bytes.
   if (!t.symbol.empty()) j["symbol"] = t.symbol;
   if (!t.study.empty()) j["study"] = t.study;
   if (t.source == TriggerSource::Time) j["minute"] = t.minute;
+  if (t.reference != TriggerReference::BidAsk) j["reference"] = t.reference;
+  if (t.trail) j["trail"] = *t.trail;
 }
 inline void from_json(const Json& j, Trigger& t) {
   j.at("source").get_to(t.source); j.at("direction").get_to(t.direction); j.at("level").get_to(t.level);
   added_field(j, "symbol", t.symbol); added_field(j, "study", t.study); added_field(j, "minute", t.minute);
+  added_field(j, "reference", t.reference); added_field(j, "trail", t.trail);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExitSpec, trigger, limit_price)
 inline void to_json(Json& j, AlertScope scope) {

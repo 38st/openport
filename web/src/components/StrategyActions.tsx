@@ -7,6 +7,7 @@ import type { NewOrder, Order, TradingStatus } from "../api/trading-types"
 import type { Chain } from "../api/types"
 import { days, expiryLabel, fixed } from "../lib/format"
 import { closingPlan, rollPlan, rollSides, type StrategyGroup } from "../lib/positions"
+import { describeTrail } from "../lib/ticket"
 import type { StrategyLeg } from "../lib/strategy"
 import { formatMoney, signedMoney } from "../lib/trading"
 import { comboTickCents } from "../lib/trading"
@@ -188,7 +189,7 @@ export function SpreadExitsDialog({ group, trading, onClose }: { group: Strategy
     {active.length ? <>
       {active.map((order) => <div className="flex items-center justify-between gap-3 text-sm" key={order.id}>
         <span>{order.role === "stop_loss" ? "Stop loss" : "Take profit"} · #{order.id} · {order.trigger
-          ? `${order.trigger.level}${order.limit_price != null ? `, limit ${order.limit_price}` : ""}` : order.limit_price}</span>
+          ? `${order.trigger.level}${order.trigger.trail ? `, trailing ${describeTrail(order.trigger.trail)}` : ""}${order.limit_price != null ? `, limit ${order.limit_price}` : ""}` : order.limit_price}</span>
         <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => setEditing(order)}>Change</button>
       </div>)}
       {confirmCancel ? <div className="space-y-2">
