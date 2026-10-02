@@ -131,7 +131,7 @@ struct TradingCommand {
   /// Recorded runs keep a kind's number: new kinds append.
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
                     Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox, PreviewChange, WhatIf, PreviewClose,
-                    Abandon, ExerciseInstruction };
+                    Abandon, ExerciseInstruction, Group, Ungroup };
   Kind kind = Kind::Submit;
   std::string actor = "unknown";
   trading::OrderRequest order;
@@ -160,6 +160,8 @@ struct TradingCommand {
   std::string review;
   std::string note;               ///< Annotate: the note; empty with no tags clears it.
   std::vector<std::string> tags;  ///< Annotate: the trade's tags.
+  /// Group and Ungroup: the round trips, by trade ID, whose trades join or which leave theirs.
+  std::vector<std::uint64_t> trades = {};
   /// Exercise: contracts of `symbol`; CloseStock: shares of `symbol` to close, 0 for all.
   trading::Quantity quantity = 0;
   /// WhatIf: each candidate's orders, and its name. Never recorded.

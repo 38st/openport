@@ -335,6 +335,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
       path.starts_with("/orders/") || path == "/positions/close" || path == "/positions/close/preview" || path == "/positions/exercise" || path == "/stocks/close" ||
       path == "/positions/abandon" || path == "/positions/instruction" ||
       path.starts_with("/playbooks/staged/") ||
+      path == "/trades/group" || path == "/trades/ungroup" ||
       ((path.starts_with("/trades/") || path.starts_with("/days/")) && path.ends_with("/note"));
   const bool permitted = (create_sandbox && sandbox.empty()) || has("admin") || (read ? has("read") || !policy.require_token :
       ((path == "/replay" || path == "/backtests" || path.starts_with("/backtests/")) ? has("replay") :

@@ -4,7 +4,7 @@ import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { isSandboxToken, writeToken } from "../lib/write-token"
@@ -157,6 +157,9 @@ export const api = {
   annotateDay: (day: string, note: Pick<DayNote, "plan" | "review">, mode: WriteMode) =>
     write<{ account_version: string; day: string; note: DayNote }>(scoped(`/api/days/${encodeURIComponent(day)}/note`), "PUT", mode, note),
   annotateTrade: (id: string, note: TradeNote, mode: WriteMode) => write<TradeNoteResponse>(scoped(`/api/trades/${encodeURIComponent(id)}/note`), "PUT", mode, note),
+  /** Joins the open round trips' trades into one whole trade, or takes each out of its trade. */
+  groupTrades: (trades: string[], together: boolean, mode: WriteMode) =>
+    write<GroupResponse>(scoped(together ? "/api/trades/group" : "/api/trades/ungroup"), "POST", mode, { trades }),
   exercise: (symbol: string, quantity: number, mode: WriteMode) => write<Portfolio>(scoped("/api/positions/exercise"), "POST", mode, { symbol, quantity }),
   abandon: (symbol: string, mode: WriteMode) => write<Portfolio>(scoped("/api/positions/abandon"), "POST", mode, { symbol }),
   exerciseInstruction: (symbol: string, doNotExercise: boolean, mode: WriteMode) =>

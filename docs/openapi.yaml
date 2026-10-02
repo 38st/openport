@@ -1138,6 +1138,80 @@
         }
       }
     },
+    "/api/trades/group": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/trades/group",
+        "description": "Joins the trades of at least two open round trips into one whole trade, named by the oldest; its review restarts now. Closed round trips, mixed underlyings or one round trip are INVALID_GROUP (422); an unknown one is UNKNOWN_TRADE (404). Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeGroupResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TradeGroupRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/trades/ungroup": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/trades/ungroup",
+        "description": "Takes each open round trip out of its whole trade into one of its own; a trade still holding more than one entry restarts its review now. Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeGroupResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TradeGroupRequest"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/days/{day}/note": {
       "parameters": [
         {
@@ -2497,6 +2571,12 @@
     },
     "/api/replay/trades/{id}/note": {
       "$ref": "#/paths/~1api~1trades~1{id}~1note"
+    },
+    "/api/replay/trades/group": {
+      "$ref": "#/paths/~1api~1trades~1group"
+    },
+    "/api/replay/trades/ungroup": {
+      "$ref": "#/paths/~1api~1trades~1ungroup"
     },
     "/api/replay/days/{day}/note": {
       "$ref": "#/paths/~1api~1days~1{day}~1note"
@@ -8911,6 +8991,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "group": {
+            "type": "string",
+            "description": "The whole trade it is in, by its first round trip's ID: its own, or its strategy's first leg's, unless a roll, an adjustment or the account joined it to another. Absent from older servers."
           }
         },
         "required": [
@@ -9373,6 +9457,13 @@
             "items": {
               "$ref": "#/components/schemas/DividendPaid"
             }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WholeTrade"
+            },
+            "description": "Whole trades with more than one entry, newest first, filtered as the trades are. Absent from older servers."
           }
         },
         "required": [
@@ -9773,6 +9864,10 @@
           "exits_only": {
             "type": "boolean",
             "description": "Multi-leg orders only: attach the bracket to held closing legs instead of submitting an entry."
+          },
+          "group": {
+            "type": "string",
+            "description": "Join the round trips this order opens to a whole trade, named by one of its open round trips' IDs (an adjustment). A multi-leg order that closes or adds to another order's round trip joins that trade without it (a roll). An order that names no open round trip on its underlying, or attaches held exits, is refused with INVALID_GROUP."
           }
         },
         "required": [
@@ -10253,6 +10348,17 @@
               }
             ],
             "description": "Open orders: what keeps it from filling now; null when nothing visible does, and for finished orders."
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The whole trade it joins, as submitted; null for none. Absent from older servers."
           }
         },
         "required": [
@@ -10809,6 +10915,13 @@
               "$ref": "#/components/schemas/ClosedAttribution"
             },
             "description": "Contracts and shares traded today and no longer held. Absent from older servers."
+          },
+          "strategies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HeldStrategy"
+            },
+            "description": "The open positions by the whole trade each is in. Absent from older servers."
           }
         },
         "required": [
@@ -15482,6 +15595,243 @@
           "kind",
           "underlying",
           "attribution"
+        ]
+      },
+      "WholeTrade": {
+        "type": "object",
+        "description": "A trade with more than one entry (a roll, an adjustment or round trips the account grouped), its round trips taken together.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The whole trade's ID: its first round trip's."
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "underlying": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ]
+          },
+          "opened": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "closed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trading_day": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "round_trips": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its round trips' trade IDs, in the order they opened."
+          },
+          "entries": {
+            "type": "integer",
+            "description": "The orders that opened its round trips."
+          },
+          "gross": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "fees": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "net": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "unrealised": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradeReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the account grouped it, from which its review runs; null when it runs from the first entry."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "attempt",
+          "underlying",
+          "status",
+          "opened",
+          "closed",
+          "trading_day",
+          "round_trips",
+          "entries",
+          "gross",
+          "fees",
+          "net",
+          "unrealised",
+          "review",
+          "review_since"
+        ]
+      },
+      "HeldStrategy": {
+        "type": "object",
+        "description": "A whole trade still held: its open legs, with every round trip of it, closed ones included, in its realised P&L and fees.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "underlying": {
+            "type": "string"
+          },
+          "opened": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "legs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "symbol": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "trade": {
+                  "type": "string",
+                  "description": "The leg's round trip in progress."
+                }
+              },
+              "required": [
+                "symbol",
+                "quantity",
+                "trade"
+              ]
+            }
+          },
+          "round_trips": {
+            "type": "integer"
+          },
+          "entries": {
+            "type": "integer"
+          },
+          "realised": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "fees": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "unrealised": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "net": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "underlying",
+          "opened",
+          "legs",
+          "round_trips",
+          "entries",
+          "realised",
+          "fees",
+          "unrealised",
+          "net"
+        ]
+      },
+      "TradeGroupRequest": {
+        "type": "object",
+        "properties": {
+          "trades": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "string"
+            },
+            "description": "Open round trips, by trade ID."
+          }
+        },
+        "required": [
+          "trades"
+        ]
+      },
+      "TradeGroupResponse": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "groups": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The whole trade each named round trip is in now."
+          }
+        },
+        "required": [
+          "account_version",
+          "groups"
         ]
       }
     }

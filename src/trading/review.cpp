@@ -1,10 +1,12 @@
 #include "review.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -43,6 +45,10 @@ void sample(TradeReview& review, Money value, Timestamp time, std::optional<doub
   if (!review.worst || value < review.worst->pnl) review.worst = Excursion{value, time, underlying};
   if (!review.best || value > review.best->pnl) review.best = Excursion{value, time, underlying};
   review.finished = finished;
+}
+bool unfinished_review(const SharedMap<std::string, TradeReview>& reviews, const std::string& key) {
+  const auto found = reviews.find(key);
+  return found == reviews.end() || !found->second.finished;
 }
 const Order* entry_order(const State& s, const Lifecycle& life) {
   if (life.first_fill == 0 || life.first_fill > s.fills.size()) return nullptr;
@@ -140,10 +146,14 @@ std::optional<Money> covered_debit(const std::vector<const Lifecycle*>& legs) {
   }
   return debit > Money{} ? std::optional(debit) : std::nullopt;
 }
-/// Samples the reviews of `lives`, given in the order they opened, and of the
-/// multi-leg entries among them. A finished review stays as it is; a missing one
-/// starts now. `unfinished` changes by the change in unfinished reviews.
-void sample_reviews(State& s, const std::vector<const Lifecycle*>& lives, std::int64_t& unfinished) {
+/// Samples the reviews of `lives`, given in the order they opened, of the
+/// multi-leg entries among them and of the trades with a whole-trade review. A
+/// finished review stays as it is; a missing trade or strategy review starts now
+/// (a whole-trade review starts only when a trade takes another entry).
+/// `unfinished` changes by the change in unfinished reviews. `shared` are the
+/// orders that added to another order's round trip.
+void sample_reviews(State& s, const std::vector<const Lifecycle*>& lives, const std::set<OrderId>& shared,
+                    std::int64_t& unfinished) {
   // A review to sample, created unfinished when missing; none once finished.
   const auto open_review = [&](SharedMap<std::string, TradeReview>& reviews, const std::string& key) -> TradeReview* {
     const auto found = reviews.find(key);
@@ -151,8 +161,26 @@ void sample_reviews(State& s, const std::vector<const Lifecycle*>& lives, std::i
     if (found == reviews.end()) ++unfinished;
     return &reviews[key];
   };
+  // Combined samples: the legs' P&L at the same instant, and the settlement
+  // reference of a leg settled now as the underlying's price.
+  const auto combined = [&](TradeReview& review, const std::vector<const Lifecycle*>& legs) {
+    Money total;
+    bool finished = true;
+    std::optional<double> settled;
+    for (const auto* leg : legs) {
+      const auto value = pnl(s, *leg);
+      if (!value) return;
+      total = total + *value;
+      finished = finished && leg->closed.has_value();
+      if (!settled) settled = settled_spot(s, *leg);
+    }
+    sample(review, total, s.time, settled ? settled : spot(s, *legs.front()), finished);
+  };
   std::map<OrderId, std::vector<const Lifecycle*>> strategies;
+  std::map<std::string, std::vector<const Lifecycle*>> trades;
   for (const auto* life : lives) {
+    if (const auto group = trade_group(*life, s.groups); unfinished_review(s.group_reviews, group) && s.group_reviews.contains(group))
+      trades[group].push_back(life);
     // Older fills carry no review baseline. Do not invent historical extrema.
     if (!life->entry_context) continue;
     const auto* order = entry_order(s, *life);
@@ -165,30 +193,111 @@ void sample_reviews(State& s, const std::vector<const Lifecycle*>& lives, std::i
   }
   for (const auto& [id, legs] : strategies) {
     const auto& order = s.orders[id - 1];
-    if (legs.size() != order.request.legs.size()) continue;
+    // Each leg it opened started a round trip of its own, as a roll's new legs do;
+    // contracts it shares with another order's round trip are not its alone.
+    std::set<std::string> symbols;
+    for (const auto* leg : legs) symbols.insert(leg->symbol);
+    if (legs.size() < 2 || symbols.size() != legs.size() || shared.contains(id)) continue;
     auto* review = open_review(s.strategy_reviews, std::to_string(id));
     if (!review) continue;
     // The plan's stop when it has one, else what the structure can lose.
     review->planned_risk = combo_stop_risk(legs, order);
     if (!review->planned_risk) review->planned_risk = structure_risk(legs);
     if (!review->planned_risk) review->planned_risk = covered_debit(legs);
-    Money total;
-    bool complete = true, finished = true;
-    std::optional<double> settled;
-    for (const auto* leg : legs) {
-      const auto value = pnl(s, *leg);
-      if (!value) { complete = false; break; }
-      total = total + *value;
-      finished = finished && leg->closed.has_value();
-      if (!settled) settled = settled_spot(s, *leg);
-    }
-    if (complete) sample(*review, total, s.time, settled ? settled : spot(s, *legs.front()), finished);
+    combined(*review, legs);
     if (review->finished) --unfinished;
   }
+  for (const auto& [group, members] : trades) {
+    auto& review = s.group_reviews[group];
+    combined(review, members);
+    if (review.finished) --unfinished;
+  }
 }
-bool unfinished_review(const SharedMap<std::string, TradeReview>& reviews, const std::string& key) {
-  const auto found = reviews.find(key);
-  return found == reviews.end() || !found->second.finished;
+/// Every lifecycle the builder holds, in the order they opened: the open ones and
+/// the finished ones it keeps.
+std::vector<const Lifecycle*> held_lives(const Reviewing& r) {
+  std::vector<std::pair<std::uint64_t, const Lifecycle*>> started;
+  for (const auto& [symbol, open] : r.builder.open) started.emplace_back(open.started, &open.life);
+  for (const auto& [number, life] : r.builder.closed) started.emplace_back(number, &life);
+  std::sort(started.begin(), started.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  std::vector<const Lifecycle*> lives;
+  for (const auto& [number, life] : started) lives.push_back(life);
+  return lives;
+}
+const Lifecycle* find_trip(const std::vector<const Lifecycle*>& lives, std::uint64_t id) {
+  const auto it = std::find_if(lives.begin(), lives.end(), [&](const Lifecycle* life) { return life->first_fill == id; });
+  return it == lives.end() ? nullptr : *it;
+}
+std::uint64_t trade_id(const std::string& text) {
+  std::uint64_t id = 0;
+  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), id);
+  return error == std::errc{} && end == text.data() + text.size() ? id : 0;
+}
+/// The trade's review so far: its strategy's for a multi-leg first entry, else
+/// its first round trip's.
+const TradeReview* first_review(const State& s, const Lifecycle& root) {
+  const auto* order = entry_order(s, root);
+  const auto& reviews = order && multi_leg(order->request) ? s.strategy_reviews : s.trade_reviews;
+  const auto found = reviews.find(std::to_string(order && multi_leg(order->request) ? order->id : root.first_fill));
+  return found == reviews.end() ? nullptr : &found->second;
+}
+/// Joins the round trips the fills since the last call opened to the trade they
+/// continue: the trade their order names (`group`), or for a multi-leg order the
+/// trade of the earliest round trip of another order it reduced or added to at
+/// that instant (a roll or an adjustment). Later round trips of an order follow its
+/// first. A trade taking another entry starts its whole-trade review as its review
+/// so far was, so the whole trade's extremes include those before the roll.
+void assign_groups(State& s, std::int64_t& unfinished) {
+  auto& effects = s.reviewing.builder.effects;
+  if (effects.empty()) return;
+  const auto lives = held_lives(s.reviewing);
+  bool opened_any = false;
+  for (std::size_t i = 0; i < effects.size();) {
+    // One execution: an order's consecutive fills at one instant.
+    const auto order_id = effects[i].order;
+    const auto time = effects[i].time;
+    std::vector<std::uint64_t> opened;
+    std::optional<std::uint64_t> touched;
+    for (; i < effects.size() && effects[i].order == order_id && effects[i].time == time; ++i) {
+      const auto& e = effects[i];
+      if (e.opened) opened.push_back(e.trade);
+      else if (e.entry != order_id && (!touched || e.trade < *touched)) touched = e.trade;
+    }
+    if (opened.empty() || order_id == 0 || order_id > s.orders.size()) continue;
+    opened_any = true;
+    const auto& order = s.orders[order_id - 1];
+    std::optional<std::string> target;
+    const Lifecycle* continued = nullptr;
+    if (!order.request.group.empty()) {
+      continued = find_trip(lives, trade_id(order.request.group));
+      target = continued ? trade_group(*continued, s.groups) : order.request.group;
+    } else if (multi_leg(order.request) && touched) {
+      continued = find_trip(lives, *touched);
+      if (continued) target = trade_group(*continued, s.groups);
+    }
+    for (const auto id : opened) {
+      const auto* life = find_trip(lives, id);
+      if (!life) continue;
+      auto group = target;
+      if (!group && life->root != life->first_fill)
+        if (const auto root = s.groups.find(std::to_string(life->root)); root != s.groups.end()) group = root->second;
+      if (!group || *group == std::to_string(life->root)) continue;
+      s.groups[std::to_string(id)] = *group;
+    }
+    if (!target || !continued || continued->entry_order == order_id || s.group_reviews.contains(*target)) continue;
+    TradeReview review;
+    if (const auto* root = find_trip(lives, trade_id(*target)))
+      if (const auto* so_far = first_review(s, *root)) review = *so_far;
+    review.finished = false;
+    // Nothing recorded before: its extremes run from now.
+    if (!review.worst) review.since = s.time;
+    s.group_reviews[*target] = review;
+    ++unfinished;
+  }
+  effects.clear();
+  // Only executions that opened round trips move the mark, so other fills leave
+  // the state as it was.
+  if (opened_any) s.grouped = s.fills.size();
 }
 /// Applies the fills and closures recorded since the last call, interleaved as
 /// lifecycles() interleaves them: a closure after the fills recorded before it.
@@ -204,89 +313,165 @@ void advance(State& s) {
     closures_until(++r.fills);
   }
 }
-/// Drops the finished lifecycles no review can use. One is kept while its own
-/// trade review is missing or unfinished, or while its multi-leg entry's
-/// strategy review can still be sampled, as a rebuild would then need all of
-/// that entry's legs: they match its legs now, or the entry is still open and
-/// can fill more. A strategy that cannot be sampled never can again.
+/// Drops the finished lifecycles no review can use. One is kept while its trade
+/// still holds a round trip, as a roll would start a whole-trade review from all
+/// of them; while its own trade review is missing or unfinished; or while its
+/// multi-leg entry's strategy review can still be sampled, as a rebuild would then
+/// need all of that entry's legs: the review is under way, or the entry is still
+/// open and can fill more. Orders that can no longer fill name no more roots.
 void prune(State& s) {
   auto& r = s.reviewing;
+  std::set<std::string> holding;
+  for (const auto& [symbol, open] : r.builder.open) holding.insert(trade_group(open.life, s.groups));
   const auto entry = [&](const Lifecycle& life) -> const Order* {
     if (!life.entry_context) return nullptr;
     const auto* order = entry_order(s, life);
     return order && multi_leg(order->request) ? order : nullptr;
   };
-  std::map<OrderId, std::size_t> legs;
-  for (const auto& [symbol, open] : r.builder.open) if (const auto* order = entry(open.life)) ++legs[order->id];
-  for (const auto& [number, life] : r.builder.closed) if (const auto* order = entry(life)) ++legs[order->id];
   const auto live = [&](const Order& order) {
-    if (!unfinished_review(s.strategy_reviews, std::to_string(order.id))) return false;
-    const auto count = legs[order.id];
-    const auto wanted = order.request.legs.size();
-    return count == wanted || (count < wanted && order.open());
+    const auto key = std::to_string(order.id);
+    return unfinished_review(s.strategy_reviews, key) && (s.strategy_reviews.contains(key) || order.open());
   };
   std::erase_if(r.builder.closed, [&](const auto& numbered) {
     const auto& life = numbered.second;
+    if (holding.contains(trade_group(life, s.groups))) return false;
     if (!life.entry_context) return true;
     if (unfinished_review(s.trade_reviews, std::to_string(life.first_fill))) return false;
     const auto* order = entry(life);
     return !order || !live(*order);
   });
+  std::erase_if(r.builder.roots, [&](const auto& root) {
+    return root.first == 0 || root.first > s.orders.size() || !s.orders[root.first - 1].open();
+  });
 }
 std::size_t count_unfinished(const State& s) {
   std::size_t count = 0;
-  for (const auto& [key, review] : s.trade_reviews) count += review.finished ? 0 : 1;
-  for (const auto& [key, review] : s.strategy_reviews) count += review.finished ? 0 : 1;
+  for (const auto* reviews : {&s.trade_reviews, &s.strategy_reviews, &s.group_reviews})
+    for (const auto& [key, review] : *reviews) count += review.finished ? 0 : 1;
   return count;
 }
 }  // namespace
 
+void recount_reviews(State& s) {
+  if (s.reviewing.ready) s.reviewing.unfinished = count_unfinished(s);
+}
+
+Decision regroup(State& s, const std::vector<std::uint64_t>& trades, bool together) {
+  const auto refuse = [](Reason code, std::string message) { return Decision{code, std::move(message), {}, {}, {}}; };
+  const auto all = lifecycles(s.fills, s.closures, s.contracts);
+  std::vector<const Lifecycle*> listed;
+  for (const auto id : trades) {
+    const auto it = std::find_if(all.begin(), all.end(), [&](const Lifecycle& life) { return life.first_fill == id; });
+    if (it == all.end()) return refuse(Reason::UNKNOWN_TRADE, "No trade opens with fill " + std::to_string(id));
+    if (it->closed) return refuse(Reason::INVALID_GROUP, "Round trip " + std::to_string(id) + " is closed; only open round trips change trades");
+    if (!listed.empty() && it->contract.underlying != listed.front()->contract.underlying)
+      return refuse(Reason::INVALID_GROUP, "A trade's round trips share one underlying");
+    if (std::find(listed.begin(), listed.end(), &*it) == listed.end()) listed.push_back(&*it);
+  }
+  if (listed.empty() || (together && listed.size() < 2))
+    return refuse(Reason::INVALID_GROUP, together ? "Name at least two open round trips to group" : "Name an open round trip to ungroup");
+  const auto set_group = [&](const Lifecycle& life, const std::string& group) {
+    const auto key = std::to_string(life.first_fill);
+    if (group == std::to_string(life.root)) s.groups.erase(key);
+    else s.groups[key] = group;
+  };
+  // Each trade's whole-trade review restarts now, while it holds more than one entry.
+  const auto restart = [&](const std::string& group, const std::vector<const Lifecycle*>& members) {
+    std::set<OrderId> entries;
+    for (const auto* life : members) entries.insert(life->entry_order);
+    if (entries.size() < 2) return;
+    TradeReview review;
+    review.since = s.time;
+    s.group_reviews[group] = review;
+  };
+  std::map<std::string, std::vector<const Lifecycle*>> members;
+  for (const auto* life : listed) members[trade_group(*life, s.groups)];
+  for (const auto& life : all)
+    if (const auto group = trade_group(life, s.groups); members.contains(group)) members[group].push_back(&life);
+  if (together) {
+    if (members.size() == 1) return {};
+    std::string target = members.begin()->first;
+    for (const auto& [group, lives] : members) if (trade_id(group) < trade_id(target)) target = group;
+    std::vector<const Lifecycle*> joined;
+    for (const auto& [group, lives] : members) {
+      s.group_reviews.erase(group);
+      for (const auto* life : lives) { set_group(*life, target); joined.push_back(life); }
+    }
+    restart(target, joined);
+  } else {
+    std::set<std::uint64_t> leaving;
+    for (const auto* life : listed) leaving.insert(life->first_fill);
+    for (const auto& [group, lives] : members) {
+      if (lives.size() < 2) continue;
+      s.group_reviews.erase(group);
+      std::vector<const Lifecycle*> staying;
+      for (const auto* life : lives) {
+        if (leaving.contains(life->first_fill)) set_group(*life, std::to_string(life->first_fill));
+        else staying.push_back(life);
+      }
+      if (staying.empty()) continue;
+      // A trade named by a round trip that left takes the oldest that stayed.
+      auto name = group;
+      if (leaving.contains(trade_id(group))) {
+        name = std::to_string(staying.front()->first_fill);
+        for (const auto* life : staying) if (life->first_fill < trade_id(name)) name = std::to_string(life->first_fill);
+      }
+      for (const auto* life : staying) set_group(*life, name);
+      restart(name, staying);
+    }
+  }
+  recount_reviews(s);
+  return {};
+}
+
 void update_reviews_rebuilt(State& s) {
   const auto done = [](const auto& entry) { return entry.second.finished; };
   if (s.ledger.positions().empty() && std::all_of(s.trade_reviews.begin(), s.trade_reviews.end(), done) &&
-      std::all_of(s.strategy_reviews.begin(), s.strategy_reviews.end(), done))
+      std::all_of(s.strategy_reviews.begin(), s.strategy_reviews.end(), done) &&
+      std::all_of(s.group_reviews.begin(), s.group_reviews.end(), done))
     return;
-  const auto rebuilt = lifecycles(s.fills, s.closures, s.contracts);
+  std::set<OrderId> shared;
+  const auto rebuilt = lifecycles(s.fills, s.closures, s.contracts, &shared);
   std::vector<const Lifecycle*> lives;
   for (const auto& life : rebuilt) lives.push_back(&life);
   std::int64_t unfinished = 0;
-  sample_reviews(s, lives, unfinished);
+  sample_reviews(s, lives, shared, unfinished);
 }
 
 void update_reviews(State& s) {
+  auto& r = s.reviewing;
+  std::int64_t unfinished = 0;
+  if (!r.ready) {
+    // After a load: one pass over the history, then only what can change. The
+    // fills up to `grouped` joined their trades when they were recorded.
+    r = Reviewing{};
+    r.ready = true;
+    r.unfinished = count_unfinished(s);
+    r.builder.record = true;
+    r.builder.record_from = s.grouped;
+    advance(s);
+    assign_groups(s, unfinished);
+    prune(s);
+  } else {
+    advance(s);
+    assign_groups(s, unfinished);
+  }
   std::optional<State> expected;
   if (verify_reviews) {
     expected = s;
     update_reviews_rebuilt(*expected);
   }
-  auto& r = s.reviewing;
-  if (!r.ready) {
-    // After a load: one pass over the history, then only what can change.
-    r = Reviewing{};
-    r.ready = true;
-    r.unfinished = count_unfinished(s);
-    advance(s);
-    prune(s);
-  } else {
-    advance(s);
-  }
   // A flat account whose reviews are all finished has nothing to sample.
-  if (!s.ledger.positions().empty() || r.unfinished > 0) {
-    // Every lifecycle a rebuild would sample, in the order they opened: the open
-    // ones, and the finished ones a review still needs.
-    std::vector<std::pair<std::uint64_t, const Lifecycle*>> started;
-    for (const auto& [symbol, open] : r.builder.open) started.emplace_back(open.started, &open.life);
-    for (const auto& [number, life] : r.builder.closed) started.emplace_back(number, &life);
-    std::sort(started.begin(), started.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    std::vector<const Lifecycle*> lives;
-    for (const auto& [number, life] : started) lives.push_back(life);
-    std::int64_t unfinished = 0;
-    sample_reviews(s, lives, unfinished);
-    r.unfinished = static_cast<std::size_t>(static_cast<std::int64_t>(r.unfinished) + unfinished);
+  if (!s.ledger.positions().empty() || static_cast<std::int64_t>(r.unfinished) + unfinished > 0) {
+    // Every lifecycle a rebuild would sample: the open ones, and the finished ones
+    // a review still needs.
+    sample_reviews(s, held_lives(r), r.builder.shared, unfinished);
     prune(s);
   }
+  r.unfinished = static_cast<std::size_t>(static_cast<std::int64_t>(r.unfinished) + unfinished);
   if (expected) {
-    if (Json(s.trade_reviews) != Json(expected->trade_reviews) || Json(s.strategy_reviews) != Json(expected->strategy_reviews))
+    if (Json(s.trade_reviews) != Json(expected->trade_reviews) || Json(s.strategy_reviews) != Json(expected->strategy_reviews) ||
+        Json(s.group_reviews) != Json(expected->group_reviews))
       throw std::logic_error("update_reviews differs from a rebuild from every fill");
     if (r.unfinished != count_unfinished(s)) throw std::logic_error("update_reviews miscounted unfinished reviews");
   }

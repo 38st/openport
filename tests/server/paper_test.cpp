@@ -2650,6 +2650,63 @@ TEST_F(PaperEngine, IdleQuoteBatchesAreNotRecordedButRolloverIs) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, WholeTradesGroupOverHttpAndListWithTheHeldStrategies) {
+  seed();
+  const auto upper = *md::parse_osi("SPXW261022C05010000");
+  provider.sink->publish(md::ContractDefinition{1, upper});
+  provider.sink->publish(md::OptionQuote{1, market.time, 3.00, 3.20, 10, 10});
+  ASSERT_TRUE(wait_for([&] {
+    const auto metrics = engine->metrics("SPX");
+    if (!metrics || metrics->slices.empty()) return false;
+    const auto& strikes = metrics->slices[0].strikes;
+    return std::any_of(strikes.begin(), strikes.end(), [](const auto& s) { return s.strike == 5010 && s.call.ask == 3.20; });
+  }));
+  // Legged in: a long 5000 call, then a short 5010 call joining its trade by name.
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "long", "4.20")).status, 201);
+  auto hedge = order(market, "hedge", "3.00");
+  hedge["symbol"] = upper.osi_symbol();
+  hedge["side"] = "sell";
+  hedge["group"] = "9";
+  expect_error(write(*engine, "POST", "/api/orders", hedge), 422, "INVALID_GROUP");
+  hedge["client_order_id"] = "hedge 2";
+  hedge["group"] = "x";
+  expect_error(write(*engine, "POST", "/api/orders", hedge), 400, "INVALID_REQUEST");
+  hedge["client_order_id"] = "hedge 3";
+  hedge["group"] = "1";
+  const auto placed = write(*engine, "POST", "/api/orders", hedge);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  EXPECT_EQ(json::parse(placed.body)["order"]["group"], "1");
+  auto trades = read(*engine, "/api/trades");
+  ASSERT_EQ(trades["trades"].size(), 2);
+  for (const auto& t : trades["trades"]) EXPECT_EQ(t["group"], "1");
+  ASSERT_EQ(trades["groups"].size(), 1);
+  const auto whole = trades["groups"][0];
+  EXPECT_EQ(whole["id"], "1");
+  EXPECT_EQ(whole["round_trips"], json::array({"1", "2"}));
+  EXPECT_EQ(whole["entries"], 2);
+  EXPECT_EQ(whole["status"], "open");
+  EXPECT_TRUE(whole["review"].is_object());
+  const auto portfolio = read(*engine, "/api/portfolio");
+  ASSERT_EQ(portfolio["strategies"].size(), 1);
+  EXPECT_EQ(portfolio["strategies"][0]["id"], "1");
+  EXPECT_EQ(portfolio["strategies"][0]["legs"].size(), 2);
+  // The short leaves the trade, and joins it again.
+  const auto out = write(*engine, "POST", "/api/trades/ungroup", {{"trades", {"2"}}});
+  ASSERT_EQ(out.status, 200) << out.body;
+  EXPECT_EQ(json::parse(out.body)["groups"], (json{{"2", "2"}}));
+  EXPECT_TRUE(read(*engine, "/api/trades")["groups"].empty());
+  EXPECT_EQ(read(*engine, "/api/portfolio")["strategies"].size(), 2);
+  const auto in = write(*engine, "POST", "/api/trades/group", {{"trades", {"1", "2"}}});
+  ASSERT_EQ(in.status, 200) << in.body;
+  EXPECT_EQ(json::parse(in.body)["groups"], (json{{"1", "1"}, {"2", "1"}}));
+  EXPECT_FALSE(read(*engine, "/api/trades")["groups"][0]["review_since"].is_null());
+  expect_error(write(*engine, "POST", "/api/trades/group", {{"trades", {"1", "7"}}}), 404, "UNKNOWN_TRADE");
+  expect_error(write(*engine, "POST", "/api/trades/group", {{"trades", {"1"}}}), 422, "INVALID_GROUP");
+  expect_error(write(*engine, "POST", "/api/trades/group", {{"trades", json::array()}}), 400, "INVALID_REQUEST");
+  expect_error(write(*engine, "POST", "/api/trades/group", {{"trades", {1}}}), 400, "INVALID_REQUEST");
+  engine->stop();
+}
+
 TEST_F(PaperEngine, MultiLegOrdersOverHttp) {
   seed();
   // A second strike, the 5010 call, beside the fixture's 5000 call.

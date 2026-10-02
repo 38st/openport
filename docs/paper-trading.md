@@ -1459,11 +1459,46 @@ credit. The option legs of a strategy
 carry its `strategy_id` and combined `strategy_review` separately from their own reviews.
 
 Strategy review follows the Journal's grouping by the order that opened each
-contract round trip. It requires all that order's legs to start round trips;
-contracts already shared with another strategy cannot be attributed separately.
+contract round trip. It covers the legs that order opened as round trips of their
+own, at least two of them: a roll's new legs keep a strategy review while the legs it
+closes keep theirs. An order that adds to another order's round trip shares those
+contracts, so it has no strategy review of its own.
 Older round trips without entry context keep null review fields: historical marks
 are not reconstructed. Share trades retain their existing P&L and notes. Each round
 trip's P&L by Greek is its `attribution` (see [P&L by Greek](#pl-by-greek)).
+
+### Whole trades
+
+A trade managed over time is one trade, not a string of round trips. Each round trip
+is in a whole trade, named by a round trip's ID and carried as its `group`: its own,
+or for a strategy's legs the first leg's. A multi-leg order that closes or adds to
+another order's round trip at the instant it opens new ones, a roll or an
+adjustment, joins the round trips it opens to that trade; so does any order that
+names a trade in `group`, by one of its open round trips' IDs (an order naming no
+open round trip on its underlying, or attaching held exits, is refused with
+`INVALID_GROUP`). `POST /api/trades/group` joins the trades of two or more open
+round trips into one, named by the oldest, so legs entered one by one become one
+trade; `POST /api/trades/ungroup` takes each listed round trip out of its trade into
+one of its own. Both refuse closed round trips and mixed underlyings
+(`INVALID_GROUP`) and unknown ones (`UNKNOWN_TRADE`), are journaled, and change
+nothing else.
+
+A trade with more than one entry has a whole-trade review. A roll's starts as the
+trade's review was before it (its first strategy's, or its first round trip's), so
+its worst and best include the moves before the roll, then samples the P&L of every
+round trip in the trade together, closed ones at their final P&L. A trade the account
+grouped or ungrouped starts its review again then (`review_since`). `GET /api/trades`
+lists such trades under `groups`, newest first and filtered as the trades are: `id`,
+`attempt`, `underlying`, `status`, `opened`, `closed`, `trading_day`, `round_trips`,
+`entries` (the orders that opened them), `gross`, `fees`, `net`, `unrealised` while
+open and `review` with its R-multiple on the trade's net. `GET /api/portfolio` lists
+the positions held by whole trade under `strategies`: each trade's open `legs`
+(`symbol`, `quantity` and the leg's round trip, `trade`), its `round_trips` and
+`entries`, and its `realised`, `fees`, `unrealised` and `net` over every round trip of
+it. The Journal shows whole trades as one row each beside strategies, with a leg
+taken out in a click, and can count its headline numbers, calendar and reports by
+whole trade instead of by round trip; on the Positions page, picked positions group
+into one trade.
 
 Each closed option trade says what closed it, `closed_by`: the closure that ended it
 (`settlement`, `exercise`, `assignment`, `abandon`, `reset`), or the order of its last reducing
@@ -1790,6 +1825,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
 | `INVALID_NOTE`, `UNKNOWN_TRADE` | An order or trade note or tag past its limits, or a note on a fill that opens no trade |
+| `INVALID_GROUP` | An order's `group` names no open round trip on its underlying, or a trade grouping names a closed round trip, mixed underlyings or too few round trips |
 | `DEFINED_RISK` | A defined-risk plan's order, bracket exit or exercise would leave a short option uncovered, now or once the open orders fill |
 
 ## Engine integration and HTTP API
@@ -2015,7 +2051,7 @@ focus at the top of the ticket.
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, and each leg's quote `liquidity` |
 | `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
@@ -2033,7 +2069,8 @@ focus at the top of the ticket.
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target), decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
-| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id` and `strategy_review` (see [trade review](#trade-review)). `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
+| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review` and the whole trade it is in, `group` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
+| `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, open round trips by trade ID: join their trades into one, or take each out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |

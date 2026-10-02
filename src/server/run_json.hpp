@@ -25,6 +25,7 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
       {"quantity", c.quantity}, {"actor", c.actor}};
   // Later fields are recorded only when set, so earlier commands keep their bytes.
   if (c.do_not_exercise) j["do_not_exercise"] = true;
+  if (!c.trades.empty()) j["trades"] = c.trades;
 }
 inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("kind").get_to(c.kind);
@@ -55,5 +56,6 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("quantity").get_to(c.quantity);
   trading::added_field(j, "actor", c.actor);
   trading::added_field(j, "do_not_exercise", c.do_not_exercise);
+  trading::added_field(j, "trades", c.trades);
 }
 }

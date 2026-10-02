@@ -208,6 +208,14 @@ class Client:
         return self._request("PUT", "/trades/" + quote(str(trade_id), safe="") + "/note",
                              {"note": note, "tags": tags or []}, scoped=True)
 
+    def group_trades(self, trade_ids: list[str]) -> JSON:
+        """Join the open round trips' trades into one whole trade."""
+        return self._request("POST", "/trades/group", {"trades": [str(t) for t in trade_ids]}, scoped=True)
+
+    def ungroup_trades(self, trade_ids: list[str]) -> JSON:
+        """Take each open round trip out of its whole trade."""
+        return self._request("POST", "/trades/ungroup", {"trades": [str(t) for t in trade_ids]}, scoped=True)
+
     def day_note(self, day: str, plan: str = "", review: str = "") -> JSON:
         return self._request("PUT", "/days/" + quote(day, safe="") + "/note",
                              {"plan": plan, "review": review}, scoped=True)

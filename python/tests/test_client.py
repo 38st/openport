@@ -162,6 +162,8 @@ def test_base_url_rejects_ambiguous_credentials(url):
     ("flatten", ("SPX",), "POST", "/api/positions/close", "ClosePositionsResponse"),
     ("note", ("1", "review", ["test"]), "PUT", "/api/trades/1/note", "TradeNoteResponse"),
     ("day_note", ("2026-09-22", "plan", "review"), "PUT", "/api/days/2026-09-22/note", "DayNoteResponse"),
+    ("group_trades", (["1", "3"],), "POST", "/api/trades/group", "TradeGroupResponse"),
+    ("ungroup_trades", (["3"],), "POST", "/api/trades/ungroup", "TradeGroupResponse"),
     ("create_account", ("Practice",), "POST", "/api/accounts", "CreateAccountResponse"),
     ("reset_account", ("new attempt",), "POST", "/api/account/reset", "Account"),
     ("payout", ("100.00",), "POST", "/api/account/payout", "Account"),

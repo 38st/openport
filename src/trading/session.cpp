@@ -860,6 +860,8 @@ TradingSnapshot snapshot_of(const State& s) {
   out.day_notes = s.day_notes;
   out.trade_reviews = s.trade_reviews;
   out.strategy_reviews = s.strategy_reviews;
+  out.groups = s.groups;
+  out.group_reviews = s.group_reviews;
   // Today's P&L by Greek: the finished stretches, and the open ones to the marks now.
   // Each round trip's, from its start: its finished stretches and the open one.
   out.attributions = s.explained;
@@ -1224,10 +1226,34 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   }
   return {};
 }
+/// An order naming a trade to join: it must open, and name a round trip held now
+/// on its underlying, by the trades view's ID.
+Decision group_check(const State& s, const OrderRequest& r) {
+  if (r.exits_only) return failure(Reason::INVALID_GROUP, "Held exits open nothing to join to a trade");
+  const auto symbols = order_symbols(r);
+  const auto contract = s.contracts.find(symbols.front());
+  if (contract == s.contracts.end()) return {};
+  const auto check = [&](const std::string& symbol, std::uint64_t trade) -> std::optional<Decision> {
+    if (std::to_string(trade) != r.group) return std::nullopt;
+    if (s.contracts.at(symbol).underlying != contract->second.underlying)
+      return failure(Reason::INVALID_GROUP, "A trade's round trips share one underlying");
+    return Decision{};
+  };
+  if (s.reviewing.ready) {
+    for (const auto& [symbol, open] : s.reviewing.builder.open)
+      if (const auto d = check(symbol, open.life.first_fill)) return *d;
+  } else {
+    for (const auto& life : lifecycles(s.fills, s.closures, s.contracts))
+      if (!life.closed) if (const auto d = check(life.symbol, life.first_fill)) return *d;
+  }
+  return failure(Reason::INVALID_GROUP, "group must name an open round trip by its trade ID");
+}
 Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept) {
   if (const auto d = account_check(s, closing_only(s, o)); !d.ok()) return d;
   try { (void)clean_annotation(o.request.note, o.request.tags); }
   catch (const TradingError& e) { return failure(e.code(), e.what()); }
+  if (stage == Stage::Accept && !o.request.group.empty())
+    if (const auto d = group_check(s, o.request); !d.ok()) return d;
   if (multi_leg(o.request)) return combo_check(s, o, stage);
   const auto& rules = s.config.rules;
   const auto& request = o.request;
@@ -3985,6 +4011,16 @@ CommandResult TradingSession::annotate(std::uint64_t trade, std::string note, st
     if (std::none_of(trades.begin(), trades.end(), [&](const Lifecycle& t) { return t.first_fill == trade; }))
       return CommandResult{failure(Reason::UNKNOWN_TRADE, "No trade opens with fill " + std::to_string(trade)), {}, 0};
     store_annotation(s, std::to_string(trade), std::move(annotation), events);
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::group_trades(std::vector<std::uint64_t> trades, bool together, Timestamp time) {
+  return impl_->transact(time, together ? "group" : "ungroup", [&](State& s, Events& events) {
+    const auto decision = detail::regroup(s, trades, together);
+    if (!decision.ok()) return CommandResult{decision, {}, 0};
+    Json ids = Json::array();
+    for (const auto id : trades) ids.push_back(std::to_string(id));
+    event(events, together ? "trades_grouped" : "trades_ungrouped", Json{{"trades", ids}});
     return CommandResult{};
   });
 }

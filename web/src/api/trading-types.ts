@@ -232,6 +232,8 @@ export interface Trade {
   review?: TradeReview
   strategy_id?: string | null
   strategy_review?: TradeReview | null
+  /** The whole trade it is in, by its first round trip's ID (its own unless rolled, adjusted or grouped); absent from older servers. */
+  group?: string
   symbol: string
   underlying: string
   expiry: string
@@ -328,10 +330,34 @@ export interface ShareTrade {
 export interface StockFill { id: string; symbol: string; shares: number; price: Money; time: string; source: ShareSource; option: string | null }
 /** A dividend paid on (negative: charged to short) shares held into its ex-date. */
 export interface DividendPaid { symbol: string; ex_date: string; per_share: Money; shares: number; amount: Money; time: string }
+/** A trade with more than one entry: a roll, an adjustment or round trips the account grouped. */
+export interface WholeTrade {
+  id: string
+  attempt: number
+  underlying: string
+  status: "open" | "closed"
+  opened: string
+  closed: string | null
+  trading_day: string | null
+  /** Its round trips' trade IDs, in the order they opened. */
+  round_trips: string[]
+  /** The orders that opened them. */
+  entries: number
+  gross: Money
+  fees: Money
+  net: Money
+  /** The open round trips' unrealized P&L; null when closed or a mark is missing. */
+  unrealised: Money | null
+  /** Its whole-trade review: from the first entry, or from `review_since` when the account grouped it later. */
+  review: TradeReview | null
+  review_since: string | null
+}
 export interface TradesResponse {
   account_version: string
   attempt: number
   trades: Trade[]
+  /** Whole trades with more than one entry, newest first; absent from older servers. */
+  groups?: WholeTrade[]
   share_trades?: ShareTrade[]
   day_notes?: Record<string, DayNote>
   /** Every change in shares and every dividend, oldest first; absent from older servers. */
@@ -371,6 +397,8 @@ export type NewOrder = { tags?: string[]; note?: string } & ({
   quantity: number
   trigger?: Trigger
   bracket?: Bracket
+  /** A whole trade to join, by one of its open round trips' IDs (an adjustment). */
+  group?: string
   legs?: never
 } | {
   client_order_id: string
@@ -379,6 +407,8 @@ export type NewOrder = { tags?: string[]; note?: string } & ({
   trigger?: Trigger
   bracket?: Bracket
   exits_only?: boolean
+  /** A whole trade to join, by one of its open round trips' IDs (an adjustment). */
+  group?: string
   /** Units of the strategy. */
   quantity: number
   symbol?: never
@@ -405,6 +435,8 @@ export interface Order {
   tags?: string[]
   note?: string
   exits_only?: boolean
+  /** The whole trade it joins; null for none, absent from older servers. */
+  group?: string | null
   id: string
   client_order_id: string
   /** Null for a multi-leg order; see `legs`. */
@@ -550,6 +582,8 @@ export interface Portfolio {
   liquidity_used?: LiquidityUsed[]
   /** Contracts and shares traded today and no longer held; absent from older servers. */
   closed?: ClosedAttribution[]
+  /** Held positions by the whole trade each is in; absent from older servers. */
+  strategies?: HeldStrategy[]
 }
 /** An OSI symbol, or the underlying for shares, with the signed contracts or shares a part takes. */
 export interface MarginLeg { symbol: string; quantity: number }
@@ -564,6 +598,21 @@ export interface MarginScan { loss: Money; spot_percent: number; vol_points: num
 /** Strategy margin's parts add up to the requirement; portfolio margin's scan sets it. */
 export interface MarginUnderlying { underlying: string; requirement: Money; parts: MarginPart[]; scan: MarginScan | null }
 export interface LiquidityUsed { symbol: string; bid_size: number; ask_size: number; bid_left: number; ask_left: number }
+/** A whole trade still held: its open legs, and every round trip of it in its realized P&L and fees. */
+export interface HeldStrategy {
+  id: string
+  underlying: string
+  opened: string
+  legs: { symbol: string; quantity: number; trade: string }[]
+  round_trips: number
+  entries: number
+  realised: Money
+  fees: Money
+  unrealised: Money | null
+  net: Money | null
+}
+/** The trade each named round trip is in after grouping or ungrouping. */
+export interface GroupResponse { account_version: string; groups: Record<string, string> }
 export interface RiskCaps { dollar_delta: number; vega: number }
 export interface Limits {
   max_order_contracts: number

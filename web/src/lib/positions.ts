@@ -1,4 +1,4 @@
-import type { Fill, Order, Position, Side, Trade } from "../api/trading-types"
+import type { Fill, Order, Position, Side, Trade, WholeTrade } from "../api/trading-types"
 import type { ChainRow } from "../api/types"
 import { expiryLabel } from "./format"
 import { riskProfile, strategyLabel, type RiskProfile, type StrategyLeg } from "./strategy"
@@ -165,11 +165,13 @@ export function rollPlan(group: StrategyGroup, target: { id: string; strikes: re
   return { units: group.units, legs: [...closingPlan(group).legs, ...opening] }
 }
 
-/** A multi-leg order's round trips, as the journal groups them. */
+/** A multi-leg order's round trips, or a whole trade's, as the journal groups them. */
 export interface TradeGroup {
   key: string
-  /** The opening multi-leg order, or null for a single contract's round trip. */
+  /** The opening multi-leg order, or null for a single contract's round trip or a whole trade. */
   order: Order | null
+  /** The whole trade (a roll, an adjustment or grouped legs), from the server; absent otherwise. */
+  whole?: WholeTrade | null
   label: string
   trades: Trade[]
   status: "open" | "closed"
@@ -180,20 +182,24 @@ export interface TradeGroup {
 }
 
 /**
- * Round trips grouped by the order that opened them: a strategy's legs become one
- * row, other trades stay alone. Newest first, as the trades arrive.
+ * Round trips grouped by the whole trade they are in, when the server lists it (a
+ * roll, an adjustment or legs the account grouped), else by the order that opened
+ * them: a strategy's legs become one row, other trades stay alone. Newest first,
+ * as the trades arrive.
  */
-export function tradeGroups(trades: readonly Trade[], fills: readonly Fill[], orders: readonly Order[]): TradeGroup[] {
+export function tradeGroups(trades: readonly Trade[], fills: readonly Fill[], orders: readonly Order[], wholes: readonly WholeTrade[] = []): TradeGroup[] {
   const fillOrder = new Map(fills.map((f) => [f.id, f.order_id]))
   const byId = new Map(orders.map((o) => [o.id, o]))
+  const byWhole = new Map(wholes.map((w) => [w.id, w]))
   const groups = new Map<string, TradeGroup>()
   for (const trade of trades) {
+    const whole = trade.group ? byWhole.get(trade.group) ?? null : null
     const opening = byId.get(fillOrder.get(trade.fills[0] ?? "") ?? "")
-    const combo = opening?.legs && opening.legs.length >= 2 ? opening : null
-    const key = combo ? `order-${combo.id}` : `trade-${trade.id}`
+    const combo = !whole && opening?.legs && opening.legs.length >= 2 ? opening : null
+    const key = whole ? `whole-${whole.id}` : combo ? `order-${combo.id}` : `trade-${trade.id}`
     let group = groups.get(key)
     if (!group) {
-      group = { key, order: combo, label: "", trades: [], status: "closed", opened: trade.opened, closed: trade.closed, net: 0, unrealised: 0 }
+      group = { key, order: combo, whole, label: "", trades: [], status: "closed", opened: trade.opened, closed: trade.closed, net: 0, unrealised: 0 }
       groups.set(key, group)
     }
     group.trades.push(trade)
@@ -214,6 +220,11 @@ export function tradeGroups(trades: readonly Trade[], fills: readonly Fill[], or
         expiry: `${t.expiry}${t.settlement}`, quote: null }] : []
     })
     group.label = legs.length ? `${strategyLabel(legs)} · ${title(members[0]!.underlying, legs)}` : ""
+    if (group.whole) {
+      const all: StrategyLeg[] = members.map((t) => ({ symbol: t.symbol, underlying: t.underlying, side: t.direction === "long" ? "buy" : "sell",
+        ratio: 1, type: t.type, strike: t.strike, expiry: `${t.expiry}${t.settlement}`, quote: null }))
+      group.label = `Whole trade · ${title(members[0]!.underlying, all)}`
+    }
   }
   return [...groups.values()]
 }
