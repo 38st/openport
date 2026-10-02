@@ -3879,7 +3879,7 @@
     },
     "responses": {
       "Error": {
-        "description": "Failure with a stable reason code and optional evidence. 400 invalid request; 403 authentication/scope; 404 missing resource; 409 conflict (a client ID reused with other terms, a stale limits revision LIMITS_REVISION, a server that keeps a single account ACCOUNTS_UNSUPPORTED); 422 simulator rejection; 503 inbox full or unavailable. Orders may retry using identical client_order_id and terms.",
+        "description": "Failure with a stable reason code and optional evidence. 400 invalid request or INVALID_RULES; 403 authentication/scope; 404 missing resource; 409 conflict (a client ID reused with other terms, a stale limits revision LIMITS_REVISION, a server that keeps a single account ACCOUNTS_UNSUPPORTED); 422 simulator rejection (including ACCOUNT_TYPE for cash/IRA restrictions); 503 inbox full or unavailable. Orders may retry using identical client_order_id and terms.",
         "content": {
           "application/json": {
             "schema": {
@@ -7733,6 +7733,37 @@
               }
             ]
           },
+          "account_type": {
+            "anyOf": [
+              {
+                "const": "margin",
+                "type": "string"
+              },
+              {
+                "const": "cash",
+                "type": "string"
+              },
+              {
+                "const": "ira",
+                "type": "string"
+              }
+            ],
+            "description": "margin (default): anything its margin allows. cash: calls sold only against 100 shares each, short puts secured with their strike, no spreads netted, no short sales. ira: as cash, but spreads net and a long call covers a short one. Cash and IRA accounts use strategy margin and enforce buying power."
+          },
+          "house_margin_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 400,
+            "default": 0,
+            "description": "A broker's house margin, in percent on top of Reg T's naked requirement and a short sale's margin (strategy), or of each underlying's scan (portfolio)."
+          },
+          "pm_vol_shock": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50,
+            "default": 0,
+            "description": "Portfolio margin also scans implied volatility this many points up and down."
+          },
           "buying_power": {
             "type": "boolean"
           },
@@ -7962,9 +7993,13 @@
               {
                 "const": "long",
                 "type": "string"
+              },
+              {
+                "const": "cash_secured",
+                "type": "string"
               }
             ],
-            "description": "naked: a short option alone; vertical: a short with the long that covers it; covered: a short call against 100 long shares or a short put against 100 short shares; straddle: a short put with a short call; short_shares: shares no long call protects; protected_shares: 100 short shares with a long call; worst_loss: positions expiring together at their worst loss at expiry; long: paid in full."
+            "description": "naked: a short option alone; vertical: a short with the long that covers it; covered: a short call against 100 long shares or a short put against 100 short shares; straddle: a short put with a short call; short_shares: shares no long call protects; protected_shares: 100 short shares with a long call; worst_loss: positions expiring together at their worst loss at expiry; long: paid in full; cash_secured: a cash account's or IRA's short put, holding its strike."
           },
           "legs": {
             "type": "array",
@@ -10057,6 +10092,35 @@
                   "conservative"
                 ],
                 "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
+              },
+              "margin": {
+                "type": "string",
+                "enum": [
+                  "strategy",
+                  "portfolio"
+                ],
+                "description": "Override the margin mode of the plan or rules, as the account's broker sets it."
+              },
+              "account_type": {
+                "type": "string",
+                "enum": [
+                  "margin",
+                  "cash",
+                  "ira"
+                ],
+                "description": "Override the account type of the plan or rules; a cash account or IRA needs strategy margin and enforced buying power."
+              },
+              "house_margin_percent": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 400,
+                "description": "Override the broker's house margin, in percent on top of Reg T's naked and short-sale requirements, or of the portfolio scan."
+              },
+              "pm_vol_shock": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50,
+                "description": "Override portfolio margin's implied-volatility shock, in points up and down."
               },
               "reason": {
                 "type": "string"
@@ -12233,6 +12297,35 @@
                   "conservative"
                 ],
                 "description": "Override execution settings for the new attempt: As displayed uses zeros; Conservative uses 1000 ms latency, 1 impact tick and 1 slippage tick."
+              },
+              "margin": {
+                "type": "string",
+                "enum": [
+                  "strategy",
+                  "portfolio"
+                ],
+                "description": "Override the margin mode of the plan or rules, as the account's broker sets it."
+              },
+              "account_type": {
+                "type": "string",
+                "enum": [
+                  "margin",
+                  "cash",
+                  "ira"
+                ],
+                "description": "Override the account type of the plan or rules; a cash account or IRA needs strategy margin and enforced buying power."
+              },
+              "house_margin_percent": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 400,
+                "description": "Override the broker's house margin, in percent on top of Reg T's naked and short-sale requirements, or of the portfolio scan."
+              },
+              "pm_vol_shock": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 50,
+                "description": "Override portfolio margin's implied-volatility shock, in points up and down."
               },
               "name": {
                 "type": "string",

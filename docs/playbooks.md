@@ -287,8 +287,9 @@ do not reconstruct historical events. `--scenario-dir` supplies custom scenarios
 `--plan` takes an evaluation preset ID, or a JSON file with `initial_cash`, `rules`
 and optional `fee_per_contract`. The API accepts that object directly as `plan`.
 Custom rule money uses decimal strings; drawdown mode is `intraday`, `end_of_day` or
-`static`, margin is `strategy` or `portfolio`, and `expiry_cutoff` is nanoseconds. The
-plan objectives and daily loss rules take their journal names and forms:
+`static`, margin is `strategy` or `portfolio`, `account_type` is `margin`, `cash` or `ira`
+(with `house_margin_percent` and `pm_vol_shock` as whole numbers), and `expiry_cutoff` is
+nanoseconds. The plan objectives and daily loss rules take their journal names and forms:
 `daily_loss_limit` and `profitable_day_profit` are decimal strings, `profit_basis`,
 `daily_loss_basis`, `daily_loss_action` and `consistency_basis` their API words,
 `lock_at_start` true or false, and `consistency_percent`, `min_trading_days`,

@@ -318,6 +318,27 @@ server::ApiResponse call(server::BacktestHost& host, const server::ApiRequest& r
   if (capture) test::capture_contract("backtests", request.method, request.target, response);
   return response;
 }
+TEST(Backtest, CustomPlansAcceptAndValidateAccountMargin) {
+  auto definitions = catalogue();
+  const auto& scenarios = providers::builtin_scenarios();
+  json rules{{"profit_target", "100"}, {"buying_power", true}, {"account_type", "ira"}, {"house_margin_percent", 25}, {"pm_vol_shock", 5}};
+  const auto parse = [&](const json& settings) {
+    return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"}, {"rules", settings}}},
+                                  {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
+  };
+  const auto parsed = parse(rules);
+  EXPECT_EQ(parsed.config.rules.account_type, trading::AccountType::Ira);
+  EXPECT_EQ(parsed.config.rules.house_margin_percent, 25);
+  EXPECT_EQ(parsed.config.rules.pm_vol_shock, 5);
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"account_type", "unknown"}, {"house_margin_percent", 401}, {"pm_vol_shock", 51},
+      {"pm_vol_shock", 1.5}, {"margin", "portfolio"}, {"buying_power", false}}) {
+    auto invalid = rules;
+    invalid[key] = value;
+    EXPECT_THROW((void)parse(invalid), std::exception);
+  }
+}
+
 TEST(BacktestApi, ContractFixture) {
   test::RecordingFile storage;
   const server::BacktestHost::Options options{storage.directory / "reports", storage.directory, {}, {}, {}, true};

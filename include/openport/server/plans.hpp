@@ -39,7 +39,8 @@ struct PlanPreset {
 /// The preset with this display name (`AccountRules::plan`), if any.
 [[nodiscard]] const PlanPreset* find_plan_named(std::string_view name);
 /// Whether an attempt that started with this balance and these rules is the preset's
-/// own. Only the fill model's execution settings (slippage, latency, impact) may differ.
+/// own. Only the fill model's execution settings (slippage, latency, impact) and the
+/// account's margin (mode, account type, house margin, vol shock) may differ.
 [[nodiscard]] bool follows_plan(const PlanPreset& plan, trading::Money initial_cash, const trading::AccountRules& rules);
 
 }  // namespace openport::server

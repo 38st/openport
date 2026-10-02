@@ -76,6 +76,8 @@ json rules_json(const AccountRules& r) {
           {"profitable_day_profit", positive(r.profitable_day_profit)}, {"day_end", clock_text(r.day_end_minutes)},
           {"buy_only", r.buy_only}, {"defined_risk", r.defined_risk}, {"buying_power", r.buying_power},
           {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin == MarginMode::Portfolio ? "portfolio" : "strategy"},
+          {"account_type", r.account_type == AccountType::Cash ? "cash" : r.account_type == AccountType::Ira ? "ira" : "margin"},
+          {"house_margin_percent", r.house_margin_percent}, {"pm_vol_shock", r.pm_vol_shock},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
   if (r.fill_latency_ms != 0) result["fill_latency_ms"] = r.fill_latency_ms;
@@ -490,7 +492,9 @@ Money average_price(const Position& position) {
 /// The requirement by underlying: strategy margin's parts, each naming the
 /// positions it takes, or the portfolio-margin scan's worst point.
 json margin_json(const std::vector<MarginUnderlying>& margin) {
-  constexpr const char* kinds[] = {"naked", "vertical", "covered", "straddle", "short_shares", "protected_shares", "worst_loss", "long"};
+  constexpr const char* kinds[] = {"naked", "vertical", "covered", "straddle", "short_shares", "protected_shares", "worst_loss", "long",
+                                   "cash_secured"};
+  static_assert(std::size(kinds) == static_cast<std::size_t>(MarginPartKind::CashSecured) + 1);
   json result = json::array();
   for (const auto& item : margin) {
     json parts = json::array();
@@ -1045,6 +1049,7 @@ json risk_json(const TradingView& view) {
 }
 
 int reason_status(Reason reason) {
+  if (reason == Reason::INVALID_RULES) return 400;
   if (reason == Reason::UNKNOWN_ORDER || reason == Reason::UNKNOWN_CONTRACT || reason == Reason::UNKNOWN_TRADE) return 404;
   if (reason == Reason::ORDER_TERMINAL || reason == Reason::DUPLICATE_CLIENT_ID) return 409;
   if (reason == Reason::JOURNAL_IO || reason == Reason::JOURNAL_CORRUPT ||
@@ -1350,13 +1355,32 @@ FeeSchedule parse_fee_schedule(const json& j) {
   }
   return f;
 }
+/// The margin settings present in `j`, in rules or beside a plan: the margin
+/// mode, account type, house margin and portfolio margin's vol shock.
+void margin_fields(const json& j, AccountRules& rules) try {
+  if (j.contains("margin")) {
+    const auto margin = string_field(j, "margin");
+    if (margin != "strategy" && margin != "portfolio") throw std::invalid_argument("margin must be strategy or portfolio");
+    rules.margin = margin == "portfolio" ? MarginMode::Portfolio : MarginMode::Strategy;
+  }
+  if (j.contains("account_type")) {
+    const auto type = string_field(j, "account_type");
+    if (type != "margin" && type != "cash" && type != "ira") throw std::invalid_argument("account_type must be margin, cash or ira");
+    rules.account_type = type == "cash" ? AccountType::Cash : type == "ira" ? AccountType::Ira : AccountType::Margin;
+  }
+  if (j.contains("house_margin_percent")) rules.house_margin_percent = integer_field(j, "house_margin_percent");
+  if (j.contains("pm_vol_shock")) rules.pm_vol_shock = integer_field(j, "pm_vol_shock");
+} catch (const std::exception& error) {
+  throw TradingError(Reason::INVALID_RULES, error.what());
+}
 /// Custom rules: nullable money for an absent target/drawdown, like rules_json.
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
          {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
-          "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees"});
+          "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
+          "account_type", "house_margin_percent", "pm_vol_shock"});
   AccountRules rules;
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
@@ -1392,11 +1416,7 @@ AccountRules parse_rules(const json& j) {
   if (j.contains("fill_latency_ms")) rules.fill_latency_ms = integer_field(j, "fill_latency_ms");
   if (j.contains("impact_ticks")) rules.impact_ticks = integer_field(j, "impact_ticks");
   if (j.contains("fees") && !j.at("fees").is_null()) rules.fees = parse_fee_schedule(j.at("fees"));
-  if (j.contains("margin")) {
-    const auto margin = string_field(j, "margin");
-    if (margin != "strategy" && margin != "portfolio") throw std::invalid_argument("margin must be strategy or portfolio");
-    rules.margin = margin == "portfolio" ? MarginMode::Portfolio : MarginMode::Strategy;
-  }
+  margin_fields(j, rules);
   rules.buying_power = boolean_field(j, "buying_power");
   // Out of range is a rule error (INVALID_RULES from validate_rules), not a malformed
   // request; saturate first so the conversion to nanoseconds cannot overflow.
@@ -1410,6 +1430,12 @@ void check_plan_name(Money initial_cash, const AccountRules& rules) {
   if (const auto* preset = find_plan_named(rules.plan); preset && !follows_plan(*preset, initial_cash, rules))
     throw TradingError(Reason::INVALID_RULES, "\"" + rules.plan + "\" is a preset's name: reset with plan " + preset->id +
                        ", or give these rules another name");
+}
+/// The account's margin, as a broker sets it, can stand beside a plan or custom
+/// rules, as the fill model does; the evaluation rules stay intact.
+void margin_model(const json& body, AccountRules& rules) {
+  margin_fields(body, rules);
+  validate_rules(rules);
 }
 /// Presets override only execution settings; all evaluation rules stay intact.
 void fill_model(const json& body, AccountRules& rules) {
@@ -1632,7 +1658,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (path == "/api/accounts") {
     // A name, and either a preset plan or a starting balance and complete rules.
-    fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model"});
+    fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model", "margin", "account_type",
+                            "house_margin_percent", "pm_vol_shock"});
     command.kind = TradingCommand::Kind::CreateAccount;
     command.name = string_field(body, "name");
     if (!valid_account_name(command.name))
@@ -1657,6 +1684,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     }
     fill_model(body, command.rules);
     fee_model(body, command.rules);
+    margin_model(body, command.rules);
     return command;
   }
   if (path == "/api/orders" || path == "/api/orders/preview") {
@@ -1776,7 +1804,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     command.reason = string_field(body, "reason");
   } else if (path == "/api/account/reset") {
     // Either a preset ID, or a custom starting balance and complete rules.
-    fields(body, {"reason"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model"});
+    fields(body, {"reason"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model", "margin", "account_type",
+                              "house_margin_percent", "pm_vol_shock"});
     command.kind = TradingCommand::Kind::ResetAccount;
     command.reason = string_field(body, "reason");
     if (body.contains("plan")) {
@@ -1797,6 +1826,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     }
     fill_model(body, command.rules);
     fee_model(body, command.rules);
+    margin_model(body, command.rules);
   } else if (path == "/api/account/payout") {
     fields(body, {"amount"});
     command.kind = TradingCommand::Kind::Payout;

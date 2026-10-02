@@ -127,6 +127,11 @@ bool follows_plan(const PlanPreset& plan, Money initial_cash, const AccountRules
   execution.fill_latency_ms = plan.rules.fill_latency_ms;
   execution.impact_ticks = plan.rules.impact_ticks;
   execution.fees = plan.rules.fees;
+  // The account's margin is the trader's broker's, not the plan's.
+  execution.margin = plan.rules.margin;
+  execution.account_type = plan.rules.account_type;
+  execution.house_margin_percent = plan.rules.house_margin_percent;
+  execution.pm_vol_shock = plan.rules.pm_vol_shock;
   return initial_cash == plan.initial_cash && execution == plan.rules;
 }
 

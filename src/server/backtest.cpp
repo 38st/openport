@@ -298,6 +298,9 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       } else if (key == "margin") {
         if (value != "strategy" && value != "portfolio") throw std::invalid_argument("Unknown margin");
         rules[key] = value == "strategy" ? trading::MarginMode::Strategy : trading::MarginMode::Portfolio;
+      } else if (key == "account_type") {
+        if (value != "margin" && value != "cash" && value != "ira") throw std::invalid_argument("Unknown account_type");
+        rules[key] = value;
       } else if (key == "phase" || key == "payouts") throw std::invalid_argument("Funded rules are not evaluation rules");
       else {
         if (key == "expiry_cutoff" && !value.is_number_integer()) throw std::invalid_argument("expiry_cutoff must be integer nanoseconds");
