@@ -31,6 +31,7 @@ export interface PayoutRules {
   /** Per payout number; the last repeats; empty is uncapped. */
   caps: Money[]
 }
+export type AccountType = "margin" | "cash" | "ira"
 export interface AccountRules {
   plan: string | null
   phase: "evaluation" | "funded"
@@ -66,6 +67,12 @@ export interface AccountRules {
   /** Absent under the flat fee and on older servers. */
   fees?: FeeSchedule
   margin?: "strategy" | "portfolio"
+  /** What the account may hold; absent from older servers (a margin account). */
+  account_type?: AccountType
+  /** A broker's house margin in percent on top of Reg T, or of the portfolio scan. */
+  house_margin_percent?: number
+  /** Portfolio margin's implied-volatility shock, in points up and down. */
+  pm_vol_shock?: number
   buying_power: boolean
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null
@@ -458,7 +465,14 @@ export type FillModel = "as_displayed" | "conservative"
 export type FeeModel = "flat" | "itemized"
 export type AccountRulesInput = Pick<AccountRules, "profit_target" | "max_drawdown" | "drawdown_mode" | "buy_only" | "buying_power" | "expiry_cutoff_seconds">
   & Partial<Omit<AccountRules, "fees">> & { fees?: Partial<FeeSchedule> | null }
-export type ResetRequest = { reason: string; fill_model?: FillModel; fee_model?: FeeModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
+/** The account's margin as its broker sets it, beside a plan or custom rules. */
+export interface MarginModel {
+  margin?: "strategy" | "portfolio"
+  account_type?: AccountType
+  house_margin_percent?: number
+  pm_vol_shock?: number
+}
+export type ResetRequest = { reason: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export type Side = "buy" | "sell"
 /**
  * Option triggers compare the order's executable side; underlying ones compare spot, or
@@ -704,7 +718,7 @@ export interface Portfolio {
 export interface MarginLeg { symbol: string; quantity: number }
 /** Positions that hold part of an underlying's strategy-margin requirement together. */
 export interface MarginPart {
-  kind: "naked" | "vertical" | "covered" | "straddle" | "short_shares" | "protected_shares" | "worst_loss" | "long"
+  kind: "naked" | "vertical" | "covered" | "straddle" | "short_shares" | "protected_shares" | "worst_loss" | "long" | "cash_secured"
   legs: MarginLeg[]
   requirement: Money
 }
@@ -797,7 +811,7 @@ export interface OrderChange { quantity?: number; limit_price?: Money; trigger_l
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
 export interface AccountListItem { id: string; name: string; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
-export type CreateAccountRequest = { name: string; fill_model?: FillModel; fee_model?: FeeModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
+export type CreateAccountRequest = { name: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
 /** Delivered shares a flatten could not close, as held after it, and why. */
 export interface KeptStock { symbol: string; shares: number; reason: Decision }

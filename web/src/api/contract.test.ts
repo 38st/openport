@@ -30,6 +30,20 @@ describe("checked API core types", () => {
     const exits = /export type TradeExit = ([^\n]+)/.exec(source)![1]!
     expect(normalize(`${exits} | null`)).toBe(wireType(spec.components.schemas.Trade!.properties!.closed_by!))
   })
+  it("account margin fields match the rules and both request contracts", () => {
+    const rules = spec.components.schemas.AccountRules!.properties!
+    expect(wireType(rules.account_type!)).toBe(normalize('"margin" | "cash" | "ira"'))
+    expect(wireType(rules.margin!)).toBe(normalize('"strategy" | "portfolio"'))
+    for (const key of ["house_margin_percent", "pm_vol_shock"]) expect(wireType(rules[key]!)).toBe("integer")
+    const accountType = /export type AccountType = ([^\n]+)/.exec(source)![1]!
+    expect(normalize(accountType)).toBe(wireType(rules.account_type!))
+    const model = /export interface MarginModel \{([^}]+)\}/.exec(source)![1]!
+    for (const field of ["margin", "account_type", "house_margin_percent", "pm_vol_shock"]) {
+      expect(model).toMatch(new RegExp(`${field}\\?:`))
+      expect(source).toMatch(/export type ResetRequest = [^\n]+& MarginModel/)
+      expect(source).toMatch(/export type CreateAccountRequest = [^\n]+& MarginModel/)
+    }
+  })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus",
     "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]

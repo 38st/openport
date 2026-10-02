@@ -7,6 +7,7 @@ import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import { account, plans, status } from "../test/trading-fixtures"
+import { NewAccountDialog } from "./AccountSwitcher"
 import { ResetDialog } from "./ResetDialog"
 import { NewAccountDialog } from "./AccountSwitcher"
 
@@ -63,4 +64,60 @@ it.each([false, true])("submits the selected fill preset, preserving the default
   await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
   expect(api.resetAccount).toHaveBeenCalledWith({ plan: plan.id, reason: `Start ${plan.name}`,
     ...(conservative ? { fill_model: "conservative" } : {}) }, "open")
+})
+it("submits the margin a trader picks beside the plan, only where it differs from the plan's", async () => {
+  const plan = plans.find((entry) => entry.id === "intraday-100k")!
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial={plan.id} onClose={() => {}} />
+  </QueryClientProvider>))
+  const choose = async (label: string, value: string) => {
+    const field = [...host.querySelectorAll("label")].find((l) => l.textContent?.startsWith(label))!.querySelector("select, input") as HTMLSelectElement | HTMLInputElement
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(field), "value")!.set!
+    await act(async () => { setter.call(field, value); field.dispatchEvent(new Event(field.tagName === "SELECT" ? "change" : "input", { bubbles: true })) })
+    return field
+  }
+  const shock = () => [...host.querySelectorAll("label")].find((l) => l.textContent?.startsWith("Portfolio IV shock"))!.querySelector("input")!
+  expect(shock().disabled).toBe(true)
+  await choose("Margin", "portfolio")
+  expect(shock().disabled).toBe(false)
+  await choose("Portfolio IV shock", "5")
+  await choose("House margin %", "25")
+  expect(host.textContent).toContain("House margin adds 25% to the scan")
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(api.resetAccount).toHaveBeenLastCalledWith({ plan: plan.id, reason: `Start ${plan.name}`,
+    margin: "portfolio", house_margin_percent: 25, pm_vol_shock: 5 }, "open")
+  // A cash account keeps strategy margin, and its shock drops.
+  const margin = await choose("Account type", "cash") as HTMLSelectElement
+  expect(margin.value).toBe("cash")
+  expect(host.textContent).toContain("short puts secured with their strike")
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(api.resetAccount).toHaveBeenLastCalledWith({ plan: plan.id, reason: `Start ${plan.name}`,
+    account_type: "cash", house_margin_percent: 25 }, "open")
+})
+
+it("creates an account with the selected margin settings", async () => {
+  vi.spyOn(api, "createAccount").mockResolvedValue({ account: { id: "new", name: "Account 2", account_version: "1", plan: "Practice", equity: "100000.00" } })
+  const created = vi.fn()
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <NewAccountDialog trading={{ ...status.trading!, write: "open" }} onCreated={created} onClose={() => {}} />
+  </QueryClientProvider>))
+  await act(async () => (host.querySelector('input[value="practice"]') as HTMLInputElement).click())
+  const type = host.querySelector("select")!
+  await act(async () => { type.value = "ira"; type.dispatchEvent(new Event("change", { bubbles: true })) })
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(api.createAccount).toHaveBeenCalledWith(expect.objectContaining({ plan: "practice", account_type: "ira" }), "open")
+  expect(created).toHaveBeenCalledWith("new")
+})
+
+it("inherits a plan's margin settings until the trader changes them", async () => {
+  const plan = { ...plans.find((entry) => entry.id === "practice")!, rules: {
+    ...plans.find((entry) => entry.id === "practice")!.rules, margin: "portfolio" as const, house_margin_percent: 30, pm_vol_shock: 5,
+  } }
+  client.setQueryData(["plans"], { plans: [plan] })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial={plan.id} onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(host.textContent).toContain("House margin adds 30% to the scan")
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(api.resetAccount).toHaveBeenCalledWith({ plan: plan.id, reason: `Start ${plan.name}` }, "open")
 })

@@ -49,6 +49,15 @@ describe("margin breakdown", () => {
     expect(total).toEqual(["", "Total, with the portfolio-margin minimum until the scan is complete", "$137.50"])
   })
 
+  it("names a cash-secured put", async () => {
+    await act(async () => root.render(<MarginBreakdown margin={[
+      { underlying: "SPY", requirement: "49000.00", scan: null, parts: [
+        { kind: "cash_secured", legs: [{ symbol: "SPY   261022P00490000", quantity: -1 }], requirement: "49000.00" },
+      ] },
+    ]} />))
+    expect(rows()).toEqual([["SPY", "Cash-secured put", "−1 SPY Oct 22 490P", "$49,000.00"]])
+  })
+
   it("labels shares and contracts", () => {
     expect(marginLegLabel({ symbol: "SPY", quantity: -200 }, "SPY")).toBe("−200 SPY shares")
     expect(marginLegLabel({ symbol: "SPXW  261022P04900000", quantity: 2 }, "SPX")).toBe("+2 SPX Oct 22 4900P")

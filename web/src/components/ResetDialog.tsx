@@ -9,6 +9,7 @@ import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { customPlan, PlanEditor, planForm, type PlanForm } from "./PlanEditor"
+import { marginFacts, marginRequest, MarginSettings, planMargin, type MarginChoice } from "./MarginSettings"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
 import { Badge } from "./ui"
 
@@ -24,7 +25,7 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
     ...objectiveFacts(r),
     r.buy_only ? "Buy-only, single leg" : r.defined_risk ? "Defined risk only" : "Any strategy",
     ...(r.buying_power ? ["Buying power enforced"] : []),
-    ...(r.margin === "portfolio" ? ["Portfolio margin"] : []),
+    ...marginFacts(r),
     ...(r.slippage_ticks ? [`${r.slippage_ticks} ${r.slippage_ticks === 1 ? "tick" : "ticks"} of slippage`] : []),
     ...(r.fill_latency_ms ? [`${r.fill_latency_ms} ms fill latency on market time`] : []),
     ...(r.impact_ticks ? [`${r.impact_ticks} extra ${r.impact_ticks === 1 ? "tick" : "ticks"} per displayed-size block`] : []),
@@ -48,6 +49,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const [choice, setChoice] = useState(initial ?? "")
   const [fillModel, setFillModel] = useState<FillModel>("as_displayed")
   const [feeModel, setFeeModel] = useState<FeeModel>("flat")
+  const [margin, setMargin] = useState<MarginChoice>()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
@@ -60,6 +62,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const base = bases.find((p) => p.id === baseId) ?? bases.find((p) => p.rules.profit_target) ?? bases[0] ?? null
   const custom = choice === CUSTOM && base && form ? customPlan(form, base.rules) : null
   const ready = custom ? !("error" in custom) : selected != null
+  const planDefaults = planMargin(custom && !("error" in custom) ? custom.rules : selected?.rules)
   function chooseCustom() {
     setChoice(CUSTOM)
     if (form || !base) return
@@ -83,8 +86,9 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
         ...(fillModel === "conservative" ? { fill_model: fillModel } : {}),
         ...(feeModel === "itemized" ? { fee_model: feeModel } : {}),
       }
-      if (custom && !("error" in custom)) await api.resetAccount({ ...custom, reason: `Start ${custom.rules.plan}`, ...fill }, trading.write)
-      else if (selected) await api.resetAccount({ plan: selected.id, reason: `Start ${selected.name}`, ...fill }, trading.write)
+      const marginSettings = marginRequest(margin ?? planDefaults, planDefaults)
+      if (custom && !("error" in custom)) await api.resetAccount({ ...custom, reason: `Start ${custom.rules.plan}`, ...fill, ...marginSettings }, trading.write)
+      else if (selected) await api.resetAccount({ plan: selected.id, reason: `Start ${selected.name}`, ...fill, ...marginSettings }, trading.write)
       if (sameSession()) onClose()
     } catch (failure) {
       if (sameSession()) setError(failure)
@@ -170,6 +174,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
           : "Fill immediately at the displayed bid or ask, up to the available displayed size, with no slippage."}
           {" "}Applies to this account’s new attempt. Neither model knows queue position, hidden liquidity, or whether the market would have traded at all.</p>
         <FeeModelPicker value={feeModel} onChange={setFeeModel} disabled={pending} flat={trading.fee_per_contract} />
+        <MarginSettings value={margin ?? planDefaults} onChange={setMargin} disabled={pending} />
         {plans.isLoading && <p className="text-sm text-muted">Loading plans…</p>}
         <TradingError error={error} />
         <button type="submit" className="trade-button" disabled={!ready || pending || writeBlocked(trading, token)}>
