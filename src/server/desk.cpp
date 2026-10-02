@@ -1285,6 +1285,10 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           else result = session.trade_stock(c.symbol, held < 0 ? shares : -shares, market_time_);
           break;
         }
+        case TradingCommand::Kind::Abandon: result = session.abandon(c.symbol, market_time_); break;
+        case TradingCommand::Kind::ExerciseInstruction:
+          result = session.instruct_exercise(c.symbol, c.do_not_exercise, market_time_);
+          break;
         case TradingCommand::Kind::CreateSandbox:
         case TradingCommand::Kind::CreateAccount: break;  // handled above
       }

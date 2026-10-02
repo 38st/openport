@@ -146,7 +146,7 @@ TEST(TradingDelivery, PortfolioMarginScansDeliveredSharesAndReleasesItOnClose) {
 }
 
 TEST(TradingDelivery, ExpiryExercisesAndAssignsEquityOptionsACentInTheMoney) {
-  const auto call = *md::parse_osi("SPY260922C00500000");  // expires today at 16:00
+  const auto call = *md::parse_osi("SPY260922C00500000");  // expires today at 16:15
   const auto put = *md::parse_osi("SPY260922P00500000");
   Spy f;
   TradingSession s(roomy(), f.time);
@@ -637,6 +637,125 @@ TEST(TradingDelivery, AFlattenAfterTheStockCloseClosesTheOptionsAndSaysWhichShar
     EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
     EXPECT_EQ(s.snapshot()->stock_fills.size(), fills);
   }
+}
+
+const MarkedPosition* position(const TradingSession& s, const md::OptionContract& c) {
+  for (const auto& p : s.snapshot()->positions) if (p.position.contract.osi_symbol() == c.osi_symbol()) return &p;
+  return nullptr;
+}
+
+TEST(TradingDelivery, ADoNotExerciseInstructionLetsAnInTheMoneyLongExpireWorthless) {
+  const auto call = *md::parse_osi("SPY260922C00500000");  // expires today at 16:15
+  const auto put = *md::parse_osi("SPY260922P00520000");
+  const auto index = *md::parse_osi("SPXW260922C05000000");
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  f.define(s, call);
+  f.define(s, put);
+  ASSERT_TRUE(s.define(index, f.time).decision.ok());
+  f.quote(s, call, "10.00", "10.20");
+  f.quote(s, put, "10.00", "10.20");
+  ASSERT_TRUE(s.submit(f.market("calls", call, 2), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("put", put, 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.instruct_exercise(put.osi_symbol(), true, f.time).decision.code, Reason::INVALID_ORDER) << "a short";
+  EXPECT_EQ(s.instruct_exercise(index.osi_symbol(), true, f.time).decision.code, Reason::INVALID_ORDER) << "no long position";
+  EXPECT_EQ(s.instruct_exercise("SPY   260922C00510000", true, f.time).decision.code, Reason::UNKNOWN_CONTRACT);
+  ASSERT_TRUE(s.instruct_exercise(call.osi_symbol(), true, f.time).decision.ok());
+  ASSERT_NE(position(s, call), nullptr);
+  EXPECT_TRUE(position(s, call)->do_not_exercise);
+  EXPECT_FALSE(position(s, put)->do_not_exercise);
+  f.time = call.expiry_time();
+  s.on_quotes({}, {}, f.time);
+  const auto cash = s.snapshot()->account.cash;
+  // Ten dollars in the money, the calls expire worthless as instructed: no shares.
+  ASSERT_TRUE(s.settle(call.osi_symbol(), m("510"), f.time).decision.ok());
+  EXPECT_EQ(stock(s, "SPY"), nullptr);
+  EXPECT_EQ(s.snapshot()->account.cash, cash);
+  EXPECT_EQ(s.snapshot()->closures.back().kind, ClosureKind::Settlement);
+  EXPECT_EQ(s.snapshot()->closures.back().price, Money{});
+  // The short put is assigned as usual: 100 shares bought at 510.
+  ASSERT_TRUE(s.settle(put.osi_symbol(), m("510"), f.time).decision.ok());
+  ASSERT_NE(stock(s, "SPY"), nullptr);
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
+}
+
+TEST(TradingDelivery, AnExerciseInstructionCanBeWithdrawnEndsWithThePositionAndRecovers) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-delivery-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "session.jsonl").string();
+  const auto call = *md::parse_osi("SPY260922C00500000");
+  Spy f;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(path);
+    TradingSession s(roomy(), f.time, journal);
+    f.define(s, call);
+    f.quote(s, call, "10.00", "10.20");
+    ASSERT_TRUE(s.submit(f.market("calls", call, 2), f.time).decision.ok());
+    ASSERT_TRUE(s.instruct_exercise(call.osi_symbol(), true, f.time).decision.ok());
+    ASSERT_TRUE(s.instruct_exercise(call.osi_symbol(), false, f.time).decision.ok());
+    EXPECT_FALSE(position(s, call)->do_not_exercise);
+    ASSERT_TRUE(s.instruct_exercise(call.osi_symbol(), true, f.time).decision.ok());
+    // Selling the position ends the instruction; a new long is exercised as usual.
+    ASSERT_TRUE(s.submit(f.market("sell", call, 2, Side::Sell), f.time).decision.ok());
+    ASSERT_TRUE(s.submit(f.market("again", call, 1), f.time).decision.ok());
+    EXPECT_FALSE(position(s, call)->do_not_exercise);
+    ASSERT_TRUE(s.instruct_exercise(call.osi_symbol(), true, f.time).decision.ok());
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(path, head));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  EXPECT_TRUE(position(recovered, call)->do_not_exercise);
+  f.time = call.expiry_time();
+  recovered.on_quotes({}, {}, f.time);
+  ASSERT_TRUE(recovered.settle(call.osi_symbol(), m("510"), f.time).decision.ok());
+  EXPECT_EQ(stock(recovered, "SPY"), nullptr);
+  std::filesystem::remove_all(directory);
+}
+
+TEST(TradingDelivery, ExerciseInstructionsForfeitCashSettlementAndWithdrawalRestoresIt) {
+  for (const bool withdraw : {false, true}) {
+    test::ScriptedMarket f;
+    f.contract = *md::parse_osi("SPXW260922C05000000");
+    TradingSession s(roomy(), f.time);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("long", 1), f.time).decision.ok());
+    ASSERT_TRUE(s.trip_kill("pause", f.time).decision.ok());
+    ASSERT_TRUE(s.instruct_exercise(f.symbol(), true, f.time).decision.ok());
+    if (withdraw) { ASSERT_TRUE(s.instruct_exercise(f.symbol(), false, f.time).decision.ok()); }
+    const auto cash = s.snapshot()->account.cash;
+    f.time = f.contract.expiry_time();
+    ASSERT_TRUE(s.settle(f.symbol(), m("5010"), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->account.cash, cash + (withdraw ? m("1000") : Money{}));
+    EXPECT_EQ(s.snapshot()->account.realised, withdraw ? m("580") : m("-420"));
+    EXPECT_EQ(s.snapshot()->closures.back().price, withdraw ? m("10") : Money{});
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_TRUE(s.snapshot()->stocks.empty());
+    EXPECT_EQ(s.snapshot()->evaluation.day_close_equity, s.snapshot()->equity);
+    EXPECT_NEAR(s.snapshot()->attribution.total(), (s.snapshot()->equity - s.snapshot()->start_of_day_equity).dollars(), 1e-6);
+  }
+}
+
+TEST(TradingDelivery, PartialExerciseKeepsTheInstructionAndFullExerciseClearsIt) {
+  const auto call = *md::parse_osi("SPY260922C00500000");
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  f.define(s, call);
+  f.quote(s, call, "10.00", "10.20");
+  ASSERT_TRUE(s.submit(f.market("long", call, 2), f.time).decision.ok());
+  ASSERT_TRUE(s.instruct_exercise(call.osi_symbol(), true, f.time).decision.ok());
+  for (const auto& warning : s.warnings()) EXPECT_NE(warning.code, "EXPIRY_DELIVERY");
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  EXPECT_TRUE(position(s, call)->do_not_exercise);
+  ASSERT_TRUE(s.exercise(call.osi_symbol(), 1, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("again", call, 1), f.time).decision.ok());
+  EXPECT_FALSE(position(s, call)->do_not_exercise);
+  ASSERT_TRUE(s.instruct_exercise(call.osi_symbol(), true, f.time).decision.ok());
+  ASSERT_TRUE(s.reset_account(m("100000"), {}, "new attempt", f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("reset long", call, 1), f.time).decision.ok());
+  EXPECT_FALSE(position(s, call)->do_not_exercise);
 }
 
 }  // namespace

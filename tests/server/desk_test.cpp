@@ -1656,4 +1656,80 @@ TEST(ReplayRun, AnActorRemovedFromOneRecordIsADifference) {
   EXPECT_FALSE(verified.matched);
   EXPECT_NE(verified.message.find("First differing transaction 1 (session_start)"), std::string::npos) << verified.message;
 }
+
+TEST(ReproducibleRun, PositionDisposalReplaysRecoversAndKeepsSparseCommandFields) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPXW260922C05000000");
+  const auto other = *md::parse_osi("SPXW260922C05005000");
+  auto header = test::recording_header();
+  header.started = market.time;
+  header.capabilities.delay = 0s;
+  header.capabilities.poll_interval = 1s;
+  md::Timestamp receipt = market.time;
+  md::RecordingSink::Options recording;
+  recording.clock = [&] { return receipt; };
+  test::DiscardEvents discard;
+  md::RecordingSink sink(file.path, header, discard, recording);
+  sink.publish(md::ContractDefinition{0, market.contract});
+  sink.publish(md::ContractDefinition{1, other});
+  for (const auto time : {market.time, market.time + md::kNanosPerSecond, market.contract.expiry_time()}) {
+    receipt = time;
+    sink.publish(md::UnderlyingQuote{"SPX", time, 5010, 5010, 5010});
+    sink.publish(md::OptionQuote{0, time, 10, 10.2, 10, 10});
+    sink.publish(md::OptionQuote{1, time, time == market.time ? 5.0 : 0.0, 5.2, time == market.time ? 10.0 : 0.0, 10});
+    sink.publish(md::SnapshotComplete{"SPX", time});
+  }
+  sink.close();
+  server::TradingCommand command;
+  json serialized = command;
+  EXPECT_FALSE(serialized.contains("do_not_exercise"));
+  EXPECT_FALSE(serialized.get<server::TradingCommand>().do_not_exercise) << "older command inputs have no field";
+  std::string golden;
+  for (const auto* name : {"first", "second"}) {
+    const auto directory = file.directory / name;
+    std::filesystem::create_directory(directory);
+    server::Engine::Options options;
+    options.paper_journal = directory / "main.jsonl";
+    server::ReplayHost host({file.directory, options, false});
+    const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 0}, {"paused", true}});
+    ASSERT_EQ(started.status, 201) << started.body;
+    const auto id = json::parse(started.body).at("replay").at("id").get<std::string>();
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+    for (const auto& c : {market.contract, other}) {
+      const auto bought = replay_call(host, "POST", "/api/replay/orders", {{"client_order_id", c.osi_symbol()}, {"symbol", c.osi_symbol()},
+          {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}});
+      ASSERT_EQ(bought.status, 201) << bought.body;
+    }
+    for (const bool instructed : {true, false, true}) {
+      const auto result = replay_call(host, "POST", "/api/replay/positions/instruction", {{"symbol", market.symbol()}, {"do_not_exercise", instructed}});
+      ASSERT_EQ(result.status, 200) << result.body;
+      EXPECT_EQ(json::parse(result.body).at("positions").at(0).at("do_not_exercise"), instructed);
+    }
+    auto journal = directory / "replays" / (id + ".jsonl");
+    auto recovered = trading::TradingSession::recover(trading::FileJournal::read(journal.string()));
+    ASSERT_EQ(recovered.snapshot()->positions.size(), 2u);
+    EXPECT_TRUE(recovered.snapshot()->positions.front().do_not_exercise);
+    ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"until", "10:00:01"}}).status, 200);
+    const auto abandoned = replay_call(host, "POST", "/api/replay/positions/abandon", {{"symbol", other.osi_symbol()}});
+    ASSERT_EQ(abandoned.status, 200) << abandoned.body;
+    const auto cash = json::parse(abandoned.body).at("cash");
+    ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"until", "16:00"}}).status, 200);
+    const auto portfolio = json::parse(replay_call(host, "GET", "/api/replay/portfolio").body);
+    EXPECT_TRUE(portfolio.at("positions").empty());
+    EXPECT_EQ(portfolio.at("cash"), cash);
+    EXPECT_EQ(json::parse(replay_call(host, "GET", "/api/replay/trades").body).at("trades").size(), 2u);
+    host.stop();
+    recovered = trading::TradingSession::recover(trading::FileJournal::read(journal.string()));
+    EXPECT_TRUE(recovered.snapshot()->positions.empty());
+    ASSERT_EQ(recovered.snapshot()->closures.size(), 2u);
+    EXPECT_EQ(recovered.snapshot()->closures.front().kind, trading::ClosureKind::Abandon);
+    EXPECT_EQ(recovered.snapshot()->closures.back().price, Money{});
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+    if (golden.empty()) golden = read_file(journal);
+    else { EXPECT_EQ(read_file(journal), golden); }
+  }
+}
+
 }  // namespace

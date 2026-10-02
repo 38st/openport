@@ -21,16 +21,16 @@ export function SettleDialog({ position, trading, onClose }: { position: Positio
   const reference = Number(value)
   const valid = /^\d+(\.\d{1,6})?$/.test(value.trim()) && reference > 0
   const call = position.type === "call"
-  const intrinsic = valid ? Math.max(0, call ? reference - position.strike : position.strike - reference) : null
+  const intrinsic = valid ? position.do_not_exercise ? 0 : Math.max(0, call ? reference - position.strike : position.strike - reference) : null
   const am = position.settlement === "AM"
   return <Dialog title={`Settle ${contractLabel(position)}`} onClose={onClose}>
     <p className="text-sm">{am
       ? `AM-settled series settle on ${position.underlying}'s special opening quotation on the expiry date, which no feed here provides.`
       : `No closing print for ${position.underlying} arrived after this contract expired. Half an hour after the close it settles on the last print before it, if that came in the close's last five minutes.`} Enter the official
-      {am ? " settlement value" : " closing value"} from the exchange; the position closes at intrinsic value.</p>
+      {am ? " settlement value" : " closing value"} from the exchange; {position.do_not_exercise ? "the do-not-exercise instruction closes this long at zero, without shares or cash proceeds" : "the position closes at intrinsic value"}.</p>
     <label className="trade-label">{position.underlying} settlement value
       <input className="trade-input" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} placeholder="Official value" /></label>
-    {intrinsic != null && <p className="text-sm text-muted">Intrinsic value {dollars(intrinsic)} a share, {signedMoney((intrinsic * 100 * position.quantity).toFixed(2))} for
+    {intrinsic != null && <p className="text-sm text-muted">{position.do_not_exercise ? "Settlement" : "Intrinsic"} value {dollars(intrinsic)} a share, {signedMoney((intrinsic * 100 * position.quantity).toFixed(2))} for
       {` ${Math.abs(position.quantity)} ${position.quantity < 0 ? "short " : ""}`}contract{Math.abs(position.quantity) === 1 ? "" : "s"}{deliversShares(position.underlying) && intrinsic >= 0.01 ? `, delivering ${Math.abs(position.quantity) * 100} ${position.underlying} shares` : ""}.</p>}
     <WriteAccess trading={trading} />
     <TradingError error={write.error} />
@@ -82,6 +82,53 @@ export function CloseSharesDialog({ stock, trading, onClose }: { stock: StockHol
     <button type="button" className="trade-button" disabled={!valid || write.pending || write.blocked}
       onClick={() => void write.run(() => api.closeStock(stock.symbol, n === held ? null : n, trading.write), onClose)}>
       {write.pending ? "Closing…" : `${verb} ${valid ? n : ""} shares`}</button>
+  </Dialog>
+}
+
+/**
+ * Give up a long nobody bids for (or one that expired and waits for its settlement):
+ * it leaves the account at zero, without a fee.
+ */
+export function AbandonDialog({ position, trading, onClose }: { position: Position; trading: TradingStatus; onClose: () => void }) {
+  const write = useWrite(trading)
+  const { underlyings } = useLive()
+  const spot = underlyings.find((u) => u.symbol === position.underlying)?.spot
+  const call = position.type === "call"
+  const intrinsic = isNum(spot) ? Math.max(0, call ? spot - position.strike : position.strike - spot) : null
+  return <Dialog title={`Abandon ${contractLabel(position)}`} onClose={onClose}>
+    <p className="text-sm">{position.quantity} contract{position.quantity === 1 ? "" : "s"} leave the account at $0.00, without a fee,
+      {position.awaiting_settlement ? " instead of waiting for the settlement." : " since nobody bids for them."} The loss of
+      {` ${formatMoney(position.basis)}`} paid is realised now.</p>
+    {position.awaiting_settlement && intrinsic != null && intrinsic >= 0.01 && <p role="status" className="text-sm text-warn">
+      With {position.underlying} at {fixed(spot, 2)} it is {dollars(intrinsic)} in the money: the settlement may still pay
+      {` ${dollars(intrinsic * 100 * position.quantity)}`}.</p>}
+    <WriteAccess trading={trading} />
+    <TradingError error={write.error} />
+    <button type="button" className="trade-button" disabled={write.pending || write.blocked}
+      onClick={() => void write.run(() => api.abandon(position.symbol, trading.write), onClose)}>
+      {write.pending ? "Abandoning…" : `Abandon ${position.quantity}`}</button>
+  </Dialog>
+}
+
+/**
+ * Instruct that a long option held into expiry is not exercised, or
+ * withdraw that instruction: it then expires worthless without shares or cash proceeds.
+ */
+export function ExerciseInstructionDialog({ position, trading, onClose }: { position: Position; trading: TradingStatus; onClose: () => void }) {
+  const write = useWrite(trading)
+  const instructed = position.do_not_exercise === true
+  const shares = position.quantity * 100
+  const physical = deliversShares(position.underlying)
+  return <Dialog title={`${instructed ? "Exercise" : "Do not exercise"} ${contractLabel(position)}`} onClose={onClose}>
+    <p className="text-sm">{instructed
+      ? !physical ? "Withdraw the instruction: held into expiry in the money, this long settles in cash at intrinsic value." : `Withdraw the instruction: held into expiry a cent or more in the money, the ${position.quantity} contract${position.quantity === 1 ? " is" : "s are"} exercised and ${position.type === "call" ? "buy" : "sell"} ${shares} ${position.underlying} shares.`
+      : `Held into expiry, the ${position.quantity} contract${position.quantity === 1 ? "" : "s"} expire worthless however far in the money, and ${physical ? `no ${position.underlying} shares change hands` : "there are no cash proceeds"}. Selling them first keeps any value.`}</p>
+    <p className="text-xs text-muted">The instruction ends with the position.</p>
+    <WriteAccess trading={trading} />
+    <TradingError error={write.error} />
+    <button type="button" className="trade-button" disabled={write.pending || write.blocked}
+      onClick={() => void write.run(() => api.exerciseInstruction(position.symbol, !instructed, trading.write), onClose)}>
+      {write.pending ? "Saving…" : instructed ? "Exercise at expiry" : "Do not exercise"}</button>
   </Dialog>
 }
 

@@ -79,7 +79,9 @@ simulation's limits.
   together with the long that covers it, so no short is left naked; closes larger than
   the order limit split, what a thin quote leaves works on later quotes until flat,
   bracket exits keep protecting whatever is still open, and the flatten reports what
-  stays and why. Server order
+  stays and why. A short quoted 0.00/0.05 is bought back at its ask, a long nobody
+  bids for is abandoned at zero without a fee, and a long option can be
+  told not to exercise at expiry. Server order
   previews show buying power, maximum loss, what fills at once and the full size's
   fill schedule, and the size that fits buying power apart from the size that uses at
   most half the floor room; Edit order previews a change to a resting order the same way,
@@ -227,6 +229,9 @@ the simulation's limits.
 
 ## Roadmap
 
+- [x] A flatten that works until flat: spreads close as one order, large closes split,
+      remainders work on later quotes and exits stay until flat; buying back shorts quoted
+      only on the ask, abandoning worthless longs and do-not-exercise instructions
 - [x] Headless playbook batch backtests, independent days and carried-account evaluation attempts, API and terminal reports
 - [x] Homebrew formula, Docker Compose and opt-in browser update notices
 - [x] External notifications through Discord, Telegram, ntfy and generic webhooks

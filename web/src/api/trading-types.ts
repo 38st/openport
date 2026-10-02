@@ -253,7 +253,7 @@ export interface Trade {
   return: Num
   mark: Money | null
   unrealised: Money | null
-  closure: "settlement" | "reset" | "exercise" | "assignment" | null
+  closure: "settlement" | "reset" | "exercise" | "assignment" | "abandon" | null
   /** What closed it: the closure, or its last reducing fill's order. Null while open; absent from older servers. */
   closed_by?: TradeExit | null
   /** Why the reducer liquidated it when closed_by is "system": "target", "drawdown", "soft_floor" or "expiry". */
@@ -264,7 +264,7 @@ export interface Trade {
   tags?: string[]
 }
 /** How a round trip ended: the trader's own order, a bracket exit, a flatten, a playbook's close, a reducer liquidation, or a closure. */
-export type TradeExit = "order" | "stop_loss" | "take_profit" | "flatten" | "playbook" | "system" | "settlement" | "exercise" | "assignment" | "reset"
+export type TradeExit = "order" | "stop_loss" | "take_profit" | "flatten" | "playbook" | "system" | "settlement" | "exercise" | "assignment" | "abandon" | "reset"
 export interface TradeNote {
   note: string
   tags: string[]
@@ -488,6 +488,10 @@ export interface Position {
   awaiting_settlement: boolean
   /** While awaiting settlement: on the recorded closing print, or by a value entered by hand (AM series, or no print arrived). */
   settle_by?: "closing_print" | "manual" | null
+  /** It cannot be sold now (its quote shows only an ask, or it has expired), so a long can be abandoned; absent on older servers. */
+  no_bid?: boolean
+  /** A long option instructed not to be exercised at expiry; absent on older servers. */
+  do_not_exercise?: boolean
   greeks: { delta: Num; gamma: Num; vega: Num; theta: Num; dollar_delta: Num; dollar_gamma_1pct: Num; vega_dollars: Num; theta_dollars: Num }
   /** Today's P&L by Greek for this contract; null until its first fill or rollover on this server. */
   attribution?: Attribution | null

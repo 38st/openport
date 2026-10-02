@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <unistd.h>
 
+#include "openport/trading/history.hpp"
 #include "support/scripted_market.hpp"
 
 namespace openport::trading {
@@ -638,6 +639,223 @@ TEST(TradingOrders, AnOrderHeldByFillLatencySaysUntilWhen) {
   s.on_quotes({f.quote()}, {f.valuation()}, f.time);
   EXPECT_EQ(order(s, 1).status, OrderStatus::Filled);
   EXPECT_FALSE(s.snapshot()->waiting.contains(1));
+}
+
+TEST(TradingOrders, AShortQuotedOnlyOnTheAskCanBeBoughtBackWithAnOrdinaryOrder) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW261022P04000000");
+  TradingSession s(roomy(), f.time);
+  f.seed(s, "0.05", "0.10");
+  ASSERT_TRUE(s.submit(f.market("short", 2, Side::Sell), f.time).decision.ok());
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, std::nullopt, m("0.05"), 0, 10}}, {f.valuation()}, f.time);
+  // Buying more than the short, or opening, still needs a two-sided quote.
+  EXPECT_EQ(s.submit(f.limit("more", 3, "0.05"), f.time).decision.code, Reason::INVALID_QUOTE);
+  EXPECT_EQ(s.submit(f.limit("back", 2, "0.05", Side::Sell), f.time).decision.code, Reason::INVALID_QUOTE);
+  const auto result = s.submit(f.limit("buy back", 2, "0.05"), f.time);
+  ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+  EXPECT_EQ(order(s, *result.order_id).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("0.05"));
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingOrders, ALongNobodyBidsForIsAbandonedWithoutAFee) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW261022C06000000");
+  TradingSession s(roomy(), f.time);
+  f.seed(s, "0.05", "0.10");
+  auto entry = f.market("long", 3);
+  entry.bracket = Bracket{std::nullopt, ExitSpec{{}, m("1.00")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.limit("manual", 1, "0.50", Side::Sell), f.time).decision.ok());
+  const auto target = order(s, 1).take_profit;
+  // Someone still bids: sell it instead.
+  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::INVALID_ORDER);
+  EXPECT_EQ(s.abandon("SPXW  261022C06100000", f.time).decision.code, Reason::UNKNOWN_CONTRACT);
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, std::nullopt, m("0.05"), 0, 10}}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.snapshot()->positions.at(0).no_bid);
+  const auto cash = s.snapshot()->account.cash;
+  ASSERT_TRUE(s.trip_kill("pause", f.time).decision.ok());
+  const auto result = s.abandon(f.symbol(), f.time);
+  ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->account.cash, cash) << "no fee and no proceeds";
+  EXPECT_EQ(order(s, target).reason.code, Reason::POSITION_CLOSED);
+  EXPECT_EQ(order(s, 3).reason.code, Reason::POSITION_CLOSED) << "a sell would now open a short";
+  const auto& closure = s.snapshot()->closures.back();
+  EXPECT_EQ(closure.kind, ClosureKind::Abandon);
+  EXPECT_EQ(closure.quantity, 3);
+  EXPECT_EQ(closure.price, Money{});
+  const auto trades = lifecycles(s.snapshot()->recent_fills, s.snapshot()->closures, s.contracts());
+  ASSERT_EQ(trades.size(), 1u);
+  EXPECT_EQ(trades[0].closure, ClosureKind::Abandon);
+  EXPECT_EQ(trades[0].quantity, 0);
+  EXPECT_EQ(s.snapshot()->account.realised, m("-30"));
+  EXPECT_EQ(s.snapshot()->account.fees, m("1.95"));
+  EXPECT_EQ(s.snapshot()->equity, s.snapshot()->account.cash);
+  EXPECT_EQ(trades[0].gross, m("-30"));
+  EXPECT_EQ(trades[0].fees, m("1.95"));
+  EXPECT_EQ(s.snapshot()->evaluation.day_close_equity, s.snapshot()->equity);
+  EXPECT_NEAR(s.snapshot()->attribution.total(), -31.95, 1e-6);
+  // A flat position cannot be abandoned either.
+  ASSERT_TRUE(s.reset_kill("resume", f.time).decision.ok());
+  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::INVALID_ORDER);
+}
+
+TEST(TradingOrders, AbandoningKeepsADefinedRiskPlansShortsCovered) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW261022C05900000");
+  auto wing = beside(f, "SPXW261022C06000000");
+  AccountRules rules;
+  rules.defined_risk = true;
+  TradingSession s(roomy(rules), f.time);
+  seed(s, f, "0.50", "0.60");
+  seed(s, wing, "0.05", "0.10");
+  OrderRequest spread{"spread", "", Side::Buy, OrderType::Market, TimeInForce::Ioc, 1, {}, {}, {},
+                      {{f.symbol(), Side::Sell, 1}, {wing.symbol(), Side::Buy, 1}}};
+  ASSERT_TRUE(s.submit(spread, f.time).decision.ok());
+  f.next(); wing.next();
+  s.on_quotes({f.quote("0.50", "0.60"), {wing.symbol(), wing.observation, wing.time, std::nullopt, m("0.05"), 0, 10}},
+              {f.valuation(), wing.valuation()}, f.time);
+  EXPECT_EQ(s.abandon(wing.symbol(), f.time).decision.code, Reason::DEFINED_RISK);
+  ASSERT_EQ(s.snapshot()->positions.size(), 2u);
+  EXPECT_EQ(s.snapshot()->positions.back().position.quantity, 1);
+}
+
+TEST(TradingOrders, AnExpiredLongAwaitingSettlementCanBeAbandonedSoTradingResumes) {
+  ScriptedMarket today;
+  today.contract = *md::parse_osi("SPXW260922C06000000");
+  today.time = md::new_york_to_utc({2026, 9, 22}, 15, 50);
+  auto later = beside(today, "SPXW261022C05000000");
+  TradingSession s(roomy(), today.time);
+  seed(s, today, "0.05", "0.10");
+  seed(s, later, "6.00", "6.20");
+  ASSERT_TRUE(s.submit(today.market("today", 2), today.time).decision.ok());
+  later.time = md::new_york_to_utc({2026, 9, 22}, 16, 5);
+  later.next();
+  s.on_quotes({later.quote("6.00", "6.20")}, {later.valuation()}, later.time);
+  EXPECT_EQ(s.submit(later.limit("waits", 1, "6.20"), later.time).decision.code, Reason::STALE_QUOTE)
+      << "an expired position awaiting settlement blocks other orders";
+  ASSERT_TRUE(s.abandon(today.symbol(), later.time).decision.ok());
+  EXPECT_TRUE(s.submit(later.limit("trades", 1, "6.20"), later.time).decision.ok());
+}
+
+TEST(TradingOrders, AbandonmentRecoversFromTheJournal) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-orders-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "session.jsonl").string();
+  ScriptedMarket f;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(path);
+    TradingSession s(roomy(), f.time, journal);
+    f.seed(s, "0.05", "0.10");
+    ASSERT_TRUE(s.submit(f.market("long", 2), f.time).decision.ok());
+    f.next();
+    s.on_quotes({{f.symbol(), f.observation, f.time, std::nullopt, m("0.05"), 0, 10}}, {f.valuation()}, f.time);
+    ASSERT_TRUE(s.abandon(f.symbol(), f.time).decision.ok());
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  const auto recovered = TradingSession::recover(FileJournal::read(path, head));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  EXPECT_EQ(recovered.snapshot()->closures.back().kind, ClosureKind::Abandon);
+  std::filesystem::remove_all(directory);
+}
+
+
+TEST(TradingOrders, DisposalRefusesShortsMissingAndStaleQuotesAndClosedEvaluations) {
+  ScriptedMarket f;
+  auto config = roomy();
+  config.rules.max_drawdown = m("100");
+  TradingSession s(config, f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("short", 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::INVALID_ORDER);
+  ASSERT_TRUE(s.submit(f.market("long", 4), f.time).decision.ok());
+  f.time += 61 * md::kNanosPerSecond;
+  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::STALE_QUOTE);
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, {}, {}, 0, 0}}, {f.valuation()}, f.time);
+  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::INVALID_QUOTE);
+  f.next();
+  s.on_quotes({f.quote("1.00", "1.20", 1)}, {f.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
+  ASSERT_FALSE(s.snapshot()->positions.empty()) << "the thin quote cannot liquidate every contract";
+  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::EVALUATION_CLOSED);
+  EXPECT_EQ(s.instruct_exercise(f.symbol(), true, f.time).decision.code, Reason::EVALUATION_CLOSED);
+}
+
+TEST(TradingOrders, AbandoningALongNeedsBuyingPowerForTheShortItUncovers) {
+  ScriptedMarket f;
+  auto wing = beside(f, "SPXW261022C05010000");
+  auto config = roomy();
+  config.rules.buying_power = true;
+  config.initial_cash = m("2000");
+  TradingSession s(config, f.time);
+  seed(s, f, "4.00", "4.20");
+  seed(s, wing, "0.05", "0.10");
+  OrderRequest spread{"spread", "", Side::Buy, OrderType::Market, TimeInForce::Ioc, 1, {}, {}, {},
+                      {{f.symbol(), Side::Sell, 1}, {wing.symbol(), Side::Buy, 1}}};
+  ASSERT_TRUE(s.submit(spread, f.time).decision.ok());
+  f.next(); wing.next();
+  s.on_quotes({f.quote(), {wing.symbol(), wing.observation, wing.time, {}, m("0.05"), 0, 10}},
+              {f.valuation(), wing.valuation()}, f.time);
+  EXPECT_EQ(s.abandon(wing.symbol(), f.time).decision.code, Reason::BUYING_POWER);
+  EXPECT_TRUE(s.snapshot()->closures.empty());
+  ASSERT_TRUE(s.submit(f.market("cover", 1), f.time).decision.ok());
+  EXPECT_TRUE(s.abandon(wing.symbol(), f.time).decision.ok());
+}
+
+TEST(TradingOrders, AskOnlyBuybacksShareDisplayedSizeAndWaitForANewQuote) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s, "0.05", "0.10");
+  ASSERT_TRUE(s.submit(f.market("short", 3, Side::Sell), f.time).decision.ok());
+  f.next();
+  const auto quote = [&] { return QuoteObservation{f.symbol(), f.observation, f.time, {}, m("0.05"), 0, 1}; };
+  s.on_quotes({quote()}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.limit("back", 3, "0.05"), f.time).decision.ok());
+  EXPECT_EQ(order(s, 2).filled_quantity, 1);
+  EXPECT_EQ(s.snapshot()->waiting.at(2).code, "DISPLAYED_SIZE");
+  s.on_quotes({quote()}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(s, 2).filled_quantity, 1) << "the same observation supplies no more size";
+  f.next();
+  s.on_quotes({quote()}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(s, 2).filled_quantity, 2);
+  f.next();
+  s.on_quotes({quote()}, {f.valuation()}, f.time);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
+TEST(TradingOrders, AbandonmentCancelsAPendingExpiryClose) {
+  ScriptedMarket f;
+  f.contract = *md::parse_osi("SPXW260922C05000000");
+  f.time = md::new_york_to_utc({2026, 9, 22}, 15, 50);
+  auto config = roomy();
+  config.rules.expiry_cutoff = 5 * md::kNanosPerMinute;
+  config.rules.fill_latency_ms = 1000;
+  TradingSession s(config, f.time);
+  f.seed(s, "0.05", "0.10");
+  ASSERT_TRUE(s.submit(f.market("long"), f.time).decision.ok());
+  f.next();
+  s.on_quotes({f.quote("0.05", "0.10")}, {f.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->positions.size(), 1u);
+  f.time = md::new_york_to_utc({2026, 9, 22}, 15, 55);
+  ++f.observation;
+  s.on_quotes({f.quote("0.05", "0.10")}, {f.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 1u);
+  ASSERT_TRUE(s.snapshot()->open_orders.front().system);
+  const auto close = s.snapshot()->open_orders.front().id;
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, {}, m("0.05"), 0, 10}}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.abandon(f.symbol(), f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+  EXPECT_EQ(order(s, close).reason.code, Reason::POSITION_CLOSED);
 }
 
 }  // namespace

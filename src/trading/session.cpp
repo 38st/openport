@@ -122,16 +122,18 @@ bool ask_only(const State& s, const Order& o, const Leg& leg) {
 }
 /// An exit's long leg that nobody bids for: sold at zero, without displayed size.
 bool given_away(const State& s, const Order& o, const Leg& leg) { return leg.side == Side::Sell && ask_only(s, o, leg); }
-/// The same for a single contract: a close kept within its position buys a short
-/// back at an ask-only quote within its size (a short quoted 0.00/0.05), and a
+bool closing_only(const State& s, const Order& o, bool include_working);
+/// The same for a single contract: a buy that only closes a short takes an ask-only
+/// quote within its size (a short quoted 0.00/0.05 can be bought back), and a
 /// reduce-only market close gives a long nobody bids for away at zero.
 bool ask_only_single(const State& s, const Order& o) {
-  return !multi_leg(o.request) && kept_within(o) && asks_only(s, o.request.symbol) &&
-         (o.request.side == Side::Buy || (o.reduce_only && o.request.type == OrderType::Market));
+  if (multi_leg(o.request) || !asks_only(s, o.request.symbol)) return false;
+  if (o.request.side == Side::Buy) return kept_within(o) || closing_only(s, o, false);
+  return o.reduce_only && o.request.type == OrderType::Market;
 }
 /// The price band around the quote's mid, or around `center` (a stop-limit's trigger level).
 Decision price_check(const State& s, const QuoteObservation& q, Money price, std::optional<Money> center = {}) {
-  const auto middle = center ? *center : mid(q);
+  const auto middle = center ? *center : mark_of(q);
   const long double difference = std::abs(static_cast<long double>(price.micros()) - static_cast<long double>(middle.micros()));
   const long double band = std::max(static_cast<long double>(s.config.limits.price_band_absolute.micros()),
       static_cast<long double>(s.config.limits.price_band_relative) * static_cast<long double>(middle.micros()));
@@ -196,6 +198,7 @@ void fill_position(State& s, const std::string& symbol, Quantity signed_quantity
   s.ledger.fill(contract, signed_quantity, price, fee);
   s.explained[symbol].costs += static_cast<double>(signed_quantity) * contract.multiplier * (value - price).dollars() - fee.dollars();
   start_stretch(s, symbol);
+  if (held(s, symbol) <= 0 && s.do_not_exercise.contains(symbol)) s.do_not_exercise.erase(symbol);
 }
 /// American equity and ETF options deliver shares; index options settle in cash.
 bool physical(const md::OptionContract& c) {
@@ -743,6 +746,8 @@ Measures measure(const State& s) {
       out.equity = out.equity + *p.market_value;
       out.unrealised = out.unrealised + *p.unrealised;
     }
+    p.no_bid = p.awaiting_settlement || asks_only(s, symbol);
+    p.do_not_exercise = s.do_not_exercise.contains(symbol);
     out.valuation_complete &= p.fresh;
     out.positions.push_back(std::move(p));
   }
@@ -1221,7 +1226,8 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
     return d;
   if (rules.expiry_cutoff > 0 && s.time >= c->second.last_trade_time() - rules.expiry_cutoff && !closing_only(s, o))
     return failure(Reason::EXPIRY_CUTOFF, "Contract is inside the pre-expiry cutoff; only closing orders are accepted");
-  if (const auto d = quote_check(s, request.symbol); !d.ok()) return d;
+  // A buy that only closes a short can take a quote that shows only an ask (ask_only_single).
+  if (const auto d = quote_check(s, request.symbol); !d.ok() && !ask_only_single(s, o)) return d;
   const auto& quote = s.books.at(request.symbol).quote;
   if (stage == Stage::Fill || !request.limit_price) {
     if (const auto d = price_check(s, quote, execution_price(s, request.symbol, request.side, request.limit_price)); !d.ok()) return d;
@@ -1836,7 +1842,8 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
                     " fill in the regular session only");
   for (const auto& symbol : symbols) {
     const auto leg = std::find_if(r.legs.begin(), r.legs.end(), [&](const Leg& l) { return l.symbol == symbol; });
-    if (const auto d = quote_check(s, symbol); !d.ok() && !(leg != r.legs.end() && ask_only(s, o, *leg)))
+    if (const auto d = quote_check(s, symbol); !d.ok() &&
+        !(leg != r.legs.end() ? ask_only(s, o, *leg) : ask_only_single(s, o)))
       return wait(d.code == Reason::STALE_QUOTE ? "STALE_QUOTE" : "INVALID_QUOTE",
                   d.code == Reason::STALE_QUOTE ? symbol + "'s quote is older than the freshness window"
                                                 : symbol + " has no two-sided quote with sizes; a one-sided book supplies no liquidity");
@@ -1853,7 +1860,8 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
   if (!multi_leg(r)) {
     const auto& book = s.books.at(r.symbol);
     const bool buy = r.side == Side::Buy;
-    if (!marketable(o, book.quote))
+    const bool given = !buy && ask_only_single(s, o);
+    if (!given && !marketable(o, book.quote))
       return wait("LIMIT", std::string(buy ? "The ask " : "The bid ") + (buy ? *book.quote.ask : *book.quote.bid).str() +
                   (buy ? " is above" : " is below") + " the limit " + r.limit_price->str());
     if (impact && r.limit_price) {
@@ -1861,7 +1869,7 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
       if (buy ? next > *r.limit_price : next < *r.limit_price)
         return wait("LIMIT", "The next simulated block's price " + next.str() + " is beyond the limit " + r.limit_price->str());
     }
-    if (!impact && (buy ? book.ask_left : book.bid_left) <= 0)
+    if (!given && !impact && (buy ? book.ask_left : book.bid_left) <= 0)
       return wait("DISPLAYED_SIZE", "Paper orders used this quote's displayed size; a new quote refreshes it");
   } else {
     const auto net = executable_net(s, o);
@@ -2019,6 +2027,10 @@ std::vector<RiskWarning> warnings_of(const State& s, const std::map<std::string,
     if (position.quantity == 0 || !physical(c) || c.expiry != s.day || s.time >= c.expiry_time()) continue;
     const auto price = underlying_price(s, symbol);
     if (!price) continue;
+    if (position.quantity > 0 && s.do_not_exercise.contains(symbol)) {
+      expiring.push_back({symbol, *price, Money{}});
+      continue;
+    }
     const Money strike = Money::from_double(c.strike);
     const Money intrinsic = std::max(Money{}, c.type == pricing::OptionType::Call ? *price - strike : strike - *price);
     if (intrinsic >= Money::from_micros(10'000)) expiring.push_back({symbol, *price, intrinsic});
@@ -2028,13 +2040,16 @@ std::vector<RiskWarning> warnings_of(const State& s, const std::map<std::string,
     State delivered_state = s;
     for (const auto& x : expiring) {
       const auto& c = delivered_state.contracts.at(x.symbol);
-      const auto shares = delivered(c, held(delivered_state, x.symbol));
+      const auto shares = x.intrinsic > Money{} ? delivered(c, held(delivered_state, x.symbol)) : 0;
       delivered_state.ledger.settle(x.symbol, x.intrinsic);
-      delivered_state.stock_marks[c.underlying] = {x.price, delivered_state.time};
-      delivered_state.ledger.trade_stock(c.underlying, shares, x.price, Money{});
+      if (shares != 0) {
+        delivered_state.stock_marks[c.underlying] = {x.price, delivered_state.time};
+        delivered_state.ledger.trade_stock(c.underlying, shares, x.price, Money{});
+      }
     }
     const auto power = buying_power(delivered_state).total.available;
     for (const auto& x : expiring) {
+      if (x.intrinsic == Money{}) continue;
       const auto& c = s.contracts.at(x.symbol);
       const auto contracts = held(s, x.symbol);
       const auto shares = delivered(c, contracts);
@@ -2706,7 +2721,15 @@ Json state_change(const State& before, const State& after) {
   if (auto change = field_change(before.field, after.field)) changes[#field] = std::move(*change);
   OPENPORT_STATE_FIELDS(OPENPORT_STATE_CHANGE)
 #undef OPENPORT_STATE_CHANGE
-  return Json{{"o", std::move(changes)}};
+  // Exercise instructions are written only while there are any (see to_json).
+  const bool had = !before.do_not_exercise.empty(), has = !after.do_not_exercise.empty();
+  if (has && !had) changes["do_not_exercise"] = Json{{"v", after.do_not_exercise}};
+  else if (has) {
+    if (auto change = field_change(before.do_not_exercise, after.do_not_exercise)) changes["do_not_exercise"] = std::move(*change);
+  }
+  Json node{{"o", std::move(changes)}};
+  if (had && !has) node["d"] = Json::array({"do_not_exercise"});
+  return node;
 }
 /// When set, each record's change is also found by writing out both states,
 /// and a difference throws (OPENPORT_VERIFY_JOURNAL).
@@ -3588,8 +3611,11 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     if (time < it->second.expiry_time() || settlement < Money{} || !s.ledger.positions().contains(symbol))
       return CommandResult{failure(Reason::INVALID_SETTLEMENT, "Settlement requires expiry, a position and nonnegative reference"), {}, 0};
     const Money strike = Money::from_double(it->second.strike);
-    const Money intrinsic = std::max(Money{}, it->second.type == pricing::OptionType::Call ? settlement - strike : strike - settlement);
     const auto quantity = held(s, symbol);
+    // A long instructed not to be exercised expires worthless.
+    const bool unexercised = quantity > 0 && s.do_not_exercise.contains(symbol);
+    const Money intrinsic = unexercised ? Money{}
+        : std::max(Money{}, it->second.type == pricing::OptionType::Call ? settlement - strike : strike - settlement);
     // The last stretch ends at intrinsic value, at expiry with the settlement
     // as the underlying's price and the volatility unchanged.
     std::optional<Valuation> at_expiry;
@@ -3603,8 +3629,11 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     s.settled.insert(symbol);
     s.settling[symbol] = settlement;
     s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
+    if (unexercised) s.do_not_exercise.erase(symbol);
     sync_exits(s, symbol, events);
-    event(events, "settlement", Json{{"symbol", symbol}, {"reference", settlement}, {"intrinsic", intrinsic}});
+    Json settled{{"symbol", symbol}, {"reference", settlement}, {"intrinsic", intrinsic}};
+    if (unexercised) settled["do_not_exercise"] = true;
+    event(events, "settlement", std::move(settled));
     // American equity and ETF options a cent or more in the money are exercised
     // or assigned: settled at intrinsic value, they deliver shares at the
     // settlement price, which together cost the strike.
@@ -3843,6 +3872,7 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.ledger = Ledger(initial_cash);
     s.explained.clear();
     s.references.clear();
+    s.do_not_exercise = {};
     s.start_equity = initial_cash;
     s.kill = false;
     s.kill_reason.clear();
@@ -3962,6 +3992,63 @@ CommandResult TradingSession::exercise(const std::string& symbol, Quantity contr
     sync_exits(s, symbol, events);
     event(events, "exercise", Json{{"symbol", symbol}, {"contracts", contracts}, {"intrinsic", intrinsic},
                                    {"underlying", contract.underlying}, {"shares", shares}, {"price", *price}});
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::abandon(const std::string& symbol, Timestamp time) {
+  return impl_->transact(time, "abandon", [&](State& s, Events& events) {
+    const auto it = s.contracts.find(symbol);
+    if (it == s.contracts.end()) return CommandResult{failure(Reason::UNKNOWN_CONTRACT, "Abandon references an unregistered OSI"), {}, 0};
+    const auto contracts = held(s, symbol);
+    if (contracts <= 0) return CommandResult{failure(Reason::INVALID_ORDER, "Abandon needs a long position; buy a short back instead"), {}, 0};
+    if (const auto d = account_check(s, true); !d.ok()) return CommandResult{d, {}, 0};
+    // Only what cannot be sold: nobody bids for it, or it has expired.
+    if (s.time < it->second.expiry_time() && !asks_only(s, symbol)) {
+      auto d = quote_check(s, symbol);
+      if (d.ok()) d = failure(Reason::INVALID_ORDER, "Someone bids for it: sell it instead");
+      return CommandResult{d, {}, 0};
+    }
+    if (const auto d = defined_risk_check(s, {{symbol, -contracts}},
+                                          "Abandoning this long would leave a short option uncovered; close the short first");
+        !d.ok())
+      return CommandResult{d, {}, 0};
+    // The contracts leave at zero, without a fee: the whole basis is the loss.
+    const auto apply = [&](State& t) {
+      fill_position(t, symbol, -contracts, Money{}, Money{});
+      t.closures.push_back({symbol, contracts, Money{}, t.time, ClosureKind::Abandon, t.fills.size()});
+    };
+    if (s.config.rules.buying_power) {
+      State projected = s;
+      apply(projected);
+      const auto power = buying_power(projected).total;
+      if (free_power(projected) < free_power(s) && power.available < Money{})
+        return CommandResult{{Reason::BUYING_POWER, "Abandoning this long leaves the short it covers needing more buying power than the account has",
+                              (-power.available).dollars(), 0.0, it->second.underlying}, {}, 0};
+    }
+    apply(s);
+    sync_exits(s, symbol, events);
+    // An order that sold the long would now open a short.
+    for (const auto id : open_ids(s)) {
+      const auto& o = s.orders[id - 1];
+      const bool sells = std::any_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& leg) {
+        return leg.symbol == symbol && leg.side == Side::Sell;
+      }) || (o.request.symbol == symbol && o.request.side == Side::Sell);
+      if (sells) cancel_order(s, id, failure(Reason::POSITION_CLOSED, "The position this order sold was abandoned"), events);
+    }
+    event(events, "abandon", Json{{"symbol", symbol}, {"contracts", contracts}});
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::instruct_exercise(const std::string& symbol, bool do_not_exercise, Timestamp time) {
+  return impl_->transact(time, "exercise_instruction", [&](State& s, Events& events) {
+    const auto it = s.contracts.find(symbol);
+    if (it == s.contracts.end()) return CommandResult{failure(Reason::UNKNOWN_CONTRACT, "The instruction references an unregistered OSI"), {}, 0};
+    if (held(s, symbol) <= 0)
+      return CommandResult{failure(Reason::INVALID_ORDER, "Only a long can be left unexercised; a short is assigned at its holder's choice"), {}, 0};
+    if (const auto d = account_check(s, true); !d.ok()) return CommandResult{d, {}, 0};
+    if (do_not_exercise) s.do_not_exercise.insert(symbol);
+    else s.do_not_exercise.erase(symbol);
+    event(events, "exercise_instruction", Json{{"symbol", symbol}, {"do_not_exercise", do_not_exercise}});
     return CommandResult{};
   });
 }

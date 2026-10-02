@@ -443,7 +443,7 @@ json portfolio_json(const TradingView& view) {
         {"mark", money(p.mark)}, {"mark_age_seconds", p.mark ? json(static_cast<double>(p.mark_age) / md::kNanosPerSecond) : json(nullptr)},
         {"market_value", money(p.market_value)}, {"unrealised", money(p.unrealised)},
         {"realised", position.realised.str()}, {"fees", position.fees.str()}, {"fresh", p.fresh},
-        {"awaiting_settlement", p.awaiting_settlement},
+        {"awaiting_settlement", p.awaiting_settlement}, {"no_bid", p.no_bid}, {"do_not_exercise", p.do_not_exercise},
         // How an expired position settles: on the closing print, recorded or still awaited
         // (with the last print before the close as the fallback) for half an hour after the
         // close, or by a value entered by hand once no automatic source remains.
@@ -557,7 +557,7 @@ json stock_fill_json(const StockFill& fill) {
 }
 const char* closure_name(ClosureKind kind) {
   return kind == ClosureKind::Settlement ? "settlement" : kind == ClosureKind::Exercise ? "exercise"
-       : kind == ClosureKind::Assignment ? "assignment" : "reset";
+       : kind == ClosureKind::Assignment ? "assignment" : kind == ClosureKind::Abandon ? "abandon" : "reset";
 }
 /// What closed a round trip, and for a reducer liquidation why: the closure that ended
 /// it, or its last reducing fill's order. A system order's client ID is system:<why>:<id>.
@@ -859,7 +859,9 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
     case TradingCommand::Kind::ResetAccount:
     case TradingCommand::Kind::Payout: body = account_json(view); break;
     case TradingCommand::Kind::Exercise:
-    case TradingCommand::Kind::CloseStock: body = portfolio_json(view); break;
+    case TradingCommand::Kind::CloseStock:
+    case TradingCommand::Kind::Abandon:
+    case TradingCommand::Kind::ExerciseInstruction: body = portfolio_json(view); break;
     case TradingCommand::Kind::DayNote: {
       const auto key = md::format_date(command.day);
       body["day"] = key;
@@ -1178,6 +1180,19 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     command.symbol = symbol_field(body);
     command.quantity = integer_field(body, "quantity");
     if (command.quantity <= 0) throw std::invalid_argument("quantity must be a positive number of contracts");
+    return command;
+  }
+  if (path == "/api/positions/abandon") {
+    fields(body, {"symbol"});
+    command.kind = TradingCommand::Kind::Abandon;
+    command.symbol = symbol_field(body);
+    return command;
+  }
+  if (path == "/api/positions/instruction") {
+    fields(body, {"symbol", "do_not_exercise"});
+    command.kind = TradingCommand::Kind::ExerciseInstruction;
+    command.symbol = symbol_field(body);
+    command.do_not_exercise = boolean_field(body, "do_not_exercise");
     return command;
   }
   if (path == "/api/stocks/close") {
@@ -1585,6 +1600,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       (path.starts_with("/api/orders/") && path.ends_with("/preview")) ||
       path == "/api/orders/cancel" || path == "/api/positions/close" || path == "/api/positions/close/preview" || path == "/api/accounts" ||
       path == "/api/positions/exercise" || path == "/api/stocks/close" ||
+      path == "/api/positions/abandon" || path == "/api/positions/instruction" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout")) ||
       (request.method == "PUT" && (path == "/api/risk/limits" || path == "/api/risk/guardrails" || path.starts_with("/api/orders/") ||

@@ -15,9 +15,17 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AnalyticsOptions, parity_strikes, flip_range,
     fallback_rate, deamericanize, min_days_for_rate, exposure_min_days, max_spot_age_minutes)
 }
 namespace openport::server {
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingCommand, kind, order, order_id, limits, guardrails,
-    floor_share, expected_revision, reason, symbol, settlement, initial_cash, rules, required_pass,
-    amount, change, underlying, account, name, trade, shares, day, plan, review, note, tags, quantity, actor)
+inline void to_json(nlohmann::json& j, const TradingCommand& c) {
+  j = nlohmann::json{{"kind", c.kind}, {"order", c.order}, {"order_id", c.order_id}, {"limits", c.limits},
+      {"guardrails", c.guardrails}, {"floor_share", c.floor_share}, {"expected_revision", c.expected_revision},
+      {"reason", c.reason}, {"symbol", c.symbol}, {"settlement", c.settlement}, {"initial_cash", c.initial_cash},
+      {"rules", c.rules}, {"required_pass", c.required_pass}, {"amount", c.amount}, {"change", c.change},
+      {"underlying", c.underlying}, {"account", c.account}, {"name", c.name}, {"trade", c.trade}, {"shares", c.shares},
+      {"day", c.day}, {"plan", c.plan}, {"review", c.review}, {"note", c.note}, {"tags", c.tags},
+      {"quantity", c.quantity}, {"actor", c.actor}};
+  // Later fields are recorded only when set, so earlier commands keep their bytes.
+  if (c.do_not_exercise) j["do_not_exercise"] = true;
+}
 inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("kind").get_to(c.kind);
   j.at("order").get_to(c.order);
@@ -46,5 +54,6 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("tags").get_to(c.tags);
   j.at("quantity").get_to(c.quantity);
   trading::added_field(j, "actor", c.actor);
+  trading::added_field(j, "do_not_exercise", c.do_not_exercise);
 }
 }

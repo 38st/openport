@@ -130,7 +130,8 @@ struct AccountStatus {
 struct TradingCommand {
   /// Recorded runs keep a kind's number: new kinds append.
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
-                    Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox, PreviewChange, WhatIf, PreviewClose };
+                    Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox, PreviewChange, WhatIf, PreviewClose,
+                    Abandon, ExerciseInstruction };
   Kind kind = Kind::Submit;
   std::string actor = "unknown";
   trading::OrderRequest order;
@@ -164,6 +165,8 @@ struct TradingCommand {
   /// WhatIf: each candidate's orders, and its name. Never recorded.
   std::vector<std::vector<trading::OrderRequest>> candidates = {};
   std::vector<std::string> candidate_names = {};
+  /// ExerciseInstruction: instruct that `symbol` is not exercised at expiry, or withdraw it.
+  bool do_not_exercise = false;
 };
 
 /// Previews and dry runs: answered from a private copy of the account, never recorded.
