@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <set>
 #include <nlohmann/json.hpp>
 #include "openport/trading/history.hpp"
@@ -446,8 +447,18 @@ inline void from_json(const Json& j, State& s) {
   s.working.clear();
   s.indexed = 0;
   reindex(s);
+  // Each client order ID names the first order that used it in the latest attempt
+  // that did, as add_order kept it.
   s.clients.clear();
-  for (const auto& order : s.orders) s.clients.emplace(order.request.client_order_id, order.id);
+  std::vector<OrderId> starts;
+  for (const auto& attempt : s.attempts) starts.push_back(attempt.first_order);
+  starts.push_back(s.evaluation.first_order);
+  for (const auto& order : s.orders) {
+    const auto later = std::upper_bound(starts.begin(), starts.end(), order.id);
+    const OrderId start = later == starts.begin() ? 0 : *(later - 1);
+    const auto& key = order.request.client_order_id;
+    if (const auto first = s.clients.find(key); first == s.clients.end() || first->second < start) s.clients[key] = order.id;
+  }
   s.reviewing = {};
   s.settling.clear();
 }

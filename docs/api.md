@@ -38,7 +38,7 @@ these routes, so anything it does can be scripted:
 | Route | Does |
 | --- | --- |
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions, orders and fills with actors (each fill with the bid, ask and sizes it took and the quote's age), risk, warnings and breach estimates, rules and progress, and its round trips |
-| `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to buying power and to floor and projected breach risk |
+| `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to buying power and to floor, projected breach risk, and warnings about terms that act at once |
 | `POST /api/orders/what-if` | Up to six candidate adjustments of up to four orders each, filled on a private copy of the account and compared on buying power, Greeks, grid loss and floor room |
 | `POST /api/orders/{id}/preview` | The same preview of a change to a resting order, as `PUT /api/orders/{id}` would make it, without making it |
 | `POST /api/positions/close/preview` | A flatten's dry run: what it would cancel and close now, and the account after it, without doing it |
@@ -76,7 +76,9 @@ curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{
 ```
 
 Sending the same order again with the same `client_order_id` is safe: it returns the
-first answer instead of placing a second order. A 503 for a full command inbox carries
+first answer instead of placing a second order, and `GET /api/orders?client_order_id=ID`
+finds the order an ID placed. Other terms under a used ID get 409 and record nothing;
+an account reset frees the IDs earlier attempts used. A 503 for a full command inbox carries
 `Retry-After` seconds; wait that long and send the same body again. [Paper trading](paper-trading.md)
 documents every field, rule and reason code.
 

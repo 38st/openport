@@ -17,6 +17,8 @@ def test_urls_auth_accounts_and_unknown_fields(stub):
     assert method == "GET"
     assert parse_qs(urlsplit(path).query) == {"status": ["open"], "account": ["practice"]}
     assert headers["Authorization"] == "Bearer secret"
+    client.orders(client_order_id="c1 &")
+    assert parse_qs(urlsplit(stub.requests[-1][1]).query) == {"status": ["all"], "client_order_id": ["c1 &"], "account": ["practice"]}
     client.chain("A/B &", "expiry &+")
     assert "/A%2FB%20%26/chain?" in stub.requests[-1][1]
     assert parse_qs(urlsplit(stub.requests[-1][1]).query)["expiry"] == ["expiry &+"]

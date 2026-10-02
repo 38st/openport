@@ -404,7 +404,7 @@
       ],
       "get": {
         "summary": "GET /api/orders",
-        "description": "Read the current publication.",
+        "description": "Read the current publication: every order, newest first. status=open keeps the open ones; client_order_id=ID keeps the orders that used that client ID (one per attempt that used it, since a reuse with other terms records nothing).",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -420,7 +420,30 @@
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "open",
+                "all"
+              ]
+            }
+          },
+          {
+            "name": "client_order_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ]
       },
       "post": {
         "summary": "POST /api/orders",
@@ -10397,6 +10420,11 @@
               }
             ],
             "description": "The whole trade it joins, as submitted; null for none. Absent from older servers."
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The evaluation attempt the order belongs to. Client order IDs are scoped to an attempt: after an account reset, an ID an earlier attempt used names a new order."
           }
         },
         "required": [
@@ -10416,7 +10444,8 @@
           "reason",
           "accepted_at",
           "day_end",
-          "actor"
+          "actor",
+          "attempt"
         ]
       },
       "Fill": {
@@ -12503,6 +12532,13 @@
           "simulated": {
             "const": true,
             "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderWarning"
+            },
+            "description": "Advice on accepted terms that are rarely meant; empty when there is none. It never changes the decision."
           }
         },
         "required": [
@@ -12521,6 +12557,7 @@
           "max_units_floor",
           "breach",
           "execution",
+          "warnings",
           "simulated",
           "liquidity"
         ]
@@ -12578,6 +12615,28 @@
           "reason",
           "displayed",
           "size_left"
+        ]
+      },
+      "OrderWarning": {
+        "type": "object",
+        "description": "STOP_AS_LIMIT: a bracket stop_loss given only a limit price rests as a limit exit (and closes at once when the closing side already reaches it). STOP_REACHED: the stop's trigger is already reached, so it fires as soon as the entry fills (or held exits are accepted). TARGET_REACHED: the take-profit is already marketable. TRIGGER_REACHED: a conditional order's level is already reached, so it activates at once. SLIPPAGE_BAND: the account's slippage ticks alone price a market order outside the price band, so it is refused PRICE_BAND.",
+        "properties": {
+          "code": {
+            "enum": [
+              "STOP_AS_LIMIT",
+              "STOP_REACHED",
+              "TARGET_REACHED",
+              "TRIGGER_REACHED",
+              "SLIPPAGE_BAND"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
         ]
       },
       "EquitySample": {

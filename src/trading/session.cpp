@@ -23,9 +23,12 @@ namespace {
 using detail::State;
 using Events = std::vector<Json>;
 Decision failure(Reason code, std::string message) { return {code, std::move(message), {}, {}, {}}; }
-/// Appends an order; its client order ID keeps naming the first order that used it.
+/// Appends an order; its client order ID keeps naming the first order that used it
+/// in the current attempt, so an account reset frees the IDs earlier attempts used.
 void add_order(State& s, const Order& order) {
-  s.clients.emplace(order.request.client_order_id, order.id);
+  const auto& key = order.request.client_order_id;
+  if (const auto first = s.clients.find(key); first == s.clients.end() || first->second < s.evaluation.first_order)
+    s.clients[key] = order.id;
   s.orders.push_back(order);
 }
 void event(Events& events, std::string_view type, Json payload) {
@@ -297,7 +300,7 @@ bool shadowed(const State& s, const Order& o) {
 /// Every leg must oppose its holding and fit within it after the other working
 /// user orders on that side. Bracket exits shrink after each fill and system
 /// closes are immediate IOC, so neither reserves a manual close's capacity.
-bool closing_only(const State& s, const Order& o, bool include_working = true) {
+bool closing_only(const State& s, const Order& o, bool include_working = true, bool include_armed = true) {
   const auto closes = [&](const std::string& symbol, Side side, Quantity ratio) {
     const auto q = held(s, symbol);
     if (q == 0 || (side != Side::Buy && side != Side::Sell) ||
@@ -314,6 +317,7 @@ bool closing_only(const State& s, const Order& o, bool include_working = true) {
     for (const auto id : open_ids(s)) {
       const auto& other = s.orders[id - 1];
       if (other.system || kept_within(other) || other.id == o.id) continue;
+      if (!include_armed && other.status == OrderStatus::Armed) continue;
       if (multi_leg(other.request)) {
         for (const auto& leg : other.request.legs)
           if (leg.symbol == symbol && leg.side == side && !reserve(other.remaining(), leg.ratio)) return false;
@@ -1948,6 +1952,9 @@ void monitor_rules(State& s, Events& events) {
   }
   std::vector<std::string> symbols;
   for (const auto& [symbol, position] : s.ledger.positions()) symbols.push_back(symbol);
+  // Shorts first, as Flatten closes them: a short bought back before the long that
+  // covers it is sold never leaves a naked short, even for one event.
+  std::stable_partition(symbols.begin(), symbols.end(), [&](const std::string& symbol) { return held(s, symbol) < 0; });
   for (const auto& symbol : symbols) {
     if (soft || decided) {
       // The plan's decision names the liquidation, even when the soft floor latched with it.
@@ -2390,9 +2397,16 @@ PreviewProjection project_working(const State& before, State after_state, OrderI
   }
   return projection;
 }
-/// A new order: accepted, or not, on a copy of `before`, then projected.
+std::vector<OrderId> superseded_stops(const State& s, const OrderRequest& request);
+void supersede(State& s, const OrderRequest& request, const std::vector<OrderId>& stops, Events& events);
+/// A new order: accepted, or not, on a copy of `before`, then projected. A buy-only
+/// close previews as submit places it, over the stops it supersedes.
 PreviewProjection project_order(const State& before, OrderRequest request, const Decision& rejection) {
   State after = before;
+  if (rejection.ok()) {
+    Events ignored;
+    supersede(after, request, superseded_stops(before, request), ignored);
+  }
   Order candidate;
   candidate.id = static_cast<OrderId>(after.orders.size() + 1);
   candidate.request = std::move(request);
@@ -2591,7 +2605,63 @@ Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Qua
 }
 
 /// Accept or reject one new order; once accepted, arm it or match it at once.
+/// On a buy-only plan, the account's own armed stop sells that keep a manual close
+/// from fitting within its held contracts, newest first: the close supersedes them.
+/// Nothing when the order fits as it is, or would not fit even without them.
+std::vector<OrderId> superseded_stops(const State& s, const OrderRequest& request) {
+  Order candidate;
+  candidate.id = static_cast<OrderId>(s.orders.size() + 1);
+  candidate.request = request;
+  if (!s.config.rules.buy_only || request.trigger || request.exits_only || request.bracket ||
+      closing_only(s, candidate) || !closing_only(s, candidate, true, false))
+    return {};
+  std::vector<OrderId> stops;
+  const auto ids = open_ids(s);
+  for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
+    const auto& other = s.orders[*it - 1];
+    if (other.status != OrderStatus::Armed || other.system || other.role != OrderRole::Normal) continue;
+    const auto shares = [&](const std::string& symbol, Side side) {
+      if (other.request.symbol == symbol && other.request.side == side) return true;
+      return std::any_of(other.request.legs.begin(), other.request.legs.end(),
+                         [&](const Leg& leg) { return leg.symbol == symbol && leg.side == side; });
+    };
+    const bool overlaps = multi_leg(request)
+        ? std::any_of(request.legs.begin(), request.legs.end(), [&](const Leg& leg) { return shares(leg.symbol, leg.side); })
+        : shares(request.symbol, request.side);
+    if (overlaps) stops.push_back(other.id);
+  }
+  return stops;
+}
+/// Cancels `stops` (superseded_stops), newest first, until the close fits.
+void supersede(State& s, const OrderRequest& request, const std::vector<OrderId>& stops, Events& events) {
+  Order candidate;
+  candidate.id = static_cast<OrderId>(s.orders.size() + 1);
+  candidate.request = request;
+  for (const auto id : stops) {
+    cancel_order(s, id, failure(Reason::POSITION_CLOSED, "Manual close order " + std::to_string(candidate.id) +
+                                " superseded this stop on a buy-only plan"), events);
+    if (closing_only(s, candidate)) break;
+  }
+}
+CommandResult place_order(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events);
+/// Places an order. On a buy-only plan a manual close that only its own armed stops
+/// keep from fitting cancels them (POSITION_CLOSED), newest first, as far as it needs
+/// to; if the close is refused anyway, the stops stay and it records that refusal.
 CommandResult place(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
+  const auto stops = rejection.ok() ? superseded_stops(s, request) : std::vector<OrderId>{};
+  if (stops.empty()) return place_order(s, std::move(request), time, rejection, events);
+  State trial = s;
+  Events trial_events = events;
+  supersede(trial, request, stops, trial_events);
+  auto result = place_order(trial, request, time, rejection, trial_events);
+  if (result.decision.ok()) {
+    s = std::move(trial);
+    events = std::move(trial_events);
+    return result;
+  }
+  return place_order(s, std::move(request), time, result.decision, events);
+}
+CommandResult place_order(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = std::move(request);
@@ -3157,14 +3227,19 @@ CommandResult TradingSession::define(const md::OptionContract& contract, Timesta
 }
 CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decision rejection) {
   // A client retrying an order it may have lost the answer to gets that answer,
-  // not a second order or a duplicate-key rejection, even after the order changed;
-  // other terms still reject.
+  // not a second order or a duplicate-key rejection, even after the order changed.
+  // Other terms are refused without recording an order, so the ID keeps naming
+  // one. Only this attempt's orders hold their IDs: after an account reset, an
+  // ID an earlier attempt used names a new order.
   if (!impl_->stopped) {
     const auto& state = impl_->state;
-    if (const auto named = state.clients.find(request.client_order_id); named != state.clients.end()) {
+    if (const auto named = state.clients.find(request.client_order_id);
+        named != state.clients.end() && named->second >= state.evaluation.first_order) {
       const auto& first = state.orders.at(static_cast<std::size_t>(named->second - 1));
       if (first.submission() == request)
         return CommandResult{first.status == OrderStatus::Rejected ? first.reason : Decision{}, first.id, state.version, true};
+      return CommandResult{failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already names order " + std::to_string(first.id) +
+                                   ", submitted with other terms"), first.id, state.version, false};
     }
   }
   return impl_->transact(time, "submit", [&](State& s, Events& events) {
@@ -3179,6 +3254,79 @@ std::vector<RiskWarning> TradingSession::warnings(const std::map<std::string, do
                                                   const std::vector<Dividend>& dividends) const {
   return warnings_of(impl_->state, close_variances, dividends);
 }
+/// What order `o` would trade at now on its executable sides: a single contract's
+/// ask (buys) or bid (sells), a combo's signed net; nothing without fresh quotes.
+std::optional<Money> executable_value(const State& s, const Order& o) {
+  Order probe = o;
+  probe.request.trigger = Trigger{multi_leg(o.request) ? TriggerSource::Combo : TriggerSource::Option, TriggerDirection::AtOrBelow, Money{}};
+  return trigger_value(s, probe);
+}
+/// Advice on terms that are accepted but rarely meant (OrderPreview::warnings).
+std::vector<OrderWarning> order_warnings(const State& s, const OrderRequest& r) {
+  std::vector<OrderWarning> out;
+  for (const auto& symbol : order_symbols(r))
+    if (!s.contracts.contains(symbol) || !s.books.contains(symbol)) return out;
+  const auto level_text = [](const Trigger& t) {
+    return std::string(t.direction == TriggerDirection::AtOrBelow ? "at or below " : "at or above ") + t.level.str();
+  };
+  // A bracket's exits as attach_exits makes them; held exits already close.
+  const auto exit_of = [&](const ExitSpec& spec, OrderRole role) {
+    Order exit;
+    exit.role = role;
+    exit.request = r;
+    exit.request.bracket.reset();
+    exit.request.exits_only = false;
+    exit.request.trigger = spec.trigger;
+    exit.request.limit_price = spec.limit_price;
+    if (!r.exits_only) {
+      exit.request.side = multi_leg(r) ? Side::Buy : r.side == Side::Buy ? Side::Sell : Side::Buy;
+      for (auto& leg : exit.request.legs) leg.side = leg.side == Side::Buy ? Side::Sell : Side::Buy;
+    }
+    return exit;
+  };
+  const std::string fires = r.exits_only ? "as soon as it is accepted" : "as soon as the entry fills";
+  // A combo's net limit is what it pays: an exit pays at most its limit.
+  const auto marketable = [&](const Order& exit, Money value) {
+    return exit.request.side == Side::Buy ? value <= *exit.request.limit_price : value >= *exit.request.limit_price;
+  };
+  if (r.bracket && r.bracket->stop_loss) {
+    const auto exit = exit_of(*r.bracket->stop_loss, OrderRole::StopLoss);
+    const auto value = executable_value(s, exit);
+    if (!exit.request.trigger && exit.request.limit_price) {
+      std::string message = "The stop_loss has a limit price and no trigger, so it rests as a limit exit at " +
+          exit.request.limit_price->str() + ", not a stop";
+      if (value && marketable(exit, *value)) message += "; the closing price now, " + value->str() + ", already reaches it, so it closes the position " + fires;
+      out.push_back({"STOP_AS_LIMIT", message + ". Give the stop a trigger instead."});
+    } else if (exit.request.trigger && reached(s, exit)) {
+      out.push_back({"STOP_REACHED", "The stop's trigger, " + level_text(*exit.request.trigger) + ", is already reached (now " +
+                     trigger_value(s, exit)->str() + "): it fires " + fires});
+    }
+  }
+  if (r.bracket && r.bracket->take_profit && r.bracket->take_profit->limit_price && !r.bracket->take_profit->trigger) {
+    const auto exit = exit_of(*r.bracket->take_profit, OrderRole::TakeProfit);
+    if (const auto value = executable_value(s, exit); value && marketable(exit, *value))
+      out.push_back({"TARGET_REACHED", "The take-profit, " + exit.request.limit_price->str() + ", is already marketable (now " +
+                     value->str() + "): it fills " + fires});
+  }
+  if (r.trigger && !r.exits_only) {
+    Order armed;
+    armed.request = r;
+    if (reached(s, armed))
+      out.push_back({"TRIGGER_REACHED", "The trigger, " + level_text(*r.trigger) + ", is already reached (now " +
+                     trigger_value(s, armed)->str() + "): the order activates at once"});
+  }
+  // Slippage that alone pushes a market order's price outside the band.
+  if (!multi_leg(r) && !r.limit_price && s.config.rules.slippage_ticks > 0 && quote_check(s, r.symbol).ok()) {
+    const auto& quote = s.books.at(r.symbol).quote;
+    const auto displayed = r.side == Side::Buy ? *quote.ask : *quote.bid;
+    const auto slipped = execution_price(s, r.symbol, r.side);
+    if (price_check(s, quote, displayed).ok() && !price_check(s, quote, slipped).ok())
+      out.push_back({"SLIPPAGE_BAND", "The account's " + std::to_string(s.config.rules.slippage_ticks) + " slippage ticks price this order at " +
+                     slipped.str() + ", outside the price band around the mid " + mid(quote).str() +
+                     ", so it is refused PRICE_BAND; widen the band or lower the slippage"});
+  }
+  return out;
+}
 OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time, double floor_share,
     Decision rejection, const std::map<std::string, double>& close_variances, const PreviewMarket& market) const {
   check_floor_share(floor_share);
@@ -3187,7 +3335,8 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
   if (!impl_->stopped) {
     const auto& state = impl_->state;
     const auto named = state.clients.find(request.client_order_id);
-    const auto* first = named == state.clients.end() ? nullptr : &state.orders.at(static_cast<std::size_t>(named->second - 1));
+    const auto* first = named == state.clients.end() || named->second < state.evaluation.first_order
+        ? nullptr : &state.orders.at(static_cast<std::size_t>(named->second - 1));
     if (first && first->submission() == request) {
       const auto snapshot = snapshot_of(state);
       OrderPreview retry;
@@ -3205,6 +3354,7 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
   Events ignored;
   auto projection = project_order(before, request, rejection);
   auto result = projection.result;
+  result.warnings = order_warnings(before, request);
   if (impl_->stopped) result.decision = failure(Reason::JOURNAL_IO, "Trading stopped after journal failure");
   // What submitting it now would execute: the same acceptance and matching, on a copy.
   if (!impl_->stopped) {
