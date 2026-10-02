@@ -374,8 +374,9 @@ Quantity delivered(const md::OptionContract& c, Quantity contracts) {
 }
 /// A bracket's two exits can fill only once between them: checks count the pair
 /// through its earlier order, so the later one is shadowed while both are open.
+/// Two orders that cancel each other may differ, so each counts in full.
 bool shadowed(const State& s, const Order& o) {
-  return o.oco != 0 && o.oco < o.id && s.orders.at(static_cast<std::size_t>(o.oco - 1)).open();
+  return o.role != OrderRole::Normal && o.oco != 0 && o.oco < o.id && s.orders.at(static_cast<std::size_t>(o.oco - 1)).open();
 }
 /// Every leg must oppose its holding and fit within it after the other working
 /// user orders on that side. Bracket exits shrink after each fill and system
@@ -2223,7 +2224,10 @@ void on_fill(State& s, OrderId id, Quantity units, Events& events) {
   if (order.oco != 0) {
     const auto& sibling = s.orders.at(static_cast<std::size_t>(order.oco - 1));
     if (sibling.open()) {
-      if (order.status == OrderStatus::Filled && units >= sibling.remaining())
+      // Two orders that cancel each other do so on the first fill of either.
+      if (order.role == OrderRole::Normal)
+        cancel_order(s, order.oco, failure(Reason::OCO_FILLED, "The other order of this pair filled"), events);
+      else if (order.status == OrderStatus::Filled && units >= sibling.remaining())
         cancel_order(s, order.oco, failure(Reason::OCO_FILLED, "The other exit of this bracket filled"), events);
       else
         // This bracket's remaining protection, even when another entry holds the same contract.
@@ -2647,12 +2651,33 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
   return std::nullopt;
 }
 /// Both submit and preview check the candidate while its reservation is present.
+/// Orders in a request and its chained orders.
+std::size_t chain_size(const OrderRequest& r) {
+  std::size_t size = 1;
+  for (const auto& next : r.then) size += chain_size(next);
+  for (const auto& other : r.oco) size += chain_size(other);
+  return size;
+}
+/// A chain's shape: at most one order placed by a complete fill and one that
+/// cancels it, an oco order taking neither oco nor exits_only, nor any chained
+/// order exits_only, nor a held exit any chain; four orders in all.
+bool chain_ok(const OrderRequest& r, bool chained = false) {
+  if (r.then.size() > 1 || r.oco.size() > 1 || (r.exits_only && (chained || !r.then.empty() || !r.oco.empty())))
+    return false;
+  if (!r.oco.empty() && !r.oco.front().oco.empty()) return false;
+  for (const auto& next : r.then) if (!chain_ok(next, true)) return false;
+  for (const auto& other : r.oco) if (!chain_ok(other, true)) return false;
+  return chained || chain_size(r) <= kMaxChain;
+}
 Decision acceptance_check(const State& s, const Order& candidate, const Decision& rejection) {
   // Another order used this ID first.
   if (const auto first = s.clients.find(candidate.request.client_order_id);
       first != s.clients.end() && first->second != candidate.id)
     return failure(Reason::DUPLICATE_CLIENT_ID, "client_order_id already used");
   if (!rejection.ok()) return rejection;
+  if (!chain_ok(candidate.request))
+    return failure(Reason::INVALID_ORDER, "A chain is at most four orders: an order takes at most one order placed when it fills "
+                   "(then) and one that cancels it (oco, which takes none of its own); chained orders are not held exits");
   auto decision = order_check(s, candidate);
   return decision.ok() ? open_orders_risk_check(s, candidate) : decision;
 }
@@ -3377,10 +3402,10 @@ void supersede(State& s, const OrderRequest& request, const std::vector<OrderId>
   }
 }
 CommandResult place_order(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events);
-/// Places an order. On a buy-only plan a manual close that only its own armed stops
+/// Places one order. On a buy-only plan a manual close that only its own armed stops
 /// keep from fitting cancels them (POSITION_CLOSED), newest first, as far as it needs
 /// to; if the close is refused anyway, the stops stay and it records that refusal.
-CommandResult place(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
+CommandResult place_one(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
   const auto stops = rejection.ok() ? superseded_stops(s, request) : std::vector<OrderId>{};
   if (stops.empty()) return place_order(s, std::move(request), time, rejection, events);
   State trial = s;
@@ -3468,6 +3493,55 @@ CommandResult place_order(State& s, OrderRequest request, Timestamp time, const 
   // A bracket stop the entry's fills created may already be reached.
   check_triggers(s, events);
   return CommandResult{{}, id, 0};
+}
+/// Accept an order, and the order that cancels it with it: both or neither. If
+/// the other is refused, the order is recorded refused for that reason and the
+/// other not at all. Once both are accepted they are linked; one that filled on
+/// acceptance cancels the other at once.
+CommandResult place(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
+  if (request.oco.empty()) return place_one(s, std::move(request), time, rejection, events);
+  const State before = s;
+  const auto recorded = events.size();
+  auto other = request.oco.front();
+  other.client_order_id = request.client_order_id + ":oco";
+  const auto first = place_one(s, request, time, rejection, events);
+  if (!first.decision.ok()) return first;
+  const auto second = place_one(s, std::move(other), time, {}, events);
+  if (!second.decision.ok()) {
+    s = before;
+    events.erase(events.begin() + static_cast<std::ptrdiff_t>(recorded), events.end());
+    auto refused = second.decision;
+    refused.message = "The order that cancels it: " + refused.message;
+    return place_one(s, std::move(request), time, refused, events);
+  }
+  const auto a = *first.order_id, b = *second.order_id;
+  s.orders.mut(a - 1).oco = b;
+  s.orders.mut(b - 1).oco = a;
+  for (const auto& [filled, open] : {std::pair{a, b}, std::pair{b, a}})
+    if (s.orders.at(static_cast<std::size_t>(filled - 1)).filled_quantity > 0)
+      cancel_order(s, open, failure(Reason::OCO_FILLED, "The other order of this pair filled"), events);
+  return first;
+}
+/// One-triggers-other: each order that filled completely places the order
+/// chained to it, once, as its own submission by the same actor. It runs after
+/// each command over the orders open when it began and those placed since, so a
+/// chained order that fills at once places its own in turn.
+void place_chained(State& s, Events& events) {
+  const auto actor = s.actor;
+  const auto visit = [&](OrderId id) {
+    const auto& o = s.orders[id - 1];
+    if (o.status != OrderStatus::Filled || o.request.then.empty() || o.chained != 0) return;
+    auto next = o.request.then.front();
+    next.client_order_id = o.request.client_order_id + ":then";
+    s.actor = o.actor;
+    const auto placed = place(s, std::move(next), s.time, {}, events);
+    s.actor = actor;
+    if (!placed.order_id) return;
+    s.orders.mut(id - 1).chained = *placed.order_id;
+    s.orders.mut(*placed.order_id - 1).chained_from = id;
+  };
+  for (const auto id : s.working) visit(id);
+  for (auto i = s.indexed; i < s.orders.size(); ++i) visit(static_cast<OrderId>(i + 1));
 }
 std::string underlying_of(const State& s, const Order& o) {
   const auto c = s.contracts.find(order_symbols(o.request).front());
@@ -3918,6 +3992,7 @@ struct TradingSession::Impl {
     advance(next, time, events);
     next.actor = actor;
     auto result = action(next, events);
+    place_chained(next, events);
     next.actor = "system";
     monitor_loss(next, events);
     monitor_rules(next, events);

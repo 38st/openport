@@ -265,12 +265,15 @@ json trigger_json(const std::optional<Trigger>& t) {
   // Conditional terms appear only on the triggers that have them.
   if (!t->symbol.empty()) result["symbol"] = t->symbol;
   if (t->source == TriggerSource::Study) result["study"] = t->study;
-  result["reference"] = t->reference == TriggerReference::Mid ? "mid" : t->reference == TriggerReference::Mark ? "mark" : "bid_ask";
-  result["trail"] = nullptr;
-  if (t->trail) {
-    const auto unit = t->trail->unit;
-    result["trail"] = {{"unit", unit == TrailUnit::Amount ? "amount" : unit == TrailUnit::Percent ? "percent" : "ticks"},
-                       {"value", unit == TrailUnit::Ticks ? json(t->trail->value.micros() / 1'000'000) : json(t->trail->value.str())}};
+  // Triggers on the order's own market report what they read and how they trail.
+  if (!conditional(*t)) {
+    result["reference"] = t->reference == TriggerReference::Mid ? "mid" : t->reference == TriggerReference::Mark ? "mark" : "bid_ask";
+    result["trail"] = nullptr;
+    if (t->trail) {
+      const auto unit = t->trail->unit;
+      result["trail"] = {{"unit", unit == TrailUnit::Amount ? "amount" : unit == TrailUnit::Percent ? "percent" : "ticks"},
+                         {"value", unit == TrailUnit::Ticks ? json(t->trail->value.micros() / 1'000'000) : json(t->trail->value.str())}};
+    }
   }
   if (t->source == TriggerSource::Time) {
     const auto two = [](std::int64_t n) { return std::string{static_cast<char>('0' + n / 10), static_cast<char>('0' + n % 10)}; };
@@ -349,6 +352,23 @@ std::uint64_t order_attempt(const TradingSnapshot& s, OrderId id) {
   return s.attempts.empty() ? s.evaluation.attempt : s.attempts.front().attempt;
 }
 const char* side_name(Side side) { return side == Side::Buy ? "buy" : "sell"; }
+/// A chained order not yet placed, in the order body's shape.
+json chained_json(const OrderRequest& r) {
+  const bool multi = multi_leg(r);
+  json legs = nullptr;
+  if (multi) {
+    legs = json::array();
+    for (const auto& leg : r.legs) legs.push_back({{"symbol", leg.symbol}, {"side", side_name(leg.side)}, {"ratio", leg.ratio}});
+  }
+  return {{"symbol", multi ? json(nullptr) : json(r.symbol)}, {"side", multi ? json(nullptr) : json(side_name(r.side))},
+          {"legs", legs}, {"type", r.type == OrderType::Limit ? "limit" : "market"},
+          {"time_in_force", tif_name(r.tif)},
+          {"quantity", r.quantity}, {"limit_price", money(r.limit_price)}, {"trigger", trigger_json(r.trigger)},
+          {"bracket", r.bracket ? json{{"stop_loss", exit_json(r.bracket->stop_loss)}, {"take_profit", exit_json(r.bracket->take_profit)}}
+                                : json(nullptr)},
+          {"then", r.then.empty() ? json(nullptr) : chained_json(r.then.front())},
+          {"oco", r.oco.empty() ? json(nullptr) : chained_json(r.oco.front())}};
+}
 json order_json(const Order& o, const TradingView& view) {
   constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
   constexpr const char* roles[] = {"", "stop_loss", "take_profit"};
@@ -391,7 +411,9 @@ json order_json(const Order& o, const TradingView& view) {
           {"bracket", o.request.bracket ? json{{"stop_loss", exit_json(o.request.bracket->stop_loss)},
                                                {"take_profit", exit_json(o.request.bracket->take_profit)}} : json(nullptr)},
           {"role", nullable(roles[static_cast<int>(o.role)])}, {"parent", id_or_null(o.parent)}, {"oco", id_or_null(o.oco)},
-          {"stop_loss_order", id_or_null(o.stop_loss)}, {"take_profit_order", id_or_null(o.take_profit)}};
+          {"stop_loss_order", id_or_null(o.stop_loss)}, {"take_profit_order", id_or_null(o.take_profit)},
+          {"then", o.request.then.empty() ? json(nullptr) : chained_json(o.request.then.front())},
+          {"chained_order", id_or_null(o.chained)}, {"chained_from", id_or_null(o.chained_from)}};
 }
 json flatten_preview_json(const FlattenPreview& f, const TradingView& view) {
   constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
@@ -1626,6 +1648,123 @@ std::optional<Walk> parse_walk(const json& j) {
   fields(j, {"step", "seconds", "limit"});
   return Walk{decimal_field(j, "step"), integer_field(j, "seconds"), decimal_field(j, "limit")};
 }
+/// Orders in a request and its chained orders.
+std::size_t chain_length(const OrderRequest& r) {
+  std::size_t size = 1;
+  for (const auto& next : r.then) size += chain_length(next);
+  for (const auto& other : r.oco) size += chain_length(other);
+  return size;
+}
+/// An order body: a single contract (symbol and side) or legs. A body no market
+/// could make a valid order is malformed. `depth` counts the orders a chained one
+/// (an order's then or oco) hangs on; it takes no client_order_id or exits_only.
+OrderRequest parse_order(const json& body, std::size_t depth = 0) {
+  if (!body.is_object()) throw std::invalid_argument("An order is an object");
+  if (depth >= kMaxChain) throw std::invalid_argument("A chain is at most four orders");
+  const bool chained = depth > 0;
+  // A single contract (symbol and side), or legs for a multi-leg order.
+  const bool legs = body.contains("legs");
+  // A chained order takes its ID from the order it hangs on, and is never a held exit.
+  if (chained && legs) fields(body, {"legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group", "good_till", "walk", "then", "oco"});
+  else if (chained) fields(body, {"symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group", "good_till", "walk", "then", "oco"});
+  else if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till", "walk", "then", "oco"});
+  else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till", "walk", "then", "oco"});
+  // A body no market could make a valid order is malformed: 400, and nothing is
+  // recorded, so its client_order_id stays free. The reducer's own checks (422,
+  // recorded) are those that depend on the account and the market.
+  OrderRequest order;
+  if (!chained) {
+    order.client_order_id = string_field(body, "client_order_id");
+    if (!valid_client_order_id(order.client_order_id))
+      throw std::invalid_argument("client_order_id must be 1 to 128 bytes of text without control characters");
+  }
+  const auto type = string_field(body, "type"), tif = string_field(body, "time_in_force");
+  constexpr std::pair<std::string_view, TimeInForce> tifs[] = {{"day", TimeInForce::Day}, {"ioc", TimeInForce::Ioc},
+      {"gtc", TimeInForce::Gtc}, {"exto", TimeInForce::Exto}, {"gtc_exto", TimeInForce::GtcExto}, {"gtd", TimeInForce::Gtd}};
+  const auto named = std::find_if(std::begin(tifs), std::end(tifs), [&](const auto& t) { return t.first == tif; });
+  if ((type != "limit" && type != "market") || named == std::end(tifs))
+    throw std::invalid_argument("Invalid type or time_in_force");
+  order.type = type == "limit" ? OrderType::Limit : OrderType::Market;
+  order.tif = named->second;
+  if (order.type == OrderType::Market && order.tif != TimeInForce::Ioc &&
+      !(body.contains("trigger") && (order.tif == TimeInForce::Exto || order.tif == TimeInForce::GtcExto || order.tif == TimeInForce::Gtd)))
+    throw std::invalid_argument("Market orders need ioc; triggered markets also take exto, gtc_exto or gtd");
+  if ((order.tif == TimeInForce::Gtd) != body.contains("good_till"))
+    throw std::invalid_argument("good_till is required for gtd and forbidden otherwise");
+  if (body.contains("good_till")) {
+    const auto value = string_field(body, "good_till");
+    const bool zoned = value.ends_with("Z") || (value.size() >= 6 && (value[value.size() - 6] == '+' || value[value.size() - 6] == '-'));
+    const auto parsed = md::parse_datetime(value, md::Zone::Utc);
+    if (!zoned || !parsed) throw std::invalid_argument("good_till must be an ISO date-time with Z or a UTC offset");
+    order.good_till = *parsed;
+  }
+  order.quantity = integer_field(body, "quantity");
+  if (order.quantity < 1) throw std::invalid_argument("quantity must be a positive whole number of contracts or units");
+  if ((order.type == OrderType::Limit) != body.contains("limit_price"))
+    throw std::invalid_argument("limit_price is required for limit orders and forbidden for market orders");
+  if (body.contains("limit_price")) order.limit_price = decimal_field(body, "limit_price");
+  if (legs) {
+    const auto& list = body.at("legs");
+    if (!list.is_array() || list.size() < 2 || list.size() > kMaxRollLegs)
+      throw std::invalid_argument("legs must be an array of two to four legs, or up to eight for a roll");
+    std::set<std::string> symbols;
+    for (const auto& item : list) {
+      fields(item, {"symbol", "side"}, {"ratio"});
+      Leg leg;
+      leg.symbol = symbol_field(item);
+      const auto side = string_field(item, "side");
+      if (side != "buy" && side != "sell") throw std::invalid_argument("Leg side must be buy or sell");
+      leg.side = side == "buy" ? Side::Buy : Side::Sell;
+      if (item.contains("ratio")) leg.ratio = integer_field(item, "ratio");
+      if (leg.ratio < 1 || leg.ratio > kMaxRatio) throw std::invalid_argument("A leg's ratio must be 1 to 10");
+      if (!symbols.insert(leg.symbol).second) throw std::invalid_argument("Each leg must name a different contract");
+      order.legs.push_back(std::move(leg));
+    }
+  } else {
+    if (order.limit_price && *order.limit_price <= Money{})
+      throw std::invalid_argument("A single contract's limit_price must be positive");
+    order.symbol = symbol_field(body);
+    const auto side = string_field(body, "side");
+    if (side != "buy" && side != "sell") throw std::invalid_argument("Invalid side, type or time_in_force");
+    order.side = side == "buy" ? Side::Buy : Side::Sell;
+  }
+  if (body.contains("exits_only")) order.exits_only = boolean_field(body, "exits_only");
+  if (body.contains("walk")) order.walk = parse_walk(body.at("walk"));
+  if (body.contains("group")) {
+    // A trade ID: the opening fill of one of the account's round trips.
+    order.group = string_field(body, "group");
+    (void)identifier(order.group);
+  }
+  if (body.contains("note")) order.note = string_field(body, "note");
+  if (body.contains("tags")) {
+    const auto& tags = body.at("tags");
+    if (!tags.is_array() || tags.size() > 16) throw std::invalid_argument("tags must be an array of at most 16 strings");
+    for (const auto& tag : tags) {
+      if (!tag.is_string()) throw std::invalid_argument("tags must be strings");
+      order.tags.push_back(tag.get<std::string>());
+    }
+  }
+  if (body.contains("trigger")) order.trigger = parse_trigger(body.at("trigger"));
+  if (body.contains("bracket")) {
+    const auto& bracket = body.at("bracket");
+    fields(bracket, {}, {"stop_loss", "take_profit"});
+    order.bracket = Bracket{};
+    if (bracket.contains("stop_loss")) order.bracket->stop_loss = parse_exit(bracket.at("stop_loss"));
+    if (bracket.contains("take_profit")) order.bracket->take_profit = parse_exit(bracket.at("take_profit"));
+    if (!order.bracket->stop_loss && !order.bracket->take_profit)
+      throw std::invalid_argument("A bracket needs a stop_loss, a take_profit or both");
+  }
+  // One order placed when this one fills completely, and one that cancels it.
+  for (const char* key : {"then", "oco"}) {
+    if (!body.contains(key)) continue;
+    auto next = parse_order(body.at(key), depth + 1);
+    if (std::string_view(key) == "oco" && !next.oco.empty()) throw std::invalid_argument("An oco order takes no oco of its own");
+    (std::string_view(key) == "then" ? order.then : order.oco).push_back(std::move(next));
+  }
+  if (order.exits_only && (!order.then.empty() || !order.oco.empty())) throw std::invalid_argument("Held exits take no then or oco");
+  if (!chained && chain_length(order) > kMaxChain) throw std::invalid_argument("A chain is at most four orders");
+  return order;
+}
 TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   TradingCommand command;
   if (path.starts_with("/api/accounts/")) {
@@ -1928,93 +2067,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
         body.erase("floor_share");
       }
     }
-    // A single contract (symbol and side), or legs for a multi-leg order.
-    const bool legs = body.is_object() && body.contains("legs");
-    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till", "walk"});
-    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till", "walk"});
-    // A body no market could make a valid order is malformed: 400, and nothing is
-    // recorded, so its client_order_id stays free. The reducer's own checks (422,
-    // recorded) are those that depend on the account and the market.
-    auto& order = command.order;
-    order.client_order_id = string_field(body, "client_order_id");
-    if (!valid_client_order_id(order.client_order_id))
-      throw std::invalid_argument("client_order_id must be 1 to 128 bytes of text without control characters");
-    const auto type = string_field(body, "type"), tif = string_field(body, "time_in_force");
-    constexpr std::pair<std::string_view, TimeInForce> tifs[] = {{"day", TimeInForce::Day}, {"ioc", TimeInForce::Ioc},
-        {"gtc", TimeInForce::Gtc}, {"exto", TimeInForce::Exto}, {"gtc_exto", TimeInForce::GtcExto}, {"gtd", TimeInForce::Gtd}};
-    const auto named = std::find_if(std::begin(tifs), std::end(tifs), [&](const auto& t) { return t.first == tif; });
-    if ((type != "limit" && type != "market") || named == std::end(tifs))
-      throw std::invalid_argument("Invalid type or time_in_force");
-    order.type = type == "limit" ? OrderType::Limit : OrderType::Market;
-    order.tif = named->second;
-    if (order.type == OrderType::Market && order.tif != TimeInForce::Ioc &&
-        !(body.contains("trigger") && (order.tif == TimeInForce::Exto || order.tif == TimeInForce::GtcExto || order.tif == TimeInForce::Gtd)))
-      throw std::invalid_argument("Market orders need ioc; triggered markets also take exto, gtc_exto or gtd");
-    if ((order.tif == TimeInForce::Gtd) != body.contains("good_till"))
-      throw std::invalid_argument("good_till is required for gtd and forbidden otherwise");
-    if (body.contains("good_till")) {
-      const auto value = string_field(body, "good_till");
-      const bool zoned = value.ends_with("Z") || (value.size() >= 6 && (value[value.size() - 6] == '+' || value[value.size() - 6] == '-'));
-      const auto parsed = md::parse_datetime(value, md::Zone::Utc);
-      if (!zoned || !parsed) throw std::invalid_argument("good_till must be an ISO date-time with Z or a UTC offset");
-      order.good_till = *parsed;
-    }
-    order.quantity = integer_field(body, "quantity");
-    if (order.quantity < 1) throw std::invalid_argument("quantity must be a positive whole number of contracts or units");
-    if ((order.type == OrderType::Limit) != body.contains("limit_price"))
-      throw std::invalid_argument("limit_price is required for limit orders and forbidden for market orders");
-    if (body.contains("limit_price")) order.limit_price = decimal_field(body, "limit_price");
-    if (legs) {
-      const auto& list = body.at("legs");
-      if (!list.is_array() || list.size() < 2 || list.size() > kMaxRollLegs)
-        throw std::invalid_argument("legs must be an array of two to four legs, or up to eight for a roll");
-      std::set<std::string> symbols;
-      for (const auto& item : list) {
-        fields(item, {"symbol", "side"}, {"ratio"});
-        Leg leg;
-        leg.symbol = symbol_field(item);
-        const auto side = string_field(item, "side");
-        if (side != "buy" && side != "sell") throw std::invalid_argument("Leg side must be buy or sell");
-        leg.side = side == "buy" ? Side::Buy : Side::Sell;
-        if (item.contains("ratio")) leg.ratio = integer_field(item, "ratio");
-        if (leg.ratio < 1 || leg.ratio > kMaxRatio) throw std::invalid_argument("A leg's ratio must be 1 to 10");
-        if (!symbols.insert(leg.symbol).second) throw std::invalid_argument("Each leg must name a different contract");
-        order.legs.push_back(std::move(leg));
-      }
-    } else {
-      if (order.limit_price && *order.limit_price <= Money{})
-        throw std::invalid_argument("A single contract's limit_price must be positive");
-      order.symbol = symbol_field(body);
-      const auto side = string_field(body, "side");
-      if (side != "buy" && side != "sell") throw std::invalid_argument("Invalid side, type or time_in_force");
-      order.side = side == "buy" ? Side::Buy : Side::Sell;
-    }
-    if (body.contains("exits_only")) order.exits_only = boolean_field(body, "exits_only");
-    if (body.contains("walk")) order.walk = parse_walk(body.at("walk"));
-    if (body.contains("group")) {
-      // A trade ID: the opening fill of one of the account's round trips.
-      order.group = string_field(body, "group");
-      (void)identifier(order.group);
-    }
-    if (body.contains("note")) order.note = string_field(body, "note");
-    if (body.contains("tags")) {
-      const auto& tags = body.at("tags");
-      if (!tags.is_array() || tags.size() > 16) throw std::invalid_argument("tags must be an array of at most 16 strings");
-      for (const auto& tag : tags) {
-        if (!tag.is_string()) throw std::invalid_argument("tags must be strings");
-        order.tags.push_back(tag.get<std::string>());
-      }
-    }
-    if (body.contains("trigger")) order.trigger = parse_trigger(body.at("trigger"));
-    if (body.contains("bracket")) {
-      const auto& bracket = body.at("bracket");
-      fields(bracket, {}, {"stop_loss", "take_profit"});
-      order.bracket = Bracket{};
-      if (bracket.contains("stop_loss")) order.bracket->stop_loss = parse_exit(bracket.at("stop_loss"));
-      if (bracket.contains("take_profit")) order.bracket->take_profit = parse_exit(bracket.at("take_profit"));
-      if (!order.bracket->stop_loss && !order.bracket->take_profit)
-        throw std::invalid_argument("A bracket needs a stop_loss, a take_profit or both");
-    }
+    command.order = parse_order(body);
   } else if (path == "/api/risk/guardrails") {
     fields(body, {"expected_revision", "guardrails"});
     command.kind = TradingCommand::Kind::Guardrails;
@@ -2130,6 +2183,9 @@ json order_request_json(const OrderRequest& order) {
   const auto trigger_body = [](const Trigger& trigger) {
     auto result = trigger_json(trigger);
     if (trigger.source == TriggerSource::Time) result.erase("level");
+    // A request names only what differs from the defaults.
+    if (result.contains("trail") && result["trail"].is_null()) result.erase("trail");
+    if (result.value("reference", "") == "bid_ask") result.erase("reference");
     return result;
   };
   if (order.trigger) body["trigger"] = trigger_body(*order.trigger);

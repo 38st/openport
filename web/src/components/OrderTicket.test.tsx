@@ -175,6 +175,42 @@ describe("order ticket interaction", () => {
     expect(host.textContent).not.toContain("New order")
     expect(host.textContent).toContain("Check Positions and Orders to confirm")
   })
+  it("trails a bracket stop by ticks of the mark", async () => {
+    await render()
+    await act(async () => (host.querySelector('input[aria-label="Bracket"]') as HTMLInputElement).click())
+    await setField("Stop reads", "mark")
+    await act(async () => ([...host.querySelectorAll("label")].find((l) => l.textContent === "Trailing")!.querySelector("input")!).click())
+    await setField("Trail by", "ticks")
+    await setField("Trail (ticks)", "4")
+    expect(host.textContent).toContain("Sells at market when mark ≤ $3.50, trailing 4 ticks.")
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({
+      bracket: { stop_loss: { trigger: { source: "option", direction: "at_or_below", level: "3.50", reference: "mark", trail: { unit: "ticks", value: 4 } } } },
+    })
+  })
+  it("chains a target placed once the entry fills completely", async () => {
+    await render()
+    await setField("Quantity", "2")
+    await choose("Chain", "Then, once filled")
+    expect(button("Submit order").disabled).toBe(true)
+    await setField("Chained limit", "6.20")
+    expect(host.textContent).toContain("Once this order fills completely, places sell 2 @ $6.20 GTC")
+    await click("Submit order")
+    const sent = vi.mocked(api.submitOrder).mock.calls[0]![0]
+    expect(sent.then).toEqual({ symbol: selection.symbol, side: "sell", quantity: 2, type: "limit", time_in_force: "gtc", limit_price: "6.20" })
+    expect(sent.oco).toBeUndefined()
+  })
+  it("chains an order that cancels it, waiting for the underlying", async () => {
+    await render()
+    await setField("Quantity", "2")
+    await choose("Chain", "Or, one cancels other")
+    await setField("Chained limit", "4.10")
+    await setField("Only when SPX crosses", "7010")
+    expect(host.textContent).toContain("The first fill of either cancels the other")
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0].oco).toEqual({ symbol: selection.symbol, side: "buy", quantity: 2, type: "limit",
+      time_in_force: "gtc", limit_price: "4.10", trigger: { source: "underlying", direction: "at_or_above", level: "7010" } })
+  })
   it("sends a conditional entry with a bracket whose exits oppose the position", async () => {
     await render({ ...trading, fee_per_contract: "0.65" })
     await choose("Condition", "When SPX crosses")

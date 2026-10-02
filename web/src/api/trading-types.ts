@@ -598,7 +598,11 @@ type Pricing = { type: "limit"; limit_price: Money; time_in_force: TimeInForce }
 export type FlattenPricing = { type?: "market" | "limit"; limit_ticks?: number }
 export interface Walk { step: Money; seconds: number; limit: Money }
 export interface WalkStep { time: string; limit_price: Money }
-export type NewOrder = { tags?: string[]; note?: string; good_till?: string; walk?: Walk | null } & ({
+/** Orders chained to an order: placed once it fills completely (then), or accepted with it, the first fill of either cancelling the other (oco). */
+export interface OrderChain { then?: ChainedOrder; oco?: ChainedOrder }
+/** An order body chained to another: it takes the other's client order ID with a suffix, and is never a held exit. */
+export type ChainedOrder = NewOrder extends infer O ? O extends unknown ? Omit<O, "client_order_id" | "exits_only"> : never : never
+export type NewOrder = { tags?: string[]; note?: string; good_till?: string; walk?: Walk | null } & OrderChain & ({
   client_order_id: string
   symbol: string
   side: Side
@@ -624,6 +628,12 @@ export type NewOrder = { tags?: string[]; note?: string; good_till?: string; wal
   symbol?: never
   side?: never
 }) & Pricing
+/** A chained order not yet placed, in the order body's shape. */
+export interface PendingOrder {
+  symbol: string | null; side: Side | null; legs: OrderLeg[] | null
+  type: "limit" | "market"; time_in_force: TimeInForce; quantity: number; limit_price: Money | null
+  trigger: Trigger | null; bracket: unknown; then: PendingOrder | null; oco: PendingOrder | null
+}
 /** What keeps an open order from filling now. */
 export interface OrderWait {
   code: "SESSION_CLOSED" | "TRIGGER" | "REGULAR_SESSION" | "INVALID_QUOTE" | "STALE_QUOTE" | "FILL_LATENCY" | "NEWER_QUOTE" | "LIMIT" | "DISPLAYED_SIZE" | "STALE_DATA"
@@ -696,6 +706,11 @@ export interface Order {
   oco?: string | null
   stop_loss_order?: string | null
   take_profit_order?: string | null
+  /** The order its complete fill will place, as a body; null when none. Absent from older servers. */
+  then?: PendingOrder | null
+  /** The order its complete fill placed, and the order whose fill placed this one. */
+  chained_order?: string | null
+  chained_from?: string | null
 }
 /** The book a fill traded against: size_left is the taken side's displayed size still free for paper orders before it, quoted_at when the quote was first given. */
 export interface FillQuote {

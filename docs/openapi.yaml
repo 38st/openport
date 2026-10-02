@@ -11535,6 +11535,14 @@
             "type": "boolean",
             "description": "Attach the bracket to a held contract (symbol and the side that closes it) or held closing legs instead of submitting an entry. The order's own terms are the take-profit's, or the stop's when there is no target: GTC for a limit (a stop-limit's with its trigger), market IOC for a stop."
           },
+          "then": {
+            "$ref": "#/components/schemas/ChainedOrder",
+            "description": "One-triggers-other: an order placed as `<client_order_id>:then` once this one fills completely, with every check a new order takes then (a refusal is recorded as its own rejected order). An order that ends any other way places nothing."
+          },
+          "oco": {
+            "$ref": "#/components/schemas/ChainedOrder",
+            "description": "One-cancels-other: an order accepted with this one as `<client_order_id>:oco`, both or neither (if it is refused, this order is recorded refused for its reason); the first fill of either cancels the other with OCO_FILLED. Each reserves in full. A chain, this order included, is at most four orders; held exits take neither."
+          },
           "group": {
             "type": "string",
             "description": "Join the round trips this order opens to a whole trade, named by its ID or one of its open round trips' IDs (an adjustment). A multi-leg order that closes or adds to another order's round trip joins that trade without it (a roll). An order naming no trade holding an open round trip on its underlying, or attaching held exits, is refused with INVALID_GROUP."
@@ -11676,6 +11684,323 @@
               }
             }
           }
+        ]
+      },
+      "ChainedOrder": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/Side"
+          },
+          "legs": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/RequestLeg"
+            },
+            "description": "Two to four legs, or up to eight for a roll: past four, every leg but four must close held contracts (INVALID_ORDER otherwise), as a condor rolls whole."
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "type": {
+            "enum": [
+              "market",
+              "limit"
+            ]
+          },
+          "time_in_force": {
+            "enum": [
+              "day",
+              "gtc",
+              "ioc",
+              "exto",
+              "gtc_exto",
+              "gtd"
+            ]
+          },
+          "limit_price": {
+            "type": "string"
+          },
+          "trigger": {
+            "$ref": "#/components/schemas/Trigger"
+          },
+          "bracket": {
+            "$ref": "#/components/schemas/Bracket"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "note": {
+            "type": "string"
+          },
+          "then": {
+            "$ref": "#/components/schemas/ChainedOrder"
+          },
+          "oco": {
+            "$ref": "#/components/schemas/ChainedOrder"
+          },
+          "group": {
+            "type": "string",
+            "description": "Join the round trips this order opens to a whole trade, named by its ID or one of its open round trips' IDs (an adjustment). A multi-leg order that closes or adds to another order's round trip joins that trade without it (a roll). An order naming no trade holding an open round trip on its underlying, or attaching held exits, is refused with INVALID_GROUP."
+          },
+          "good_till": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Required only for gtd. ISO timestamp with Z or UTC offset, in the future and no more than 366 days after acceptance (market time). GTD trades regular hours; expires with GTD_END."
+          },
+          "walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Walk"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "quantity",
+          "type",
+          "time_in_force"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "symbol",
+              "side"
+            ],
+            "not": {
+              "required": [
+                "legs"
+              ]
+            }
+          },
+          {
+            "required": [
+              "legs"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "symbol"
+                  ]
+                },
+                {
+                  "required": [
+                    "side"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "limit"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "limit_price"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "limit_price"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "market"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "time_in_force": {
+                      "const": "ioc"
+                    }
+                  }
+                },
+                {
+                  "required": [
+                    "trigger"
+                  ],
+                  "properties": {
+                    "time_in_force": {
+                      "enum": [
+                        "exto",
+                        "gtc_exto",
+                        "gtd"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "time_in_force": {
+                  "const": "gtd"
+                }
+              },
+              "required": [
+                "time_in_force"
+              ]
+            },
+            "then": {
+              "required": [
+                "good_till"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "good_till"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "An order chained to another (its then or oco): an order body without client_order_id, which it takes from the order it hangs on, or exits_only. An oco order takes no oco of its own.",
+        "additionalProperties": false
+      },
+      "PendingOrder": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "side": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Side"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "legs": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RequestLeg"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "enum": [
+              "market",
+              "limit"
+            ]
+          },
+          "time_in_force": {
+            "enum": [
+              "day",
+              "gtc",
+              "ioc",
+              "exto",
+              "gtc_exto",
+              "gtd"
+            ]
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "limit_price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trigger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Trigger"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bracket": {},
+          "then": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingOrder"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "oco": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingOrder"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "symbol",
+          "side",
+          "legs",
+          "type",
+          "time_in_force",
+          "quantity",
+          "limit_price",
+          "trigger",
+          "bracket",
+          "then",
+          "oco"
         ]
       },
       "Order": {
@@ -12137,6 +12462,39 @@
               }
             ],
             "description": "Next scheduled step, or null when there is none (including at cap or terminal)."
+          },
+          "then": {
+            "description": "The order its complete fill will place, in the order body's shape (symbol, side, legs, type, time_in_force, quantity, limit_price, trigger, bracket, then, oco); null when none. It stays after the order is placed: chained_order names it.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingOrder"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "chained_order": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The order this one's complete fill placed (its then)."
+          },
+          "chained_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The order whose complete fill placed this one."
           }
         },
         "required": [

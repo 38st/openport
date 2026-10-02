@@ -3282,6 +3282,59 @@ TEST_F(PaperEngine, TrailingTriggersAndTheirReferenceOverHttp) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, OrderChainsOverHttp) {
+  seed();
+  // A dip buy or a breakout buy, whichever fills first; the dip then places its target.
+  auto dip = order(market, "dip", "3.90");
+  auto target = order(market, "", "4.30");
+  target.erase("client_order_id");
+  target["side"] = "sell";
+  target["time_in_force"] = "gtc";
+  dip["then"] = target;
+  json breakout{{"symbol", market.symbol()}, {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"},
+                {"trigger", {{"source", "underlying"}, {"direction", "at_or_above"}, {"level", "5010.00"}}}};
+  dip["oco"] = breakout;
+  const auto placed = write(*engine, "POST", "/api/orders", dip);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  const auto first = json::parse(placed.body)["order"];
+  EXPECT_EQ(first["then"]["side"], "sell");
+  EXPECT_EQ(first["then"]["limit_price"], "4.30");
+  EXPECT_TRUE(first["then"]["then"].is_null());
+  EXPECT_TRUE(first["chained_order"].is_null());
+  ASSERT_TRUE(first["oco"].is_string());
+  const auto open = read(*engine, "/api/orders?status=open")["orders"];
+  ASSERT_EQ(open.size(), 2);
+  EXPECT_EQ(open[0]["client_order_id"], "dip:oco");
+  EXPECT_EQ(open[0]["status"], "armed");
+  EXPECT_EQ(write(*engine, "POST", "/api/orders", dip).status, 200);  // a retry answers once
+  quote("3.80", "3.90");
+  const auto all = read(*engine, "/api/orders?status=all")["orders"];
+  ASSERT_EQ(all.size(), 3);
+  EXPECT_EQ(all[0]["client_order_id"], "dip:then");
+  EXPECT_EQ(all[0]["chained_from"], first["id"]);
+  EXPECT_EQ(all[0]["status"], "working");
+  EXPECT_EQ(all[1]["reason"]["code"], "OCO_FILLED");
+  EXPECT_EQ(all[2]["chained_order"], all[0]["id"]);
+  // Chained orders take their ID from the order they hang on, are not held exits, and chain four orders at most.
+  const auto refused = [&](json body) { expect_error(write(*engine, "POST", "/api/orders", body), 400, "INVALID_REQUEST"); };
+  auto named = order(market, "named", "3.90");
+  named["then"] = order(market, "inner", "3.80");
+  refused(named);
+  auto held = order(market, "held", "3.90");
+  held["then"] = target;
+  held["then"]["exits_only"] = true;
+  refused(held);
+  auto nested = order(market, "nested", "3.90");
+  nested["oco"] = target;
+  nested["oco"]["oco"] = target;
+  refused(nested);
+  auto deep = order(market, "deep", "3.90");
+  json* tail = &deep;
+  for (int i = 0; i < 4; ++i) { (*tail)["then"] = target; tail = &(*tail)["then"]; }
+  refused(deep);
+  engine->stop();
+}
+
 TEST_F(PaperEngine, HeldContractExitsAndAPairCancelOverHttp) {
   seed();
   auto entry = order(market, "long", "4.20");

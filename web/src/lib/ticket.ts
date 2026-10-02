@@ -1,5 +1,5 @@
 import type { OptionQuote } from "../api/types"
-import type { Side, Trail, Trigger, TriggerReference, TriggerStudy } from "../api/trading-types"
+import type { Order, PendingOrder, Side, Trail, Trigger, TriggerReference, TriggerStudy } from "../api/trading-types"
 import { price as formatPrice } from "./format"
 
 type Kind = "call" | "put"
@@ -81,4 +81,20 @@ export function describeTrigger(trigger: { source: Trigger["source"]; direction?
   const base = trigger.source === "combo" ? `closing ${reference ? `${reference} ` : ""}net ${sign} $${text}`
     : trigger.source === "option" ? `${reference ?? (side === "buy" ? "ask" : "bid")} ${sign} $${text}` : `${watched} ${sign} ${text}`
   return trigger.trail ? `${base}, trailing ${describeTrail(trigger.trail)}` : base
+}
+/** "sell 2 @ $4.30 GTC" or "buy 1 at market when SPX ≥ 5,010.00", with any order that cancels it. */
+export function describePending(order: PendingOrder, underlying: string): string {
+  const what = order.legs ? `${order.quantity} × ${order.legs.length}-leg` : `${order.side ?? "buy"} ${order.quantity}`
+  const price = order.type === "limit" && order.limit_price != null ? ` @ $${order.limit_price}` : " at market"
+  const when = order.trigger ? ` when ${describeTrigger(order.trigger, order.side ?? "buy", underlying)}` : ""
+  return `${what}${price} ${order.time_in_force.toUpperCase()}${when}${order.oco ? `, or ${describePending(order.oco, underlying)}` : ""}`
+}
+/** How an order is chained: the order that cancels it, the one its fill will place or placed, and the one that placed it. */
+export function describeChain(order: Pick<Order, "role" | "oco" | "then" | "chained_order" | "chained_from" | "underlying">): string {
+  const parts: string[] = []
+  if (order.chained_from) parts.push(`placed by #${order.chained_from}`)
+  if (order.oco && !order.role) parts.push(`one cancels other with #${order.oco}`)
+  if (order.chained_order) parts.push(`placed #${order.chained_order} when filled`)
+  else if (order.then) parts.push(`when filled, places ${describePending(order.then, order.underlying)}`)
+  return parts.join(" · ")
 }
