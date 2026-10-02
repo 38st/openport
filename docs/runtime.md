@@ -642,7 +642,9 @@ so keep the original when exact run verification is needed.
 ## Demo feed
 
 `openportd --provider demo` rotates the twelve built-in regular scenarios in their
-Replay listing order. `--option days=trend,chop` selects and orders built-in ids;
+Replay listing order, one a trading date: a date plays the scenario its count of
+trading dates from 2 January 2026 selects, so it plays the same one whenever the
+server starts. `--option days=trend,chop` selects and orders built-in ids;
 unknown ids, overnight sessions and empty entries are startup errors. Custom files
 in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2, 5,
 10, 30, 60, 120 or 300; default 1. Maximum-throughput playback is not supported.
@@ -658,7 +660,10 @@ Sessions have 15-second snapshots and jump directly from the last snapshot to th
 next open. Normal expiry, settlement, auto-close and the 17:00 ET trading-date
 rollover apply. A series stays listed until its last trade, so positions carry from
 day to day. Scenario opening levels can gap from the preceding close; the feed keeps
-the close each day actually printed rather than the one a scenario starts from.
+the close each day actually printed rather than the one a scenario starts from. The
+first day after a start also gets the closes of the trading date before it, generated
+as the feed would have played that date, so the market-wide circuit breakers have a
+previous close to measure a fall from from the first snapshot on.
 
 The existing generator writes each day in a private temporary directory,
 `openport-feed-PID-*` (scenario replays use `openport-demo-PID-*`). Replay pacing
@@ -674,10 +679,15 @@ off. `--dividends massive` is rejected; a supplied dividend file remains usable.
 Candles stay in memory unless `--candle-dir` is explicit. The default journal is
 `~/.openport/demo/paper-journal.jsonl`; accounts and replay history derive their
 directories beside it. Journals do not record their feed, so keep any explicit demo
-journal and Docker volume separate from live accounts. On restart, the first day
-is the next trading date after the latest recovered market time's trading date
-across the main and named accounts. Without recovered market time, the first day
-remains the last trading date before startup's New York date.
+journal and Docker volume separate from live accounts. On restart, the feed resumes
+after the latest recovered market time across the main and named accounts. When that
+time's trading date has more snapshots to play, it plays the rest of that date: the
+snapshots up to that time are applied without pacing and without reaching the
+accounts, and the first one after it carries every contract's definition and latest
+quote, so the chain is whole again. A date that had played to its last snapshot (a
+quarter hour after its close) resumes on the next trading date, at its open. Without
+recovered market time, the first day remains the last trading date before startup's
+New York date.
 
 ## Public sandboxes
 
