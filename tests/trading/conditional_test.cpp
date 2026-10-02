@@ -190,6 +190,23 @@ TEST(TradingConditional, APartialTargetFillShrinksTheStopInsteadOfCancellingIt) 
   EXPECT_TRUE(s.snapshot()->positions.empty());
 }
 
+TEST(TradingConditional, APartlyFilledExitCancelsItsSiblingWithoutClosingAnotherEntry) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(with_bracket(f.limit("entry", 3, "4.20"), stop_at("3.50"), target_at("5.00")), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("another entry"), f.time).decision.ok());
+  quote(s, f, "3.40", "3.60", 1);
+  EXPECT_EQ(order(s, 2).filled_quantity, 1);
+  EXPECT_EQ(order(s, 3).remaining(), 2);
+  // The stop's last two contracts finish this bracket; the other entry stays held.
+  quote(s, f, "3.40", "3.60", 2);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 3).reason.code, Reason::OCO_FILLED);
+  ASSERT_EQ(s.snapshot()->positions.size(), 1U);
+  EXPECT_EQ(s.snapshot()->positions.front().position.quantity, 1);
+}
+
 TEST(TradingConditional, AStopLimitExitRestsAtItsLimitOnceReachedAndWaitsThroughAGap) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

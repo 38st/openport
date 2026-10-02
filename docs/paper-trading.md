@@ -470,8 +470,10 @@ filled quantity; later entry fills grow them. Client IDs are the entry's with `:
 on the tier tick; all last, and report
 in `day_end`, until the nearest contract's last trade or auto-close, and a stop already
 reached when the entry fills fires at once. The two exits are linked: when one fills
-completely it cancels the other with `OCO_FILLED`, and a partial fill of one leaves the
-other in place, shrunk to what is still held. A stop that fills only in part, because the
+completely it cancels the other with `OCO_FILLED`, unless it was resized to leave
+part of the position protected by that sibling. A partial fill also leaves the other
+in place, shrunk to what this bracket still protects even when another entry holds
+the same contract. A stop that fills only in part, because the
 bid shows fewer contracts than it sells or other orders have used them, does not cancel
 its remainder: it re-arms for it (`order_rearmed`) and fires again on the next quote that
 still reaches its level, so a thin book never leaves part of the position bare. If the
@@ -598,8 +600,9 @@ exits change their level or take-profit price (a signed net on the combo tick
 for spreads, positive on the tier tick for a single contract), and their size: at
 most the position they protect, so a target can take part off while the stop keeps
 protecting the rest (a smaller exit that fills completely leaves the other working,
-shrunk to what is still held). They follow the position down as it shrinks, and a
-later fill of their entry grows them back to its filled size. A resting limit
+shrunk to what is still held, even if either exit had already partly filled). They
+follow the position down as it shrinks, and a later fill of their entry grows them
+back to its filled size. A resting limit
 entry changes its time in force between DAY and GTC (`time_in_force`): a DAY order
 then ends with the current session, a GTC one at expiry; an armed order keeps its
 expiry until it triggers. Bracket exits are good until expiry and keep it. The engine applies a new order's feed gate

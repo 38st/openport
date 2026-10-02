@@ -164,6 +164,33 @@ TEST(TradingOrders, ASmallerTargetTakesPartOffAndTheStopKeepsProtectingTheRest) 
   EXPECT_EQ(s.modify(2, gtc, f.time).decision.code, Reason::INVALID_ORDER);
 }
 
+TEST(TradingOrders, ResizingAPartiallyFilledTargetKeepsTheStopForWhatItLeaves) {
+  ScriptedMarket f;
+  TradingSession s(roomy(), f.time);
+  f.seed(s);
+  auto entry = f.limit("entry", 4, "4.20");
+  entry.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.50")}, {}},
+                          ExitSpec{{}, m("5.00")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  f.next();
+  ASSERT_TRUE(s.on_quotes({f.quote("5.00", "5.20", 2)}, {f.valuation()}, f.time).decision.ok());
+  ASSERT_EQ(order(s, 3).filled_quantity, 2);
+  ASSERT_EQ(order(s, 2).remaining(), 2);
+  // The new total includes its two fills: take just one more, leaving one protected.
+  ASSERT_TRUE(s.modify(3, size(3), f.time).decision.ok());
+  f.next();
+  ASSERT_TRUE(s.on_quotes({f.quote("5.00", "5.20", 1)}, {f.valuation()}, f.time).decision.ok());
+  EXPECT_EQ(order(s, 3).status, OrderStatus::Filled);
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Armed);
+  EXPECT_EQ(order(s, 2).remaining(), 1);
+  ASSERT_EQ(s.snapshot()->positions.size(), 1U);
+  EXPECT_EQ(s.snapshot()->positions.front().position.quantity, 1);
+  f.next();
+  ASSERT_TRUE(s.on_quotes({f.quote("3.40", "3.60", 1)}, {f.valuation()}, f.time).decision.ok());
+  EXPECT_EQ(order(s, 2).status, OrderStatus::Filled);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 TEST(TradingOrders, ARestingLimitSwitchesBetweenDayAndGtcInPlace) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);
