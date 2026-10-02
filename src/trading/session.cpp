@@ -1477,6 +1477,28 @@ std::optional<Money> stop_level(const Order& o) {
   if (!t || o.triggered_at > 0 || (t->source != TriggerSource::Option && t->source != TriggerSource::Combo)) return std::nullopt;
   return t->level;
 }
+/// A trigger's reference and trail fit its source: an underlying trigger reads
+/// spot only and trails in dollars or percent; a trail is a positive distance,
+/// under 100 percent, or one to 1,000 whole ticks.
+bool trail_terms_ok(const std::optional<Trigger>& t) {
+  if (!t) return true;
+  if (t->reference != TriggerReference::BidAsk && t->reference != TriggerReference::Mid && t->reference != TriggerReference::Mark)
+    return false;
+  if (t->source == TriggerSource::Underlying && t->reference != TriggerReference::BidAsk) return false;
+  if (!t->trail) return true;
+  const auto value = t->trail->value.micros();
+  switch (t->trail->unit) {
+    case TrailUnit::Amount: return value > 0;
+    case TrailUnit::Percent: return value > 0 && value < 100'000'000;
+    case TrailUnit::Ticks:
+      return t->source != TriggerSource::Underlying && value > 0 && value % 1'000'000 == 0 && value <= 1'000'000'000;
+  }
+  return false;
+}
+bool trail_terms_ok(const OrderRequest& r) {
+  const auto exit_ok = [](const std::optional<ExitSpec>& e) { return !e || trail_terms_ok(e->trigger); };
+  return trail_terms_ok(r.trigger) && (!r.bracket || (exit_ok(r.bracket->stop_loss) && exit_ok(r.bracket->take_profit)));
+}
 /// Checks a multi-leg order like a single-leg one, per leg where it applies:
 /// contracts, sessions, size and quotes on every leg; the net price on the
 /// smallest leg tick and inside the band around the net mid (as wide as the
@@ -1534,6 +1556,9 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   if (!trigger_ok(r.trigger, false) || (r.bracket && ((!r.bracket->stop_loss && !r.bracket->take_profit) ||
       !exit_ok(r.bracket->stop_loss) || !exit_ok(r.bracket->take_profit))))
     return failure(Reason::INVALID_ORDER, "Combo exits need a combo/underlying trigger, a signed net limit, or both");
+  if (!trail_terms_ok(r))
+    return failure(Reason::INVALID_ORDER, "A trigger reads the bid/ask, mid or mark (spot for the underlying) and trails by a positive "
+                   "amount, a percentage under 100 or 1 to 1,000 ticks (not ticks of the underlying)");
   const auto on_tick = [&](const std::optional<ExitSpec>& e) {
     return !e || !e->limit_price || e->limit_price->micros() % tick.micros() == 0;
   };
@@ -1670,6 +1695,9 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
       !positive(request.trigger) ||
       (bracket && (!exit_ok(bracket->stop_loss) || !exit_ok(bracket->take_profit) || (!bracket->stop_loss && !bracket->take_profit))))
     return failure(Reason::INVALID_ORDER, "Trigger levels and exit prices must be positive; each exit takes a trigger, a limit price or both");
+  if (!trail_terms_ok(request))
+    return failure(Reason::INVALID_ORDER, "A trigger reads the bid/ask, mid or mark (spot for the underlying) and trails by a positive "
+                   "amount, a percentage under 100 or 1 to 1,000 ticks (not ticks of the underlying)");
   const auto on_tick = [&](const std::optional<ExitSpec>& e) {
     return !e || !e->limit_price || e->limit_price->micros() % tick_size(c->second.root, *e->limit_price).micros() == 0;
   };
@@ -2207,39 +2235,54 @@ void on_fill(State& s, OrderId id, Quantity units, Events& events) {
   if (order.request.bracket && !order.request.exits_only) attach_exits(s, id, events);
   for (const auto& symbol : order_symbols(s.orders.at(static_cast<std::size_t>(id - 1)).request)) sync_exits(s, symbol, events);
 }
-/// Option triggers read the order's executable side from a fresh book; underlying
-/// triggers read spot from a fresh valuation. Missing data never triggers; an exit's
-/// leg that shows only an ask counts at that ask, or at zero when the exit sells it.
+/// What a trigger reads now. Option triggers read the order's executable side
+/// from a fresh book, or its mid or mark; underlying triggers read spot from a
+/// fresh valuation; combo triggers sum the closing legs the same way, weighted by
+/// ratio. Missing data reads nothing; an exit's leg that shows only an ask counts
+/// at that ask, or at zero when the exit sells it.
 std::optional<Money> trigger_value(const State& s, const Order& o) {
   const auto& t = *o.request.trigger;
-  std::optional<Money> value;
   if (t.source == TriggerSource::Time) return std::nullopt;  // reached reads the clock
   if (conditional(t)) {
     // Another underlying's price or a study, as the integration last supplied it.
     const auto symbol = t.symbol.empty() ? s.contracts.at(order_symbols(o.request).front()).underlying : t.symbol;
     const auto it = s.indicators.find(indicator_key(symbol, t.study));
     if (it != s.indicators.end() && it->second.time <= s.time && s.time - it->second.time <= s.config.limits.max_valuation_age)
-      value = it->second.price;
-  } else if (t.source == TriggerSource::Underlying) {
+      return it->second.price;
+    return std::nullopt;
+  }
+  // One contract's value under the trigger's reference, signed by the side it trades.
+  const auto read = [&](const std::string& symbol, Side side) -> std::optional<Money> {
+    if (t.reference == TriggerReference::Mark) {
+      if (!marked_now(s, symbol)) return std::nullopt;
+      return mark_of(s.books.at(symbol).quote);
+    }
+    if (!quote_check(s, symbol).ok()) return std::nullopt;
+    const auto& q = s.books.at(symbol).quote;
+    if (t.reference == TriggerReference::Mid) return mid(q);
+    return side == Side::Buy ? *q.ask : *q.bid;
+  };
+  if (t.source == TriggerSource::Underlying) {
     const auto it = s.valuations.find(order_symbols(o.request).front());
     if (it != s.valuations.end() && valid_valuation(it->second) && it->second.time <= s.time &&
         s.time - it->second.time <= s.config.limits.max_valuation_age) {
-      try { value = Money::from_double(it->second.spot); } catch (const TradingError&) {}
+      try { return Money::from_double(it->second.spot); } catch (const TradingError&) {}
     }
-  } else if (t.source == TriggerSource::Combo && multi_leg(o.request)) {
+    return std::nullopt;
+  }
+  if (t.source == TriggerSource::Combo && multi_leg(o.request)) {
     Money net;
     for (const auto& leg : o.request.legs) {
-      if (given_away(s, o, leg)) continue;
-      if (!quote_check(s, leg.symbol).ok() && !ask_only(s, o, leg)) return std::nullopt;
-      const auto& q = s.books.at(leg.symbol).quote;
-      net = net + (leg.side == Side::Buy ? *q.ask : -*q.bid) * leg.ratio;
+      std::optional<Money> value;
+      if (t.reference == TriggerReference::BidAsk && given_away(s, o, leg)) continue;
+      if (t.reference == TriggerReference::BidAsk && ask_only(s, o, leg)) value = *s.books.at(leg.symbol).quote.ask;
+      else value = read(leg.symbol, leg.side);
+      if (!value) return std::nullopt;
+      net = net + (leg.side == Side::Buy ? *value : -*value) * leg.ratio;
     }
-    value = net;
-  } else if (quote_check(s, o.request.symbol).ok()) {
-    const auto& q = s.books.at(o.request.symbol).quote;
-    value = o.request.side == Side::Buy ? *q.ask : *q.bid;
+    return net;
   }
-  return value;
+  return read(o.request.symbol, o.request.side);
 }
 bool reached(const State& s, const Order& o) {
   const auto& t = *o.request.trigger;
@@ -2249,6 +2292,62 @@ bool reached(const State& s, const Order& o) {
   }
   const auto value = trigger_value(s, o);
   return value && (t.direction == TriggerDirection::AtOrBelow ? *value <= t.level : *value >= t.level);
+}
+/// `value` rounded down (or up) to a multiple of `step`, which is positive.
+Money floor_to(Money value, std::int64_t step) {
+  auto q = value.micros() / step;
+  if (value.micros() % step != 0 && value.micros() < 0) --q;
+  return Money::from_micros(q * step);
+}
+Money ceil_to(Money value, std::int64_t step) { return -floor_to(-value, step); }
+/// A trailing trigger follows its reference while armed: when the value it reads
+/// less the trail (plus it, for at_or_above) passes the level, the level moves
+/// there in whole cents, and it never moves back. A stop-limit's limit moves
+/// with it, kept on the tick by moving both a little less, never more.
+void trail_level(State& s, OrderId id, Events& events) {
+  const auto& o = s.orders[id - 1];
+  const auto& t = *o.request.trigger;
+  if (!t.trail) return;
+  const auto value = trigger_value(s, o);
+  if (!value) return;
+  const auto& root = s.contracts.at(order_symbols(o.request).front()).root;
+  // The combo tick: the smallest of its legs' ticks.
+  const auto combo_tick = [&] {
+    Money tick;
+    for (const auto& leg : o.request.legs) {
+      const auto leg_tick = tick_size(s.contracts.at(leg.symbol).root, Money{});
+      tick = tick == Money{} ? leg_tick : std::min(tick, leg_tick);
+    }
+    return tick;
+  };
+  const auto magnitude = *value < Money{} ? -*value : *value;
+  Money distance;
+  switch (t.trail->unit) {
+    case TrailUnit::Amount: distance = t.trail->value; break;
+    case TrailUnit::Percent: distance = magnitude.prorate(t.trail->value.micros(), 100'000'000); break;
+    case TrailUnit::Ticks:
+      distance = (multi_leg(o.request) ? combo_tick() : tick_size(root, magnitude)) * (t.trail->value.micros() / 1'000'000);
+      break;
+  }
+  const bool below = t.direction == TriggerDirection::AtOrBelow;
+  const auto candidate = below ? floor_to(*value - distance, 10'000) : ceil_to(*value + distance, 10'000);
+  auto move = candidate - t.level;
+  if (below ? move <= Money{} : move >= Money{}) return;
+  std::optional<Money> limit = o.request.limit_price;
+  if (limit) {
+    const auto raw = *limit + move;
+    const auto tick = multi_leg(o.request) ? combo_tick() : tick_size(root, raw);
+    const auto snapped = move > Money{} ? floor_to(raw, tick.micros()) : ceil_to(raw, tick.micros());
+    move = snapped - *limit;
+    if (move == Money{} || (!multi_leg(o.request) && snapped <= Money{})) return;
+    limit = snapped;
+  }
+  auto& order = s.orders.mut(id - 1);
+  // A retry of the submission still finds the order its trail has moved.
+  if (!order.submitted && order.parent == 0) order.submitted = order.request;
+  order.request.trigger->level = order.request.trigger->level + move;
+  order.request.limit_price = limit;
+  event(events, "order_trailed", order);
 }
 /// A reached order runs its checks now: exits need only an executable book;
 /// entries take every pre-trade check. Stale data or a closed session keeps it
@@ -2278,9 +2377,12 @@ void activate(State& s, OrderId id, Events& events) {
 void check_triggers(State& s, Events& events) {
   const auto visit = [&](OrderId id) {
     const auto& o = s.orders[id - 1];
-    if (o.status != OrderStatus::Armed || !trades_now(o, s.contracts.at(order_symbols(o.request).front()), s.time) || !reached(s, o))
-      return;
-    activate(s, id, events);
+    const auto& contract = s.contracts.at(order_symbols(o.request).front());
+    if (o.status != OrderStatus::Armed || !trades_now(o, contract, s.time)) return;
+    // A trail follows what the trigger reads first, in the regular session; it
+    // cannot reach the level it sets.
+    if (regular(contract, s.time)) trail_level(s, id, events);
+    if (reached(s, s.orders[id - 1])) activate(s, id, events);
   };
   // The open orders in ID order, then any placed while activating them (a
   // bracket's exits), in order, as one pass over every order would find them.
@@ -2478,11 +2580,14 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
     }
     const auto value = trigger_value(s, o);
     const auto watched = t.symbol.empty() ? std::string("the underlying") : t.symbol;
+    const std::string reference = t.reference == TriggerReference::Mid ? "mid" : t.reference == TriggerReference::Mark ? "mark" : "";
     const std::string source = t.source == TriggerSource::Study ? watched + "'s " + t.study
         : t.source == TriggerSource::Underlying ? watched : t.source == TriggerSource::Combo
-        ? "the closing legs' net" : r.side == Side::Buy ? "the ask" : "the bid";
+        ? "the closing legs' " + (reference.empty() ? std::string("net") : reference + " net")
+        : !reference.empty() ? "the " + reference : r.side == Side::Buy ? "the ask" : "the bid";
     return wait("TRIGGER", "Waits for " + source + " to reach " + (t.direction == TriggerDirection::AtOrBelow ? "at or below " : "at or above ") +
-                t.level.str() + (value ? " (now " + value->str() + ")" : " (no fresh value now; missing or stale data never triggers)"));
+                t.level.str() + (t.trail ? " (a trailing level)" : "") +
+                (value ? " (now " + value->str() + ")" : " (no fresh value now; missing or stale data never triggers)"));
   }
   if (persistent(o) || o.system) {
     for (const auto& symbol : symbols) {

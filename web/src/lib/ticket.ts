@@ -1,5 +1,5 @@
 import type { OptionQuote } from "../api/types"
-import type { Side, Trigger, TriggerStudy } from "../api/trading-types"
+import type { Side, Trail, Trigger, TriggerReference, TriggerStudy } from "../api/trading-types"
 import { price as formatPrice } from "./format"
 
 type Kind = "call" | "put"
@@ -63,8 +63,13 @@ export function stopDirection(source: "option" | "underlying", entry: Side, type
 export function crossDirection(level: number, spot: number | null | undefined): Direction {
   return spot != null && Number.isFinite(spot) && level < spot ? "at_or_below" : "at_or_above"
 }
-/** "bid ≤ $3.50", "SPX ≥ 5,010.00", "VIX ≥ 20.00", "SPX 30-day IV ≤ 15.00" or "it is 15:30 New York time or later". */
-export function describeTrigger(trigger: { source: Trigger["source"]; direction?: Direction; level?: string; symbol?: string; study?: TriggerStudy; at?: string },
+/** "$0.50", "10%" or "3 ticks". */
+export function describeTrail(trail: Trail): string {
+  if (trail.unit === "ticks") return `${trail.value} tick${Number(trail.value) === 1 ? "" : "s"}`
+  return trail.unit === "percent" ? `${Number(trail.value)}%` : `$${Number(trail.value).toFixed(2)}`
+}
+/** "bid ≤ $3.50", "mid ≤ $3.60, trailing $0.50", "SPX ≥ 5,010.00", "VIX ≥ 20.00", "SPX 30-day IV ≤ 15.00" or "it is 15:30 New York time or later". */
+export function describeTrigger(trigger: { source: Trigger["source"]; direction?: Direction; level?: string; symbol?: string; study?: TriggerStudy; at?: string; reference?: TriggerReference; trail?: Trail | null },
   side: Side, underlying: string): string {
   const sign = trigger.direction === "at_or_below" ? "≤" : "≥"
   if (trigger.source === "time") return `it is ${trigger.at ?? "?"} New York time${trigger.direction === "at_or_below" ? " or earlier" : " or later"}`
@@ -72,5 +77,8 @@ export function describeTrigger(trigger: { source: Trigger["source"]; direction?
   const text = Number.isFinite(level) ? level.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : trigger.level ?? ""
   const watched = trigger.symbol || underlying
   if (trigger.source === "study") return `${watched} ${trigger.study === "term_ratio" ? "9d/30d IV ratio" : trigger.study === "iv7" ? "7-day IV" : "30-day IV"} ${sign} ${text}`
-  return trigger.source === "combo" ? `closing net ${sign} $${text}` : trigger.source === "option" ? `${side === "buy" ? "ask" : "bid"} ${sign} $${text}` : `${watched} ${sign} ${text}`
+  const reference = trigger.reference === "mid" || trigger.reference === "mark" ? trigger.reference : null
+  const base = trigger.source === "combo" ? `closing ${reference ? `${reference} ` : ""}net ${sign} $${text}`
+    : trigger.source === "option" ? `${reference ?? (side === "buy" ? "ask" : "bid")} ${sign} $${text}` : `${watched} ${sign} ${text}`
+  return trigger.trail ? `${base}, trailing ${describeTrail(trigger.trail)}` : base
 }

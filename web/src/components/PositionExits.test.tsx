@@ -101,3 +101,23 @@ it("lists the held exits and cancels the pair in one call", async () => {
   await click("Cancel exits")
   expect(api.cancelOrders).toHaveBeenCalledWith(["9", "8"], trading.write)
 }, renderTimeout)
+
+it("trails a held long's stop by a percentage of the mid", async () => {
+  await render(<PositionExitsDialog position={long} trading={trading} onClose={() => {}} />)
+  await waitForRender(() => expect(host.textContent).toContain("Set exits"))
+  await check("Take profit")
+  await setField("Stop price", "3.50")
+  await setField("Stop reads", "mid")
+  await check("Trailing")
+  await setField("Trail by", "percent")
+  await setField("Trail (%)", "100")
+  expect(host.textContent).toContain("Enter a percentage above 0 and below 100.")
+  expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Set exits")?.disabled).toBe(true)
+  await setField("Trail (%)", "10")
+  expect(host.textContent).toContain("Sells at market when mid ≤ $3.50, trailing 10%.")
+  await submit()
+  const trigger = { source: "option", direction: "at_or_below", level: "3.50", reference: "mid", trail: { unit: "percent", value: "10.00" } }
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({
+    side: "sell", type: "market", time_in_force: "ioc", trigger, bracket: { stop_loss: { trigger } },
+  }), trading.write)
+}, renderTimeout)

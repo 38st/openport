@@ -178,6 +178,12 @@ describe("conditional orders", () => {
     expect(describeTrigger({ source: "underlying", symbol: "VIX", direction: "at_or_above", level: "20" }, "buy", "SPX")).toBe("VIX ≥ 20.00")
     expect(describeTrigger({ source: "study", study: "term_ratio", direction: "at_or_above", level: "1" }, "buy", "SPX")).toBe("SPX 9d/30d IV ratio ≥ 1.00")
     expect(describeTrigger({ source: "time", direction: "at_or_above", level: "0.00", at: "15:30" }, "sell", "SPX")).toBe("it is 15:30 New York time or later")
+    expect(describeTrigger({ source: "option", direction: "at_or_below", level: "3.60", reference: "mid", trail: { unit: "amount", value: "0.50" } }, "sell", "SPX"))
+      .toBe("mid ≤ $3.60, trailing $0.50")
+    expect(describeTrigger({ source: "option", direction: "at_or_above", level: "4.50", reference: "bid_ask", trail: { unit: "ticks", value: 3 } }, "buy", "SPX"))
+      .toBe("ask ≥ $4.50, trailing 3 ticks")
+    expect(describeTrigger({ source: "combo", direction: "at_or_above", level: "0.90", reference: "mark", trail: { unit: "percent", value: "10" } }, "buy", "SPX"))
+      .toBe("closing mark net ≥ $0.90, trailing 10%")
   })
   it("rounds suggested prices to the root's tier tick", () => {
     expect(roundToTick("SPXW", 6.31)).toBe("6.30")

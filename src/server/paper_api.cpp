@@ -265,6 +265,13 @@ json trigger_json(const std::optional<Trigger>& t) {
   // Conditional terms appear only on the triggers that have them.
   if (!t->symbol.empty()) result["symbol"] = t->symbol;
   if (t->source == TriggerSource::Study) result["study"] = t->study;
+  result["reference"] = t->reference == TriggerReference::Mid ? "mid" : t->reference == TriggerReference::Mark ? "mark" : "bid_ask";
+  result["trail"] = nullptr;
+  if (t->trail) {
+    const auto unit = t->trail->unit;
+    result["trail"] = {{"unit", unit == TrailUnit::Amount ? "amount" : unit == TrailUnit::Percent ? "percent" : "ticks"},
+                       {"value", unit == TrailUnit::Ticks ? json(t->trail->value.micros() / 1'000'000) : json(t->trail->value.str())}};
+  }
   if (t->source == TriggerSource::Time) {
     const auto two = [](std::int64_t n) { return std::string{static_cast<char>('0' + n / 10), static_cast<char>('0' + n % 10)}; };
     result["at"] = two(t->minute / 60 % 24) + ":" + two(t->minute % 60);
@@ -1352,8 +1359,8 @@ Trigger parse_trigger(const json& j) {
     t.direction = TriggerDirection::AtOrAbove;
   } else {
     fields(j, {"source", "direction", "level"}, source == "study" ? std::initializer_list<std::string_view>{"symbol", "study"}
-                                               : source == "underlying" ? std::initializer_list<std::string_view>{"symbol"}
-                                                                        : std::initializer_list<std::string_view>{});
+                                               : source == "underlying" ? std::initializer_list<std::string_view>{"symbol", "reference", "trail"}
+                                                                        : std::initializer_list<std::string_view>{"reference", "trail"});
     if (source != "option" && source != "underlying" && source != "combo" && source != "study")
       throw std::invalid_argument("trigger source must be option, combo, underlying, study or time");
     t.source = source == "option" ? TriggerSource::Option : source == "combo" ? TriggerSource::Combo
@@ -1378,6 +1385,36 @@ Trigger parse_trigger(const json& j) {
   if (t.source == TriggerSource::Study &&
       std::find(std::begin(kTriggerStudies), std::end(kTriggerStudies), t.study) == std::end(kTriggerStudies))
     throw std::invalid_argument("trigger study must be iv30, iv7 or term_ratio");
+  // A reference and a trail read the order's own market, not another underlying.
+  if ((j.contains("reference") || j.contains("trail")) && conditional(t))
+    throw std::invalid_argument("A trigger on another underlying takes no reference or trail");
+  if (j.contains("reference")) {
+    const auto reference = string_field(j, "reference");
+    if (reference != "bid_ask" && reference != "mid" && reference != "mark")
+      throw std::invalid_argument("trigger reference must be bid_ask, mid or mark");
+    if (reference != "bid_ask" && t.source == TriggerSource::Underlying)
+      throw std::invalid_argument("An underlying trigger reads spot; only option and combo triggers take mid or mark");
+    t.reference = reference == "mid" ? TriggerReference::Mid : reference == "mark" ? TriggerReference::Mark : TriggerReference::BidAsk;
+  }
+  if (j.contains("trail")) {
+    const auto& spec = j.at("trail");
+    fields(spec, {"unit", "value"});
+    const auto unit = string_field(spec, "unit");
+    Trail trail;
+    if (unit == "ticks") {
+      if (t.source == TriggerSource::Underlying) throw std::invalid_argument("An underlying trigger trails by amount or percent");
+      const auto ticks = integer_field(spec, "value");
+      if (ticks < 1 || ticks > 1000) throw std::invalid_argument("A trail is 1 to 1,000 ticks");
+      trail = {TrailUnit::Ticks, Money::from_micros(ticks * 1'000'000)};
+    } else if (unit == "amount" || unit == "percent") {
+      trail = {unit == "amount" ? TrailUnit::Amount : TrailUnit::Percent, decimal_field(spec, "value")};
+      if (trail.value <= Money{} || (trail.unit == TrailUnit::Percent && trail.value >= Money::from_micros(100'000'000)))
+        throw std::invalid_argument("A trail amount is positive, and a percentage above 0 and below 100");
+    } else {
+      throw std::invalid_argument("trail unit must be amount, percent or ticks");
+    }
+    t.trail = trail;
+  }
   return t;
 }
 ExitSpec parse_exit(const json& j) {

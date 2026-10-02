@@ -75,6 +75,19 @@ enum class TriggerDirection { AtOrBelow, AtOrAbove };
 /// The studies a trigger can watch: 30-day and 7-day implied volatility in vol
 /// points, and the 9-day to 30-day implied volatility ratio.
 inline constexpr std::string_view kTriggerStudies[] = {"iv30", "iv7", "term_ratio"};
+/// What an option or combo trigger reads: the executable side (bid for sells,
+/// ask for buys; a combo's closing far sides), the mid, or the mark (the mid,
+/// or half the ask when nobody bids).
+enum class TriggerReference { BidAsk, Mid, Mark };
+/// A trailing trigger's distance from the best value it has read: dollars, a
+/// percentage of that value, or ticks (the product tier tick at that value, or
+/// the combo tick).
+enum class TrailUnit { Amount, Percent, Ticks };
+struct Trail {
+  TrailUnit unit = TrailUnit::Amount;
+  Money value;  ///< Dollars, percent (2.5 for 2.5%) or a whole number of ticks.
+  bool operator==(const Trail&) const = default;
+};
 struct Trigger {
   TriggerSource source = TriggerSource::Option;
   TriggerDirection direction = TriggerDirection::AtOrBelow;
@@ -84,6 +97,10 @@ struct Trigger {
   std::string symbol = {};
   std::string study = {};   ///< Study triggers: one of kTriggerStudies.
   std::int64_t minute = 0;  ///< Time triggers: minutes after New York midnight.
+  TriggerReference reference = TriggerReference::BidAsk;
+  /// A trailing stop: while armed, the level follows the reference by this
+  /// distance as it moves away from the level, and never moves back.
+  std::optional<Trail> trail = std::nullopt;
   bool operator==(const Trigger&) const = default;
 };
 /// A trigger on something other than the order's own market: another
