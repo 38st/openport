@@ -42,6 +42,8 @@ these routes, so anything it does can be scripted:
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
 | `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
+| `POST /api/positions/abandon` | Give up a long at zero without a fee: `{symbol}`, allowed with a fresh ask-only quote or after expiry |
+| `POST /api/positions/instruction` | Set or withdraw a long's expiry instruction: `{symbol, do_not_exercise}`; true forfeits shares and cash settlement. Both routes return the portfolio and require trade scope (replay scope on the replay mirror) |
 | `GET /api/trades.csv`, `/api/fills.csv` | Trades or fills, with context and excursions, filtered by account and New York `from`/`to` dates |
 | `PUT /api/days/{YYYY-MM-DD}/note` | The account's plan and review for a day; returned in `/api/trades` as `day_notes` |
 | `PUT /api/trades/{id}/note` | A trade's note and tags, or a share trade's (`s1`, ...) |

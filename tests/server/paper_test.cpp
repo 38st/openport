@@ -1630,6 +1630,8 @@ TEST(PaperAvailability, LockedJournalDisablesEveryWriteButKeepsAnalyticsAndOwner
         {"POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}}},
         {"POST", "/api/risk/kill", {{"action", "reset"}, {"reason", "test"}}},
         {"POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5000.00"}}},
+        {"POST", "/api/positions/abandon", {{"symbol", market.symbol()}}},
+        {"POST", "/api/positions/instruction", {{"symbol", market.symbol()}, {"do_not_exercise", true}}},
         // Unavailability also takes precedence over malformed command bodies.
         {"POST", "/api/orders", json::object()}};
     for (const auto& request : requests) {
@@ -2931,4 +2933,62 @@ TEST_F(PaperEngine, ContractFixture) {
   capture("POST", "/api/orders/cancel", json::object());
   capture("POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});
 }
+
+TEST(PaperStocks, PositionDisposalContractFixture) {
+  PaperProvider provider;
+  server::Engine engine(provider, md::Subscription{{"SPY"}}, paper_options());
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto contract = *md::parse_osi("SPY261022C00500000");
+  const auto symbol = contract.osi_symbol();
+  auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  const auto quote = [&](double bid, double bid_size) {
+    provider.sink->publish(md::UnderlyingQuote{"SPY", time, 519.9, 520.1, 520});
+    provider.sink->publish(md::OptionQuote{0, time, bid, 21.2, bid_size, 10});
+    ASSERT_TRUE(wait_for([&] { const auto m = engine.metrics("SPY"); return m && m->as_of == time && !m->slices.empty(); }));
+  };
+  provider.sink->publish(md::ContractDefinition{0, contract});
+  quote(21.0, 10);
+  const auto bought = write(engine, "POST", "/api/orders", {{"client_order_id", "calls"}, {"symbol", symbol}, {"side", "buy"},
+      {"type", "limit"}, {"quantity", 2}, {"limit_price", "21.20"}, {"time_in_force", "day"}});
+  ASSERT_EQ(bought.status, 201) << bought.body;
+  const auto instructed = write(engine, "POST", "/api/positions/instruction", {{"symbol", symbol}, {"do_not_exercise", true}});
+  ASSERT_EQ(instructed.status, 200) << instructed.body;
+  test::capture_contract("disposal", "POST", "/api/positions/instruction", instructed);
+  auto position = json::parse(instructed.body)["positions"][0];
+  EXPECT_EQ(position["do_not_exercise"], true);
+  EXPECT_EQ(position["no_bid"], false);
+  EXPECT_EQ(write(engine, "POST", "/api/positions/instruction", {{"symbol", symbol}}).status, 400);
+  for (const auto& body : {json{{"symbol", symbol}}, json{{"symbol", symbol}, {"do_not_exercise", "true"}},
+                           json{{"symbol", symbol}, {"do_not_exercise", true}, {"extra", 1}}}) {
+    const auto invalid = write(engine, "POST", "/api/positions/instruction", body);
+    EXPECT_EQ(invalid.status, 400) << invalid.body;
+  }
+  const auto withdrawn = write(engine, "POST", "/api/positions/instruction", {{"symbol", symbol}, {"do_not_exercise", false}});
+  ASSERT_EQ(withdrawn.status, 200) << withdrawn.body;
+  EXPECT_EQ(json::parse(withdrawn.body)["positions"][0]["do_not_exercise"], false);
+  const auto unknown = write(engine, "POST", "/api/positions/abandon", {{"symbol", "SPY   261022C00600000"}});
+  EXPECT_EQ(unknown.status, 404) << unknown.body;
+  EXPECT_EQ(json::parse(unknown.body)["error"]["code"], "UNKNOWN_CONTRACT");
+  // Someone bids, so it cannot be abandoned yet.
+  const auto refused = write(engine, "POST", "/api/positions/abandon", {{"symbol", symbol}});
+  EXPECT_EQ(refused.status, 422) << refused.body;
+  EXPECT_EQ(json::parse(refused.body)["error"]["code"], "INVALID_ORDER");
+  // Nobody bids now: 0.00 x 21.20.
+  time += md::kNanosPerSecond;
+  quote(0, 0);
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view()->snapshot->time == time; }));
+  EXPECT_EQ(read(engine, "/api/portfolio")["positions"][0]["no_bid"], true);
+  const auto abandoned = write(engine, "POST", "/api/positions/abandon", {{"symbol", symbol}});
+  ASSERT_EQ(abandoned.status, 200) << abandoned.body;
+  test::capture_contract("disposal", "POST", "/api/positions/abandon", abandoned);
+  test::capture_contract("disposal", "GET", "/api/trades", server::handle_api({"GET", "/api/trades"}, engine));
+  EXPECT_TRUE(json::parse(abandoned.body)["positions"].empty());
+  const auto trades = read(engine, "/api/trades")["trades"];
+  ASSERT_EQ(trades.size(), 1);
+  EXPECT_EQ(trades[0]["closure"], "abandon");
+  EXPECT_EQ(trades[0]["average_close"], "0.00");
+  engine.stop();
+}
+
 }  // namespace

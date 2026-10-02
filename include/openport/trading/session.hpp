@@ -21,6 +21,11 @@ struct MarkedPosition {
   std::optional<Money> unrealised;
   bool fresh = false;
   bool awaiting_settlement = false;
+  /// It cannot be sold now: its fresh quote shows only an ask, as a far option
+  /// nobody bids for does, or it has expired. Such a long can be abandoned.
+  bool no_bid = false;
+  /// A long option the trader instructed not to be exercised at expiry.
+  bool do_not_exercise = false;
 };
 struct MarkedStock {
   StockPosition position;
@@ -419,6 +424,18 @@ class TradingSession {
   /// which together cost the strike. Held into expiry, such options are exercised
   /// or assigned at settlement when a cent or more in the money.
   CommandResult exercise(const std::string& symbol, Quantity contracts, Timestamp time);
+  /// Give up a long that cannot be sold: nobody bids for it (its fresh quote shows
+  /// only an ask) or it has expired and waits for its settlement. It leaves the
+  /// account at zero, without a fee, as an Abandon closure; its exits and the
+  /// orders selling it are cancelled. Allowed under the kill switch; it may not
+  /// leave a defined-risk plan's short uncovered, and with the `buying_power` rule
+  /// a short it covered must still fit.
+  CommandResult abandon(const std::string& symbol, Timestamp time);
+  /// Instruct that a long option held into expiry is not
+  /// exercised, however far in the money (`do_not_exercise`), or withdraw that
+  /// instruction. At settlement such a long expires worthless and delivers no
+  /// shares or cash. The instruction ends with the position.
+  CommandResult instruct_exercise(const std::string& symbol, bool do_not_exercise, Timestamp time);
   /// Reduce or close a stock position at the underlying's fresh price in the
   /// regular session, without a fee; shares come only from exercise and assignment.
   CommandResult trade_stock(const std::string& symbol, Quantity signed_shares, Timestamp time);

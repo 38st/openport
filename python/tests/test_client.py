@@ -170,6 +170,8 @@ def test_base_url_rejects_ambiguous_credentials(url):
     ("kill", ("trip", "review"), "POST", "/api/risk/kill", "KillResponse"),
     ("settle", ("SPXW  261022P05000000", "5000.00"), "POST", "/api/settlements", "SettlementResponse"),
     ("exercise", ("SPY   261022C00500000", 1), "POST", "/api/positions/exercise", "Portfolio"),
+    ("abandon", ("SPY   261022C00500000",), "POST", "/api/positions/abandon", "Portfolio"),
+    ("exercise_instruction", ("SPY   261022C00500000", True), "POST", "/api/positions/instruction", "Portfolio"),
     ("close_stock", ("SPY", 100), "POST", "/api/stocks/close", "Portfolio"),
     ("delete_replay", ("run-1",), "DELETE", "/api/replay/history/run-1", "DeletedReplay"),
 ])
@@ -224,3 +226,30 @@ def test_backtest_calls_use_global_routes_even_from_replay_and_history(stub):
         assert [(row[0], row[1]) for row in stub.requests[-4:]] == [
             ("GET", "/api/backtests"), ("POST", "/api/backtests"),
             ("GET", "/api/backtests/000001"), ("DELETE", "/api/backtests/000001")]
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_position_disposal_bodies_and_scope(stub, replay):
+    from conftest import shaped
+    original = stub.respond
+    def respond(method, target, headers, body):
+        original(method, target, headers, body)
+        return 200, shaped("Portfolio")
+    stub.respond = respond
+    client = Client(stub.url, "secret", "practice")
+    if replay:
+        client = client.for_replay()
+    prefix = "/api/replay" if replay else "/api"
+    symbol = "SPXW  261022C05000000"
+    client.abandon(symbol)
+    method, target, _, body = stub.requests[-1]
+    assert method == "POST"
+    assert urlsplit(target).path == prefix + "/positions/abandon"
+    assert body == {"symbol": symbol}
+    assert parse_qs(urlsplit(target).query) == {"account": ["main" if replay else "practice"]}
+    for instructed in (True, False):
+        client.exercise_instruction(symbol, instructed)
+        method, target, _, body = stub.requests[-1]
+        assert method == "POST"
+        assert urlsplit(target).path == prefix + "/positions/instruction"
+        assert body == {"symbol": symbol, "do_not_exercise": instructed}

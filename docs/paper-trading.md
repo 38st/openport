@@ -92,6 +92,16 @@ money contracts early in the same way against the underlying's fresh price, so a
 time value left is a cost; it takes the account's checks and, with the
 `buying_power` rule, must fit within it.
 
+A long held into expiry can take a **do-not-exercise instruction**:
+`instruct_exercise(symbol, true, time)` on a long option makes
+it expire worthless at its settlement, however far in the money, with no shares or cash
+delivered (its settlement closure is at 0.00), as a broker's contrary exercise advice
+does. `false` withdraws it. The instruction ends with the position: selling the
+contracts, exercising them early, abandoning them or a reset clears it. It also
+forfeits the cash settlement of an index long; a short cannot take an instruction
+(`INVALID_ORDER`). Both disposal commands allow the kill switch but reject a
+closed evaluation (`EVALUATION_CLOSED`).
+
 **Early assignment** follows the market rather than a model: at each day rollover
 (`roll_day`, overnight), holders exercise a short American equity or ETF option when
 they did better exercising than holding it at the close, as exercise notices are due
@@ -221,9 +231,11 @@ fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
 
 Both positive prices and both positive integer sizes are required; crossed,
 one-sided, missing and zero-size books supply **no liquidity**, except to a combo
-exit closing a leg that shows only an ask (see Multi-leg orders), and to an exit or
-a flatten's close buying a short back at a book that shows only an ask (see
-[flattening](#changing-cancelling-and-flattening)). Locked positive
+exit closing a leg that shows only an ask (see Multi-leg orders), and to a buy that
+only closes a short, which can take a fresh book that shows only an ask, as a far
+option nobody bids for does: a short quoted 0.00/0.05 is bought back at 0.05 within
+the displayed size, its price band measured from the mark halfway to the ask. Buying
+more than the short, or selling, still needs a two-sided quote. Locked positive
 books are accepted. Displayed size is an independent bid/ask budget per
 (contract, observation), consumed across all paper orders. The same observation
 never refills that budget, including after recovery. Each new observation refreshes
@@ -679,6 +691,24 @@ keep (`kept_stocks`), what would still be held in scope (`remaining` contracts a
 after it still holds that position. Flatten in the terminal shows the dry run before
 the flatten is confirmed.
 
+### Disposing of worthless positions
+
+A short nobody bids for still has an ask: an ordinary closing buy takes it (see
+[quote matching](#orders-and-quote-matching)). A long nobody bids for cannot be sold,
+so `abandon(symbol, time)` gives it up: the whole long leaves the account at 0.00,
+without a fee, as an `Abandon` closure, and the trade history closes it there. It
+needs a long that cannot be sold now: its fresh quote shows only an ask, or it has
+expired and waits for its settlement (`INVALID_ORDER` "Someone bids for it" while a
+two-sided quote is fresh; a stale or missing quote is refused with its reason).
+Abandoning an expired position that would have settled in the money forfeits that
+value. The long's bracket exits and the orders selling it are cancelled with
+`POSITION_CLOSED`, since a sell would now open a short. It is allowed under the kill
+switch and personal guardrails, may not leave a defined-risk plan's short uncovered
+(`DEFINED_RISK`), and with `buying_power` a short it covered must still fit. The
+portfolio marks such positions `no_bid`. An expired position awaiting settlement
+blocks other orders (`STALE_QUOTE`, "All held positions need fresh marks"), so
+abandoning a worthless one lets trading resume before an AM settlement arrives.
+
 ## Accounting, marks and equity
 
 Let `q` be signed contracts, `M = 100`, `p` fill premium per unit and `f` the fill fee:
@@ -1064,7 +1094,7 @@ in words, and `actual` and `limit` numbers whose meaning depends on the code:
 | `SOFT_FLOOR` | Equity is at or below the soft floor, which closes positions and refuses opening orders until rollover | Equity and the soft floor |
 | `SOFT_FLOOR_ROLLOVER` | At rollover the soft floor would be at or above today's equity: pending guardrails apply, and a percent soft floor follows a ratcheted plan floor | Equity and that soft floor |
 | `FLOOR_RATCHET` | An active end-of-day drawdown floor that tonight's close at today's equity would raise (and lock, at a lock balance) | The floor tomorrow and today |
-| `EXPIRY_DELIVERY` | An American equity or ETF option expiring today a cent or more in the money: held into expiry it is exercised or assigned and delivers shares, together the strike | Buying power once every option expiring in the money today has delivered at today's price, and zero; `warning` when that is negative |
+| `EXPIRY_DELIVERY` | An American equity or ETF option expiring today a cent or more in the money, without a do-not-exercise instruction: held into expiry it is exercised or assigned and delivers shares, together the strike | Buying power once every option expiring in the money today has delivered at today's price, and zero; `warning` when that is negative |
 | `EARLY_ASSIGNMENT` | A short American equity or ETF option the rollover may assign (about half of it, as described under early assignment): marked below its exercise value, or a call with less time value than a dividend going ex within a week and before its expiry; `warning` for tonight's rollover | The mark and the exercise value, or the time value and the dividend |
 | `EX_DIVIDEND` | A held underlying (options or shares) goes ex-dividend within a week; `warning` when short shares will pay it | The dividend a share, and null |
 
@@ -1374,7 +1404,7 @@ marks and is null if a holding has no mark. Room above the floor is null without
 drawdown rule. Atomic multi-leg fills share the same pre-execution account values.
 Older fills have null context. A trade's `entry_context` is its first opening
 fill's; `exit_context` is its last reducing fill's, including a partial close.
-Settlement, exercise, assignment and reset have no closing fill context.
+Settlement, exercise, assignment, abandonment and reset have no closing fill context.
 
 The reducer journals a `TradeReview` per option round trip and per opening
 multi-leg order. It samples total marked P&L: realised gross plus the remaining
@@ -1410,7 +1440,7 @@ attribution remains per day and contract; its daily stretch baselines do not sup
 an independent attribution for each round trip.
 
 Each closed option trade says what closed it, `closed_by`: the closure that ended it
-(`settlement`, `exercise`, `assignment`, `reset`), or the order of its last reducing
+(`settlement`, `exercise`, `assignment`, `abandon`, `reset`), or the order of its last reducing
 fill: the trader's own `order`, a bracket exit (`stop_loss`, `take_profit`), a
 `flatten`, a playbook's close (`playbook`), or a reducer liquidation (`system`), with
 `system_reason` saying why: `target` and `drawdown` when a decided attempt liquidates,
@@ -1954,6 +1984,8 @@ focus at the top of the ticket.
 | Endpoint | Request / response |
 | --- | --- |
 | `POST /api/positions/exercise` | Canonical `symbol` and positive `quantity` of long equity or ETF contracts to exercise early; returns the portfolio |
+| `POST /api/positions/abandon` | Canonical `symbol` of a long nobody bids for, or one awaiting settlement, to give up at zero without a fee ([disposal](#disposing-of-worthless-positions)); returns the portfolio |
+| `POST /api/positions/instruction` | Canonical `symbol` of a long option and boolean `do_not_exercise`: true makes it expire worthless at settlement, false withdraws that; returns the portfolio, whose positions carry `do_not_exercise` and `no_bid` |
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
@@ -1975,7 +2007,7 @@ focus at the top of the ticket.
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target), decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
-| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id` and `strategy_review` (see [trade review](#trade-review)). `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
+| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id` and `strategy_review` (see [trade review](#trade-review)). `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |

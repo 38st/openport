@@ -7,6 +7,7 @@ import { tradingQueries } from "../api/trading"
 import type { Account } from "../api/trading-types"
 import { account, fill, plans, portfolio, risk, shareTrades, status, trades } from "../test/trading-fixtures"
 import { DashboardView, equitySeries } from "./DashboardView"
+import { PositionsView } from "./PositionsView"
 import { JournalView } from "./JournalView"
 import { RulesView, ruleText } from "./RulesView"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
@@ -31,6 +32,19 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("simulator pages", () => {
+  it("offers disposal only for longs and labels abandoned trades", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+    clients.push(client)
+    const queries = tradingQueries(0, "17", true)
+    client.setQueryData(queries.portfolio.queryKey, { ...portfolio, positions: portfolio.positions.map((p) => ({ ...p, no_bid: true, do_not_exercise: p.quantity > 0 })) })
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><PositionsView /></QueryClientProvider>)
+    for (const p of portfolio.positions) {
+      expect(html.includes(`aria-label="Abandon ${p.symbol}"`)).toBe(p.quantity > 0)
+      expect(html.includes(`aria-label="Exercise instruction for ${p.symbol}"`)).toBe(p.quantity > 0)
+    }
+    expect(html).toContain("Not to be exercised")
+    expect(exitLabel({ ...trades[0]!, closure: "abandon" })).toBe("abandon")
+  })
   it("plots equity by finished day with the trailing floor and the target line", () => {
     const { series, references } = equitySeries(account)
     expect(series[0]!.points.map((p) => p.y)).toEqual([100000, 100100, 100267.5])

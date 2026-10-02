@@ -1442,6 +1442,80 @@
         }
       }
     },
+    "/api/positions/abandon": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/positions/abandon",
+        "description": "Give up a long nobody bids for (its fresh quote shows only an ask) or one that has expired and awaits its settlement: it leaves the account at zero without a fee. Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portfolio"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbandonRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/positions/instruction": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "post": {
+        "summary": "POST /api/positions/instruction",
+        "description": "Instruct that a long option held into expiry is not exercised (do_not_exercise true), or withdraw the instruction. Paper trading only. Requires trade:ACCOUNT (or trade:*) for live accounts; replay scope for replay accounts.",
+        "x-scope": "trade",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portfolio"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExerciseInstructionRequest"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/stocks/close": {
       "parameters": [
         {
@@ -2450,6 +2524,12 @@
     },
     "/api/replay/stocks/close": {
       "$ref": "#/paths/~1api~1stocks~1close"
+    },
+    "/api/replay/positions/abandon": {
+      "$ref": "#/paths/~1api~1positions~1abandon"
+    },
+    "/api/replay/positions/instruction": {
+      "$ref": "#/paths/~1api~1positions~1instruction"
     },
     "/api/replay": {
       "get": {
@@ -8731,6 +8811,10 @@
                 "type": "string"
               },
               {
+                "const": "abandon",
+                "type": "string"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -8771,6 +8855,10 @@
               },
               {
                 "const": "assignment",
+                "type": "string"
+              },
+              {
+                "const": "abandon",
                 "type": "string"
               },
               {
@@ -10389,6 +10477,14 @@
           },
           "awaiting_settlement": {
             "type": "boolean"
+          },
+          "no_bid": {
+            "type": "boolean",
+            "description": "It cannot be sold now: its fresh quote shows only an ask, as a far option nobody bids for does, or it has expired. Such a long can be abandoned."
+          },
+          "do_not_exercise": {
+            "type": "boolean",
+            "description": "A long option instructed not to be exercised at expiry: it then expires worthless with no cash proceeds or shares delivered."
           },
           "settle_by": {
             "description": "How an expired position settles: closing_print while a PM position's closing print is recorded or still awaited (until half an hour after the close); manual for an AM position, or a PM one with neither after that; null while not awaiting settlement.",
@@ -12587,6 +12683,32 @@
         "required": [
           "symbol",
           "value"
+        ]
+      },
+      "AbandonRequest": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol"
+        ]
+      },
+      "ExerciseInstructionRequest": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "do_not_exercise": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "symbol",
+          "do_not_exercise"
         ]
       },
       "ExerciseRequest": {

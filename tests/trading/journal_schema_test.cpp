@@ -579,5 +579,31 @@ TEST(TradingJournalSchema, RuleLiquidationIsAttributedToSystem) {
   EXPECT_EQ(session.snapshot()->recent_orders.back().actor, "system");
   EXPECT_EQ(session.snapshot()->recent_fills.back().actor, "system");
 }
+
+TEST(TradingJournalSchema, ExerciseInstructionsAreSparseAndEveryPrefixRecovers) {
+  TemporaryDirectory directory;
+  test::ScriptedMarket f;
+  const auto path = directory.file("instructions.jsonl");
+  auto journal = FileJournal::create(path);
+  TradingSession s({}, f.time, journal);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long"), f.time).decision.ok());
+  EXPECT_EQ(TradingSession::recover(FileJournal::read(path)).snapshot_json(), s.snapshot_json());
+  for (const auto& record : FileJournal::read(path).records)
+    EXPECT_EQ(record.payload.find("do_not_exercise"), std::string::npos) << "old states omit the default field";
+  for (const bool instructed : {true, false, true}) {
+    ASSERT_TRUE(s.instruct_exercise(f.symbol(), instructed, f.time).decision.ok());
+    const auto recovered = TradingSession::recover(FileJournal::read(path));
+    EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+    EXPECT_EQ(recovered.snapshot()->positions.front().do_not_exercise, instructed);
+  }
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, {}, Money::parse("0.05"), 0, 10}}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.abandon(f.symbol(), f.time).decision.ok());
+  EXPECT_EQ(TradingSession::recover(FileJournal::read(path)).snapshot_json(), s.snapshot_json());
+  const auto payload = Json::parse(FileJournal::read(path).records.back().payload);
+  EXPECT_NE(payload.dump().find("do_not_exercise"), std::string::npos) << "the delta removes the last instruction";
+}
+
 }  // namespace
 }  // namespace openport::trading

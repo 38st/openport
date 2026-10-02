@@ -158,6 +158,9 @@ export const api = {
     write<{ account_version: string; day: string; note: DayNote }>(scoped(`/api/days/${encodeURIComponent(day)}/note`), "PUT", mode, note),
   annotateTrade: (id: string, note: TradeNote, mode: WriteMode) => write<TradeNoteResponse>(scoped(`/api/trades/${encodeURIComponent(id)}/note`), "PUT", mode, note),
   exercise: (symbol: string, quantity: number, mode: WriteMode) => write<Portfolio>(scoped("/api/positions/exercise"), "POST", mode, { symbol, quantity }),
+  abandon: (symbol: string, mode: WriteMode) => write<Portfolio>(scoped("/api/positions/abandon"), "POST", mode, { symbol }),
+  exerciseInstruction: (symbol: string, doNotExercise: boolean, mode: WriteMode) =>
+    write<Portfolio>(scoped("/api/positions/instruction"), "POST", mode, { symbol, do_not_exercise: doNotExercise }),
   closeStock: (symbol: string, shares: number | null, mode: WriteMode) =>
     write<Portfolio>(scoped("/api/stocks/close"), "POST", mode, shares == null ? { symbol } : { symbol, shares }),
   updateLimits: (expected_revision: string, limits: Limits, mode: WriteMode) => write<Risk>(scoped("/api/risk/limits"), "PUT", mode, { expected_revision, limits }),

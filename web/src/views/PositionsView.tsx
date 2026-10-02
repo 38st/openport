@@ -10,7 +10,7 @@ import { LimitsEditor } from "../components/LimitsEditor"
 import { MarginBreakdown } from "../components/MarginBreakdown"
 import { FlattenDialog } from "../components/OrderActions"
 import { OrderTicket } from "../components/OrderTicket"
-import { CloseSharesDialog, ExerciseDialog, SettleDialog, SharesTable } from "../components/StockActions"
+import { AbandonDialog, CloseSharesDialog, ExerciseDialog, ExerciseInstructionDialog, SettleDialog, SharesTable } from "../components/StockActions"
 import { CloseStrategyDialog, Strategies } from "../components/StrategyActions"
 import { RiskPanel } from "../components/RiskPanel"
 import { WhatIfPanel } from "../components/WhatIfPanel"
@@ -73,9 +73,11 @@ function protection(position: Position, orders: Order[]): string | null {
   return exits.map((o) => `${o.role === "stop_loss" ? "Stop" : "Target"} ${o.trigger ? describeTrigger(o.trigger, o.side ?? "sell", o.underlying)
     + (o.limit_price != null ? `, limit ${formatMoney(o.limit_price)}` : "") : formatMoney(o.limit_price)}`).join(" · ")
 }
-function Positions({ positions, onClose, onExercise, onSettle, orders = [], selected, onSelect, groups = [] }: {
+function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInstruct, orders = [], selected, onSelect, groups = [] }: {
   positions: Position[]; onClose?: (position: Position) => void; onExercise?: (position: Position) => void
   onSettle?: (position: Position) => void; orders?: Order[]
+  /** Give up a long nobody bids for; instruct or withdraw do-not-exercise on a long option. */
+  onAbandon?: (position: Position) => void; onInstruct?: (position: Position) => void
   /** Held strategies, to note which positions belong to one. */
   groups?: readonly StrategyGroup[]
   /** Positions picked to close together, by symbol. */
@@ -95,6 +97,8 @@ function Positions({ positions, onClose, onExercise, onSettle, orders = [], sele
           <div className="font-medium">{contractLabel(position)} <span className="text-muted">{position.settlement}</span></div>
           <div className="mt-1 text-[11px] text-faint">{position.symbol}</div>
           {position.awaiting_settlement && <span className="mt-1 inline-block rounded-full border border-warn px-2 py-0.5 text-[10px] text-warn">Awaiting settlement</span>}
+          {position.do_not_exercise && <span className="mt-1 ml-1 inline-block rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">Not to be exercised</span>}
+          {position.no_bid && !position.awaiting_settlement && <div className="mt-1 text-[10px] text-warn">Nobody bids for it</div>}
           {protection(position, orders) && <div className="mt-1 text-[10px] text-accent">{protection(position, orders)}</div>}
           {groups.filter((g) => g.legs.some((l) => l.position.symbol === position.symbol)).map((g) =>
             <div key={g.order.id} className="mt-1 text-[10px] text-muted">In {g.label.toLowerCase()} #{g.order.id}</div>)}
@@ -111,6 +115,11 @@ function Positions({ positions, onClose, onExercise, onSettle, orders = [], sele
         <td><div className="flex justify-end gap-1.5">
           {onExercise && position.quantity > 0 && !position.awaiting_settlement && deliversShares(position.underlying) &&
             <button type="button" className="trade-button" aria-label={`Exercise ${position.symbol}`} onClick={() => onExercise(position)}>Exercise</button>}
+          {onInstruct && position.quantity > 0 &&
+            <button type="button" className="trade-button" aria-label={`Exercise instruction for ${position.symbol}`} onClick={() => onInstruct(position)}>
+              {position.do_not_exercise ? "Exercise at expiry" : "Don't exercise"}</button>}
+          {onAbandon && position.quantity > 0 && position.no_bid &&
+            <button type="button" className="trade-button" aria-label={`Abandon ${position.symbol}`} onClick={() => onAbandon(position)}>Abandon</button>}
           {onClose && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Close ${position.symbol}`} onClick={() => onClose(position)}>Close</button>}
           {onSettle && position.awaiting_settlement && position.settle_by === "manual" &&
             <button type="button" className="trade-button" aria-label={`Settle ${position.symbol}`} onClick={() => onSettle(position)}>Settle</button>}
@@ -136,6 +145,8 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
   const [closing, setClosing] = useState<Position | null>(null)
   const [exercising, setExercising] = useState<Position | null>(null)
   const [settling, setSettling] = useState<Position | null>(null)
+  const [abandoning, setAbandoning] = useState<Position | null>(null)
+  const [instructing, setInstructing] = useState<Position | null>(null)
   const [closingShares, setClosingShares] = useState<StockHolding | null>(null)
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [together, setTogether] = useState(false)
@@ -183,6 +194,8 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
         <Positions positions={data.positions} orders={allOrders} groups={groups} onClose={trading.enabled ? setClosing : undefined}
           onExercise={trading.enabled ? setExercising : undefined}
           onSettle={trading.enabled ? setSettling : undefined}
+          onAbandon={trading.enabled ? setAbandoning : undefined}
+          onInstruct={trading.enabled ? setInstructing : undefined}
           selected={trading.enabled && data.positions.length > 1 ? picked : undefined}
           onSelect={(symbol, on) => setPicked((current) => { const next = new Set(current); if (on) next.add(symbol); else next.delete(symbol); return next })} />
       </Panel>
@@ -208,6 +221,8 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
     {closing && <CloseTicket position={closing} trading={trading} onClose={() => setClosing(null)} />}
     {exercising && <ExerciseDialog position={exercising} trading={trading} onClose={() => setExercising(null)} />}
     {settling && <SettleDialog position={settling} trading={trading} onClose={() => setSettling(null)} />}
+    {abandoning && <AbandonDialog position={abandoning} trading={trading} onClose={() => setAbandoning(null)} />}
+    {instructing && <ExerciseInstructionDialog position={instructing} trading={trading} onClose={() => setInstructing(null)} />}
     {closingShares && <CloseSharesDialog stock={closingShares} trading={trading} onClose={() => setClosingShares(null)} />}
     {flatten && data && <FlattenDialog positions={data.positions} stocks={data.stocks ?? []} orders={allOrders ?? []} trading={trading}
       initial={flatten.underlying} onClose={() => setFlatten(null)} />}

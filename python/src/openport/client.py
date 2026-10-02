@@ -241,6 +241,12 @@ class Client:
     def exercise(self, symbol: str, quantity: int) -> Portfolio:
         return self._request("POST", "/positions/exercise", {"symbol": symbol, "quantity": quantity}, scoped=True)
 
+    def abandon(self, symbol: str) -> Portfolio:
+        return self._request("POST", "/positions/abandon", {"symbol": symbol}, scoped=True)
+
+    def exercise_instruction(self, symbol: str, do_not_exercise: bool = True) -> Portfolio:
+        return self._request("POST", "/positions/instruction", {"symbol": symbol, "do_not_exercise": do_not_exercise}, scoped=True)
+
     def close_stock(self, symbol: str, shares: int | None = None) -> Portfolio:
         return self._request("POST", "/stocks/close", {"symbol": symbol, **({"shares": shares} if shares is not None else {})}, scoped=True)
 

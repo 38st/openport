@@ -226,7 +226,20 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RiskBucket, position, reachable, limits, delt
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RiskSnapshot, aggregate, underlyings, complete, daily_loss, kill_latched, kill_reason, limits_revision)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioCell, spot_percent, vol_points, pnl, clamped)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioGrid, cells, complete)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedPosition, position, mark, mark_time, mark_age, market_value, unrealised, fresh, awaiting_settlement)
+inline void to_json(Json& j, const MarkedPosition& p) {
+  j = Json{{"position", p.position}, {"mark", p.mark}, {"mark_time", p.mark_time}, {"mark_age", p.mark_age},
+           {"market_value", p.market_value}, {"unrealised", p.unrealised}, {"fresh", p.fresh},
+           {"awaiting_settlement", p.awaiting_settlement}};
+  // Older snapshots have neither; write them only when set.
+  if (p.no_bid) j["no_bid"] = true;
+  if (p.do_not_exercise) j["do_not_exercise"] = true;
+}
+inline void from_json(const Json& j, MarkedPosition& p) {
+  j.at("position").get_to(p.position); j.at("mark").get_to(p.mark); j.at("mark_time").get_to(p.mark_time);
+  j.at("mark_age").get_to(p.mark_age); j.at("market_value").get_to(p.market_value); j.at("unrealised").get_to(p.unrealised);
+  j.at("fresh").get_to(p.fresh); j.at("awaiting_settlement").get_to(p.awaiting_settlement);
+  added_field(j, "no_bid", p.no_bid); added_field(j, "do_not_exercise", p.do_not_exercise);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedStock, position, mark, mark_time, market_value, unrealised, fresh)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews, pending_limits, pending_guardrails, guardrails, pending_applied_at, soft_floor)
 inline void from_json(const Json& j, TradingSnapshot& s) {
@@ -330,6 +343,8 @@ struct State {
   /// by the transaction in progress, the underlying's price for the last review
   /// sample of the round trip it closed. update_reviews consumes and clears it.
   std::map<std::string, Money> settling;
+  /// Longs the trader instructed not to exercise at expiry, by symbol.
+  SharedSet<std::string> do_not_exercise;
 };
 /// The open orders' IDs, in ID order.
 inline std::vector<OrderId> open_ids(const State& s) {
@@ -359,6 +374,8 @@ inline void to_json(Json& j, const State& s) {
 #define OPENPORT_STATE_TO(field) j[#field] = s.field;
   OPENPORT_STATE_FIELDS(OPENPORT_STATE_TO)
 #undef OPENPORT_STATE_TO
+  // Written once used, so accounts that never give an instruction keep their bytes.
+  if (!s.do_not_exercise.empty()) j["do_not_exercise"] = s.do_not_exercise;
 }
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
@@ -376,6 +393,7 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "strategy_reviews", s.strategy_reviews);
   added_field(j, "pending_limits", s.pending_limits); added_field(j, "pending_guardrails", s.pending_guardrails);
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
+  added_field(j, "do_not_exercise", s.do_not_exercise);
   s.working.clear();
   s.indexed = 0;
   reindex(s);

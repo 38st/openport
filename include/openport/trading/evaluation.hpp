@@ -106,7 +106,8 @@ struct AttemptSummary {
 
 /// Exercise: contracts exercised early into shares, at intrinsic value.
 /// Assignment: a short American equity or ETF option assigned early, overnight.
-enum class ClosureKind { Settlement, Reset, Exercise, Assignment };
+/// Abandon: a long nobody bids for, given up at zero without a fee.
+enum class ClosureKind { Settlement, Reset, Exercise, Assignment, Abandon };
 
 /// A position that left the ledger without a fill, so trade history can close it.
 struct Closure {

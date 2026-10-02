@@ -18,6 +18,17 @@ function wireType(schema: Schema): string {
 }
 
 describe("checked API core types", () => {
+  it("keeps position disposal fields and closure kinds in sync", () => {
+    const position = /export interface Position \{([\s\S]*?)\n\}/.exec(source)![1]!
+    for (const field of ["no_bid", "do_not_exercise"]) {
+      expect(position).toMatch(new RegExp(`${field}\\?: boolean`))
+      expect(wireType(spec.components.schemas.Position!.properties![field]!)).toBe("boolean")
+    }
+    const trade = /export interface Trade \{([\s\S]*?)\n\}/.exec(source)![1]!
+    expect(normalize(/closure: ([^\n]+)/.exec(trade)![1]!)).toBe(wireType(spec.components.schemas.Trade!.properties!.closure!))
+    const exits = /export type TradeExit = ([^\n]+)/.exec(source)![1]!
+    expect(normalize(`${exits} | null`)).toBe(wireType(spec.components.schemas.Trade!.properties!.closed_by!))
+  })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus",
     "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
