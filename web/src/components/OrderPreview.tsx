@@ -94,6 +94,7 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
         </dl>
         {p.decision !== "ok" && <p role="status" className="text-warn">{p.decision}: {p.reason?.message}</p>}
         {p.decision === "ok" && p.execution && <ExecutionSummary execution={p.execution} />}
+        {p.warnings?.map((warning) => <p key={warning.code} role="status" className="text-warn">Check: {warning.message}</p>)}
         {(p.breaches_floor || p.breaches_soft_floor) && <p role="alert" className="font-medium text-danger">This {what} could breach {p.breaches_floor ? "the plan floor" : "your soft floor"}.</p>}
         <details><summary className="cursor-pointer text-muted">After this {what} · breach risk, and the change in Greeks</summary>
           <BreachPanel breach={p.breach} />

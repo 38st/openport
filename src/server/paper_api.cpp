@@ -165,6 +165,8 @@ json leg_liquidity_json(const OrderPreview& p) {
   return legs;
 }
 json preview_json(const OrderPreview& p) {
+  json warnings = json::array();
+  for (const auto& warning : p.warnings) warnings.push_back({{"code", warning.code}, {"message", warning.message}});
   json change = nullptr;
   if (p.exposure_change) change = {{"dollar_delta", number(p.exposure_change->dollar_delta)},
       {"dollar_gamma_1pct", number(p.exposure_change->dollar_gamma_1pct)},
@@ -178,7 +180,7 @@ json preview_json(const OrderPreview& p) {
       {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
       {"max_units", units(p.max_units)}, {"max_units_buying_power", units(p.max_units_buying_power)},
       {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)},
-      {"execution", execution_json(p.execution)}, {"liquidity", leg_liquidity_json(p)}, {"simulated", true}};
+      {"execution", execution_json(p.execution)}, {"liquidity", leg_liquidity_json(p)}, {"warnings", warnings}, {"simulated", true}};
 }
 
 /// The next payout's requirements, or null outside the funded phase.
@@ -250,6 +252,13 @@ json modified_at(const Order& o) {
     if (it->decision.ok()) return md::format_timestamp(it->time);
   return nullptr;
 }
+/// The evaluation attempt an order belongs to: the last one started at or before it.
+std::uint64_t order_attempt(const TradingSnapshot& s, OrderId id) {
+  if (id >= s.evaluation.first_order) return s.evaluation.attempt;
+  for (auto it = s.attempts.rbegin(); it != s.attempts.rend(); ++it)
+    if (id >= it->first_order) return it->attempt;
+  return s.attempts.empty() ? s.evaluation.attempt : s.attempts.front().attempt;
+}
 const char* side_name(Side side) { return side == Side::Buy ? "buy" : "sell"; }
 json order_json(const Order& o, const TradingView& view) {
   constexpr const char* statuses[] = {"working", "partially_filled", "filled", "cancelled", "rejected", "armed"};
@@ -283,6 +292,7 @@ json order_json(const Order& o, const TradingView& view) {
              return {{"code", wait->second.code}, {"message", wait->second.message}};
            }()},
           {"ended_at", time_or_null(o.ended_at)}, {"modified_at", modified_at(o)}, {"changes", order_changes_json(o)},
+          {"attempt", order_attempt(*view.snapshot, o.id)},
           {"origin", o.system ? "system" : "user"}, {"reduce_only", o.reduce_only},
           {"trigger", trigger_json(o.request.trigger)},
           {"triggered_at", o.triggered_at > 0 ? json(md::format_timestamp(o.triggered_at)) : json(nullptr)},
@@ -1709,12 +1719,13 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
       path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/account/equity" &&
       path != "/api/trades" && path != "/api/plans" && path != "/api/accounts") return {};
   const auto query = question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1);
-  // Every route takes account=ID; orders take status=open|all; trades take
-  // status=open|closed|all and attempt=current|all. Each key at most once.
+  // Every route takes account=ID; orders take status=open|all and client_order_id;
+  // trades take status=open|closed|all and attempt=current|all. Each key at most once.
   const auto pairs = query_parameters(query);
   const bool csv = path == "/api/trades.csv" || path == "/api/fills.csv";
   // CSV exports filter by New York date; the equity history by instant.
   std::string account, status = "all", attempt = csv ? "all" : "current", from, to;
+  std::optional<std::string> client_order_id;
   std::optional<Timestamp> since, until;
   bool valid_query = pairs.has_value();
   for (const auto& [key, value] : pairs.value_or(std::map<std::string, std::string>{})) {
@@ -1724,6 +1735,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
       else if (key == "from") since = parsed; else until = parsed;
     } else if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
     else if (key == "status" && path == "/api/orders" && (value == "open" || value == "all")) status = value;
+    else if (key == "client_order_id" && path == "/api/orders" && valid_client_order_id(value)) client_order_id = value;
     else if (key == "status" && (path == "/api/trades" || path == "/api/trades.csv") && (value == "open" || value == "closed" || value == "all")) status = value;
     else if (key == "attempt" && (path == "/api/trades" || path == "/api/trades.csv") && (value == "current" || value == "all")) attempt = value;
     else if (csv && key == "from" && csv_date(value)) from = value;
@@ -1772,7 +1784,8 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   if (path == "/api/orders") {
     body["orders"] = json::array();
     for (auto it = s.recent_orders.rbegin(); it != s.recent_orders.rend(); ++it)
-      if (status != "open" || it->open()) body["orders"].push_back(order_json(*it, *view));
+      if ((status != "open" || it->open()) && (!client_order_id || it->request.client_order_id == *client_order_id))
+        body["orders"].push_back(order_json(*it, *view));
   } else {
     body["fills"] = json::array();
     for (auto it = s.recent_fills.rbegin(); it != s.recent_fills.rend(); ++it) body["fills"].push_back(fill_json(*it, *view));

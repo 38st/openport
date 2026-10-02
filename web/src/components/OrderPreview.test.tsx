@@ -139,6 +139,11 @@ describe("order preview", () => {
     // Four more units beside the two filled.
     expect(host.querySelector<HTMLInputElement>('input[aria-label="Quantity"]')!.value).toBe("6")
   })
+  it("shows the server's warnings about terms that act at once", async () => {
+    const warned = { ...preview, warnings: [{ code: "STOP_REACHED", message: "The stop's trigger, at or below 3.10, is already reached (now 3.00): it fires as soon as the entry fills" }] }
+    await act(async () => root.render(<OrderPreviewPanel preview={{ data: warned, error: null, loading: false }} onSize={() => {}} />))
+    expect(host.textContent).toContain("Check: The stop's trigger, at or below 3.10, is already reached (now 3.00): it fires as soon as the entry fills")
+  })
   it("labels scenario estimates and prevents zero-unit sizing", async () => {
     const result = { ...preview, max_loss_basis: "scenario_grid" as const, max_units: 0 }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: result, error: null, loading: false }} onSize={() => {}} />))

@@ -167,6 +167,7 @@ class OrderPreview(TypedDict):
     breach: JSON
     execution: JSON
     liquidity: list[JSON]
+    warnings: list[JSON]
     simulated: bool
 
 

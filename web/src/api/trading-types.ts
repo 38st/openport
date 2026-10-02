@@ -469,6 +469,8 @@ export interface Order {
   day_end: string | null
   /** When it stopped working; null while open. Absent on older servers, as are the changes. */
   ended_at?: string | null
+  /** The evaluation attempt it belongs to; absent on older servers. */
+  attempt?: number
   /** An open order: what keeps it from filling now, or null. */
   waiting?: OrderWait | null
   modified_at?: string | null
@@ -787,6 +789,8 @@ export interface OrderPreview {
   execution?: PreviewExecution
   /** Each leg's quote; absent on older servers. */
   liquidity?: PreviewLiquidity[]
+  /** Advice on accepted terms that are rarely meant; absent on older servers. */
+  warnings?: OrderWarning[]
   simulated: true
 }
 /** An account as POST /api/orders/what-if projects it, measured from today's equity. */
@@ -841,6 +845,7 @@ export interface PreviewLiquidity {
   displayed: number
   size_left: number
 }
+export interface OrderWarning { code: "STOP_AS_LIMIT" | "STOP_REACHED" | "TARGET_REACHED" | "TRIGGER_REACHED" | "SLIPPAGE_BAND" | (string & {}); message: string }
 export interface EquitySample {
   time: string
   day: string

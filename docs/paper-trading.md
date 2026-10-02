@@ -205,10 +205,14 @@ specification. Observed fill prices need not themselves be on the limit-order ti
 Orders have buy/sell side, a positive integer contract count, a client ID and one
 of market/IOC or limit/DAY/GTC/IOC. Market/DAY or market/GTC, market with a limit, and limit without
 a positive price reject. A client ID is 1 to 128 bytes of text without control
-characters, and cannot be reused, even after a rejected order.
+characters, and cannot be reused within an attempt, even after a rejected order.
 Submitting the same terms again under a used client ID is a retry, not a new order: it
 gets the first answer (the order as it now stands, even after a change, or the original
-rejection) and records nothing. Other terms under that ID reject with `DUPLICATE_CLIENT_ID`.
+rejection) and records nothing. Other terms under that ID are refused with
+`DUPLICATE_CLIENT_ID`, naming the order that holds it, and record nothing either, so
+an ID names one order however often a client retries. Client IDs are scoped to the
+evaluation attempt: after an account reset, an ID an earlier attempt used is free and
+names a new order, and each order reports the `attempt` it belongs to.
 
 Tickets show liquidity warnings for thin or absent two-sided quotes, including
 spread percentage, session volume and OI, without blocking submission. Strategy
@@ -488,7 +492,9 @@ and are cancelled with `POSITION_CLOSED` once it is flat, so they never open a
 position. Because they only reduce risk, they execute like system orders, without the
 price band or loss projection, and good-until-expiry exits wait for the next regular
 session. A bracket pair counts once in reachable exposure and buying power (fees only);
-exits never count against buy-only sells, so a manual close is always possible.
+exits never count against buy-only sells, so a manual close is always possible. Plain
+stop sells do count, but a manual close supersedes them on a buy-only plan (see
+`buy_only` under plan rules).
 
 ## Multi-leg orders
 
@@ -994,7 +1000,7 @@ The response contains `decision` (`ok` or a reason code), `reason`, `buying_powe
 (`required`, `before`, `working`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
 vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
 `breaches_floor`, `breaches_soft_floor`, `max_units`, `max_units_buying_power`,
-`max_units_floor`, projected `breach`, `execution` and
+`max_units_floor`, projected `breach`, `execution`, `warnings` and
 `liquidity`: for each leg, its `symbol`, `side` and `contracts`, whether paper orders
 can fill on its quote now (`executable`, with the `INVALID_QUOTE` or `STALE_QUOTE`
 `reason` when not, and a one-sided, crossed or sizeless quote named in its message),
@@ -1002,6 +1008,17 @@ the `displayed` size on the side it takes and `size_left`, what this account's o
 have left of it on that observation. Orders beyond `size_left` wait for a new quote,
 or cancel as `IOC_REMAINDER`, unless impact supplies simulated depth. Missing
 inputs produce null analytical values. `simulated: true` labels the projection.
+
+`warnings` lists `{code, message}` advice on terms that are accepted but rarely meant;
+it never changes the decision, and submission gives none:
+
+| Code | When |
+|---|---|
+| `STOP_AS_LIMIT` | A bracket `stop_loss` has a `limit_price` and no trigger, so it rests as a limit exit, not a stop; the message says when the closing side already reaches it, which closes the position as soon as the entry fills |
+| `STOP_REACHED` | The stop's trigger is already reached on the current quote (for a combo, the closing legs' far sides, which include both spreads), so it fires as soon as the entry fills, or as soon as held exits are accepted |
+| `TARGET_REACHED` | The take-profit limit is already marketable, so it fills at once |
+| `TRIGGER_REACHED` | A conditional order's level is already reached, so it activates at once |
+| `SLIPPAGE_BAND` | The account's `slippage_ticks` alone price a market order outside the price band, so it is refused `PRICE_BAND`: widen the band or lower the slippage |
 Market orders use slipped far sides, through the impact blocks a fill would walk; limit
 orders use their limit debit or credit.
 Fees are included. Identical client-ID retries return their original decision with no
@@ -1181,7 +1198,7 @@ side, no buying-power check. All rule money is exact.
 | `profit_target` | Pass when equity reaches starting balance + target (zero disables) |
 | `max_drawdown` | Fail when equity touches peak − drawdown (zero disables) |
 | `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date. The peak is the high-water mark the floor follows; an account without a target or drawdown (practice) keeps it the same way, although no rule reads it |
-| `buy_only` | A sell must close contracts already held, counting working sells on the same contract; otherwise `BUY_ONLY` |
+| `buy_only` | A sell must close contracts already held, counting working and armed sells on the same contract; otherwise `BUY_ONLY`. A manual (untriggered) close that only the account's own armed stop sells keep from fitting supersedes them: it cancels them with `POSITION_CLOSED`, newest first and only as many as it needs, and keeps them if it is refused anyway. Preview shows the same |
 | `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Open orders count as if every sell they offer filled and no buy did (a multi-leg order fills whole; a bracket's two exits sell its position once), so a working sell can never take the long a short needs. Bracket exits and exercise keep shorts covered too. Off in every preset; custom rules take it |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
 | `slippage_ticks` | Integer from 0 to 10 adverse ticks per option fill, including each combo leg and closing orders; default 0 |
@@ -1208,6 +1225,8 @@ the floor rises. The decision is sticky for the attempt: open user orders cancel
 (a passed one), `system:expiry:N` (the expiry cutoff) or `system:soft_floor:N` (a
 personal soft floor while the attempt is still active; once the plan decides the
 attempt, its own label wins, even when the soft floor latched in the same update).
+Like Flatten, they close shorts first: a short is bought back before the long that
+covers it is sold, so the order of events never shows a naked short.
 They need a registered unexpired contract, the regular session and a fresh
 executable book and available closing-side liquidity under the selected fill model.
 With latency, the close stays pending until an eligible later quote. They skip the kill
@@ -2103,8 +2122,8 @@ focus at the top of the ticket.
 | `POST /api/stocks/close` | `symbol` of delivered shares (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, reject with 409 `DUPLICATE_CLIENT_ID` |
-| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, and each leg's quote `liquidity` |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`), optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
+| `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, each leg's quote `liquidity`, and `warnings` about stops, targets and triggers already reached, a stop given only a limit price, or slippage that pushes a market order outside the band |
 | `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
@@ -2173,7 +2192,8 @@ is not positive, fewer than two or more than eight legs, two legs naming one con
 or a ratio outside 1 to 10. Nothing is recorded and the client ID stays free. Business
 rejections, which depend on the account and the market, return 422 and remain recorded
 as rejected orders; unknown contracts/orders return 404,
-terminal orders and a client ID reused with other terms return 409; an identical
+terminal orders and a client ID this attempt already used with other terms return 409
+(nothing recorded); an identical
 retry returns 200 with the order as it now stands. Errors always have this shape:
 
 ```json
@@ -2183,8 +2203,9 @@ retry returns 200 with the order as it now stands. Errors always have this shape
 Unused `actual`, `limit` and `scope` are null. `scope` names an underlying or
 `aggregate`: a check on one contract, such as `PRICE_BAND`, reports that contract's
 underlying, while the journaled decision keeps the contract's OSI symbol, as the
-order itself does. Rejected writes still consume their client ID; GET orders shows
-their resulting rejection reason. An order's `reason` has the same shape as an error,
+order itself does. Rejected writes still consume their client ID for the attempt; GET
+orders shows their resulting rejection reason, and `GET /api/orders?client_order_id=ID`
+lists the orders that used an ID, newest first: one per attempt that used it. An order's `reason` has the same shape as an error,
 `{code, message, actual, limit, scope}`: a `RISK_CHANGED` cancel keeps the original
 check's code at the start of its message and its numbers (3 contracts against a new
 limit of 2, a projected loss of 15.65 against 15.64), and so does a Flatten leg the

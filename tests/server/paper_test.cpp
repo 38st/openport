@@ -634,6 +634,14 @@ TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejection
   EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), recorded);
   request["limit_price"] = "4.05";
   expect_error(write(*engine, "POST", "/api/orders", request), 409, "DUPLICATE_CLIENT_ID");
+  // The conflict records nothing, and the ID still finds the one order it names.
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), recorded);
+  const auto named = read(*engine, "/api/orders?client_order_id=bad-tick")["orders"];
+  ASSERT_EQ(named.size(), 1u);
+  EXPECT_EQ(named[0]["status"], "rejected");
+  EXPECT_EQ(named[0]["attempt"], 1);
+  EXPECT_TRUE(read(*engine, "/api/orders?client_order_id=nobody")["orders"].empty());
+  expect_error(server::handle_api({"GET", "/api/orders?client_order_id="}, *engine), 400, "INVALID_REQUEST");
   expect_error(write(*engine, "POST", "/api/settlements", {{"symbol", market.symbol()}, {"value", "5000.00"}}), 422, "INVALID_SETTLEMENT");
   expect_error(server::handle_api({"GET", "/api/orders?status=closed"}, *engine), 400, "INVALID_REQUEST");
   expect_error(server::handle_api({"GET", "/api/missing"}, *engine), 404, "NOT_FOUND");

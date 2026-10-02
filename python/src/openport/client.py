@@ -146,8 +146,9 @@ class Client:
     def portfolio(self) -> Portfolio:
         return self._request("GET", "/portfolio", scoped=True)
 
-    def orders(self, status: str = "all") -> Orders:
-        return self._request("GET", "/orders", scoped=True, params={"status": status})
+    def orders(self, status: str = "all", client_order_id: str | None = None) -> Orders:
+        """Orders, newest first; client_order_id finds the order(s) that used that ID, one per attempt."""
+        return self._request("GET", "/orders", scoped=True, params={"status": status, "client_order_id": client_order_id})
 
     def fills(self) -> Fills:
         return self._request("GET", "/fills", scoped=True)

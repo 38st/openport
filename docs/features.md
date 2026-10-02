@@ -313,3 +313,13 @@ the simulation's limits.
       playbook reports and backtests
 - [x] Same-expiry strike rolls and whole-condor rolls, exits resized in place and DAY or
       GTC changed on a resting order
+- [x] Kill latch history, when a reset can clear it, and guardrail refusals with their numbers
+- [x] Client order IDs scoped to an attempt and looked up by ID, conflicting reuses
+      recorded nowhere, shorts closed first on auto-close, and a buy-only manual close
+      that supersedes its own armed stop
+- [x] Preview warnings for stops, targets and triggers already reached, a stop given as a
+      limit price, and slippage that pushes a market order outside the price band;
+      IOC remainders that say whether the limit was short or the book was used up
+- [x] Marketable buy limits reserve their expected fill and armed buy stops their level;
+      dividends paid in whole cents; an idle account's views as of the feed's time;
+      working-order ladders that no longer slow every command

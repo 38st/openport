@@ -159,6 +159,15 @@ struct PreviewMarket {
   std::vector<QuoteObservation> quotes;
   std::vector<Valuation> valuations;
 };
+/// Advice on accepted terms that are rarely meant: STOP_AS_LIMIT (a bracket stop
+/// given only a limit price rests as a limit exit), STOP_REACHED (its trigger is
+/// already reached, so it fires at once), TARGET_REACHED (the take-profit is already
+/// marketable), TRIGGER_REACHED (a conditional order activates at once) or
+/// SLIPPAGE_BAND (the account's slippage alone prices a market order outside the band).
+struct OrderWarning {
+  std::string code;
+  std::string message;
+};
 /// A block of contracts at one price, as a fill would trade it.
 struct PreviewFill {
   std::string symbol;
@@ -204,6 +213,7 @@ struct SizeLeft {
 };
 struct OrderPreview {
   Decision decision;
+  std::vector<OrderWarning> warnings;
   Money buying_power_required;
   Money buying_power_before;
   /// Available while the order works on its terms, before it fills: for a change,
