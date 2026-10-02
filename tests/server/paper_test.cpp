@@ -2614,7 +2614,8 @@ TEST_F(PaperEngine, BracketAndConditionalOrdersOverHttp) {
   const auto limited = write(*engine, "POST", "/api/orders", stop_limit);
   ASSERT_EQ(limited.status, 201) << limited.body;
   const auto exit_id = json::parse(limited.body)["order"]["stop_loss_order"];
-  for (const auto& item : read(*engine, "/api/orders?status=open")["orders"]) {
+  const auto open_orders = read(*engine, "/api/orders?status=open");
+  for (const auto& item : open_orders["orders"]) {
     if (item["id"] != exit_id) continue;
     EXPECT_EQ(item["type"], "limit");
     EXPECT_EQ(item["time_in_force"], "gtc");
