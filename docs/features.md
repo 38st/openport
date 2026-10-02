@@ -64,7 +64,8 @@ simulation's limits.
   next trading day. Personal soft floors, trade limits, cooldowns and profit locks
   keep the account reduce-only when reached.
   The Dashboard charts minute and fill equity against the target and floor, and the Journal keeps a P&L
-  calendar, win rate, profit factor and reports by hold time, weekday, month and tag,
+  calendar, win rate, profit factor, return on buying power and reports by hold time,
+  weekday, month and tag,
   per contract or per strategy, with shares from exercise and assignment as trades of
   their own. Each trade's review shows the market and the account at entry and exit,
   how far it went against you and in your favour (MAE and MFE), what you gave back and
@@ -306,3 +307,5 @@ the simulation's limits.
       positions with their round trip and the contract's lifetime this attempt
 - [x] Whole trades across rolls and adjustments, with their own review, and legs
       entered one by one grouped into one trade; held strategies over the API
+- [x] Return on buying power for trades, strategies and whole trades, in the Journal,
+      playbook reports and backtests

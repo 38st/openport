@@ -155,5 +155,25 @@ TEST(TradeGroups, ARecoveredSessionGroupsARollAsTheLiveOneDoes) {
   EXPECT_EQ(again.snapshot_json(), s.snapshot_json());
 }
 
+TEST(TradeGroups, ReturnOnBuyingPowerDividesByWhatTheEntryNeeded) {
+  Calls m;
+  TradingSession s({}, m.a.time);
+  m.seed(s);
+  // A debit vertical needs its debit: 4.20 paid less 2.00 received.
+  ASSERT_TRUE(s.submit(m.open(), m.a.time).decision.ok());
+  // A credit vertical needs its width less the credit.
+  auto credit = m.order("credit", {{m.c.symbol(), Side::Sell, 1}, {m.d.symbol(), Side::Buy, 1}});
+  ASSERT_TRUE(s.submit(credit, m.a.time).decision.ok());
+  const auto lives = lifecycles(s.snapshot()->recent_fills, s.snapshot()->closures, s.contracts());
+  ASSERT_EQ(lives.size(), 4U);
+  EXPECT_EQ(entry_buying_power({&lives[0], &lives[1]}), dollars("220"));
+  // The 5020 call sold at 1.00 and the 5030 bought at 0.60: 40 received against 1,000 of width.
+  EXPECT_EQ(entry_buying_power({&lives[2], &lives[3]}), dollars("960"));
+  // Alone, the short call is naked.
+  EXPECT_GT(entry_buying_power({&lives[2]}), dollars("960"));
+  // At once the two needed both; the peak counts every round trip open at an opening.
+  EXPECT_EQ(peak_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}), entry_buying_power({&lives[0], &lives[1], &lives[2], &lives[3]}));
+}
+
 }  // namespace
 }  // namespace openport::trading

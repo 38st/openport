@@ -8995,6 +8995,43 @@
           "group": {
             "type": "string",
             "description": "The whole trade it is in, by its first round trip's ID: its own, or its strategy's first leg's, unless a roll, an adjustment or the account joined it to another. Absent from older servers."
+          },
+          "buying_power": {
+            "$ref": "#/components/schemas/Money",
+            "description": "The buying power its entry needed on its own under strategy margin: the premium paid less received, plus its shorts' requirement at their opening prices. Absent from older servers."
+          },
+          "return_on_buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Net P&L over the buying power its entry needed, closed trades only; null when open or the need was zero. Absent from older servers."
+          },
+          "strategy_buying_power": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The same for its strategy's legs together; null outside a strategy. Absent from older servers."
+          },
+          "strategy_return_on_buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The strategy's net over its buying power, once every leg has closed. Absent from older servers."
           }
         },
         "required": [
@@ -13412,6 +13449,17 @@
                 "type": "null"
               }
             ]
+          },
+          "average_return_on_buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The mean return on buying power of the closed trades. Absent from older servers."
           }
         },
         "required": [
@@ -13486,6 +13534,21 @@
                 "type": "null"
               }
             ]
+          },
+          "buying_power": {
+            "$ref": "#/components/schemas/Money",
+            "description": "The buying power its entry needed."
+          },
+          "return_on_buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Net P&L over the buying power its entry needed, closed trades only; null when open or the need was zero. Absent from older servers."
           }
         },
         "required": [
@@ -14361,6 +14424,17 @@
                 "type": "null"
               }
             ]
+          },
+          "average_return_on_buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The mean return on buying power of the closed trades. Absent from older servers."
           }
         },
         "required": [
@@ -15695,6 +15769,21 @@
                 "type": "null"
               }
             ]
+          },
+          "buying_power": {
+            "$ref": "#/components/schemas/Money",
+            "description": "The most its round trips needed at once: at each opening, the buying power of those open then."
+          },
+          "return_on_buying_power": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Net P&L over that peak, closed trades only."
           }
         },
         "required": [
@@ -15712,7 +15801,9 @@
           "net",
           "unrealised",
           "review",
-          "review_since"
+          "review_since",
+          "buying_power",
+          "return_on_buying_power"
         ]
       },
       "HeldStrategy": {

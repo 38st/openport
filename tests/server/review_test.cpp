@@ -141,7 +141,7 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
       "quote.observation", "quote.bid", "quote.ask", "quote.bid_size", "quote.ask_size", "quote.size_left", "quote.quoted_at",
       "quote.age_seconds"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
-  EXPECT_EQ(server::paper_csv_columns(false).size(), 101U);
+  EXPECT_EQ(server::paper_csv_columns(false).size(), 105U);
 }
 TEST(TradeReviewApi, ExportsNameTheirRunAttemptAndClosingTradingDay) {
   test::ScriptedMarket f;

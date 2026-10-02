@@ -1467,6 +1467,23 @@ Older round trips without entry context keep null review fields: historical mark
 are not reconstructed. Share trades retain their existing P&L and notes. Each round
 trip's P&L by Greek is its `attribution` (see [P&L by Greek](#pl-by-greek)).
 
+### Return on buying power
+
+A premium-based return misleads for credit spreads: a $1.00 credit on a $5-wide
+spread risks $400, not $100. Each trade also gives `buying_power`, what its entry
+needed on its own under strategy margin, and `return_on_buying_power`, its net over
+that once closed (null while open or when the need is zero). The need is the
+premium its opening fills paid less what they received, plus the requirement of its
+shorts at their opening prices, with the entry's underlying price for the naked rule
+(the strike without one), every contract it opened counted; fees are left out. A
+strategy's legs carry the same for the strategy together, `strategy_buying_power` and
+`strategy_return_on_buying_power` (once every leg has closed), and a whole trade its
+peak: at each opening, what its round trips open then needed, the most of those. The
+playbook report and backtest summaries give `average_return_on_buying_power` over
+their closed trades, and the Journal, the Playbooks page and backtests show it. It is
+the account's strategy margin at entry; portfolio margin or later price changes do not
+rewrite it.
+
 ### Whole trades
 
 A trade managed over time is one trade, not a string of round trips. Each round trip
@@ -1491,7 +1508,8 @@ grouped or ungrouped starts its review again then (`review_since`). `GET /api/tr
 lists such trades under `groups`, newest first and filtered as the trades are: `id`,
 `attempt`, `underlying`, `status`, `opened`, `closed`, `trading_day`, `round_trips`,
 `entries` (the orders that opened them), `gross`, `fees`, `net`, `unrealised` while
-open and `review` with its R-multiple on the trade's net. `GET /api/portfolio` lists
+open, `buying_power` and `return_on_buying_power` on its peak, and `review` with its
+R-multiple on the trade's net. `GET /api/portfolio` lists
 the positions held by whole trade under `strategies`: each trade's open `legs`
 (`symbol`, `quantity` and the leg's round trip, `trade`), its `round_trips` and
 `entries`, and its `realised`, `fees`, `unrealised` and `net` over every round trip of
@@ -2069,7 +2087,7 @@ focus at the top of the ticket.
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target), decision, current day, finished `days[]` with `realised`, `qualifying`, `attribution` and equity low/high with times, attempt closest-floor distance/time, `qualifying_days`, `cycle_started` and `payouts[]`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
-| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review` and the whole trade it is in, `group` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
+| `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, open round trips by trade ID: join their trades into one, or take each out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing) and their `funded-*` accounts (`unlocked_by` names the evaluation); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |

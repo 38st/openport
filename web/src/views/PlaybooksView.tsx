@@ -19,10 +19,10 @@ export const newPlaybook: Playbook = {
 const pct = (value: number | null) => value == null ? "—" : `${(100 * value).toFixed(1)}%`
 function Stats({ rows }: { rows: [string, PlaybookStats][] }) {
   return <div className="overflow-x-auto"><table className="w-full text-left text-xs tabular">
-    <thead className="text-muted"><tr>{["Trades", "Count", "Win rate", "Average win", "Average loss", "Expectancy", "Profit factor", "Average R", "Adherence"].map((label) => <th className="p-2 font-normal" key={label}>{label}</th>)}</tr></thead>
+    <thead className="text-muted"><tr>{["Trades", "Count", "Win rate", "Average win", "Average loss", "Expectancy", "Profit factor", "Average R", "Return on BP", "Adherence"].map((label) => <th className="p-2 font-normal" key={label}>{label}</th>)}</tr></thead>
     <tbody>{rows.map(([label, row]) => <tr key={label} className="border-t border-border">
       <th className="p-2 font-normal">{label}</th><td>{row.trades}</td><td>{pct(row.win_rate)}</td><td>{formatMoney(row.average_win)}</td><td>{formatMoney(row.average_loss)}</td>
-      <td>{formatMoney(row.expectancy)}</td><td>{row.no_losses ? "∞" : row.profit_factor?.toFixed(2) ?? "—"}</td><td>{row.average_r?.toFixed(2) ?? "—"}</td><td>{pct(row.adherence)}</td>
+      <td>{formatMoney(row.expectancy)}</td><td>{row.no_losses ? "∞" : row.profit_factor?.toFixed(2) ?? "—"}</td><td>{row.average_r?.toFixed(2) ?? "—"}</td><td>{pct(row.average_return_on_buying_power ?? null)}</td><td>{pct(row.adherence)}</td>
     </tr>)}</tbody>
   </table></div>
 }

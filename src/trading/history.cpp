@@ -163,6 +163,29 @@ std::string trade_group(const Lifecycle& life, const SharedMap<std::string, std:
   return it == groups.end() ? std::to_string(life.root) : it->second;
 }
 
+Money entry_buying_power(const std::vector<const Lifecycle*>& legs) {
+  std::vector<MarginLeg> margin;
+  Money paid;
+  for (const auto* leg : legs) {
+    const Money value = leg->open_notional * leg->contract.multiplier;
+    paid = paid + value * leg->direction;
+    margin.push_back({leg->contract, leg->opened_contracts * leg->direction, leg->direction < 0 ? value : Money{},
+                      leg->entry_context ? leg->entry_context->spot : std::nullopt});
+  }
+  return paid + margin_requirement(margin);
+}
+
+Money peak_buying_power(const std::vector<const Lifecycle*>& legs) {
+  Money peak;
+  for (const auto* at : legs) {
+    std::vector<const Lifecycle*> open;
+    for (const auto* leg : legs)
+      if (leg->opened <= at->opened && (!leg->closed || *leg->closed > at->opened)) open.push_back(leg);
+    peak = std::max(peak, entry_buying_power(open));
+  }
+  return peak;
+}
+
 std::vector<ShareLifecycle> share_lifecycles(const SharedVector<StockFill>& fills,
                                              const SharedVector<DividendPayment>& dividends) {
   std::vector<ShareLifecycle> out;

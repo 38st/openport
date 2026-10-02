@@ -22,6 +22,8 @@ export interface BacktestReport {
   errors: { day: number | null; message: string }[]
   summary: { daily_pnl: BacktestDistribution; daily_drawdown: BacktestDistribution; worst_days: number[]
     completed_days: number; marked_days: number; trades: number; expectancy: string | null; win_rate: number | null; day_win_rate: number | null
+    /** Mean return on buying power of the closed trades; absent from older servers. */
+    average_return_on_buying_power?: number | null
     attempts: number; passed: number; failed: number; open: number; pass_rate: number | null }
 }
 export interface BacktestState {
