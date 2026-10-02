@@ -460,8 +460,22 @@ export type AccountRulesInput = Pick<AccountRules, "profit_target" | "max_drawdo
   & Partial<Omit<AccountRules, "fees">> & { fees?: Partial<FeeSchedule> | null }
 export type ResetRequest = { reason: string; fill_model?: FillModel; fee_model?: FeeModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export type Side = "buy" | "sell"
-/** Option triggers compare the order's executable side; underlying ones compare spot. */
-export interface Trigger { source: "option" | "underlying" | "combo"; direction: "at_or_below" | "at_or_above"; level: Money }
+/**
+ * Option triggers compare the order's executable side; underlying ones compare spot, or
+ * another underlying's price when they name `symbol`; study ones an underlying's iv30
+ * or iv7 (vol points) or term_ratio; time ones the New York time of day `at` (level zero).
+ */
+export interface Trigger {
+  source: "option" | "underlying" | "combo" | "study" | "time"
+  direction: "at_or_below" | "at_or_above"
+  level: Money
+  symbol?: string
+  study?: TriggerStudy
+  at?: string
+}
+export type TriggerStudy = "iv30" | "iv7" | "term_ratio"
+/** A time trigger is sent without a level: `{source: "time", at: "15:30"}`. */
+export type TriggerRequest = Trigger | { source: "time"; at: string; direction?: "at_or_below" | "at_or_above" }
 /** A trigger (a stop: market when reached), a limit (a resting take-profit), or both (a stop-limit: a GTC limit once reached). */
 export type ExitSpec = { trigger: Trigger; limit_price?: Money } | { limit_price: Money; trigger?: Trigger }
 export interface Bracket { stop_loss?: ExitSpec; take_profit?: ExitSpec }
@@ -476,7 +490,7 @@ export type NewOrder = { tags?: string[]; note?: string; good_till?: string } & 
   symbol: string
   side: Side
   quantity: number
-  trigger?: Trigger
+  trigger?: TriggerRequest
   bracket?: Bracket
   /** A whole trade to join, by its ID or one of its open round trips' IDs (an adjustment). */
   group?: string
@@ -485,7 +499,7 @@ export type NewOrder = { tags?: string[]; note?: string; good_till?: string } & 
   client_order_id: string
   /** Two to four legs on one underlying, filled together. */
   legs: OrderLeg[]
-  trigger?: Trigger
+  trigger?: TriggerRequest
   bracket?: Bracket
   exits_only?: boolean
   /** A whole trade to join, by its ID or one of its open round trips' IDs (an adjustment). */

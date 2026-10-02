@@ -6,7 +6,7 @@ import { api, ApiError } from "../api/client"
 import { useLive } from "../api/live"
 import { useSmileSurface } from "../api/smiles"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
-import type { Bracket, NewOrder, Order, Side, TimeInForce, Trigger, TradingStatus } from "../api/trading-types"
+import type { Bracket, NewOrder, Order, Side, TimeInForce, TriggerRequest, TriggerStudy, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote, Surface } from "../api/types"
 import { count, days, fixed, isNum, price } from "../lib/format"
 import { dayLockNotice } from "../lib/plan-rules"
@@ -112,15 +112,21 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const [fee, setFee] = useState("")
   // Conditional entry and bracket exits.
   const spot = selection.spot != null && Number.isFinite(selection.spot) ? selection.spot : null
-  const [chosenCondition, setCondition] = useState<"now" | "cross">("now")
+  const [chosenCondition, setCondition] = useState<"now" | "cross" | "watch" | "time">("now")
   const allSessions = tif === "exto" || tif === "gtc_exto"
   const conditional = !extended || tif === "gtc" || tif === "gtd" || allSessions
   const condition = conditional ? chosenCondition : "now"
-  const marketAllowed = !extended || (allSessions && condition === "cross")
+  const marketAllowed = !extended || (allSessions && condition !== "now")
   const type = marketAllowed ? chosenType : "limit"
-  const effectiveTif = type === "market" && (condition !== "cross" || (!allSessions && tif !== "gtd")) ? "ioc" : tif
+  const effectiveTif = type === "market" && (condition === "now" || (!allSessions && tif !== "gtd")) ? "ioc" : tif
   // No default level: one at spot would sit on the boundary, so the trader picks it.
   const [crossLevel, setCrossLevel] = useState("")
+  // Another underlying's price or a study, or the time of day.
+  const [watchKind, setWatchKind] = useState<"price" | TriggerStudy>("price")
+  const [watchSymbol, setWatchSymbol] = useState("VIX")
+  const [watchDirection, setWatchDirection] = useState<"at_or_above" | "at_or_below">("at_or_above")
+  const [watchLevel, setWatchLevel] = useState("")
+  const [timeAt, setTimeAt] = useState("15:30")
   const [chosenProtect, setProtect] = useState(false)
   const protect = conditional && chosenProtect
   const [stopOn, setStopOn] = useState(true)
@@ -168,8 +174,15 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     const { breakeven, value } = singleLeg(selection.optionType, side, selection.strike, premium)
     return { breakeven, pop: probabilityOfProfit(value, [breakeven], distribution) }
   })() : null
-  const trigger: Trigger | undefined = condition === "cross" && validMoney(crossLevel) && Number(crossLevel) > 0
-    ? { source: "underlying", direction: crossDirection(Number(crossLevel), spot), level: crossLevel } : undefined
+  const watchedSymbol = watchSymbol.trim().toUpperCase()
+  const trigger: TriggerRequest | undefined = condition === "cross" ? (validMoney(crossLevel) && Number(crossLevel) > 0
+      ? { source: "underlying", direction: crossDirection(Number(crossLevel), spot), level: crossLevel } : undefined)
+    : condition === "watch" ? (validMoney(watchLevel) && Number(watchLevel) > 0 && /^[A-Z0-9._]{0,12}$/.test(watchedSymbol) && (watchKind !== "price" || watchedSymbol !== "")
+      ? { source: watchKind === "price" ? "underlying" : "study", direction: watchDirection, level: watchLevel,
+          ...(watchedSymbol && watchedSymbol !== selection.underlying ? { symbol: watchedSymbol } : {}), ...(watchKind !== "price" ? { study: watchKind } : {}) }
+      : undefined)
+    : condition === "time" ? (/^([01]\d|2[0-3]):[0-5]\d$/.test(timeAt) ? { source: "time", at: timeAt } : undefined)
+    : undefined
   const exitLevel = (value: string) => validMoney(value) && Number(value) > 0
   const stopValid = exitLevel(stopLevel) && (!stopLimitOn || exitLevel(stopLimit))
   const bracket: Bracket | undefined = protect ? {
@@ -325,7 +338,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           </div>
         </div>
         <div className="col-span-2"><TimeInForceField value={effectiveTif} onChange={(next) => { setTif(next); if (next === "exto" || next === "gtc_exto") setStopLimitOn(true) }} market={type === "market"}
-          conditional={condition === "cross"} goodTill={goodTill} setGoodTill={setGoodTill} /></div>
+          conditional={condition !== "now"} goodTill={goodTill} setGoodTill={setGoodTill} /></div>
         {type === "limit" && <div className="trade-label col-span-2">
           <label className="trade-label">Limit price ($)<input className="trade-input" inputMode="decimal" value={limitPrice} onChange={(e) => setLimitPrice(e.target.value)} onBlur={() => setLimitPrice(limitPriceText(limitPrice))} onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setLimitPrice(stepLimitPrice(root, limitPrice, e.key === "ArrowUp" ? 1 : -1)) } }} pattern="[0-9]+([.][0-9]+)?" required /></label>
           <div className="flex flex-wrap items-center gap-2">
@@ -339,7 +352,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           : <div className="trade-label col-span-2">Fee / contract<div className="tabular text-foreground">{formatMoney(serverFee)}</div></div>}
         {conditional && <div className="trade-label col-span-2">Condition
           <Segmented label="Condition" value={condition} onChange={setCondition}
-            options={[{ value: "now", label: "Now" }, { value: "cross", label: `When ${selection.underlying} crosses` }]} />
+            options={[{ value: "now", label: "Now" }, { value: "cross", label: `When ${selection.underlying} crosses` },
+              { value: "watch", label: "When a price or study" }, { value: "time", label: "At a time" }]} />
           {condition === "cross" && <>
             <label className="trade-label">{selection.underlying} level
               <input className="trade-input" inputMode="decimal" value={crossLevel} placeholder={spot != null ? spot.toFixed(2) : undefined}
@@ -347,6 +361,35 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
             <span className="text-[11px] text-muted">{trigger
               ? `Arms now and activates when ${describeTrigger(trigger, side, selection.underlying)}${spot != null ? ` (now ${spot.toFixed(2)})` : ""}; ${effectiveTif === "gtd" ? "good until the chosen timestamp" : effectiveTif === "exto" ? "good through this trading date" : "good until expiry"}.`
               : `Enter the level that activates the order${spot != null ? `; ${selection.underlying} is at ${spot.toFixed(2)}` : ""}.`}</span>
+          </>}
+          {condition === "watch" && <>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="trade-label">Watch
+                <select className="trade-input" aria-label="Watch" value={watchKind} onChange={(e) => setWatchKind(e.target.value as "price" | TriggerStudy)}>
+                  <option value="price">Price</option>
+                  <option value="iv30">30-day IV (vol points)</option>
+                  <option value="iv7">7-day IV (vol points)</option>
+                  <option value="term_ratio">9d/30d IV ratio</option>
+                </select></label>
+              <label className="trade-label">Underlying
+                <input className="trade-input" aria-label="Watched underlying" value={watchSymbol} placeholder={selection.underlying}
+                  onChange={(e) => setWatchSymbol(e.target.value)} /></label>
+            </div>
+            <Segmented label="Watch direction" value={watchDirection} onChange={setWatchDirection}
+              options={[{ value: "at_or_above", label: "At or above" }, { value: "at_or_below", label: "At or below" }]} />
+            <label className="trade-label">Level
+              <input className="trade-input" inputMode="decimal" aria-label="Watch level" value={watchLevel}
+                onChange={(e) => setWatchLevel(e.target.value)} pattern="[0-9]+([.][0-9]+)?" required /></label>
+            <span className="text-[11px] text-muted">{trigger
+              ? `Arms now and activates when ${describeTrigger(trigger, side, selection.underlying)}; good until expiry. Needs that underlying on the feed.`
+              : "Enter an underlying (empty for a study of this one) and a positive level."}</span>
+          </>}
+          {condition === "time" && <>
+            <label className="trade-label">New York time
+              <input className="trade-input" type="time" aria-label="Activation time" value={timeAt} onChange={(e) => setTimeAt(e.target.value)} required /></label>
+            <span className="text-[11px] text-muted">{trigger
+              ? `Arms now and activates at the first update at or after ${timeAt} in the regular session${closes ? "; it closes this quantity, so cancel it if you close the position first" : ""}.`
+              : "Enter a time as HH:MM."}</span>
           </>}
         </div>}
         {conditional && <div className="col-span-2 space-y-2 rounded-md border border-border p-3">

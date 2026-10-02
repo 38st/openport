@@ -19,9 +19,14 @@ class Leg:
 
 @dataclass
 class Trigger:
-    source: Literal["option", "underlying", "combo"]
-    direction: Literal["at_or_below", "at_or_above"]
-    level: str
+    """A level to arm an order until reached. underlying may name another underlying
+    (symbol); study watches iv30, iv7 or term_ratio; time takes at ("15:30") and no level."""
+    source: Literal["option", "underlying", "combo", "study", "time"]
+    direction: Literal["at_or_below", "at_or_above"] | None = None
+    level: str | None = None
+    symbol: str | None = None
+    study: Literal["iv30", "iv7", "term_ratio"] | None = None
+    at: str | None = None
 
 
 @dataclass

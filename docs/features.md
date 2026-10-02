@@ -36,7 +36,8 @@ simulation's limits.
   underlying (one-minute to daily, backfilled from Cboe's free history) showing your
   strikes, armed triggers and the selected expiry's expected move.
 - **Orders**: DAY, GTC, EXTO, GTC_EXTO and timestamp-bounded GTD limits, market orders, orders that wait for a price level,
-  stop-limits, and brackets whose stop-loss (a stop or a stop-limit) and take-profit
+  another underlying's price (enter if VIX reaches 20), a study (30-day IV, the 9/30-day
+  IV ratio) or a time of day (close at 15:30), stop-limits, and brackets whose stop-loss (a stop or a stop-limit) and take-profit
   cancel each other, keeping a partly filled position protected. GTC orders wait
   outside the regular session and last until the contract's last trade or auto-close.
   Working orders change in place: size, limit or trigger level. Each order keeps its
@@ -285,6 +286,7 @@ the simulation's limits.
 - [x] Paper trading in Cboe's overnight and curb sessions
 - [x] GTC limit orders, order notes and tags, spread brackets and held-spread exits
 - [x] EXTO/GTC_EXTO protection in all product sessions, timestamp GTD, and limit flatten in GTH/curb
+- [x] Orders conditional on another underlying, an IV study or the time of day, verified in replays
 - [x] Roll the put or call side of a four-leg strategy
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
 - [x] Fill context, trade and strategy excursions, CSV export and day plans and reviews

@@ -5,6 +5,7 @@
 
 #include "openport/pricing/black.hpp"
 #include "openport/server/run.hpp"
+#include "metric_cache.hpp"
 #include "run_json.hpp"
 
 #include <algorithm>
@@ -996,7 +997,43 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         const auto time = current(symbol) ? market_time_ : book->second.spot_ts;
         if (const auto price = quote_price(book->second.spot)) stocks.push_back({symbol, time, *price});
       }
-      session.on_quotes(quotes, valuations, market_time_, stocks);
+      // Conditional triggers watch other underlyings' prices and studies, read from
+      // the same analytics that value the contracts, so a replay supplies them alike.
+      std::set<std::pair<std::string, std::string>> watched;
+      const auto watch = [&](const OrderRequest& request) {
+        if (!request.trigger || !conditional(*request.trigger) || request.trigger->source == TriggerSource::Time) return;
+        auto symbol = request.trigger->symbol;
+        if (symbol.empty()) {
+          const auto definition = session.contracts().find(order_symbols(request).front());
+          if (definition == session.contracts().end()) return;
+          symbol = definition->second.underlying;
+        }
+        watched.emplace(symbol, request.trigger->study);
+      };
+      for (const auto& order : session.snapshot()->open_orders)
+        if (order.status == OrderStatus::Armed) watch(order.request);
+      for (const auto& pending : commands)
+        if ((pending.command.account.empty() ? kMainAccount : std::string_view(pending.command.account)) == account.id &&
+            pending.command.kind == TradingCommand::Kind::Submit)
+          watch(pending.command.order);
+      std::vector<Indicator> indicators;
+      for (const auto& [symbol, study] : watched) {
+        const auto m = metrics(symbol);
+        if (!m || m->as_of <= 0 || m->as_of > market_time_) continue;
+        double value = m->spot;
+        if (!study.empty()) {
+          // As the Volatility page reports them: model-free 30-day volatility (at the money
+          // when the strip cannot give it), 7-day at the money, and the 9/30-day ratio.
+          const auto volatility = cached_volatility(m);
+          value = study == "term_ratio" ? volatility.ratio9_30
+              : study == "iv7" ? (!volatility.atm.empty() ? volatility.atm[0].vol : std::nan(""))
+              : volatility.mfiv.size() > 1 && std::isfinite(volatility.mfiv[1].vol) ? volatility.mfiv[1].vol
+              : volatility.atm.size() > 1 ? volatility.atm[1].vol : std::nan("");
+        }
+        const auto price = quote_price(value);
+        if (price) indicators.push_back({symbol, study, current(symbol) ? market_time_ : m->as_of, *price});
+      }
+      session.on_quotes(quotes, valuations, market_time_, stocks, indicators);
       sample_equity(account);
       // Each account keeps the closing print its PM positions will settle on, so
       // a restart before they expire (16:15 for ETF options) still uses it. When

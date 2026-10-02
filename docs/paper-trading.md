@@ -538,6 +538,36 @@ IOC). Armed orders last until the nearest contract’s last trade or auto-close,
 their `day_end` reports (EXTO/GTD instead keep their earlier TIF deadline). Once triggered, a DAY order lasts the session it activated in,
 like any DAY order; a GTC order stays good until that deadline.
 
+A trigger can also watch something other than the order's own market, so a rule such as
+"buy if VIX reaches 20" or "close at 15:30" runs unattended on any account:
+
+| Trigger | Compares |
+| --- | --- |
+| `{"source": "underlying", "symbol": "VIX", "direction": "at_or_above", "level": "20"}` | Another underlying's price |
+| `{"source": "study", "study": "iv30", "direction": "at_or_below", "level": "15"}` | The order's underlying's 30-day implied volatility, in vol points; `symbol` names another underlying |
+| `{"source": "study", "study": "iv7", "direction": "at_or_above", "level": "20"}` | Its 7-day at-the-money implied volatility, in vol points |
+| `{"source": "study", "study": "term_ratio", "direction": "at_or_above", "level": "1"}` | Its 9-day over 30-day implied volatility (above one is inverted) |
+| `{"source": "time", "at": "15:30"}` | The New York time of day: from that minute on, or up to it with `"direction": "at_or_below"` |
+
+Prices and studies come from the same analytics that value the contracts: the
+underlying's spot (quoted, or implied by parity), the model-free 30-day volatility
+(the 30-day at-the-money volatility when the strip cannot give one), the 7-day
+at-the-money volatility and the ratio of the 9-day and 30-day model-free volatilities, as
+on the Volatility page. A demo or scenario day lists expiries only a few weeks out, so
+only `iv7` is available there. The server
+supplies them with each market batch to the accounts whose armed orders watch them, and
+the account keeps the latest of each; one older than the valuation age, or missing
+because the feed does not carry that underlying, never triggers. Like any trigger they
+are checked after each market batch and at submission, in the order's contract's regular
+session, so a time trigger fires at the first batch at or after its minute (in a replay,
+the first step that reaches it) and an order placed after its time is reached at once. A
+GTC order waiting for 10:00 with `at_or_below` therefore activates the next morning.
+They read only recorded inputs, so a replay verifies like any other run. Bracket exits
+keep watching their own option, net or underlying, and a time trigger has no level to
+change: cancel and place it again. A trigger watches a fixed quantity: unlike a bracket
+exit, a conditional closing order is not resized when the position changes, so cancel
+it when you close the position another way.
+
 A limit order with a trigger is a **stop-limit**. Its limit is set against its stop, not
 against today's market, so when it is accepted or changed the price band is measured
 around an option (or combo) trigger's level instead of the mid: a protective sell at
