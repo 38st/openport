@@ -60,6 +60,8 @@ simulated on every page:
 - **Evaluations**: a profit target and a trailing drawdown floor decide pass or fail,
   with buying-power rules, personal guardrails, a reduce-only kill switch and breach
   estimates.
+- **Account margin**: cash, IRA and margin accounts, with strategy or portfolio
+  margin, house requirements and an optional portfolio IV shock selected in the terminal.
 - **Orders and strategies**: DAY/GTC, all-session EXTO/GTC_EXTO protection, timestamp
   GTD and limit flattening overnight and in curb. Up to four legs picked on the chain
   or built from templates, with probability of profit, OCO exits and rolls.

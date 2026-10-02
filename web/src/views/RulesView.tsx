@@ -78,6 +78,8 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
       ? "Buy-only and single-leg: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells. Multi-leg orders are not available."
       : r.defined_risk
         ? "Defined risk only: each short option needs a long of the same type on the same underlying that expires with it or later, so no position can lose without limit. Open spreads, condors and butterflies as one order from the Trade page's Strategy mode, or buy the long first; an order that would leave a short uncovered, now or once your open orders fill, is refused, and closing a short is always allowed."
+        : r.account_type === "cash" ? "Cash account: buy options, write covered calls, or sell cash-secured puts."
+          : r.account_type === "ira" ? "IRA: buy options, write covered calls, sell cash-secured puts, or trade covered spreads."
         : "Any strategy: buy or sell calls and puts, or place spreads, straddles, condors and butterflies of up to four legs as one order from the Trade page's Strategy mode. All legs fill together at a net debit or credit." },
     { title: "Buying power", body: <>{r.buying_power
       ? <>Orders that use buying power must fit within it, now {formatMoney(account.buying_power.available)}: {r.margin === "portfolio"
@@ -85,13 +87,24 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
       : <>Buying power is not enforced; cash may go negative. </>}
       {r.margin === "portfolio"
         ? <>Portfolio margin: each underlying holds its largest loss across 11 price shocks, from −8% to +6% for index products and −15% to +15% for stocks and ETFs,
-          or $37.50 per standard option contract, long or short, if that is larger. Options are repriced at unchanged volatility and time to expiry; shares move with the underlying.
+          or $37.50 per standard option contract, long or short, if that is larger. {r.pm_vol_shock
+            ? <>Options are repriced at implied volatility unchanged and {r.pm_vol_shock} points up and down, at unchanged time to expiry; </>
+            : <>Options are repriced at unchanged volatility and time to expiry; </>}shares move with the underlying.
           Long options and shares count as collateral, so you can borrow against them.</>
-        : <>Strategy margin: long premium is paid in full.
+        : r.account_type === "cash"
+          ? <>Cash account: calls may be sold only against 100 held shares each. Short puts hold their strike × 100 per contract in cash.
+            Long premium is paid in full, spreads are not netted, and short shares are prohibited.</>
+          : r.account_type === "ira"
+            ? <>IRA (limited margin): calls need 100 held shares or a long call on the same underlying that expires with them or later.
+              Spreads net to their worst loss; unpaired short puts hold their strike × 100 per contract in cash. Long premium is paid in full,
+              straddles do not pair, and short shares are prohibited.</>
+            : <>Strategy margin: long premium is paid in full.
         A naked short holds its buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike). Spreads are netted: a vertical holds its width,
         an iron condor its wider wing, a calendar nothing beyond its debit, and a position with a bounded worst case at expiry never more than that loss.
         Every 100 shares cover an option: a covered call holds nothing beyond its shares, a short put against short shares its buy-back value, and a long call caps 100 short shares at its strike.
-        A short straddle or strangle holds its greater side plus the other side's buy-back value.</>} Orders that free buying power are always allowed.</> },
+        A short straddle or strangle holds its greater side plus the other side's buy-back value.</>}
+      {r.house_margin_percent ? <> House margin adds {r.house_margin_percent}% {r.margin === "portfolio" ? "to each underlying's scan" : "to each naked requirement and short sale's margin"}.</> : null}
+      {" "}Orders that free buying power still have to satisfy the account’s strategy and account-type rules. The Positions page shows what holds the requirement.</> },
     { title: "Expiring positions", body: minutes > 0
       ? `From ${minutes} minutes before a contract's last trade, working orders on it are cancelled, the position is closed at the bid or ask with the account's slippage, and only closing orders are accepted. Expiring index options such as SPXW and XSP last trade at 4:00 pm ET, SPY, QQQ, IWM, DIA and other ETF options at 4:15 pm, and AM-settled series at the regular close the day before.`
       : "Positions are held into expiry. Expiring index options trade until 4:00 pm ET and settle in cash; SPY, QQQ, IWM, DIA and other ETF options trade until 4:15 pm and deliver shares when a cent or more in the money at the 4:00 pm close." },

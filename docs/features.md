@@ -217,9 +217,13 @@ needs, or the portfolio scan's worst point.
 Custom plans can instead select portfolio margin, as Cboe's and FINRA's rules set it:
 each underlying holds its largest loss across a price scan (−8% to +6% for index
 products, ±15% for stocks and ETFs), at least $37.50 a contract, and buying power is
-equity less that, so long options and shares count as collateral. Presets use strategy
-margin and As displayed fills unless Conservative is selected; the
-[paper-trading guide](paper-trading.md#account-rules-and-evaluations) has the details.
+equity less that, so long options and shares count as collateral, optionally with an
+implied-volatility shock. Buying power can match the account a trader really uses: a
+cash account sells calls only against shares and secures each short put with its
+strike, an IRA nets spreads but sells nothing naked or short, and a broker's house
+margin can be added on top. Presets use strategy margin and As displayed fills unless
+Conservative or another margin is selected when starting an attempt or creating an
+account; the [paper-trading guide](paper-trading.md#account-rules-and-evaluations) has the details.
 
 Plans set an account's rules: `practice` (the default: buying power only),
 `intraday-25k|50k|100k` (buy-only, 10% target, 5% drawdown trailing every new high),
@@ -314,6 +318,9 @@ the simulation's limits.
 - [x] Dividends from a file you supply
 - [x] Optional market-time fill latency and simulated size impact, with As displayed and Conservative presets
 - [x] Optional slippage, and portfolio margin as Cboe's and FINRA's rules set it
+- [x] Margin realism: shares covering options, Reg T straddles, netted combined
+      structures, a per-position margin breakdown, portfolio margin with an IV shock
+      from the terminal, and cash, IRA and house-margin accounts
 - [x] Known cash dividends in the American exercise model
 - [x] IWM and DIA by default, with stocks and ETFs marked at their regular close
       outside the session

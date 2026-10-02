@@ -12,16 +12,18 @@ export const partLabels: Record<MarginPart["kind"], string> = {
   protected_shares: "Protected short shares",
   worst_loss: "Worst loss at expiry",
   long: "Paid in full",
+  cash_secured: "Cash-secured put",
 }
 const partHints: Record<MarginPart["kind"], string> = {
-  naked: "Its buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike)",
+  naked: "Its buy-back value plus 100 × max(20% of spot − out-of-the-money amount, 10% of spot or strike), plus any house margin",
   vertical: "The short with the long that covers it: the strikes' distance, never more than naked",
   covered: "A short call against 100 long shares holds nothing more; a short put against 100 short shares its buy-back value",
   straddle: "The greater naked requirement plus the other side's buy-back value",
-  short_shares: "Their value and half again, as a short sale",
+  short_shares: "Their value and half again, with any house percentage added to the half",
   protected_shares: "100 short shares with a long call: at most its strike",
   worst_loss: "Positions that expire together, held at their worst loss at expiry",
   long: "Premium and shares are paid in full",
+  cash_secured: "A cash account's or IRA's short put holds its strike in cash",
 }
 
 const cents = (money: string) => Math.round(Number(money) * 100)
@@ -47,7 +49,7 @@ export function MarginBreakdown({ margin }: { margin: MarginUnderlying[] }) {
           const rows = item.scan
             ? [<tr key="scan" className="border-t border-border/40">
                 <td className="font-medium">{item.underlying}</td>
-                <td title="The largest loss over the portfolio-margin price and volatility shocks, or the contract minimum if larger">Portfolio scan</td>
+                <td title="The largest loss over the portfolio-margin price and volatility shocks, or the contract minimum if larger, plus any house margin">Portfolio scan</td>
                 <td className="text-muted">Worst at {fixed(item.scan.spot_percent, 1)}% spot{item.scan.vol_points ? `, ${item.scan.vol_points > 0 ? "+" : ""}${fixed(item.scan.vol_points, 0)} vol points` : ""}:
                   {" "}loss {formatMoney(item.scan.loss)}, minimum {formatMoney(item.scan.minimum)}</td>
                 <td className="text-right tabular">{formatMoney(item.requirement)}</td>
