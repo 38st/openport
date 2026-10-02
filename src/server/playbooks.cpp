@@ -595,15 +595,17 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
       bool followed = true;
       int passed = 0, measured = 0;
       for (const auto& value : rules) if (value.is_boolean()) { ++measured; if (value.get<bool>()) ++passed; else followed = false; }
+      const auto buying_power = entry_buying_power(trip.legs);
       rows.push_back({{"order", std::to_string(order.id)}, {"version", definition->at("version")}, {"tag", playbook_tag(*definition)},
           {"opened", md::format_timestamp(opened)}, {"closed", trip.closed ? json(md::format_timestamp(*trip.closed)) : json(nullptr)},
-          {"net", trip.net.str()}, {"rules", rules}, {"passed_rules", passed}, {"measured_rules", measured}, {"followed", followed},
+          {"net", trip.net.str()}, {"buying_power", buying_power.str()},
+          {"return_on_buying_power", trip.closed && buying_power > Money{} ? json(trip.net.dollars() / buying_power.dollars()) : json(nullptr)}, {"rules", rules}, {"passed_rules", passed}, {"measured_rules", measured}, {"followed", followed},
           {"r", trip.closed && planned && *planned > Money{} ? json(trip.net.dollars() / planned->dollars()) : json(nullptr)}});
     }
     const auto stats = [&](int filter) {
-      int count = 0, wins = 0, losses = 0, r_count = 0, passed = 0, measured = 0;
+      int count = 0, wins = 0, losses = 0, r_count = 0, passed = 0, measured = 0, bp_count = 0;
       Money total, win_total, loss_total;
-      double r_total = 0;
+      double r_total = 0, bp_total = 0;
       for (const auto& row : rows) {
         if (filter >= 0 && row.at("followed").get<bool>() != (filter == 1)) continue;
         passed += row.at("passed_rules").get<int>(); measured += row.at("measured_rules").get<int>();
@@ -614,6 +616,7 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
         if (net > Money{}) { ++wins; win_total = win_total + net; }
         if (net < Money{}) { ++losses; loss_total = loss_total - net; }
         if (row.at("r").is_number()) { ++r_count; r_total += row.at("r").get<double>(); }
+        if (row.at("return_on_buying_power").is_number()) { ++bp_count; bp_total += row.at("return_on_buying_power").get<double>(); }
       }
       // Wins over decided trades: a breakeven is neither, as in the Journal and backtests.
       return json{{"trades", count}, {"win_rate", wins + losses ? json(static_cast<double>(wins) / (wins + losses)) : json(nullptr)},
@@ -622,6 +625,7 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
           {"expectancy", count ? json(total.prorate(1, count).str()) : json(nullptr)},
           {"profit_factor", loss_total > Money{} ? json(win_total.dollars() / loss_total.dollars()) : json(nullptr)},
           {"no_losses", wins > 0 && losses == 0}, {"average_r", r_count ? json(r_total / r_count) : json(nullptr)},
+          {"average_return_on_buying_power", bp_count ? json(bp_total / bp_count) : json(nullptr)},
           {"adherence", measured ? json(static_cast<double>(passed) / measured) : json(nullptr)}};
     };
     reports[id] = {{"trades", rows}, {"all", stats(-1)}, {"followed", stats(1)}, {"deviated", stats(0)}};

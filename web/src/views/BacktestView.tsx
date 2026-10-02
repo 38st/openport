@@ -41,11 +41,13 @@ export function BacktestReportView({ report }: { report: BacktestReport }) {
   return <div className="space-y-4">
     <p className="text-sm text-muted">{report.label} {report.status !== "completed" && "Partial report; unfinished days and attempts are excluded."}</p>
     {report.errors.map((error, index) => <p role="alert" key={index}>{error.day == null ? "Attempt" : `Day ${error.day + 1}`}: {error.message}</p>)}
-    <div className="grid gap-3 sm:grid-cols-4">
+    <div className="grid gap-3 sm:grid-cols-5">
       <Stat label="Attempt pass rate" value={percent(summary.pass_rate)} hint="Passed / decided attempts. Open attempts are excluded." />
       <Stat label="Attempts" value={`${summary.passed} passed · ${summary.failed} failed · ${summary.open} open`} />
       <Stat label="Trade expectancy" value={signedMoney(summary.expectancy)} hint="Mean net result per closed strategy in independent daily runs." />
       <Stat label="Trade win rate" value={percent(summary.win_rate)} hint={`${summary.trades} closed strategies; wins over decided ones, breakevens left out.`} />
+      <Stat label="Return on buying power" value={percent(summary.average_return_on_buying_power ?? null)}
+        hint="Mean of each closed strategy's net over the buying power its entry needed: a credit spread's width less its credit, not its premium." />
     </div>
     <p className="text-xs text-muted">{summary.completed_days} independent days, {summary.marked_days} with complete final marks. Day win rate: {percent(summary.day_win_rate)}. Attempts replay the ordered days on one account until a pass or failure, then start fresh on the next day.</p>
     <div className="grid gap-4 lg:grid-cols-2">{([

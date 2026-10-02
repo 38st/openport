@@ -52,7 +52,8 @@ inline std::vector<std::string> paper_csv_columns(bool fills) {
     }
     for (const auto* field : {"delta", "gamma", "vega", "theta", "other", "costs", "total", "fallback"})
       columns.push_back(std::string("attribution.") + field);
-    columns.push_back("group");
+    for (const auto* field : {"group", "buying_power", "return_on_buying_power", "strategy_buying_power", "strategy_return_on_buying_power"})
+      columns.push_back(field);
   }
   return columns;
 }

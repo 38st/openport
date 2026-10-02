@@ -191,7 +191,8 @@ json aggregate(const json& days, const json& attempts) {
   std::vector<Money> pnls, drawdowns;
   std::vector<std::size_t> worst;
   Money net;
-  std::size_t trades = 0, wins = 0, losses = 0, day_wins = 0, day_losses = 0, passed = 0, failed = 0;
+  std::size_t trades = 0, wins = 0, losses = 0, day_wins = 0, day_losses = 0, passed = 0, failed = 0, bp_trades = 0;
+  double bp_total = 0;
   for (std::size_t index = 0; index < days.size(); ++index) {
     const auto& day = days[index];
     if (day.is_null()) continue;
@@ -208,6 +209,10 @@ json aggregate(const json& days, const json& attempts) {
       net = net + profit; ++trades;
       if (profit > Money{}) ++wins;
       if (profit < Money{}) ++losses;
+      if (const auto it = trade.find("return_on_buying_power"); it != trade.end() && it->is_number()) {
+        ++bp_trades;
+        bp_total += it->get<double>();
+      }
     }
   }
   std::stable_sort(worst.begin(), worst.end(), [&](std::size_t left, std::size_t right) {
@@ -222,6 +227,7 @@ json aggregate(const json& days, const json& attempts) {
   return {{"daily_pnl", distribution(pnls)}, {"daily_drawdown", distribution(drawdowns)}, {"worst_days", worst},
       {"completed_days", drawdowns.size()}, {"marked_days", pnls.size()}, {"trades", trades},
       {"expectancy", trades ? json(net.prorate(1, static_cast<std::int64_t>(trades)).str()) : json(nullptr)},
+      {"average_return_on_buying_power", bp_trades ? json(bp_total / static_cast<double>(bp_trades)) : json(nullptr)},
       // Win rates count decided trades and days: breakeven ones are neither wins nor losses.
       {"win_rate", wins + losses ? json(static_cast<double>(wins) / static_cast<double>(wins + losses)) : json(nullptr)},
       {"day_win_rate", day_wins + day_losses ? json(static_cast<double>(day_wins) / static_cast<double>(day_wins + day_losses)) : json(nullptr)},

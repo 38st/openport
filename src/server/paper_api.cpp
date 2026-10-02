@@ -670,6 +670,10 @@ std::pair<json, json> closed_by(const TradingSnapshot& s, const Lifecycle& t) {
   return {"order", nullptr};
 }
 /// The replay run behind an account's trades, or null for a live account.
+/// Net P&L over the buying power an entry needed: closed trades with a positive need only.
+json return_on(Money net, Money buying_power, bool closed) {
+  return closed && buying_power > Money{} ? number(net.dollars() / buying_power.dollars()) : json(nullptr);
+}
 json run_json(const std::optional<RunIdentity>& run) {
   if (!run) return nullptr;
   return {{"id", nullable(run->id)}, {"scenario", nullable(run->scenario)}, {"seed", nullable(run->seed)},
@@ -705,15 +709,24 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     const auto order_id = s.recent_fills.at(t.first_fill - 1).order_id;
     const auto strategy = s.strategy_reviews.find(std::to_string(order_id));
     std::optional<Money> strategy_net;
-    if (strategy != s.strategy_reviews.end() && strategy->second.finished) {
-      strategy_net = Money{};
+    std::vector<const Lifecycle*> strategy_legs;
+    if (strategy != s.strategy_reviews.end()) {
       for (const auto& leg : all)
-        if (s.recent_fills.at(leg.first_fill - 1).order_id == order_id) *strategy_net = *strategy_net + leg.gross - leg.fees;
+        if (s.recent_fills.at(leg.first_fill - 1).order_id == order_id) strategy_legs.push_back(&leg);
+      if (strategy->second.finished) {
+        strategy_net = Money{};
+        for (const auto* leg : strategy_legs) *strategy_net = *strategy_net + leg->gross - leg->fees;
+      }
     }
+    const auto buying_power = entry_buying_power({&t});
+    const auto strategy_power = strategy_legs.empty() ? std::optional<Money>{} : std::optional(entry_buying_power(strategy_legs));
     trades.push_back({{"entry_context", context_json(t.entry_context)}, {"exit_context", context_json(t.exit_context)},
         {"review", review_json(review == s.trade_reviews.end() ? nullptr : &review->second, open ? std::nullopt : std::optional(net))},
         {"strategy_id", strategy == s.strategy_reviews.end() ? json(nullptr) : json(std::to_string(order_id))},
         {"strategy_review", strategy == s.strategy_reviews.end() ? json(nullptr) : review_json(&strategy->second, strategy_net)},
+        {"buying_power", buying_power.str()}, {"return_on_buying_power", return_on(net, buying_power, !open)},
+        {"strategy_buying_power", money(strategy_power)},
+        {"strategy_return_on_buying_power", strategy_power && strategy_net ? return_on(*strategy_net, *strategy_power, true) : json(nullptr)},
         {"id", std::to_string(t.first_fill)}, {"attempt", attempt}, {"symbol", t.symbol},
         {"underlying", c.underlying}, {"expiry", md::format_date(c.expiry)},
         {"settlement", c.settlement == md::Settlement::AM ? "AM" : "PM"}, {"strike", c.strike},
@@ -779,6 +792,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
     }
     const Money net = gross - fees;
     const auto review = s.group_reviews.find(id);
+    const auto peak = peak_buying_power(whole->members);
     groups.push_back({{"id", id}, {"attempt", attempt}, {"underlying", first.contract.underlying},
         {"status", open ? "open" : "closed"}, {"opened", md::format_timestamp(first.opened)},
         {"closed", open ? json(nullptr) : json(md::format_timestamp(closed))},
@@ -786,6 +800,7 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"round_trips", members}, {"entries", whole->entries.size()},
         {"gross", gross.str()}, {"fees", fees.str()}, {"net", net.str()},
         {"unrealised", open && unrealised ? json(unrealised->str()) : json(nullptr)},
+        {"buying_power", peak.str()}, {"return_on_buying_power", return_on(net, peak, !open)},
         {"review", review == s.group_reviews.end() ? json(nullptr)
                    : review_json(&review->second, open ? std::nullopt : std::optional(net))},
         {"review_since", review == s.group_reviews.end() || !review->second.since ? json(nullptr)

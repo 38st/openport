@@ -475,6 +475,12 @@ TEST(Playbooks, ExpectancyAndRuleSplitsUseWholeStrategies) {
   EXPECT_EQ(report.at("all").at("expectancy"), (first + second).prorate(1, 2).str());
   EXPECT_DOUBLE_EQ(report.at("all").at("profit_factor").get<double>(), first.dollars() / -second.dollars());
   EXPECT_TRUE(report.at("all").at("average_r").is_null());
+  // Long calls need their premium: one bought at 4.20, two at 4.20.
+  EXPECT_EQ(report.at("trades")[0].at("buying_power"), "420.00");
+  EXPECT_EQ(report.at("trades")[1].at("buying_power"), "840.00");
+  const auto returns = first.dollars() / 420 + second.dollars() / 840;
+  EXPECT_NEAR(report.at("trades")[0].at("return_on_buying_power").get<double>(), first.dollars() / 420, 1e-12);
+  EXPECT_NEAR(report.at("all").at("average_return_on_buying_power").get<double>(), returns / 2, 1e-12);
 }
 class DeskSource final : public server::MetricsSource {
  public:

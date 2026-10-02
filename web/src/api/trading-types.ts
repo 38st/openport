@@ -234,6 +234,12 @@ export interface Trade {
   strategy_review?: TradeReview | null
   /** The whole trade it is in, by its first round trip's ID (its own unless rolled, adjusted or grouped); absent from older servers. */
   group?: string
+  /** The buying power its entry needed on its own, and net over it once closed; absent from older servers. */
+  buying_power?: Money
+  return_on_buying_power?: Num
+  /** The same for its strategy's legs together; null outside a strategy. */
+  strategy_buying_power?: Money | null
+  strategy_return_on_buying_power?: Num
   symbol: string
   underlying: string
   expiry: string
@@ -348,6 +354,9 @@ export interface WholeTrade {
   net: Money
   /** The open round trips' unrealized P&L; null when closed or a mark is missing. */
   unrealised: Money | null
+  /** The most buying power its round trips needed at once, and net over it once closed; absent from older servers. */
+  buying_power?: Money
+  return_on_buying_power?: Num
   /** Its whole-trade review: from the first entry, or from `review_since` when the account grouped it later. */
   review: TradeReview | null
   review_since: string | null

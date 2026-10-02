@@ -31,13 +31,18 @@ export interface JournalStats {
   shares: number
   averageHoldSeconds: number | null
   fees: number
+  /** Mean of the closed trades' net over the buying power their entries needed; null when none says. */
+  returnOnBuyingPower: number | null
 }
 
 export function journalStats(trades: readonly JournalTrade[]): JournalStats {
   const closed = trades.filter((t) => t.status === "closed")
   let wins = 0, losses = 0, grossWin = 0, grossLoss = 0, contracts = 0, shares = 0, fees = 0, hold = 0, held = 0
   let best: JournalTrade | null = null, worst: JournalTrade | null = null
+  let robp = 0, robpCount = 0
   for (const trade of closed) {
+    const ratio = isShares(trade) ? null : trade.return_on_buying_power
+    if (ratio != null && Number.isFinite(ratio)) { robp += ratio; robpCount++ }
     const net = tradeNet(trade)
     if (net > 0) { wins++; grossWin += net } else if (net < 0) { losses++; grossLoss += net }
     if (!best || net > tradeNet(best)) best = trade
@@ -56,6 +61,7 @@ export function journalStats(trades: readonly JournalTrade[]): JournalStats {
     averageLoss: losses ? grossLoss / losses : null,
     best, worst, contracts, shares, fees,
     averageHoldSeconds: held ? hold / held : null,
+    returnOnBuyingPower: robpCount ? robp / robpCount : null,
   }
 }
 
@@ -293,6 +299,8 @@ export function wholeEntries(groups: readonly TradeGroup[]): Trade[] {
       closed_contracts: group.trades.reduce((total, t) => total + t.closed_contracts, 0),
       gross: group.whole?.gross ?? sum((t) => t.gross), fees: group.whole?.fees ?? sum((t) => t.fees),
       net: group.whole?.net ?? sum((t) => t.net), return: null,
+      buying_power: group.whole?.buying_power ?? first.strategy_buying_power ?? undefined,
+      return_on_buying_power: group.whole ? group.whole.return_on_buying_power ?? null : first.strategy_return_on_buying_power ?? null,
       tags: [...new Set(group.trades.flatMap((t) => t.tags ?? []))],
     }
   })

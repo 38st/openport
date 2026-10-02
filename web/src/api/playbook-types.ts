@@ -14,10 +14,14 @@ export interface Playbook {
 export interface PlaybookStats {
   trades: number; win_rate: number | null; average_win: string | null; average_loss: string | null
   expectancy: string | null; profit_factor: number | null; no_losses: boolean; average_r: number | null; adherence: number | null
+  /** Mean return on buying power of the closed trades; absent from older servers. */
+  average_return_on_buying_power?: number | null
 }
 export interface PlaybookTrade {
   order: string; version: number; tag: string; opened: string; closed: string | null; net: string
   rules: Record<string, boolean | null>; followed: boolean; r: number | null
+  /** The buying power its entry needed, and net over it once closed; absent from older servers. */
+  buying_power?: string; return_on_buying_power?: number | null
 }
 export interface StagedOrder {
   id: string; playbook: string; version: number; name: string; underlying: string; units: number; net: string

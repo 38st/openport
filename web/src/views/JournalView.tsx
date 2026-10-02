@@ -86,6 +86,8 @@ function Journal({ trading }: { trading: TradingStatus }) {
         <Tile label="Trades" value={String(stats.trades)} detail={`${stats.contracts} contracts${stats.shares ? ` · ${stats.shares} shares` : ""}`} />
         <Tile label="Average hold" value={formatDuration(stats.averageHoldSeconds)} />
         <Tile label="Open trades" value={String(entries.filter((t) => t.status === "open").length)} />
+        <Tile label="Return on BP" value={stats.returnOnBuyingPower == null ? "—" : signedPercent(stats.returnOnBuyingPower)}
+          detail="mean net ÷ buying power each entry needed" />
       </div>
       <CsvDownloads scope={scope} />
       <Calendar trades={entries} notes={trades.data.day_notes ?? {}} trading={trading} />
@@ -334,7 +336,8 @@ export function WholeRow({ group, expanded, onToggle }: { group: TradeGroup; exp
     <td className={`px-2 py-2 ${toneText[toneOf(value)]}`}>
       {value == null ? "—" : whole.status === "open" ? <span title="Realised P&L and fees plus remaining unrealised">{usd(value)}</span> : usd(value)}
     </td>
-    <td className="px-2 py-2">—</td>
+    <td className={`px-2 py-2 ${toneText[toneOf(whole.return_on_buying_power)]}`} title="Return on the most buying power the trade needed at once">
+      {signedPercent(whole.return_on_buying_power ?? null)}</td>
     <td className="px-2 py-2">{formatMoney(whole.review?.mae)}</td>
     <td className="px-2 py-2">{whole.review?.r_multiple == null ? "—" : `${whole.review.r_multiple.toFixed(2)}R`}</td>
   </tr>
@@ -474,6 +477,10 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
       <dt className="text-muted">Gross P&L</dt><dd className="tabular">{signedMoney(trade.gross)}</dd>
       <dt className="text-muted">Fees</dt><dd className="tabular">{formatMoney(trade.fees)}</dd>
       <dt className="text-muted">Contracts in / out</dt><dd className="tabular">{trade.opened_contracts} / {trade.closed_contracts}</dd>
+      {trade.buying_power != null && <><dt className="text-muted" title="What this round trip's entry needed on its own: premium paid, or its shorts' requirement">Buying power</dt>
+        <dd className="tabular">{formatMoney(trade.buying_power)}{trade.return_on_buying_power != null && ` · ${signedPercent(trade.return_on_buying_power)}`}</dd></>}
+      {trade.strategy_buying_power != null && <><dt className="text-muted">Strategy BP</dt>
+        <dd className="tabular">{formatMoney(trade.strategy_buying_power)}{trade.strategy_return_on_buying_power != null && ` · ${signedPercent(trade.strategy_return_on_buying_power)}`}</dd></>}
       <dt className="text-muted">Opened</dt><dd>{timestampET(trade.opened)}</dd>
       <dt className="text-muted">Attempt</dt><dd>#{trade.attempt}</dd>
     </dl>

@@ -110,6 +110,18 @@ class LifecycleBuilder {
 /// else its root's. A multi-leg order's legs share their first leg's ID.
 [[nodiscard]] std::string trade_group(const Lifecycle& life, const SharedMap<std::string, std::string>& groups);
 
+/// The buying power round trips opened together needed on their own under strategy
+/// margin: the premium their opening fills paid less what they received, plus the
+/// requirement of their shorts valued at their opening prices, with the entry's
+/// underlying price for the naked rule (the strike without one), each leg at every
+/// contract it opened. Fees are left out, as from planned risk.
+[[nodiscard]] Money entry_buying_power(const std::vector<const Lifecycle*>& legs);
+
+/// The most that `legs` needed at once: at each leg's opening, the buying power of
+/// the legs open then, as entry_buying_power counts it. A rolled or adjusted trade's
+/// peak, as a trade's return on buying power divides by.
+[[nodiscard]] Money peak_buying_power(const std::vector<const Lifecycle*>& legs);
+
 /// The same for shares, from the account's stock fills: a fill that reverses the
 /// holding closes one round trip and opens the next at its price. Each dividend
 /// belongs to the round trip holding its shares when it was paid.
