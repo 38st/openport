@@ -142,6 +142,22 @@ std::string plan_id(const std::string& name) {
   return name;
 }
 
+/// A saved run plays no further, so an order it left working or armed can never fill or
+/// cancel: its archive shows it cancelled RUN_ENDED. The journal keeps the order as it was.
+std::shared_ptr<const trading::TradingSnapshot> end_open_orders(std::shared_ptr<const trading::TradingSnapshot> snapshot) {
+  if (snapshot->open_orders.empty()) return snapshot;
+  auto ended = std::make_shared<trading::TradingSnapshot>(*snapshot);
+  const trading::Decision reason{trading::Reason::RUN_ENDED, "The replay run ended with this order still open", {}, {}, {}};
+  for (std::size_t i = 0; i < ended->recent_orders.size(); ++i) {
+    if (!ended->recent_orders[i].open()) continue;
+    auto& order = ended->recent_orders.mut(i);
+    order.status = trading::OrderStatus::Cancelled;
+    order.reason = reason;
+  }
+  ended->open_orders.clear();
+  return ended;
+}
+
 }  // namespace
 
 /// A small cache of generated (scenario, date, seed) recordings.
@@ -278,7 +294,7 @@ class ArchivedReplay final : public MetricsSource {
     const auto recovery = trading::FileJournal::read(file.string());
     const auto session = trading::TradingSession::recover(recovery);
     view_ = std::make_shared<TradingView>();
-    view_->snapshot = session.snapshot();
+    view_->snapshot = end_open_orders(session.snapshot());
     view_->config = session.config();
     view_->contracts = session.contracts();
     view_->valuations = session.valuations();

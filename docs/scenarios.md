@@ -157,7 +157,10 @@ use `practice`). Names include the scenario or recording, date, seed or `recordi
 start time and a unique suffix. A JSON sidecar holds the replay metadata. Account
 records retain the existing hash chain and schema; repair and compaction commands
 include these journals. Runs from a prior process are treated as finished, including
-ones interrupted by a crash. Recovery errors are shown in history.
+ones interrupted by a crash. Recovery errors are shown in history. A run that has
+ended trades no more, so its archive shows every order it left working or armed (a
+resting GTC limit, an armed stop) cancelled with `RUN_ENDED`. Its journal keeps those
+orders as they were.
 
 `GET /api/replay` includes a `history` array with pass, fail or open, the plan's
 id (`plan`) and name (`plan_name`) and P&L (last marked equity less initial cash).

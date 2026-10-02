@@ -882,6 +882,45 @@ TEST(ReplayHost, FinishedRunsServeTheirEquityHistoryWithoutRewritingIt) {
   EXPECT_EQ(std::filesystem::file_size(history), bytes);
 }
 
+TEST(ReplayHost, AnArchivedRunsOpenOrdersEndWithTheRun) {
+  // F69: a stopped or finished run showed its resting GTC limit and armed stop as
+  // working forever, in an account that can never fill or cancel them.
+  using nlohmann::json;
+  test::RecordingFile file;
+  const auto replays = file.directory / "replays";
+  std::filesystem::create_directory(replays);
+  const auto journal = replays / "ended.jsonl";
+  test::ScriptedMarket market;
+  {
+    trading::TradingSession session({}, market.time, trading::FileJournal::create(journal.string()));
+    market.seed(session);
+    ASSERT_TRUE(session.submit(market.limit("resting", 1, "3.90", trading::Side::Buy, trading::TimeInForce::Gtc), market.time).decision.ok());
+    auto stop = market.market("stop");
+    stop.trigger = trading::Trigger{trading::TriggerSource::Option, trading::TriggerDirection::AtOrAbove, trading::Money::parse("5.00")};
+    ASSERT_TRUE(session.submit(stop, market.time).decision.ok());
+    ASSERT_TRUE(session.submit(market.market("filled"), market.time).decision.ok());
+    ASSERT_EQ(session.snapshot()->open_orders.size(), 2U);
+  }
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  server::ReplayHost host({{}, options, false});
+  const auto response = call(host, "GET", "/api/replay/history/ended/orders");
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto orders = json::parse(response.body)["orders"];
+  ASSERT_EQ(orders.size(), 3U) << orders;
+  for (const auto& order : orders) {
+    if (order["client_order_id"] == "filled") {
+      EXPECT_EQ(order["status"], "filled");
+      continue;
+    }
+    EXPECT_EQ(order["status"], "cancelled") << order;
+    EXPECT_EQ(order["reason"]["code"], "RUN_ENDED") << order;
+  }
+  EXPECT_TRUE(json::parse(call(host, "GET", "/api/replay/history/ended/orders?status=open").body)["orders"].empty());
+  // The journal keeps them as they were.
+  EXPECT_EQ(trading::TradingSession::recover(trading::FileJournal::read(journal.string())).snapshot()->open_orders.size(), 2U);
+}
+
 TEST(ReplayHost, ImportedHeaderIsListedAndRetainedInActiveReplay) {
   using namespace openport;
   using nlohmann::json;
