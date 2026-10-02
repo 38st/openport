@@ -1,4 +1,4 @@
-import type { Num } from "./types"
+import type { Num, PriceRange } from "./types"
 
 /** Exact decimal dollars, including request bodies. Responses keep 2–6 decimals; round only for display. */
 export type Money = string
@@ -869,6 +869,61 @@ export interface Breach {
     soft_down?: BreachLevel | null; soft_up?: BreachLevel | null
   }[]
 }
+/** Where a risk-profile curve reaches a floor: the reference's move and price, and the odds of touching it by the curve's horizon. */
+export interface ProfileLevel { percent: number; points: number | null; price: number | null; touch_probability: number | null }
+export interface ProfileHorizon {
+  /** When touch odds and the cone are measured to: today's close for today's curve, else the curve's date. */
+  until: string
+  sigma: number | null
+  one_sd: PriceRange | null
+  two_sd: PriceRange | null
+}
+export interface ProfileCurve {
+  days: number
+  /** "expiry" for the first held expiry's curve. */
+  label: string | null
+  time: string
+  /** By move; analytical dollars from the book's value now. Null while incomplete. */
+  pnl: (number | null)[]
+  clamped: boolean
+  horizon: ProfileHorizon
+  down: ProfileLevel | null
+  up: ProfileLevel | null
+  soft_down: ProfileLevel | null
+  soft_up: ProfileLevel | null
+}
+export type BetaSource = "reference" | "given" | "index" | "daily" | "intraday"
+export interface ProfileBeta {
+  underlying: string
+  beta: number | null
+  source: BetaSource | null
+  observations: number
+  correlation: number | null
+  dollar_delta: number | null
+  weighted_dollar_delta: number | null
+}
+export interface RiskProfile {
+  account_version: string
+  time: string
+  underlying: string | null
+  benchmark: string | null
+  /** The symbol whose moves the curves are drawn against. */
+  reference: string
+  spot: number | null
+  vol_points: number
+  equity: Money
+  room: Money | null
+  soft_room: Money | null
+  percent: number[]
+  prices: (number | null)[]
+  curves: ProfileCurve[]
+  betas: ProfileBeta[]
+  weighted_dollar_delta: number | null
+  weighted_delta: number | null
+  complete: boolean
+  model: string
+}
+export interface RiskProfileQuery { underlying?: string; benchmark?: "SPY" | "SPX"; days?: (number | "expiry")[]; iv?: number; range?: number; steps?: number; betas?: Record<string, number> }
 /** A block of contracts at one price, as a fill would trade it. */
 export interface PreviewFill { symbol: string; side: Side; quantity: number; price: Money }
 /** What submitting the order now would execute (a private dry run), and its full size block by block. */

@@ -101,7 +101,12 @@ simulation's limits.
   of up to four orders, against the held book on buying power, Greeks, grid loss and
   floor room before any is sent. Breach risk shows the spot moves that could reach the floor (the
   personal soft floor on an account without a plan floor) and labelled model
-  estimates of touching it before the close.
+  estimates of touching it before the close. The risk profile curves the held book's
+  P&L today, on later dates and at the first expiry, with an IV offset, against one
+  underlying or the whole book beta-weighted to SPY or SPX, and marks where each
+  date's curve reaches the floors and the odds of touching them by then. The
+  Volatility tab gives probability cones and the odds of finishing beyond or touching
+  chosen prices by chosen dates.
 - **Playbooks**: versioned setups with entry windows and conditions, shared strategy
   templates, preview sizing and spread exits. Trade, Brief and Dashboard stage orders
   for review; replays and scenarios can send them automatically. The Playbooks page
@@ -370,3 +375,5 @@ the simulation's limits.
       product ticks and sessions, AM last-trade cutoffs beside same-date PM series,
       VIX driven by SPX volatility and mean-reverting forwards
 - [ ] F69 remaining: American ETF option generation and dividends reflected in option prices
+- [x] F35, F53, F54: risk profile of the held book on later dates and IV offsets with room to the floor,
+      beta weighting to SPY or SPX, and probability cones with odds of reaching a price by a date

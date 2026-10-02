@@ -5,6 +5,7 @@ import { useLive } from "../api/live"
 import { LineChart, type Series } from "../charts/LineChart"
 import { VolatilityDetails, VolatilitySummary } from "../components/VolatilityMetrics"
 import { VolatilityHistory } from "../components/VolatilityHistory"
+import { ProbabilityPanel } from "../components/ProbabilityPanel"
 import { volatilityTerm, volPoints } from "../lib/volatility"
 import { SviTable } from "../components/SviTable"
 import { Empty, Panel, Segmented } from "../components/ui"
@@ -161,6 +162,7 @@ export function SmileView({ symbol }: { symbol: string }) {
         </Panel>
       </div>
       {volatilityData && <VolatilityDetails data={volatilityData} />}
+      <ProbabilityPanel symbol={symbol} />
     </div>
   )
 }

@@ -342,6 +342,56 @@
         }
       }
     },
+    "/api/underlyings/{symbol}/probability": {
+      "parameters": [
+        {
+          "name": "symbol",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "days",
+          "in": "query",
+          "required": false,
+          "description": "Up to eight comma-separated horizons in calendar days (0 to 366); 0 is today's regular close. Default 0,1,7,30.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "prices",
+          "in": "query",
+          "required": false,
+          "description": "Up to twenty comma-separated positive prices to give odds for.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "GET /api/underlyings/{symbol}/probability",
+        "description": "Probability cones and price odds from the at-the-money implied term structure.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Probability"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/api/account": {
       "parameters": [
         {
@@ -580,6 +630,106 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Risk"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/risk/profile": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/account"
+        },
+        {
+          "name": "underlying",
+          "in": "query",
+          "required": false,
+          "description": "Profile one underlying's contracts and shares against its own moves; omitted, the whole book beta-weighted to the benchmark.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "benchmark",
+          "in": "query",
+          "required": false,
+          "description": "The benchmark the whole book is weighted to (default SPY).",
+          "schema": {
+            "type": "string",
+            "enum": [
+              "SPY",
+              "SPX"
+            ]
+          }
+        },
+        {
+          "name": "days",
+          "in": "query",
+          "required": false,
+          "description": "Up to eight comma-separated curve dates in calendar days from now (0 to 366, fractions allowed), or expiry for the first held expiry; default 0,1.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "iv",
+          "in": "query",
+          "required": false,
+          "description": "Vol points added to every contract's smile IV (default 0).",
+          "schema": {
+            "type": "number",
+            "minimum": -100,
+            "maximum": 100
+          }
+        },
+        {
+          "name": "range",
+          "in": "query",
+          "required": false,
+          "description": "The moves span plus and minus this percent (default 10).",
+          "schema": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 99
+          }
+        },
+        {
+          "name": "steps",
+          "in": "query",
+          "required": false,
+          "description": "An odd number of moves, evenly spaced across the range (default 41).",
+          "schema": {
+            "type": "integer",
+            "minimum": 3,
+            "maximum": 201
+          }
+        },
+        {
+          "name": "betas",
+          "in": "query",
+          "required": false,
+          "description": "Comma-separated SYMBOL:BETA overrides, each beta within 10 of zero.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "summary": "GET /api/risk/profile",
+        "description": "The held book's P&L across moves of a reference price on several dates, where each date's curve reaches the floors, and beta-weighted delta. Analytical; nothing is recorded.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiskProfile"
                 }
               }
             }
@@ -2277,6 +2427,9 @@
     },
     "/api/replay/risk": {
       "$ref": "#/paths/~1api~1risk"
+    },
+    "/api/replay/risk/profile": {
+      "$ref": "#/paths/~1api~1risk~1profile"
     },
     "/api/replay/history/{run_id}/risk": {
       "parameters": [
@@ -12860,6 +13013,561 @@
           "complete",
           "model",
           "underlyings"
+        ]
+      },
+      "PriceRange": {
+        "type": "object",
+        "properties": {
+          "low": {
+            "type": "number"
+          },
+          "high": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "low",
+          "high"
+        ]
+      },
+      "ProfileHorizon": {
+        "type": "object",
+        "properties": {
+          "until": {
+            "type": "string"
+          },
+          "sigma": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "one_sd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "two_sd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "until",
+          "sigma",
+          "one_sd",
+          "two_sd"
+        ]
+      },
+      "ProfileLevel": {
+        "type": "object",
+        "properties": {
+          "percent": {
+            "type": "number"
+          },
+          "points": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "touch_probability": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "percent",
+          "points",
+          "price",
+          "touch_probability"
+        ]
+      },
+      "ProfileCurve": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "number"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "time": {
+            "type": "string"
+          },
+          "pnl": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "clamped": {
+            "type": "boolean"
+          },
+          "horizon": {
+            "$ref": "#/components/schemas/ProfileHorizon"
+          },
+          "down": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "up": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "soft_down": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "soft_up": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "days",
+          "label",
+          "time",
+          "pnl",
+          "clamped",
+          "horizon",
+          "down",
+          "up",
+          "soft_down",
+          "soft_up"
+        ]
+      },
+      "ProfileBeta": {
+        "type": "object",
+        "properties": {
+          "underlying": {
+            "type": "string"
+          },
+          "beta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "reference",
+                  "given",
+                  "index",
+                  "daily",
+                  "intraday"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observations": {
+            "type": "integer"
+          },
+          "correlation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dollar_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weighted_dollar_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "underlying",
+          "beta",
+          "source",
+          "observations",
+          "correlation",
+          "dollar_delta",
+          "weighted_dollar_delta"
+        ]
+      },
+      "RiskProfile": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string"
+          },
+          "underlying": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "benchmark": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reference": {
+            "type": "string"
+          },
+          "spot": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vol_points": {
+            "type": "number"
+          },
+          "equity": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "room": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "soft_room": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "percent": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "prices": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "curves": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileCurve"
+            }
+          },
+          "betas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileBeta"
+            }
+          },
+          "weighted_dollar_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weighted_delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_version",
+          "time",
+          "underlying",
+          "benchmark",
+          "reference",
+          "spot",
+          "vol_points",
+          "equity",
+          "room",
+          "soft_room",
+          "percent",
+          "prices",
+          "curves",
+          "betas",
+          "weighted_dollar_delta",
+          "weighted_delta",
+          "complete",
+          "model"
+        ]
+      },
+      "PriceOdds": {
+        "type": "object",
+        "properties": {
+          "price": {
+            "type": "number"
+          },
+          "above": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "below": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "touch": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "price",
+          "above",
+          "below",
+          "touch"
+        ]
+      },
+      "ProbabilityHorizon": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": "number"
+          },
+          "until": {
+            "type": "string"
+          },
+          "sigma": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "one_sd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "two_sd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceRange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceOdds"
+            }
+          }
+        },
+        "required": [
+          "days",
+          "until",
+          "sigma",
+          "one_sd",
+          "two_sd",
+          "prices"
+        ]
+      },
+      "Probability": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "as_of": {
+            "type": "string"
+          },
+          "spot": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "horizons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProbabilityHorizon"
+            }
+          },
+          "model": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "as_of",
+          "spot",
+          "horizons",
+          "model"
         ]
       },
       "RiskWarning": {

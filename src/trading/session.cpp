@@ -3622,6 +3622,33 @@ CommandResult TradingSession::submit(OrderRequest request, Timestamp time, Decis
     return place(s, std::move(request), time, rejection, events);
   });
 }
+RiskProfile snapshot_profile(const TradingSnapshot& snapshot, const SessionConfig& config,
+    const Valuations& valuations, const ProfileConfig& profile, double reference_spot, const std::string& underlying) {
+  std::map<std::string, Position> positions;
+  std::map<std::string, StockPosition> stocks;
+  std::map<std::string, double> prices;
+  for (const auto& marked : snapshot.positions)
+    if (underlying.empty() || marked.position.contract.underlying == underlying)
+      positions.emplace(marked.position.contract.osi_symbol(), marked.position);
+  for (const auto& marked : snapshot.stocks) {
+    if (!underlying.empty() && marked.position.symbol != underlying) continue;
+    stocks.emplace(marked.position.symbol, marked.position);
+    if (marked.fresh && marked.mark) prices[marked.position.symbol] = marked.mark->dollars();
+  }
+  auto result = risk_profile(Ledger::restore({}, std::move(positions), std::move(stocks)), valuations, profile,
+      reference_spot, snapshot.equity,
+      config.rules.max_drawdown > Money{} ? std::optional(snapshot.evaluation.floor) : std::nullopt,
+      snapshot.soft_floor, snapshot.time, config.limits.max_valuation_age, prices);
+  if (!snapshot.valuation_complete) {
+    result.complete = false;
+    result.room.reset(); result.soft_room.reset();
+    for (auto& curve : result.curves) {
+      std::fill(curve.pnl.begin(), curve.pnl.end(), 0.0);
+      curve.down.reset(); curve.up.reset(); curve.soft_down.reset(); curve.soft_up.reset();
+    }
+  }
+  return result;
+}
 BreachRisk TradingSession::breach(const std::map<std::string, double>& close_variances) const {
   return breach_of(impl_->state, close_variances);
 }

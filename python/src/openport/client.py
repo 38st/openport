@@ -12,7 +12,11 @@ from .types import (JSON, Account, Chain, Fills, OrderResult, Orders, Portfolio,
                     ReplayListing, ReplayResult, Status, Summary, Surface, Trades,
                     Exposure, Volatility, Candles, Risk, OrderPreview, SubmitResult,
                     Plans, Accounts, EquityHistory, CancelAllResult, FlattenResult,
-                    WhatIfResult, FlattenPreview, StockPreview)
+                    WhatIfResult, FlattenPreview, StockPreview, RiskProfile, Probability)
+
+
+def _list(values) -> str | None:
+    return ",".join(str(value) for value in values) if values else None
 
 
 class ApiError(Exception):
@@ -141,6 +145,11 @@ class Client:
     def candles(self, symbol: str, interval: str = "5m", limit: int = 500) -> Candles:
         return self._market(symbol, "candles", interval=interval, limit=limit)
 
+    def probability(self, symbol: str, days: list[float] | None = None,
+                    prices: list[float] | None = None) -> Probability:
+        """Probability cones and each price's odds of finishing beyond or touching it by each horizon."""
+        return self._market(symbol, "probability", days=_list(days), prices=_list(prices))
+
     def account(self) -> Account:
         return self._request("GET", "/account", scoped=True)
 
@@ -159,6 +168,15 @@ class Client:
 
     def risk(self) -> Risk:
         return self._request("GET", "/risk", scoped=True)
+
+    def risk_profile(self, underlying: str | None = None, benchmark: str | None = None,
+                     days: list[float | str] | None = None, iv: float | None = None,
+                     range: float | None = None, steps: int | None = None,
+                     betas: dict[str, float] | None = None) -> RiskProfile:
+        """The held book's P&L curves over dates, against one underlying or beta-weighted to SPY or SPX."""
+        return self._request("GET", "/risk/profile", scoped=True, params={
+            "underlying": underlying, "benchmark": benchmark, "days": _list(days), "iv": iv, "range": range,
+            "steps": steps, "betas": ",".join(f"{symbol}:{beta}" for symbol, beta in betas.items()) if betas else None})
 
     def equity(self, start: str | None = None, end: str | None = None) -> EquityHistory:
         return self._request("GET", "/account/equity", scoped=True, params={"from": start, "to": end})

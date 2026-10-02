@@ -186,6 +186,13 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
         return result(target, lambda: target.volatility(symbol))
 
     @server.tool()
+    def probability(symbol: str, days: list[float] | None = None, prices: list[float] | None = None,
+                    replay: bool = False) -> dict:
+        """Implied probability cones by horizon (days; 0 is today's close) and odds of finishing beyond or touching prices."""
+        target = selected(replay=replay)
+        return result(target, lambda: target.probability(symbol, days, prices))
+
+    @server.tool()
     def exposure(symbol: str, replay: bool = False) -> dict:
         """Gamma and vanna exposure in the default display window."""
         target = selected(replay=replay)
@@ -214,6 +221,14 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
         """Paper account limits, Greeks and breach estimates."""
         target = selected(account, replay)
         return result(target, target.risk)
+
+    @server.tool()
+    def risk_profile(account: str, underlying: str | None = None, benchmark: str | None = None,
+                     days: list[float | str] | None = None, iv: float | None = None, replay: bool = False) -> dict:
+        """The held book's P&L curves over dates (days, or "expiry") and an IV offset, against one underlying
+        or beta-weighted to SPY or SPX, with the levels where each date reaches the floors."""
+        target = selected(account, replay)
+        return result(target, lambda: target.risk_profile(underlying, benchmark, days, iv))
 
     def order_body(order):
         body = _body(asdict(order))

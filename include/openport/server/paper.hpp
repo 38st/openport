@@ -11,6 +11,7 @@
 
 #include "openport/trading/session.hpp"
 #include "openport/analytics/chain_analytics.hpp"
+#include "openport/md/bars.hpp"
 #include "openport/server/equity.hpp"
 
 namespace openport::server {
@@ -112,6 +113,50 @@ struct TradingView {
 /// times its years (as the IV was solved, on calendar time), with today's share of it
 /// in regular-session time. Zero once today's session is over; empty without an IV.
 [[nodiscard]] std::optional<double> implied_variance_to_close(const analytics::UnderlyingMetrics& metrics);
+/// The market's implied variance of an underlying's log price from its analytics'
+/// market time to `target`. Before today's close it is implied_variance_to_close's,
+/// in proportion to the regular-session time to `target`; later, the at-the-money
+/// term structure's total variance interpolated linearly in calendar time (flat
+/// volatility outside the listed expiries), never less than the variance to today's
+/// close. Zero for a target already past; empty without an IV.
+[[nodiscard]] std::optional<double> implied_variance_until(const analytics::UnderlyingMetrics& metrics, md::Timestamp target);
+/// Where a probability horizon `days` ahead of `now` ends: today's regular close for
+/// zero, otherwise `days` calendar days after `now`.
+[[nodiscard]] md::Timestamp probability_horizon(md::Timestamp now, double days);
+
+/// What the market's implied volatility says about where an underlying can be by a
+/// date, with S the spot, v the variance of its log price to the date and Φ the
+/// normal CDF: finishing above K has probability Φ((ln(S/K) - v/2)/√v), the
+/// risk-neutral lognormal with the forward at spot; touching K at any time before
+/// then 2Φ(-|ln(K/S)|/√v), the driftless reflection estimate; and a cone of k
+/// standard deviations runs from S e^(-k√v) to S e^(k√v).
+struct PriceOdds {
+  double price = 0;
+  double above = 0;
+  double below = 0;
+  double touch = 0;
+};
+[[nodiscard]] PriceOdds price_odds(double spot, double price, double variance);
+
+/// An underlying's beta to a benchmark, from paired log returns: covariance over
+/// the benchmark's variance. `source` says where it came from: "reference" (the
+/// benchmark itself), "given" (the caller's), "index" (the same index, as SPY and
+/// SPX are: 1), "daily" (completed daily closes, at most the last 252 returns, at
+/// least 20) or "intraday" (5-minute closes within each session, at least 30).
+/// Empty source: no beta.
+struct BetaEstimate {
+  double beta = 0;
+  double correlation = analytics::kNaN;
+  std::size_t observations = 0;
+  std::string source;
+};
+/// Beta from bars matched by start time; consecutive bars of one series whose gap
+/// exceeds `max_gap` (0 for any) are not paired into a return.
+[[nodiscard]] BetaEstimate estimate_beta(const std::vector<md::Bar>& asset, const std::vector<md::Bar>& benchmark,
+                                         std::size_t max_returns, md::Timestamp max_gap = 0);
+/// Whether two symbols follow the same index (SPX, SPXW, XSP and SPY; NDX, NDXP, XND
+/// and QQQ; RUT, RUTW and IWM), so their beta to each other is 1.
+[[nodiscard]] bool same_index(std::string_view a, std::string_view b);
 
 /// The main account keeps the original journal; others are named alongside it.
 inline constexpr std::string_view kMainAccount = "main";

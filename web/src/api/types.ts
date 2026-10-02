@@ -413,6 +413,22 @@ export type CandleInterval = "1m" | "5m" | "15m" | "30m" | "1h" | "1d"
 export interface Candle { t: number; o: number; h: number; l: number; c: number }
 export interface Candles { symbol: string; interval: CandleInterval; bars: Candle[] }
 
+/** A price band, such as one or two standard deviations of a probability cone. */
+export interface PriceRange { low: number; high: number }
+/** Odds of finishing above or below a price by a horizon, or touching it on the way. */
+export interface PriceOdds { price: number; above: number | null; below: number | null; touch: number | null }
+export interface ProbabilityHorizon {
+  days: number
+  /** When the horizon ends: today's regular close for 0 days. */
+  until: string
+  /** Standard deviation of the log price to `until`, from the implied term structure. */
+  sigma: number | null
+  one_sd: PriceRange | null
+  two_sd: PriceRange | null
+  prices: PriceOdds[]
+}
+export interface Probability { symbol: string; as_of: string; spot: number | null; horizons: ProbabilityHorizon[]; model: string }
+
 /** Current snapshot metrics. Every vol, RR/BF and slope is in vol points. */
 export interface ConstantVol {
   days: number

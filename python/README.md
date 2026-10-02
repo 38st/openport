@@ -39,8 +39,8 @@ with zero. It does not coerce monetary strings into floats.
 | --- | --- |
 | `status`, `symbols` | `/api/status`; symbols are its underlying names |
 | `summary`, `series` | `/api/underlyings/{symbol}/summary`; series are its expiries |
-| `chain`, `exposure`, `surface`, `volatility`, `candles` | The corresponding underlying views |
-| `account`, `portfolio`, `orders`, `fills`, `trades`, `risk`, `plans`, `accounts`, `equity` | The terminal's paper reads |
+| `chain`, `exposure`, `surface`, `volatility`, `candles`, `probability` | The corresponding underlying views |
+| `account`, `portfolio`, `orders`, `fills`, `trades`, `risk`, `risk_profile`, `plans`, `accounts`, `equity` | The terminal's paper reads |
 | `place_order`, `preview_order`, `modify_order`, `cancel_order`, `cancel_all`, `flatten` | Paper orders and position closure |
 | `note`, `day_note`, `export_csv` | Trade/day annotations and fills/trades exports |
 | `group_trades`, `ungroup_trades` | Join open round trips into one whole trade, or take one out |
@@ -101,7 +101,7 @@ Store the actual secret in your client's protected environment configuration. It
 is never a tool argument. The installed SDK is MCP 2.x: `MCPServer`, not `FastMCP`.
 
 Tools include status, symbols, summary, chain, volatility, exposure, account,
-positions, orders, risk, order preview/place/cancel, flatten, scenario listing and
+positions, orders, risk, risk profile, probability cones, order preview/place/cancel, flatten, scenario listing and
 replay start/step/stop (scenarios or recordings). Chain results default to a 3% strike window and at most 80
 strikes; a capped response says `truncated: true`. Windows must be in `(0, 0.1]`.
 

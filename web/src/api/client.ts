@@ -3,8 +3,8 @@ import type { Playbook, PlaybooksResponse, PassOdds } from "./playbook-types"
 import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
-import type { CandleInterval, Candles, Chain, ExposureMatrix, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
+import type { CandleInterval, Candles, Chain, ExposureMatrix, Probability, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
+import type { Account, AccountsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, RiskProfile, RiskProfileQuery, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { isSandboxToken, writeToken } from "../lib/write-token"
@@ -95,6 +95,19 @@ function write<T>(path: string, method: "POST" | "PUT" | "DELETE", mode: WriteMo
 }
 
 const underlying = (symbol: string) => `/api/underlyings/${encodeURIComponent(symbol)}`
+/** GET /api/risk/profile's query; defaults are left to the server. */
+export function riskProfilePath(query: RiskProfileQuery): string {
+  const params = new URLSearchParams()
+  if (query.underlying) params.set("underlying", query.underlying)
+  else if (query.benchmark) params.set("benchmark", query.benchmark)
+  if (query.days?.length) params.set("days", query.days.join(","))
+  if (query.iv) params.set("iv", String(query.iv))
+  if (query.range != null) params.set("range", String(query.range))
+  if (query.steps != null) params.set("steps", String(query.steps))
+  const betas = Object.entries(query.betas ?? {}).map(([symbol, beta]) => `${symbol}:${beta}`)
+  if (betas.length) params.set("betas", betas.join(","))
+  return `/api/risk/profile${params.size ? `?${params}` : ""}`
+}
 /** Trading routes act on the active account; the main one needs no parameter. */
 function scoped(path: string): string {
   const account = activeAccount.get()
@@ -141,6 +154,7 @@ export const api = {
   orders: (status: "open" | "all" = "all", signal?: AbortSignal) => get<OrdersResponse>(scoped(`/api/orders?status=${status}`), signal),
   fills: (signal?: AbortSignal) => get<FillsResponse>(scoped("/api/fills"), signal),
   risk: (signal?: AbortSignal) => get<Risk>(scoped("/api/risk"), signal),
+  riskProfile: (query: RiskProfileQuery, signal?: AbortSignal) => get<RiskProfile>(scoped(riskProfilePath(query)), signal),
   submitOrder: (order: NewOrder, mode: WriteMode) => write<SubmitOrderResponse>(scoped("/api/orders"), "POST", mode, order),
   cancelOrder: (id: string, mode: WriteMode) => write<OrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "DELETE", mode),
   modifyOrder: (id: string, change: OrderChange, mode: WriteMode) => write<SubmitOrderResponse>(scoped(`/api/orders/${encodeURIComponent(id)}`), "PUT", mode, change),
@@ -201,6 +215,8 @@ export const api = {
   controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean; until?: string }, mode: WriteMode) =>
     write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),
   stopReplay: (mode: WriteMode) => write<{ replay: null }>("/api/replay", "DELETE", mode),
+  probability: (symbol: string, days: number[], prices: number[], signal?: AbortSignal) =>
+    get<Probability>(`${underlying(symbol)}/probability?days=${days.join(",")}${prices.length ? `&prices=${prices.join(",")}` : ""}`, signal),
   candles: (symbol: string, interval: CandleInterval, limit: number, signal?: AbortSignal) =>
     get<Candles>(`${underlying(symbol)}/candles?interval=${interval}&limit=${limit}`, signal),
 }

@@ -3071,6 +3071,137 @@ TEST(PaperBreach, ImpliedVarianceToTheCloseSharesTheFrontExpiryInTradingTime) {
   EXPECT_FALSE(implied_variance_to_close(metrics));
 }
 
+// Probability horizons past today's close read the at-the-money term structure in
+// calendar time; before it they share today's variance in trading time.
+TEST(PaperProbability, ImpliedVarianceUntilADateInterpolatesTheTermStructure) {
+  using openport::server::implied_variance_until;
+  const auto now = md::new_york_to_utc({2026, 9, 23}, 10, 30);  // a Wednesday
+  const auto slice_at = [&](md::Timestamp expiry, double iv) {
+    analytics::SliceMetrics slice;
+    slice.expiry_time = expiry;
+    slice.years = md::years_between(now, expiry);
+    slice.atm_iv = iv;
+    analytics::StrikeMetrics strike;
+    strike.strike = 100;
+    strike.iv = iv;
+    slice.strikes.push_back(strike);
+    return slice;
+  };
+  analytics::UnderlyingMetrics metrics;
+  metrics.spot = 100;
+  metrics.as_of = now;
+  const auto friday = md::new_york_to_utc({2026, 9, 25}, 16, 0);
+  const auto month = md::new_york_to_utc({2026, 10, 23}, 16, 0);
+  metrics.slices = {slice_at(friday, 0.2), slice_at(month, 0.3)};
+  const auto close = md::new_york_to_utc({2026, 9, 23}, 16, 0);
+  const auto to_close = *server::implied_variance_to_close(metrics);
+  EXPECT_EQ(*implied_variance_until(metrics, close), to_close);
+  // Half of today's remaining session is half of today's variance.
+  EXPECT_NEAR(*implied_variance_until(metrics, md::new_york_to_utc({2026, 9, 23}, 13, 15)), to_close / 2, 1e-15);
+  // Halfway in time between the expiries, total variance is halfway between theirs.
+  const auto middle = friday + (month - friday) / 2;
+  const double front = 0.04 * md::years_between(now, friday), back = 0.09 * md::years_between(now, month);
+  EXPECT_NEAR(*implied_variance_until(metrics, middle), (front + back) / 2, 1e-12);
+  // Past the last expiry its volatility holds.
+  const auto later = month + 30 * md::kNanosPerDay;
+  EXPECT_NEAR(*implied_variance_until(metrics, later), 0.09 * md::years_between(now, later), 1e-12);
+  EXPECT_EQ(*implied_variance_until(metrics, now - 1), 0.0);
+  EXPECT_EQ(server::probability_horizon(now, 0), close);
+  EXPECT_EQ(server::probability_horizon(now, 1.5), now + 36 * 60 * md::kNanosPerMinute);
+  metrics.slices.clear();
+  EXPECT_FALSE(implied_variance_until(metrics, middle));
+}
+
+TEST(PaperProbability, PriceOddsAddUpAndTouchingIsLikelierThanFinishingBeyond) {
+  const auto odds = server::price_odds(100, 110, 0.01);
+  EXPECT_NEAR(odds.above + odds.below, 1, 1e-15);
+  // ln(100/110) = -0.0953; with v = 0.01, Φ((-0.0953 - 0.005) / 0.1) = Φ(-1.003).
+  EXPECT_NEAR(odds.above, 0.15793, 1e-4);
+  EXPECT_NEAR(odds.touch, std::erfc(std::log(1.1) / (0.1 * std::sqrt(2.0))), 1e-15);
+  EXPECT_GT(odds.touch, odds.above);
+  const auto now = server::price_odds(100, 90, 0);
+  EXPECT_EQ(now.above, 1);
+  EXPECT_EQ(now.touch, 0);
+  EXPECT_EQ(server::price_odds(100, 100, 0).touch, 1);
+}
+
+TEST(PaperBeta, BetaIsTheCovarianceOverTheBenchmarksVarianceOfPairedReturns) {
+  std::vector<md::Bar> asset, benchmark;
+  double a = 100, b = 50;
+  for (int i = 0; i < 40; ++i) {
+    const md::Timestamp start = i * md::kNanosPerDay;
+    const double move = (i % 3 == 0 ? 0.01 : i % 3 == 1 ? -0.006 : 0.002);
+    b *= std::exp(move);
+    a *= std::exp(2 * move);
+    benchmark.push_back({start, b, b, b, b});
+    if (i != 10) asset.push_back({start, a, a, a, a});  // a missing day pairs no return across it
+  }
+  const auto beta = server::estimate_beta(asset, benchmark, 252);
+  EXPECT_NEAR(beta.beta, 2, 1e-9);
+  EXPECT_NEAR(beta.correlation, 1, 1e-9);
+  EXPECT_EQ(beta.observations, 37U);  // 39 returns less the two across the gap
+  EXPECT_EQ(server::estimate_beta(asset, benchmark, 10).observations, 10U);
+  // Bars further apart than the gap allowed pair no return.
+  EXPECT_EQ(server::estimate_beta(asset, benchmark, 252, md::kNanosPerDay).observations, 37U);
+  EXPECT_EQ(server::estimate_beta(asset, benchmark, 252, md::kNanosPerMinute).observations, 0U);
+  EXPECT_TRUE(server::estimate_beta({}, benchmark, 252).source.empty());
+  EXPECT_TRUE(server::same_index("SPY", "SPX"));
+  EXPECT_TRUE(server::same_index("QQQ", "NDX"));
+  EXPECT_FALSE(server::same_index("QQQ", "SPY"));
+}
+
+namespace {
+TEST_F(PaperEngine, RiskProfileCurvesTheHeldBookOverDatesAndBetaWeightsIt) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "eod-25k"}, {"reason", "evaluation"}}).status, 200);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "entry", "4.20")).status, 201);
+  engine->synchronize().get();
+  auto profile = read(*engine, "/api/risk/profile?underlying=SPX&days=0,1,expiry&range=10&steps=5&iv=2");
+  EXPECT_EQ(profile["reference"], "SPX");
+  EXPECT_TRUE(profile["benchmark"].is_null());
+  EXPECT_EQ(profile["spot"], 5000);
+  EXPECT_EQ(profile["percent"], json::array({-10, -5, 0, 5, 10}));
+  EXPECT_NEAR(profile["prices"][1].get<double>(), 4750, 1e-9);
+  EXPECT_TRUE(profile["complete"]);
+  EXPECT_TRUE(profile["room"].is_string());
+  ASSERT_EQ(profile["curves"].size(), 3U);
+  EXPECT_EQ(profile["curves"][2]["label"], "expiry");
+  EXPECT_TRUE(profile["curves"][0]["label"].is_null());
+  EXPECT_GT(profile["curves"][0]["pnl"][4].get<double>(), profile["curves"][0]["pnl"][2].get<double>());
+  EXPECT_TRUE(profile["curves"][0]["horizon"]["sigma"].is_number());
+  EXPECT_LT(profile["curves"][0]["horizon"]["one_sd"]["low"].get<double>(), 5000);
+  EXPECT_EQ(profile["betas"][0]["source"], "reference");
+  // The whole book, weighted to SPY: SPX follows the same index.
+  profile = read(*engine, "/api/risk/profile");
+  EXPECT_EQ(profile["benchmark"], "SPY");
+  EXPECT_EQ(profile["percent"].size(), 41U);
+  ASSERT_EQ(profile["curves"].size(), 2U);
+  EXPECT_EQ(profile["curves"][0]["pnl"][20], 0);
+  ASSERT_EQ(profile["betas"].size(), 1U);
+  EXPECT_EQ(profile["betas"][0]["source"], "index");
+  EXPECT_EQ(profile["betas"][0]["beta"], 1);
+  EXPECT_EQ(profile["weighted_dollar_delta"], profile["betas"][0]["dollar_delta"]);
+  profile = read(*engine, "/api/risk/profile?benchmark=SPX&betas=SPX:1.5");
+  EXPECT_EQ(profile["betas"][0]["source"], "reference");
+  for (const auto* bad : {"?benchmark=QQQ", "?days=-1", "?days=0,1,2,3,4,5,6,7,8", "?steps=4", "?range=0", "?iv=500",
+                          "?betas=QQQ", "?betas=QQQ:x", "?other=1", "?underlying=spx"})
+    EXPECT_EQ(server::handle_api({"GET", std::string("/api/risk/profile") + bad}, *engine).status, 400) << bad;
+  EXPECT_EQ(server::handle_api({"GET", "/api/risk/profile?account=nobody"}, *engine).status, 404);
+  // Probability cones and price odds for any underlying.
+  const auto odds = read(*engine, "/api/underlyings/SPX/probability?days=0,7&prices=4900,5100");
+  EXPECT_EQ(odds["symbol"], "SPX");
+  ASSERT_EQ(odds["horizons"].size(), 2U);
+  EXPECT_EQ(odds["horizons"][1]["days"], 7);
+  const auto& week = odds["horizons"][1]["prices"];
+  ASSERT_EQ(week.size(), 2U);
+  EXPECT_NEAR(week[0]["above"].get<double>() + week[0]["below"].get<double>(), 1, 1e-6);
+  EXPECT_GT(week[0]["touch"].get<double>(), week[0]["below"].get<double>());
+  EXPECT_GT(odds["horizons"][1]["sigma"].get<double>(), odds["horizons"][0]["sigma"].get<double>());
+  EXPECT_EQ(server::handle_api({"GET", "/api/underlyings/SPX/probability?days=400"}, *engine).status, 400);
+  EXPECT_EQ(server::handle_api({"GET", "/api/underlyings/SPX/probability?prices=0"}, *engine).status, 400);
+}
+}  // namespace
+
 namespace {
 TEST_F(PaperEngine, AuthenticatedActorPassesThroughQueueToOrdersFillsAndCsv) {
   seed();

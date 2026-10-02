@@ -135,6 +135,12 @@ struct PayoutQuote {
   Money trader_share;            ///< split_percent of the maximum.
 };
 [[nodiscard]] PayoutQuote payout_quote(const TradingSnapshot& snapshot, const AccountRules& rules);
+/// The held book's risk profile (see risk_profile) as a snapshot publishes it: its
+/// equity, the plan floor under a drawdown rule, the soft floor and its fresh share
+/// prices, at its time. A nonempty `underlying` limits it to that underlying's
+/// contracts and shares. An incomplete valuation leaves it incomplete.
+[[nodiscard]] RiskProfile snapshot_profile(const TradingSnapshot& snapshot, const SessionConfig& config,
+    const Valuations& valuations, const ProfileConfig& profile, double reference_spot, const std::string& underlying = {});
 
 /// A position a flatten left open: the contracts still held, those its closes are
 /// still working on later quotes, and why the rest are not being closed (a refusal,

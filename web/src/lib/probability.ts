@@ -209,3 +209,15 @@ export function singleLeg(type: "call" | "put", side: "buy" | "sell", strike: nu
   const value = (spot: number) => direction * (Math.max(0, type === "call" ? spot - strike : strike - spot) - premium)
   return { breakeven, value }
 }
+
+/** "0, 1, 7" as distinct numbers within [minimum, maximum], at most `most`; null when any entry does not parse. */
+export function parseNumbers(text: string, most: number, minimum: number, maximum: number): number[] | null {
+  const values: number[] = []
+  for (const part of text.split(",").map((p) => p.trim()).filter(Boolean)) {
+    if (!/^\d+(\.\d+)?$/.test(part)) return null
+    const value = Number(part)
+    if (!(value >= minimum && value <= maximum)) return null
+    if (!values.includes(value)) values.push(value)
+  }
+  return values.length <= most ? values : null
+}

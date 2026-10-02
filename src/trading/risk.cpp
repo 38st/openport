@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 
 #include "openport/pricing/black.hpp"
@@ -62,6 +63,37 @@ Decision check_bucket(const RiskBucket& b, const std::string& scope, const RiskB
   if (vega > b.limits.vega && vega_raised)
     return {Reason::VEGA_LIMIT, "Worst reachable absolute vega per point exceeds limit", vega, b.limits.vega, scope};
   return {};
+}
+/// The first move from zero, in percent, at which `pnl` loses `room`: a scan in
+/// 0.25% steps (1% past 100%) to -99.75% or +1000%, then bisection of the crossing.
+/// `sigma` is the log price's standard deviation to when the touch probability is
+/// measured (the driftless reflection estimate); zero means no time is left.
+std::optional<BreachLevel> solve_level(const std::function<std::optional<double>(double)>& pnl, bool up,
+    double room, double spot, std::optional<double> sigma) {
+  double prior = 0;
+  double crossing = 0;
+  bool found = room <= 0;
+  for (double distance = 0.25; !found && distance <= (up ? 1000 : 99.75); distance += distance < 100 ? 0.25 : 1) {
+    const double shock = up ? distance : -distance;
+    const auto loss = pnl(shock);
+    if (!loss) return {};
+    if (*loss <= -room) { crossing = shock; found = true; break; }
+    prior = shock;
+  }
+  if (!found) return {};
+  for (int i = 0; i < 40 && room > 0; ++i) {
+    const double middle = (prior + crossing) / 2;
+    const auto value = pnl(middle);
+    if (!value) return {};
+    if (*value <= -room) crossing = middle; else prior = middle;
+  }
+  BreachLevel level{spot * crossing / 100, crossing, {}};
+  if (crossing == 0) level.touch_probability = 1;
+  else if (sigma && *sigma > 0)
+    level.touch_probability = std::clamp(std::erfc(std::abs(std::log1p(crossing / 100)) /
+        (*sigma * std::sqrt(2.0))), 0.0, 1.0);
+  else if (sigma) level.touch_probability = 0;  // no session left today
+  return level;
 }
 }  // namespace
 Timestamp observation_time(const md::OptionContract& contract, Timestamp now) {
@@ -221,6 +253,123 @@ ScenarioGrid scenario_grid(const Ledger& ledger, const Valuations& valuations,
   if (!result.complete) for (auto& cell : result.cells) cell.pnl = 0;
   return result;
 }
+void validate_profile(const ProfileConfig& c) {
+  bool valid = !c.percent.empty() && c.percent.size() <= 201 && !c.days.empty() && c.days.size() <= 8 &&
+               (c.variances.empty() || c.variances.size() == c.days.size()) &&
+               std::isfinite(c.vol_points) && std::abs(c.vol_points) <= 1000 &&
+               std::isfinite(c.vol_floor) && c.vol_floor > 0 && c.vol_floor <= 10;
+  for (double x : c.percent) valid &= std::isfinite(x) && x > -100 && x <= 1000;
+  for (double d : c.days) valid &= std::isfinite(d) && d >= 0 && d <= 366;
+  for (const auto& [underlying, beta] : c.betas) valid &= std::isfinite(beta) && std::abs(beta) <= 10;
+  for (const auto& variance : c.variances) valid &= !variance || (std::isfinite(*variance) && *variance >= 0);
+  if (!valid) throw TradingError(Reason::INVALID_SCENARIO, "Invalid or oversized risk profile");
+}
+RiskProfile risk_profile(const Ledger& ledger, const Valuations& valuations, const ProfileConfig& config,
+    double reference_spot, Money equity, std::optional<Money> floor, std::optional<Money> soft_floor,
+    Timestamp now, Timestamp max_age, const std::map<std::string, double>& stock_prices) {
+  validate_profile(config);
+  RiskProfile result;
+  if (floor) result.room = equity - *floor;
+  if (soft_floor) result.soft_room = equity - *soft_floor;
+  struct Held {
+    const Position* position;
+    const Valuation* valuation;
+    double beta;
+  };
+  struct Shares {
+    double shares, price, beta;
+  };
+  std::vector<Held> held;
+  std::vector<Shares> shares;
+  bool clamped = false;
+  for (const auto& [symbol, p] : ledger.positions()) {
+    const auto beta = config.betas.find(p.contract.underlying);
+    const auto it = valuations.find(symbol);
+    if (beta == config.betas.end() || now >= p.contract.expiry_time() || it == valuations.end() ||
+        !fresh(it->second, p.contract, now, max_age)) {
+      result.complete = false;
+      continue;
+    }
+    clamped |= it->second.smile_iv + config.vol_points / 100 < config.vol_floor;
+    held.push_back({&p, &it->second, beta->second});
+  }
+  for (const auto& [symbol, stock] : ledger.stocks()) {
+    const auto beta = config.betas.find(symbol);
+    const auto price = stock_prices.find(symbol);
+    if (beta == config.betas.end() || price == stock_prices.end()) {
+      result.complete = false;
+      continue;
+    }
+    shares.push_back({static_cast<double>(stock.shares), price->second, beta->second});
+  }
+  const auto target = floor ? floor : soft_floor;
+  for (std::size_t index = 0; index < config.days.size(); ++index) {
+    const double days = config.days[index];
+    ProfileCurve curve;
+    curve.days = days;
+    curve.time = now + std::llround(days * static_cast<double>(md::kNanosPerDay));
+    curve.clamped = clamped;
+    const double elapsed = days * static_cast<double>(md::kNanosPerDay) / md::kNanosPerYear;
+    std::map<double, std::optional<double>> valued;
+    const auto pnl = [&](double percent) -> std::optional<double> {
+      const auto [it, added] = valued.try_emplace(percent);
+      if (!added) return it->second;
+      double total = 0;
+      for (const auto& [position, valuation, beta] : held) {
+        // Avoid subtraction and floor artifacts: no change at all is exactly zero.
+        if (percent == 0 && days == 0 && config.vol_points == 0) continue;
+        const auto& p = *position;
+        const auto& v = *valuation;
+        const double move = 1 + std::max(-0.9999, beta * percent / 100);
+        // Today's curve prices exactly as the scenario grid does.
+        double life = v.years, forward = v.forward, discount = v.discount;
+        if (days > 0) {
+          life = p.contract.expiry_time() <= curve.time ? 0 : std::max(0.0, v.years - elapsed);
+          const double share = v.years > 0 ? life / v.years : 0;
+          if (v.spot > 0) forward = v.spot + (v.forward - v.spot) * share;
+          if (v.years > 0) discount = std::pow(v.discount, share);
+        }
+        const double base = pricing::black_price(p.contract.type, v.forward, p.contract.strike, v.years, v.smile_iv, v.discount);
+        const double shocked = pricing::black_price(p.contract.type, forward * move, p.contract.strike, life,
+            std::max(config.vol_floor, v.smile_iv + config.vol_points / 100), discount);
+        total += static_cast<double>(p.quantity) * 100 * (shocked - base);
+      }
+      for (const auto& stock : shares) total += stock.shares * stock.price * std::max(-0.9999, stock.beta * percent / 100);
+      if (std::isfinite(total)) it->second = total;
+      return it->second;
+    };
+    for (double percent : config.percent) {
+      const auto value = result.complete ? pnl(percent) : std::nullopt;
+      if (!value) result.complete = false;
+      curve.pnl.push_back(value.value_or(0));
+    }
+    if (result.complete && target) {
+      std::optional<double> sigma;
+      if (index < config.variances.size() && config.variances[index]) sigma = std::sqrt(*config.variances[index]);
+      const auto solve = [&](bool up, Money reach) {
+        return solve_level(pnl, up, (equity - reach).dollars(), reference_spot, sigma);
+      };
+      curve.down = solve(false, *target);
+      curve.up = solve(true, *target);
+      if (floor && soft_floor) {
+        curve.soft_down = solve(false, *soft_floor);
+        curve.soft_up = solve(true, *soft_floor);
+      } else if (soft_floor) {
+        curve.soft_down = curve.down;
+        curve.soft_up = curve.up;
+      }
+    }
+    result.curves.push_back(std::move(curve));
+  }
+  // An incomplete profile must not look like a valuation of only the covered subset.
+  if (!result.complete) {
+    for (auto& curve : result.curves) {
+      std::fill(curve.pnl.begin(), curve.pnl.end(), 0.0);
+      curve.down.reset(); curve.up.reset(); curve.soft_down.reset(); curve.soft_up.reset();
+    }
+  }
+  return result;
+}
 BreachRisk breach_risk(const Ledger& ledger, const Valuations& valuations,
     Money equity, std::optional<Money> floor, std::optional<Money> soft_floor, Timestamp now, Timestamp max_age,
     const std::map<std::string, double>& stock_prices, const std::map<std::string, double>& close_variances) {
@@ -265,32 +414,8 @@ BreachRisk breach_risk(const Ledger& ledger, const Valuations& valuations,
     item.complete = item.spot > 0 && pnl(0).has_value();
     result.complete &= item.complete;
     if (item.complete && target) {
-      const auto solve = [&](bool up, Money reach) -> std::optional<BreachLevel> {
-        double prior = 0;
-        const double room = (equity - reach).dollars();
-        double crossing = 0;
-        bool found = room <= 0;
-        for (double distance = 0.25; !found && distance <= (up ? 1000 : 99.75); distance += distance < 100 ? 0.25 : 1) {
-          const double shock = up ? distance : -distance;
-          const auto loss = pnl(shock);
-          if (!loss) return {};
-          if (*loss <= -room) { crossing = shock; found = true; break; }
-          prior = shock;
-        }
-        if (!found) return {};
-        for (int i = 0; i < 40 && room > 0; ++i) {
-          const double middle = (prior + crossing) / 2;
-          const auto value = pnl(middle);
-          if (!value) return {};
-          if (*value <= -room) crossing = middle; else prior = middle;
-        }
-        BreachLevel level{item.spot * crossing / 100, crossing, {}};
-        if (crossing == 0) level.touch_probability = 1;
-        else if (item.close_sigma && *item.close_sigma > 0)
-          level.touch_probability = std::clamp(std::erfc(std::abs(std::log1p(crossing / 100)) /
-              (*item.close_sigma * std::sqrt(2.0))), 0.0, 1.0);
-        else if (item.close_sigma) level.touch_probability = 0;  // no session left today
-        return level;
+      const auto solve = [&](bool up, Money reach) {
+        return solve_level(pnl, up, (equity - reach).dollars(), item.spot, item.close_sigma);
       };
       item.down = solve(false, *target);
       item.up = solve(true, *target);
