@@ -113,11 +113,13 @@ inline void from_json(const Json& j, TradeReview& r) {
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DayNote, plan, review, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillQuote, bid, ask, bid_size, ask_size, left, quoted)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillFees, commission, clearing, regulatory, index)
 inline void to_json(Json& j, const Fill& f) {
   j = Json{{"id", f.id}, {"order_id", f.order_id}, {"symbol", f.symbol}, {"side", f.side}, {"quantity", f.quantity},
            {"price", f.price}, {"fee", f.fee}, {"observation", f.observation}, {"quote_time", f.quote_time},
            {"time", f.time}, {"context", f.context}, {"actor", f.actor}};
   if (f.quote) j["quote"] = *f.quote;
+  if (f.fees) j["fees"] = *f.fees;
 }
 inline void from_json(const Json& j, Fill& f) {
   j.at("id").get_to(f.id); j.at("order_id").get_to(f.order_id); j.at("symbol").get_to(f.symbol);
@@ -125,6 +127,7 @@ inline void from_json(const Json& j, Fill& f) {
   j.at("fee").get_to(f.fee); j.at("observation").get_to(f.observation);
   j.at("quote_time").get_to(f.quote_time); j.at("time").get_to(f.time);
   added_field(j, "context", f.context); added_field(j, "actor", f.actor); added_field(j, "quote", f.quote);
+  added_field(j, "fees", f.fees);
 }
 inline void to_json(Json& j, const QuoteObservation& q) {
   j = Json{{"symbol", q.symbol}, {"observation", q.observation}, {"time", q.time}, {"bid", q.bid}, {"ask", q.ask},
@@ -198,6 +201,7 @@ inline Json optional_rule_defaults() {
               {"min_trading_days", d.min_trading_days}, {"min_profitable_days", d.min_profitable_days},
               {"profitable_day_profit", d.profitable_day_profit}, {"day_end_minutes", d.day_end_minutes}};
 }
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FeeSchedule, open, close, leg_cap, clearing, regulatory, index, exercise)
 inline void to_json(Json& j, const AccountRules& r) {
   j = Json{{"plan", r.plan}, {"profit_target", r.profit_target}, {"max_drawdown", r.max_drawdown},
            {"drawdown_mode", r.drawdown_mode}, {"buy_only", r.buy_only}, {"buying_power", r.buying_power},
@@ -213,6 +217,7 @@ inline void to_json(Json& j, const AccountRules& r) {
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
+  if (r.fees) j["fees"] = *r.fees;
 }
 inline void from_json(const Json& j, AccountRules& r) {
   j.at("plan").get_to(r.plan); j.at("profit_target").get_to(r.profit_target); j.at("max_drawdown").get_to(r.max_drawdown);
@@ -237,6 +242,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "consistency_percent", r.consistency_percent); added_field(j, "consistency_basis", r.consistency_basis);
   added_field(j, "min_trading_days", r.min_trading_days); added_field(j, "min_profitable_days", r.min_profitable_days);
   added_field(j, "profitable_day_profit", r.profitable_day_profit); added_field(j, "day_end_minutes", r.day_end_minutes);
+  added_field(j, "fees", r.fees);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {
@@ -327,7 +333,16 @@ inline void from_json(const Json& j, AttemptSummary& a) {
   added_field(j, "decision_code", a.decision_code);
   a.decision_code = decision_code_of(a.status, a.decision_code);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Closure, symbol, quantity, price, time, kind, after_fill)
+inline void to_json(Json& j, const Closure& c) {
+  j = Json{{"symbol", c.symbol}, {"quantity", c.quantity}, {"price", c.price}, {"time", c.time}, {"kind", c.kind},
+           {"after_fill", c.after_fill}};
+  if (c.fee != Money{}) j["fee"] = c.fee;
+}
+inline void from_json(const Json& j, Closure& c) {
+  j.at("symbol").get_to(c.symbol); j.at("quantity").get_to(c.quantity); j.at("price").get_to(c.price);
+  j.at("time").get_to(c.time); j.at("kind").get_to(c.kind); j.at("after_fill").get_to(c.after_fill);
+  added_field(j, "fee", c.fee);
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(StockFill, id, symbol, shares, price, time, source, option)
 inline void to_json(Json& j, const DividendPayment& d) {
   j = Json{{"symbol", d.symbol}, {"ex_date", d.ex_date}, {"per_share", d.per_share}, {"shares", d.shares},
@@ -440,6 +455,8 @@ struct State {
   Valuations valuations;
   SharedVector<Order> orders;
   SharedVector<Fill> fills;
+  /// Transient commission already charged in a trial fill, before it has a Fill.
+  std::map<std::pair<OrderId, std::string>, Money> projected_commission;
   SharedSet<std::string> settled;
   bool kill = false;
   std::string kill_reason;

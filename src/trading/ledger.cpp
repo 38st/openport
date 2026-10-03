@@ -82,12 +82,12 @@ void Ledger::trade_stock(const std::string& symbol, Quantity signed_shares, Mone
   else stocks_.insert_or_assign(symbol, std::move(next));
   account_ = account;
 }
-void Ledger::settle(const std::string& symbol, Money intrinsic) {
+void Ledger::settle(const std::string& symbol, Money intrinsic, Money fee) {
   const auto it = positions_.find(symbol);
-  if (it == positions_.end() || intrinsic < Money{})
-    throw TradingError(Reason::INVALID_SETTLEMENT, "Settlement requires an open position and nonnegative intrinsic");
+  if (it == positions_.end() || intrinsic < Money{} || fee < Money{})
+    throw TradingError(Reason::INVALID_SETTLEMENT, "Settlement requires an open position, nonnegative intrinsic and fee");
   const Money proceeds = (intrinsic * 100) * it->second.quantity;
-  const Account next{account_.cash + proceeds, account_.realised + proceeds - it->second.basis, account_.fees};
+  const Account next{account_.cash + proceeds - fee, account_.realised + proceeds - it->second.basis, account_.fees + fee};
   positions_.erase(it);
   account_ = next;
 }

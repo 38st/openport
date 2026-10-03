@@ -115,9 +115,9 @@ void LifecycleBuilder::closure(const Closure& closure, const Contracts& contract
   const auto closing = (closure.kind == ClosureKind::Exercise || closure.kind == ClosureKind::Assignment)
       ? std::min(magnitude(closure.quantity), magnitude(held)) : magnitude(held);
   if (closure.kind == ClosureKind::Settlement) {
-    it->second.ledger.settle(closure.symbol, closure.price);
+    it->second.ledger.settle(closure.symbol, closure.price, closure.fee);
   } else {
-    it->second.ledger.fill(contract->second, held > 0 ? -closing : closing, closure.price, Money{});
+    it->second.ledger.fill(contract->second, held > 0 ? -closing : closing, closure.price, closure.fee);
   }
   life.exit_context.reset();
   life.exit_order = 0;

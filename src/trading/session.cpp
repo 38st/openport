@@ -283,6 +283,33 @@ void fill_position(State& s, const std::string& symbol, Quantity signed_quantity
   start_stretch(s, symbol);
   if (held(s, symbol) <= 0 && s.do_not_exercise.contains(symbol)) s.do_not_exercise.erase(symbol);
 }
+Quantity closing_contracts(Quantity position, Side side, Quantity contracts) {
+  return std::min(contracts, side == Side::Buy ? std::max<Quantity>(-position, 0) : std::max<Quantity>(position, 0));
+}
+/// The commission cap belongs to a leg of an order, across all partial fills.
+Money commission_paid(const State& s, const Order& o, const std::string& symbol) {
+  Money paid;
+  if (!s.config.rules.fees || s.config.rules.fees->leg_cap <= Money{}) return paid;
+  if (const auto it = s.projected_commission.find({o.id, symbol}); it != s.projected_commission.end()) paid = it->second;
+  for (auto i = s.fills.size(); i > 0 && s.fills[i - 1].time >= o.accepted_at; --i) {
+    const auto& f = s.fills[i - 1];
+    if (f.order_id == o.id && f.symbol == symbol && f.fees) paid = paid + f.fees->commission;
+  }
+  return paid;
+}
+FillFees fees_for(const State& s, const std::string& symbol, Quantity contracts, Quantity closing, Money paid = {}) {
+  const auto& schedule = s.config.rules.fees;
+  if (!schedule) return {s.config.fee_per_contract * contracts, {}, {}, {}};
+  FillFees fees{schedule->open * (contracts - closing) + schedule->close * closing,
+                schedule->clearing * contracts, schedule->regulatory * contracts, {}};
+  if (schedule->leg_cap > Money{}) fees.commission = std::min(fees.commission, std::max(Money{}, schedule->leg_cap - paid));
+  if (const auto index = schedule->index.find(s.contracts.at(symbol).root); index != schedule->index.end())
+    fees.index = index->second * contracts;
+  return fees;
+}
+Money exercise_fee(const State& s, Quantity contracts) {
+  return s.config.rules.fees ? s.config.rules.fees->exercise * magnitude(contracts) : Money{};
+}
 /// American equity and ETF options deliver shares; index options settle in cash.
 bool physical(const md::OptionContract& c) {
   return c.style == pricing::ExerciseStyle::American && !md::is_index_underlying(c.underlying);
@@ -659,7 +686,8 @@ Use combo_use(const State& s, const Order& o, const MarginBook& book) {
   Money fees;
   for (const auto& leg : o.request.legs) {
     const auto contracts = signed_contracts(leg, units);
-    fees = fees + s.config.fee_per_contract * magnitude(contracts);
+    fees = fees + fees_for(s, leg.symbol, magnitude(contracts), closing_contracts(held(s, leg.symbol), leg.side, magnitude(contracts)),
+                           commission_paid(s, o, leg.symbol)).total();
     const auto mark = s.marks.find(leg.symbol);
     trade(after, leg.symbol, contracts, mark != s.marks.end() ? mark->second.price : Money{});
   }
@@ -718,7 +746,8 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
     if (multi_leg(o.request)) {
       if (kept_within(o)) {
         Money fees;
-        for (const auto& leg : o.request.legs) fees = fees + s.config.fee_per_contract * (remaining * leg.ratio);
+        for (const auto& leg : o.request.legs)
+          fees = fees + fees_for(s, leg.symbol, remaining * leg.ratio, remaining * leg.ratio, commission_paid(s, o, leg.symbol)).total();
         use = {fees, false};
       } else use = combo_use(s, o, book);
       for (const auto& leg : o.request.legs)
@@ -729,7 +758,8 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
       const auto q = held(s, symbol);
       auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Quantity>(q, 0), std::max<Quantity>(-q, 0)).first->second;
       const bool buy = o.request.side == Side::Buy;
-      const Money fees = s.config.fee_per_contract * remaining;
+      const auto closing = kept_within(o) ? remaining : std::min(remaining, buy ? short_left : long_left);
+      const Money fees = fees_for(s, symbol, remaining, closing, commission_paid(s, o, symbol)).total();
       if (kept_within(o)) {
         // Bracket exits and reduce-only closes stay within the position, so they only
         // ever close; they leave closing capacity to ordinary orders such as a manual close.
@@ -756,7 +786,6 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
         if (q > 0 && !buy) trade(before, symbol, long_left - q, {});
         if (q < 0 && buy) trade(before, symbol, -q - short_left, {});
         auto& left = buy ? short_left : long_left;
-        const auto closing = std::min(remaining, left);
         left -= closing;
         opening = remaining - closing;
         auto after = before;
@@ -775,19 +804,24 @@ PowerDetail buying_power(const State& s, OrderId focus = 0) {
 struct ProjectedFill {
   Money premium;  ///< Paid, negative when received.
   Money fees;
+  FillFees itemized;
 };
 /// Fill `units` of `request` into `after` (a copy of `before`) now: every leg at
 /// market through impact blocks, as a real fill would walk them, and a limit
 /// order at its limit's debit or credit instead, never an impossible fill at
 /// today's far sides. This also keeps size-to-floor conservative at limits.
-ProjectedFill project_fill(State& after, const State& before, const OrderRequest& request, Quantity units) {
+ProjectedFill project_fill(State& after, const State& before, const OrderRequest& request, Quantity units, const Order& order) {
   auto legs = request.legs;
   if (legs.empty()) legs.push_back({request.symbol, request.side, 1});
   ProjectedFill result;
   for (const auto& leg : legs) {
     const auto quantity = signed_contracts(leg, units);
-    auto fee = before.config.fee_per_contract * magnitude(quantity);
+    const auto fees = fees_for(before, leg.symbol, magnitude(quantity),
+                               closing_contracts(held(before, leg.symbol), leg.side, magnitude(quantity)),
+                               commission_paid(before, order, leg.symbol));
+    auto fee = fees.total();
     result.fees = result.fees + fee;
+    result.itemized += fees;
     for (const auto& [price, n] : market_slices(before, leg.symbol, leg.side, magnitude(quantity))) {
       const auto contracts = quantity < 0 ? -n : n;
       result.premium = result.premium + (price * 100) * contracts;
@@ -819,7 +853,7 @@ bool fill_frees_power(const State& s, const Order& o) {
   auto& order = filled.orders.mut(static_cast<std::size_t>(o.id - 1));
   order.status = OrderStatus::Filled;
   order.filled_quantity = order.request.quantity;
-  (void)project_fill(filled, s, o.request, o.remaining());
+  (void)project_fill(filled, s, o.request, o.remaining(), o);
   return frees_power(s, o, filled);
 }
 /// The personal soft floor now: an absolute level, or a share of the plan's
@@ -1599,12 +1633,14 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const Quantity quantity = reducing ? std::min({o.remaining(), budget, capacity}) : std::min(o.remaining(), budget);
   if (quantity <= 0) return;
   decision = reducing ? Decision{} : price_check(s, book.quote, price);
-  const Money fee = s.config.fee_per_contract * quantity;
+  const auto fees = fees_for(s, symbol, quantity, std::min(quantity, capacity), commission_paid(s, o, symbol));
+  const Money fee = fees.total();
   if (decision.ok() && !reducing) {
     // Check the proposed accounting before committing any liquidity or fill.
     const Quantity signed_quantity = side == Side::Buy ? quantity : -quantity;
     State projected = s;
     projected.ledger.fill(s.contracts.at(symbol), signed_quantity, price, fee);
+    if (s.config.rules.fees) projected.projected_commission[{id, symbol}] = fees.commission;
     projected.orders.mut(static_cast<std::size_t>(id - 1)).filled_quantity += quantity;
     if (!closing_only(s, o)) decision = loss_check(projected, measure(projected));
     // A fill that reduces free buying power must leave it nonnegative, or leave
@@ -1639,13 +1675,26 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   order.status = order.remaining() == 0 ? OrderStatus::Filled : OrderStatus::PartiallyFilled;
   if (order.status == OrderStatus::Filled) order.ended_at = s.time;
   Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, symbol, side,
-            quantity, price, fee, quote.observation, quote.time, s.time, context, order.actor, taken};
+            quantity, price, fee, quote.observation, quote.time, s.time, context, order.actor, taken,
+            s.config.rules.fees ? std::optional(fees) : std::nullopt};
   s.fills.push_back(fill);
   event(events, "fill", fill);
   count_execution(s, order);
   on_fill(s, id, quantity, events);
   guardrail_fill(s, id, opening, realised_before, events);
   observe_equity(s, events);
+}
+/// Later slices of a leg see the position and commission its earlier slices leave.
+std::vector<FillFees> combo_fees(const State& s, const Order& o, const std::vector<ExecutionSlice>& slices) {
+  std::map<std::string, std::pair<Quantity, Money>> legs;
+  std::vector<FillFees> out;
+  for (const auto& slice : slices) {
+    auto& [position, paid] = legs.try_emplace(slice.symbol, held(s, slice.symbol), commission_paid(s, o, slice.symbol)).first->second;
+    out.push_back(fees_for(s, slice.symbol, slice.quantity, closing_contracts(position, slice.side, slice.quantity), paid));
+    paid = paid + out.back().commission;
+    position += slice.side == Side::Buy ? slice.quantity : -slice.quantity;
+  }
+  return out;
 }
 /// A multi-leg order fills all its legs together, in ratio, at each leg's slipped
 /// far side when the net debit is at or below its limit; units are bounded by every
@@ -1672,11 +1721,17 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   }
   if (decision.ok() && units <= 0) return;
   const auto slices = combo_slices(s, o, units);
+  const auto slice_fees = combo_fees(s, o, slices);
   if (decision.ok() && !exit) {
     State projected = s;
-    for (const auto& slice : slices) {
+    for (std::size_t i = 0; i < slices.size(); ++i) {
+      const auto& slice = slices[i];
       const auto contracts = slice.side == Side::Buy ? slice.quantity : -slice.quantity;
-      projected.ledger.fill(s.contracts.at(slice.symbol), contracts, slice.price, s.config.fee_per_contract * slice.quantity);
+      projected.ledger.fill(s.contracts.at(slice.symbol), contracts, slice.price, slice_fees[i].total());
+      if (s.config.rules.fees) {
+        auto& paid = projected.projected_commission[{id, slice.symbol}];
+        paid = paid + slice_fees[i].commission;
+      }
     }
     projected.orders.mut(static_cast<std::size_t>(id - 1)).filled_quantity += units;
     if (!closing_only(s, o)) decision = loss_check(projected, measure(projected));
@@ -1701,20 +1756,22 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     const auto position = held(s, leg.symbol);
     return units * leg.ratio > (leg.side == Side::Buy ? std::max<Quantity>(0, -position) : std::max<Quantity>(0, position));
   });
-  for (const auto& slice : slices) {
+  for (std::size_t i = 0; i < slices.size(); ++i) {
+    const auto& slice = slices[i];
     const auto context = fill_context(s, slice.symbol, before);
     const auto quote = s.books.at(slice.symbol).quote;
     const auto taken = fill_quote(s.books.at(slice.symbol), slice.side);
     const auto contracts = slice.side == Side::Buy ? slice.quantity : -slice.quantity;
     const auto size = magnitude(contracts);
     const Money price = slice.price;
-    const Money fee = s.config.fee_per_contract * size;
+    const Money fee = slice_fees[i].total();
     annotate_opening(s, request, slice.symbol, contracts, events);
     fill_position(s, slice.symbol, contracts, price, fee);
     auto& book = s.books[slice.symbol];
     if (!slice.given) consume_depth(slice.side == Side::Buy ? book.ask_left : book.bid_left, size);
     Fill fill{static_cast<std::uint64_t>(s.fills.size() + 1), id, slice.symbol, slice.side,
-              size, price, fee, quote.observation, quote.time, s.time, context, actor, taken};
+              size, price, fee, quote.observation, quote.time, s.time, context, actor, taken,
+              s.config.rules.fees ? std::optional(slice_fees[i]) : std::nullopt};
     s.fills.push_back(fill);
     event(events, "fill", fill);
   }
@@ -2419,7 +2476,7 @@ std::vector<RiskWarning> warnings_of(const State& s, const std::map<std::string,
     for (const auto& x : expiring) {
       const auto& c = delivered_state.contracts.at(x.symbol);
       const auto shares = x.intrinsic > Money{} ? delivered(c, held(delivered_state, x.symbol)) : 0;
-      delivered_state.ledger.settle(x.symbol, x.intrinsic);
+      delivered_state.ledger.settle(x.symbol, x.intrinsic, shares != 0 ? exercise_fee(delivered_state, held(delivered_state, x.symbol)) : Money{});
       if (shares != 0) {
         delivered_state.stock_marks[c.underlying] = {x.price, delivered_state.time};
         delivered_state.ledger.trade_stock(c.underlying, shares, x.price, Money{});
@@ -2575,7 +2632,9 @@ PreviewProjection project_working(const State& before, State after_state, OrderI
   auto& filled = after.orders.mut(static_cast<std::size_t>(id - 1));
   filled.status = OrderStatus::Filled;
   filled.filled_quantity = total;
-  const auto [premium, fees] = project_fill(after, before, request, request.quantity);
+  const auto [premium, fees, itemized] = project_fill(after, before, request, request.quantity, filled);
+  result.fee = fees;
+  if (before.config.rules.fees) result.fees = itemized;
   // A filled bracket entry leaves its exits working, and they reserve their fees.
   if (request.bracket && !request.exits_only) {
     Events ignored;
@@ -4196,11 +4255,14 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
       at_expiry->years = 0;
     }
     end_stretch(s, symbol, intrinsic, at_expiry ? &*at_expiry : nullptr);
-    s.ledger.settle(symbol, intrinsic);
+    const bool delivers = physical(it->second) && intrinsic >= Money::from_micros(10'000);
+    const Money fee = delivers ? exercise_fee(s, quantity) : Money{};
+    s.ledger.settle(symbol, intrinsic, fee);
+    if (fee > Money{}) s.explained[symbol].costs -= fee.dollars();
     s.trips.erase(symbol);
     s.settled.insert(symbol);
     s.settling[symbol] = settlement;
-    s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size()});
+    s.closures.push_back({symbol, quantity, intrinsic, time, ClosureKind::Settlement, s.fills.size(), fee});
     if (unexercised) s.do_not_exercise.erase(symbol);
     sync_exits(s, symbol, events);
     Json settled{{"symbol", symbol}, {"reference", settlement}, {"intrinsic", intrinsic}};
@@ -4209,7 +4271,7 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     // American equity and ETF options a cent or more in the money are exercised
     // or assigned: settled at intrinsic value, they deliver shares at the
     // settlement price, which together cost the strike.
-    if (physical(it->second) && intrinsic >= Money::from_micros(10'000)) {
+    if (delivers) {
       const auto underlying = it->second.underlying;
       const auto shares = delivered(it->second, quantity);
       if (const auto mark = s.stock_marks.find(underlying); mark == s.stock_marks.end() || mark->second.time <= time)
@@ -4272,8 +4334,9 @@ void assign_early(State& s, const std::vector<Dividend>& dividends, Timestamp cl
     const auto contracts = assigned_contracts(s, symbol, short_contracts);
     if (contracts == 0) continue;
     const auto shares = delivered(contract, -contracts);
-    fill_position(s, symbol, contracts, intrinsic, Money{});
-    s.closures.push_back({symbol, -contracts, intrinsic, s.time, ClosureKind::Assignment, s.fills.size()});
+    const auto fee = exercise_fee(s, contracts);
+    fill_position(s, symbol, contracts, intrinsic, fee);
+    s.closures.push_back({symbol, -contracts, intrinsic, s.time, ClosureKind::Assignment, s.fills.size(), fee});
     trade_shares(s, contract.underlying, shares, *price, StockSource::Assignment, symbol);
     sync_exits(s, symbol, events);
     event(events, "assignment", Json{{"symbol", symbol}, {"contracts", contracts}, {"of", short_contracts}, {"reason", reason},
@@ -4594,8 +4657,9 @@ CommandResult TradingSession::exercise(const std::string& symbol, Quantity contr
     // The contracts close at intrinsic value, so any time value left is a cost,
     // and the shares change hands at the underlying's price.
     const auto apply = [&](State& t) {
-      fill_position(t, symbol, -contracts, intrinsic, Money{});
-      t.closures.push_back({symbol, contracts, intrinsic, t.time, ClosureKind::Exercise, t.fills.size()});
+      const auto fee = exercise_fee(t, contracts);
+      fill_position(t, symbol, -contracts, intrinsic, fee);
+      t.closures.push_back({symbol, contracts, intrinsic, t.time, ClosureKind::Exercise, t.fills.size(), fee});
       trade_shares(t, contract.underlying, shares, *price, StockSource::Exercise, symbol);
     };
     if (s.config.rules.buying_power) {

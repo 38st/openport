@@ -223,6 +223,7 @@ struct Closure {
   Timestamp time = 0;
   ClosureKind kind = ClosureKind::Settlement;
   std::uint64_t after_fill = 0;  ///< Fills recorded before the closure, for ordering.
+  Money fee{};  ///< Total exercise, assignment or delivery fee.
 };
 
 /// How shares changed hands: delivered by an option at settlement, delivered by

@@ -240,6 +240,20 @@ struct FillQuote {
   Quantity left = 0;
   Timestamp quoted = 0;
 };
+/// An itemized fill's charges, adding up to Fill::fee.
+struct FillFees {
+  Money commission;
+  Money clearing;
+  Money regulatory;
+  Money index;
+  [[nodiscard]] Money total() const { return commission + clearing + regulatory + index; }
+  FillFees& operator+=(const FillFees& f) {
+    commission = commission + f.commission; clearing = clearing + f.clearing;
+    regulatory = regulatory + f.regulatory; index = index + f.index;
+    return *this;
+  }
+  bool operator==(const FillFees&) const = default;
+};
 struct Fill {
   std::uint64_t id = 0;
   OrderId order_id = 0;
@@ -255,6 +269,7 @@ struct Fill {
   std::string actor = "unknown";
   /// Absent on fills recorded before the book was kept with them.
   std::optional<FillQuote> quote = std::nullopt;
+  std::optional<FillFees> fees = std::nullopt;
 };
 
 /// Observation numbers strictly increase per OSI. Repeated/older observations
@@ -426,6 +441,21 @@ struct PayoutRules {
   bool operator==(const PayoutRules&) const = default;
 };
 
+/// Commission to open or close, capped per leg per order (zero is uncapped).
+/// Clearing, regulatory and root-specific index fees apply to every contract.
+/// Exercise, assignment and physical delivery cost `exercise` per contract;
+/// cash settlement is free.
+struct FeeSchedule {
+  Money open;
+  Money close;
+  Money leg_cap;
+  Money clearing;
+  Money regulatory;
+  std::map<std::string, Money> index;
+  Money exercise;
+  bool operator==(const FeeSchedule&) const = default;
+};
+
 /// Evaluation-account rules. The defaults describe an unrestricted paper
 /// account: no target, no drawdown floor, any side, no buying-power check.
 struct AccountRules {
@@ -460,6 +490,7 @@ struct AccountRules {
   /// Minutes after New York midnight at which the plan's trading day ends, from
   /// 16:15 (975) to 24:00 (1440): it decides which day a moment counts toward.
   std::int64_t day_end_minutes = kDayEndMinutes;
+  std::optional<FeeSchedule> fees;  ///< Empty keeps SessionConfig::fee_per_contract.
   [[nodiscard]] bool evaluation() const {
     return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{};
   }
@@ -489,6 +520,7 @@ void validate_limits(const Limits& limits);
 /// target and needs at least one qualifying day; slippage is 0-10 ticks. The
 /// consistency percentage is 0-100, minimum days 0-366 and the day's end 16:15 to
 /// 24:00; a floor locks at one level at most, and a static floor not at all.
+/// Fee amounts are $0 to $1,000, with at most 16 named index roots.
 void validate_rules(const AccountRules& rules);
 
 }  // namespace openport::trading
