@@ -256,6 +256,8 @@ export interface AttemptSummary {
 /**
  * Something about the held book worth acting on. `actual` and `limit` depend on the
  * code (docs/paper-trading.md, Risk warnings).
+ * EXPIRY_DELIVERY is info before the account's pre-expiry cutoff closes at market;
+ * delivery applies only to contracts still held if a close cannot fill.
  */
 export interface RiskWarning {
   code: "DELTA_LIMIT" | "VEGA_LIMIT" | "DELTA_HEADROOM" | "SOFT_FLOOR" | "SOFT_FLOOR_ROLLOVER" | "FLOOR_RATCHET" | "EXPIRY_DELIVERY" | "EARLY_ASSIGNMENT" | "EX_DIVIDEND"

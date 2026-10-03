@@ -14347,7 +14347,7 @@
       },
       "RiskWarning": {
         "type": "object",
-        "description": "Something about the held book worth acting on. actual and limit depend on the code: DELTA_LIMIT and VEGA_LIMIT the exposure and its limit; DELTA_HEADROOM the signed percent move that takes dollar delta to a limit and the threshold it is within; SOFT_FLOOR and SOFT_FLOOR_ROLLOVER equity and the soft floor; FLOOR_RATCHET the floor tomorrow and today; EXPIRY_DELIVERY buying power once the options expiring in the money today deliver, and zero; EARLY_ASSIGNMENT the mark and intrinsic value, or the time value and the dividend; EX_DIVIDEND the dividend a share.",
+        "description": "Something about the held book worth acting on. actual and limit depend on the code: DELTA_LIMIT and VEGA_LIMIT the exposure and its limit; DELTA_HEADROOM the signed percent move that takes dollar delta to a limit and the threshold it is within; SOFT_FLOOR and SOFT_FLOOR_ROLLOVER equity and the soft floor; FLOOR_RATCHET the floor tomorrow and today; EXPIRY_DELIVERY buying power once the options expiring in the money today deliver, and zero; EARLY_ASSIGNMENT the mark and intrinsic value, or the time value and the dividend; EX_DIVIDEND the dividend a share. Before the account's pre-expiry cutoff, EXPIRY_DELIVERY is info and names the cutoff time when the position closes at the market; only contracts still held because a close cannot fill are exercised or assigned. Without a cutoff, or at or after it with the position still held, it is warning when delivery leaves negative buying power, otherwise info.",
         "properties": {
           "code": {
             "type": "string",
