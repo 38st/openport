@@ -208,7 +208,8 @@ std::vector<Listing> listings(const Scenario& script, md::Date date, int revisio
   }
   std::vector<Listing> out;
   std::set<std::string> defined;
-  for (const auto& s : series) {
+  for (auto s : series) {
+    s.window = std::max(s.window, script.strike_window);
     const auto symbol = md::conventions_for_root(s.root).underlying;
     if (std::find(script.symbols.begin(), script.symbols.end(), symbol) == script.symbols.end()) continue;
     const double center = centers.for_symbol(symbol);
@@ -322,6 +323,7 @@ struct Play {
   double volatility, iv_shift, spot_vol;
   const std::vector<ScenarioEvent>& events;
   std::vector<ScenarioDividend> dividends;
+  std::optional<double> previous_close;
 };
 
 }  // namespace
@@ -416,32 +418,46 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
     try { return scenario_windows(script, date); }
     catch (const std::invalid_argument& error) { throw std::invalid_argument("scenario." + std::string(error.what())); }
   }();
+  const auto event_time = [&](const ScenarioEvent& event, const ScenarioWindow& w, bool end = false) {
+    const int minutes = end ? event.minutes : 0;
+    if (revision >= 5 && !script.events_scaled) return scenario_event_time(event.at, w, minutes);
+    const auto at = scenario_time(event.at, w.date, w.session == "overnight") + minutes * md::kNanosPerMinute;
+    const auto opens = w.session == "curb" ? w.first - w.step : w.first;
+    if (at < opens || (minutes > 0 ? at > w.close : at >= w.close))
+      throw std::invalid_argument("outside this date's session");
+    return at;
+  };
   std::vector<Play> plays;
   if (script.sessions.empty()) {
-    plays.push_back({windows.front(), script.drift, script.volatility, script.iv_shift, script.spot_vol, script.events, {}});
+    plays.push_back({windows.front(), script.drift, script.volatility, script.iv_shift, script.spot_vol, script.events, {}, script.previous_close});
   } else {
     for (std::size_t i = 0; i < windows.size(); ++i) {
       const auto& session = script.sessions[i];
-      plays.push_back({windows[i], session.drift, session.volatility, session.iv_shift, session.spot_vol, session.events, session.dividends});
+      plays.push_back({windows[i], session.drift, session.volatility, session.iv_shift, session.spot_vol, session.events, session.dividends, session.previous_close});
     }
   }
   for (std::size_t i = 0; i < plays.size(); ++i) {
     const auto& w = plays[i].window;
-    // A curb session opens at 16:15, a step before its first snapshot.
-    const auto opens = w.session == "curb" ? w.first - w.step : w.first;
-    for (const auto& event : plays[i].events) {
+    for (std::size_t index = 0; index < plays[i].events.size(); ++index) {
+      const auto& event = plays[i].events[index];
       if (event.type == "gap") continue;
-      const auto at = scenario_time(event.at, w.date, w.session == "overnight");
-      if (at < opens || at >= w.close)
-        throw std::invalid_argument(script.sessions.empty() ? "scenario.events.at: outside this date's session"
-            : "scenario.sessions[" + std::to_string(i) + "].events.at: outside " + md::format_date(w.date) + "'s " + w.session + " session");
+      try { (void)event_time(event, w); if (event.minutes > 0) (void)event_time(event, w, true); }
+      catch (const std::invalid_argument& error) {
+        throw std::invalid_argument("scenario.sessions[" + std::to_string(i) + "].events[" +
+            std::to_string(index) + "] (" + event.type + " at " + event.at + "): " + error.what());
+      }
     }
+    if (plays[i].previous_close && revision < 2)
+      throw std::invalid_argument("scenario.previous_close needs revision 2 or later");
   }
 
   const auto dividends = revision >= 4 ? scenario_dividends(script, date, revision) : std::vector<trading::Dividend>{};
 
   md::RecordingHeader header;
   header.provider = std::string(kDemoProvider);
+  for (const auto& play : plays)
+    for (const auto& event : play.events)
+      if (event.type == "stall" || event.type == "halt") header.market_controls = true;
   // A run's feed polls at its slowest session's pace: an overnight session's minute.
   md::Timestamp poll = 0;
   for (const auto& window : windows) poll = std::max(poll, window.step);
@@ -452,6 +468,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
   md::Timestamp now = windows.front().first;
   md::RecordingSink::Options sink_options;
   sink_options.clock = [&now] { return now; };
+  sink_options.fixed_frames = revision >= 5;
   Discard discard;
   md::RecordingSink sink(path, header, discard, sink_options);
 
@@ -493,6 +510,15 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
                    kRutOpen * std::exp(kRutBeta * (log_center - log_reference) + rut_idio),
                    vix_level(std::exp(log_center) / kOpen, play.spot_vol, noise, play.iv_shift, carried_iv)};
       }
+      Centers reference = centers;
+      if (!first && play.previous_close) {
+        const double opening = std::exp(base);
+        reference = {opening, std::max(0.01, opening / kSpyRatio - paid["SPY"]),
+            std::max(0.01, kQqqOpen * std::exp(kQqqBeta * (base - log_reference) + idio) - paid["QQQ"]),
+            kNdxOpen * std::exp(kQqqBeta * (base - log_reference) + idio),
+            kRutOpen * std::exp(kRutBeta * (base - log_reference) + rut_idio),
+            vix_level(opening / kOpen, play.spot_vol, noise, play.iv_shift, carried_iv)};
+      }
       for (auto& [contract, monthly, center] : listings(script, w.date, revision, centers)) {
         if (publisher.known(contract.osi_symbol())) continue;
         Listed listed;
@@ -520,7 +546,8 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         // Each underlying's previous close, as the run printed it.
         for (const auto& symbol : script.symbols)
           if (const auto close = closes.find(symbol); close != closes.end())
-            sink.publish(md::UnderlyingClose{symbol, w.first, closed, close->second});
+            sink.publish(md::UnderlyingClose{symbol, w.first, closed, play.previous_close
+                ? cents(reference.for_symbol(symbol) * std::exp(*play.previous_close)) : close->second});
       }
     }
     if (first) {
@@ -539,7 +566,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
       }
       if (revision >= 2)
         for (const auto& symbol : script.symbols)
-          sink.publish(md::UnderlyingClose{symbol, w.first, md::previous_business_day(date), cents(previous.for_symbol(symbol))});
+          sink.publish(md::UnderlyingClose{symbol, w.first, md::previous_business_day(date), cents(previous.for_symbol(symbol) * std::exp(play.previous_close.value_or(0)))});
     }
     // ETF prices drop by a dividend from its ex-date on.
     if (revision >= 4) {
@@ -589,7 +616,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
       event_iv = carried_iv;
       for (const auto& event : play.events) {
         if (event.type == "gap") { log_level += event.move; continue; }
-        const auto at = scenario_time(event.at, w.date, overnight);
+        const auto at = event_time(event, w);
         if (now < at) continue;
         if (event.type == "crush") event_iv += event.iv;
         if (event.type == "spike") {
@@ -603,6 +630,23 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
           log_level += (std::log(event.strike) - log_level) * pull;
         }
       }
+      std::set<std::string> stalled;
+      md::Timestamp halted_until = 0;
+      std::vector<const ScenarioEvent*> books;
+      for (const auto& event : play.events) {
+        if (event.minutes == 0) continue;
+        const auto at = event_time(event, w);
+        const auto end = event_time(event, w, true);
+        if (now < at || now >= end) continue;
+        if (event.type == "halt") {
+          halted_until = std::max(halted_until, end);
+          if (now == at) sink.publish(md::TradingHalt{now, end});
+        } else if (event.type == "stall") {
+          const auto& selected = event.symbols.empty() ? script.symbols : event.symbols;
+          stalled.insert(selected.begin(), selected.end());
+        } else if (event.type == "book") books.push_back(&event);
+      }
+      const auto frozen = [&](const std::string& symbol) { return halted_until > now || stalled.contains(symbol); };
       const double level = std::exp(log_level);
       if (!after_close) close_level = level;
       const double ratio = level / kOpen;
@@ -618,11 +662,11 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         if (!after_close)
           for (const auto& [symbol, price] : std::array<std::pair<const char*, double>, 4>{{
               {"XSP", level / 10}, {"NDX", ndx}, {"RUT", rut}, {"VIX", vix}}})
-            if (chains.contains(symbol)) sink.publish(md::UnderlyingQuote{symbol, now, 0, 0, cents(price)});
+            if (chains.contains(symbol) && !frozen(symbol)) sink.publish(md::UnderlyingQuote{symbol, now, 0, 0, cents(price)});
         // The index prints until the close; SPY and QQQ trade on after it.
-        if (!after_close && chains.contains("SPX")) sink.publish(md::UnderlyingQuote{"SPX", now, 0, 0, cents(level)});
+        if (!after_close && chains.contains("SPX") && !frozen("SPX")) sink.publish(md::UnderlyingQuote{"SPX", now, 0, 0, cents(level)});
         for (const auto& [symbol, price] : {std::pair<const char*, double>{"SPY", spy}, {"QQQ", qqq}}) {
-          if (!chains.contains(symbol)) continue;
+          if (!chains.contains(symbol) || frozen(symbol)) continue;
           const double bid = std::floor(price * 100) / 100;
           sink.publish(md::UnderlyingQuote{symbol, now, bid, cents(bid + 0.01), cents(price)});
         }
@@ -639,6 +683,12 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         }
       }
       for (auto& [underlying, chain] : chains) {
+        if (frozen(underlying)) {
+          sink.publish(md::ProviderStatus{now, md::FeedState::Stale,
+              halted_until > now ? "scenario market halt" : "scenario feed stall", underlying});
+          sink.publish(md::SnapshotHeartbeat{underlying, now});
+          continue;
+        }
         const bool index = md::is_index_underlying(underlying);
         const bool trades = revision < 3 ? underlying == "SPX" : md::trading_session(underlying, now).open;
         if (!regular && !trades) {
@@ -714,7 +764,24 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
                 (0.5 + draw(seed ^ 0x564F4C554D45ull, listed.id, tick));
           }
           publisher.volume(listed.id, now, std::floor(listed.volume), sink);
-          publisher.quote(listed.id, now, q.bid, q.ask, listed.bid_size, listed.ask_size, sink);
+          auto stressed = q;
+          auto bid_size = listed.bid_size, ask_size = listed.ask_size;
+          for (const auto* event : books) {
+            if (!event->symbols.empty() && std::find(event->symbols.begin(), event->symbols.end(), underlying) == event->symbols.end()) continue;
+            if (event->expiry && *event->expiry != c.expiry) continue;
+            stressed = q;
+            bid_size = std::max(1.0, listed.bid_size);
+            ask_size = std::max(1.0, listed.ask_size);
+            if (event->state == "crossed") stressed.bid = cents(q.ask + listed.ticks.above);
+            else if (event->state == "locked") stressed.bid = q.ask;
+            else if (event->state == "one_sided") { stressed.bid = 0; bid_size = 0; }
+            else if (event->state == "zero_size") { stressed.bid = std::max(q.bid, listed.ticks.below); bid_size = ask_size = 0; }
+            else if (event->state == "wide") {
+              stressed.bid = cents(std::max(listed.ticks.below, q.bid - 10 * listed.ticks.above));
+              stressed.ask = cents(q.ask + 10 * listed.ticks.above);
+            }
+          }
+          publisher.quote(listed.id, now, stressed.bid, stressed.ask, bid_size, ask_size, sink);
           seen.insert(listed.id);
         }
         publisher.finish(underlying, seen, now, sink);

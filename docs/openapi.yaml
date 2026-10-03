@@ -5264,6 +5264,7 @@
         "type": "object",
         "properties": {
           "level": {
+            "description": "0 is an authored market-wide halt; 1–3 are price-triggered circuit breakers.",
             "type": "number"
           },
           "start": {
@@ -5328,6 +5329,11 @@
                 "type": "null"
               }
             ]
+          },
+          "inactive_reason": {
+            "type": ["string", "null"],
+            "enum": ["MISSING_PREVIOUS_CLOSE", null],
+            "description": "Why price-triggered circuit breakers lack a reference. Null when ready; authored halts are independent. Optional on older servers."
           },
           "level": {
             "type": "number"

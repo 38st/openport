@@ -50,6 +50,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/playbooks_test.cpp
     server/desk_test.cpp
     server/multiday_test.cpp
+    server/stress_test.cpp
     server/backtest_test.cpp
     server/paper_test.cpp
     server/review_test.cpp

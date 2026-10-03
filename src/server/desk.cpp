@@ -365,14 +365,25 @@ std::optional<MarketHalt> circuit_breaker(double reference, double price, md::Ti
 trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp market_time,
     md::Timestamp wall_time, std::chrono::seconds delay, md::Timestamp max_quote_age,
     const std::vector<MarketHalt>& halts) {
+  // Authored halts use the driver clock: their frozen quotes must not hide either
+  // the halt or its resume behind the feed-stalled gate.
+  const auto delay_seconds = std::max<std::int64_t>(0, delay.count());
+  const auto shown = delay_seconds >= wall_time / md::kNanosPerSecond ? 0 : wall_time - delay_seconds * md::kNanosPerSecond;
+  bool authored = false;
+  md::Timestamp resume = 0;
+  for (const auto& halt : halts) {
+    if (shown < halt.start || shown >= halt.end) continue;
+    authored = authored || halt.level == 0;
+    resume = std::max(resume, halt.end);
+  }
+  if (authored)
+    return {Reason::MARKET_HALTED, "Authored market-wide halt; trading resumes at " + md::format_timestamp(resume), {}, {}, {}};
   if (market_time <= 0)
     return {Reason::INVALID_QUOTE, std::string(underlying) + " is waiting for market data", {}, {}, {}};
-  const auto delay_seconds = std::max<std::int64_t>(0, delay.count());
   // A healthy feed shows the market as it was `delay` ago, and stops at the end
   // of a session. Data more than max_quote_age behind that is a stalled feed;
   // a feed that rightly shows a closed market (as in a session's first minutes
   // on a delayed feed) is not.
-  const auto shown = delay_seconds >= wall_time / md::kNanosPerSecond ? 0 : wall_time - delay_seconds * md::kNanosPerSecond;
   const auto session = md::trading_session(underlying, market_time);
   auto expected = market_time;
   if (md::trading_session(underlying, shown).open) expected = shown;
@@ -391,7 +402,7 @@ trading::Decision paper_acceptance(std::string_view underlying, md::Timestamp ma
         " behind the market; the feed appears to have stalled", {}, {}, {}};
   }
   for (const auto& halt : halts) {
-    if (market_time < halt.start || market_time >= halt.end) continue;
+    if (halt.level == 0 || market_time < halt.start || market_time >= halt.end) continue;
     const auto resumes = md::new_york_time(halt.end).seconds / 60;
     char text[240];
     std::snprintf(text, sizeof text,
@@ -947,6 +958,10 @@ void Desk::observe_trading(const md::Event& event) {
     }
   } else if (const auto* spot = std::get_if<md::UnderlyingQuote>(&event)) {
     market_time_ = std::max(market_time_, spot->ts);
+  } else if (const auto* heartbeat = std::get_if<md::SnapshotHeartbeat>(&event)) {
+    market_time_ = std::max(market_time_, heartbeat->ts);
+  } else if (const auto* halt = std::get_if<md::TradingHalt>(&event)) {
+    market_time_ = std::max(market_time_, halt->ts);
   } else if (const auto* snapshot = std::get_if<md::SnapshotComplete>(&event)) {
     // It vouches for quotes but does not move the market clock: a provider may stamp
     // it with the wall clock (ThetaData), which can run ahead of its data.
@@ -1015,7 +1030,7 @@ void Desk::load_circuit_breaker() {
         !data.at("market_time").is_number_integer() || data.at("level") < 0 || data.at("level") > 3 ||
         (recovered.symbol != "SPX" && recovered.symbol != "SPY") || recovered.market_time <= 0 ||
         md::trading_date(recovered.market_time) != recovered.day || !data.at("halts").is_array() ||
-        data.at("halts").size() > 3)
+        data.at("halts").size() > 771)
       throw std::runtime_error("invalid breaker state");
     const auto& close = data.at("previous_close");
     if (!close.is_null()) {
@@ -1029,6 +1044,14 @@ void Desk::load_circuit_breaker() {
       MarketHalt halt{value.at("level").get<int>(), value.at("start").get<md::Timestamp>(),
                       value.at("end").get<md::Timestamp>(), value.at("reference").get<double>(),
                       value.at("price").get<double>()};
+      if (halt.level == 0) {
+        if (!value.at("level").is_number_integer() || !value.at("start").is_number_integer() ||
+            !value.at("end").is_number_integer() || halt.start <= 0 || halt.start > recovered.market_time ||
+            halt.end <= halt.start || halt.end - halt.start > md::kNanosPerDay || halt.reference != 0 || halt.price != 0)
+          throw std::runtime_error("invalid authored halt");
+        recovered.halts.push_back(halt);
+        continue;
+      }
       const auto expected = circuit_breaker(halt.reference, halt.price, halt.start, level);
       if (!value.at("level").is_number_integer() || value.at("level") < 1 || value.at("level") > 3 ||
           !value.at("start").is_number_integer() ||
@@ -1106,6 +1129,15 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
   // after its regular close (16:00, 13:00 early) is our documented PM
   // closing-print approximation; the last one before it stands in when none comes.
   for (const auto& event : batch) {
+    if (const auto* halt = std::get_if<md::TradingHalt>(&event)) {
+      if (halt->ts > 0 && halt->end > halt->ts && halt->end - halt->ts <= md::kNanosPerDay) {
+        advance_circuit_breaker(halt->ts);
+        if (!breaker_.halts.empty() && new_york_date(breaker_.halts.back().start) != breaker_.day) breaker_.halts.clear();
+        breaker_.halts.push_back({0, halt->ts, halt->end, 0, 0});
+        breaker_dirty_ = true;
+      }
+      continue;
+    }
     if (const auto* close = std::get_if<md::UnderlyingClose>(&event)) {
       if (!(close->price > 0) || !std::isfinite(close->price)) continue;
       official_closes_[{close->symbol, close->date}] = *close;

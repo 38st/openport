@@ -1,0 +1,26 @@
+{
+  "id": "stress-rehearsal",
+  "title": "Books, stalls and circuit breakers",
+  "description": "Crossed and empty books, a feed stall and an authored halt precede three circuit-breaker levels. Quotes and trading recover between windows.",
+  "goal": "Recognise invalid books and stale marks, manage a halt and resume, then observe the level-3 close.",
+  "symbols": ["SPX", "XSP"],
+  "session": "regular",
+  "date": "2026-09-16",
+  "seed": 26,
+  "generator": 1,
+  "drift": [[1, 0]],
+  "volatility": 0,
+  "iv_shift": 0,
+  "spot_vol": -1,
+  "previous_close": 0.06,
+  "strike_window": 0.3,
+  "events": [
+    {"type": "book", "at": "09:45", "minutes": 3, "state": "crossed", "symbols": ["SPX"]},
+    {"type": "book", "at": "09:50", "minutes": 3, "state": "zero_size", "symbols": ["SPX"]},
+    {"type": "stall", "at": "10:00", "minutes": 4, "symbols": ["SPX"]},
+    {"type": "halt", "at": "10:15", "minutes": 15},
+    {"type": "spike", "at": "11:00", "move": -0.04, "iv": 0.02},
+    {"type": "spike", "at": "12:00", "move": -0.10, "iv": 0.03},
+    {"type": "spike", "at": "14:00", "move": -0.10, "iv": 0.04}
+  ]
+}

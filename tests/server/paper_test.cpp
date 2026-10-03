@@ -939,12 +939,13 @@ TEST(CircuitBreakers, PublishesReferenceAndHaltsInStatusAndTicksWithoutPaperTrad
   };
   EXPECT_EQ(state(), (json{{"symbol", "SPX"}, {"day", nullptr}, {"previous_close", nullptr},
                            {"level", 0}, {"halts", json::array()}, {"market_time", nullptr},
-                           {"active", false}, {"error", nullptr}}));
+                           {"active", false}, {"error", nullptr}, {"inactive_reason", "MISSING_PREVIOUS_CLOSE"}}));
   provider.sink->publish(md::UnderlyingClose{"SPX", at(9, 59), {2026, 9, 21}, 5400});
   provider.sink->publish(md::UnderlyingClose{"SPY", at(9, 59), {2026, 9, 21}, 540});
   provider.sink->publish(md::UnderlyingQuote{"SPY", at(9, 59), 400, 400, 400});
   ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.market_time == at(9, 59); }));
   EXPECT_EQ(state()["previous_close"], (json{{"date", "2026-09-21"}, {"price", 5400}}));
+  EXPECT_TRUE(state()["inactive_reason"].is_null());
   EXPECT_EQ(state()["level"], 0);
   provider.sink->publish(md::UnderlyingQuote{"SPX", at(10, 0), 5000, 5000, 5000});
   ASSERT_TRUE(wait_for([&] { return engine.status().circuit_breaker.active; }));

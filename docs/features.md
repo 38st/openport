@@ -171,7 +171,7 @@ simulation's limits.
   show their provider and an imported label. The importers follow the documented
   APIs and have saved-response tests; they have not yet been run live with a key.
 - **Demo market**: when markets are closed or the feed has stalled, the terminal offers
-  nineteen built-in simulated scenarios, including SPX, SPY, QQQ, XSP, NDX, RUT and
+  twenty built-in simulated scenarios, including SPX, SPY, QQQ, XSP, NDX, RUT and
   VIX options, with drill objectives, gaps, volatility changes, overnight sessions
   and runs that span several sessions and days. Each run chooses a fresh seed, or
   repeats one you supply. Add your own JSON files with `--scenario-dir`; generated
@@ -316,6 +316,10 @@ settle AM positions on the expiry opening print, an approximation of the officia
 special opening quotation; live providers keep manual imports.
 
 ## Roadmap
+
+- [x] F26 stress-scenario authoring: abnormal books, quote stalls and stale marks,
+  authored previous closes and market halts, all three circuit-breaker levels,
+  wider strike ranges for 10%+ moves and margin floors, and early-close event scaling.
 
 - [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
 - [x] F52: backtest comparison, combined independent daily P&L, per-day evaluation rows,

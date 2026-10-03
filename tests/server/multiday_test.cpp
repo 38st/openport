@@ -359,3 +359,21 @@ TEST(MultiDayReplay, ScenarioSecondsAndRestartKeepTheSeedPlanSettingsAndCommandP
 }
 
 }  // namespace
+
+TEST(MultiDayReplay, WaterfallStartsAndStepsOnAnEarlyCloseDate) {
+  test::RecordingFile file;
+  server::Engine::Options base;
+  base.analytics_interval = std::chrono::milliseconds(1);
+  base.paper_journal = file.directory / "paper.jsonl";
+  server::ReplayHost host({file.directory, base, true});
+  const auto started = call(host, "POST", "/api/replay", {{"scenario", "afternoon-waterfall"},
+      {"date", "2026-11-27"}, {"seed", "17"}, {"paused", true}, {"start_at", "12:00"}});
+  ASSERT_EQ(started.status, 201) << started.body;
+  ASSERT_TRUE(test::recording_eventually([&] {
+    return !json::parse(call(host, "GET", "/api/replay").body)["replay"]["fast_forwarding"].get<bool>();
+  }));
+  const auto step = call(host, "PUT", "/api/replay", {{"until", "12:30"}});
+  ASSERT_EQ(step.status, 200) << step.body;
+  EXPECT_EQ(json::parse(step.body)["settled_through"], "2026-11-27T17:30:00.000Z");
+  EXPECT_EQ(call(host, "DELETE", "/api/replay").status, 200);
+}

@@ -42,10 +42,10 @@ class DemoProvider final : public md::Provider {
   [[nodiscard]] const std::filesystem::path& directory() const { return directory_; }
   void validate(const md::Subscription& subscription) const;
 
+  /// Fit events with the shared generator clock; keeps older live revisions unchanged.
+  [[nodiscard]] static Scenario on_date(Scenario scenario, md::Date date);
   [[nodiscard]] static md::Date next_date(md::Date date);
   [[nodiscard]] static std::uint64_t seed(std::string_view id, md::Date date);
-  /// Fit timed events proportionally into a shortened regular session.
-  [[nodiscard]] static Scenario on_date(Scenario scenario, md::Date date);
 
  private:
   void run(md::Subscription subscription, md::EventSink& sink);

@@ -297,7 +297,10 @@ only closes a short, which can take a fresh book that shows only an ask, as a fa
 option nobody bids for does: a short quoted 0.00/0.05 is bought back at 0.05 within
 the displayed size, its price band measured from the mark halfway to the ask. Buying
 more than the short, or selling, still needs a two-sided quote. Locked positive
-books are accepted. Displayed size is an independent bid/ask budget per
+books are accepted. [Stress scenarios](scenarios.md#events) can author each book
+state, stall quotes until marks become stale, and halt/resume the market. During a
+stall, marks are retained with `valuation_complete: false` and `STALE_QUOTE` in
+quality flags; orders on that feed fail `FEED_STALLED`. Displayed size is an independent bid/ask budget per
 (contract, observation), consumed across all paper orders. The same observation
 never refills that budget, including after recovery. Each new observation refreshes
 it once. The same observation offered again with a later time confirms the quote is
@@ -2494,7 +2497,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `REPLAY_NOT_RESTARTABLE` | HTTP 409: a source run cannot be restarted with its commands because its inputs, calendar, driver or journal integrity do not permit deterministic re-execution |
 | `REPLAY_NOT_RESUMABLE` | HTTP 409: a saved replay run cannot resume: it has ended, or it was recorded by an older driver, or its recording, scenario or the exchange calendar has changed; the message says which |
 | `REPLAY_HISTORY_FAILED` | A saved replay run's journal cannot be opened, as when it was edited; the message gives the reason |
-| `MARKET_HALTED` | A market-wide circuit breaker has halted trading; the message gives the S&P 500's fall and when trading resumes |
+| `MARKET_HALTED` | A market-wide circuit breaker or authored scenario halt has stopped trading; the message identifies the halt and resume time |
 | `INVALID_REQUEST` | HTTP 400: a malformed body or query, including an order no market could make valid (see the HTTP errors below); nothing is recorded |
 | `UNKNOWN_ACCOUNT`, `ACCOUNTS_UNSUPPORTED` | HTTP 404 for an `account=` the server does not have; 409 when creating an account on a server that keeps one (a replay, or no accounts directory) |
 | `LIMITS_REVISION` | HTTP 409: `expected_revision` on `PUT /api/risk/limits` or `/api/risk/guardrails` is not the current `limits_revision`; refetch and retry |
@@ -2686,7 +2689,8 @@ object, shared by all accounts and available even with paper trading disabled:
 | `day` | Current trading date as `YYYY-MM-DD` on the market-data clock; null before any data or recovery. As with the paper accounts, the next trading date starts after 17:00 ET. |
 | `previous_close` | `{date, price}` for the previous business day, or null when unavailable. The date is `YYYY-MM-DD`; the price is a number. An official close takes precedence over a recorded closing print. |
 | `level` | Highest level tripped on `day`, from 0 (none) through 3. |
-| `halts` | Halts of the most recent day that tripped one, in start order. Each has `level`, `start`, `end`, `reference`, `price` and `active`. The two prices record the previous close and the print that tripped that halt. |
+| `inactive_reason` | `MISSING_PREVIOUS_CLOSE` when the price-triggered breaker has no reference, otherwise null; optional on older servers. Authored halts work independently. |
+| `halts` | Halts of the most recent day that tripped one, in start order. Each has `level`, `start`, `end`, `reference`, `price` and `active`. The two prices record the previous close and the print that tripped that halt. An authored scenario halt has level 0 and both prices 0; levels 1–3 retain the real circuit-breaker thresholds. |
 | `active` | Whether any halt covers the latest market time, including its start and excluding its end. Each halt's flag uses the same clock. |
 | `market_time` | Latest observed market time, or recovered time at startup; null before either is available. This and halt timestamps use the API's UTC ISO timestamp format. |
 | `error` | Last breaker storage failure for this engine instance, or null. A later successful write does not erase the warning. |

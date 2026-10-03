@@ -4,7 +4,7 @@ Scenarios are generated practice sessions, not market data or reconstructions of
 historical days. Generated prices and volume are labelled simulated. The session date
 sets the calendar and expiries; it does not identify an event being reproduced.
 
-The nineteen built-ins, four of them [several sessions](#several-sessions) long, are compiled into the binary from `scenarios/*.json`.
+The twenty built-ins, four of them [several sessions](#several-sessions) long, are compiled into the binary from `scenarios/*.json`.
 They need no files at runtime. CMake regenerates the embedded library when a source
 file is edited, added or removed; rebuild to change a built-in.
 `--scenario-dir DIR` adds JSON files, in
@@ -35,7 +35,7 @@ same strict parser; diagnostics name the source file and field.
 }
 ```
 
-All fields except `goal` and `events` are required, unless `sessions` describes the
+The example’s fields except `goal` and `events` are required, unless `sessions` describes the
 run (see [several sessions](#several-sessions)). Unknown fields and generator
 versions are rejected. Files are limited to 64 KiB.
 
@@ -53,6 +53,8 @@ versions are rejected. Files are limited to 64 KiB.
 | `iv_shift` | Absolute shift to implied volatility, −0.1 to 1; 0.01 is one vol point |
 | `spot_vol` | IV response per unit of spot return, −10 to 0 |
 | `events` | At most 32 events; no repeated type at the same time |
+| `previous_close` | Optional previous-close log return relative to the opening reference before a gap, −0.3 to 0.3; 0.08 makes the previous close about 8.33% higher, so the open trips level 1. Requires revision 2+ |
+| `strike_window` | Optional minimum strike radius as a fraction of the opening level, 0.03–0.5, across all listed series. For a 15% move, 0.3 keeps strikes around both levels; VIX retains its wider native range |
 | `sessions` | 1–24 sessions played one after another as one run, in place of `session`, `drift` and `events`; see below |
 
 Drift is linearly interpolated from zero at the open. A seeded, mean-reverting
@@ -188,7 +190,8 @@ session has:
 | `session` | `regular`, `curb` or `overnight` |
 | `drift` | As above, over this session: zero is where the previous session ended |
 | `volatility`, `iv_shift`, `spot_vol` | Optional; as above |
-| `events` | Optional; as above, at times inside this session. A pin needs a regular session |
+| `events` | Optional; as above, at times inside this session. A pin or halt needs a regular session |
+| `previous_close` | Optional, as above; only the first session of a trading date may set it. Later dates otherwise retain the run’s actual previous closing print |
 | `dividends` | Optional; at most two `{"symbol": "SPY", "per_share": 1.75}`: SPY or QQQ, among `symbols`, going ex on this session's trading date. Not on the run's first date, and once a symbol and date |
 
 `date` is the first session's trading date, and the sessions follow each other in
@@ -229,17 +232,63 @@ days are single sessions.
 
 ## Events
 
-Times are `HH:MM` in New York, within the session and before its close (a curb
+Times are `HH:MM` in New York. Regular events are authored on a full 09:30–16:00
+session, even when the file’s date closes early. Replays, recordings and the live
+demo feed share the same scaling: multiply minutes since 09:30 by the actual
+regular duration / 390 and round down to a minute. Window endpoints scale too,
+with a minimum duration of one minute. Overnight and curb times are unscaled.
+Times must be within the session and before its close (a curb
 session's close is its last snapshot, 16:59:45). For
 an overnight session, 20:15–23:59 belongs to the evening before the trading date;
 00:00–09:24 belongs to that date. Events are applied in file order.
 
 | Event | Fields | Effect |
 | --- | --- | --- |
-| Gap | `{"type":"gap","move":0.01}` | Adds a log return at the opening snapshot; ±0.1 maximum |
+| Gap | `{"type":"gap","move":0.01}` | Adds a log return at the opening snapshot; ±0.3 maximum |
 | Crush | `{"type":"crush","at":"10:30","iv":-0.04}` | Lowers IV at that time; change from −0.3 to −0.0001 |
-| Spike | `{"type":"spike","at":"14:30","move":-0.006,"iv":0.03}` | Spreads a move over five minutes and jumps IV immediately; move ±0.1, IV 0–0.3 |
+| Spike | `{"type":"spike","at":"14:30","move":-0.006,"iv":0.03}` | Spreads a move over five minutes and jumps IV immediately; move ±0.3, IV 0–0.3 |
 | Pin | `{"type":"pin","at":"14:30","strike":6000}` | Progressively pulls the SPX level to the strike at the regular close; strike 5400–6600; regular sessions only |
+| Book | `{"type":"book","at":"11:00","minutes":5,"state":"crossed","symbols":["SPX"],"expiry":"2026-09-18"}` | Changes option books for the window; state is `crossed`, `locked`, `one_sided`, `zero_size` or `wide`. Optional symbols select a nonempty unique subset of the scenario; default all. Optional expiry selects an exact date (it does not shift when replay date changes) |
+| Stall | `{"type":"stall","at":"13:00","minutes":4,"symbols":["SPX"]}` | Freezes underlying and option quotes, volume and snapshot confirmations for the selected symbols (default all); heartbeats advance market time without refreshing marks |
+| Halt | `{"type":"halt","at":"11:30","minutes":15}` | Market-wide, regular session only; freezes all quotes and refuses orders with `MARKET_HALTED` until the exclusive end, independently of the price-triggered circuit breaker |
+
+Window `minutes` must be an integer 1–790 and its end must be within the authored
+session. The window includes its start and excludes its end. At its end, the
+market rejoins the underlying scripted path. Stalls and halts take precedence over
+books; overlapping books apply in file order, with the last applicable book winning.
+No expiry or symbol filter on a halt: it always affects the entire market.
+
+Crossed books set bid one upper-tier tick above ask; locked books set bid equal to
+ask and remain executable. One-sided books remove the bid and its size, keeping
+the ask (marked at ask/2). Zero-size books have positive prices but zero size on
+both sides. Wide books add ten upper-tier ticks on each side, flooring bid at a
+positive tick. Other books have positive integer sizes. Every book returns to
+normal when the window ends. No NaN input is accepted.
+
+After a stall exceeds `max_quote_age`, held marks remain visible but lose freshness:
+`valuation_complete` is false and quality flags include `STALE_QUOTE`. Orders on
+that feed fail with `FEED_STALLED`; orders on a healthy feed still require fresh
+marks for all holdings. Resume restores confirmations, marks and trading. Commands
+and heartbeats cannot indefinitely refresh stalled quotes.
+
+`stress-rehearsal` exercises invalid books, a stall, an authored halt and all three
+real circuit-breaker levels. `previous_close: 0.06` followed by three downward
+spikes crosses 7%, 13% and 20%; level 3 lasts for the rest of the trading date.
+An upward 0.16 log-return spike and `strike_window: 0.3` let a short put at the old
+opening strike reach its 10%-of-strike margin floor while strikes remain near the
+new spot. A sufficiently OTM short call reaches its 10%-of-spot floor.
+
+Revision 5 adds shared early-close timing and fixed-size compression frames for
+byte-identical generated files independent of generation speed. Revisions 1–4 regenerate the original
+replay times (and still reject afternoon events outside a shortened session). This
+gate preserves morning events that already worked on early-close dates. The live
+demo feed retains its historical scaled timing at every revision. Older revisions
+retain timed compression flushes: under load, compressed frame boundaries can
+differ even when the decompressed recording bytes agree. Revision 5 removes this
+pre-existing packaging nondeterminism. Optional stress
+fields do not change existing scenario output on regular dates. Stress recordings with stalls or halts
+use recording format 4 (heartbeat tag 10 and halt tag 11); older builds refuse this
+format rather than trade through a halt. Existing recordings remain readable.
 
 SPY, QQQ, XSP, NDX and RUT follow the changed index path. Every expiry is repriced from the new
 forward and smile, including the spot response in `spot_vol`. An IV event receives

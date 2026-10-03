@@ -105,7 +105,9 @@ DemoProvider::DemoProvider(Options options) : options_(std::move(options)) {
   };
   const auto& builtins = builtin_scenarios();
   if (options_.days.empty()) {
-    for (const auto& day : builtins) if (!day.overnight && day.sessions.empty() && supported(day)) days_.push_back(day);
+    for (const auto& day : builtins)
+      if (!day.overnight && day.sessions.empty() && supported(day) &&
+          !day.previous_close && day.strike_window == 0) days_.push_back(day);
   } else {
     for (const auto& id : options_.days) {
       const auto it = std::find_if(builtins.begin(), builtins.end(), [&](const auto& day) { return day.id == id; });
@@ -156,16 +158,18 @@ std::uint64_t DemoProvider::seed(std::string_view id, md::Date date) {
   return value;
 }
 Scenario DemoProvider::on_date(Scenario scenario, md::Date date) {
-  const int minutes = md::regular_close_hour(date) * 60 - 570;
-  if (minutes != 390) {
-    for (auto& event : scenario.events) {
-      if (event.type == "gap") continue;
-      const auto original = md::new_york_time(scenario_time(event.at, scenario.date, false)).seconds / 60;
-      const int at = 570 + (original - 570) * minutes / 390;
-      event.at = (at / 60 < 10 ? "0" : "") + std::to_string(at / 60) + ":" +
-          (at % 60 < 10 ? "0" : "") + std::to_string(at % 60);
-    }
+  if (scenario.events_scaled) return scenario;
+  const auto window = scenario_windows(scenario, date).front();
+  for (auto& event : scenario.events) {
+    if (event.type == "gap") continue;
+    const auto at = scenario_event_time(event.at, window);
+    if (event.minutes > 0)
+      event.minutes = static_cast<int>((scenario_event_time(event.at, window, event.minutes) - at) / md::kNanosPerMinute);
+    const auto minute = md::new_york_time(at).seconds / 60;
+    event.at = (minute / 60 < 10 ? "0" : "") + std::to_string(minute / 60) + ":" +
+        (minute % 60 < 10 ? "0" : "") + std::to_string(minute % 60);
   }
+  scenario.events_scaled = true;
   return scenario;
 }
 void DemoProvider::validate(const md::Subscription& subscription) const {
@@ -263,10 +267,13 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
       bool first_batch = true;
       CatchUp caught;
       const auto title = "demo: " + days_[day_on(date)].title + " · simulated prices";
-      replay->set_driver([&, title](ReplayBatch batch) {
+      const bool authored_close = days_[day_on(date)].previous_close.has_value();
+      if (authored_close) closes.clear();
+      replay->set_driver([&, title, authored_close](ReplayBatch batch) {
         // A day's recording opens with the previous close its scenario starts from; the
         // feed keeps the close the day before it actually printed.
-        std::erase_if(batch.events, [](const md::Event& event) { return std::holds_alternative<md::UnderlyingClose>(event); });
+        if (!authored_close)
+          std::erase_if(batch.events, [](const md::Event& event) { return std::holds_alternative<md::UnderlyingClose>(event); });
         for (auto& event : batch.events) {
           std::visit([&](auto& value) {
             using T = std::decay_t<decltype(value)>;
@@ -281,7 +288,7 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
             } else if constexpr (requires { value.id; }) {
               value.id = remap.at(value.id);
             } else if constexpr (std::is_same_v<T, md::ProviderStatus>) {
-              value.message = title;
+              value.message = value.state == md::FeedState::Stale ? title + ": " + value.message : title;
             }
           }, event);
         }
