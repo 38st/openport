@@ -42,6 +42,132 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
   if (!result) throw std::runtime_error("Desk did not complete command");
   return *result;
 }
+TEST(Desk, DemoAmSettlementUsesFirstExpiryOpeningPrintAndLiveKeepsManualImport) {
+  for (const auto* provider : {"demo", "live"}) {
+    for (const bool manual : {false, true}) {
+      test::ScriptedMarket market;
+      market.contract = *md::parse_osi("SPX260923C05000000");
+      server::Desk::Options options;
+      server::Desk desk(provider, {}, {{"SPX"}}, options);
+      desk.start_trading();
+      desk.replay_batch(market_batch(market), market.time);
+      server::TradingCommand entry;
+      entry.order = market.market("am-entry");
+      ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+      const auto open = market.contract.expiry_time();
+      // Neither another date's open nor today's premarket price settles the position.
+      desk.replay_batch({md::UnderlyingQuote{"SPX", open - md::kNanosPerMinute, 0, 0, 5020}}, open - md::kNanosPerMinute);
+      ASSERT_EQ(desk.trading_view()->snapshot->positions.size(), 1U);
+      desk.replay_batch({md::UnderlyingQuote{"SPY", open, 0, 0, 500}}, open);
+      ASSERT_EQ(desk.trading_view()->snapshot->positions.size(), 1U);
+      EXPECT_TRUE(desk.trading_view()->snapshot->positions[0].awaiting_settlement);
+      EXPECT_EQ(desk.trading_view()->opening_settlement, std::string_view(provider) == "demo");
+      if (manual) {
+        server::TradingCommand settle;
+        settle.kind = server::TradingCommand::Kind::Settle;
+        settle.symbol = market.symbol();
+        settle.settlement = Money::parse("5007.125");
+        ASSERT_TRUE(command(desk, settle, open, open).decision.ok());
+      }
+      // Arrival after 09:30 still counts, but a later print in the batch cannot replace it.
+      const auto print_time = open + md::kNanosPerSecond;
+      desk.replay_batch({md::UnderlyingQuote{"SPX", print_time, 0, 0, 5011.125},
+                         md::UnderlyingQuote{"SPX", print_time + md::kNanosPerSecond, 0, 0, 5099}}, print_time + md::kNanosPerSecond);
+      const auto snapshot = desk.trading_view()->snapshot;
+      if (!manual && std::string_view(provider) == "live") {
+        EXPECT_EQ(snapshot->positions.size(), 1U);
+        EXPECT_TRUE(snapshot->settlements.empty());
+      } else {
+        EXPECT_TRUE(snapshot->positions.empty());
+        ASSERT_EQ(snapshot->settlements.size(), 1U);
+        const auto& record = snapshot->settlements.front();
+        EXPECT_EQ(record.value, Money::parse(manual ? "5007.125" : "5011.125"));
+        ASSERT_TRUE(record.source);
+        EXPECT_EQ(record.source->at("kind"), manual ? "manual_am_import" : "demo_opening_print");
+        if (!manual) {
+          EXPECT_EQ(record.source->at("quote_time"), md::format_timestamp(print_time));
+          EXPECT_EQ(record.source->at("symbol"), "SPX");
+          EXPECT_EQ(record.source->at("provider"), "demo");
+        }
+      }
+    }
+  }
+}
+
+TEST(ReproducibleRun, AmOpeningSettlementIsGatedByDriverAndNamesScenarioOrRecording) {
+  test::RecordingFile file;
+  const auto source = file.directory / "am-overnight.json";
+  {
+    std::ofstream out(source);
+    out << R"({"id":"am-overnight","title":"AM expiry","description":"Hold an AM monthly into its opening print","symbols":["SPX"],"date":"2026-09-17","seed":81723,"generator":1,"volatility":0.12,"iv_shift":0,"spot_vol":-2,"sessions":[{"session":"regular","drift":[[1,0.001]]},{"session":"regular","drift":[[1,0.001]]}]})";
+  }
+  const auto scenario = providers::read_scenario(source);
+  providers::write_scenario_recording(file.path, scenario, scenario.date, scenario.seed);
+  const auto contract = *md::parse_osi("SPX260918C06000000");
+  for (const auto* kind : {"scenario", "recording"}) {
+    for (const int driver : {4, 5}) {
+      SCOPED_TRACE(std::string(kind) + " driver " + std::to_string(driver));
+      const auto journal = file.directory / (std::string(kind) + std::to_string(driver) + ".jsonl");
+      Money reference;
+      {
+        md::RecordingReader reader(file.path);
+        server::Desk::Options options;
+        options.replay = true;
+        options.opening_settlement = driver >= 5;
+        options.run_input = std::string_view(kind) == "scenario"
+            ? server::scenario_input(scenario, scenario.date, scenario.seed) : server::recording_input(file.path);
+        options.paper_journal = journal;
+        server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+        desk.start_trading();
+        providers::ReplayBatches batches(reader, reader.header().subscription);
+        bool bought = false;
+        while (const auto batch = batches.next()) {
+          if (batch->time > contract.expiry_time()) break;
+          for (const auto& event : batch->events) {
+            if (const auto* quote = std::get_if<md::UnderlyingQuote>(&event);
+                quote && quote->symbol == "SPX" && quote->ts == contract.expiry_time()) reference = Money::from_double(quote->last);
+          }
+          desk.replay_batch(batch->events, batch->received, batch->time);
+          if (!bought) {
+            server::TradingCommand entry;
+            entry.order.client_order_id = "am-entry";
+            entry.order.symbol = contract.osi_symbol();
+            entry.order.quantity = 1;
+            entry.order.type = trading::OrderType::Market;
+            entry.order.tif = trading::TimeInForce::Ioc;
+            const auto result = command(desk, entry, desk.market_time(), batch->received);
+            ASSERT_TRUE(result.decision.ok()) << result.decision.message;
+            ASSERT_EQ(result.view->snapshot->positions.size(), 1U);
+            bought = true;
+          }
+        }
+        ASSERT_TRUE(bought);
+        ASSERT_GT(reference, Money{});
+        const auto snapshot = desk.trading_view()->snapshot;
+        if (driver == 4) {
+          EXPECT_EQ(snapshot->positions.size(), 1U);
+          EXPECT_TRUE(snapshot->settlements.empty());
+        } else {
+          EXPECT_TRUE(snapshot->positions.empty());
+          ASSERT_EQ(snapshot->settlements.size(), 1U);
+          const auto& record = snapshot->settlements.front();
+          EXPECT_EQ(record.value, reference);
+          EXPECT_EQ(record.time, contract.expiry_time());
+          ASSERT_TRUE(record.source);
+          EXPECT_EQ(record.source->at("kind"), std::string_view(kind) == "scenario" ? "scenario_opening_print" : "recorded_opening_print");
+          EXPECT_EQ(record.source->at("provider"), "replay (demo)");
+          EXPECT_EQ(record.source->at("quote_time"), md::format_timestamp(contract.expiry_time()));
+        }
+        desk.stop();
+      }
+      const auto verified = server::verify_run(journal);
+      EXPECT_TRUE(verified.matched) << verified.message;
+      auto recovered = trading::TradingSession::recover(trading::FileJournal::read(journal.string()));
+      EXPECT_EQ(recovered.snapshot()->settlements.size(), driver == 5 ? 1U : 0U);
+    }
+  }
+}
+
 TEST(Desk, NamedAccountsListInIdOrderBeforeAndAfterARestart) {
   test::RecordingFile file;
   test::ScriptedMarket market;
@@ -711,6 +837,7 @@ TEST(ReproducibleRun, RunsRecordedBeforeInstantBatchesStillVerify) {
       server::Desk::Options options;
       options.replay = true;
       options.instant_batches = instants;
+      options.opening_settlement = false;
       options.run_input = server::recording_input(feed.file.path);
       options.paper_journal = journal;
       options.paper.rules.fill_latency_ms = 1000;

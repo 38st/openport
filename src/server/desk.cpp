@@ -537,7 +537,7 @@ void Desk::start_trading() {
   if (!options_.run_input.empty()) {
     nlohmann::json start{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
         {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
-    if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? 4 : 3;
+    if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? (options_.opening_settlement ? 5 : 4) : 3;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
     if (options_.resume) {
@@ -710,6 +710,7 @@ void Desk::publish_trading() {
       view->contracts = session.contracts();
       view->valuations = session.valuations();
       view->run = run_;
+      view->opening_settlement = !opening_source().empty();
       // Each underlying's own data time tells whether its feed has stalled. Until this
       // run has seen any (just after a restart), the account's last quotes stand in.
       for (const auto& [symbol, contract] : view->contracts) {
@@ -933,6 +934,13 @@ void Desk::check_circuit_breaker(const md::UnderlyingQuote& spot) {
   }
 }
 
+std::string Desk::opening_source() const {
+  if (!options_.opening_settlement) return {};
+  if (options_.replay)
+    return inputs_first() ? (scenario_source_ ? "scenario_opening_print" : "recorded_opening_print") : "";
+  return provider_ == "demo" ? "demo_opening_print" : "";
+}
+
 void Desk::update_trading(const std::vector<md::Event>& batch,
                             std::deque<PendingCommand>& commands, md::Timestamp driver_time) {
   if (batch.empty() && commands.empty()) return;
@@ -952,6 +960,12 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
     check_circuit_breaker(*spot);
     const auto date = new_york_date(spot->ts);
+    if (!opening_source().empty() && spot->ts >= md::new_york_to_utc(date, 9, 30)) {
+      // Ingress order matters: premarket prints and later revisions never replace it.
+      opening_prints_.try_emplace(std::make_pair(spot->symbol, date), *spot);
+      const auto oldest = md::date_from_days(md::days_since_epoch(date) - 7);
+      std::erase_if(opening_prints_, [&](const auto& entry) { return entry.first.second < oldest; });
+    }
     const bool closed = spot->ts >= md::new_york_to_utc(date, md::regular_close_hour(date), 0);
     auto& prints = closed ? closing_prints_ : before_close_;
     const auto [it, added] = prints.try_emplace({spot->symbol, date}, *spot);
@@ -1178,11 +1192,23 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
       }
       // A PM contract settles on its expiry date's closing print once it expires:
       // at the close, or a quarter hour later for ETF options that trade until 16:15.
+      // Demo and driver-5 replay AM contracts use their date’s opening print.
       // Hold the snapshot: settle publishes a new one and frees this one.
       const auto expiring = session.snapshot();
       for (const auto& p : expiring->positions) {
         const auto& contract = p.position.contract;
-        if (contract.settlement != md::Settlement::PM || market_time_ < contract.expiry_time()) continue;
+        if (market_time_ < contract.expiry_time()) continue;
+        if (contract.settlement == md::Settlement::AM) {
+          const auto kind = opening_source();
+          const auto opening = opening_prints_.find({contract.underlying, contract.expiry});
+          if (kind.empty() || opening == opening_prints_.end() || opening->second.ts > market_time_) continue;
+          const auto& print = opening->second;
+          const SettlementSource source{{"kind", kind}, {"provider", provider_},
+              {"symbol", contract.underlying}, {"quote_time", md::format_timestamp(print.ts)}};
+          session.settle(contract.osi_symbol(), Money::from_double(print.last), market_time_, source);
+          sample_equity(account);
+          continue;
+        }
         const auto print = session.closing_print(contract.underlying, contract.expiry);
         if (!print) continue;
         const bool before = print->time < md::new_york_to_utc(contract.expiry, md::regular_close_hour(contract.expiry), 0);
@@ -1395,7 +1421,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         case TradingCommand::Kind::Trip: result = session.trip_kill(c.reason, market_time_); break;
         case TradingCommand::Kind::Reset: result = session.reset_kill(c.reason, market_time_); break;
         case TradingCommand::Kind::Settle: {
-          // AM settlement is always imported; PM only when no closing print arrived.
+          // AM imports work while waiting for a source; PM only without a recorded close.
           const auto it = session.contracts().find(c.symbol);
           const bool pm = it != session.contracts().end() && it->second.settlement != md::Settlement::AM;
           if (pm && session.closing_print(it->second.underlying, it->second.expiry))
@@ -1519,6 +1545,7 @@ Desk::Desk(std::string provider, md::Capabilities capabilities, md::Subscription
   trading_status_.fee_per_contract = options_.paper.fee_per_contract;
   trading_status_.initial_cash = options_.paper.initial_cash;
   if (!options_.run_input.empty()) run_ = run_identity(options_.run_input, options_.run_id);
+  scenario_source_ = run_ && !run_->scenario.empty();
 }
 void Desk::set_dividends(std::vector<trading::Dividend> dividends) {
   dividends_ = std::move(dividends);
@@ -1563,6 +1590,7 @@ void Desk::replay_source(const std::string& input, const md::RecordingHeader& he
   instruments_.clear();
   capabilities_ = header.capabilities;
   provider_ = "replay (" + header.provider + ")";
+  scenario_source_ = nlohmann::json::parse(input).at("kind") == "scenario";
   record_input(nlohmann::json{{"kind", "source"}, {"input", nlohmann::json::parse(input)}}.dump());
   publish_trading();
 }

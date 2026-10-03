@@ -2173,8 +2173,9 @@ At `OptionContract::expiry_time()` orders cancel and open positions become
 last trade, 16:00 or 16:15 for ETF options that trade until then (13:00 and 13:15 on
 early-close days). No underlying quote is automatically taken as settlement.
 The caller supplies the authoritative reference with `settle(OSI, value, time)`
-after expiry. The hosting engine obtains PM closing prints or explicitly imported
-AM settlement values, passing optional provenance to the core as the fourth argument.
+after expiry. The hosting engine obtains PM closing prints, AM opening-print
+approximations in demo/replay, or explicitly imported AM values for live feeds,
+passing optional provenance to the core as the fourth argument.
 
 ```text
 intrinsic = max(0, omega * (settlement_reference - strike))
@@ -2913,10 +2914,21 @@ provided it came within the close's last five minutes (a feed that stopped just 
 the close); the engine keeps both prints in memory for a week of dates, so after a
 restart only a print that arrives counts. Until then an expired PM position's
 `settle_by` reads `closing_print`, as it does once the print is recorded; after it,
-with neither, the position waits and its `settle_by` reads `manual`. AM positions
-always wait for an
-explicit `/api/settlements` import (the terminal's Settle button on the position),
-whose value must come from the authoritative settlement source; PM imports are
+with neither, the position waits and its `settle_by` reads `manual`.
+
+In demo and new replays (driver 5), an AM position settles on the first valid
+underlying print received at or after 09:30 ET on its expiry date. Premarket
+prints and prints from other dates do not count; later prints do not replace the
+first. This is an approximation of the official special opening quotation, which
+can differ materially from the underlying's opening print. Sources are
+`demo_opening_print`, `scenario_opening_print` or `recorded_opening_print`, with
+provider, underlying symbol and quote time. Waiting AM positions show
+`settle_by: "opening_print"`. If no qualifying print arrives they continue to wait;
+a manual import after expiry but before the print still settles exactly once.
+Live real-provider AM positions retain `settle_by: "manual"` and the explicit
+`POST /api/settlements` import (the terminal's Settle button). Their feed does not
+supply the official special opening quotation. Its value must come from the
+authoritative source; PM imports are
 accepted only while no closing print is recorded. The same journal transaction
 records the reference value, canonical definition and integration
 `settlement_source`: `provider_official_close`, `provider_closing_print` or

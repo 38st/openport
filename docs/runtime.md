@@ -613,6 +613,14 @@ waits one receipt-time gap from the resume, however many steps came before.
 `start_at` retains its receipt-time semantics for delayed recordings; `until` uses
 market time.
 
+AM positions in the real-time demo and in driver-5 replays settle on the first
+underlying print at or after 09:30 ET of their expiry date. These are approximations
+of the official special opening quotation, labeled `demo_opening_print`,
+`scenario_opening_print` or `recorded_opening_print`. Live real providers still
+require an imported AM value. Waiting positions say `settle_by: opening_print`
+or `manual` accordingly. References and provenance remain available through
+`GET /api/settlements`, its replay mirror, and finished-run history.
+
 ### Verifying a run
 
 ```sh
@@ -624,6 +632,11 @@ paper account. It verifies the journal chain, opens the original recording or
 regenerates the scenario, repeats its boundaries and commands, and checks every
 transaction hash, final equity and head hash. Exit 0 means a match. Exit 1 names the
 first differing transaction, or reports a damaged journal or missing/changed input.
+New runs record replay driver 5, which adds AM opening-print settlement. Verification
+of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
+changes the start input for every new run and adds settlement transactions when an
+AM position is held into an expiry opening print. Resuming requires driver 5;
+older runs remain readable and verifiable. The scenario generator revision stays 3.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
 So does a run a crash cut off, whichever record its journal ends at: each input and
 each transaction is its own append, and new runs record a command's input before the
