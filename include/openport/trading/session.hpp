@@ -401,7 +401,9 @@ class TradingSession {
   /// (FLOOR_RATCHET: the floor tomorrow and today); American equity and ETF
   /// options expiring today a cent or more in the money, which deliver shares
   /// (EXPIRY_DELIVERY: buying power once every one of them has delivered, and
-  /// zero); short ones the simulator may assign early, trading below their
+  /// zero; info before the account's pre-expiry cutoff, which closes at market,
+  /// leaving delivery only if a close cannot fill); short ones the simulator may
+  /// assign early, trading below their
   /// exercise value or with less time value than a dividend going ex within a week
   /// (EARLY_ASSIGNMENT: the mark and intrinsic value, or the time value and the
   /// dividend); and a held underlying's ex-date within a week (EX_DIVIDEND: the

@@ -2562,10 +2562,13 @@ BreachRisk breach_of(const State& s, const std::map<std::string, double>& close_
 }
 /// Whole units with thousands separators, as warnings print exposures.
 std::string whole(double value) {
-  const auto rounded = std::llround(std::abs(value));
-  auto digits = std::to_string(rounded);
+  if (!std::isfinite(value)) return "unavailable";
+  std::array<char, std::numeric_limits<double>::max_exponent10 + 3> text{};
+  std::snprintf(text.data(), text.size(), "%.0f", std::round(std::abs(value)));
+  std::string digits = text.data();
+  const bool negative = value < 0 && digits != "0";
   for (auto i = static_cast<std::ptrdiff_t>(digits.size()) - 3; i > 0; i -= 3) digits.insert(static_cast<std::size_t>(i), ",");
-  return (value < 0 && rounded != 0 ? "-" : "") + digits;
+  return (negative ? "-" : "") + digits;
 }
 std::string decimal(double value, int places) {
   std::array<char, 64> text{};
@@ -2695,10 +2698,16 @@ std::vector<RiskWarning> warnings_of(const State& s, const std::map<std::string,
       const auto contracts = held(s, x.symbol);
       const auto shares = delivered(c, contracts);
       const Money strike = Money::from_double(c.strike);
-      add("EXPIRY_DELIVERY", power < Money{}, c.underlying, x.symbol,
+      const auto cutoff = c.last_trade_time() - rules.expiry_cutoff;
+      const bool before_cutoff = rules.expiry_cutoff > 0 && s.time < cutoff;
+      const auto expiry = before_cutoff
+          ? "the account closes the position at its pre-expiry cutoff at " + clock_text(cutoff) +
+            " at the market; only contracts still held into expiry because a close cannot fill are "
+          : std::string("held into expiry ") + (magnitude(contracts) == 1 ? "it is " : "they are ");
+      add("EXPIRY_DELIVERY", !before_cutoff && power < Money{}, c.underlying, x.symbol,
           std::to_string(magnitude(contracts)) + " " + (contracts > 0 ? "long " : "short ") + contract_name(c) + " expiring today " +
-          (magnitude(contracts) == 1 ? "is " : "are ") + dollars(x.intrinsic) + " in the money: held into expiry " +
-          (magnitude(contracts) == 1 ? "it is " : "they are ") + (contracts > 0 ? "exercised" : "assigned") + ", " +
+          (magnitude(contracts) == 1 ? "is " : "are ") + dollars(x.intrinsic) + " in the money: " + expiry +
+          (contracts > 0 ? "exercised" : "assigned") + ", " +
           (shares > 0 ? "buying " : "selling ") + std::to_string(magnitude(shares)) + " " + c.underlying + " shares at the strike (" +
           dollars(strike * magnitude(shares)) + "). Buying power once the options expiring in the money today deliver: " + dollars(power),
           power.dollars(), 0.0);

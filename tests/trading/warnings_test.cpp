@@ -113,6 +113,32 @@ TEST(TradingWarnings, TonightsRatchetAndASoftFloorAboveEquityAreWarned) {
   EXPECT_EQ(find(warnings, "SOFT_FLOOR_ROLLOVER"), nullptr);
 }
 
+TEST(TradingWarnings, LargeFiniteLimitsPrintWithoutIntegerOverflow) {
+  ScriptedMarket f; auto c = config();
+  c.limits.aggregate.dollar_delta = 1e300;
+  c.limits.per_underlying.dollar_delta = 1e300;
+  TradingSession s(c, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("long"), f.time).decision.ok());
+  EXPECT_TRUE(s.warnings().empty());
+  // Large gamma brings the large limit within reach, so its text is published.
+  f.next(); auto valuation = f.valuation(); valuation.gamma = 1e294;
+  s.on_quotes({f.quote()}, {valuation}, f.time);
+  const auto warnings = s.warnings();
+  const auto* near = find(warnings, "DELTA_HEADROOM");
+  ASSERT_NE(near, nullptr);
+  const std::string prefix = "to its ";
+  const auto start = near->message.find(prefix);
+  ASSERT_NE(start, std::string::npos) << near->message;
+  const auto end = near->message.find(" limit", start);
+  ASSERT_NE(end, std::string::npos) << near->message;
+  auto digits = near->message.substr(start + prefix.size(), end - start - prefix.size());
+  EXPECT_NE(digits.find(','), std::string::npos);
+  std::erase(digits, ',');
+  EXPECT_EQ(digits.size(), 301);
+  EXPECT_EQ(digits.find_first_not_of("0123456789"), std::string::npos);
+  EXPECT_DOUBLE_EQ(std::stod(digits), 1e300);
+}
+
 TEST(TradingWarnings, InTheMoneyEquityOptionsExpiringTodaySayWhatDeliveryLeaves) {
   const auto call = *md::parse_osi("SPY260922C00500000");  // expires today
   const auto put = *md::parse_osi("SPY260922P00500000");
@@ -143,6 +169,45 @@ TEST(TradingWarnings, InTheMoneyEquityOptionsExpiringTodaySayWhatDeliveryLeaves)
   TradingSession index(config(), spx.time); spx.seed(index, "10.00", "10.20");
   ASSERT_TRUE(index.submit(spx.market("index"), spx.time).decision.ok());
   EXPECT_EQ(find(index.warnings(), "EXPIRY_DELIVERY"), nullptr);
+}
+
+TEST(TradingWarnings, ExpiryDeliveryNamesTheCutoffUntilItPasses) {
+  const auto call = *md::parse_osi("SPY260922C00500000");
+  Spy f; f.time = md::new_york_to_utc({2026, 9, 22}, 16, 8);
+  auto c = config(); c.initial_cash = m("100000");
+  c.rules.expiry_cutoff = 5 * md::kNanosPerMinute;
+  TradingSession s(c, f.time);
+  ASSERT_TRUE(s.define(call, f.time).decision.ok());
+  f.quote(s, call, "10.00", "10.20");
+  ASSERT_TRUE(s.submit(f.market("calls", call, 2), f.time).decision.ok());
+  auto warnings = s.warnings();
+  const auto* delivery = find(warnings, "EXPIRY_DELIVERY");
+  ASSERT_NE(delivery, nullptr);
+  EXPECT_EQ(delivery->severity, "info");
+  EXPECT_NE(delivery->message.find("pre-expiry cutoff at 16:10:00 ET at the market"), std::string::npos) << delivery->message;
+  EXPECT_NE(delivery->message.find("only contracts still held into expiry because a close cannot fill are exercised"),
+            std::string::npos) << delivery->message;
+  EXPECT_NE(delivery->message.find("buying 200 SPY shares at the strike ($100000.00)"), std::string::npos) << delivery->message;
+  ASSERT_TRUE(delivery->actual.has_value());
+  const auto power = *delivery->actual;
+  EXPECT_LT(power, 0);
+  EXPECT_EQ(delivery->limit, 0.0);
+  // With no fresh option quote the cutoff cannot close; delivery remains a risk.
+  for (const auto time : {call.last_trade_time() - c.rules.expiry_cutoff, call.last_trade_time() - md::kNanosPerMinute}) {
+    f.time = time;
+    s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("510")}});
+    warnings = s.warnings();
+    delivery = find(warnings, "EXPIRY_DELIVERY");
+    ASSERT_NE(delivery, nullptr);
+    EXPECT_EQ(delivery->severity, "warning");
+    EXPECT_NE(delivery->message.find("held into expiry they are exercised"), std::string::npos) << delivery->message;
+    EXPECT_EQ(delivery->message.find("pre-expiry cutoff"), std::string::npos);
+    EXPECT_EQ(delivery->actual, power);
+    EXPECT_EQ(delivery->limit, 0.0);
+  }
+  f.quote(s, call, "10.00", "10.20");
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(find(s.warnings(), "EXPIRY_DELIVERY"), nullptr);
 }
 
 TEST(TradingWarnings, EarlyAssignmentAndExDatesAreWarned) {
