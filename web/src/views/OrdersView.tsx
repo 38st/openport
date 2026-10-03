@@ -129,7 +129,7 @@ function OrdersTable({ orders, trading, empty, onDone }: { orders: Order[]; trad
             <div className="text-[10px] text-faint">#{order.id} · {order.actor ?? "unknown"}{order.origin === "system" ? " · system" : ""}{order.parent ? ` · for #${order.parent}` : ""}
               {order.trigger ? ` · when ${describeTrigger(order.trigger, order.side ?? "buy", order.underlying)}` : ""}
               {order.triggered_at ? " · triggered" : ""}
-              {order.note?.startsWith("Playbook automatic time stop") ? ` · ${order.note}` : ""}
+              {order.note?.startsWith("Playbook automatic ") ? ` · ${order.note}` : ""}
               {order.changes?.length ? ` · changed ${order.changes.filter((c) => c.applied).length}×${order.changes.some((c) => !c.applied) ? `, ${order.changes.filter((c) => !c.applied).length} refused` : ""}` : ""}</div></td>
           <td className={order.side === "buy" ? "text-bullish" : order.side === "sell" ? "text-bearish" : "text-accent"}>{order.side ? order.side.toUpperCase() : "NET"}</td>
           <td>{order.type} · {order.time_in_force.toUpperCase()}</td>

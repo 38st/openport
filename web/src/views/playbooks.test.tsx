@@ -47,6 +47,22 @@ async function value(selector: string, text: string) {
   await act(async () => { Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(field, text); field.dispatchEvent(new Event(field instanceof HTMLTextAreaElement ? "input" : "change", { bubbles: true })) })
 }
 describe("Playbooks page and staged actions", { timeout: renderTimeout }, () => {
+  it("shows the additional written exits and preserves technical rules in the editor", async () => {
+    const saved = catalogue()
+    const definition = saved.definitions["put-spread"]!.versions[0]!
+    definition.conditions = { technical: [{ indicator: "rsi", interval: "minute", period: 14, min: 30, max: 70 }],
+      gap: { min_percent: -2, max_percent: 2 }, vix: { min: 10, max: 30 } }
+    definition.management = { close_by: "15:45", trailing_stop: { percent: 25 }, close_at_dte: 1, max_days_in_trade: 2, stop_loss_percent: 40 }
+    saved.staged[0]!.management = definition.management
+    vi.mocked(api.playbooks).mockResolvedValue(saved)
+    await render(<><PlaybooksView /><StagedOrders /></>)
+    await waitForRender(() => expect(host.textContent).toContain("Trailing stop: 25%"))
+    for (const text of ["40% debit loss", "Close at 1 calendar DTE", "Close after 2 trading days"]) expect(host.textContent).toContain(text)
+    await click("Edit Morning put spread")
+    const editor = host.querySelector("textarea")!
+    expect(JSON.parse(editor.value).conditions).toEqual(definition.conditions)
+    expect(JSON.parse(editor.value).management).toEqual(definition.management)
+  })
   it("shows saved versions, safe live modes and followed-versus-deviated statistics", async () => {
     await render(<PlaybooksView />)
     await waitForRender(() => expect(host.textContent).toContain("Morning put spread"))

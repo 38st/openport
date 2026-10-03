@@ -50,7 +50,10 @@ function Stages() {
       <div className="font-medium">{stage.name} · v{stage.version} · {stage.underlying} · {stage.units} units</div>
       <div className="my-2 space-y-1 tabular">{stage.legs.map((leg) => <div key={leg.symbol}>{leg.side} {leg.ratio} × {leg.strike} {leg.type} · {leg.expiry}</div>)}</div>
       <p>Net limit {formatMoney(stage.net)} · Maximum loss {formatMoney(stage.max_loss)}{stage.max_loss_basis === "scenario_grid" ? " (scenario estimate)" : ""}</p>
-      {stage.management && <p className="mt-1 text-muted">Take profit: {stage.management.take_profit_percent == null ? "none" : `${stage.management.take_profit_percent}% closing premium`} · Stop: {stage.management.stop_credit_multiple != null ? `${stage.management.stop_credit_multiple}× credit` : stage.management.stop_underlying ? `underlying ${stage.management.stop_underlying.direction} ${stage.management.stop_underlying.level}` : "none"}</p>}
+      {stage.management && <p className="mt-1 text-muted">Take profit: {stage.management.take_profit_percent == null ? "none" : `${stage.management.take_profit_percent}% closing premium`} · Stop: {stage.management.stop_credit_multiple != null ? `${stage.management.stop_credit_multiple}× credit` : stage.management.stop_loss_percent != null ? `${stage.management.stop_loss_percent}% debit loss` : stage.management.stop_underlying ? `underlying ${stage.management.stop_underlying.direction} ${stage.management.stop_underlying.level}` : "none"}</p>}
+      {stage.management?.trailing_stop && <p className="mt-1 text-muted">Trailing stop: {stage.management.trailing_stop.percent}% of peak gross profit given back (closing natural)</p>}
+      {stage.management?.close_at_dte != null && <p className="mt-1 text-muted">Close at {stage.management.close_at_dte} calendar DTE</p>}
+      {stage.management?.max_days_in_trade != null && <p className="mt-1 text-muted">Close after {stage.management.max_days_in_trade} trading days at close by</p>}
       <p className="mt-1 text-muted">Close by {timestampET(stage.close_by)} · Tag playbook:{stage.playbook}@v{stage.version}</p>
       <div className="mt-3 flex gap-2">
         <button className="trade-button" disabled={!!blocked || busy != null} onClick={() => void action(stage.id, "send")}>Send {stage.name}</button>
