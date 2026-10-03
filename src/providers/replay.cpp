@@ -258,8 +258,10 @@ void ReplayProvider::run(md::Subscription subscription, md::EventSink& sink) {
                 return symbols.contains(e.symbol);
               } else if constexpr (std::is_same_v<T, md::ProviderStatus>) {
                 return e.underlying.empty() || symbols.contains(e.underlying);
-              } else if constexpr (std::is_same_v<T, md::SnapshotComplete>) {
+              } else if constexpr (std::is_same_v<T, md::SnapshotComplete> || std::is_same_v<T, md::SnapshotHeartbeat>) {
                 return symbols.contains(e.underlying);
+              } else if constexpr (std::is_same_v<T, md::TradingHalt>) {
+                return true;
               } else {
                 const auto it = admitted.find(e.id);
                 if (it == admitted.end())
