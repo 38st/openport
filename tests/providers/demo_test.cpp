@@ -468,6 +468,91 @@ TEST(DemoMarket, NewIndicesQuoteOnTheirTicksWithRelatedLevelsAndVixForwards) {
   std::filesystem::remove(path);
 }
 
+TEST(DemoMarket, AmMonthliesAndSameDatePmSeriesHaveSeparateLastTradingDays) {
+  const auto& scenario = index_scenario();
+  const md::Date expiry{2026, 9, 18};
+  const auto before = providers::scenario_chain(scenario, {2026, 9, 17});
+  const auto after = providers::scenario_chain(scenario, expiry);
+  for (const auto* underlying : {"SPX", "NDX", "RUT", "XSP"}) {
+    const auto count = [&](const auto& chain, md::Settlement settlement) {
+      return std::count_if(chain.begin(), chain.end(), [&](const auto& c) {
+        return c.underlying == underlying && c.expiry == expiry && c.settlement == settlement;
+      });
+    };
+    if (std::string_view(underlying) != "XSP") { EXPECT_GT(count(before, md::Settlement::AM), 0); }
+    else { EXPECT_EQ(count(before, md::Settlement::AM), 0); }
+    EXPECT_EQ(count(after, md::Settlement::AM), 0);
+    EXPECT_GT(count(before, md::Settlement::PM), 0);
+    EXPECT_GT(count(after, md::Settlement::PM), 0);
+  }
+  // Held series stay listed across month boundaries, holidays and the turn of the year.
+  auto previous = providers::scenario_chain(scenario, {2026, 12, 1});
+  for (auto date = md::Date{2026, 12, 2}; date <= md::Date{2027, 1, 22};
+       date = md::trading_date(md::new_york_to_utc(date, 18, 0))) {
+    const auto chain = providers::scenario_chain(scenario, date);
+    std::set<std::string> symbols;
+    for (const auto& c : chain) symbols.insert(c.osi_symbol());
+    for (const auto& c : previous) {
+      if (c.last_trade_time() > md::new_york_to_utc(date, 9, 30)) {
+        EXPECT_TRUE(symbols.contains(c.osi_symbol())) << c.osi_symbol() << " on " << md::format_date(date);
+      }
+    }
+    previous = chain;
+  }
+}
+
+TEST(DemoMarket, AmQuotesEndAtTheirLastRegularCloseBeforeCurbAndOvernight) {
+  for (const auto& [date, root] : std::vector<std::pair<md::Date, std::string>>{
+      {{2026, 9, 17}, "SPX"}, {{2026, 9, 15}, "VIX"}, {{2026, 9, 22}, "VIXW"}, {{2024, 6, 17}, "VIX"}}) {
+    auto scenario = index_scenario();
+    scenario.date = date;
+    if (root != "SPX") scenario.symbols = {"VIX"};
+    scenario.sessions.clear();
+    for (const auto* kind : {"regular", "curb", "overnight", "regular"})
+      scenario.sessions.push_back({kind, {{1, 0}}, 0, 0, 0, {}, {}});
+    const auto windows = providers::scenario_windows(scenario, date);
+    const auto cutoff = windows[0].last;
+    const auto expiry = windows[3].date;
+    const auto path = temporary("am-close");
+    providers::write_scenario_recording(path, scenario, date, scenario.seed);
+    md::RecordingReader reader(path);
+    std::map<md::InstrumentId, md::OptionContract> contracts;
+    std::set<std::string> last_day, retired, settlement_day;
+    std::map<md::InstrumentId, double> asks;
+    while (const auto event = reader.next()) {
+      if (const auto* d = std::get_if<md::ContractDefinition>(&event->event)) contracts[d->id] = d->contract;
+      if (const auto* q = std::get_if<md::OptionQuote>(&event->event)) {
+        asks[q->id] = q->ask;
+        const auto& c = contracts.at(q->id);
+        if (q->ask > 0) {
+          ASSERT_LT(q->ts, c.last_trade_time()) << c.osi_symbol();
+          if (q->ts >= windows[3].first && c.expiry == expiry) settlement_day.insert(c.root);
+        } else if (c.expiry == expiry && c.settlement == md::Settlement::AM) {
+          EXPECT_EQ(q->ts, cutoff) << c.osi_symbol();
+          retired.insert(c.root);
+        }
+      }
+      if (const auto* snapshot = std::get_if<md::SnapshotComplete>(&event->event);
+          snapshot && snapshot->ts == cutoff - windows[0].step) {
+        // Prices can stay unchanged in the last interval; their live quotes remain.
+        for (const auto& [id, c] : contracts)
+          if (c.underlying == snapshot->underlying && c.expiry == expiry && asks[id] > 0) last_day.insert(c.root);
+      }
+    }
+    EXPECT_TRUE(last_day.contains(root)) << root;
+    EXPECT_TRUE(retired.contains(root)) << root;
+    EXPECT_FALSE(settlement_day.contains(root)) << root;
+    if (root == "SPX") {
+      EXPECT_EQ(retired, (std::set<std::string>{"SPX", "NDX", "RUT"}));
+      for (const auto* pm : {"SPXW", "XSP", "NDXP", "RUTW"}) {
+        EXPECT_TRUE(last_day.contains(pm)) << pm;
+        EXPECT_TRUE(settlement_day.contains(pm)) << pm;
+      }
+    }
+    std::filesystem::remove(path);
+  }
+}
+
 TEST(DemoMarket, SimulatedVolumeRisesAndFavoursNearMoneyAndFrontExpiry) {
   const auto path = temporary("volume");
   providers::write_demo_recording(path);

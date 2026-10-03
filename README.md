@@ -44,8 +44,9 @@ pass (over 23 passes) and the Cboe comparison on live data during the session, a
 2026-09-24. [How the numbers are made](docs/methods.md).
 
 No market open, or no data? The **demo market** plays simulated trading days you can
-trade: eighteen scenarios in SPX, SPY and QQQ options, from a reversal or a selloff to
-an afternoon waterfall, a pin into the close or a position held overnight and over a
+trade: nineteen scenarios, including SPX, SPY, QQQ, XSP, NDX, RUT and VIX options,
+from a reversal or a selloff to an afternoon waterfall, a pin into the close or a
+position held overnight and over a
 weekend, each run on a fresh or repeatable seed, with generated prices labelled as
 simulated on every page:
 
@@ -119,7 +120,7 @@ recording and hosting a public demo.
 | ThetaData | `thetadata` | Snapshots from your local Theta Terminal | Theta Terminal login |
 | Tradier | `tradier` | Chain snapshots, real-time in production, delayed in its sandbox | `TRADIER_ACCESS_TOKEN` |
 | tastytrade | `tastytrade` | DXLink quotes from a funded brokerage account | `TASTYTRADE_CLIENT_SECRET`, `TASTYTRADE_REFRESH_TOKEN` |
-| Demo | `demo` | Simulated SPX, SPY and QQQ days | none |
+| Demo | `demo` | Simulated SPX, SPY, QQQ, XSP, NDX, RUT and VIX days | none |
 | Replay | `replay` | A recording played back as the feed | none |
 
 Every provider but Cboe, Demo and Replay is tested against sample responses and has

@@ -189,8 +189,8 @@ std::vector<Listing> listings(const Scenario& script, md::Date date, int revisio
   auto series = listed_on(date, revision);
   if (revision >= 2) {
     // Every series an earlier date listed that still trades, as wide as it ever was,
-    // after the date's own: a position opened on an earlier day keeps its quotes. A
-    // series lists at most eight weeks ahead; AM-settled series stop the day before.
+    // after the date's own: a position opened on an earlier day keeps its quotes.
+    // AM-settled series stop the day before.
     std::map<std::pair<std::string, md::Date>, Series> earlier;
     const auto first = md::days_since_epoch(date) - 56;
     for (auto day = md::previous_business_day(date); md::days_since_epoch(day) >= first; day = md::previous_business_day(day)) {
@@ -293,6 +293,7 @@ class Discard final : public md::EventSink {
 struct Listed {
   md::OptionContract contract;
   md::Timestamp expiry = 0;  ///< contract.expiry_time(), computed once
+  md::Timestamp last_trade = 0;
   md::InstrumentId id = 0;
   bool monthly = false;
   double center = 0;  ///< the level its strikes were listed around
@@ -450,6 +451,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         listed.id = publisher.define(contract.osi_symbol(), contract, sink);
         listed.contract = contract;
         listed.expiry = listed.contract.expiry_time();
+        listed.last_trade = revision >= 3 ? listed.contract.last_trade_time() : listed.expiry;
         listed.ticks = ticks_for(contract.root);
         listed.monthly = monthly;
         listed.center = center;
@@ -462,7 +464,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         for (auto& [underlying, chain] : chains) {
           for (auto& listed : chain) {
             listed.volume = 0;
-            if (w.first >= listed.expiry) continue;
+            if (w.first >= listed.last_trade) continue;
             const double days = md::years_between(w.first, listed.expiry) * 365;
             publisher.open_interest(listed.id, w.first, open_interest(listed.contract, listed.monthly, listed.center, days, seed, listed.id), sink);
           }
@@ -604,7 +606,7 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
         std::set<md::InstrumentId> seen;
         for (auto& listed : chain) {
           const auto& c = listed.contract;
-          if (now >= listed.expiry) continue;
+          if (now >= listed.last_trade) continue;
           const double years = md::years_between(now, listed.expiry);
           const double dividend = underlying == "NDX" ? 0.007 : underlying == "RUT" ? 0.012 : kDividend;
           const double forward = underlying == "VIX" ? kVixMean + (price - kVixMean) * std::exp(-4 * years)

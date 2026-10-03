@@ -1949,7 +1949,12 @@ physical delivery charges the itemized schedule’s `exercise` fee per contract 
 one is configured. OTM options pay zero and release their entire basis into realised P&L. Negative
 references, premature settlement, missing positions or unknown contracts reject.
 AM-settled series stop trading at the regular close the business day before expiry
-(`last_trade_time`) and wait for an explicit settlement value.
+(`last_trade_time`) and wait for an explicit settlement value. Revision 3 demo
+and scenario quotes follow that boundary for SPX, NDX, RUT, VIX and VIXW: the
+AM series still quotes on its last trading day, disappears at the regular option
+close, and is absent on its settlement date. Same-date SPXW, NDXP and RUTW PM
+series remain tradable through that date's 16:00 close; XSP has PM series only.
+VIX and VIXW both settle AM, usually Wednesday, and last trade Tuesday.
 American equity and ETF options held into expiry deliver shares at settlement (see
 [instruments](#instruments-and-prices)); the settlement closure keeps the option's
 trade at intrinsic value.
