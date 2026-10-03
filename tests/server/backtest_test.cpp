@@ -360,11 +360,14 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
   EXPECT_EQ(custom.config.rules.max_drawdown, Money::parse("50"));
   auto timed = good;
   timed["plan"] = {{"initial_cash", "10000"}, {"rules", {{"profit_target", "100"}, {"time_limit_days", 30},
-      {"inactivity_days", 14}, {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"}}}};
+      {"inactivity_days", 14}, {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
+      {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 25}}}};
   const auto time_rules = server::parse_backtest(timed, definitions, scenarios, {}).config.rules;
   EXPECT_EQ(time_rules.time_limit_days, 30); EXPECT_EQ(time_rules.inactivity_days, 14);
   EXPECT_EQ(time_rules.underlyings, std::vector<std::string>{"SPX"});
   EXPECT_EQ(time_rules.trading_start, 570); EXPECT_EQ(time_rules.trading_end, 960);
+  EXPECT_EQ(time_rules.max_contracts_held, 5); EXPECT_TRUE(time_rules.require_stop_loss);
+  EXPECT_EQ(time_rules.max_trade_risk, Money::parse("123.456789")); EXPECT_EQ(time_rules.max_trade_risk_percent, 25);
   for (const auto& patch : std::vector<json>{{{"time_limit_days", 367}}, {{"inactivity_days", 1.5}},
       {{"underlyings", "SPX"}}, {{"trading_end", nullptr}}, {{"trading_start", "09:60"}}}) {
     auto bad = timed; bad["plan"]["rules"].update(patch);

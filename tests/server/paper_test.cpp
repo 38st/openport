@@ -4261,9 +4261,16 @@ TEST_F(PaperEngine, StopAndRiskRulesRoundTripWithPreviewAndRefusalEvidence) {
 
 namespace {
 TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
+  engine->stop();
+  const auto directory = paper_path().parent_path();
+  auto options = paper_options();
+  options.paper_accounts = directory / "accounts";
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
   seed();
   auto rules = read(*engine, "/api/account")["rules"];
-  rules.update({{"plan", "Combined rules"}, {"time_limit_days", 30}, {"inactivity_days", 14},
+  rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"time_limit_days", 30}, {"inactivity_days", 14},
                 {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
                 {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"},
                 {"max_trade_risk_percent", 25}});
@@ -4286,6 +4293,8 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
     expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", borrowed},
         {"reason", "cannot borrow a preset name"}}), 400, "INVALID_RULES");
   }
+  engine->stop();
+  std::filesystem::remove_all(directory);
 }
 TEST_F(PaperEngine, TimeRulesRoundTripProgressRefusalsAndValidation) {
   seed();

@@ -116,6 +116,26 @@ describe("disposing of a worthless position", () => {
 
 
 describe("trading shares", () => {
+  it.each([
+    { underlyings: ["SPX"], code: "INSTRUMENT_NOT_ALLOWED" },
+    { trading_start: "10:30", trading_end: "16:00", code: "OUTSIDE_PLAN_HOURS" },
+  ])("keeps share reductions available under $code", async ({ code, ...restrictions }) => {
+    const time = "2026-09-22T14:00:00Z"
+    vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
+      { ...status.underlyings[0]!, symbol: "SPY", spot: 510, as_of: time },
+    ] } as ReturnType<typeof useLive>)
+    vi.spyOn(api, "portfolio").mockResolvedValue({ ...portfolio, stocks: [{ symbol: "SPY", shares: 100 }] } as typeof portfolio)
+    vi.spyOn(api, "account").mockResolvedValue({ ...account, time, rules: { ...account.rules, ...restrictions } })
+    vi.spyOn(api, "previewStock").mockRejectedValue(new Error("fixture preview"))
+    await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>
+      <TradeSharesDialog trading={status.trading!} onClose={() => {}} /></QueryClientProvider>))
+    await waitForRender(() => expect(host.textContent).toContain(code))
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Buy 100 SPY")!.disabled).toBe(true)
+    await waitForRender(() => expect(host.textContent).toContain("You hold 100 long"))
+    await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Sell")!.click())
+    expect(host.textContent).not.toContain(code)
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Sell 100 SPY")!.disabled).toBe(false)
+  })
   it("blocks unprotected share entries but keeps reductions available", async () => {
     vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
       { ...status.underlyings[0]!, symbol: "SPY", spot: 510 },

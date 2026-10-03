@@ -118,7 +118,8 @@ it("edits trade-entry rules and validates their ranges", () => {
 })
 
 describe("time and instrument rules", () => {
-  const restricted = { ...rules, time_limit_days: 60, inactivity_days: 14, underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00" }
+  const restricted = { ...rules, time_limit_days: 60, inactivity_days: 14, underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00",
+    max_contracts_held: 5, require_stop_loss: true, max_trade_risk: "123.456789", max_trade_risk_percent: 25 }
   it("validates and round-trips the custom form, including midnight", () => {
     const form = planForm({ initial_cash: "100000", rules: restricted })
     const result = customPlan(form, restricted)
