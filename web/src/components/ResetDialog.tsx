@@ -1,7 +1,8 @@
 import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useAccount, useRefreshTrading, usePlans, useTradingSession } from "../api/trading"
-import type { FillModel, Plan, TradingStatus } from "../api/trading-types"
+import type { FeeModel, FillModel, Plan, TradingStatus } from "../api/trading-types"
+import { FeeModelPicker } from "./FeeModelPicker"
 import { lockReason, offeredPlans } from "../lib/payouts"
 import { dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact } from "../lib/plan-rules"
 import { formatMoney } from "../lib/trading"
@@ -46,6 +47,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const sameSession = useTradingSession()
   const [choice, setChoice] = useState(initial ?? "")
   const [fillModel, setFillModel] = useState<FillModel>("as_displayed")
+  const [feeModel, setFeeModel] = useState<FeeModel>("flat")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
@@ -77,7 +79,10 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
     setPending(true)
     setError(undefined)
     try {
-      const fill = fillModel === "conservative" ? { fill_model: fillModel } : {}
+      const fill = {
+        ...(fillModel === "conservative" ? { fill_model: fillModel } : {}),
+        ...(feeModel === "itemized" ? { fee_model: feeModel } : {}),
+      }
       if (custom && !("error" in custom)) await api.resetAccount({ ...custom, reason: `Start ${custom.rules.plan}`, ...fill }, trading.write)
       else if (selected) await api.resetAccount({ plan: selected.id, reason: `Start ${selected.name}`, ...fill }, trading.write)
       if (sameSession()) onClose()
@@ -164,6 +169,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
           ? "For delayed feeds: wait 1,000 ms on market time, add 1 tick of slippage, and 1 extra tick for each additional displayed-size block. The next available quote may arrive much later."
           : "Fill immediately at the displayed bid or ask, up to the available displayed size, with no slippage."}
           {" "}Applies to this account’s new attempt. Neither model knows queue position, hidden liquidity, or whether the market would have traded at all.</p>
+        <FeeModelPicker value={feeModel} onChange={setFeeModel} disabled={pending} flat={trading.fee_per_contract} />
         {plans.isLoading && <p className="text-sm text-muted">Loading plans…</p>}
         <TradingError error={error} />
         <button type="submit" className="trade-button" disabled={!ready || pending || writeBlocked(trading, token)}>

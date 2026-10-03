@@ -1,3 +1,4 @@
+import { FeeAmount } from "../components/FeeAmount"
 import { useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -182,7 +183,7 @@ function FillsTable({ fills }: { fills: Fill[] }) {
         <td className="text-muted">{Number.isFinite(Date.parse(fill.time)) ? timeFormat.format(Date.parse(fill.time)) : "—"}</td>
         <td className="!text-left font-medium">{osiLabel(fill.symbol, fill.underlying)}</td>
         <td className={fill.side === "buy" ? "text-bullish" : "text-bearish"}>{fill.side.toUpperCase()}</td>
-        <td>{fill.quantity}</td><td>{formatMoney(fill.price)}</td><td><FillBook fill={fill} /></td><td>{formatMoney(fill.fee)}</td><td>#{fill.order_id}<div className="text-[10px] text-faint">{fill.actor ?? "unknown"}</div></td>
+        <td>{fill.quantity}</td><td>{formatMoney(fill.price)}</td><td><FillBook fill={fill} /></td><td>{<FeeAmount fee={fill.fee} fees={fill.fees} />}</td><td>#{fill.order_id}<div className="text-[10px] text-faint">{fill.actor ?? "unknown"}</div></td>
       </tr>),
     ])}
   </Table>
