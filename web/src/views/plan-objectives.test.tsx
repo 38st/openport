@@ -27,7 +27,7 @@ const planned: Account = {
     target_remaining: "9850.00", decision_code: null,
     objectives: [
       { code: "PROFIT_TARGET", met: false, actual: 150, required: 10000, message: "$9850.00 to go to the target $110000.00 on the closed balance" },
-      { code: "MIN_TRADING_DAYS", met: false, actual: 2, required: 3, message: "2 of 3 days with a trade; a day counts once one of your own orders, or a share sale, executes on it" },
+      { code: "MIN_TRADING_DAYS", met: false, actual: 2, required: 3, message: "2 of 3 days with a trade; a day counts once one of your own orders, or a share trade, executes on it" },
       { code: "CONSISTENCY", met: false, actual: 66.7, required: 40, message: "The best day, $100.00 on 2026-09-22, is 67% of the total profit $150.00" },
     ],
     trading_days: 2, profitable_days: 1, best_day: { day: "2026-09-22", profit: "100.00" }, consistency_target: "250.00",

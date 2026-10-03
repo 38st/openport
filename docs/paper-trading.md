@@ -1609,8 +1609,8 @@ day's percent of its basis against the limit). The attempt passes on the first
 observation that meets all of them, so a trader who reaches the target early keeps
 trading, and protecting it, until the other objectives are met. Days are the finished
 `days[]` and the day in progress, which counts as soon as it qualifies: a trading day
-once one of the trader's own orders executes on it or the trader sells or buys back
-delivered shares, a flatten's included (bracket exits count; the account's liquidations,
+once one of the trader's own orders executes on it or the trader trades
+shares, a flatten's included (bracket exits count; the account's liquidations,
 expiry closes, settlements, exercises and assignments do not), and a profitable day once
 its profit so far reaches `profitable_day_profit`. Holding a position over a day does
 not make it a trading day. Each day's profit follows `profit_basis`: its equity
@@ -2382,7 +2382,7 @@ flatten dialog names an underlying whose paper orders are refused (a stalled fee
 halt), whose positions and orders the flatten leaves, and does not count its orders
 among those cancelled; Close all is disabled when that is every underlying in scope.
 After a flatten, its dialog lists each closing order's outcome (a close still
-working says so), the delivered shares it traded and any it left with the reason, and
+working says so), the shares it traded and any it left with the reason, and
 each position still open with the contracts being worked and why the rest stay. The
 dialog counts the orders it cancels without the bracket exits, which stay until the
 position they protect is flat. For
