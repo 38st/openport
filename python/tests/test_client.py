@@ -113,6 +113,16 @@ def test_preview_cancel_and_replay_routing(stub):
     assert client.step_replay("15:00")["settled_through"] == TIME
     assert stub.requests[-1][1] == "/api/replay"
     assert stub.requests[-1][3] == {"until": "15:00"}
+    for target in ("+15s", "+1m", "+1h", "next"):
+        client.step_replay(target)
+        assert stub.requests[-1][3] == {"until": target}
+    client.control_replay(skip=True)
+    assert stub.requests[-1][3] == {"skip": True}
+    client.control_replay(skip=False)
+    assert stub.requests[-1][3] == {"skip": False}
+    client.abort_replay()
+    assert stub.requests[-1][1] == "/api/replay"
+    assert stub.requests[-1][3] == {"abort": True}
     assert client.stop_replay()["replay"] is None
 
 

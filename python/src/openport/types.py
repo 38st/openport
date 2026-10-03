@@ -204,7 +204,13 @@ class RunVerification(TypedDict, total=False):
     run: JSON
 
 
-class ReplayResult(TypedDict):
+class ReplayFeedback(TypedDict, total=False):
+    settled_through: str
+    aborted: bool
+    message: str
+
+
+class ReplayResult(ReplayFeedback):
     replay: JSON | None
 
 

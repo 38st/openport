@@ -59,7 +59,11 @@ class ReplayProvider final : public md::Provider {
   /// publishes the next event now, cutting short a long gap such as a closed market.
   void set_speed(int speed);
   void set_paused(bool paused);
-  void skip();
+  void skip(bool pending = true);
+  [[nodiscard]] bool skip_pending() const noexcept { return skip_.load(); }
+  /// Interrupt a step at a complete, synchronized batch boundary.
+  void abort();
+  [[nodiscard]] md::Timestamp next_time() const noexcept { return next_time_.load(); }
   /// Install before start. Each completed batch waits for its consumer; no queue
   /// coalescing or playback-clock scheduling can change its contents.
   using Driver = std::function<std::future<void>(ReplayBatch)>;
@@ -68,7 +72,7 @@ class ReplayProvider final : public md::Provider {
   /// Synchronous lockstep advance; returns only after all complete input through
   /// the target is settled. Controls and shutdown interrupt the pacing wait. A target
   /// past the recording's last batch throws before anything plays.
-  void until(md::Timestamp target);
+  bool until(md::Timestamp target);  ///< true if interrupted by abort/pause/stop
   /// The market time of the recording's last complete batch, read once on first use.
   [[nodiscard]] md::Timestamp end_time(const md::Subscription& subscription = {});
   [[nodiscard]] md::Timestamp settled_through() const { return settled_.load(); }
@@ -121,6 +125,9 @@ class ReplayProvider final : public md::Provider {
   md::Timestamp in_flight_time_ = 0;  // control_mutex_
   md::Timestamp step_target_ = 0;  // control_mutex_
   bool step_pending_ = false;  // control_mutex_
+  bool abort_requested_ = false;  // control_mutex_
+  bool step_aborted_ = false;  // control_mutex_
+  std::atomic<md::Timestamp> next_time_{0};
   std::atomic<bool> stepping_{false};
   std::string playback_error_;
   md::Subscription subscription_;

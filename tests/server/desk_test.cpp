@@ -1734,6 +1734,96 @@ TEST(ReplayRun, AStepHoldsNoCallerAndRefusesWritesUntilItSettles) {
   host.stop();
 }
 
+TEST(ReplayRun, RelativeStepsSecondsAndQueuedSkipsAreExplicit) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  server::ReplayHost host({file.directory, options, false});
+  const test::ScriptedMarket market;
+  for (const auto& start : {std::string("10:00:02"), md::format_timestamp(market.time + 2 * md::kNanosPerSecond)}) {
+    const auto response = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"start_at", start}, {"paused", true}});
+    ASSERT_EQ(response.status, 201) << response.body;
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+    EXPECT_EQ(json::parse(host.tick()).at("replay").at("settled_through"), md::format_timestamp(market.time + 2 * md::kNanosPerSecond));
+  }
+  auto queued = replay_call(host, "PUT", "/api/replay", {{"skip", true}});
+  EXPECT_EQ(json::parse(queued.body).at("replay").at("skip_pending"), true);
+  EXPECT_TRUE(json::parse(queued.body).contains("message"));
+  EXPECT_EQ(json::parse(host.tick()).at("replay").at("skip_pending"), true);
+  EXPECT_EQ(replay_call(host, "PUT", "/api/replay", {{"skip", false}}).status, 200);
+  EXPECT_EQ(json::parse(host.tick()).at("replay").at("skip_pending"), false);
+  const auto before = json::parse(host.tick()).at("replay");
+  for (const auto* value : {"+15s", "+5m", "+1h", "+0s", "+1.5s", "+999999999999999999h", "+1d"}) {
+    const auto refused = replay_call(host, "PUT", "/api/replay", {{"until", value}});
+    EXPECT_EQ(refused.status, 400) << refused.body;
+    EXPECT_EQ(json::parse(host.tick()).at("replay"), before);
+  }
+  EXPECT_EQ(replay_call(host, "PUT", "/api/replay", {{"until", "next"}}).status, 200);
+  EXPECT_EQ(json::parse(host.tick()).at("replay").at("settled_through"), md::format_timestamp(market.time + 3 * md::kNanosPerSecond));
+}
+
+TEST(ReplayRun, AbortPauseAndDeleteInterruptStepsAndPreserveTheSettledJournal) {
+  for (const auto* action : {"abort", "paused", "delete"}) {
+    test::RecordingFile file;
+    write_stream(file.path, true);
+    const test::ScriptedMarket market;
+    std::promise<void> entered, release;
+    const auto released = release.get_future().share();
+    auto held = entered.get_future();
+    std::atomic<bool> hold{false};
+    std::atomic<int> clock{0};
+    server::Engine::Options options;
+    options.paper_journal = file.directory / "main.jsonl";
+    options.journal_io.clock = [&] { return std::chrono::steady_clock::time_point{} + std::chrono::seconds(++clock); };
+    options.journal_io.sync = [&](int) {
+      if (hold.exchange(false)) { entered.set_value(); released.wait(); }
+      return true;
+    };
+    server::ReplayHost host({file.directory, options, false});
+    const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"paused", true}});
+    ASSERT_EQ(started.status, 201);
+    const auto id = json::parse(started.body).at("replay").at("id").get<std::string>();
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+    // Block the first batch's durable write, so the interrupt deterministically arrives mid-step.
+    hold = true;
+    auto step = std::async(std::launch::async, [&] { return replay_call(host, "PUT", "/api/replay", {{"until", "+10s"}}); });
+    const auto waiting = held.wait_for(10s);
+    EXPECT_EQ(waiting, std::future_status::ready);
+    if (waiting != std::future_status::ready) { release.set_value(); host.stop(); return; }
+    std::promise<server::ApiResponse> completed;
+    auto interrupted = completed.get_future();
+    server::ApiRequest request{std::string(action) == "delete" ? "DELETE" : "PUT", "/api/replay",
+        std::string(action) == "delete" ? "{}" : json{{action, true}}.dump()};
+    request.content_type = "application/json";
+    ASSERT_TRUE(host.handle(request, [&](server::ApiResponse response) { completed.set_value(std::move(response)); }));
+    EXPECT_EQ(json::parse(host.tick()).at("replay").at("stepping"), true);
+    EXPECT_EQ(interrupted.wait_for(0s), std::future_status::timeout);
+    EXPECT_EQ(replay_call(host, "POST", "/api/replay/orders", json::object()).status, 409);
+    release.set_value();
+    const auto result = step.get();
+    ASSERT_EQ(result.status, 200) << result.body;
+    const auto state = json::parse(result.body);
+    EXPECT_EQ(state.at("aborted"), true);
+    EXPECT_EQ(state.at("replay").at("paused"), true);
+    EXPECT_EQ(state.at("settled_through"), md::format_timestamp(market.time + md::kNanosPerSecond));
+    EXPECT_EQ(interrupted.get().status, 200);
+    host.stop();
+    const auto journal = file.directory / "replays" / (id + ".jsonl");
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+    // The interrupted run is byte-identical to a normal step to its settled boundary.
+    server::ReplayHost reference({file.directory, options, false});
+    const auto fresh = replay_call(reference, "POST", "/api/replay", {{"file", "session.oprec"}, {"paused", true}});
+    ASSERT_EQ(fresh.status, 201);
+    const auto fresh_id = json::parse(fresh.body).at("replay").at("id").get<std::string>();
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(reference.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
+    ASSERT_EQ(replay_call(reference, "PUT", "/api/replay", {{"until", state.at("settled_through")}}).status, 200);
+    reference.stop();
+    EXPECT_EQ(read_file(journal), read_file(file.directory / "replays" / (fresh_id + ".jsonl")));
+  }
+}
+
 TEST(ReplayRun, StandaloneEngineFlushesBeforePublishingFinished) {
   test::RecordingFile file;
   write_stream(file.path, true);
@@ -1763,7 +1853,7 @@ TEST(ReproducibleRun, LockstepSmallAndLargeStepsMatchContinuousCommandsAndVerify
   const test::ScriptedMarket market;
   std::string golden;
   // Continuous headless run is the reference, including identical command instants.
-  for (const int step : {0, 1, 4}) {
+  for (const int step : {0, 1, 4, -1, -2}) {
     const auto directory = file.directory / std::to_string(step);
     std::filesystem::create_directory(directory);
     std::filesystem::path journal;
@@ -1802,9 +1892,9 @@ TEST(ReproducibleRun, LockstepSmallAndLargeStepsMatchContinuousCommandsAndVerify
       ASSERT_TRUE(test::recording_eventually([&] {
         return !json::parse(replay_call(host, "GET", "/api/replay").body).at("replay").at("fast_forwarding").get<bool>();
       }));
-      for (int second = step; second <= 12; second += step) {
+      for (int second = std::max(1, step); second <= 12; second += std::max(1, step)) {
         const auto time = market.time + second * md::kNanosPerSecond;
-        const auto target = second % 2 == 0 ? md::format_timestamp(time) : "10:00:" + (second < 10 ? std::string("0") : std::string()) + std::to_string(second);
+        const auto target = step == -1 ? std::string("+1s") : step == -2 ? std::string("next") : second % 2 == 0 ? md::format_timestamp(time) : "10:00:" + (second < 10 ? std::string("0") : std::string()) + std::to_string(second);
         const auto stepped = replay_call(host, "PUT", "/api/replay", {{"until", target}});
         ASSERT_EQ(stepped.status, 200) << stepped.body;
         EXPECT_EQ(json::parse(stepped.body).at("settled_through"), md::format_timestamp(time));

@@ -151,6 +151,8 @@ simulation's limits.
   second.
 
   - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
+    Relative and next-snapshot steps, batch-boundary abort/pause/stop, visible queued
+    skips, and start times with seconds support repeatable drills.
     Step to a market time with `PUT /api/replay {"until":"10:30"}`, or a date and time
     in the terminal; check a saved run with **Finished runs → Verify** or
     `openportd --verify-run JOURNAL`. Final journal heads and counts detect missing

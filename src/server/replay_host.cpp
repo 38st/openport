@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <random>
 #include <map>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <system_error>
 #include <unistd.h>
@@ -149,6 +150,36 @@ md::Timestamp session_time(const std::string& value, const std::vector<providers
   }
   throw std::invalid_argument(std::string(field) + " " + value + " falls in none of this run's sessions after " +
                               md::format_timestamp(after) + "; give a date and time");
+}
+
+md::Timestamp control_time(std::string value, const std::vector<providers::ScenarioWindow>& windows,
+                           const providers::ReplayProvider& provider, const char* field) {
+  const auto current = std::max(provider.settled_through(), provider.market_time());
+  if (value == "next") {
+    const auto next = provider.next_time();
+    if (next <= current) throw std::invalid_argument("No next snapshot; the recording has ended");
+    return next;
+  }
+  if (value.starts_with('+')) {
+    md::Timestamp seconds = 0;
+    if (value.size() < 3) throw std::invalid_argument("Relative time must be +Ns, +Nm or +Nh (whole positive seconds, minutes or hours)");
+    const auto [end, error] = std::from_chars(value.data() + 1, value.data() + value.size() - 1, seconds);
+    const auto unit = value.back() == 's' ? 1 : value.back() == 'm' ? 60 : value.back() == 'h' ? 3600 : 0;
+    if (error != std::errc{} || end != value.data() + value.size() - 1 || seconds <= 0 || unit == 0 ||
+        seconds > (std::numeric_limits<md::Timestamp>::max() - current) / md::kNanosPerSecond / unit)
+      throw std::invalid_argument("Relative time must be +Ns, +Nm or +Nh (whole positive seconds, minutes or hours)");
+    return current + seconds * unit * md::kNanosPerSecond;
+  }
+  if (const auto dated = dated_time(value, field)) return *dated;
+  // A bare time is its next occurrence at or after the replay's time.
+  if (windows.size() > 1) return session_time(value, windows, current - 1, field);
+  const auto date = md::trading_date(provider.header().started);
+  auto day = date;
+  if (md::new_york_time(provider.header().started).date < date && value.substr(0, 5) >= "20:15")
+    day = md::date_from_days(md::days_since_epoch(date) - 1);
+  if (value.size() == 5) value += ":00";
+  if (const auto parsed = md::parse_datetime(md::format_date(day) + "T" + value, md::Zone::NewYork)) return *parsed;
+  throw std::invalid_argument(std::string(field) + " must be HH:MM[:SS], a dated time, +Ns/+Nm/+Nh or next");
 }
 
 void replay_gate(json& message, const providers::ReplayProvider& provider) {
@@ -323,6 +354,7 @@ struct ReplayHost::Session {
     out["durable"] = durable;
     out["fast_forwarding"] = provider->fast_forwarding();
     out["stepping"] = provider->stepping();
+    out["skip_pending"] = provider->skip_pending();
     out["progress"] = target > provider->header().started ? std::clamp(
         static_cast<double>(time - provider->header().started) / static_cast<double>(target - provider->header().started), 0.0, 1.0) : 1.0;
     out["speed"] = provider->speed();
@@ -817,6 +849,7 @@ void ReplayHost::stop() {
   }
   jobs_ready_.notify_all();
   for (auto& job : refused) job.complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
+  if (const auto session = current()) session->provider->abort();
   const std::lock_guard control_lock(control_mutex_);
   verifier_.request_stop();
   if (verifier_.joinable()) verifier_.join();
@@ -855,6 +888,17 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
   const bool saved = rest.starts_with("/history/");
   // Changes wait their turn on the control thread; a step there never holds this one.
   if ((controls && request.method != "GET") || (saved && (request.method == "DELETE" || request.method == "POST"))) {
+    // Interrupt before queuing: an until occupies the host thread until its current
+    // batch and consumer barrier settle. Invalid controls must never move a replay.
+    if (request.target == "/api/replay" && options_.engine.write_mode != "disabled") {
+      bool interrupt = request.method == "DELETE";
+      if (request.method == "PUT") {
+        const auto body = json::parse(request.body, nullptr, false);
+        interrupt = body.is_object() && body.size() == 1 &&
+            (body.value("abort", json(false)) == json(true) || body.value("paused", json(false)) == json(true));
+      }
+      if (interrupt) if (const auto session = current()) session->provider->abort();
+    }
     enqueue(request, complete);
     return true;
   }
@@ -1389,7 +1433,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       old.reset();
       complete(ok({{"replay", session->state()}}, 201));
     } else if (request.method == "PUT") {
-      const auto body = parse_body(request, {"speed", "paused", "skip", "until"});
+      const auto body = parse_body(request, {"speed", "paused", "skip", "until", "abort"});
       const auto session = current();
       if (!session) {
         complete(api_error(404, "NO_REPLAY", "No replay is running"));
@@ -1401,33 +1445,28 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       }
       if (body.contains("paused") && !body.at("paused").is_boolean()) throw std::invalid_argument("paused must be true or false");
       if (body.contains("skip") && !body.at("skip").is_boolean()) throw std::invalid_argument("skip must be true or false");
+      if (body.contains("abort")) {
+        if (body.size() != 1 || body.at("abort") != json(true)) throw std::invalid_argument("abort must be true and the only control");
+        session->provider->abort();
+        session->engine->synchronize().get();
+        complete(ok({{"replay", session->state()}, {"aborted", true}}));
+        return;
+      }
       if (body.contains("until")) {
         if (body.size() != 1 || !body.at("until").is_string())
           throw std::invalid_argument("until must be a time string and the only control");
-        auto value = body.at("until").get<std::string>();
-        // A bare time is on the session's date; in a run of several sessions, its next
-        // occurrence at or after the replay's time. A date and time is New York unless zoned.
-        std::optional<md::Timestamp> target = dated_time(value, "until");
-        if (!target && session->windows.size() > 1) {
-          target = session_time(value, session->windows, std::max(session->provider->settled_through(), session->provider->market_time()) - 1, "until");
-        } else if (!target) {
-          const auto date = md::trading_date(session->provider->header().started);
-          auto day = date;
-          if (md::new_york_time(session->provider->header().started).date < date && value.substr(0, 5) >= "20:15")
-            day = md::date_from_days(md::days_since_epoch(date) - 1);
-          if (value.size() == 5) value += ":00";
-          target = md::parse_datetime(md::format_date(day) + "T" + value, md::Zone::NewYork);
-        }
-        if (!target) throw std::invalid_argument("until must be New York HH:MM[:SS], or a date and time such as 2026-09-17T10:30");
-        session->provider->until(*target);
-        complete(ok({{"replay", session->state()}, {"settled_through", md::format_timestamp(session->provider->settled_through())}}));
+        const auto target = control_time(body.at("until").get<std::string>(), session->windows, *session->provider, "until");
+        const bool aborted = session->provider->until(target);
+        complete(ok({{"replay", session->state()}, {"aborted", aborted}, {"settled_through", md::format_timestamp(session->provider->settled_through())}}));
         return;
       }
       if (body.contains("speed")) session->provider->set_speed(speed_field(body));
       if (body.contains("paused")) session->provider->set_paused(body.at("paused").get<bool>());
-      if (body.contains("skip") && body.at("skip").get<bool>()) session->provider->skip();
+      if (body.contains("skip")) session->provider->skip(body.at("skip").get<bool>());
       if (body.value("paused", false)) session->engine->synchronize().get();
-      complete(ok({{"replay", session->state()}}));
+      auto response = json{{"replay", session->state()}};
+      if (session->provider->skip_pending()) response["message"] = "Skip queued for the next resume; skip:false cancels it";
+      complete(ok(response));
     } else if (request.method == "DELETE") {
       stop_session();
       complete(ok({{"replay", nullptr}}));

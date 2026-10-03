@@ -90,9 +90,17 @@ void ReplayProvider::set_paused(bool paused) {
   wake();
 }
 
-void ReplayProvider::skip() {
-  skip_ = true;
+void ReplayProvider::skip(bool pending) {
+  skip_ = pending;
   wake();
+}
+
+void ReplayProvider::abort() {
+  {
+    const std::lock_guard lock(control_mutex_);
+    if (stepping_.load()) abort_requested_ = true;
+  }
+  set_paused(true);
 }
 
 bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
@@ -111,7 +119,7 @@ bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
       continue;
     }
     const int speed = speed_.load();
-    if (speed == 0 || skip_.exchange(false)) {
+    if (skip_.exchange(false) || speed == 0) {
       deadline = options_.clock->now();
       return true;
     }
@@ -292,9 +300,14 @@ md::Timestamp ReplayProvider::end_time(const md::Subscription& subscription) {
   return last;
 }
 
-void ReplayProvider::until(md::Timestamp target) {
+bool ReplayProvider::until(md::Timestamp target) {
   if (!driver_) throw std::invalid_argument("Lockstep requires a deterministic consumer");
-  if (stepping_.exchange(true)) throw std::invalid_argument("Another lockstep advance is in progress");
+  {
+    const std::lock_guard lock(control_mutex_);
+    if (stepping_.exchange(true)) throw std::invalid_argument("Another lockstep advance is in progress");
+    abort_requested_ = false;
+    step_aborted_ = false;
+  }
   // stepping() holds from here until this returns, the end's first lookup included.
   struct Stepped { std::atomic<bool>& stepping; ~Stepped() { stepping = false; } } stepped{stepping_};
   // Refuse a target past EOF before playing anything: an error leaves the run where it was.
@@ -314,8 +327,9 @@ void ReplayProvider::until(md::Timestamp target) {
   lock.lock();
   control_.wait(lock, [&] { return !step_pending_ || finished_.load() || stopping_.load(); });
   if (!playback_error_.empty()) throw std::runtime_error(playback_error_);
-  if (settled_.load() < target)
+  if (!step_aborted_ && settled_.load() < target)
     throw std::invalid_argument(stopping_.load() ? "The replay stopped before until" : "until exceeds the recording's end");
+  return step_aborted_;
 }
 
 void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventSink& sink) {
@@ -323,18 +337,22 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
     ReplayBatches batches(reader_, subscription);
     snapshot_batches_ = batches.snapshot_feed();
     auto next = batches.next();
+    next_time_ = next ? next->time : 0;
     auto deadline = options_.clock->now();
     md::Timestamp previous = 0;
     std::uint64_t remainder = 0;
     while (!stopping_.load() && next) {
       {
         std::unique_lock lock(control_mutex_);
-        if (step_pending_ && next->time > step_target_) {
+        if (step_pending_ && (abort_requested_ || next->time > step_target_)) {
           lock.unlock();
           if (!synchronize()) break;
           lock.lock();
-          market_time_ = step_target_;
-          settled_ = step_target_;
+          step_aborted_ = abort_requested_;
+          if (!step_aborted_) {
+            market_time_ = step_target_;
+            settled_ = step_target_;
+          }
           paused_ = true;
           // The step played its batches unpaced: the next gap counts from here, not
           // from a deadline measured before it, or each step would add a stale gap.
@@ -355,7 +373,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       // An until request may have interrupted the wait before this future batch.
       {
         const std::lock_guard lock(control_mutex_);
-        if (step_pending_ && next->time > step_target_) continue;
+        if (step_pending_ && (abort_requested_ || next->time > step_target_)) continue;
         in_flight_time_ = next->time;
       }
       const auto receipt = next->received;
@@ -368,6 +386,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       settled_ = through;
       previous = receipt;
       next = batches.next();
+      next_time_ = next ? next->time : 0;
       if (preparing_.load() && receipt >= options_.start_at && (!next || next->received > receipt)) {
         if (paused_.load() && !synchronize()) break;
         seeking_ = false;
@@ -386,7 +405,10 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
   if (!stopping_.load()) (void)synchronize();
   {
     const std::lock_guard lock(control_mutex_);
-    if (step_pending_) paused_ = true;
+    if (step_pending_) {
+      paused_ = true;
+      step_aborted_ = abort_requested_;
+    }
     step_pending_ = false;
     seeking_ = false;
     preparing_ = false;

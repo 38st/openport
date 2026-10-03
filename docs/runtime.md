@@ -534,7 +534,7 @@ recordings. Imported days appear beside live recordings with their provider name
 `POST /api/replay` starts `{file: NAME}` or `{scenario: ID}`; `demo: ID` and
 `demo: true` remain accepted, and `scenario: true`, like `demo: true`, plays the
 default scenario. Optional fields are `plan` (default `practice`),
-`speed` (0, 1, 2, 5, 10, 30, 60, 120 or 300), `start_at` (`HH:MM` New York, or a
+`speed` (0, 1, 2, 5, 10, 30, 60, 120 or 300), `start_at` (`HH:MM[:SS]` New York, or a
 date and time such as `2026-09-17T10:30`) and `paused`. Scenarios also accept a trading `date` and `seed`: omit it for a fresh
 seed, use `"scenario"` for the file's seed, or supply a uint64 decimal string.
 `PUT` changes speed or pause, skips a gap, or advances through `until`; `DELETE` stops playback.
@@ -593,7 +593,12 @@ before anything plays, naming where the recording ends, so the replay, its worki
 orders and its evaluation stay where they were. The response waits for every
 complete input boundary through the target, analytics, trading and publication, and
 includes `settled_through` both at the top level and in replay state. A market time's snapshots are applied as one
-complete batch.
+complete batch. `until` also accepts `+15s`, `+5m`, `+1h` (positive whole units
+relative to max(settled_through, market_time)) and `next` (the next complete snapshot
+or market-second batch). Relative targets past EOF are refused before playing.
+
+A paused skip is explicit: `PUT {"skip":true}` replies that it is queued for the
+next resume and state/ticks expose `skip_pending:true`. `PUT {"skip":false}` cancels it.
 
 ```sh
 curl -X PUT http://localhost:8080/api/replay \
@@ -606,8 +611,11 @@ the paused market time. While the step plays, replay state reports `stepping: tr
 (`fast_forwarding` stays false: it means the start state is still being prepared),
 and orders and other writes to the replay account return 409 `REPLAY_STEPPING`,
 since they would land at whatever market time the step had reached. Other starts,
-controls and history deletes wait their turn behind the step on the replay host's
-own thread; listings, reads, WebSocket ticks and the live accounts keep answering. Stepping through intermediate times adds no account
+controls and history deletes wait their turn on the replay host's own thread, except
+`PUT {"abort":true}`, `PUT {"paused":true}` and `DELETE /api/replay`, which interrupt
+the step at its next complete batch and wait for analytics, account and journal sync.
+The interrupted step returns `aborted:true` with its actual `settled_through`; writes
+stay `REPLAY_STEPPING` until that barrier completes. Invalid controls do not interrupt; listings, reads, WebSocket ticks and the live accounts keep answering. Stepping through intermediate times adds no account
 transactions; with the same commands at the same times it gives the same journal
 as continuous playback. A step plays unpaced and leaves the replay paused; resuming
 waits one receipt-time gap from the resume, however many steps came before.
