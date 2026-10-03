@@ -15,7 +15,6 @@ function wireType(schema: Schema): string {
   if (schema.items) return `${wireType(schema.items)}[]`
   if (schema.type === "object" && typeof schema.additionalProperties === "object") return `Record<string, ${wireType(schema.additionalProperties)}>`
   if (schema.const !== undefined) return JSON.stringify(schema.const)
-  if (schema.type === "integer") return "number"
   return schema.type!
 }
 
@@ -54,7 +53,8 @@ describe("checked API core types", () => {
     const schema = spec.components.schemas[name]!
     expect(fields.map((field) => field[1]).sort()).toEqual(Object.keys(schema.properties!).sort())
     for (const [, field, optional, type] of fields) {
-      expect(normalize(type!), `${name}.${field}`).toBe(wireType(schema.properties![field!]!))
+      // TypeScript has no integer type: an OpenAPI integer is a number on the wire.
+      expect(normalize(type!), `${name}.${field}`).toBe(wireType(schema.properties![field!]!).replace(/\binteger\b/g, "number"))
       // Browser types allow fields absent on older servers; all its required
       // fields must still be required by the current HTTP contract.
       if (!optional) expect(schema.required, `${name}.${field}`).toContain(field)
