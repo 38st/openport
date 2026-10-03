@@ -137,6 +137,7 @@ if(OPENPORT_BUILD_PROVIDERS)
     server/series.cpp
     server/series_api.cpp
     server/equity.cpp
+    server/event_calendar.cpp
     server/strategy_template.cpp
     server/playbooks.cpp
     server/playbook_api.cpp

@@ -369,8 +369,14 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
       {"microscalp_seconds", 30}, {"microscalp_percent", 25}, {"no_hedging", true}, {"no_counter_positions", true},
       {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 25},
       {"scaling", {{{"profit", "0.00"}, {"contracts", 2}}}}, {"size_scaling", nullptr}}}};
+  timed["plan"]["rules"].update({{"events", {{{"kind", "news"}, {"time", "2026-09-22T14:00:00Z"}}}},
+      {"news_before_minutes", 5}, {"news_after_minutes", 10}, {"news_action", "flatten"},
+      {"hold_restrictions", {"weekend", "split"}}, {"hold_cutoff", "15:40"}});
   const auto time_rules = server::parse_backtest(timed, definitions, scenarios, {}).config.rules;
   EXPECT_EQ(time_rules.flat_time, 945); EXPECT_TRUE(time_rules.no_overnight);
+  EXPECT_EQ(time_rules.events.size(), 1U); EXPECT_EQ(time_rules.news_before_minutes, 5);
+  EXPECT_EQ(time_rules.news_action, "flatten"); EXPECT_EQ(time_rules.hold_cutoff, 940);
+  EXPECT_EQ(time_rules.hold_restrictions, (std::vector<std::string>{"split", "weekend"}));
   EXPECT_EQ(time_rules.time_limit_days, 30); EXPECT_EQ(time_rules.inactivity_days, 14);
   EXPECT_EQ(time_rules.underlyings, std::vector<std::string>{"SPX"});
   EXPECT_EQ(time_rules.trading_start, 570); EXPECT_EQ(time_rules.trading_end, 960);

@@ -381,7 +381,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
   const auto& account = *addressed;
   if (!sandbox.empty()) {
     const bool market_read = read && (path == "/ws" || path == "/api/status" || path == "/api/accounts" ||
-        path == "/api/plans" || path == "/api/strategy-template" || path.starts_with("/api/underlyings/"));
+        path == "/api/plans" || path == "/api/calendar/events" || path == "/api/strategy-template" || path.starts_with("/api/underlyings/"));
     const bool account_read = read && (path == "/api/account" || path == "/api/account/equity" ||
         path == "/api/account/pass-odds" || path == "/api/portfolio" || path == "/api/orders" || path.starts_with("/api/orders/") ||
         path == "/api/fills" || path == "/api/settlements" || path == "/api/risk" || path == "/api/risk/profile" || path == "/api/trades" ||

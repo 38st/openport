@@ -1,4 +1,5 @@
 #include "paper_json.hpp"
+#include "event_calendar.hpp"
 #include "openport/server/sandboxes.hpp"
 #include "playbook_api.hpp"
 #include "paper_csv.hpp"
@@ -105,6 +106,10 @@ json rules_json(const AccountRules& r, Money initial_cash) {
   if (r.impact_ticks != 0) result["impact_ticks"] = r.impact_ticks;
   if (r.inside_fill_percent != 0) result["inside_fill_percent"] = r.inside_fill_percent;
   if (r.fees) result["fees"] = fee_schedule_json(*r.fees);
+  result["events"] = calendar_events_json(r.events);
+  result["news_before_minutes"] = r.news_before_minutes; result["news_after_minutes"] = r.news_after_minutes;
+  result["news_action"] = r.news_action; result["hold_restrictions"] = r.hold_restrictions;
+  result["hold_cutoff"] = clock_text(r.hold_cutoff);
   return result;
 }
 /// A check one contract failed reports that contract's underlying as its scope, as
@@ -112,6 +117,13 @@ json rules_json(const AccountRules& r, Money initial_cash) {
 json scope_json(const std::string& scope) {
   const auto contract = md::parse_osi(scope);
   return nullable(contract ? contract->underlying : scope);
+}
+json evidence_value(const Decision& d, bool limit) {
+  const auto value = limit ? d.limit : d.actual;
+  if (!value) return nullptr;
+  if (d.code == Reason::NEWS_BLACKOUT) return md::format_timestamp(static_cast<Timestamp>(*value));
+  if (d.code == Reason::HOLD_RESTRICTED && limit) return clock_text(static_cast<std::int64_t>(*value));
+  return number(*value);
 }
 /// A reason with its numeric evidence: how far a check was exceeded, and where.
 json rule_evidence_json(const RuleEvidence& e) {
@@ -125,7 +137,7 @@ json rule_evidence_json(const RuleEvidence& e) {
 json decision_json(const Decision& d) {
   if (d.ok()) return nullptr;
   json result{{"code", to_string(d.code)}, {"message", d.message},
-          {"actual", d.actual ? number(*d.actual) : json(nullptr)}, {"limit", d.limit ? number(*d.limit) : json(nullptr)},
+          {"actual", evidence_value(d, false)}, {"limit", evidence_value(d, true)},
           {"scope", scope_json(d.scope)}};
   if (d.evidence) result["evidence"] = rule_evidence_json(*d.evidence);
   return result;
@@ -869,6 +881,9 @@ json account_json(const TradingView& view) {
               {"best_trade", e.best_trade ? json{{"id", e.best_trade->id}, {"pnl", e.best_trade->pnl.str()}} : json(nullptr)},
               {"consistency_target", money(consistency_target(e, r, in))},
               {"daily_loss", daily_loss},
+              {"next_event", [&] { const auto upcoming = restricting_events_json(r, s.time, false);
+                  return upcoming.empty() ? json(nullptr) : upcoming.front(); }()},
+              {"active_events", restricting_events_json(r, s.time, true)},
               {"time_limit_days", r.time_limit_days > 0 ? json(r.time_limit_days) : json(nullptr)},
               {"deadline", timed.deadline ? json(md::format_date(*timed.deadline)) : json(nullptr)},
               {"days_left", timed.days_left ? json(*timed.days_left) : json(nullptr)},
@@ -1230,11 +1245,9 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
                      reply.error_code, reply.decision.message);
   if (!reply.decision.ok()) return api_error(reason_status(reply.decision.code),
       std::string(to_string(reply.decision.code)), reply.decision.message, reply.decision);
-  // Mandatory flat time is an HTTP refusal for opening dry runs as well as submits.
-  const auto* preview_decision = reply.preview ? &reply.preview->decision
-      : reply.stock_preview ? &reply.stock_preview->decision : nullptr;
-  if (preview_decision && preview_decision->code == Reason::FLAT_TIME)
-    return api_error(422, "FLAT_TIME", preview_decision->message, *preview_decision);
+  const auto* preview_decision = reply.preview ? &reply.preview->decision : reply.stock_preview ? &reply.stock_preview->decision : nullptr;
+  if (preview_decision && (preview_decision->code == Reason::FLAT_TIME || preview_decision->code == Reason::NEWS_BLACKOUT || preview_decision->code == Reason::HOLD_RESTRICTED))
+    return api_error(422, std::string(to_string(preview_decision->code)), preview_decision->message, *preview_decision);
   if (!reply.account_result.empty()) return {200, reply.account_result};
   if (!reply.view || !reply.view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "No trading publication");
   const auto& view = *reply.view;
@@ -1639,6 +1652,18 @@ void parse_time_rules(const json& j, AccountRules& rules) try {
     }
   }
   if (j.contains("no_overnight")) rules.no_overnight = boolean_field(j, "no_overnight");
+  if (j.contains("events")) rules.events = parse_calendar_events(j.at("events"));
+  if (j.contains("news_before_minutes")) rules.news_before_minutes = integer_field(j, "news_before_minutes");
+  if (j.contains("news_after_minutes")) rules.news_after_minutes = integer_field(j, "news_after_minutes");
+  if (j.contains("news_action")) rules.news_action = string_field(j, "news_action");
+  if (j.contains("hold_cutoff")) rules.hold_cutoff = clock_field(j, "hold_cutoff");
+  if (j.contains("hold_restrictions")) {
+    const auto& list = j.at("hold_restrictions");
+    if (!list.is_array() || !std::all_of(list.begin(), list.end(), [](const json& v) { return v.is_string(); }))
+      throw std::invalid_argument("hold_restrictions must be an array of restriction names");
+    rules.hold_restrictions = list.get<std::vector<std::string>>();
+  }
+  normalize_event_rules(rules);
   validate_time_rules(rules);
 } catch (const std::exception& error) {
   throw PlanRestrictionError(error.what());
@@ -1652,7 +1677,8 @@ AccountRules parse_rules(const json& j) {
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
           "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "max_volume_percent", "max_contracts_held", "no_hedging", "no_counter_positions", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
-          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling", "size_scaling"});
+          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling", "size_scaling",
+          "events", "news_before_minutes", "news_after_minutes", "news_action", "hold_restrictions", "hold_cutoff"});
   if (j.contains("microscalp_seconds") != j.contains("microscalp_percent"))
     throw TradingError(Reason::INVALID_RULES, "Set microscalp_seconds and microscalp_percent together");
   AccountRules rules;
@@ -2317,8 +2343,8 @@ ApiResponse api_error(int status, std::string code, std::string message, const D
   // Some reducer checks identify a single contract. The HTTP contract exposes
   // risk scope as the underlying, while the order itself carries the OSI.
   json error{{"code", code}, {"message", message},
-      {"actual", evidence.actual ? number(*evidence.actual) : json(nullptr)},
-      {"limit", evidence.limit ? number(*evidence.limit) : json(nullptr)}, {"scope", scope_json(evidence.scope)}};
+      {"actual", evidence_value(evidence, false)},
+      {"limit", evidence_value(evidence, true)}, {"scope", scope_json(evidence.scope)}};
   if (evidence.evidence) error["evidence"] = rule_evidence_json(*evidence.evidence);
   return {status, json{{"error", std::move(error)}}.dump()};
 }

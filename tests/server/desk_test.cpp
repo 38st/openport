@@ -2841,6 +2841,48 @@ TEST(ReproducibleRun, PositionDisposalReplaysRecoversAndKeepsSparseCommandFields
   }
 }
 
+TEST(ReproducibleRun, CalendarRulesCaptureResetCalendarAndVerifyWithoutDriverChange) {
+  PolledInstants feed;
+  feed.write({{4.02, 10.20, 2.02}, {4.02, 10.20, 2.02}, {4.02, 10.20, 2.02},
+              {4.02, 10.20, 2.02}, {4.02, 10.20, 2.02}, {4.02, 10.20, 2.02}});
+  const auto journal = feed.file.directory / "calendar.jsonl";
+  {
+    server::Desk::Options options;
+    options.replay = true; options.run_input = server::recording_input(feed.file.path); options.paper_journal = journal;
+    auto desk = feed.desk(options); desk.start_trading();
+    md::RecordingReader reader(feed.file.path); providers::ReplayBatches batches(reader, feed.subscription);
+    auto batch = batches.next();
+    for (; batch && batch->time == feed.at(0); batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+    server::TradingCommand reset;
+    reset.kind = server::TradingCommand::Kind::ResetAccount; reset.initial_cash = Money::parse("100000"); reset.reason = "F17 F59";
+    reset.rules.events = {{"news", md::format_timestamp(feed.at(1)), "SPX", "", "CPI"},
+        {"earnings", "2026-09-22", "SPY", "after_close", "Results"}};
+    reset.rules.news_after_minutes = 1; reset.rules.news_action = "flatten";
+    reset.rules.hold_restrictions = {"earnings"}; reset.rules.hold_cutoff = 10 * 60 + 1;
+    {
+      md::ScheduledDaysScope changed({{{2030, 1, 2}, "Calendar changed after run start", true, 13, 0}});
+      const auto reply = command(desk, reset, feed.at(0), feed.at(0));
+      ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+    }
+    ASSERT_TRUE(order(desk, feed.symbol(1), trading::Side::Buy, 1, feed.at(0)).decision.ok());
+    ASSERT_TRUE(order(desk, feed.symbol(2), trading::Side::Buy, 1, feed.at(0)).decision.ok());
+    for (; batch; batch = batches.next()) desk.replay_batch(batch->events, batch->received, batch->time);
+    EXPECT_TRUE(desk.trading_view()->snapshot->positions.empty());
+    EXPECT_EQ(desk.trading_view()->snapshot->evaluation.event_actions.size(), 2U);
+    desk.stop();
+  }
+  const auto recovery = trading::FileJournal::read(journal.string());
+  const auto inputs = server::run_inputs(recovery);
+  ASSERT_FALSE(inputs.empty()); EXPECT_EQ(json::parse(inputs.front()).at("driver"), 6);
+  const auto verified = server::verify_run(journal);
+  EXPECT_TRUE(verified.matched) << verified.message;
+  auto recovered = trading::TradingSession::recover(recovery);
+  EXPECT_TRUE(recovered.snapshot()->positions.empty());
+  ASSERT_TRUE(recovered.config().rules.hold_calendar);
+  ASSERT_EQ(recovered.config().rules.hold_calendar->size(), 1U);
+  EXPECT_EQ(recovered.config().rules.hold_calendar->front().name, "Calendar changed after run start");
+}
+
 TEST(ReproducibleRun, OpeningShareCommandsRecordTheirPriceAndRecoverCoveredCalls) {
   PolledInstants feed;
   feed.write({{4.02, 10.20, 2.02}, {4.12, 11.20, 2.12}});

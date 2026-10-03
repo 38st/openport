@@ -121,6 +121,8 @@ class Stub:
             return 200, PLAYBOOK
         if path == "/api/account/pass-odds":
             return 200, shaped("PassOdds", seed="81723")
+        if path == "/api/calendar/events":
+            return 200, {"events": []}
         if path == "/api/strategy-template":
             return 200, shaped("TemplateResult")
         if path == "/api/orders/what-if":

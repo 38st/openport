@@ -52,6 +52,7 @@
 #include "openport/server/sandboxes.hpp"
 #include "openport/server/web_policy.hpp"
 #include "openport/trading/journal.hpp"
+#include "openport/server/event_calendar.hpp"
 
 namespace {
 
@@ -91,6 +92,7 @@ struct Settings {
   std::filesystem::path paper_journal;
   trading::SessionConfig paper;
   std::vector<trading::Dividend> dividends;
+  std::vector<trading::PlanEvent> event_calendar;
   bool massive_dividends = false;
   bool dividends_source = false;
   std::vector<analytics::EventLabel> events;
@@ -128,7 +130,7 @@ int usage(const char* error = nullptr) {
       "                 [--paper-slippage-ticks N] [--paper-fill-latency-ms N] [--paper-impact-ticks N]\n"
       "                 [--sandboxes N] [--sandbox-idle-seconds N] [--client-ip-header NAME]\n"
       "                 [--no-paper] [--write-token TOKEN] [--write-token-file PATH] [--candle-dir DIR] [--no-history]\n"
-      "                 [--dividends FILE|massive] [--events FILE] [--no-cboe-holidays]\n"
+      "                 [--dividends FILE|massive] [--event-calendar FILE] [--events FILE] [--no-cboe-holidays]\n"
       "                 [--series-dir DIR] [--no-series]\n"
       "       openportd --backfill-series FILE... [--force] [--series-dir DIR]\n"
       "       openportd --verify-run JOURNAL\n"
@@ -472,6 +474,11 @@ int run(int argc, char** argv) {
       if (!file) return usage(("--events: cannot read " + value).c_str());
       try { settings.events = analytics::parse_events(file); }
       catch (const std::exception& e) { return usage(e.what()); }
+    } else if (arg == "--event-calendar") {
+      std::ifstream file(value);
+      if (!file) return usage(("--event-calendar: cannot read " + value).c_str());
+      try { settings.event_calendar = trading::parse_event_calendar(file); }
+      catch (const std::exception& error) { return usage(error.what()); }
     } else if (arg == "--dividends" && value == "massive") {
       settings.massive_dividends = true;
       settings.dividends_source = true;
@@ -717,7 +724,8 @@ int run(int argc, char** argv) {
   const auto token_file = settings.token_file.empty() ? nullptr : std::make_shared<server::TokenFile>(settings.token_file, settings.write_token);
   server::WebServer web(
       settings.address, settings.port, settings.web_root,
-      [&engine, &replays, &backtests](const server::ApiRequest& request, server::ApiCompletion complete) {
+      [&engine, &replays, &backtests, &settings](const server::ApiRequest& request, server::ApiCompletion complete) {
+        if (auto response = server::event_calendar_read(request, settings.event_calendar)) { complete(std::move(*response)); return; }
         if (backtests.handle(request, engine, complete)) return;
         if (replays.handle(request, complete)) return;
         server::handle_api_async(request, engine, std::move(complete));

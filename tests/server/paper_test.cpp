@@ -16,6 +16,7 @@
 #include "openport/server/plans.hpp"
 #include "openport/server/web_policy.hpp"
 #include "server/paper_json.hpp"
+#include "server/event_calendar.hpp"
 #include "support/scripted_market.hpp"
 
 namespace {
@@ -2561,7 +2562,9 @@ TEST(PaperPlans, PresetsListExactRules) {
                   {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0},
                   {"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
                   {"trading_start", nullptr}, {"trading_end", nullptr}, {"flat_time", nullptr}, {"no_overnight", false},
-                  {"scaling", json::array()}, {"size_scaling", nullptr}});
+                  {"scaling", json::array()}, {"size_scaling", nullptr}, {"events", json::array()},
+                  {"news_before_minutes", 0}, {"news_after_minutes", 0}, {"news_action", "block"},
+                  {"hold_restrictions", json::array()}, {"hold_cutoff", "15:45"}});
     return rules;
   };
   const auto scaling = plans[19];
@@ -4768,6 +4771,63 @@ TEST(PaperStocks, FlatTimeRejectsOpeningPreviewsWith422) {
     test::capture_contract("flat-rules", "POST", path, response);
   }
   engine.stop();
+}
+
+TEST_F(PaperEngine, EventCalendarRulesRoundTripAndValidation) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules.update({{"plan", "Event plan"}, {"news_before_minutes", 5}, {"news_after_minutes", 5}, {"news_action", "flatten"},
+      {"hold_restrictions", {"weekend", "split", "weekend"}}, {"hold_cutoff", "15:40"},
+      {"events", {{{"kind", "earnings"}, {"time", "2026-10-20"}, {"symbol", "SPY"}},
+                  {{"kind", "news"}, {"time", "2026-09-22T14:00:00Z"}, {"label", "CPI"}}}}});
+  const auto reset = [&](const json& r) {
+    return write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", r}, {"reason", "F17 F59 calendar"}});
+  };
+  const auto response = reset(rules); ASSERT_EQ(response.status, 200) << response.body;
+  const auto account = json::parse(response.body);
+  EXPECT_EQ(account["rules"]["hold_restrictions"], json({"split", "weekend"}));
+  EXPECT_EQ(account["rules"]["events"][0]["kind"], "news");
+  EXPECT_EQ(account["rules"]["events"][1]["session"], "before_open");
+  EXPECT_EQ(account["evaluation"]["next_event"]["kind"], "news");
+  EXPECT_TRUE(account["evaluation"]["next_event"]["active"]);
+  expect_error(write(*engine, "POST", "/api/orders/preview", order(market, "news-preview")), 422, "NEWS_BLACKOUT");
+  const auto blocked = write(*engine, "POST", "/api/orders", order(market, "news-denied"));
+  expect_error(blocked, 422, "NEWS_BLACKOUT");
+  const auto evidence = json::parse(blocked.body)["error"];
+  EXPECT_EQ(evidence["scope"], "account"); EXPECT_TRUE(evidence["actual"].is_string());
+  EXPECT_EQ(evidence["limit"], "2026-09-22T14:05:00.000Z");
+  const auto again = reset(account["rules"]); ASSERT_EQ(again.status, 200) << again.body;
+  EXPECT_EQ(json::parse(again.body)["rules"], account["rules"]);
+  for (const auto& patch : std::vector<json>{
+      {{"news_before_minutes", -1}}, {{"news_after_minutes", 241}}, {{"news_before_minutes", 1.5}},
+      {{"news_action", "ignore"}}, {{"hold_restrictions", {"overnight"}}}, {{"hold_cutoff", "17:00"}},
+      {{"hold_cutoff", "15:99"}}, {{"events", "bad"}},
+      {{"events", {{{"kind", "news"}, {"time", "2026-09-22"}}}}},
+      {{"events", {{{"kind", "split"}, {"time", "2026-09-22"}}}}},
+      {{"events", {{{"kind", "earnings"}, {"time", "2026-02-30"}, {"symbol", "SPY"}}}}},
+      {{"events", {{{"kind", "news"}, {"time", "2026-09-22T14:00:00Z"}, {"symbol", "spy"}}}}},
+      {{"events", {{{"kind", "split"}, {"time", "2026-09-22"}, {"symbol", "SPY"}, {"session", "before_open"}}}}},
+      {{"events", {{{"kind", "news"}, {"time", "2026-09-22T14:00:00Z"}, {"label", std::string(65, 'x')}}}}}}) {
+    auto invalid = rules; invalid.update(patch);
+    expect_error(reset(invalid), 422, "INVALID_RULES");
+    expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Bad calendar"}, {"initial_cash", "100000"}, {"rules", invalid}}), 422, "INVALID_RULES");
+  }
+}
+TEST(EventCalendarApi, CsvAndFilteredReadRoute) {
+  std::istringstream input("# supplied events\nkind,time,symbol,session,label\nnews,2026-09-22T14:00:00Z,,,CPI\nearnings,2026-09-23,SPY,,Earnings\nnews,2026-09-22T14:00:00Z,,,CPI\n");
+  const auto events = trading::parse_event_calendar(input);
+  ASSERT_EQ(events.size(), 2U); EXPECT_EQ(events[1].session, "before_open");
+  const auto all = server::event_calendar_read({"GET", "/api/calendar/events"}, events);
+  ASSERT_TRUE(all); EXPECT_EQ(all->status, 200); EXPECT_EQ(json::parse(all->body)["events"].size(), 2U);
+  const auto range = server::event_calendar_read({"GET", "/api/calendar/events?from=2026-09-23&to=2026-09-24"}, events);
+  ASSERT_TRUE(range); ASSERT_EQ(range->status, 200); EXPECT_EQ(json::parse(range->body)["events"].size(), 1U);
+  for (const auto* query : {"from=bad", "from=2026-09-24&to=2026-09-23", "x=1", "from=2026-09-23&from=2026-09-24"}) {
+    const auto response = server::event_calendar_read({"GET", std::string("/api/calendar/events?") + query}, events);
+    ASSERT_TRUE(response); EXPECT_EQ(response->status, 400);
+  }
+  std::istringstream bad("# comment\nkind,time,symbol,session,label\nsplit,2026-02-30,SPY,,bad\n");
+  try { (void)trading::parse_event_calendar(bad); FAIL() << "expected line error"; }
+  catch (const std::invalid_argument& error) { EXPECT_NE(std::string(error.what()).find("line 3"), std::string::npos); }
 }
 }  // namespace
 

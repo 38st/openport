@@ -263,7 +263,33 @@ class ScalingStatus(TypedDict):
     next: ScalingStep | None
 
 
+class _PlanEvent(TypedDict):
+    kind: Literal["news", "earnings", "ex_dividend", "split"]
+    time: str
+
+
+class PlanEvent(_PlanEvent, total=False):
+    symbol: str
+    session: Literal["before_open", "after_close"]
+    label: str
+
+
+class EventWindow(TypedDict):
+    kind: Literal["news", "weekend", "earnings", "ex_dividend", "split"]
+    symbol: str | None
+    label: str | None
+    start: str
+    end: str
+    active: bool
+
+
 class AccountRules(TypedDict, total=False):
+    events: list[PlanEvent]
+    news_before_minutes: int
+    news_after_minutes: int
+    news_action: Literal["block", "flatten"]
+    hold_restrictions: list[Literal["weekend", "earnings", "ex_dividend", "split"]]
+    hold_cutoff: str
     time_limit_days: int
     inactivity_days: int
     underlyings: list[str]
@@ -337,6 +363,8 @@ class AccountStorage(TypedDict, total=False):
 
 
 class EvaluationProgress(TypedDict, total=False):
+    next_event: EventWindow | None
+    active_events: list[EventWindow]
     day_low_equity: str | None
     day_high_equity: str | None
     day_low_at: str | None

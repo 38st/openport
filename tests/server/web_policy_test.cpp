@@ -537,7 +537,7 @@ TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
     request.authorization = "Bearer " + secret;
     return server::check_api_write(request, policy);
   };
-  for (const auto* path : {"/api/status", "/api/accounts", "/api/portfolio?account=practice", "/api/replay", "/ws"}) {
+  for (const auto* path : {"/api/status", "/api/calendar/events?from=2026-09-22", "/api/accounts", "/api/portfolio?account=practice", "/api/replay", "/ws"}) {
     EXPECT_FALSE(check("GET", path, "reader-secret"));
     EXPECT_TRUE(check("GET", path, "agent-secret"));
     EXPECT_FALSE(check("GET", path, "owner-secret"));

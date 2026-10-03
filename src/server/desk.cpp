@@ -1543,6 +1543,10 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
   market_time_ = std::max(market_time_, market_time);
   TradingReply reply;
   if (!input_recorded) price_stock_command(pending.command, driver_time);
+  // Freeze the calendar in the command input too, so re-execution does not use
+  // the run-start calendar if the live holiday schedule changed before reset.
+  if (!pending.command.rules.hold_restrictions.empty() && !pending.command.rules.hold_calendar)
+    pending.command.rules.hold_calendar = md::scheduled_days();
   const auto& c = pending.command;
   // Driver 4 records the command before its first transaction.
   if (!input_recorded && inputs_first() && recorded_input(c)) record_command(c, driver_time);
@@ -2023,6 +2027,8 @@ void Desk::price_stock_command(TradingCommand& c, md::Timestamp driver_time) {
 void Desk::command(TradingCommand command, TradingCompletion completion, md::Timestamp time, md::Timestamp driver_time) {
   market_time_ = std::max(market_time_, time);
   price_stock_command(command, driver_time);
+  if (!command.rules.hold_restrictions.empty() && !command.rules.hold_calendar)
+    command.rules.hold_calendar = md::scheduled_days();
   std::deque<PendingCommand> commands{{0, std::move(command), std::move(completion)}};
   // Driver 4: the input comes before the command's quotes and its own transaction.
   const bool recorded = inputs_first() && recorded_input(commands.front().command);

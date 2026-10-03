@@ -14,6 +14,7 @@
 #include "openport/server/plans.hpp"
 #include "openport/server/web_policy.hpp"
 #include "run_json.hpp"
+#include "event_calendar.hpp"
 #include "strategy_template.hpp"
 
 namespace openport::server {
@@ -431,7 +432,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
                          : key == "daily_loss_action" ? std::initializer_list<const char*>{"lock", "fail"}
                                                       : std::initializer_list<const char*>{"total", "positive_days"});
         rules[key] = value;
-      } else if (key == "trading_start" || key == "trading_end" || key == "flat_time") {
+      } else if (key == "trading_start" || key == "trading_end" || key == "flat_time" || key == "hold_cutoff") {
         if (value.is_null()) { rules[key] = nullptr; continue; }
         if (!value.is_string()) throw std::invalid_argument("plan rules " + key + " must be HH:MM New York time");
         const auto text = value.get<std::string>();
@@ -441,7 +442,9 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
         const auto h = (text[0] - '0') * 10 + text[1] - '0', m = (text[3] - '0') * 10 + text[4] - '0';
         if (h > 24 || m > 59 || (h == 24 && m != 0)) throw std::invalid_argument("Invalid plan trading hour");
         rules[key] = h * 60 + m;
-      } else if (key == "underlyings") {
+      } else if (key == "events") {
+        rules[key] = parse_calendar_events(value);
+      } else if (key == "underlyings" || key == "hold_restrictions") {
         if (!value.is_array() || !std::all_of(value.begin(), value.end(), [](const json& symbol) { return symbol.is_string(); }))
           throw std::invalid_argument("plan rules underlyings must be an array of uppercase symbols");
         rules[key] = value;
@@ -492,6 +495,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       throw std::invalid_argument("payouts are required for custom funded plans and forbidden otherwise");
     if (plan.contains("fee_per_contract")) result.config.fee_per_contract = decimal(plan.at("fee_per_contract"), "plan fee_per_contract");
   }
+  trading::normalize_event_rules(result.config.rules);
   trading::validate_rules(result.config.rules);
   if (result.config.rules.size_scaling && result.config.rules.size_scaling->max_balance < result.config.initial_cash)
     throw trading::TradingError(trading::Reason::INVALID_RULES, "Account size scaling maximum must be at least the starting balance");
