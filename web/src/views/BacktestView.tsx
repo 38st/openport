@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
 import { useRef, useState } from "react"
 import { api } from "../api/client"
-import type { BacktestDayInput, BacktestReport, BacktestResult, BacktestStart } from "../api/backtest-types"
+import type { BacktestComparison, BacktestDayInput, BacktestReport, BacktestResult, BacktestStart } from "../api/backtest-types"
 import { useLive } from "../api/live"
+import { Dialog } from "../components/Dialog"
+import { LineChart } from "../charts/LineChart"
 import { BarChart } from "../charts/BarChart"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Empty, Meter, PageHeader, Panel, Stat } from "../components/ui"
@@ -71,9 +73,47 @@ export function BacktestReportView({ report }: { report: BacktestReport }) {
     </table></div></Panel>
     <Panel title="Evaluation attempts">{report.attempts.map((attempt, index) => <div className="space-y-2 border-b border-border py-2 text-sm" key={index}>
       <p>Attempt {index + 1} · {attempt.outcome} · days {attempt.first_day + 1}–{attempt.last_day + 1} · {signedMoney(attempt.pnl)}</p>
+      {attempt.day_rows && <details><summary>Daily evaluation ({attempt.day_rows.length} days)</summary><div className="overflow-x-auto"><table className="w-full text-left text-xs tabular">
+        <thead><tr>{["Day", "Balance start → end", "Equity start → end", "Day P&L", "Floor / room", "Target / progress", "Peak", "Opened / closed", "Status / rules"].map((title) => <th className="p-2" key={title}>{title}</th>)}</tr></thead>
+        <tbody>{attempt.day_rows.map((day) => <tr className="border-t border-border" key={day.day_index}>
+          <td className="p-2">{day.day_index + 1} · {day.date}<div className="text-muted">As of {day.ended}</div></td>
+          <td className="p-2">{formatMoney(day.start_balance)} → {formatMoney(day.end_balance)}</td>
+          <td className="p-2">{formatMoney(day.start_equity)} → {formatMoney(day.end_equity)}{!day.valuation_complete && " · Incomplete marks"}</td>
+          <td className="p-2">{signedMoney(day.pnl)}</td><td className="p-2">{formatMoney(day.floor)} / {formatMoney(day.floor_distance)}</td>
+          <td className="p-2">{formatMoney(day.target)} / {signedMoney(day.target_progress)}</td><td className="p-2">{formatMoney(day.peak)}</td>
+          <td className="p-2">{day.trades_opened} / {day.trades_closed}</td><td className="p-2">{day.outcome}{day.day_lock !== "NONE" && ` · ${day.day_lock}`}
+            {day.decision && <p>{day.decision_code} · {day.decision}</p>}{day.rule_trips.map((trip, tripIndex) => <p key={tripIndex}>{trip.time} · {trip.type} · {JSON.stringify(trip.detail)}</p>)}</td>
+        </tr>)}</tbody>
+      </table></div></details>}
       {attempt.decision && <p className="text-xs text-muted">{attempt.decision}</p>}<Details result={attempt} />
     </div>)}</Panel>
   </div>
+}
+export function BacktestCompareView({ comparison }: { comparison: BacktestComparison }) {
+  const { runs, combined } = comparison
+  return <Panel title="Compare saved runs">
+    {comparison.apples_to_oranges && <p className="mb-3 text-warn">Apples-to-oranges comparison: {[
+      comparison.different_inputs && "different inputs", comparison.different_plans && "different plans", comparison.incomplete_inputs && "incomplete input identities",
+    ].filter(Boolean).join("; ")}.</p>}
+    <div className="overflow-x-auto"><table className="w-full text-left text-xs tabular">
+      <thead><tr><th className="p-2">Metric / date</th>{runs.map((run) => <th className="p-2" key={run.id}>{run.id} · {run.playbook.id}@{run.playbook.version}</th>)}</tr></thead>
+      <tbody>
+        <tr><th className="p-2">Plan / status</th>{runs.map((run) => <td className="p-2" key={run.id}>{run.plan.rules?.plan ?? "Custom"} · {run.status}<details><summary>Plan and input identity</summary><pre className="max-w-lg whitespace-pre-wrap">{JSON.stringify({ plan: run.plan, inputs: run.input_set }, null, 2)}</pre></details></td>)}</tr>
+        {([['Mean daily P&L', (run) => signedMoney(run.summary.daily_pnl.mean)], ['Trade expectancy', (run) => signedMoney(run.summary.expectancy)],
+          ['Day win rate', (run) => percent(run.summary.day_win_rate)], ['Pass rate', (run) => percent(run.summary.pass_rate)],
+          ['Completed days', (run) => String(run.summary.completed_days)]] as [string, (run: BacktestComparison["runs"][number]) => string][]).map(([title, value]) =>
+          <tr key={title}><th className="p-2">{title}</th>{runs.map((run) => <td className="p-2" key={run.id}>{value(run)}</td>)}</tr>)}
+        {comparison.daily.map((day) => <tr className="border-t border-border" key={day.date}><th className="p-2">{day.date}</th>{runs.map((run) => <td className="p-2" key={run.id}>{signedMoney(day.pnl[run.id] ?? null)}</td>)}</tr>)}
+      </tbody>
+    </table></div>
+    <h3 className="mt-4 text-sm font-medium">Combined independent daily P&amp;L</h3><p className="my-2 text-xs text-muted">{combined.label} Missing dates contribute nothing; unmarked or unfinished supplied days leave a gap in the curve.</p>
+    <LineChart series={[{ id: "combined", label: "Combined cumulative P&L", color: "var(--accent)", points: [
+      { x: -1, y: 0 }, ...combined.curve.map((day, index) => ({ x: index, y: day.cumulative == null ? null : Number(day.cumulative) })),
+    ] }]} formatX={(value) => value < 0 ? "Start" : combined.curve[Math.round(value)]?.date ?? ""} formatY={(value) => formatMoney(String(value), 0)} height={240} />
+    <p className="text-xs">Maximum drawdown {formatMoney(combined.max_drawdown)} · Day win rate {percent(combined.day_win_rate)} · Mean {signedMoney(combined.daily_pnl.mean)} · Median {signedMoney(combined.daily_pnl.median)}</p>
+    <BarChart bars={backtestHistogram(combined.daily_pnl.values)} formatX={(value) => formatMoney(String(value), 0)} formatY={String} height={180} />
+    <p className="text-xs">Worst days: {combined.worst_days.map((day) => `${day.date}: ${signedMoney(day.pnl)}`).join(" · ")}</p>
+  </Panel>
 }
 export function BacktestView() {
   const live = useLive(), token = useWriteToken()
@@ -85,6 +125,8 @@ export function BacktestView() {
   const blocked = trading ? writeBlocked(trading, token) : "Paper trading is unavailable."
   const listing = useQuery({ queryKey: ["backtests"], queryFn: ({ signal }) => api.backtests(signal), refetchInterval: 1000 })
   const [selected, setSelected] = useState("")
+  const [compareIds, setCompareIds] = useState<string[]>([]), [deleting, setDeleting] = useState("")
+  const comparison = useQuery({ queryKey: ["backtest-compare", compareIds], queryFn: ({ signal }) => api.compareBacktests(compareIds, signal), enabled: compareIds.length >= 2 })
   const activeId = selected || listing.data?.active || listing.data?.runs[0]?.id || ""
   const job = useQuery({ queryKey: ["backtest", activeId], queryFn: ({ signal }) => api.backtest(activeId, signal), enabled: !!activeId,
     refetchInterval: (query) => ["running", "cancelling"].includes(query.state.data?.status ?? "running") ? 1000 : false })
@@ -98,10 +140,10 @@ export function BacktestView() {
   const mode = trading?.write ?? "disabled"
   const badSeed = !/^\d{1,20}$/.test(seed) || BigInt(seed || "0") > 18446744073709551615n
   const badCount = !/^\d+$/.test(count) || Number(count) < 1 || Number(count) > 252
-  async function mutate(action: () => Promise<void>) {
+  async function mutate(action: () => Promise<void>, refreshJob = true) {
     if (busy.current) return
     busy.current = true; setPending(true); setError(undefined)
-    try { await action(); await listing.refetch(); if (activeId) await job.refetch() }
+    try { await action(); await listing.refetch(); if (activeId && refreshJob) await job.refetch() }
     catch (failure) { setError(failure) } finally { busy.current = false; setPending(false) }
   }
   async function start() {
@@ -124,7 +166,7 @@ export function BacktestView() {
   }
   return <div className="space-y-4">
     <PageHeader title="Backtest" subtitle={label}>{trading && <WriteAccess trading={trading} />}</PageHeader>
-    <TradingError error={error ?? listing.error ?? job.error ?? definitions.error ?? sources.error ?? plans.error} />
+    <TradingError error={error ?? comparison.error ?? listing.error ?? job.error ?? definitions.error ?? sources.error ?? plans.error} />
     <Panel title="Run a playbook">
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="trade-label">Playbook version<select className="trade-input" value={chosen} onChange={(event) => setPlaybook(event.target.value)}>{versions.map((definition) => <option key={`${definition.id}@${definition.version}`} value={`${definition.id}@${definition.version}`}>{definition.name} · v{definition.version}{definition.archived ? " · archived" : ""}</option>)}</select></label>
@@ -144,6 +186,26 @@ export function BacktestView() {
       {blocked && <p className="mb-2 text-xs text-warn">{blocked}</p>}
       <button className="trade-button" disabled={!!blocked || pending || !!listing.data?.active || !chosen || (kind === "scenarios" && (badSeed || badCount)) || (kind === "recordings" && !files.length)} onClick={() => void mutate(start)}>Start backtest</button>
     </Panel>
+    {!!listing.data?.runs.length && <Panel title="Saved runs"><p className="mb-2 text-xs text-muted">Select 2–8 finished reports to compare. Keep exempts a run from automatic retention.</p><div className="overflow-x-auto"><table className="w-full text-left text-sm">
+      <thead><tr>{["Compare", "Run", "Playbook", "Disk size", "Retention", "Delete"].map((title) => <th className="p-2" key={title}>{title}</th>)}</tr></thead>
+      <tbody>{listing.data.runs.map((run) => <tr className="border-t border-border" key={run.id}>
+        <td className="p-2"><input type="checkbox" aria-label={`Compare run ${run.id}`} checked={compareIds.includes(run.id)} disabled={!run.summary || ["running", "cancelling"].includes(run.status) || (compareIds.length >= 8 && !compareIds.includes(run.id))} onChange={(event) => setCompareIds(event.target.checked ? [...compareIds, run.id] : compareIds.filter((id) => id !== run.id))} /></td>
+        <td className="p-2"><button className="text-accent" onClick={() => setSelected(run.id)}>{run.id} · {run.status}</button></td>
+        <td className="p-2">{run.playbook ? `${run.playbook.id}@${run.playbook.version}` : "—"}</td><td className="p-2">{run.bytes == null ? "—" : `${(run.bytes / 1048576).toFixed(2)} MiB`}</td>
+        <td className="p-2"><label><input type="checkbox" aria-label={`Keep run ${run.id}`} checked={run.keep ?? false} disabled={!!blocked || pending} onChange={(event) => { const keep = event.target.checked; void mutate(async () => { await api.keepBacktest(run.id, keep, mode) }) }} /> Keep</label></td>
+        <td className="p-2"><button className="trade-button" aria-label={`Delete run ${run.id}`} disabled={!!blocked || pending || ["running", "cancelling"].includes(run.status)} onClick={() => setDeleting(run.id)}>Delete</button></td>
+      </tr>)}</tbody>
+    </table></div></Panel>}
+    {comparison.data && compareIds.length >= 2 && <BacktestCompareView comparison={comparison.data} />}
+    {deleting && <Dialog title="Delete saved backtest?" onClose={() => setDeleting("")}>
+      <p className="text-sm">Permanently delete run {deleting}, including its report and journals? Kept runs can also be deleted. This cannot be undone.</p>
+      <TradingError error={error} />
+      <button className="trade-button" disabled={!!blocked || pending} onClick={() => void mutate(async () => {
+        await api.deleteBacktest(deleting, mode); setCompareIds(compareIds.filter((id) => id !== deleting));
+        if (activeId === deleting) setSelected(""); setDeleting("")
+      }, false)}>Delete saved run</button>
+      <button className="trade-button" disabled={pending} onClick={() => setDeleting("")}>Cancel</button>
+    </Dialog>}
     {!!listing.data?.runs.length && <label className="trade-label">Saved report<select className="trade-input" value={activeId} onChange={(event) => setSelected(event.target.value)}>{listing.data.runs.map((run) => <option key={run.id} value={run.id}>{run.id} · {run.status}</option>)}</select></label>}
     {job.data && <Panel title={`Run ${job.data.id} · ${job.data.status}`}>
       <p className="mb-2 text-sm" role="status">{job.data.phase} · {job.data.completed} / {job.data.total} day runs</p>
