@@ -73,7 +73,7 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
     server = MCPServer("openport", instructions=(
         "Trades a paper simulator only, on data openportd has, often delayed. "
         "Check as_of, feed and simulated on every result. Money is decimal text. "
-        "Writes require a named account and OPENPORT_WRITE_TOKEN. Preview before placing an order. "
+        "Writes require OPENPORT_WRITE_TOKEN and an account, except sandbox tokens default to their own account. Preview before placing an order. "
         "Reuse client_order_id if repeating an order after an uncertain response."))
 
     def selected(account: str | None = None, replay: bool = False):
@@ -125,7 +125,8 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
                 raise ApiError(403, {"error": {"code": "WRITE_TOKEN_REQUIRED", "message": "Set OPENPORT_WRITE_TOKEN"}})
             if replay and account != "main":
                 raise ApiError(400, {"error": {"code": "INVALID_ACCOUNT", "message": "Replay's isolated account is main"}})
-            if not account or len(account) > 40 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", account):
+            sandbox_default = account is None and client.token.startswith("sandbox_") and not replay
+            if not sandbox_default and (not account or len(account) > 40 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", account)):
                 raise ApiError(400, {"error": {"code": "INVALID_ACCOUNT", "message": "Name the paper account"}})
             return action(target)
         response = result(target, authorized)
@@ -134,12 +135,12 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
         return response
 
     @server.tool()
-    def trade_stock(account: str, symbol: str, side: Literal["buy", "sell"], shares: int, replay: bool = False) -> dict:
+    def trade_stock(symbol: str, side: Literal["buy", "sell"], shares: int, account: str | None = None, replay: bool = False) -> dict:
         """Trade shares at the fresh stock-session price. Not idempotent: inspect positions after an uncertain response."""
         return write(account, replay, lambda target: target.trade_stock(symbol, side, shares))
 
     @server.tool()
-    def preview_stock(account: str, symbol: str, side: Literal["buy", "sell"], shares: int, replay: bool = False) -> dict:
+    def preview_stock(symbol: str, side: Literal["buy", "sell"], shares: int, account: str | None = None, replay: bool = False) -> dict:
         """Preview shares, including cost, buying power and dollar delta; does not trade."""
         return write(account, replay, lambda target: target.preview_stock(symbol, side, shares))
 
@@ -199,31 +200,31 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
         return result(target, lambda: target.exposure(symbol))
 
     @server.tool()
-    def account(account: str, replay: bool = False) -> dict:
+    def account(account: str | None = None, replay: bool = False) -> dict:
         """Paper account rules and evaluation."""
         target = selected(account, replay)
         return result(target, target.account)
 
     @server.tool()
-    def positions(account: str, replay: bool = False) -> dict:
+    def positions(account: str | None = None, replay: bool = False) -> dict:
         """Paper positions, cash and equity."""
         target = selected(account, replay)
         return result(target, target.portfolio)
 
     @server.tool()
-    def orders(account: str, replay: bool = False) -> dict:
+    def orders(account: str | None = None, replay: bool = False) -> dict:
         """Working paper orders."""
         target = selected(account, replay)
         return result(target, lambda: target.orders("open"))
 
     @server.tool()
-    def risk(account: str, replay: bool = False) -> dict:
+    def risk(account: str | None = None, replay: bool = False) -> dict:
         """Paper account limits, Greeks and breach estimates."""
         target = selected(account, replay)
         return result(target, target.risk)
 
     @server.tool()
-    def risk_profile(account: str, underlying: str | None = None, benchmark: str | None = None,
+    def risk_profile(account: str | None = None, underlying: str | None = None, benchmark: str | None = None,
                      days: list[float | str] | None = None, iv: float | None = None, replay: bool = False) -> dict:
         """The held book's P&L curves over dates (days, or "expiry") and an IV offset, against one underlying
         or beta-weighted to SPY or SPX, with the levels where each date reaches the floors."""
@@ -240,22 +241,22 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
         return body
 
     @server.tool()
-    def preview_order(account: str, order: Order, replay: bool = False) -> dict:
+    def preview_order(order: Order, account: str | None = None, replay: bool = False) -> dict:
         """Preview a paper order without changing the account."""
         return write(account, replay, lambda target: target.preview_order(order_body(order)))
 
     @server.tool()
-    def place_order(account: str, order: Order, replay: bool = False) -> dict:
+    def place_order(order: Order, account: str | None = None, replay: bool = False) -> dict:
         """Place a paper order tagged with this agent's name."""
         return write(account, replay, lambda target: target.place_order(order_body(order)))
 
     @server.tool()
-    def cancel_order(account: str, order_id: str, replay: bool = False) -> dict:
+    def cancel_order(order_id: str, account: str | None = None, replay: bool = False) -> dict:
         """Cancel one paper order."""
         return write(account, replay, lambda target: target.cancel_order(order_id))
 
     @server.tool()
-    def flatten(account: str, underlying: str | None = None, replay: bool = False,
+    def flatten(account: str | None = None, underlying: str | None = None, replay: bool = False,
                 type: Literal["market", "limit"] = "market", limit_ticks: int | None = None) -> dict:
         """Close paper positions in one underlying, or the whole named account."""
         return write(account, replay, lambda target: target.flatten(underlying, type=type, limit_ticks=limit_ticks))

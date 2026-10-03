@@ -168,3 +168,9 @@ and the message. `client.replay_verification(run_id, receipt=True)` returns the
 shareable JSON result with run inputs, plan, final equity/count/head, build and
 verification times. A changed journal invalidates the saved result. Starts need
 replay write scope; reads and receipts need read access.
+
+Sandbox tokens default to their own account: `Client(url, token)` and MCP account
+tools can omit `account`. Explicit account selections remain scope checked. Other
+MCP writes require an account, and replay controls require `main`. Named-token
+administrators can call `Client.reload_tokens()` to reload `--token-file` without
+restarting; the response contains names, count and load time, never secrets.

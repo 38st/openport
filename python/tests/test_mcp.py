@@ -18,7 +18,7 @@ def test_tool_schemas_name_accounts_and_typed_orders(stub):
     server = create_server(Client(stub.url, "secret"))
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
     assert set(tools) == {"status", "symbols", "summary", "chain", "volatility", "exposure", "account", "positions", "orders", "risk", "risk_profile", "probability", "preview_order", "place_order", "trade_stock", "preview_stock", "cancel_order", "flatten", "list_scenarios", "start_replay", "step_replay", "stop_replay"}
-    for name in ["place_order", "preview_order", "cancel_order", "flatten", "start_replay", "step_replay", "stop_replay"]:
+    for name in ["start_replay", "step_replay", "stop_replay"]:
         assert "account" in tools[name].input_schema["required"]
     schema = tools["place_order"].input_schema
     assert schema["$defs"]["Order"]["properties"]["quantity"]["type"] == "integer"
@@ -108,3 +108,19 @@ def test_share_tools_forward_scoped_and_replay_requests(stub):
         call(server, tool, account="main", replay=True, symbol="SPY", side="buy", shares=100)
         assert stub.requests[-1][1] == "/api/replay/stocks/trade" + suffix + "?account=main"
         assert stub.requests[-1][3] == {"symbol": "SPY", "side": "buy", "shares": 100}
+
+
+def test_sandbox_tools_default_to_own_account_but_other_writers_still_name_one(stub):
+    server = create_server(Client(stub.url, "sandbox_secret"))
+    tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+    for name in ["account", "positions", "orders", "risk", "risk_profile", "place_order", "preview_order", "cancel_order", "flatten"]:
+        assert "account" not in tools[name].input_schema.get("required", [])
+    assert "error" not in call(server, "account")
+    assert stub.requests[-1][1] == "/api/account"
+    order = {"quantity": 1, "type": "limit", "time_in_force": "gtc", "symbol": "SPXW  261022P05000000", "side": "buy", "limit_price": "0.05"}
+    assert "error" not in call(server, "place_order", order=order)
+    assert stub.requests[-1][1] == "/api/orders"
+    assert "error" not in call(server, "flatten")
+    assert stub.requests[-1][1] == "/api/positions/close"
+    ordinary = create_server(Client(stub.url, "named-secret"))
+    assert call(ordinary, "place_order", order=order)["error"]["code"] == "INVALID_ACCOUNT"
