@@ -59,8 +59,9 @@ simulated on every page:
 - **Evaluations**: a profit target and a trailing drawdown floor decide pass or fail,
   with buying-power rules, personal guardrails, a reduce-only kill switch and breach
   estimates.
-- **Orders and strategies**: day and GTC limits, brackets, and up to four legs picked
-  on the chain or built from templates, with probability of profit, OCO exits and rolls.
+- **Orders and strategies**: DAY/GTC, all-session EXTO/GTC_EXTO protection, timestamp
+  GTD and limit flattening overnight and in curb. Up to four legs picked on the chain
+  or built from templates, with probability of profit, OCO exits and rolls.
 - **Journal**: a P&L calendar, reports by tag and hold time, and a review of every
   trade with its context, excursions and R-multiple.
 - **Replay and backtests**: trade any recorded or imported day again at up to 300×,

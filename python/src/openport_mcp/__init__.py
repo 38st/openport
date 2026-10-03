@@ -40,7 +40,7 @@ class Bracket:
 class Order:
     quantity: int
     type: Literal["limit", "market"]
-    time_in_force: Literal["day", "gtc", "ioc"]
+    time_in_force: Literal["day", "gtc", "ioc", "exto", "gtc_exto", "gtd"]
     symbol: str | None = None
     side: Literal["buy", "sell"] | None = None
     legs: list[Leg] | None = None
@@ -51,6 +51,7 @@ class Order:
     note: str | None = None
     tags: list[str] | None = None
     exits_only: bool | None = None
+    good_till: str | None = None
 
 
 def _body(value):
@@ -224,9 +225,10 @@ def create_server(client: Client, agent_name: str = "openport") -> MCPServer:
         return write(account, replay, lambda target: target.cancel_order(order_id))
 
     @server.tool()
-    def flatten(account: str, underlying: str | None = None, replay: bool = False) -> dict:
+    def flatten(account: str, underlying: str | None = None, replay: bool = False,
+                type: Literal["market", "limit"] = "market", limit_ticks: int | None = None) -> dict:
         """Close paper positions in one underlying, or the whole named account."""
-        return write(account, replay, lambda target: target.flatten(underlying))
+        return write(account, replay, lambda target: target.flatten(underlying, type=type, limit_ticks=limit_ticks))
 
     @server.tool()
     def list_scenarios() -> dict:

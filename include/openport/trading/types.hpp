@@ -28,11 +28,10 @@ enum class Reason {
   EVALUATION_CLOSED, BUYING_POWER, BUY_ONLY, EXPIRY_CUTOFF, ACCOUNT_RESET, INVALID_RULES,
   OCO_FILLED, POSITION_CLOSED, PAYOUT_UNAVAILABLE, PAYOUT_NOT_ELIGIBLE, INVALID_PAYOUT, PLAN_LOCKED,
   LIMIT_ONLY, INVALID_NOTE, UNKNOWN_TRADE, DEFINED_RISK, MARKET_HALTED, SOFT_FLOOR, TRADE_LIMIT, COOLDOWN, PROFIT_LOCK,
-  RUN_ENDED,
-  INVALID_GROUP
+  RUN_ENDED, INVALID_GROUP, GTD_END
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::INVALID_GROUP;
+inline constexpr Reason kLastReason = Reason::GTD_END;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -55,7 +54,9 @@ struct Decision {
 
 enum class Side { Buy, Sell };
 enum class OrderType { Market, Limit };
-enum class TimeInForce { Day, Ioc, Gtc };
+/// EXTO lasts the trading date in all product sessions; GTC_EXTO extends GTC
+/// to them. GTD trades regular hours until its explicit good_till timestamp.
+enum class TimeInForce { Day, Ioc, Gtc, Exto, GtcExto, Gtd };
 /// Armed orders wait for their trigger; they are open (cancellable, reserving
 /// risk and buying power) but never match until activated.
 enum class OrderStatus { Working, PartiallyFilled, Filled, Cancelled, Rejected, Armed };
@@ -123,6 +124,8 @@ struct OrderRequest {
   /// The trade the round trips it opens join, named by one of its open round
   /// trips' IDs (an adjustment); empty for their own, or a roll's.
   std::string group = {};
+  /// GTD only: explicit market-time deadline, at most 366 days after acceptance.
+  std::optional<Timestamp> good_till = {};
   bool operator==(const OrderRequest&) const = default;
 };
 [[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }
@@ -177,6 +180,8 @@ struct Order {
   /// is kept within the position like a bracket exit and works on later quotes
   /// until it fills, its session ends, the position closes or it is cancelled.
   bool reduce_only = false;
+  /// A flatten limit follows the touch by this many ticks; a manual price turns it off.
+  std::optional<Quantity> limit_ticks = {};
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   /// The terms a retry must repeat to be answered with this order.
   [[nodiscard]] const OrderRequest& submission() const { return submitted ? *submitted : request; }

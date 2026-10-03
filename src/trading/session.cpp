@@ -35,17 +35,35 @@ void event(Events& events, std::string_view type, Json payload) {
   events.push_back(Json{{"type", type}, {"payload", std::move(payload)}});
 }
 bool regular(const md::OptionContract& c, Timestamp time) { return md::trading_session(c.root, time).name == "regular"; }
+bool extended(const OrderRequest& r) { return r.tif == TimeInForce::Exto || r.tif == TimeInForce::GtcExto; }
+bool good_until(const OrderRequest& r) {
+  return r.tif == TimeInForce::Gtc || r.tif == TimeInForce::GtcExto || r.tif == TimeInForce::Gtd;
+}
+bool immediate(const OrderRequest& r) {
+  return r.tif == TimeInForce::Ioc || (r.type == OrderType::Market && r.trigger && (extended(r) || r.tif == TimeInForce::Gtd));
+}
+Decision tif_check(const State& s, const OrderRequest& r, Timestamp accepted) {
+  if (r.tif != TimeInForce::Gtd)
+    return r.good_till ? failure(Reason::INVALID_ORDER, "Only GTD takes good_till") : Decision{};
+  constexpr auto bound = 366LL * 24 * 60 * 60 * md::kNanosPerSecond;
+  if (!r.good_till || *r.good_till <= s.time || *r.good_till - accepted > bound)
+    return failure(Reason::INVALID_ORDER, "GTD needs a future good_till timestamp within 366 days of acceptance");
+  return {};
+}
 /// Whether the contract trades now, and the order with it: every order in the
 /// regular session; plain limit orders in the overnight (global) and curb sessions.
-/// GTC limits, with or without a trigger or bracket, and a held spread's exits are
-/// accepted at any time and wait for the regular session.
+/// Persistent limits and stops can wait between sessions. EXTO/GTC_EXTO triggers
+/// and brackets execute as simulator-managed limits outside regular hours. Legacy
+/// protection and GTC/GTD limits wait for the regular session.
 Decision session_check(const md::OptionContract& c, Timestamp time, const OrderRequest& r) {
   if (time >= c.last_trade_time())
     return failure(Reason::SESSION_CLOSED, "AM-settled series stop trading at the regular close before expiry");
-  if ((r.tif == TimeInForce::Gtc && r.type == OrderType::Limit) || r.exits_only) return {};
+  if ((r.type == OrderType::Limit && (good_until(r) || extended(r))) ||
+      (r.trigger && (r.tif == TimeInForce::GtcExto || r.tif == TimeInForce::Gtd)) || r.exits_only) return {};
   const auto session = md::trading_session(c.root, time);
   if (!session.open) return failure(Reason::SESSION_CLOSED, "Outside the contract's trading sessions");
-  if (session.name != "regular" && (r.type != OrderType::Limit || r.trigger || r.bracket))
+  if (session.name != "regular" && (extended(r) ? r.type != OrderType::Limit && !r.trigger
+                                                : r.type != OrderType::Limit || r.trigger || r.bracket))
     return failure(Reason::LIMIT_ONLY, "The overnight and curb sessions take plain limit orders only: no market "
                    "orders, and triggers or brackets only on a GTC limit, which waits for the regular session");
   return {};
@@ -68,11 +86,40 @@ Timestamp order_expiry(const State& s, const OrderRequest& r) {
 Timestamp day_deadline(const State& s, const OrderRequest& r, Timestamp time) {
   return std::min(session_end(s.contracts.at(order_symbols(r).front()), time), order_expiry(s, r));
 }
-/// Good until expiry: GTC orders, bracket exits and armed orders. Once triggered,
+/// Outlives a session: extended TIFs, GTC/GTD, bracket exits and armed orders. Once triggered,
 /// a DAY order lasts its session like any other.
 bool persistent(const Order& o) {
-  return o.request.tif == TimeInForce::Gtc || o.role != OrderRole::Normal ||
+  return good_until(o.request) || extended(o.request) || o.role != OrderRole::Normal ||
          (o.request.trigger && (o.status == OrderStatus::Armed || o.request.tif != TimeInForce::Day));
+}
+/// EXTO lasts through the trading date's last session; expiry and account cutoff
+/// still bound it. GTD trades regular hours until its explicit timestamp.
+Timestamp order_end(const State& s, const OrderRequest& r, Timestamp time) {
+  const auto expiry = order_expiry(s, r);
+  if (r.tif == TimeInForce::Gtd) return std::min(expiry, *r.good_till);
+  if (good_until(r)) return expiry;
+  if (r.tif != TimeInForce::Exto) return day_deadline(s, r, time);
+  const auto& root = s.contracts.at(order_symbols(r).front()).root;
+  const auto current = md::trading_session(root, time);
+  const auto date = current.name == "global" ? md::new_york_time(current.end).date : md::trading_date(time);
+  const auto noon = md::new_york_to_utc(date, 12, 0);
+  const auto regular_session = md::trading_session(root, noon);
+  auto end = regular_session.open ? regular_session.end : current.end;
+  const auto curb = md::trading_session(root, end);
+  if (curb.open && curb.name == "curb") end = curb.end;
+  if (end == md::kInvalidTimestamp || end <= time)
+    throw TradingError(Reason::SESSION_CLOSED, "No remaining session for this trading date");
+  return std::min(expiry, end);
+}
+bool trades_now(const Order& o, const md::OptionContract& c, Timestamp time) {
+  if (!extended(o.request)) return !persistent(o) || regular(c, time);
+  return md::trading_session(c.root, time).open;
+}
+/// Extended stop-market orders are simulator-held triggers. Outside regular
+/// hours they send an IOC limit at the touch, taking displayed liquidity only.
+bool touch_stop(const State& s, const Order& o) {
+  return extended(o.request) && o.request.type == OrderType::Market && o.request.trigger &&
+      !regular(s.contracts.at(order_symbols(o.request).front()), s.time);
 }
 Annotation clean_annotation(std::string note, const std::vector<std::string>& tags);
 void store_annotation(State& s, const std::string& key, Annotation annotation, Events& events);
@@ -372,6 +419,14 @@ Money execution_price(const State& s, const std::string& symbol, Side side, std:
   const auto price = buy ? displayed + slip : std::max(Money{}, displayed - slip);
   return limit && s.config.rules.impact_ticks == 0 ? (buy ? std::min(*limit, price) : std::max(*limit, price)) : price;
 }
+Money order_price(const State& s, const Order& o, const std::string& symbol, Side side,
+                  std::optional<Money> limit = {}, Quantity offset = 0) {
+  if (touch_stop(s, o)) {
+    const auto& q = s.books.at(symbol).quote;
+    return side == Side::Buy ? *q.ask : *q.bid;
+  }
+  return execution_price(s, symbol, side, limit, offset);
+}
 /// What a market order for `quantity` contracts would trade at now, as
 /// (price, contracts): an executable book's slipped far side, block by block
 /// with impact as the fills would walk it; with only the far side quoted, that
@@ -424,10 +479,10 @@ std::vector<ExecutionSlice> combo_slices(const State& s, const Order& o, Quantit
     if (given_away(s, o, leg)) {
       slices.push_back({leg.symbol, leg.side, units * leg.ratio, Money{}, true});
     } else if (s.config.rules.impact_ticks == 0) {
-      slices.push_back({leg.symbol, leg.side, units * leg.ratio, execution_price(s, leg.symbol, leg.side), false});
+      slices.push_back({leg.symbol, leg.side, units * leg.ratio, order_price(s, o, leg.symbol, leg.side), false});
     } else {
       for (Quantity offset = 0; offset < units * leg.ratio; ++offset) {
-        const auto price = execution_price(s, leg.symbol, leg.side, {}, offset);
+        const auto price = order_price(s, o, leg.symbol, leg.side, {}, offset);
         if (!slices.empty() && slices.back().symbol == leg.symbol && slices.back().price == price) ++slices.back().quantity;
         else slices.push_back({leg.symbol, leg.side, 1, price, false});
       }
@@ -445,11 +500,11 @@ std::optional<Money> executable_net(const State& s, const Order& o) {
   for (const auto& leg : o.request.legs) {
     if (given_away(s, o, leg)) continue;
     if (s.config.rules.impact_ticks == 0) {
-      const auto price = execution_price(s, leg.symbol, leg.side) * leg.ratio;
+      const auto price = order_price(s, o, leg.symbol, leg.side) * leg.ratio;
       net = leg.side == Side::Buy ? net + price : net - price;
     } else {
       for (Quantity offset = 0; offset < leg.ratio; ++offset) {
-        const auto price = execution_price(s, leg.symbol, leg.side, {}, offset);
+        const auto price = order_price(s, o, leg.symbol, leg.side, {}, offset);
         net = leg.side == Side::Buy ? net + price : net - price;
       }
     }
@@ -468,7 +523,7 @@ bool latency_ready(const State& s, const Order& o) {
     const bool usable = quote_check(s, symbol).ok() ||
                         (leg != o.request.legs.end() ? ask_only(s, o, *leg) : ask_only_single(s, o));
     if (quote.time < start || quote.time - start < delay || !usable) return false;
-    if ((persistent(o) || o.system) && !regular(s.contracts.at(symbol), s.time)) return false;
+    if (o.system ? !regular(s.contracts.at(symbol), s.time) : !trades_now(o, s.contracts.at(symbol), s.time)) return false;
   }
   return true;
 }
@@ -1122,7 +1177,9 @@ void advance(State& s, Timestamp time, Events& events) {
     else if (!o.system && cutoff > 0 && time >= last - cutoff)
       cancel_order(s, id, failure(Reason::EXPIRY_CUTOFF, "A contract reached the account's pre-expiry cutoff"), events);
     else if (time >= o.day_end)
-      cancel_order(s, id, failure(Reason::DAY_END, "The order's session ended"), events);
+      cancel_order(s, id, o.request.tif == TimeInForce::Gtd
+          ? failure(Reason::GTD_END, "The order reached its good_till timestamp")
+          : failure(Reason::DAY_END, "The order's session ended"), events);
   }
 }
 /// Short contracts no long covers, after the account's positions take `extra`
@@ -1213,8 +1270,8 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   const auto& rules = s.config.rules;
   const bool shape = r.legs.size() >= 2 && r.legs.size() <= kMaxRollLegs && r.symbol.empty() && r.side == Side::Buy &&
       !r.client_order_id.empty() && r.quantity > 0 &&
-      ((r.type == OrderType::Market && r.tif == TimeInForce::Ioc && !r.limit_price) ||
-       (r.type == OrderType::Limit && r.limit_price && (r.tif == TimeInForce::Day || r.tif == TimeInForce::Ioc || r.tif == TimeInForce::Gtc)));
+      ((r.type == OrderType::Market && immediate(r) && !r.limit_price) ||
+       (r.type == OrderType::Limit && r.limit_price && r.tif >= TimeInForce::Day && r.tif <= TimeInForce::Gtd));
   if (!shape)
     return failure(Reason::INVALID_ORDER, "Multi-leg orders take two to four legs (eight for a roll), a unit quantity and a net limit "
                    "(negative for a credit) or market IOC");
@@ -1228,6 +1285,7 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
       return {Reason::INVALID_ORDER, "Orders past four legs are rolls: at most four legs may open, the rest close held contracts",
               static_cast<double>(opening), static_cast<double>(kMaxLegs), {}};
   }
+  if (const auto d = tif_check(s, r, o.accepted_at); !d.ok()) return d;
   std::set<std::string> seen;
   const md::OptionContract* first = nullptr;
   Money tick;
@@ -1267,7 +1325,7 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   if ((r.trigger || r.exits_only) && !closing_only(s, o))
     return failure(Reason::INVALID_ORDER, "Conditional combos and held exits must close held legs in ratio without exceeding them");
   if (r.exits_only) {
-    if (!r.bracket || (r.type == OrderType::Limit && r.tif != TimeInForce::Gtc))
+    if (!r.bracket || (r.type == OrderType::Limit && !good_until(r) && !extended(r)))
       return failure(Reason::INVALID_ORDER, "Held exits require a bracket and GTC for a limit exit");
     const auto& primary = r.bracket->take_profit ? *r.bracket->take_profit : *r.bracket->stop_loss;
     if (r.trigger != primary.trigger || r.limit_price != primary.limit_price)
@@ -1364,10 +1422,11 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   if (request.client_order_id.empty() || request.quantity <= 0 ||
       (request.side != Side::Buy && request.side != Side::Sell) ||
       (request.type != OrderType::Market && request.type != OrderType::Limit) ||
-      (request.tif != TimeInForce::Day && request.tif != TimeInForce::Ioc && request.tif != TimeInForce::Gtc) ||
-      (request.type == OrderType::Market && (request.tif != TimeInForce::Ioc || request.limit_price)) ||
+      (request.tif < TimeInForce::Day || request.tif > TimeInForce::Gtd) ||
+      (request.type == OrderType::Market && (!immediate(request) || request.limit_price)) ||
       (request.type == OrderType::Limit && (!request.limit_price || *request.limit_price <= Money{})))
     return failure(Reason::INVALID_ORDER, "Positive quantity/client ID required; market is IOC without price; limit requires positive price");
+  if (const auto d = tif_check(s, request, o.accepted_at); !d.ok()) return d;
   if (request.quantity > s.config.limits.max_order_contracts)
     return {Reason::MAX_ORDER_CONTRACTS, "Order contract count exceeds limit", static_cast<double>(request.quantity),
             static_cast<double>(s.config.limits.max_order_contracts), request.symbol};
@@ -1399,7 +1458,7 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   if (const auto d = quote_check(s, request.symbol); !d.ok() && !ask_only_single(s, o)) return d;
   const auto& quote = s.books.at(request.symbol).quote;
   if (stage == Stage::Fill || !request.limit_price) {
-    if (const auto d = price_check(s, quote, execution_price(s, request.symbol, request.side, request.limit_price)); !d.ok()) return d;
+    if (const auto d = price_check(s, quote, order_price(s, o, request.symbol, request.side, request.limit_price)); !d.ok()) return d;
   } else if (stage == Stage::Accept) {
     if (const auto d = price_check(s, quote, *request.limit_price, stop_level(o)); !d.ok()) return d;
   }
@@ -1432,7 +1491,7 @@ Decision system_check(const State& s, const Order& o, bool now) {
     for (const auto& leg : o.request.legs) {
       const auto& c = s.contracts.at(leg.symbol);
       if (s.time >= c.last_trade_time()) return failure(Reason::EXPIRED, "An exit leg reached its last trade");
-      if (now && !regular(c, s.time)) return failure(Reason::SESSION_CLOSED, "Combo exits wait for the regular session");
+      if (now && !trades_now(o, c, s.time)) return failure(Reason::SESSION_CLOSED, "Combo exits wait for the regular session");
       if (auto d = quote_check(s, leg.symbol); !d.ok() && !ask_only(s, o, leg)) return d;
       legs.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
     }
@@ -1441,7 +1500,7 @@ Decision system_check(const State& s, const Order& o, bool now) {
   const auto c = s.contracts.find(o.request.symbol);
   if (c == s.contracts.end()) return failure(Reason::UNKNOWN_CONTRACT, "Order must reference a registered canonical OSI definition");
   if (s.time >= c->second.expiry_time()) return failure(Reason::EXPIRED, "Contract has expired");
-  if (!regular(c->second, s.time))
+  if (o.system ? !regular(c->second, s.time) : !trades_now(o, c->second, s.time))
     return failure(Reason::SESSION_CLOSED, "Closing orders the account places itself and bracket exits trade in the regular session only");
   // A bracket exit keeps a defined-risk plan's shorts covered; the account's own closing orders need not.
   if (!o.system && o.request.side == Side::Sell)
@@ -1476,8 +1535,8 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   if (!o.open() || o.status == OrderStatus::Armed || !latency_ready(s, o)) return;
   if (incoming != id && s.books.at(o.request.symbol).quote.time < o.accepted_at) return;
   // Good-until-expiry exits and triggered orders outlive a session; outside
-  // the regular session they wait for the next one.
-  if (persistent(o) && !regular(s.contracts.at(o.request.symbol), s.time)) return;
+  // their eligible sessions they wait for the next one.
+  if (!trades_now(o, s.contracts.at(o.request.symbol), s.time)) return;
   // A close kept within its position may meet a quote with only an ask: it buys at
   // that ask, or a reduce-only market close gives the long away at zero.
   const bool one_sided = ask_only_single(s, o);
@@ -1503,14 +1562,14 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto side = o.request.side;
   const auto& book = s.books.at(symbol);
   if (!given && !marketable(o, book.quote)) return;
-  const Money price = given ? Money{} : execution_price(s, symbol, side, o.request.limit_price);
+  const Money price = given ? Money{} : order_price(s, o, symbol, side, o.request.limit_price);
   const auto remaining_depth = side == Side::Buy ? book.ask_left : book.bid_left;
   const auto size = side == Side::Buy ? book.quote.ask_size : book.quote.bid_size;
   const auto position = held(s, o.request.symbol);
   const auto capacity = o.request.side == Side::Sell ? std::max<Quantity>(position, 0) : std::max<Quantity>(-position, 0);
   // A long given away needs no bid, so no displayed size limits it.
   const auto budget = given ? capacity
-      : s.config.rules.impact_ticks > 0 ? size - depth_used(size, remaining_depth) % size : remaining_depth;
+      : s.config.rules.impact_ticks > 0 && !touch_stop(s, o) ? size - depth_used(size, remaining_depth) % size : remaining_depth;
   const Quantity quantity = reducing ? std::min({o.remaining(), budget, capacity}) : std::min(o.remaining(), budget);
   if (quantity <= 0) return;
   decision = reducing ? Decision{} : price_check(s, book.quote, price);
@@ -1569,7 +1628,7 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   const auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
   if (!o.open() || o.status == OrderStatus::Armed || !latency_ready(s, o)) return;
   for (const auto& leg : o.request.legs) {
-    if (persistent(o) && !regular(s.contracts.at(leg.symbol), s.time)) return;
+    if (!trades_now(o, s.contracts.at(leg.symbol), s.time)) return;
     if (!quote_check(s, leg.symbol).ok() && !ask_only(s, o, leg)) return;
     if (incoming != id && s.books.at(leg.symbol).quote.time < o.accepted_at) return;
   }
@@ -1578,8 +1637,8 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
   const bool exit = kept_within(o);
   auto decision = exit ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
-  Quantity units = s.config.rules.impact_ticks > 0 ? 1 : o.remaining();
-  if (s.config.rules.impact_ticks == 0) for (const auto& leg : o.request.legs) {
+  Quantity units = s.config.rules.impact_ticks > 0 && !touch_stop(s, o) ? 1 : o.remaining();
+  if (s.config.rules.impact_ticks == 0 || touch_stop(s, o)) for (const auto& leg : o.request.legs) {
     if (given_away(s, o, leg)) continue;
     const auto& book = s.books.at(leg.symbol);
     units = std::min(units, (leg.side == Side::Buy ? book.ask_left : book.bid_left) / leg.ratio);
@@ -1663,7 +1722,7 @@ std::string ioc_remainder_message(const State& s, const Order& o, std::string ex
 /// again on the next quote that reaches its level, so no remainder is left bare.
 void end_ioc(State& s, OrderId id, std::string message, Events& events) {
   const auto& o = s.orders.at(static_cast<std::size_t>(id - 1));
-  if (!o.open() || o.request.tif != TimeInForce::Ioc) return;
+  if (!o.open() || !immediate(o.request)) return;
   if (o.role != OrderRole::Normal && o.request.trigger) {
     auto& stop = s.orders.mut(id - 1);
     stop.status = OrderStatus::Armed;
@@ -1672,12 +1731,54 @@ void end_ioc(State& s, OrderId id, std::string message, Events& events) {
   }
   cancel_order(s, id, failure(Reason::IOC_REMAINDER, ioc_remainder_message(s, o, std::move(message))), events);
 }
+/// A flatten limit follows fresh executable touches, each leg rounded outwards to
+/// its valid price tick. Missing books leave it working for a later quote.
+std::optional<Money> close_price(const State& s, const Order& o) {
+  Money net;
+  auto legs = o.request.legs;
+  if (legs.empty()) legs.push_back({o.request.symbol, o.request.side, 1});
+  for (const auto& leg : legs) {
+    if (given_away(s, o, leg)) continue;
+    if (!quote_check(s, leg.symbol).ok() && !(leg.side == Side::Buy && asks_only(s, leg.symbol))) return {};
+    const auto& q = s.books.at(leg.symbol).quote;
+    if (q.time < o.accepted_at) return {};
+    const bool buy = leg.side == Side::Buy;
+    const auto touch = buy ? *q.ask : *q.bid;
+    const auto& root = s.contracts.at(leg.symbol).root;
+    auto price = buy ? touch + tick_size(root, touch) * *o.limit_ticks
+                    : std::max(tick_size(root, Money{}), touch - tick_size(root, touch) * *o.limit_ticks);
+    // Crossing a tier boundary can change the valid tick, so round once more there.
+    for (int pass = 0; pass < 2; ++pass) {
+      const auto tick = tick_size(root, price).micros();
+      const auto remainder = price.micros() % tick;
+      if (remainder != 0) price = price + Money::from_micros(buy ? tick - remainder : -remainder);
+    }
+    net = net + (buy ? price : -price) * leg.ratio;
+  }
+  return multi_leg(o.request) || o.request.side == Side::Buy ? net : -net;
+}
+bool reprice_close(State& s, OrderId id, Events& events) {
+  const auto& o = s.orders[id - 1];
+  if (!o.limit_ticks) return true;
+  for (const auto& symbol : order_symbols(o.request))
+    if (!trades_now(o, s.contracts.at(symbol), s.time)) return false;
+  const auto price = close_price(s, o);
+  if (!price) return false;
+  if (o.request.limit_price != price) {
+    auto& changed = s.orders.mut(id - 1);
+    if (!changed.submitted) changed.submitted = changed.request;
+    changed.request.limit_price = price;
+    event(events, "order_repriced", changed);
+  }
+  return true;
+}
 /// Sweep successive simulated tiers, retaining the original one-fill path when
 /// impact is off. A delayed IOC gets its one attempt on an eligible quote.
 void match_order(State& s, OrderId id, Events& events, std::optional<OrderId> incoming) {
   const auto& initial = s.orders[id - 1];
   if (!initial.open() || initial.status == OrderStatus::Armed || !latency_ready(s, initial)) return;
   const bool combo = multi_leg(initial.request);
+  if (!reprice_close(s, id, events)) return;
   for (;;) {
     const auto before = s.orders[id - 1].filled_quantity;
     if (combo) match_combo(s, id, events, incoming); else match_one(s, id, events, incoming);
@@ -1760,9 +1861,10 @@ void attach_exits(State& s, OrderId entry_id, Events& events) {
     Order exit;
     exit.actor = entry.actor;
     exit.id = static_cast<OrderId>(s.orders.size() + 1);
+    const auto tif = extended(entry.request) ? TimeInForce::GtcExto : spec.limit_price ? TimeInForce::Gtc : TimeInForce::Ioc;
     exit.request = {entry.request.client_order_id + (role == OrderRole::StopLoss ? ":stop" : ":target"),
                     entry.request.symbol, entry.request.side == Side::Buy ? Side::Sell : Side::Buy,
-                    spec.limit_price ? OrderType::Limit : OrderType::Market, spec.limit_price ? TimeInForce::Gtc : TimeInForce::Ioc,
+                    spec.limit_price ? OrderType::Limit : OrderType::Market, tif,
                     entry.filled_quantity, spec.limit_price, spec.trigger, {}, {}};
     if (multi_leg(entry.request)) {
       exit.request.side = Side::Buy;
@@ -1876,11 +1978,11 @@ void activate(State& s, OrderId id, Events& events) {
   match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
   if (s.config.rules.fill_latency_ms == 0) end_ioc(s, id, "IOC exhausted available displayed liquidity", events);
 }
-/// Armed orders activate only in their contract's regular session.
+/// Armed orders activate in eligible sessions; only EXTO/GTC_EXTO extend them.
 void check_triggers(State& s, Events& events) {
   const auto visit = [&](OrderId id) {
     const auto& o = s.orders[id - 1];
-    if (o.status != OrderStatus::Armed || !regular(s.contracts.at(order_symbols(o.request).front()), s.time) || !reached(s, o))
+    if (o.status != OrderStatus::Armed || !trades_now(o, s.contracts.at(order_symbols(o.request).front()), s.time) || !reached(s, o))
       return;
     activate(s, id, events);
   };
@@ -2034,7 +2136,9 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
   const auto symbols = order_symbols(r);
   for (const auto& symbol : symbols) if (!s.contracts.contains(symbol)) return std::nullopt;
   if (o.status == OrderStatus::Armed) {
-    if (!regular(s.contracts.at(symbols.front()), s.time))
+    if (extended(r) && !trades_now(o, s.contracts.at(symbols.front()), s.time))
+      return wait("SESSION_CLOSED", "Waits for the next trading session");
+    if (!extended(r) && !regular(s.contracts.at(symbols.front()), s.time))
       return wait("REGULAR_SESSION", "Armed orders trigger in the regular session only");
     const auto& t = *r.trigger;
     const auto value = trigger_value(s, o);
@@ -2043,11 +2147,15 @@ std::optional<OrderWait> waiting_for(const State& s, const Order& o, bool data_c
     return wait("TRIGGER", "Waits for " + source + " to reach " + (t.direction == TriggerDirection::AtOrBelow ? "at or below " : "at or above ") +
                 t.level.str() + (value ? " (now " + value->str() + ")" : " (no fresh value now; missing or stale data never triggers)"));
   }
-  if (persistent(o) || o.system)
-    for (const auto& symbol : symbols)
-      if (!regular(s.contracts.at(symbol), s.time))
+  if (persistent(o) || o.system) {
+    for (const auto& symbol : symbols) {
+      if (extended(r) && !trades_now(o, s.contracts.at(symbol), s.time))
+        return wait("SESSION_CLOSED", "Waits for the next trading session");
+      else if (!extended(r) && !regular(s.contracts.at(symbol), s.time))
         return wait("REGULAR_SESSION", std::string(r.tif == TimeInForce::Gtc && o.role == OrderRole::Normal ? "GTC orders" : "Bracket exits and triggered orders") +
                     " fill in the regular session only");
+    }
+  }
   for (const auto& symbol : symbols) {
     const auto leg = std::find_if(r.legs.begin(), r.legs.end(), [&](const Leg& l) { return l.symbol == symbol; });
     if (const auto d = quote_check(s, symbol); !d.ok() &&
@@ -2471,7 +2579,10 @@ Decision change_check(const State& s, const Order& order, const Decision& reject
 void change_terms(State& s, OrderId id, const OrderChange& change) {
   auto& order = s.orders.mut(static_cast<std::size_t>(id - 1));
   if (change.quantity) order.request.quantity = *change.quantity;
-  if (change.limit_price && order.request.type == OrderType::Limit) order.request.limit_price = *change.limit_price;
+  if (change.limit_price && order.request.type == OrderType::Limit) {
+    order.request.limit_price = *change.limit_price;
+    order.limit_ticks.reset();
+  }
   if (change.trigger_level && order.request.trigger) order.request.trigger->level = *change.trigger_level;
   if (change.tif) order.request.tif = *change.tif;
 }
@@ -2729,7 +2840,8 @@ CommandResult place_order(State& s, OrderRequest request, Timestamp time, const 
   if (stored.request.exits_only) {
     const auto bracket = *stored.request.bracket;
     stored.role = bracket.take_profit ? OrderRole::TakeProfit : OrderRole::StopLoss;
-    stored.day_end = order_expiry(s, stored.request);
+    stored.day_end = extended(stored.request) || stored.request.tif == TimeInForce::Gtd
+        ? order_end(s, stored.request, time) : order_expiry(s, stored.request);
     stored.status = stored.request.trigger ? OrderStatus::Armed : OrderStatus::Working;
     stored.take_profit = bracket.take_profit ? id : 0;
     stored.stop_loss = bracket.take_profit ? 0 : id;
@@ -2742,7 +2854,8 @@ CommandResult place_order(State& s, OrderRequest request, Timestamp time, const 
       stop.request.limit_price = bracket.stop_loss->limit_price;
       stop.request.trigger = bracket.stop_loss->trigger;
       stop.request.type = stop.request.limit_price ? OrderType::Limit : OrderType::Market;
-      stop.request.tif = stop.request.limit_price ? TimeInForce::Gtc : TimeInForce::Ioc;
+      stop.request.tif = extended(stored.request) || stored.request.tif == TimeInForce::Gtd
+          ? stored.request.tif : stop.request.limit_price ? TimeInForce::Gtc : TimeInForce::Ioc;
       stop.status = stop.request.trigger ? OrderStatus::Armed : OrderStatus::Working;
       stop.role = OrderRole::StopLoss;
       stop.oco = id;
@@ -2762,12 +2875,13 @@ CommandResult place_order(State& s, OrderRequest request, Timestamp time, const 
     // Armed until reached, and good until expiry; a level already reached
     // activates at once, and so does a reached stop of the exits its fills create.
     stored.status = OrderStatus::Armed;
-    stored.day_end = order_expiry(s, stored.request);
+    stored.day_end = extended(stored.request) || stored.request.tif == TimeInForce::Gtd
+        ? order_end(s, stored.request, time) : order_expiry(s, stored.request);
     event(events, "order_accepted", stored);
     check_triggers(s, events);
     return CommandResult{{}, id, 0};
   }
-  stored.day_end = stored.request.tif == TimeInForce::Gtc ? order_expiry(s, stored.request) : day_deadline(s, stored.request, time);
+  stored.day_end = order_end(s, stored.request, time);
   event(events, "order_accepted", stored);
   // Existing better orders share any remaining budget even on command ingress.
   // Matching can append bracket exits, so re-read the order by ID afterwards.
@@ -2803,16 +2917,18 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
     order.changes.push_back(record);
     return CommandResult{std::move(decision), id, 0};
   };
-  const bool exit = order.role != OrderRole::Normal;
+  const bool exit = kept_within(order);
   const bool resting = order.status == OrderStatus::Armed || (r.type == OrderType::Limit && r.tif != TimeInForce::Ioc);
   if (order.system || !resting)
     return refuse(failure(Reason::INVALID_ORDER, "Only resting orders change: DAY/GTC limit orders, armed orders and bracket exits"));
   if (change.empty()) return refuse(failure(Reason::INVALID_ORDER, "Give a new quantity, limit price, trigger level or time in force"));
+  if (change.quantity && order.reduce_only)
+    return refuse(failure(Reason::INVALID_ORDER, "A reduce-only close's size follows its position; change its price instead"));
   // An exit may close part of what it protects, or all of it again, never more.
   if (change.quantity && exit && *change.quantity > order.filled_quantity + exit_capacity(s, r))
     return refuse({Reason::INVALID_ORDER, "A bracket exit closes at most the position it protects",
                    static_cast<double>(*change.quantity), static_cast<double>(order.filled_quantity + exit_capacity(s, r)), {}});
-  if (change.tif && (exit || r.type != OrderType::Limit || r.tif == TimeInForce::Ioc ||
+  if (change.tif && (exit || r.type != OrderType::Limit || (r.tif != TimeInForce::Day && r.tif != TimeInForce::Gtc) ||
                      (*change.tif != TimeInForce::Day && *change.tif != TimeInForce::Gtc)))
     return refuse(failure(Reason::INVALID_ORDER, "Only resting limit orders change between DAY and GTC; bracket exits are good until expiry"));
   if (change.quantity && *change.quantity <= order.filled_quantity)
@@ -2850,6 +2966,7 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
   // A new time in force sets when a working order ends; an armed one keeps expiry.
   if (change.tif && order.status != OrderStatus::Armed)
     order.day_end = order.request.tif == TimeInForce::Gtc ? order_expiry(s, order.request) : day_deadline(s, order.request, s.time);
+  if (change.limit_price) order.limit_ticks.reset();
   order.changes.push_back(record);
   event(events, "order_modified", order);
   const auto symbols = order_symbols(order.request);
@@ -3483,7 +3600,7 @@ OrderPreview TradingSession::preview_change(OrderId id, const OrderChange& chang
   result.execution = executed(before, trial, id, std::move(result.execution));
   // Sizing counts the units the order could still work, its filled ones aside.
   const auto& order = before.orders.at(static_cast<std::size_t>(id - 1));
-  if (impl_->stopped || order.role != OrderRole::Normal || order.request.exits_only) return result;
+  if (impl_->stopped || kept_within(order) || order.request.exits_only) return result;
   Quantity upper = before.config.limits.max_order_contracts;
   for (const auto& leg : order.request.legs) {
     if (leg.ratio <= 0) return result;
@@ -3546,7 +3663,7 @@ WhatIf TradingSession::what_if(const std::vector<std::vector<OrderRequest>>& can
 }
 FlattenPreview TradingSession::preview_close_positions(std::optional<std::string> underlying, Timestamp time,
     const std::map<std::string, Decision>& rejections, const std::map<std::string, double>& close_variances,
-    const PreviewMarket& market) const {
+    const PreviewMarket& market, FlattenPricing pricing) const {
   if (impl_->stopped) throw TradingError(Reason::JOURNAL_IO, "Trading stopped after journal failure; recover first");
   // The flatten itself, on a journal-less copy, so the dry run does what it would.
   auto copy = std::make_unique<Impl>();
@@ -3558,7 +3675,7 @@ FlattenPreview TradingSession::preview_close_positions(std::optional<std::string
   FlattenPreview result;
   const auto base = measure(before).equity;
   result.current = what_if_account(before, base, close_variances);
-  const auto closed = trial.close_positions(underlying, time, rejections);
+  const auto closed = trial.close_positions(underlying, time, rejections, pricing);
   const auto& after = trial.impl_->state;
   result.decision = closed.decision;
   result.kept_stocks = closed.kept_stocks;
@@ -3666,13 +3783,17 @@ std::vector<PlannedClose> plan_closes(const State& s, const std::vector<std::str
 /// the account and the session can refuse it whatever the price; missing or stale
 /// quotes only make it wait. Accepted, it trades at once where it can and works
 /// the rest on later quotes until its session ends.
-Decision place_close(State& s, OrderRequest request, const Decision& rejection, Events& events) {
+Decision place_close(State& s, OrderRequest request, const Decision& rejection, FlattenPricing pricing, Events& events) {
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = std::move(request);
   order.actor = s.actor;
   order.accepted_at = s.time;
   order.reduce_only = true;
+  if (pricing.limit) {
+    order.limit_ticks = pricing.limit_ticks;
+    order.request.limit_price = close_price(s, order).value_or(Money{});
+  }
   add_order(s, order);
   // Written until matching starts; nothing copies the orders before that.
   auto& stored = s.orders.mut_back();
@@ -3681,7 +3802,9 @@ Decision place_close(State& s, OrderRequest request, const Decision& rejection, 
     if (!decision.ok()) break;
     const auto& contract = s.contracts.at(symbol);
     decision = s.time >= contract.expiry_time() ? failure(Reason::EXPIRED, "Contract has expired")
-                                                : session_check(contract, s.time, stored.request);
+        : pricing.limit && !md::trading_session(contract.root, s.time).open
+            ? failure(Reason::SESSION_CLOSED, "Flatten requires an open trading session")
+            : session_check(contract, s.time, stored.request);
     if (!decision.ok() && multi_leg(stored.request)) decision.scope = symbol;
   }
   if (!decision.ok()) {
@@ -3691,7 +3814,7 @@ Decision place_close(State& s, OrderRequest request, const Decision& rejection, 
     return decision;
   }
   const auto id = stored.id;
-  stored.day_end = day_deadline(s, stored.request, s.time);
+  stored.day_end = order_end(s, stored.request, s.time);
   event(events, "order_accepted", stored);
   const auto symbols = order_symbols(stored.request);
   match_symbols(s, {symbols.begin(), symbols.end()}, events, id);
@@ -3699,7 +3822,9 @@ Decision place_close(State& s, OrderRequest request, const Decision& rejection, 
 }
 }  // namespace
 CommandResult TradingSession::close_positions(std::optional<std::string> underlying, Timestamp time,
-                                              const std::map<std::string, Decision>& rejections) {
+                                              const std::map<std::string, Decision>& rejections, FlattenPricing pricing) {
+  if (pricing.limit_ticks < 0 || pricing.limit_ticks > 10 || (!pricing.limit && pricing.limit_ticks != 0))
+    throw TradingError(Reason::INVALID_ORDER, "limit_ticks needs a limit flatten and must be 0 to 10");
   return impl_->transact(time, "close_positions", [&](State& s, Events& events) {
     monitor_loss(s, events);
     const auto in_scope = [&](const std::string& name) { return !underlying || name == *underlying; };
@@ -3717,8 +3842,8 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       }
     };
     OrderRequest market;
-    market.type = OrderType::Market;
-    market.tif = TimeInForce::Day;
+    market.type = pricing.limit ? OrderType::Limit : OrderType::Market;
+    market.tif = pricing.limit ? TimeInForce::Exto : TimeInForce::Day;
     // Every position in scope, expired ones included: they cannot trade and close
     // at settlement, but an expired short keeps the long that covers it until then.
     std::vector<std::string> positions;
@@ -3730,7 +3855,8 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
       const auto rejection = rejections.find(contract.underlying);
       auto decision = account_check(s, true);
       if (decision.ok() && rejection != rejections.end()) decision = rejection->second;
-      if (decision.ok()) decision = session_check(contract, s.time, market);
+      if (decision.ok()) decision = pricing.limit && !md::trading_session(contract.root, s.time).open
+          ? failure(Reason::SESSION_CLOSED, "Flatten requires an open trading session") : session_check(contract, s.time, market);
       gate(contract.underlying, std::move(decision));
     }
     // Shares close at the underlying's fresh price in the regular session.
@@ -3783,11 +3909,11 @@ CommandResult TradingSession::close_positions(std::optional<std::string> underly
         } else {
           request.legs = close.legs;
         }
-        request.type = OrderType::Market;
-        request.tif = TimeInForce::Day;
+        request.type = market.type;
+        request.tif = market.tif;
         request.quantity = std::min(close.units - placed, limit);
         placed += request.quantity;
-        const auto decision = place_close(s, std::move(request), rejection == rejections.end() ? Decision{} : rejection->second, events);
+        const auto decision = place_close(s, std::move(request), rejection == rejections.end() ? Decision{} : rejection->second, pricing, events);
         if (!decision.ok())
           for (const auto& leg : close.legs) refused.emplace(leg.symbol, decision);
       }

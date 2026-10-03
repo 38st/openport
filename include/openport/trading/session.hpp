@@ -269,6 +269,10 @@ struct WhatIf {
   std::vector<WhatIfCandidate> candidates;
 };
 /// What a flatten would do now, as close_positions would do it on a private copy.
+struct FlattenPricing {
+  bool limit = false;
+  Quantity limit_ticks = 0;  ///< 0-10 adverse ticks from each leg's displayed touch.
+};
 struct FlattenPreview {
   Decision decision;                ///< The refusal when nothing in scope can close.
   std::vector<OrderId> cancelled;   ///< Open orders it would cancel.
@@ -340,7 +344,7 @@ class TradingSession {
   /// Allocates no IDs and writes nothing.
   [[nodiscard]] FlattenPreview preview_close_positions(std::optional<std::string> underlying, Timestamp time,
       const std::map<std::string, Decision>& rejections = {}, const std::map<std::string, double>& close_variances = {},
-      const PreviewMarket& market = {}) const;
+      const PreviewMarket& market = {}, FlattenPricing pricing = {}) const;
   /// `close_variances`: each underlying's implied variance of its log price to today's close.
   [[nodiscard]] BreachRisk breach(const std::map<std::string, double>& close_variances = {}) const;
   /// The held book's warnings, most urgent first: a bucket over its delta or vega
@@ -377,7 +381,9 @@ class TradingSession {
   CommandResult cancel_all(std::optional<std::string> underlying, Timestamp time);
   /// Flatten the account, or one underlying: cancel the open orders in scope but
   /// the bracket exits, then close each unexpired position in scope with
-  /// reduce-only market DAY orders under the account's fill model. A short and
+  /// reduce-only market DAY orders under the account's fill model. Limit pricing
+  /// instead uses EXTO and follows each fresh touch by 0-10 adverse ticks; manual
+  /// price changes turn off repricing. It works in overnight and curb too. A short and
   /// the long that covers it (as for `defined_risk`) close together as one
   /// two-leg order, so no short is ever left naked; the other shorts and longs
   /// close alone, and each close is split at `max_order_contracts`. The closes
@@ -395,7 +401,7 @@ class TradingSession {
   /// can close, the decision is the first such refusal (scoped to its
   /// underlying) and nothing changes; otherwise it is success.
   CommandResult close_positions(std::optional<std::string> underlying, Timestamp time,
-                                const std::map<std::string, Decision>& rejections = {});
+                                const std::map<std::string, Decision>& rejections = {}, FlattenPricing pricing = {});
   /// Apply a whole batch before risk/matching. Unknown symbols and future data
   /// reject the whole batch; duplicate/older observations are ignored. Supply
   /// at most one quote and one valuation per OSI per batch. An empty batch

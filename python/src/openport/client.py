@@ -176,6 +176,7 @@ class Client:
         return body
 
     def place_order(self, order: JSON | None = None, **fields) -> SubmitResult:
+        """Submit live/replay terms, including exto, gtc_exto or gtd with a zoned good_till timestamp."""
         return self._request("POST", "/orders", self._order(order, fields), scoped=True)
 
     def preview_order(self, order: JSON | None = None, **fields) -> OrderPreview:
@@ -198,12 +199,27 @@ class Client:
     def cancel_all(self, underlying: str | None = None) -> CancelAllResult:
         return self._request("POST", "/orders/cancel", {"underlying": underlying} if underlying else {}, scoped=True)
 
-    def flatten(self, underlying: str | None = None) -> FlattenResult:
-        return self._request("POST", "/positions/close", {"underlying": underlying} if underlying else {}, scoped=True)
+    @staticmethod
+    def _flatten_body(underlying, type, limit_ticks):
+        if type not in ("market", "limit"):
+            raise ValueError("type must be market or limit")
+        if limit_ticks is not None and (type != "limit" or isinstance(limit_ticks, bool)
+                                       or not isinstance(limit_ticks, int) or not 0 <= limit_ticks <= 10):
+            raise ValueError("limit_ticks requires type limit and an integer from 0 to 10")
+        body = {"underlying": underlying} if underlying else {}
+        if type == "limit":
+            body["type"] = type
+        if limit_ticks is not None:
+            body["limit_ticks"] = limit_ticks
+        return body
 
-    def preview_flatten(self, underlying: str | None = None) -> FlattenPreview:
+    def flatten(self, underlying: str | None = None, *, type: str = "market", limit_ticks: int | None = None) -> FlattenResult:
+        """Reduce-only closes; limit follows each touch by 0-10 ticks and works extended sessions."""
+        return self._request("POST", "/positions/close", self._flatten_body(underlying, type, limit_ticks), scoped=True)
+
+    def preview_flatten(self, underlying: str | None = None, *, type: str = "market", limit_ticks: int | None = None) -> FlattenPreview:
         """What flatten would cancel and close now, and the account after it, without doing it."""
-        return self._request("POST", "/positions/close/preview", {"underlying": underlying} if underlying else {}, scoped=True)
+        return self._request("POST", "/positions/close/preview", self._flatten_body(underlying, type, limit_ticks), scoped=True)
 
     def note(self, trade_id: str, note: str = "", tags: list[str] | None = None) -> JSON:
         return self._request("PUT", "/trades/" + quote(str(trade_id), safe="") + "/note",

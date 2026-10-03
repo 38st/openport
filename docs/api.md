@@ -75,6 +75,24 @@ curl -X POST localhost:8080/api/orders -H 'Content-Type: application/json' -d '{
            {"symbol": "SPXW  260923P07700000", "side": "sell"}]}'
 ```
 
+Orders accept `time_in_force: "exto"`, `"gtc_exto"` or `"gtd"` in live and replay
+entry/preview routes. EXTO ends with the trading date's last session; GTC_EXTO
+works all sessions until expiry/cutoff. GTD trades regular hours until `good_till`,
+for example `"2026-09-23T14:15:00Z"`, a future market-time timestamp within 366 days.
+Only GTD takes that field. Extended stops are simulator-held triggers that send
+limits outside regular hours; stop-limit retains its price, while stop-market
+executes once at the touch against displayed size. Extended entries' bracket exits
+inherit all sessions. Plain market entries remain IOC and regular-only.
+
+`POST /api/positions/close` and `/api/positions/close/preview` take optional
+`type: "limit"` and `limit_ticks: 0` (0–10). Limits reprice from each leg's touch,
+work across quotes through the trading date and allow overnight/curb flattening.
+A manual limit modification stops repricing. Market remains the default. Orders
+report nullable `good_till` and `limit_ticks`; replay mirrors accept the same fields.
+Python: `client.place_order(..., time_in_force="gtd", good_till="2026-09-23T14:15:00Z")`
+and `client.flatten("SPX", type="limit", limit_ticks=1)`; `preview_flatten` takes the
+same pricing arguments.
+
 Sending the same order again with the same `client_order_id` is safe: it returns the
 first answer instead of placing a second order, and `GET /api/orders?client_order_id=ID`
 finds the order an ID placed. Other terms under a used ID get 409 and record nothing;

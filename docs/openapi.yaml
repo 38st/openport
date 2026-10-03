@@ -1072,7 +1072,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ScopeRequest"
+                "$ref": "#/components/schemas/FlattenRequest"
               }
             }
           }
@@ -1109,7 +1109,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ScopeRequest"
+                "$ref": "#/components/schemas/FlattenRequest"
               }
             }
           }
@@ -9874,7 +9874,7 @@
             "minLength": 1,
             "maxLength": 128,
             "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (market orders IOC, a positive quantity, two to eight legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
+            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (plain market orders IOC, a positive quantity, two to eight legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
           },
           "symbol": {
             "type": "string"
@@ -9903,9 +9903,12 @@
           },
           "time_in_force": {
             "enum": [
-              "ioc",
               "day",
-              "gtc"
+              "gtc",
+              "ioc",
+              "exto",
+              "gtc_exto",
+              "gtd"
             ]
           },
           "limit_price": {
@@ -9933,6 +9936,11 @@
           "group": {
             "type": "string",
             "description": "Join the round trips this order opens to a whole trade, named by its ID or one of its open round trips' IDs (an adjustment). A multi-leg order that closes or adds to another order's round trip joins that trade without it (a roll). An order naming no trade holding an open round trip on its underlying, or attaching held exits, is refused with INVALID_GROUP."
+          },
+          "good_till": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Required only for gtd. ISO timestamp with Z or UTC offset, in the future and no more than 366 days after acceptance (market time). GTD trades regular hours; expires with GTD_END."
           }
         },
         "required": [
@@ -10016,10 +10024,52 @@
               ]
             },
             "then": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "time_in_force": {
+                      "const": "ioc"
+                    }
+                  }
+                },
+                {
+                  "required": [
+                    "trigger"
+                  ],
+                  "properties": {
+                    "time_in_force": {
+                      "enum": [
+                        "exto",
+                        "gtc_exto",
+                        "gtd"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "if": {
               "properties": {
                 "time_in_force": {
-                  "const": "ioc"
+                  "const": "gtd"
                 }
+              },
+              "required": [
+                "time_in_force"
+              ]
+            },
+            "then": {
+              "required": [
+                "good_till"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "good_till"
+                ]
               }
             }
           }
@@ -10110,6 +10160,18 @@
               {
                 "const": "ioc",
                 "type": "string"
+              },
+              {
+                "const": "exto",
+                "type": "string"
+              },
+              {
+                "const": "gtc_exto",
+                "type": "string"
+              },
+              {
+                "const": "gtd",
+                "type": "string"
               }
             ]
           },
@@ -10193,7 +10255,7 @@
                 "type": "null"
               }
             ],
-            "description": "When the order ends. A DAY order ends with its session (a triggered one, the session it activated in) or at its earliest leg's last trade or the account's auto-close deadline, whichever comes first; GTC orders, armed orders and bracket exits last until that deadline."
+            "description": "When the order ends. A DAY order ends with its session (a triggered one, the session it activated in) or at its earliest leg's last trade or the account's auto-close deadline, whichever comes first; GTC orders, armed orders and bracket exits last until that deadline. EXTO ends at its trading date last session; GTD at good_till, both bounded by expiry/cutoff. GTC_EXTO and extended bracket exits work in all product sessions."
           },
           "reduce_only": {
             "type": "boolean",
@@ -10429,6 +10491,28 @@
             "type": "integer",
             "minimum": 1,
             "description": "The evaluation attempt the order belongs to. Client order IDs are scoped to an attempt: after an account reset, an ID an earlier attempt used names a new order."
+          },
+          "good_till": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The GTD timestamp, otherwise null."
+          },
+          "limit_ticks": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Automatic flatten repricing: 0-10 adverse ticks from each leg touch, otherwise null. A manual price disables it."
           }
         },
         "required": [
@@ -10449,7 +10533,9 @@
           "accepted_at",
           "day_end",
           "actor",
-          "attempt"
+          "attempt",
+          "good_till",
+          "limit_ticks"
         ]
       },
       "Fill": {
@@ -15764,7 +15850,7 @@
       },
       "OrderWait": {
         "type": "object",
-        "description": "What keeps an open order from filling now, as matching reads the books, sessions and clocks: TRIGGER, REGULAR_SESSION, INVALID_QUOTE, STALE_QUOTE, FILL_LATENCY, NEWER_QUOTE, LIMIT, DISPLAYED_SIZE or STALE_DATA.",
+        "description": "What keeps an open order from filling now, as matching reads the books, sessions and clocks: TRIGGER, REGULAR_SESSION, SESSION_CLOSED, INVALID_QUOTE, STALE_QUOTE, FILL_LATENCY, NEWER_QUOTE, LIMIT, DISPLAYED_SIZE or STALE_DATA.",
         "properties": {
           "code": {
             "enum": [
@@ -15776,7 +15862,8 @@
               "NEWER_QUOTE",
               "LIMIT",
               "DISPLAYED_SIZE",
-              "STALE_DATA"
+              "STALE_DATA",
+              "SESSION_CLOSED"
             ]
           },
           "message": {
@@ -16097,6 +16184,49 @@
         "required": [
           "account_version",
           "groups"
+
+        ]
+      },
+      "FlattenRequest": {
+        "type": "object",
+        "properties": {
+          "underlying": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "market",
+              "limit"
+            ],
+            "default": "market"
+          },
+          "limit_ticks": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 0,
+            "description": "Limit only: adverse ticks from each leg displayed touch. Closes use EXTO and reprice on fresh quotes. A manual limit modification disables repricing."
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "limit_ticks"
+              ]
+            },
+            "then": {
+              "required": [
+                "type"
+              ],
+              "properties": {
+                "type": {
+                  "const": "limit"
+                }
+              }
+            }
+          }
         ]
       }
     }

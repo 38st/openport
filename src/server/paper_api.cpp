@@ -223,9 +223,18 @@ json exit_json(const std::optional<ExitSpec>& e) {
   return {{"trigger", trigger_json(e->trigger)}, {"limit_price", money(e->limit_price)}};
 }
 json id_or_null(OrderId id) { return id == 0 ? json(nullptr) : json(std::to_string(id)); }
-json tif_or_null(const std::optional<TimeInForce>& tif) {
-  return !tif ? json(nullptr) : json(*tif == TimeInForce::Day ? "day" : *tif == TimeInForce::Gtc ? "gtc" : "ioc");
+const char* tif_name(TimeInForce tif) {
+  switch (tif) {
+    case TimeInForce::Day: return "day";
+    case TimeInForce::Ioc: return "ioc";
+    case TimeInForce::Gtc: return "gtc";
+    case TimeInForce::Exto: return "exto";
+    case TimeInForce::GtcExto: return "gtc_exto";
+    case TimeInForce::Gtd: return "gtd";
+  }
+  return "day";
 }
+json tif_or_null(const std::optional<TimeInForce>& tif) { return !tif ? json(nullptr) : json(tif_name(*tif)); }
 /// Each change asked of an order: the terms requested (null where kept), the terms
 /// before it, and whether it was applied or refused, and why.
 json order_changes_json(const Order& o) {
@@ -275,7 +284,9 @@ json order_json(const Order& o, const TradingView& view) {
           {"underlying", underlying(view, order_symbols(o.request).front())},
           {"side", multi ? json(nullptr) : json(side_name(o.request.side))}, {"legs", legs},
           {"type", o.request.type == OrderType::Limit ? "limit" : "market"},
-          {"time_in_force", o.request.tif == TimeInForce::Day ? "day" : o.request.tif == TimeInForce::Gtc ? "gtc" : "ioc"},
+          {"time_in_force", tif_name(o.request.tif)},
+          {"good_till", o.request.good_till ? time_or_null(*o.request.good_till) : json(nullptr)},
+          {"limit_ticks", o.limit_ticks ? json(*o.limit_ticks) : json(nullptr)},
           {"tags", o.request.tags}, {"note", o.request.note}, {"exits_only", o.request.exits_only},
           {"group", nullable(o.request.group)},
           {"quantity", o.request.quantity}, {"filled_quantity", o.filled_quantity},
@@ -1431,7 +1442,19 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (path == "/api/positions/close" || path == "/api/positions/close/preview") {
     command.kind = path.ends_with("/preview") ? TradingCommand::Kind::PreviewClose : TradingCommand::Kind::ClosePositions;
-    command.underlying = scope_field(body);
+    fields(body, {}, {"underlying", "type", "limit_ticks"});
+    auto scope = body;
+    scope.erase("type"); scope.erase("limit_ticks");
+    command.underlying = scope_field(scope);
+    const auto type = body.contains("type") ? string_field(body, "type") : std::string("market");
+    if (type != "market" && type != "limit") throw std::invalid_argument("type must be market or limit");
+    command.close_pricing.limit = type == "limit";
+    if (body.contains("limit_ticks")) {
+      if (!command.close_pricing.limit) throw std::invalid_argument("limit_ticks needs type limit");
+      command.close_pricing.limit_ticks = integer_field(body, "limit_ticks");
+      if (command.close_pricing.limit_ticks < 0 || command.close_pricing.limit_ticks > 10)
+        throw std::invalid_argument("limit_ticks must be 0 to 10");
+    }
     return command;
   }
   if (path == "/api/accounts") {
@@ -1473,8 +1496,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     }
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
-    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group"});
-    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group"});
+    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till"});
+    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group", "good_till"});
     // A body no market could make a valid order is malformed: 400, and nothing is
     // recorded, so its client_order_id stays free. The reducer's own checks (422,
     // recorded) are those that depend on the account and the market.
@@ -1483,12 +1506,25 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     if (!valid_client_order_id(order.client_order_id))
       throw std::invalid_argument("client_order_id must be 1 to 128 bytes of text without control characters");
     const auto type = string_field(body, "type"), tif = string_field(body, "time_in_force");
-    if ((type != "limit" && type != "market") || (tif != "day" && tif != "ioc" && tif != "gtc"))
+    constexpr std::pair<std::string_view, TimeInForce> tifs[] = {{"day", TimeInForce::Day}, {"ioc", TimeInForce::Ioc},
+        {"gtc", TimeInForce::Gtc}, {"exto", TimeInForce::Exto}, {"gtc_exto", TimeInForce::GtcExto}, {"gtd", TimeInForce::Gtd}};
+    const auto named = std::find_if(std::begin(tifs), std::end(tifs), [&](const auto& t) { return t.first == tif; });
+    if ((type != "limit" && type != "market") || named == std::end(tifs))
       throw std::invalid_argument("Invalid type or time_in_force");
     order.type = type == "limit" ? OrderType::Limit : OrderType::Market;
-    order.tif = tif == "day" ? TimeInForce::Day : tif == "gtc" ? TimeInForce::Gtc : TimeInForce::Ioc;
-    if (order.type == OrderType::Market && order.tif != TimeInForce::Ioc)
-      throw std::invalid_argument("A market order's time_in_force must be ioc");
+    order.tif = named->second;
+    if (order.type == OrderType::Market && order.tif != TimeInForce::Ioc &&
+        !(body.contains("trigger") && (order.tif == TimeInForce::Exto || order.tif == TimeInForce::GtcExto || order.tif == TimeInForce::Gtd)))
+      throw std::invalid_argument("Market orders need ioc; triggered markets also take exto, gtc_exto or gtd");
+    if ((order.tif == TimeInForce::Gtd) != body.contains("good_till"))
+      throw std::invalid_argument("good_till is required for gtd and forbidden otherwise");
+    if (body.contains("good_till")) {
+      const auto value = string_field(body, "good_till");
+      const bool zoned = value.ends_with("Z") || (value.size() >= 6 && (value[value.size() - 6] == '+' || value[value.size() - 6] == '-'));
+      const auto parsed = md::parse_datetime(value, md::Zone::Utc);
+      if (!zoned || !parsed) throw std::invalid_argument("good_till must be an ISO date-time with Z or a UTC offset");
+      order.good_till = *parsed;
+    }
     order.quantity = integer_field(body, "quantity");
     if (order.quantity < 1) throw std::invalid_argument("quantity must be a positive whole number of contracts or units");
     if ((order.type == OrderType::Limit) != body.contains("limit_price"))

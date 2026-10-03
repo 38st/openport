@@ -3056,4 +3056,51 @@ TEST(PaperStocks, PositionDisposalContractFixture) {
   engine.stop();
 }
 
+TEST_F(PaperEngine, ExtendedTimeInForceAndGtdRoundTripAndValidate) {
+  seed();
+  for (const auto tif : {"exto", "gtc_exto", "gtd"}) {
+    auto body = order(market, tif);
+    body["time_in_force"] = tif;
+    if (std::string_view(tif) == "gtd") body["good_till"] = "2026-09-23T10:15:00-04:00";
+    const auto response = write(*engine, "POST", "/api/orders", body);
+    ASSERT_EQ(response.status, 201) << response.body;
+    const auto saved = json::parse(response.body)["order"];
+    EXPECT_EQ(saved["time_in_force"], tif);
+    if (std::string_view(tif) == "gtd") { EXPECT_EQ(saved["good_till"], "2026-09-23T14:15:00.000Z"); }
+    else { EXPECT_TRUE(saved["good_till"].is_null()); }
+  }
+  auto body = order(market, "bad-gtd"); body["time_in_force"] = "gtd";
+  expect_error(write(*engine, "POST", "/api/orders", body), 400, "INVALID_REQUEST");
+  body["good_till"] = "2026-09-23T10:15:00";
+  expect_error(write(*engine, "POST", "/api/orders", body), 400, "INVALID_REQUEST");
+  body["good_till"] = "2026-09-21T14:15:00Z";
+  expect_error(write(*engine, "POST", "/api/orders", body), 422, "INVALID_ORDER");
+  body["client_order_id"] = "stop"; body.erase("good_till"); body.erase("limit_price");
+  body["time_in_force"] = "gtc_exto"; body["type"] = "market";
+  body["trigger"] = {{"source", "option"}, {"direction", "at_or_below"}, {"level", "3.00"}};
+  ASSERT_EQ(write(*engine, "POST", "/api/orders/cancel", json::object()).status, 200);
+  const auto stop = write(*engine, "POST", "/api/orders", body);
+  ASSERT_EQ(stop.status, 201) << stop.body;
+  EXPECT_EQ(json::parse(stop.body)["order"]["status"], "armed");
+}
+
+TEST_F(PaperEngine, LimitFlattenPreviewAndCloseAcceptBoundedPricing) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "held", "4.20")).status, 201);
+  for (const auto path : {"/api/positions/close/preview", "/api/positions/close"}) {
+    expect_error(write(*engine, "POST", path, {{"type", "market"}, {"limit_ticks", 1}}), 400, "INVALID_REQUEST");
+    expect_error(write(*engine, "POST", path, {{"type", "limit"}, {"limit_ticks", 11}}), 400, "INVALID_REQUEST");
+    expect_error(write(*engine, "POST", path, {{"type", "limit"}, {"limit_ticks", -1}}), 400, "INVALID_REQUEST");
+    const auto response = write(*engine, "POST", path, {{"type", "limit"}, {"limit_ticks", 1}});
+    ASSERT_EQ(response.status, 200) << response.body;
+  }
+  const auto orders = read(*engine, "/api/orders?status=all")["orders"];
+  ASSERT_EQ(orders.size(), 2);
+  const auto close = std::find_if(orders.begin(), orders.end(), [](const json& o) { return o["reduce_only"] == true; });
+  ASSERT_NE(close, orders.end());
+  EXPECT_EQ((*close)["type"], "limit");
+  EXPECT_EQ((*close)["time_in_force"], "exto");
+  EXPECT_EQ((*close)["limit_ticks"], 1);
+}
+
 }  // namespace

@@ -44,3 +44,12 @@ describe("checked API core types", () => {
     }
   })
 })
+
+it("keeps extended TIFs and sparse order metadata in the wire contract", () => {
+  const declared = /export type TimeInForce = ([^\n]+)/.exec(source)![1]!
+  expect(normalize(declared)).toBe(wireType(spec.components.schemas.Order!.properties!.time_in_force!))
+  for (const key of ["good_till", "limit_ticks"]) {
+    expect(source).toContain(`${key}?:`)
+    expect(spec.components.schemas.Order!.properties![key]).toBeDefined()
+  }
+})

@@ -54,6 +54,9 @@ class Order(TypedDict):
     quantity: int
     filled_quantity: int
     limit_price: str | None
+    time_in_force: str
+    good_till: str | None
+    limit_ticks: int | None
     status: str
 
 

@@ -1378,5 +1378,29 @@ TEST(TradingMultiLeg, LatencyStopWaitsFromTriggerAndOcoCancelsRemainingEntry) {
   EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Filled);
 }
 
+TEST(TradingMultiLeg, ExtendedHeldComboStopsUseDisplayedTouchesAndRearmOvernight) {
+  Chain f;
+  auto c = config();
+  TradingSession s(c, f.time);
+  f.define(s, {P4900, P4890});
+  f.quote(s, {{P4900, "5.00", "5.20", -0.30}, {P4890, "4.00", "4.20", -0.28}});
+  ASSERT_TRUE(s.submit(combo("entry", credit_legs(), 2, "-0.80"), f.time).decision.ok());
+  const auto stop = Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, m("2.00")};
+  auto exits = combo("exits", close_legs(), 2, "0.40", TimeInForce::GtcExto);
+  exits.exits_only = true;
+  exits.bracket = Bracket{ExitSpec{stop, {}}, ExitSpec{{}, m("0.40")}};
+  ASSERT_TRUE(s.submit(exits, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->recent_orders[2].request.tif, TimeInForce::GtcExto);
+  f.time = md::new_york_to_utc({2026, 9, 22}, 21, 0) - md::kNanosPerSecond;
+  f.quote(s, {{P4900, "6.90", "7.10", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+  EXPECT_EQ(s.snapshot()->recent_orders[2].status, OrderStatus::Armed);
+  EXPECT_EQ(s.snapshot()->recent_orders[2].filled_quantity, 1);
+  EXPECT_EQ(s.snapshot()->recent_orders[2].filled_notional, m("3.10"));
+  f.quote(s, {{P4900, "6.90", "7.10", -0.30}, {P4890, "4.00", "4.20", -0.28}}, 1);
+  EXPECT_EQ(s.snapshot()->recent_orders[2].status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].reason.code, Reason::OCO_FILLED);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+}
+
 }  // namespace
 }  // namespace openport::trading

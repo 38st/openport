@@ -35,7 +35,7 @@ simulation's limits.
 - **Trade**: the chain with an order ticket docked beside it, and a candle chart of the
   underlying (one-minute to daily, backfilled from Cboe's free history) showing your
   strikes, armed triggers and the selected expiry's expected move.
-- **Orders**: day and GTC limits, market orders, orders that wait for a price level,
+- **Orders**: DAY, GTC, EXTO, GTC_EXTO and timestamp-bounded GTD limits, market orders, orders that wait for a price level,
   stop-limits, and brackets whose stop-loss (a stop or a stop-limit) and take-profit
   cancel each other, keeping a partly filled position protected. GTC orders wait
   outside the regular session and last until the contract's last trade or auto-close.
@@ -48,6 +48,10 @@ simulation's limits.
   quotes paper orders cannot fill on (one-sided, crossed or sizeless) and the displayed
   size your orders already took, so a partial IOC is no surprise. Every fill keeps the
   bid, ask and sizes it traded against, the displayed size left, and how old the quote was.
+  EXTO/GTC_EXTO protection works overnight and curb with simulator-managed limit
+  execution. Flatten can use limits that follow the touch across quotes in those
+  sessions, preserving combo closes, size splits and bracket protection.
+
 - **Strategies**: up to four legs (spreads, straddles, condors, butterflies, calendars
   and diagonals) picked on the chain, or built from a template such as a 10-wide put
   spread at 15 delta or a condor one expected move out, with presets saved in the
@@ -264,6 +268,7 @@ the simulation's limits.
       accounts and trading recorded days in replay
 - [x] Paper trading in Cboe's overnight and curb sessions
 - [x] GTC limit orders, order notes and tags, spread brackets and held-spread exits
+- [x] EXTO/GTC_EXTO protection in all product sessions, timestamp GTD, and limit flatten in GTH/curb
 - [x] Roll the put or call side of a four-leg strategy
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
 - [x] Fill context, trade and strategy excursions, CSV export and day plans and reviews
