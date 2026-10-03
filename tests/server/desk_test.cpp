@@ -75,6 +75,15 @@ TEST(Desk, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContracts) {
     entry.kind = server::TradingCommand::Kind::Submit;
   }
   volume(10, market.time);
+  server::TradingCommand what_if;
+  what_if.kind = server::TradingCommand::Kind::WhatIf;
+  what_if.candidates = {{market.market("buy"), market.market("close", 1, trading::Side::Sell)},
+                        {market.market("buy"), market.market("add")}};
+  const auto projection = command(desk, what_if, market.time, market.time);
+  ASSERT_TRUE(projection.what_if);
+  ASSERT_EQ(projection.what_if->candidates.size(), 2U);
+  EXPECT_TRUE(projection.what_if->candidates[0].decision.ok());
+  EXPECT_EQ(projection.what_if->candidates[1].decision.code, trading::Reason::MAX_VOLUME_SHARE);
   const auto resting = command(desk, entry, market.time, market.time);
   ASSERT_TRUE(resting.decision.ok()) << resting.decision.message;
   server::TradingCommand change;
@@ -186,6 +195,15 @@ TEST(Desk, CounterPositionsGatePreviewsChangesChainsAndIgnoresArchivedAccounts) 
   // An opposite order that only reduces is exempt.
   change.kind = server::TradingCommand::Kind::Cancel;
   ASSERT_TRUE(command(desk, change, market.time, market.time).decision.ok());
+  server::TradingCommand what_if;
+  what_if.kind = server::TradingCommand::Kind::WhatIf;
+  what_if.candidates = {{market.market("buy"), market.market("close", 1, trading::Side::Sell)},
+                        {market.market("buy"), market.market("reverse", 2, trading::Side::Sell)}};
+  const auto projection = command(desk, what_if, market.time, market.time);
+  ASSERT_TRUE(projection.what_if);
+  ASSERT_EQ(projection.what_if->candidates.size(), 2U);
+  EXPECT_TRUE(projection.what_if->candidates[0].decision.ok());
+  EXPECT_EQ(projection.what_if->candidates[1].decision.code, trading::Reason::COUNTER_POSITION);
   entry.order = market.market("same-direction");
   ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
   entry.order = market.market("reduce", 1, trading::Side::Sell);

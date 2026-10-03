@@ -24,6 +24,24 @@ namespace openport::server {
 namespace {
 using namespace trading;
 
+// Hypothetical fills used by chained-entry gates and sequential what-if previews.
+Decision project_contracts(const OrderRequest& order, std::map<std::string, Quantity>& changes) {
+  if (order.exits_only) return {};
+  auto legs = order.legs;
+  if (legs.empty()) legs.push_back({order.symbol, order.side, 1});
+  for (const auto& leg : legs) {
+    if (order.quantity <= 0 || leg.ratio < 1 || leg.ratio > kMaxRatio || (leg.side != Side::Buy && leg.side != Side::Sell))
+      return {Reason::INVALID_ORDER, "Invalid projected contract count or side", {}, {}, leg.symbol};
+    Quantity quantity = 0;
+    if (__builtin_mul_overflow(order.quantity, leg.ratio, &quantity))
+      return {Reason::ARITHMETIC_OVERFLOW, "Projected contract count overflow", {}, {}, leg.symbol};
+    if (leg.side == Side::Sell) quantity = -quantity;
+    if (__builtin_add_overflow(changes[leg.symbol], quantity, &changes[leg.symbol]))
+      return {Reason::ARITHMETIC_OVERFLOW, "Projected holdings overflow", {}, {}, leg.symbol};
+  }
+  return {};
+}
+
 void sync_directory(const std::filesystem::path& path) {
   const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY);
   if (fd < 0) throw TradingError(Reason::JOURNAL_IO, "Cannot open journal directory for durability");
@@ -1514,13 +1532,7 @@ Decision Desk::opening_gate(const PaperAccount& account, const OrderRequest& ord
     if (const auto d = opening_gate(account, child, time, market, preceding); !d.ok()) return d;
   if (!order.then.empty()) {
     auto after = preceding;
-    auto legs = order.legs;
-    if (legs.empty()) legs.push_back({order.symbol, order.side, 1});
-    for (const auto& leg : legs) {
-      const auto quantity = order.quantity * leg.ratio * (leg.side == Side::Buy ? 1 : -1);
-      if (__builtin_add_overflow(after[leg.symbol], quantity, &after[leg.symbol]))
-        return {Reason::ARITHMETIC_OVERFLOW, "Chained holdings overflow", {}, {}, {}};
-    }
+    if (const auto d = project_contracts(order, after); !d.ok()) return d;
     for (const auto& child : order.then)
       if (const auto d = opening_gate(account, child, time, market, after); !d.ok()) return d;
   }
@@ -1653,12 +1665,15 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           std::set<std::string> symbols;
           for (const auto& orders : c.candidates) {
             auto& gates = rejections.emplace_back();
+            std::map<std::string, Quantity> preceding;
             for (const auto& order : orders) {
               auto gate = submission_gate(order);
               std::map<std::string, double> ignored;
               const auto names = order_symbols(order);
               const auto inputs = preview_market({names.begin(), names.end()}, ignored);
-              if (gate.ok()) gate = opening_gate(*account, order, market_time_, inputs);
+              if (gate.ok()) gate = opening_gate(*account, order, market_time_, inputs, preceding);
+              if (gate.ok() && (session.config().rules.no_counter_positions || session.config().rules.max_volume_percent != 0))
+                gate = project_contracts(order, preceding);
               gates.push_back(std::move(gate));
               for (const auto& symbol : order_symbols(order)) symbols.insert(symbol);
             }
