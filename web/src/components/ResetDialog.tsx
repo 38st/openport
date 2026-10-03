@@ -4,7 +4,7 @@ import { useAccount, useRefreshTrading, usePlans, useTradingSession } from "../a
 import type { FeeModel, FillModel, Plan, TradingStatus } from "../api/trading-types"
 import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
-import { lockReason, offeredPlans } from "../lib/payouts"
+import { lockReason, offeredPlans, payoutRuleFacts } from "../lib/payouts"
 import { dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact } from "../lib/plan-rules"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -34,7 +34,7 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
     ...(r.expiry_cutoff_seconds > 0 ? [`Auto-close ${Math.round(r.expiry_cutoff_seconds / 60)} min before expiry`] : []),
     ...(dayEnd ? [dayEnd] : []),
     ...(p ? [`Payout every ${p.qualifying_days} days of ${formatMoney(p.qualifying_profit, 0)}+ net profit`,
-      `Up to ${p.withdrawal_percent}% of profit per payout, ${p.split_percent}% to you`] : []),
+      `Up to ${p.withdrawal_percent}% of profit per payout, ${p.split_percent}% to you`, ...payoutRuleFacts(p, plan.initial_cash)] : []),
   ]
 }
 
@@ -57,8 +57,8 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const busy = useRef(false)
   const list = offeredPlans(plans.data?.plans ?? [])
   const selected = list.find((p) => p.id === choice && lockReason(p, list, account) == null) ?? null
-  // A custom plan starts from an evaluation preset's rules, which keep what the editor leaves out.
-  const bases = list.filter((p) => p.rules.phase !== "funded")
+  // Custom rules can use either phase without taking the preset's name.
+  const bases = list
   const [baseId, setBaseId] = useState("")
   const [form, setForm] = useState<PlanForm | null>(null)
   const base = bases.find((p) => p.id === baseId) ?? bases.find((p) => p.rules.profit_target) ?? bases[0] ?? null

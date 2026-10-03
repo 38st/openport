@@ -9,7 +9,7 @@ import { ResetDialog } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
-import { lockReason, offeredPlans, payoutCap } from "../lib/payouts"
+import { lockReason, offeredPlans, payoutCap, payoutRuleFacts } from "../lib/payouts"
 import { clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts } from "../lib/plan-rules"
 import { compareMoney, formatMoney, subtractMoney } from "../lib/trading"
 
@@ -74,6 +74,8 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         Request it with no open positions or working orders. Each payout may take up to {p.withdrawal_percent}% of the profit above your {formatMoney(e.starting_balance)} starting balance,
         at least {formatMoney(p.minimum)}{p.caps.length ? <> and at most {p.caps.map((cap, i) => `${formatMoney(cap, 0)} for payout ${i + 1}${i === p.caps.length - 1 && i > 0 ? " and later" : ""}`).join(", ")}</> : null}; you keep {p.split_percent}%.
         Each finished day counts once, toward the payout cycle in progress when it closes.
+        {payoutRuleFacts(p, e.starting_balance).map((fact) => <span className="block" key={fact}>{fact}.</span>)}
+        {!!p.consistency_percents?.length && <span className="block">Consistency includes losses and the day in progress. The request day remains in the next cycle in full; earlier finished days reset after each payout.</span>}
         A withdrawal is not a loss: the day's starting equity {r.lock_balance ? "and a floor that has not locked yet move" : "moves"} down with it.
         {payoutCap(p.caps, e.payouts.length + 1) && <> Your next payout is number {e.payouts.length + 1}, capped at {formatMoney(payoutCap(p.caps, e.payouts.length + 1))}.</>}
       </> }] : []),

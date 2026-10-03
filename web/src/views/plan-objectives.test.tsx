@@ -151,6 +151,33 @@ describe("plan objectives in the terminal", () => {
     const waits = ruleAlerts(reached, risk).find((a) => a.id === "target-waits")
     expect(waits?.body).toContain("close every position to count it")
   })
+  it("submits a custom funded plan from the editor with consistency and buffer", async () => {
+    Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
+    Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
+    vi.spyOn(api, "resetAccount").mockResolvedValue(account)
+    host = document.createElement("div"); document.body.append(host); root = createRoot(host)
+    await act(async () => root.render(<QueryClientProvider client={client(account)}>
+      <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} onClose={() => {}} />
+    </QueryClientProvider>))
+    await act(async () => host.querySelector<HTMLInputElement>('input[value="custom"]')!.click())
+    const set = async (name: string, value: string) => {
+      const element = [...host.querySelectorAll("label")].find((l) => l.textContent?.startsWith(name))?.querySelector("input, select")
+      if (!(element instanceof HTMLInputElement || element instanceof HTMLSelectElement)) throw new Error(`Missing field ${name}`)
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLSelectElement.prototype, "value")!.set!.call(element, value)
+        element.dispatchEvent(new Event(element instanceof HTMLInputElement ? "input" : "change", { bubbles: true }))
+      })
+    }
+    await set("Phase", "funded")
+    await set("Payout consistency percentages", "20, 25, 30")
+    await set("Payout buffer", "2100")
+    await set("Buffer payouts", "3")
+    expect(host.textContent).toContain("20% / 25% / 30%")
+    expect(host.textContent).toContain("first 3 payouts")
+    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+    expect(api.resetAccount).toHaveBeenCalledWith(expect.objectContaining({ rules: expect.objectContaining({ phase: "funded", profit_target: null,
+      payouts: expect.objectContaining({ consistency_percents: [20, 25, 30], buffer: "2100", buffer_payouts: 3 }) }) }), "open")
+  })
   it("starts a custom plan from a preset with the edited rules", async () => {
     Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
     Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })

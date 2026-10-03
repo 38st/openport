@@ -6,6 +6,16 @@ import { validMoney } from "../lib/trading"
 /** The custom plan form: text fields as typed, choices as their API words. */
 export interface PlanForm {
   name: string
+  phase: AccountRules["phase"]
+  qualifying_profit: string
+  qualifying_days: string
+  withdrawal_percent: string
+  split_percent: string
+  payout_minimum: string
+  payout_caps: string
+  payout_consistency_percents: string
+  payout_buffer: string
+  buffer_payouts: string
   initial_cash: string
   profit_target: string
   profit_basis: "equity" | "balance"
@@ -28,7 +38,14 @@ export interface PlanForm {
 /** A form that starts from a preset's own rules, under a name of its own. */
 export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
   const r = plan.rules
+  const p = r.payouts
   return {
+    phase: r.phase,
+    qualifying_profit: p?.qualifying_profit ?? "0", qualifying_days: String(p?.qualifying_days ?? 1),
+    withdrawal_percent: String(p?.withdrawal_percent ?? 50), split_percent: String(p?.split_percent ?? 80),
+    payout_minimum: p?.minimum ?? "0", payout_caps: p?.caps.join(", ") ?? "",
+    payout_consistency_percents: p?.consistency_percents?.join(", ") ?? "",
+    payout_buffer: p?.buffer ?? "0", buffer_payouts: String(p?.buffer_payouts ?? 0),
     name: "Custom plan", initial_cash: plan.initial_cash,
     profit_target: r.profit_target ?? "", profit_basis: r.profit_basis ?? "equity",
     max_drawdown: r.max_drawdown ?? "", drawdown_mode: r.drawdown_mode,
@@ -53,7 +70,7 @@ const amount = (text: string): Money | null => text.trim() === "" || Number(text
 export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: Money; rules: AccountRules } | { error: string } {
   const name = form.name.trim()
   if (!name) return { error: "Name the plan" }
-  for (const [label, value, required] of [["Starting balance", form.initial_cash, true], ["Profit target", form.profit_target],
+  for (const [label, value, required] of [["Starting balance", form.initial_cash, true], ["Profit target", form.phase === "funded" ? "" : form.profit_target],
     ["Max drawdown", form.max_drawdown], ["Lock balance", form.lock === "balance" ? form.lock_balance : ""],
     ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.profitable_day_profit]] as const)
     if ((required || value.trim() !== "") && !validMoney(value.trim())) return { error: `${label} must be a dollar amount` }
@@ -68,9 +85,30 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
   const drawdown = amount(form.max_drawdown)
   if (form.lock === "balance" && !amount(form.lock_balance)) return { error: "Enter the balance the floor locks at" }
   const trailing = drawdown != null && form.drawdown_mode !== "static"
+  let payouts: AccountRules["payouts"] = null
+  if (form.phase === "funded") {
+    for (const [label, value] of [["Qualifying day profit", form.qualifying_profit], ["Minimum payout", form.payout_minimum],
+      ["Payout buffer", form.payout_buffer]] as const)
+      if (!validMoney(value.trim()) || Number(value) < 0) return { error: `${label} must be a nonnegative dollar amount` }
+    for (const [label, value, min, max] of [["Qualifying days", form.qualifying_days, 1, 366],
+      ["Withdrawal percent", form.withdrawal_percent, 0, 100], ["Trader split percent", form.split_percent, 0, 100],
+      ["Buffer payouts", form.buffer_payouts, 0, 100]] as const)
+      if (!Number.isInteger(count(value)) || count(value) < min || count(value) > max)
+        return { error: `${label} must be a whole number from ${min} to ${max}` }
+    const list = (value: string) => value.trim() ? value.split(",").map((v) => v.trim()) : []
+    const percents = list(form.payout_consistency_percents)
+    if (percents.length > 64 || percents.some((v) => !/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 100))
+      return { error: "Payout consistency must be up to 64 comma-separated whole percentages from 1 to 100" }
+    const caps = list(form.payout_caps)
+    if (caps.length > 64 || caps.some((v) => !validMoney(v) || Number(v) <= 0))
+      return { error: "Payout caps must be up to 64 comma-separated positive dollar amounts" }
+    payouts = { qualifying_profit: form.qualifying_profit.trim(), qualifying_days: count(form.qualifying_days),
+      withdrawal_percent: count(form.withdrawal_percent), split_percent: count(form.split_percent), minimum: form.payout_minimum.trim(),
+      caps, consistency_percents: percents.map(Number), buffer: form.payout_buffer.trim(), buffer_payouts: count(form.buffer_payouts) }
+  }
   const rules: AccountRules = {
-    ...base, plan: name, phase: "evaluation", payouts: null,
-    profit_target: amount(form.profit_target), profit_basis: form.profit_basis,
+    ...base, plan: name, plan_id: null, phase: form.phase, payouts,
+    profit_target: form.phase === "funded" ? null : amount(form.profit_target), profit_basis: form.profit_basis,
     max_drawdown: drawdown, drawdown_mode: form.drawdown_mode,
     lock_at_start: trailing && form.lock === "start", lock_balance: trailing && form.lock === "balance" ? amount(form.lock_balance) : null,
     daily_loss_limit: amount(form.daily_loss_limit), daily_loss_basis: form.daily_loss_basis, daily_loss_action: form.daily_loss_action,
@@ -90,11 +128,11 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   </label>
 }
 
-/** Edits a custom plan's evaluation rules; the dialog submits it. */
+/** Edits a custom plan's rules; the dialog submits it. */
 export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onChange: (form: PlanForm) => void; disabled?: boolean }) {
   const set = <K extends keyof PlanForm>(key: K) => (value: PlanForm[K]) => onChange({ ...form, [key]: value })
   const text = (key: keyof PlanForm, placeholder = "") => <input className="trade-input w-full" value={form[key]} placeholder={placeholder}
-    disabled={disabled} inputMode={key === "name" || key === "day_end" ? "text" : "decimal"}
+    disabled={disabled} inputMode={key === "name" || key === "day_end" || key === "payout_caps" || key === "payout_consistency_percents" ? "text" : "decimal"}
     onChange={(event) => set(key)(event.target.value as never)} />
   const choice = <K extends keyof PlanForm>(key: K, options: [PlanForm[K], string][]) => <select className="trade-input w-full"
     value={form[key]} disabled={disabled} onChange={(event) => set(key)(event.target.value as PlanForm[K])}>
@@ -105,8 +143,9 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
     <fieldset className="grid gap-3 rounded-md border border-border p-3 sm:grid-cols-2" disabled={disabled} aria-label="Custom plan rules">
       <Field label="Plan name" hint="Not a preset's name">{text("name")}</Field>
       <Field label="Starting balance">{text("initial_cash")}</Field>
-      <Field label="Profit target" hint="Blank for none">{text("profit_target", "none")}</Field>
-      <Field label="Profit counts on">{choice("profit_basis", [["equity", "Marked equity"], ["balance", "Closed balance (positions closed)"]])}</Field>
+      <Field label="Phase">{choice("phase", [["evaluation", "Evaluation"], ["funded", "Funded (simulated payouts)"]])}</Field>
+      {form.phase === "evaluation" && <Field label="Profit target" hint="Blank for none">{text("profit_target", "none")}</Field>}
+      {form.phase === "evaluation" && <Field label="Profit counts on">{choice("profit_basis", [["equity", "Marked equity"], ["balance", "Closed balance (positions closed)"]])}</Field>}
       <Field label="Max drawdown" hint="Blank for no floor">{text("max_drawdown", "none")}</Field>
       <Field label="Floor">{choice("drawdown_mode", [["intraday", "Trails every new high"], ["end_of_day", "Trails each close"], ["static", "Static: never moves"]])}</Field>
       {trailing && <Field label="Floor locks">{choice("lock", [["none", "Never"], ["start", "At the starting balance"], ["balance", "At a balance"]])}</Field>}
@@ -115,11 +154,24 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
       <Field label="Measured from">{choice("daily_loss_basis", (Object.keys(dailyLossBasisText) as DailyLossBasis[]).map((b) => [b, dailyLossBasisText[b]]))}</Field>
       <Field label="Reaching it">{choice("daily_loss_action", [["lock", "Closes positions and locks the day"], ["fail", "Fails the attempt"]])}</Field>
       <Field label="Trading day ends (ET)" hint="HH:MM, 16:15 to 24:00">{text("day_end")}</Field>
-      <Field label="Consistency: best day at most %" hint="Blank for none">{text("consistency_percent", "none")}</Field>
-      <Field label="Of">{choice("consistency_basis", [["total", "The total profit"], ["positive_days", "The profitable days' total"]])}</Field>
-      <Field label="Minimum trading days">{text("min_trading_days", "0")}</Field>
-      <Field label="Minimum profitable days">{text("min_profitable_days", "0")}</Field>
-      <Field label="A profitable day makes at least" hint="Blank counts any profit">{text("profitable_day_profit", "any")}</Field>
+      {form.phase === "evaluation" && <>
+        <Field label="Consistency: best day at most %" hint="Blank for none">{text("consistency_percent", "none")}</Field>
+        <Field label="Of">{choice("consistency_basis", [["total", "The total profit"], ["positive_days", "The profitable days' total"]])}</Field>
+        <Field label="Minimum trading days">{text("min_trading_days", "0")}</Field>
+        <Field label="Minimum profitable days">{text("min_profitable_days", "0")}</Field>
+        <Field label="A profitable day makes at least" hint="Blank counts any profit">{text("profitable_day_profit", "any")}</Field>
+      </>}
+      {form.phase === "funded" && <>
+        <Field label="Qualifying day profit" hint="Net realised profit after fees">{text("qualifying_profit")}</Field>
+        <Field label="Qualifying days per payout">{text("qualifying_days")}</Field>
+        <Field label="Withdrawal percent">{text("withdrawal_percent")}</Field>
+        <Field label="Trader split percent">{text("split_percent")}</Field>
+        <Field label="Minimum payout">{text("payout_minimum")}</Field>
+        <Field label="Payout caps" hint="Comma-separated dollars by payout number; last repeats; blank for none">{text("payout_caps")}</Field>
+        <Field label="Payout consistency percentages" hint="Best day as a share of cycle net profit. Comma-separated 1–100; last repeats; blank for none">{text("payout_consistency_percents", "20, 25, 30")}</Field>
+        <Field label="Payout buffer" hint="Equity to keep above the starting balance; 0 disables">{text("payout_buffer")}</Field>
+        <Field label="Buffer payouts" hint="First N payouts; 0 applies to every payout">{text("buffer_payouts")}</Field>
+      </>}
       <Field label="Strategies">{choice("strategies", [["buy_only", "Buy only, single leg"], ["defined_risk", "Defined risk"], ["any", "Any"]])}</Field>
     </fieldset>
   )
