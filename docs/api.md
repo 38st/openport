@@ -4,6 +4,14 @@ The HTTP routes the web terminal uses, by area. The [OpenAPI contract](openapi.y
 is the full reference, and [paper trading](paper-trading.md) documents every order
 field, rule and reason code.
 
+Money is exact decimal text, never a JSON number. Strings preserve every meaningful
+micro-dollar with 2 to 6 decimal places, omitting trailing zeros beyond cents.
+Computed requirements, buying power under portfolio margin and prorated values can
+carry more than cents: for example, available buying power may be `"2033.725875"`
+beside cash of `"100000.00"`. Clients should parse money as exact decimals and round
+only for display (the terminal shows that buying power as `$2,033.73`). Booked values
+remain exact integer micro-dollars.
+
 ## Status and market data
 
 | Route | Returns |

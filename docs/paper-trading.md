@@ -175,7 +175,12 @@ known definition determine expiry; conflicting terms cannot replace a definition
 All booked money is signed int64 **micro-dollars**. `Money::parse("4.60")` is exactly
 4,600,000. Input permits a sign, integral digits, and up to six fractional digits;
 it rejects whitespace, exponent notation, empty fractions and excess precision.
-Formatting preserves meaningful micro-dollars and prints at least two decimals.
+Money strings preserve every meaningful micro-dollar with 2 to 6 decimal places,
+omitting trailing zeros beyond cents. Computed requirements, buying power under
+portfolio margin and prorated values can carry more than cents (for example,
+`"2033.725875"`). Clients should parse them as exact decimals and round only for
+display; the terminal shows buying power and requirements at two decimals without
+changing booked values.
 `from_double` is an adapter boundary conversion, nearest micro-dollar, ties away
 from zero. Prefer exact decimal parsing whenever a source provides decimal text.
 Every addition, subtraction, multiplication, division allocation and conversion is

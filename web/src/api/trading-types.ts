@@ -1,6 +1,6 @@
 import type { Num } from "./types"
 
-/** Accounting values stay decimal strings, including request bodies. */
+/** Exact decimal dollars, including request bodies. Responses keep 2–6 decimals; round only for display. */
 export type Money = string
 /** open: writes need no token (one sent is still checked); token: writes need one; disabled: none can write. */
 export type WriteMode = "open" | "token" | "disabled"

@@ -16,6 +16,12 @@ describe("decimal money", () => {
     expect(formatMoney("-1.005")).toBe("−$1.01")
     expect(formatMoney("0.0049")).toBe("$0.00")
   })
+  it("displays micro-dollar buying power and requirements at cents", () => {
+    expect(formatMoney("2033.725875")).toBe("$2,033.73")
+    expect(formatMoney("2033.724999")).toBe("$2,033.72")
+    expect(formatMoney("-2033.725875")).toBe("−$2,033.73")
+    expect(formatMoney("0.000001")).toBe("$0.00")
+  })
   it("multiplies decimal strings without float rounding", () => {
     expect(multiplyMoney("0.29", 300)).toBe("87.00")
     expect(multiplyMoney("9007199254740993.01", 2)).toBe("18014398509481986.02")
