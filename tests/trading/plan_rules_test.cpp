@@ -83,6 +83,22 @@ TEST(TradingPlanRules, BothContractCapsUseTheSameWorkingOpeningCount) {
   }
 }
 
+TEST(TradingPlanRules, ScalingReductionAllowanceDoesNotBypassTheFixedCap) {
+  ScriptedMarket f;
+  auto rules = scaling_plan();
+  rules.max_contracts_held = 2;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("held", 2), f.time).decision.ok());
+  // Reversing two longs into one short does not increase gross holdings, so F39
+  // allows it. F15 still counts the opening short alongside the held contracts.
+  const auto reverse = s.submit(f.market("reverse", 3, Side::Sell), f.time);
+  EXPECT_EQ(reverse.decision.code, Reason::MAX_CONTRACTS_HELD);
+  EXPECT_EQ(reverse.decision.actual, 3);
+  EXPECT_EQ(reverse.decision.limit, 2);
+  EXPECT_EQ(s.snapshot()->positions.front().position.quantity, 2);
+}
+
 TEST(PlanRules, ScalingCountsHeldContractsWorkingOpeningsAndComboLegs) {
   ScriptedMarket f, g;
   g.contract = *md::parse_osi("SPXW261022C05010000");

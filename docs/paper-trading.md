@@ -2105,7 +2105,10 @@ acceptance and fill checks. Excess increases are refused with `SCALING_LIMIT`,
 `actual` contracts including reservations, `limit` and aggregate scope. A working
 order that fails its recheck is cancelled with that same code. Previews and what-if
 report it too. There is **no grace period**: excess orders are refused up front.
-Other account checks still apply.
+Other account checks still apply. Both contract caps use the same held-plus-opening
+count. The fixed `max_contracts_held` cap still reserves the opening part of a
+reversal or roll, even when F39 permits its atomic reduction; the tighter
+applicable cap supplies the refusal reason.
 
 `evaluation.scaling` in the account view is null without the rule, otherwise
 `{limit, held, profit, next}`. `profit` is the current closed balance less start;

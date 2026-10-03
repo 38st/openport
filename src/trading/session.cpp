@@ -1663,22 +1663,27 @@ Quantity projected_contracts_held(const State& s, const Order& candidate) {
 Decision contracts_held_check(const State& s, const Order& candidate) {
   const auto fixed = s.config.rules.max_contracts_held;
   const auto scaling = s.evaluation.scaling_limit;
-  const bool scaled = scaling > 0 && (fixed == 0 || scaling < fixed);
+  if ((fixed == 0 && scaling == 0) || candidate.system || kept_within(candidate) || closing_only(s, candidate)) return {};
+  bool scale_applies = scaling > 0;
+  if (scale_applies) {
+    // F39 allows atomic reductions above a stepped-down cap. F15 still reserves
+    // their opening legs (including reversals); its cap remains independent.
+    __extension__ using Wide = __int128;
+    Wide change = 0;
+    const auto leg_change = [&](const std::string& symbol, Side side, Quantity quantity) {
+      const Wide before = held(s, symbol);
+      const Wide after = before + (side == Side::Buy ? static_cast<Wide>(quantity) : -static_cast<Wide>(quantity));
+      change += (after < 0 ? -after : after) - (before < 0 ? -before : before);
+    };
+    if (multi_leg(candidate.request)) {
+      for (const auto& leg : candidate.request.legs)
+        leg_change(leg.symbol, leg.side, magnitude(signed_contracts(leg, candidate.remaining())));
+    } else leg_change(candidate.request.symbol, candidate.request.side, candidate.remaining());
+    scale_applies = change > 0;
+  }
+  const bool scaled = scale_applies && (fixed == 0 || scaling < fixed);
   const auto cap = scaled ? scaling : fixed;
-  if (cap == 0 || candidate.system || kept_within(candidate) || closing_only(s, candidate)) return {};
-  // An atomic reduction (including a roll) remains possible above a lowered cap.
-  __extension__ using Wide = __int128;
-  Wide change = 0;
-  const auto leg_change = [&](const std::string& symbol, Side side, Quantity quantity) {
-    const Wide before = held(s, symbol);
-    const Wide after = before + (side == Side::Buy ? static_cast<Wide>(quantity) : -static_cast<Wide>(quantity));
-    change += (after < 0 ? -after : after) - (before < 0 ? -before : before);
-  };
-  if (multi_leg(candidate.request)) {
-    for (const auto& leg : candidate.request.legs)
-      leg_change(leg.symbol, leg.side, magnitude(signed_contracts(leg, candidate.remaining())));
-  } else leg_change(candidate.request.symbol, candidate.request.side, candidate.remaining());
-  if (change <= 0) return {};
+  if (cap == 0) return {};
   const auto projected = projected_contracts_held(s, candidate);
   if (projected > cap)
     return {scaled ? Reason::SCALING_LIMIT : Reason::MAX_CONTRACTS_HELD,
