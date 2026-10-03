@@ -213,17 +213,48 @@ TEST(DemoMarket, EachDayFollowsItsScript) {
   EXPECT_GT(night.quotes, 10'000U);
 }
 // Hash the ordered recording receipts and price/size payloads, independent of zstd framing.
-std::uint64_t recording_hash(const std::filesystem::path& path) {
+std::uint64_t recording_hash(const std::filesystem::path& path, bool complete = false) {
   std::uint64_t hash = 14695981039346656037ULL;
   const auto mix = [&](std::uint64_t value) {
     for (unsigned i = 0; i < 8; ++i) { hash ^= (value >> (8 * i)) & 255; hash *= 1099511628211ULL; }
   };
   const auto bits = [](double v) { std::uint64_t n = 0; std::memcpy(&n, &v, sizeof n); return n; };
+  const auto text = [&](const std::string& value) {
+    mix(value.size());
+    for (const unsigned char byte : value) mix(byte);
+  };
   md::RecordingReader reader(path);
+  if (complete) {
+    text(reader.header().provider);
+    mix(reader.header().started);
+    for (const auto& symbol : reader.header().subscription.underlyings) text(symbol);
+  }
   while (const auto e = reader.next()) {
-    if (std::holds_alternative<md::OptionVolume>(e->event)) continue;
+    if (!complete && std::holds_alternative<md::OptionVolume>(e->event)) continue;
     mix(static_cast<std::uint64_t>(e->received));
     mix(e->event.index());
+    if (complete) {
+      std::visit([&](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, md::ContractDefinition>) {
+          mix(value.id);
+          const auto& c = value.contract;
+          text(c.osi_symbol()); text(c.underlying);
+          mix(static_cast<unsigned>(c.style)); mix(static_cast<unsigned>(c.settlement));
+          mix(bits(c.multiplier)); mix(c.standard);
+        } else {
+          mix(value.ts);
+          if constexpr (std::is_same_v<T, md::OptionVolume>) { mix(value.id); mix(bits(value.contracts)); }
+          else if constexpr (std::is_same_v<T, md::UnderlyingClose>) {
+            text(value.symbol); mix(md::days_since_epoch(value.date)); mix(bits(value.price));
+          } else if constexpr (std::is_same_v<T, md::UnderlyingQuote>) text(value.symbol);
+          else if constexpr (std::is_same_v<T, md::SnapshotComplete>) text(value.underlying);
+          else if constexpr (std::is_same_v<T, md::ProviderStatus>) {
+            mix(static_cast<unsigned>(value.state)); text(value.message); text(value.underlying);
+          }
+        }
+      }, e->event);
+    }
     if (const auto* q = std::get_if<md::OptionQuote>(&e->event)) {
       mix(q->id); mix(static_cast<std::uint64_t>(q->ts));
       for (double v : {q->bid, q->ask, q->bid_size, q->ask_size}) mix(bits(v));
@@ -250,6 +281,17 @@ TEST(DemoMarket, LegacyRecordingsAreUnchanged) {
     EXPECT_EQ(recording_hash(path), hash) << id;
     std::filesystem::remove(path);
   }
+}
+
+TEST(DemoMarket, RevisionTwoRecordingIsUnchanged) {
+  // Captured before revision 3; includes definitions, closes, volume and snapshot boundaries.
+  const auto& scenarios = providers::builtin_scenarios();
+  const auto day = std::find_if(scenarios.begin(), scenarios.end(), [](const auto& s) { return s.id == "overnight"; });
+  ASSERT_NE(day, scenarios.end());
+  const auto path = temporary("revision-two");
+  providers::write_scenario_recording(path, *day, day->date, day->seed, 2);
+  EXPECT_EQ(recording_hash(path, true), 2843919881680902969ULL);
+  std::filesystem::remove(path);
 }
 
 TEST(DemoMarket, AHeldSeriesStaysListedUntilItsLastTrade) {
