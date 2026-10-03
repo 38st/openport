@@ -444,7 +444,7 @@ TEST(DemoMarket, AHeldSeriesStaysListedUntilItsLastTrade) {
   const auto second = providers::scenario_chain(*day, {2026, 10, 1});
   ASSERT_GT(second.size(), first.size());
   for (std::size_t i = 0; i < first.size(); ++i) EXPECT_EQ(second[i].osi_symbol(), first[i].osi_symbol());
-  EXPECT_THROW((void)providers::scenario_chain(*day, {2026, 10, 1}, 4), std::invalid_argument);
+  EXPECT_THROW((void)providers::scenario_chain(*day, {2026, 10, 1}, providers::kScenarioRevision + 1), std::invalid_argument);
 }
 
 TEST(DemoMarket, RevisionTwoKeepsEveryQuoteOfTheFirstAndAddsTheRest) {
