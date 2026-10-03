@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { AccountRules } from "../api/trading-types"
 import { customPlan, planForm } from "../components/PlanEditor"
 import { account, fundedAccount } from "../test/trading-fixtures"
-import { clockText, dailyLossFact, dayEndFact, decisionLabel, drawdownFact, floorMoves, objectiveFacts, objectiveValue, targetFact } from "./plan-rules"
+import { clockText, dailyLossFact, dayEndFact, decisionLabel, drawdownFact, floorMoves, objectiveFacts, objectiveValue, targetFact, planEntryNotice, timeRuleNotices } from "./plan-rules"
 
 const rules: AccountRules = { ...account.rules, buy_only: false }
 
@@ -115,4 +115,36 @@ it("edits trade-entry rules and validates their ranges", () => {
   expect(customPlan({ ...form, max_trade_risk: "-1" }, base)).toHaveProperty("error")
   const off = customPlan({ ...form, max_contracts_held: "", require_stop_loss: "no", max_trade_risk: "", max_trade_risk_percent: "" }, base)
   expect("error" in off ? off : off.rules).toMatchObject({ max_contracts_held: 0, require_stop_loss: false, max_trade_risk: null, max_trade_risk_percent: 0 })
+})
+
+describe("time and instrument rules", () => {
+  const restricted = { ...rules, time_limit_days: 60, inactivity_days: 14, underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00" }
+  it("validates and round-trips the custom form, including midnight", () => {
+    const form = planForm({ initial_cash: "100000", rules: restricted })
+    const result = customPlan(form, restricted)
+    expect("error" in result ? result : result.rules).toMatchObject({ ...restricted, plan: "Custom plan" })
+    for (const patch of [{ time_limit_days: "367" }, { inactivity_days: "1.5" }, { underlyings: "spx" }, { underlyings: "SPX, SPX" },
+      { trading_start: "16:00" }, { trading_end: "" }, { trading_start: "24:01" }])
+      expect(customPlan({ ...form, ...patch }, rules)).toHaveProperty("error")
+    expect(customPlan({ ...form, trading_start: "00:00", trading_end: "24:00" }, rules)).not.toHaveProperty("error")
+  })
+  it("blocks entries by underlying and New York hours, including DST, but permits exits", () => {
+    expect(planEntryNotice(restricted, "SPY", account.time, false)).toContain("INSTRUMENT_NOT_ALLOWED")
+    expect(planEntryNotice(restricted, "SPY", account.time, true)).toBeNull()
+    for (const time of ["2026-09-22T13:29:59Z", "2026-09-22T20:00:00Z", "2026-12-01T21:00:00Z"])
+      expect(planEntryNotice(restricted, "SPX", time, false)).toContain("OUTSIDE_PLAN_HOURS")
+    for (const time of ["2026-09-22T13:30:00Z", "2026-09-22T19:59:59Z", "2026-12-01T14:30:00Z"])
+      expect(planEntryNotice(restricted, "SPX", time, false)).toBeNull()
+    expect(planEntryNotice(rules, "SPY", account.time, false)).toBeNull()
+  })
+  it("shows deadlines only while active and warns within seven inactivity days", () => {
+    const e = { ...account.evaluation, days_left: 3, deadline: "2026-09-25", inactive_days: 7, inactivity_deadline: "2026-09-29" }
+    expect(timeRuleNotices(e, restricted)).toEqual([
+      "Evaluation: 3 calendar days left; deadline 2026-09-25.",
+      "Inactivity: 7 calendar days left to execute a trade; deadline 2026-09-29.",
+    ])
+    expect(timeRuleNotices({ ...e, inactive_days: 6 }, restricted)).toHaveLength(1)
+    expect(timeRuleNotices({ ...e, status: "passed" }, restricted)).toEqual([])
+    expect(timeRuleNotices(account.evaluation, rules)).toEqual([])
+  })
 })

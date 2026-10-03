@@ -71,6 +71,8 @@ export const decisionLabels: Record<string, string> = {
   PROFIT_TARGET: "profit target",
   DRAWDOWN_FLOOR: "drawdown floor",
   DAILY_LOSS_LIMIT: "daily loss limit",
+  TIME_LIMIT: "evaluation time limit", INACTIVITY: "inactivity limit",
+  INSTRUMENT_NOT_ALLOWED: "underlying not allowed", OUTSIDE_PLAN_HOURS: "outside plan trading hours",
 }
 /** Why an attempt ended, as a short label: "daily loss limit". */
 export function decisionLabel(code: string | null | undefined): string | null {
@@ -94,4 +96,43 @@ export function tradeRuleFacts(r: AccountRules): string[] {
     ...(r.max_trade_risk && Number(r.max_trade_risk) > 0 ? [`Trade risk at most ${formatMoney(r.max_trade_risk)} before fees`] : []),
     ...(r.max_trade_risk_percent ? [`Trade risk at most ${r.max_trade_risk_percent}% of room to the plan floor`] : []),
   ]
+}
+
+/** Optional time and product restrictions, shared by the plan chooser and Rules. */
+export function timeRuleEntries(r: AccountRules): { title: string; body: string }[] {
+  return [
+    ...(r.time_limit_days ? [{ title: "Evaluation time limit", body: `Evaluation ends after ${r.time_limit_days} calendar days` }] : []),
+    ...(r.inactivity_days ? [{ title: "Inactivity limit", body: `Inactivity limit: ${r.inactivity_days} calendar days without your own execution` }] : []),
+    ...(r.underlyings?.length ? [{ title: "Allowed underlyings", body: `Allowed underlyings: ${r.underlyings.join(", ")}${r.underlyings.includes("SPX") ? " (SPX includes SPXW options)" : ""}` }] : []),
+    ...(r.trading_start && r.trading_end ? [{ title: "Opening hours", body: `Opening hours: ${r.trading_start}–${r.trading_end} ET; exits keep working` }] : []),
+  ]
+}
+export function timeRuleFacts(r: AccountRules): string[] { return timeRuleEntries(r).map((entry) => entry.body) }
+const planClock = new Intl.DateTimeFormat("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+/** Ticket checks use the account's market clock, including paused and delayed feeds. */
+export function planEntryNotice(r: AccountRules | undefined, underlying: string, time: string | undefined, reducing: boolean): string | null {
+  if (!r || reducing) return null
+  if (r.underlyings?.length && !r.underlyings.includes(underlying))
+    return `INSTRUMENT_NOT_ALLOWED: ${underlying} is outside this plan's allowed underlyings (${r.underlyings.join(", ")}); closing orders still work.`
+  const timestamp = Date.parse(time ?? "")
+  if (r.trading_start && r.trading_end && Number.isFinite(timestamp)) {
+    const clock = planClock.format(timestamp)
+    if (clock < r.trading_start || clock >= r.trading_end)
+      return `OUTSIDE_PLAN_HOURS: opening orders work from ${r.trading_start} to ${r.trading_end} ET; closing orders still work.`
+  }
+  return null
+}
+export function timeRuleNotices(e: Evaluation, r: AccountRules): string[] {
+  if (e.status !== "active") return []
+  return [
+    ...(e.days_left != null && e.deadline ? [`Evaluation: ${e.days_left} calendar days left; deadline ${e.deadline}.`] : []),
+    ...(r.inactivity_days && e.inactive_days != null && e.inactivity_deadline && r.inactivity_days - e.inactive_days <= 7
+      ? [`Inactivity: ${Math.max(0, r.inactivity_days - e.inactive_days)} calendar days left to execute a trade; deadline ${e.inactivity_deadline}.`] : []),
+  ]
+}
+
+/** The newest known market timestamp, without consulting the wall clock. */
+export function planMarketTime(...times: (string | null | undefined)[]): string | undefined {
+  return times.filter((time): time is string => !!time && Number.isFinite(Date.parse(time)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0]
 }

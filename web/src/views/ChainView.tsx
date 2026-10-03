@@ -1,6 +1,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { api } from "../api/client"
+import { planEntryNotice, planMarketTime } from "../lib/plan-rules"
 import { marketTime, useLive } from "../api/live"
 import type { ChainRow, OptionQuote } from "../api/types"
 import { ExpiryPicker } from "../components/ExpiryPicker"
@@ -20,7 +21,7 @@ import { CoveredStrategyDialog } from "../components/CoveredStrategyDialog"
 import { deliversShares } from "../lib/trading"
 import { MAX_LEGS, strategyLabel, toggleLeg, type StrategyLeg, type TemplateSetup } from "../lib/strategy"
 import { Dialog } from "../components/Dialog"
-import { usePortfolio } from "../api/trading"
+import { useAccount, usePortfolio } from "../api/trading"
 import type { LiquidityUsed } from "../api/trading-types"
 import { useMediaQuery } from "../lib/media"
 import { sideFromCell } from "../lib/trading"
@@ -49,6 +50,9 @@ function vendorAgreement(rows: ChainRow[], forward: number | null) {
 
 export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry: string | null; onExpiry: (id: string) => void }) {
   const live = useLive()
+  const account = useAccount().data
+  const planNotice = planEntryNotice(account?.rules, symbol, planMarketTime(account?.time,
+    live.underlyings.find((u) => u.symbol === symbol)?.as_of, live.source !== "live" ? live.replay?.time : null), false)
   const version = live.version(symbol)
   const [window, setWindow] = useState(0.05)
   const [showGreeks, setShowGreeks] = useState(false)
@@ -134,6 +138,7 @@ export function ChainView({ symbol, expiry, onExpiry }: { symbol: string; expiry
   const approximation = americanApproximation(symbol, summaryData.american_approximation, e?.style ?? summaryExpiry?.style, deamericanized)
   return (
     <div className="flex flex-col gap-3">
+      {planNotice && <p role="status" className="text-sm text-warn">{planNotice}</p>}
       <ExpiryPicker expiries={expiries} value={selected} onChange={onExpiry} />
       {countdown && <p role="status" className="text-xs tabular text-warn">{countdown}</p>}
 

@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useWriteToken } from "../lib/write-token"
+import { planEntryNotice, planMarketTime } from "../lib/plan-rules"
 import { useAccount, usePortfolio } from "../api/trading"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -89,7 +90,7 @@ export function shareEffect(held: number, side: Side, shares: number): "opens" |
  */
 export function TradeSharesDialog({ initial, trading, onClose }: { initial?: string; trading: TradingStatus; onClose: () => void }) {
   const write = useWrite(trading)
-  const { underlyings, accountScope } = useLive()
+  const { underlyings, accountScope, source, replay } = useLive()
   const token = useWriteToken()
   const stocks = usePortfolio().data?.stocks ?? []
   const account = useAccount().data
@@ -106,12 +107,13 @@ export function TradeSharesDialog({ initial, trading, onClose }: { initial?: str
   const reduces = effect === "reduces" || effect === "closes"
   const shortSale = side === "sell" && valid && held - n < 0
   const decided = account?.evaluation.enabled && account.evaluation.status !== "active"
-  const refused = decided && !reduces ? "The evaluation is decided. Only trades that reduce shares toward zero are allowed; opening requires a new attempt."
+  const planNotice = planEntryNotice(rules, symbol, planMarketTime(account?.time, underlyings.find((u) => u.symbol === symbol)?.as_of, source !== "live" ? replay?.time : null), reduces)
+  const refused = planNotice ?? (decided && !reduces ? "The evaluation is decided. Only trades that reduce shares toward zero are allowed; opening requires a new attempt."
     : trading.kill_latched && !reduces ? "Kill switch latched · reduce-only: only trades that reduce shares toward zero are allowed."
     : rules?.require_stop_loss && !reduces ? "Stop-loss required by this plan. Share entries cannot attach a protective stop."
     : rules?.buy_only && shortSale ? `${rules.plan ?? "This plan"} is buy-only: share sales may only close shares you hold.`
     : rules?.defined_risk && shortSale ? "This plan allows defined risk only, and short shares can lose without limit."
-    : null
+    : null)
   const preview = useQuery({
     queryKey: ["trading", accountScope, "stock-preview", trading.account_version, symbol, side, n, token],
     queryFn: () => api.previewStock(symbol, side, n, trading.write),

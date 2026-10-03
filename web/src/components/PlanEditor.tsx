@@ -36,6 +36,11 @@ export interface PlanForm {
   require_stop_loss: "yes" | "no"
   max_trade_risk: string
   max_trade_risk_percent: string
+  time_limit_days: string
+  inactivity_days: string
+  underlyings: string
+  trading_start: string
+  trading_end: string
   strategies: "buy_only" | "defined_risk" | "any"
 }
 
@@ -62,6 +67,9 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     max_contracts_held: r.max_contracts_held ? String(r.max_contracts_held) : "",
     require_stop_loss: r.require_stop_loss ? "yes" : "no", max_trade_risk: r.max_trade_risk ?? "",
     max_trade_risk_percent: r.max_trade_risk_percent ? String(r.max_trade_risk_percent) : "",
+    time_limit_days: r.time_limit_days ? String(r.time_limit_days) : "",
+    inactivity_days: r.inactivity_days ? String(r.inactivity_days) : "",
+    underlyings: r.underlyings?.join(", ") ?? "", trading_start: r.trading_start ?? "", trading_end: r.trading_end ?? "",
     strategies: r.buy_only ? "buy_only" : r.defined_risk ? "defined_risk" : "any",
   }
 }
@@ -82,8 +90,9 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     ["Maximum trade risk", form.max_trade_risk], ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.phase === "funded" ? "" : form.profitable_day_profit]] as const)
     if ((required || value.trim() !== "") && !validMoney(value.trim())) return { error: `${label} must be a dollar amount` }
   if (!(Number(form.initial_cash) > 0)) return { error: "The starting balance must be above zero" }
-  if (form.phase === "evaluation") for (const [label, value, most] of [["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
-    ["Minimum profitable days", form.min_profitable_days, 366]] as const) {
+  for (const [label, value, most] of [...(form.phase === "evaluation" ? [["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
+    ["Minimum profitable days", form.min_profitable_days, 366], ["Evaluation time limit", form.time_limit_days, 366]] : []),
+    ["Inactivity limit", form.inactivity_days, 366]] as [string, string, number][]) {
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
   }
@@ -94,6 +103,12 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
   }
   if (!/^([01]\d|2[0-4]):[0-5]\d$/.test(form.day_end) || form.day_end < "16:15" || form.day_end > "24:00")
     return { error: "The trading day ends between 16:15 and 24:00" }
+  const underlyings = form.underlyings.trim() ? form.underlyings.trim().split(/[\s,]+/) : []
+  if (underlyings.length > 32 || new Set(underlyings).size !== underlyings.length || underlyings.some((s) => !/^[A-Z0-9.]{1,12}$/.test(s)))
+    return { error: "Use up to 32 distinct uppercase underlying symbols" }
+  const clock = (s: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s) || s === "24:00"
+  if ((form.trading_start || form.trading_end) && (!clock(form.trading_start) || !clock(form.trading_end) || form.trading_start >= form.trading_end))
+    return { error: "Set both trading hours as HH:MM ET, with the start before the end" }
   const drawdown = amount(form.max_drawdown)
   if (form.lock === "balance" && !amount(form.lock_balance)) return { error: "Enter the balance the floor locks at" }
   const trailing = drawdown != null && form.drawdown_mode !== "static"
@@ -130,6 +145,8 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     profitable_day_profit: form.phase === "funded" ? null : amount(form.profitable_day_profit), day_end: form.day_end,
     max_contracts_held: count(form.max_contracts_held), require_stop_loss: form.require_stop_loss === "yes",
     max_trade_risk: amount(form.max_trade_risk), max_trade_risk_percent: count(form.max_trade_risk_percent),
+    time_limit_days: form.phase === "funded" ? 0 : count(form.time_limit_days), inactivity_days: count(form.inactivity_days), underlyings,
+    trading_start: form.trading_start || null, trading_end: form.trading_end || null,
     buy_only: form.strategies === "buy_only", defined_risk: form.strategies === "defined_risk",
   }
   return { initial_cash: form.initial_cash.trim(), rules }
@@ -147,7 +164,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onChange: (form: PlanForm) => void; disabled?: boolean }) {
   const set = <K extends keyof PlanForm>(key: K) => (value: PlanForm[K]) => onChange({ ...form, [key]: value })
   const text = (key: keyof PlanForm, placeholder = "") => <input className="trade-input w-full" value={form[key]} placeholder={placeholder}
-    disabled={disabled} inputMode={key === "name" || key === "day_end" || key === "payout_caps" || key === "payout_consistency_percents" ? "text" : "decimal"}
+    disabled={disabled} inputMode={["name", "day_end", "payout_caps", "payout_consistency_percents", "underlyings", "trading_start", "trading_end"].includes(key) ? "text" : "decimal"}
     onChange={(event) => set(key)(event.target.value as never)} />
   const choice = <K extends keyof PlanForm>(key: K, options: [PlanForm[K], string][]) => <select className="trade-input w-full"
     value={form[key]} disabled={disabled} onChange={(event) => set(key)(event.target.value as PlanForm[K])}>
@@ -175,6 +192,7 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
         <Field label="Minimum trading days">{text("min_trading_days", "0")}</Field>
         <Field label="Minimum profitable days">{text("min_profitable_days", "0")}</Field>
         <Field label="A profitable day makes at least" hint="Blank counts any profit">{text("profitable_day_profit", "any")}</Field>
+        <Field label="Evaluation time limit (days)" hint="Calendar days; blank for none">{text("time_limit_days", "none")}</Field>
       </>}
       {form.phase === "funded" && <>
         <Field label="Qualifying day profit" hint="Net realised profit after fees">{text("qualifying_profit")}</Field>
@@ -191,6 +209,10 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
       <Field label="Stop-loss required">{choice("require_stop_loss", [["no", "Optional"], ["yes", "Required on every entry"]])}</Field>
       <Field label="Maximum trade risk" hint="Dollars before fees. Blank for none.">{text("max_trade_risk", "none")}</Field>
       <Field label="Maximum trade risk %" hint="Of room to the plan floor; ignored without a floor. The tighter cap applies.">{text("max_trade_risk_percent", "none")}</Field>
+      <Field label="Inactivity limit (days)" hint="Calendar days since your last execution; blank for none">{text("inactivity_days", "none")}</Field>
+      <Field label="Allowed underlyings" hint="Comma-separated uppercase symbols; blank allows all. SPX includes SPXW options.">{text("underlyings", "SPX, XSP, VIX")}</Field>
+      <Field label="Trading starts (ET)" hint="HH:MM; set both hours or leave both blank">{text("trading_start", "09:30")}</Field>
+      <Field label="Trading ends (ET)" hint="Opening orders cancel at this time; exits keep working">{text("trading_end", "16:00")}</Field>
       <Field label="Strategies">{choice("strategies", [["buy_only", "Buy only, single leg"], ["defined_risk", "Defined risk"], ["any", "Any"]])}</Field>
     </fieldset>
   )

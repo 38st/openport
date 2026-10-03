@@ -671,3 +671,21 @@ it("keeps an unprotected reducing single order available under a stop-required p
   expect(button("Submit order").disabled).toBe(false)
   expect(host.textContent).not.toContain("Stop-loss required by this plan")
 })
+
+it("blocks plan-disallowed openings and shows the reason on the ticket", async () => {
+  const restricted = { ...account, rules: { ...account.rules, buy_only: false, underlyings: ["SPY"] } }
+  vi.mocked(api.account).mockResolvedValue(restricted)
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey, restricted)
+  await render()
+  expect(host.textContent).toContain("INSTRUMENT_NOT_ALLOWED")
+  expect(button("Submit order").disabled).toBe(true)
+})
+it("blocks openings outside plan hours using market time", async () => {
+  const restricted = { ...account, time: "2026-09-23T20:00:00Z",
+    rules: { ...account.rules, buy_only: false, trading_start: "09:30", trading_end: "16:00" } }
+  vi.mocked(api.account).mockResolvedValue(restricted)
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey, restricted)
+  await render()
+  expect(host.textContent).toContain("OUTSIDE_PLAN_HOURS")
+  expect(button("Submit order").disabled).toBe(true)
+})

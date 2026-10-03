@@ -11,7 +11,7 @@ import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "
 import type { Bracket, NewOrder, Order, Side, TimeInForce, TriggerRequest, TriggerStudy, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote, Surface } from "../api/types"
 import { count, days, fixed, isNum, price } from "../lib/format"
-import { dayLockNotice } from "../lib/plan-rules"
+import { dayLockNotice, planEntryNotice, planMarketTime } from "../lib/plan-rules"
 import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
 import { addWhatIfOrder, useWhatIfScope } from "../lib/what-if"
 import { whatIfOrderText } from "./WhatIfPanel"
@@ -218,7 +218,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const stopRequired = rules?.require_stop_loss && opening > 0
   const missingStop = stopRequired && !bracket?.stop_loss?.trigger
   const buyOnlyBlock = rules?.buy_only && side === "sell" && opening > 0
-  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked || closed) && opening > 0) || untradable || !!notice || !!buyOnlyBlock || !!missingStop
+  const planNotice = planEntryNotice(account?.rules, selection.underlying, planMarketTime(account?.time, underlying?.as_of, source !== "live" ? replay?.time : null), opening === 0)
+  const blocked = !!planNotice || writeBlocked(trading, token) || ((trading.kill_latched || dayLocked || closed) && opening > 0) || untradable || !!notice || !!buyOnlyBlock || !!missingStop
   const reason = quote?.untradable_reason ?? "Contract unavailable for paper trading"
   const root = selection.symbol.slice(0, 6).trim()
   const name = strategyName(side, selection.optionType, held, Number.isSafeInteger(q) && q > 0 ? q : 1)
@@ -337,6 +338,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     {limitOnly && <p role="status" className="text-xs text-muted">{limitOnly}</p>}
     {(!trading.enabled || trading.kill_latched || untradable) && <p role="status" className="text-sm text-warn">{!trading.enabled ? trading.reason ?? "Trading unavailable" : trading.kill_latched ? "Kill switch latched · reduce-only: closing orders and exits still work." : reason}</p>}
     {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Closing orders are allowed; start a new attempt from the Dashboard to open positions.</p>}
+    {planNotice && <p role="status" className="text-sm text-warn">{planNotice}</p>}
     {dayLocked && <p role="status" className="text-sm text-warn">{dayLockNotice}</p>}
     {buyOnlyBlock && <p role="status" className="text-sm text-warn">{rules?.plan ?? "This plan"} is buy-only: sells may only close contracts you hold{held > 0 ? ` (${held} long)` : ""}.</p>}
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>

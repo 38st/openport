@@ -64,6 +64,20 @@ afterEach(async () => {
 })
 
 describe("plan objectives in the terminal", () => {
+  it("shows evaluation and inactivity deadlines and configured entry restrictions", () => {
+    const timed: Account = { ...planned, rules: { ...planned.rules, time_limit_days: 30, inactivity_days: 14,
+      underlyings: ["SPX", "XSP"], trading_start: "09:30", trading_end: "16:00" }, evaluation: { ...planned.evaluation,
+      days_left: 5, deadline: "2026-10-22", inactive_days: 10, inactivity_deadline: "2026-10-21" } }
+    const html = render(<DashboardView />, timed)
+    expect(html).toContain("5 calendar days left; deadline 2026-10-22")
+    expect(html).toContain("4 calendar days left to execute a trade; deadline 2026-10-21")
+    const texts = ruleText(timed).map((r) => renderToStaticMarkup(<>{r.body}</>)).join(" ")
+    expect(texts).toContain("30 calendar days")
+    expect(texts).toContain("Allowed underlyings: SPX, XSP")
+    expect(texts).toContain("09:30–16:00 ET")
+    expect(texts).not.toContain("There is no time limit")
+    expect(planFacts({ initial_cash: "100000", rules: timed.rules })).toContain("Evaluation ends after 30 calendar days")
+  })
   it("lists what a pass waits for, the daily loss room and what closing now would leave", () => {
     const html = render(<DashboardView />, planned)
     for (const text of ["Objectives to pass", "0 of 3 met", "Trading days", "2 of 3", "Consistency", "67% of 40% max",

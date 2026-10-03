@@ -10,7 +10,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
 import { lockReason, offeredPlans, payoutCap, payoutRuleFacts } from "../lib/payouts"
-import { clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts } from "../lib/plan-rules"
+import { clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts, timeRuleEntries } from "../lib/plan-rules"
 import { compareMoney, formatMoney, subtractMoney } from "../lib/trading"
 
 function Rule({ title, children }: { title: string; children: ReactNode }) {
@@ -34,14 +34,14 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
   const end = dayEnd(r)
   return [
     funded ? { title: "Funded account", body: <>There is no profit target: trade the account and withdraw from its profits under the payout rules below.
-        The account stays open until equity touches the drawdown floor.</> }
+        The account stays open while its drawdown and any inactivity limit are respected.</> }
     : { title: "Profit target", body: r.profit_target
       ? <>Pass by reaching <strong className="text-foreground">{formatMoney(e.target_equity)}</strong> {balance
           ? <>on the closed balance (cash plus what your positions cost, so realised P&amp;L after fees), with every position closed: open profit counts only once you close the trade</>
           : "equity"}, {formatMoney(r.profit_target)} above your {formatMoney(e.starting_balance)} starting balance.
         {objectives.length
           ? <> The pass also waits for: {objectives.map((o) => o.charAt(0).toLowerCase() + o.slice(1)).join("; ")}. Until then, reaching the target does not end the attempt: keep trading, and protect it.</>
-          : " There is no time limit and no minimum number of trading days."} Once you pass, the attempt is complete and the system tries to close positions. You can close any leftovers; opening orders require a new attempt.</>
+          : r.time_limit_days ? " There is no minimum number of trading days." : " There is no time limit and no minimum number of trading days."} Once you pass, the attempt is complete and the system tries to close positions. You can close any leftovers; opening orders require a new attempt.</>
       : "This account has no profit target." },
     { title: fixed ? "Static drawdown" : "Trailing drawdown", body: r.max_drawdown
       ? <>Equity may never touch the floor, now <strong className="text-foreground">{formatMoney(e.floor)}</strong>{fixed
@@ -69,6 +69,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         {objectives.map((o, i) => i === 0 ? o : o.charAt(0).toLowerCase() + o.slice(1)).join("; ")}. A trading day counts once one of your own orders executes on it, or you trade shares; holding a position over a day, or an exercise, does not count.
         Days follow the plan's trading day, and a day's profit is {balance ? "what you close that day (net realised P&L after fees)" : "its change in equity"}.
         {r.consistency_percent ? <> The consistency rule never fails the attempt: while the best day is too large a share, the pass waits, as if the target were higher{e.consistency_target ? <> (the best day so far needs {formatMoney(e.consistency_target)} of profit)</> : null}, or for more profitable days.</> : null}</> }] : []),
+    ...timeRuleEntries(r),
     ...(p ? [{ title: "Payouts", body: <>
         A payout needs <strong className="text-foreground">{p.qualifying_days} qualifying days</strong> since the previous one: days that end with at least {formatMoney(p.qualifying_profit)} of net realised profit, after fees.
         Request it with no open positions or working orders. Each payout may take up to {p.withdrawal_percent}% of the profit above your {formatMoney(e.starting_balance)} starting balance,
