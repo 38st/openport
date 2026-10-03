@@ -260,6 +260,7 @@ struct OrderPreview {
   std::optional<FillFees> fees;  ///< Itemized schedule only.
   PreviewExecution execution;
   std::vector<LegLiquidity> liquidity;  ///< Each leg's quote, in leg order.
+  std::optional<WalkStep> next_walk = {};
 };
 
 /// An account as a what-if projects it, measured from today's equity.
@@ -318,7 +319,8 @@ struct OrderChange {
   std::optional<Money> trigger_level;  ///< Armed orders with a trigger only.
   /// DAY or GTC, for resting limit orders: a DAY order then ends with this session.
   std::optional<TimeInForce> tif = {};
-  [[nodiscard]] bool empty() const { return !quantity && !limit_price && !trigger_level && !tif; }
+  std::optional<std::optional<Walk>> walk = {};
+  [[nodiscard]] bool empty() const { return !quantity && !limit_price && !trigger_level && !tif && !walk; }
 };
 
 /// Single-threaded, deterministic reducer. Every timestamp is caller market

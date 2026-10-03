@@ -161,6 +161,14 @@ inline constexpr std::size_t kMaxLegs = 4;
 inline constexpr std::size_t kMaxRollLegs = 8;
 inline constexpr Quantity kMaxRatio = 10;
 
+/// A resting limit moves toward the market on market time, stopping at limit.
+struct Walk {
+  Money step;
+  std::int64_t seconds = 0;
+  Money limit;
+  bool operator==(const Walk&) const = default;
+};
+
 struct OrderRequest {
   std::string client_order_id;
   std::string symbol;  ///< Canonical padded OSI of a registered definition; empty with legs.
@@ -188,6 +196,7 @@ struct OrderRequest {
   std::string group = {};
   /// GTD only: explicit market-time deadline, at most 366 days after acceptance.
   std::optional<Timestamp> good_till = {};
+  std::optional<Walk> walk = {};
   bool operator==(const OrderRequest&) const = default;
 };
 [[nodiscard]] inline bool multi_leg(const OrderRequest& request) { return !request.legs.empty(); }
@@ -210,6 +219,9 @@ struct OrderChangeRecord {
   /// A change of time in force, and the one before it; absent for other changes.
   std::optional<TimeInForce> time_in_force = {};
   std::optional<TimeInForce> previous_time_in_force = {};
+  /// Outer optional absent keeps the walk; an empty inner optional removes it.
+  std::optional<std::optional<Walk>> walk = {};
+  std::optional<Walk> previous_walk = {};
 };
 struct Order {
   OrderId id = 0;  ///< Also the acceptance priority sequence; never reused.
@@ -244,6 +256,8 @@ struct Order {
   bool reduce_only = false;
   /// A flatten limit follows the touch by this many ticks; a manual price turns it off.
   std::optional<Quantity> limit_ticks = {};
+  /// Last scheduled step or accepted manual change; zero before either.
+  Timestamp walked_at = 0;
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   /// The terms a retry must repeat to be answered with this order.
   [[nodiscard]] const OrderRequest& submission() const { return submitted ? *submitted : request; }
@@ -251,6 +265,12 @@ struct Order {
     return status == OrderStatus::Working || status == OrderStatus::PartiallyFilled || status == OrderStatus::Armed;
   }
 };
+struct WalkStep {
+  Timestamp time = 0;
+  Money price;
+};
+/// The next scheduled price, rounded toward the cap on the product's tier tick.
+[[nodiscard]] std::optional<WalkStep> next_walk(const Order& order);
 /// A trader's note and tags on one trade.
 struct Annotation {
   std::string note;
@@ -547,6 +567,7 @@ struct AccountRules {
   std::int64_t slippage_ticks = 0;  ///< Adverse ticks per option fill, from 0 to 10.
   std::int64_t fill_latency_ms = 0; ///< Market-time delay before execution, from 0 to 60,000 ms.
   std::int64_t impact_ticks = 0;    ///< Extra adverse ticks per displayed-size block, from 0 to 10.
+  std::int64_t inside_fill_percent = 0; ///< 1-100% from own side to far side; zero disables inside fills.
   MarginMode margin = MarginMode::Strategy;
   AccountType account_type = AccountType::Margin;  ///< Cash and IRA accounts enforce buying power under strategy margin.
   /// A broker's house margin, in percent on top of Reg T's naked requirement and
@@ -603,7 +624,7 @@ void validate_limits(const Limits& limits);
 /// target and needs at least one qualifying day; slippage is 0-10 ticks. The
 /// consistency percentage is 0-100, minimum days 0-366 and the day's end 16:15 to
 /// 24:00; a floor locks at one level at most, and a static floor not at all.
-/// Fee amounts are $0 to $1,000, with at most 16 named index roots.
+/// Fee amounts are $0 to $1,000, with at most 16 named index roots; inside fills are 0-100%.
 void validate_rules(const AccountRules& rules);
 
 }  // namespace openport::trading

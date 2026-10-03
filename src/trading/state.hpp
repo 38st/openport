@@ -65,6 +65,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Leg, symbol, side, ratio)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AlertCondition, scope, metric, symbol, legs, direction, level)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AlertSpec, label, condition, repeat)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Alert, id, spec, created, actor, armed, fired, fired_at, value)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Walk, step, seconds, limit)
 inline void to_json(Json& j, const OrderRequest& r) {
   j = Json{{"client_order_id", r.client_order_id}, {"symbol", r.symbol}, {"side", r.side}, {"type", r.type}, {"tif", r.tif},
            {"quantity", r.quantity}, {"limit_price", r.limit_price}, {"trigger", r.trigger}, {"bracket", r.bracket},
@@ -72,6 +73,7 @@ inline void to_json(Json& j, const OrderRequest& r) {
   // Only an order naming a trade records it, so every other order keeps its bytes.
   if (!r.group.empty()) j["group"] = r.group;
   if (r.good_till) j["good_till"] = *r.good_till;
+  if (r.walk) j["walk"] = *r.walk;
 }
 inline void from_json(const Json& j, OrderRequest& r) {
   j.at("client_order_id").get_to(r.client_order_id); j.at("symbol").get_to(r.symbol); j.at("side").get_to(r.side);
@@ -81,6 +83,7 @@ inline void from_json(const Json& j, OrderRequest& r) {
   added_field(j, "tags", r.tags); added_field(j, "note", r.note); added_field(j, "exits_only", r.exits_only);
   added_field(j, "group", r.group);
   added_field(j, "good_till", r.good_till);
+  added_field(j, "walk", r.walk);
 }
 inline void to_json(Json& j, const OrderChangeRecord& c) {
   j = Json{{"time", c.time}, {"actor", c.actor}, {"previous_quantity", c.previous_quantity}};
@@ -92,6 +95,10 @@ inline void to_json(Json& j, const OrderChangeRecord& c) {
   if (!c.decision.ok()) j["decision"] = c.decision;
   if (c.time_in_force) j["time_in_force"] = *c.time_in_force;
   if (c.previous_time_in_force) j["previous_time_in_force"] = *c.previous_time_in_force;
+  if (c.walk) {
+    j["walk"] = *c.walk;
+    j["previous_walk"] = c.previous_walk;
+  }
 }
 inline void from_json(const Json& j, OrderChangeRecord& c) {
   j.at("time").get_to(c.time); j.at("actor").get_to(c.actor); j.at("previous_quantity").get_to(c.previous_quantity);
@@ -99,6 +106,8 @@ inline void from_json(const Json& j, OrderChangeRecord& c) {
   added_field(j, "trigger_level", c.trigger_level); added_field(j, "previous_limit_price", c.previous_limit_price);
   added_field(j, "previous_trigger_level", c.previous_trigger_level); added_field(j, "decision", c.decision);
   added_field(j, "time_in_force", c.time_in_force); added_field(j, "previous_time_in_force", c.previous_time_in_force);
+  if (j.contains("walk")) c.walk.emplace(j.at("walk").get<std::optional<Walk>>());
+  added_field(j, "previous_walk", c.previous_walk);
 }
 inline void to_json(Json& j, const Order& o) {
   j = Json{{"id", o.id}, {"request", o.request}, {"status", o.status}, {"filled_quantity", o.filled_quantity},
@@ -112,6 +121,7 @@ inline void to_json(Json& j, const Order& o) {
   if (!o.changes.empty()) j["changes"] = o.changes;
   if (o.reduce_only) j["reduce_only"] = true;
   if (o.limit_ticks) j["limit_ticks"] = *o.limit_ticks;
+  if (o.walked_at != 0) j["walked_at"] = o.walked_at;
 }
 inline void from_json(const Json& j, Order& o) {
   j.at("id").get_to(o.id); j.at("request").get_to(o.request); j.at("status").get_to(o.status);
@@ -123,6 +133,7 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "submitted", o.submitted); added_field(j, "reduce_only", o.reduce_only);
   added_field(j, "ended_at", o.ended_at); added_field(j, "changes", o.changes);
   added_field(j, "limit_ticks", o.limit_ticks);
+  added_field(j, "walked_at", o.walked_at);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)
@@ -253,6 +264,7 @@ inline void to_json(Json& j, const AccountRules& r) {
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
   if (r.fees) j["fees"] = *r.fees;
+  if (r.inside_fill_percent != 0) j["inside_fill_percent"] = r.inside_fill_percent;
 }
 inline void from_json(const Json& j, AccountRules& r) {
   j.at("plan").get_to(r.plan); j.at("profit_target").get_to(r.profit_target); j.at("max_drawdown").get_to(r.max_drawdown);
@@ -263,11 +275,12 @@ inline void from_json(const Json& j, AccountRules& r) {
   if (const auto it = j.find("slippage_ticks"); it != j.end() && !it->is_number_integer())
     throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded slippage must be an integer");
   added_field(j, "slippage_ticks", r.slippage_ticks); added_field(j, "margin", r.margin);
-  for (const auto* key : {"fill_latency_ms", "impact_ticks"})
+  for (const auto* key : {"fill_latency_ms", "impact_ticks", "inside_fill_percent"})
     if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
       throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded fill settings must be integers");
   r.fill_latency_ms = j.value("fill_latency_ms", std::int64_t{0});
   r.impact_ticks = j.value("impact_ticks", std::int64_t{0});
+  added_field(j, "inside_fill_percent", r.inside_fill_percent);
   for (const auto* key : {"consistency_percent", "min_trading_days", "min_profitable_days", "day_end_minutes",
                           "house_margin_percent", "pm_vol_shock"})
     if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
@@ -502,6 +515,7 @@ struct Reviewing {
 };
 struct State {
   std::string actor = "system"; ///< Transient command context, not persisted as account state.
+  std::set<std::string> walked; ///< Transient symbols to match after this transaction's market is in place.
   SessionConfig config;
   Timestamp time = 0;
   std::uint64_t version = 0;
