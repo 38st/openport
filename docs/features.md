@@ -299,7 +299,8 @@ from older builds that way, keeping each original as `.bak`, and `--repair-journ
 cuts off a last line a full disk tore. `--no-paper` turns trading off. The engine also
 models the funded phase that follows a pass (`funded-*` plans with a locking floor and
 payouts). Custom funded plans support payout-cycle best-day consistency (F37),
-including escalating limits by payout number and the additional profit needed.
+including escalating limits by payout number and the additional profit needed,
+and a payout buffer above the starting balance for all or the first N payouts (F38).
 This is a simulator that funds no one, so the web terminal hides those plans
 and the Payouts page; set `showFundedAccounts` in `web/src/lib/features.ts` to offer
 them. [Paper trading](paper-trading.md) documents every rule, the HTTP contract and
@@ -319,6 +320,7 @@ special opening quotation; live providers keep manual imports.
 
 ## Roadmap
 
+- [x] F38 payout buffer: retain starting balance plus a safety net for every payout or the first N
 - [x] F37 payout consistency: net realised best-day limits per payout cycle, escalating percentages and remaining profit
 
 - [x] F26 stress-scenario authoring: abnormal books, quote stalls and stale marks,

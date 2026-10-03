@@ -37,7 +37,8 @@ json payout_rules_json(const PayoutRules& p) {
   for (const auto cap : p.caps) caps.push_back(cap.str());
   return {{"qualifying_profit", p.qualifying_profit.str()}, {"qualifying_days", p.qualifying_days},
           {"withdrawal_percent", p.withdrawal_percent}, {"split_percent", p.split_percent},
-          {"minimum", p.minimum.str()}, {"caps", caps}, {"consistency_percents", p.consistency_percents}};
+          {"minimum", p.minimum.str()}, {"caps", caps}, {"consistency_percents", p.consistency_percents},
+          {"buffer", p.buffer.str()}, {"buffer_payouts", p.buffer_payouts}};
 }
 constexpr const char* kDrawdownModes[] = {"intraday", "end_of_day", "static"};
 constexpr const char* kProfitBases[] = {"equity", "balance"};
@@ -238,6 +239,7 @@ json payout_json(const TradingView& view) {
           {"profit", q.profit.str()},
           {"consistency_percent", q.consistency_percent ? json(*q.consistency_percent) : json(nullptr)},
           {"cycle_profit", q.cycle_profit.str()}, {"consistency_needed", q.consistency_needed.str()},
+          {"buffer_balance", money(q.buffer_balance)},
           {"best_day", q.best_day ? json{{"day", md::format_date(q.best_day_date)}, {"profit", q.best_day->str()}} : json(nullptr)},
           {"withdrawable", q.withdrawable.str()}, {"cap", money(q.cap)}, {"maximum", q.maximum.str()},
           {"minimum", q.minimum.str()}, {"trader_share", q.trader_share.str()},
@@ -1458,7 +1460,8 @@ bool boolean_field(const json& j, const char* key) {
   return j.at(key).get<bool>();
 }
 PayoutRules parse_payout_rules(const json& j) {
-  fields(j, {"qualifying_profit", "qualifying_days", "withdrawal_percent", "split_percent", "minimum", "caps"}, {"consistency_percents"});
+  fields(j, {"qualifying_profit", "qualifying_days", "withdrawal_percent", "split_percent", "minimum", "caps"},
+         {"consistency_percents", "buffer", "buffer_payouts"});
   PayoutRules p;
   p.qualifying_profit = decimal_field(j, "qualifying_profit");
   p.qualifying_days = integer_field(j, "qualifying_days");
@@ -1466,6 +1469,8 @@ PayoutRules parse_payout_rules(const json& j) {
   p.withdrawal_percent = integer_field(j, "withdrawal_percent");
   p.split_percent = integer_field(j, "split_percent");
   p.minimum = decimal_field(j, "minimum");
+  if (j.contains("buffer")) p.buffer = decimal_field(j, "buffer");
+  if (j.contains("buffer_payouts")) p.buffer_payouts = integer_field(j, "buffer_payouts");
   if (j.contains("consistency_percents")) {
     const auto& percents = j.at("consistency_percents");
     if (!percents.is_array() || percents.size() > 64)

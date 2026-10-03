@@ -34,6 +34,10 @@ export interface PayoutRules {
   caps: Money[]
   /** Best-day limit by payout number; last repeats; empty disables. */
   consistency_percents?: number[]
+  /** Equity to retain above start; zero disables. */
+  buffer?: Money
+  /** First N payouts; zero means every payout. */
+  buffer_payouts?: number
 }
 export type AccountType = "margin" | "cash" | "ira"
 export interface AccountRules {
@@ -185,6 +189,7 @@ export interface PayoutStatus {
   cycle_profit: Money
   best_day: { day: string; profit: Money } | null
   consistency_needed: Money
+  buffer_balance: Money | null
   /** Largest amount accepted now. */
   maximum: Money
   minimum: Money

@@ -567,6 +567,8 @@ struct PayoutRules {
   Money minimum;
   std::vector<Money> caps;  ///< Per payout number; the last repeats; empty is uncapped.
   std::vector<std::int64_t> consistency_percents;  ///< Best day's share of cycle profit; last repeats, empty disables.
+  Money buffer;                 ///< Keep starting balance plus this amount; zero disables.
+  std::int64_t buffer_payouts = 0;  ///< First N payouts; zero applies to every payout.
   bool operator==(const PayoutRules&) const = default;
 };
 

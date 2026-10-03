@@ -2503,7 +2503,7 @@ TEST(PaperPlans, PresetsListExactRules) {
       {"account_type", "margin"}, {"house_margin_percent", 0}, {"pm_vol_shock", 0}, {"expiry_cutoff_seconds", 300},
       {"payouts", {{"qualifying_profit", "200.00"}, {"qualifying_days", 8}, {"withdrawal_percent", 50},
                    {"split_percent", 80}, {"minimum", "1000.00"},
-                   {"caps", {"2000.00", "3000.00", "4000.00", "6000.00"}}, {"consistency_percents", json::array()}}}}));
+                   {"caps", {"2000.00", "3000.00", "4000.00", "6000.00"}}, {"consistency_percents", json::array()}, {"buffer", "0.00"}, {"buffer_payouts", 0}}}}));
   EXPECT_EQ(plans[7]["rules"]["payouts"]["qualifying_profit"], "100.00");
   EXPECT_EQ(plans[8]["rules"]["payouts"]["qualifying_profit"], "150.00");
   EXPECT_EQ(plans[10]["id"], "funded-eod-25k");
@@ -2976,6 +2976,7 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   EXPECT_EQ(payout["minimum"], "250.00");
   EXPECT_EQ(payout["cap"], "500.00");
   EXPECT_EQ(payout["split_percent"], 80);
+  EXPECT_EQ(payout["buffer_balance"], nullptr);
   EXPECT_EQ(payout["consistency_percent"], nullptr);
   EXPECT_EQ(payout["cycle_profit"], "0.00");
   EXPECT_EQ(payout["best_day"], nullptr);
@@ -2997,11 +2998,24 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}}), 400, "INVALID_RULES");
   custom["profit_target"] = nullptr;
   custom["payouts"]["consistency_percents"] = {20, 25, 30};
+  custom["payouts"]["buffer"] = "2100";
+  custom["payouts"]["buffer_payouts"] = 3;
   const auto custom_reset = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", custom}, {"reason", "x"}});
   ASSERT_EQ(custom_reset.status, 200) << custom_reset.body;
   EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["qualifying_days"], 3);
   EXPECT_EQ(json::parse(custom_reset.body)["payout"]["cap"], nullptr);
   EXPECT_EQ(json::parse(custom_reset.body)["payout"]["consistency_percent"], 20);
+  EXPECT_EQ(json::parse(custom_reset.body)["payout"]["buffer_balance"], "12100.00");
+  EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["buffer"], "2100.00");
+  EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["buffer_payouts"], 3);
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{{"buffer", "-1"}, {"buffer_payouts", -1}, {"buffer_payouts", 101}}) {
+    auto bad = custom; bad["payouts"][key] = value;
+    expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", bad}, {"reason", "invalid"}}), 400, "INVALID_RULES");
+  }
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{{"buffer", 100}, {"buffer", nullptr}, {"buffer_payouts", 1.5}, {"buffer_payouts", "1"}}) {
+    auto bad = custom; bad["payouts"][key] = value;
+    expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", bad}, {"reason", "invalid"}}), 400, "INVALID_REQUEST");
+  }
   EXPECT_EQ(json::parse(custom_reset.body)["rules"]["payouts"]["consistency_percents"], json({20, 25, 30}));
   for (const auto& invalid : {json({0}), json({101}), json({-1})}) {
     custom["payouts"]["consistency_percents"] = invalid;

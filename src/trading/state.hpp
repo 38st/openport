@@ -211,6 +211,8 @@ inline void to_json(Json& j, const PayoutRules& p) {
   j = Json{{"qualifying_profit", p.qualifying_profit}, {"qualifying_days", p.qualifying_days},
            {"withdrawal_percent", p.withdrawal_percent}, {"split_percent", p.split_percent}, {"minimum", p.minimum}, {"caps", p.caps}};
   if (!p.consistency_percents.empty()) j["consistency_percents"] = p.consistency_percents;
+  if (p.buffer != Money{}) j["buffer"] = p.buffer;
+  if (p.buffer_payouts != 0) j["buffer_payouts"] = p.buffer_payouts;
 }
 inline void from_json(const Json& j, PayoutRules& p) {
   j.at("qualifying_profit").get_to(p.qualifying_profit); j.at("qualifying_days").get_to(p.qualifying_days);
@@ -223,6 +225,11 @@ inline void from_json(const Json& j, PayoutRules& p) {
         throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded payout consistency must contain integers from 1 to 100");
   }
   added_field(j, "consistency_percents", p.consistency_percents);
+  added_field(j, "buffer", p.buffer);
+  if (const auto it = j.find("buffer_payouts"); it != j.end() &&
+      (!it->is_number_integer() || *it < 0 || *it > 100))
+    throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded buffer_payouts must be an integer from 0 to 100");
+  added_field(j, "buffer_payouts", p.buffer_payouts);
 }
 inline void to_json(Json& j, MarginMode mode) { j = mode == MarginMode::Portfolio ? "portfolio" : "strategy"; }
 inline void from_json(const Json& j, MarginMode& mode) {
