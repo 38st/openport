@@ -60,7 +60,7 @@ describe("checked API core types", () => {
     expect(fields.map((field) => field[1]).sort()).toEqual(Object.keys(schema.properties!).sort())
     for (const [, field, optional, type] of fields) {
       // TypeScript has no integer type: an OpenAPI integer is a number on the wire.
-      expect(normalize(type!), `${name}.${field}`).toBe(wireType(schema.properties![field!]!).replace(/\binteger\b/g, "number"))
+      expect(normalize(type!), `${name}.${field}`).toBe(normalize(wireType(schema.properties![field!]!).replace(/\binteger\b/g, "number")))
       // Browser types allow fields absent on older servers; all its required
       // fields must still be required by the current HTTP contract.
       if (!optional) expect(schema.required, `${name}.${field}`).toContain(field)
