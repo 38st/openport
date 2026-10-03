@@ -415,7 +415,7 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     for (const auto& [key, value] : plan.at("rules").items()) {
       if (!rules.contains(key)) throw std::invalid_argument("Unknown plan rule: " + key);
       if (key == "profit_target" || key == "max_drawdown" || key == "lock_balance" || key == "daily_loss_limit" ||
-          key == "profitable_day_profit")
+          key == "profitable_day_profit" || key == "max_trade_risk")
         rules[key] = decimal(value, "plan rules " + key).micros();
       else if (key == "drawdown_mode") {
         choice(value, key, {"intraday", "end_of_day", "static"});

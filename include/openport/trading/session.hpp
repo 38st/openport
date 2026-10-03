@@ -262,6 +262,9 @@ struct OrderPreview {
   std::optional<Exposure> exposure_change;
   std::optional<Money> max_loss;
   std::string max_loss_basis;  ///< "expiry_payoff" or "scenario_grid"; empty when unavailable.
+  std::optional<Money> trade_risk;
+  std::optional<Money> trade_risk_limit;
+  std::string trade_risk_basis;  ///< "stop_loss", "expiry_payoff" or "unbounded_or_unknown"; empty when not applicable.
   std::optional<Money> equity_at_max_loss;
   std::optional<bool> breaches_floor;
   std::optional<bool> breaches_soft_floor;

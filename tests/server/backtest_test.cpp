@@ -655,11 +655,33 @@ TEST(BacktestApi, ComparisonAcceptsLegacyReportsAndRejectsInvalidSelection) {
 }  // namespace
 
 TEST(Backtest, CustomContractCap) {
-  const auto parse = [](json cap) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14});
+  const auto parse = [&](json cap) {
     return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"},
-        {"rules", {{"profit_target", "100"}, {"max_contracts_held", cap}}}}}, {"scenarios", 1}, {"seed", 0}}, catalogue(), {}, {});
+        {"rules", {{"profit_target", "100"}, {"max_contracts_held", cap}}}}}, {"days", {{{"file", file.string()}}}}}, catalogue(), {}, {}, false);
   };
   EXPECT_EQ(parse(5).config.rules.max_contracts_held, 5);
   EXPECT_THROW((void)parse(100001), std::exception);
   EXPECT_THROW((void)parse(1.5), std::exception);
+}
+
+TEST(Backtest, CustomStopAndRiskRules) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14});
+  const auto parse = [&](const json& rules) {
+    return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"}, {"rules", rules}}},
+                                  {"days", {{{"file", file.string()}}}}}, catalogue(), {}, {}, false);
+  };
+  const json rules{{"profit_target", "100"}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 10}};
+  const auto result = parse(rules);
+  EXPECT_TRUE(result.config.rules.require_stop_loss);
+  EXPECT_EQ(result.config.rules.max_trade_risk, Money::parse("123.456789"));
+  EXPECT_EQ(result.config.rules.max_trade_risk_percent, 10);
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"max_trade_risk", "-1"}, {"max_trade_risk", 100}, {"max_trade_risk_percent", 101},
+      {"max_trade_risk_percent", 1.5}, {"require_stop_loss", 1}}) {
+    auto invalid = rules; invalid[key] = value;
+    EXPECT_THROW((void)parse(invalid), std::exception);
+  }
 }

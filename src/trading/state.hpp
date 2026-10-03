@@ -281,7 +281,9 @@ inline Json optional_rule_defaults() {
               {"profitable_day_profit", d.profitable_day_profit}, {"day_end_minutes", d.day_end_minutes},
               {"account_type", d.account_type}, {"house_margin_percent", d.house_margin_percent},
               {"pm_vol_shock", d.pm_vol_shock},
-              {"max_contracts_held", d.max_contracts_held}};
+              {"max_contracts_held", d.max_contracts_held},
+              {"require_stop_loss", d.require_stop_loss}, {"max_trade_risk", d.max_trade_risk},
+              {"max_trade_risk_percent", d.max_trade_risk_percent}};
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FeeSchedule, open, close, leg_cap, clearing, regulatory, index, exercise)
 inline void to_json(Json& j, const AccountRules& r) {
@@ -298,7 +300,9 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"profitable_day_profit", r.profitable_day_profit}, {"day_end_minutes", r.day_end_minutes},
                  {"account_type", r.account_type}, {"house_margin_percent", r.house_margin_percent},
                  {"pm_vol_shock", r.pm_vol_shock},
-                 {"max_contracts_held", r.max_contracts_held}};
+                 {"max_contracts_held", r.max_contracts_held},
+                 {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", r.max_trade_risk},
+                 {"max_trade_risk_percent", r.max_trade_risk_percent}};
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
@@ -321,7 +325,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   r.impact_ticks = j.value("impact_ticks", std::int64_t{0});
   added_field(j, "inside_fill_percent", r.inside_fill_percent);
   for (const auto* key : {"consistency_percent", "min_trading_days", "min_profitable_days", "day_end_minutes",
-                          "house_margin_percent", "pm_vol_shock", "max_contracts_held"})
+                          "house_margin_percent", "pm_vol_shock", "max_contracts_held", "max_trade_risk_percent"})
     if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
       throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded rule counts must be integers");
   added_field(j, "lock_at_start", r.lock_at_start); added_field(j, "profit_basis", r.profit_basis);
@@ -334,6 +338,8 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "account_type", r.account_type); added_field(j, "house_margin_percent", r.house_margin_percent);
   added_field(j, "pm_vol_shock", r.pm_vol_shock);
   added_field(j, "max_contracts_held", r.max_contracts_held);
+  added_field(j, "require_stop_loss", r.require_stop_loss); added_field(j, "max_trade_risk", r.max_trade_risk);
+  added_field(j, "max_trade_risk_percent", r.max_trade_risk_percent);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {

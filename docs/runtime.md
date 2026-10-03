@@ -1405,3 +1405,5 @@ Schema 1 reports still load. Snapshot reads and comparison do not add reducer
 commands or change any journal bytes; driver 6 and scenario revisions are unchanged.
 
 F15 plan contract caps are opt-in: `max_contracts_held` is journaled only when nonzero. Existing plans keep their journal bytes; driver 6 and scenario revisions are unchanged.
+
+F60 stop and trade-risk rules likewise omit `require_stop_loss`, `max_trade_risk` and `max_trade_risk_percent` at their off defaults. Only opted-in plans record the new fields and decisions; existing journal bytes and driver/scenario versions are unchanged. Preview risk fields are derived, never journaled.

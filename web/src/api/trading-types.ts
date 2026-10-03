@@ -85,6 +85,11 @@ export interface AccountRules {
   pm_vol_shock?: number
   /** Held options plus working opening contracts, excluding shares; 0 disables. */
   max_contracts_held?: number
+  require_stop_loss?: boolean
+  /** Per-order risk before fees; null/zero disables. */
+  max_trade_risk?: Money | null
+  /** Percent of equity minus the plan floor; 0 disables, ignored without a floor. */
+  max_trade_risk_percent?: number
   buying_power: boolean
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null
@@ -1085,6 +1090,9 @@ export interface PreviewExecution {
   average_price: Money | null
 }
 export interface OrderPreview {
+  trade_risk?: Money | null
+  trade_risk_limit?: Money | null
+  trade_risk_basis?: "stop_loss" | "expiry_payoff" | "unbounded_or_unknown" | null
   next_walk?: WalkStep | null
   account_version: string
   decision: string

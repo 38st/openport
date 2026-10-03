@@ -25,7 +25,6 @@ simulation's limits.
 - **Exposure**: GEX and VEX by strike and expiry, total gamma profile, gamma flip, and
   call and put walls.
 
-- **F15 contracts held cap:** custom plans cap held option contracts plus working opening quantities across orders, with numeric refusals and preview sizing; shares are excluded.
 
 ## Trading terminal
 
@@ -211,6 +210,9 @@ simulation's limits.
   is 7 with a paper account, 2 on analytics-only servers; arrows step expiries on Trade).
 
 ## Paper trading
+
+- **F60 entry protection and risk:** custom plans require bracket stops and cap per-order risk in dollars or a percentage of room to the floor. Preview shows risk against the limit; required stops cannot be cancelled while their position is held.
+- **F15 contracts held cap:** custom plans cap held option contracts plus working opening quantities across orders, with numeric refusals and preview sizing; shares are excluded.
 
 The engine simulates orders on European cash-settled index options (SPX, XSP, NDX,
 RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single stocks)
@@ -488,3 +490,5 @@ special opening quotation; live providers keep manual imports.
   and replay control queue shutdown.
 
 - [x] F15: a per-plan cap on contracts held at once, counting working entries and combo ratios
+
+- [x] F60: required stop-loss protection and maximum trade risk in dollars or floor-room percent
