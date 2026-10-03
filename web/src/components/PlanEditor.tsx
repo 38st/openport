@@ -72,10 +72,10 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
   if (!name) return { error: "Name the plan" }
   for (const [label, value, required] of [["Starting balance", form.initial_cash, true], ["Profit target", form.phase === "funded" ? "" : form.profit_target],
     ["Max drawdown", form.max_drawdown], ["Lock balance", form.lock === "balance" ? form.lock_balance : ""],
-    ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.profitable_day_profit]] as const)
+    ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.phase === "funded" ? "" : form.profitable_day_profit]] as const)
     if ((required || value.trim() !== "") && !validMoney(value.trim())) return { error: `${label} must be a dollar amount` }
   if (!(Number(form.initial_cash) > 0)) return { error: "The starting balance must be above zero" }
-  for (const [label, value, most] of [["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
+  if (form.phase === "evaluation") for (const [label, value, most] of [["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
     ["Minimum profitable days", form.min_profitable_days, 366]] as const) {
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
@@ -112,9 +112,10 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     max_drawdown: drawdown, drawdown_mode: form.drawdown_mode,
     lock_at_start: trailing && form.lock === "start", lock_balance: trailing && form.lock === "balance" ? amount(form.lock_balance) : null,
     daily_loss_limit: amount(form.daily_loss_limit), daily_loss_basis: form.daily_loss_basis, daily_loss_action: form.daily_loss_action,
-    consistency_percent: count(form.consistency_percent), consistency_basis: form.consistency_basis,
-    min_trading_days: count(form.min_trading_days), min_profitable_days: count(form.min_profitable_days),
-    profitable_day_profit: amount(form.profitable_day_profit), day_end: form.day_end,
+    consistency_percent: form.phase === "funded" ? 0 : count(form.consistency_percent), consistency_basis: form.consistency_basis,
+    min_trading_days: form.phase === "funded" ? 0 : count(form.min_trading_days),
+    min_profitable_days: form.phase === "funded" ? 0 : count(form.min_profitable_days),
+    profitable_day_profit: form.phase === "funded" ? null : amount(form.profitable_day_profit), day_end: form.day_end,
     buy_only: form.strategies === "buy_only", defined_risk: form.strategies === "defined_risk",
   }
   return { initial_cash: form.initial_cash.trim(), rules }
