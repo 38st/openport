@@ -1556,6 +1556,25 @@ void margin_fields(const json& j, AccountRules& rules) try {
 } catch (const std::exception& error) {
   throw TradingError(Reason::INVALID_RULES, error.what());
 }
+/// New restriction values use 422 without changing legacy rule error statuses.
+struct PlanRestrictionError : std::invalid_argument {
+  using std::invalid_argument::invalid_argument;
+};
+void parse_time_rules(const json& j, AccountRules& rules) try {
+  if (j.contains("time_limit_days")) rules.time_limit_days = integer_field(j, "time_limit_days");
+  if (j.contains("inactivity_days")) rules.inactivity_days = integer_field(j, "inactivity_days");
+  if (j.contains("underlyings")) {
+    const auto& symbols = j.at("underlyings");
+    if (!symbols.is_array() || !std::all_of(symbols.begin(), symbols.end(), [](const json& symbol) { return symbol.is_string(); }))
+      throw std::invalid_argument("underlyings must be an array of uppercase symbols");
+    rules.underlyings = symbols.get<std::vector<std::string>>();
+  }
+  if (j.contains("trading_start") && !j.at("trading_start").is_null()) rules.trading_start = clock_field(j, "trading_start");
+  if (j.contains("trading_end") && !j.at("trading_end").is_null()) rules.trading_end = clock_field(j, "trading_end");
+  validate_time_rules(rules);
+} catch (const std::exception& error) {
+  throw PlanRestrictionError(error.what());
+}
 /// Custom rules: nullable money for an absent target/drawdown, like rules_json.
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
@@ -1602,16 +1621,7 @@ AccountRules parse_rules(const json& j) {
   if (j.contains("require_stop_loss")) rules.require_stop_loss = boolean_field(j, "require_stop_loss");
   if (has("max_trade_risk")) rules.max_trade_risk = decimal_field(j, "max_trade_risk");
   if (j.contains("max_trade_risk_percent")) rules.max_trade_risk_percent = integer_field(j, "max_trade_risk_percent");
-  if (j.contains("time_limit_days")) rules.time_limit_days = integer_field(j, "time_limit_days");
-  if (j.contains("inactivity_days")) rules.inactivity_days = integer_field(j, "inactivity_days");
-  if (j.contains("underlyings")) {
-    const auto& symbols = j.at("underlyings");
-    if (!symbols.is_array() || !std::all_of(symbols.begin(), symbols.end(), [](const json& symbol) { return symbol.is_string(); }))
-      throw std::invalid_argument("underlyings must be an array of uppercase symbols");
-    rules.underlyings = symbols.get<std::vector<std::string>>();
-  }
-  if (has("trading_start")) rules.trading_start = clock_field(j, "trading_start");
-  if (has("trading_end")) rules.trading_end = clock_field(j, "trading_end");
+  parse_time_rules(j, rules);
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");
@@ -2759,6 +2769,8 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       busy.retry_after = kInboxRetrySeconds;
       complete(std::move(busy));
     }
+  } catch (const PlanRestrictionError& error) {
+    complete(api_error(422, "INVALID_RULES", error.what()));
   } catch (const TradingError& error) {
     complete(api_error(reason_status(error.code()), std::string(to_string(error.code())), error.what()));
   } catch (const std::exception& error) {

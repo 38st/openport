@@ -190,6 +190,19 @@ void validate_limits(const Limits& l) {
   for (const auto& [name, limit] : l.underlying_overrides) valid &= !name.empty() && exposure_ok(limit);
   if (!valid) throw TradingError(Reason::INVALID_LIMITS, "Limits must be finite and nonnegative; order size must be positive");
 }
+void validate_time_rules(const AccountRules& r) {
+  if (r.time_limit_days < 0 || r.time_limit_days > 366 || r.inactivity_days < 0 || r.inactivity_days > 366 ||
+      (r.phase == Phase::Funded && r.time_limit_days != 0))
+    throw TradingError(Reason::INVALID_RULES, "time_limit_days and inactivity_days must be 0-366 calendar days; funded plans require time_limit_days = 0");
+  std::set<std::string> symbols;
+  for (const auto& symbol : r.underlyings)
+    if (r.underlyings.size() > 32 || symbol.empty() || symbol.size() > 12 || !symbols.insert(symbol).second ||
+        !std::all_of(symbol.begin(), symbol.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.'; }))
+      throw TradingError(Reason::INVALID_RULES, "underlyings must contain up to 32 distinct symbols of 1-12 uppercase letters, digits or dots");
+  if (r.trading_start.has_value() != r.trading_end.has_value() ||
+      (r.trading_start && (*r.trading_start < 0 || *r.trading_end > 24 * 60 || *r.trading_start >= *r.trading_end)))
+    throw TradingError(Reason::INVALID_RULES, "Set both trading_start and trading_end, between 00:00 and 24:00 New York, with start before end, or neither");
+}
 void validate_rules(const AccountRules& r) {
   const auto& p = r.payouts;
   if (p.buffer < Money{} || p.buffer_payouts < 0 || p.buffer_payouts > 100)
@@ -240,17 +253,7 @@ void validate_rules(const AccountRules& r) {
     throw TradingError(Reason::INVALID_RULES, "The contracts held cap must be 0 to 100000; zero disables it");
   if (r.max_trade_risk < Money{} || r.max_trade_risk_percent < 0 || r.max_trade_risk_percent > 100)
     throw TradingError(Reason::INVALID_RULES, "Maximum trade risk must be nonnegative and its percentage 0 to 100");
-  if (r.time_limit_days < 0 || r.time_limit_days > 366 || r.inactivity_days < 0 || r.inactivity_days > 366 ||
-      (r.phase == Phase::Funded && r.time_limit_days != 0))
-    throw TradingError(Reason::INVALID_RULES, "Time and inactivity limits must be 0-366 calendar days; a funded plan has no evaluation time limit");
-  std::set<std::string> symbols;
-  for (const auto& symbol : r.underlyings)
-    if (r.underlyings.size() > 32 || symbol.empty() || symbol.size() > 12 || !symbols.insert(symbol).second ||
-        !std::all_of(symbol.begin(), symbol.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.'; }))
-      throw TradingError(Reason::INVALID_RULES, "Allowed underlyings must be up to 32 distinct symbols of 1-12 uppercase letters, digits or dots");
-  if (r.trading_start.has_value() != r.trading_end.has_value() ||
-      (r.trading_start && (*r.trading_start < 0 || *r.trading_end > 24 * 60 || *r.trading_start >= *r.trading_end)))
-    throw TradingError(Reason::INVALID_RULES, "Set both trading hours, between 00:00 and 24:00 New York, with start before end, or neither");
+  validate_time_rules(r);
   if (r.fees) {
     const auto& f = *r.fees;
     const auto amount = [](Money value) { return value >= Money{} && value <= Money::from_micros(1'000'000'000); };
