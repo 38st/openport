@@ -907,8 +907,12 @@ expiry until it triggers. EXTO, GTC_EXTO and GTD orders keep their time in force
 cancel and submit again to change it or `good_till`. Bracket exits are good until expiry and keep it. The engine applies a new order's feed gate
 (`FEED_STALLED`) before a change, because a change can trade.
 
-Every change asked of an open order stays on it in `Order::changes`, oldest first,
-applied or refused: its market time and actor, the terms requested (each left empty
+PUT and change preview reject a quantity below 1 with 400 `INVALID_REQUEST` and
+record nothing. A positive quantity at or below the filled quantity remains a
+422 `INVALID_ORDER` on PUT, recorded with the requested and filled quantities.
+
+Changes with valid request bodies stay on open orders in `Order::changes`, oldest
+first, applied or refused: their market time and actor, the terms requested (each left empty
 kept), the terms the order had then, and the refusal's decision with its numbers.
 A refused change leaves the order's terms as they were. `Order::ended_at` is when an
 order stopped working: the fill that completed it, its cancellation (whatever the
@@ -1221,7 +1225,7 @@ attempts retain their existing restrictions.
 `reset_kill` requires a nonblank reason, records the reset, and immediately re-trips
 if the loss still breaches. The account remains reduce-only while latched. A new
 trading day's baseline permits a reset; rollover alone does not clear a manual or
-daily-loss latch. While latched, the snapshot's `kill_reset` says why a reset could
+daily-loss latch. While latched, `kill.reset_blocked` says why a reset could
 not clear it now and when it can: `DAILY_LOSS` with the marked loss and the limit
 while the loss still exceeds it (a reset works once it is back within the limit, or
 from the next trading day's baseline), or a personal guardrail's code until it
@@ -1392,7 +1396,8 @@ It takes the fields `PUT /api/orders/{id}` takes (`quantity`, `limit_price`,
 `trigger_level`, at least one of them) and `floor_share`, and answers with the same
 response. Its `decision` is the change's, from the checks a change takes with the
 order's own reservation released, and an unknown or finished order answers
-`UNKNOWN_ORDER` (404) or `ORDER_TERMINAL` (409) as the change would. `execution` is what
+`UNKNOWN_ORDER` (404) or `ORDER_TERMINAL` (409) as the change would. A quantity below 1
+returns 400 `INVALID_REQUEST` and records nothing. `execution` is what
 the change would do now, on a private copy of the account: a limit repriced through the
 market fills at once (`filled_quantity` and `fills` count only what fills now), an armed order whose new level is reached activates, and a refused
 change leaves the order as it stands, with its status and remaining quantity. The rest

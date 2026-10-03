@@ -128,6 +128,11 @@ limits outside regular hours; stop-limit retains its price, while stop-market
 executes once at the touch against displayed size. Extended entries' bracket exits
 inherit all sessions. Plain market entries remain IOC and regular-only.
 
+`PUT /api/orders/{id}` and `POST /api/orders/{id}/preview` reject a quantity below 1
+with 400 `INVALID_REQUEST` and record nothing, including on replay mirrors. A positive
+quantity at or below the filled quantity remains a recorded 422 `INVALID_ORDER` on PUT,
+with the requested and filled quantities.
+
 POST orders and PUT order changes take an optional `walk: {step, seconds, limit}`: money values are decimal strings, seconds is an integer from 1 to 3600.
 Only untriggered DAY/GTC limits may walk; managed exits cannot. PUT omission keeps
 the walk and `null` removes it. Orders report the current `limit_price`, `walk`,

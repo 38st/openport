@@ -638,7 +638,20 @@ TEST_F(PaperEngine, OrdersChangeInPlaceAndPositionsCloseOverHttp) {
   EXPECT_TRUE(body["fills"].empty());
   expect_error(write(*engine, "PUT", "/api/orders/1", json::object()), 400, "INVALID_REQUEST");
   expect_error(write(*engine, "PUT", "/api/orders/1", {{"side", "sell"}}), 400, "INVALID_REQUEST");
-  expect_error(write(*engine, "PUT", "/api/orders/1", {{"quantity", 0}}), 422, "INVALID_ORDER");
+  const auto version = engine->trading_view()->snapshot->account_version;
+  const auto changes = body["order"]["changes"].size();
+  for (const auto quantity : {0, -1}) {
+    for (const auto& [method, path] : {std::pair{"PUT", "/api/orders/1"},
+                                     std::pair{"POST", "/api/orders/1/preview"}}) {
+      SCOPED_TRACE(std::string(method) + " " + path + " quantity=" + std::to_string(quantity));
+      const auto refused = write(*engine, method, path, {{"quantity", quantity}});
+      expect_error(refused, 400, "INVALID_REQUEST");
+      EXPECT_EQ(json::parse(refused.body)["error"]["message"],
+                "quantity must be a positive whole number of contracts or units");
+      EXPECT_EQ(read(*engine, "/api/orders/1")["order"]["changes"].size(), changes);
+      EXPECT_EQ(engine->trading_view()->snapshot->account_version, version);
+    }
+  }
   expect_error(write(*engine, "PUT", "/api/orders/1", {{"limit_price", "4.03"}}), 422, "INVALID_TICK");
   expect_error(write(*engine, "PUT", "/api/orders/9", {{"quantity", 2}}), 404, "UNKNOWN_ORDER");
   // Marketable at its new price, it fills in place.
@@ -802,6 +815,34 @@ TEST_F(PaperEngine, OrdersReportTheirHistoryAndWhatTheyWaitFor) {
   EXPECT_FALSE(listed["changes"][1]["applied"]);
   EXPECT_EQ(listed["changes"][1]["trigger_level"], "5.00");
   EXPECT_EQ(listed["changes"][1]["reason"]["code"], "INVALID_ORDER");
+}
+
+TEST_F(PaperEngine, PositiveChangeQuantitiesAtOrBelowFilledRemainRecordedBusinessRejections) {
+  seed("4.00", "4.20", 2);
+  auto request = order(market, "partial", "4.20");
+  request["quantity"] = 3;
+  const auto placed = write(*engine, "POST", "/api/orders", request);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  auto listed = json::parse(placed.body)["order"];
+  ASSERT_EQ(listed["filled_quantity"], 2);
+  for (const auto quantity : {1, 2}) {
+    SCOPED_TRACE(quantity);
+    const auto version = engine->trading_view()->snapshot->account_version;
+    const auto changes = listed["changes"].size();
+    const auto refused = write(*engine, "PUT", "/api/orders/1", {{"quantity", quantity}});
+    expect_error(refused, 422, "INVALID_ORDER");
+    const auto reason = json::parse(refused.body)["error"];
+    EXPECT_EQ(reason["actual"], quantity);
+    EXPECT_EQ(reason["limit"], 2);
+    listed = read(*engine, "/api/orders/1")["order"];
+    ASSERT_EQ(listed["changes"].size(), changes + 1);
+    EXPECT_EQ(listed["changes"].back()["quantity"], quantity);
+    EXPECT_FALSE(listed["changes"].back()["applied"]);
+    EXPECT_EQ(listed["changes"].back()["reason"], reason);
+    EXPECT_EQ(listed["quantity"], 3);
+    EXPECT_EQ(listed["filled_quantity"], 2);
+    EXPECT_GT(engine->trading_view()->snapshot->account_version, version);
+  }
 }
 
 TEST_F(PaperEngine, ErrorsRejectMalformedUnknownFieldsAndRecordBusinessRejections) {

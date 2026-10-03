@@ -1855,7 +1855,11 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       command.floor_share = number_field(body, "floor_share");
       if (command.floor_share <= 0 || command.floor_share > 1) throw std::invalid_argument("floor_share must be in (0, 1]");
     }
-    if (body.contains("quantity")) command.change.quantity = integer_field(body, "quantity");
+    if (body.contains("quantity")) {
+      command.change.quantity = integer_field(body, "quantity");
+      if (*command.change.quantity < 1)
+        throw std::invalid_argument("quantity must be a positive whole number of contracts or units");
+    }
     if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
     if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
     if (body.contains("walk")) command.change.walk.emplace(parse_walk(body.at("walk")));
