@@ -1316,18 +1316,39 @@ void walk_limits(State& s, Events& events) {
     }
   }
 }
+void decide(State& s, const PlanVerdict& verdict, Money equity, Events& events);
+Decision entry_check(const State& s, const Order& o) {
+  if (s.config.rules.underlyings.empty() && !s.config.rules.trading_start) return {};
+  if (o.system || kept_within(o) || closing_only(s, o)) return {};
+  for (const auto& symbol : order_symbols(o.request))
+    if (const auto c = s.contracts.find(symbol); c != s.contracts.end())
+      if (const auto d = plan_entry_check(s.config.rules, c->second.underlying, s.time); !d.ok()) return d;
+  return {};
+}
 void advance(State& s, Timestamp time, Events& events) {
   if (time < 0 || time < s.time) throw TradingError(Reason::INVALID_TIME, "Market time must be nonnegative and monotone");
+  const auto previous_time = s.time;
   s.time = time;
+  if (const auto verdict = evaluate_time_rules(s.evaluation, s.config.rules, time); verdict.decided())
+    decide(s, verdict, measure(s).equity, events);
   refresh_guardrail_latch(s, events);
   // Every order ends at its earliest leg's last trade; before that, the account's
   // pre-expiry cutoff ends all but its own closing orders, whatever their time in force.
   const auto cutoff = s.config.rules.expiry_cutoff;
+  // A gap straight into the next window still crossed the previous window's end.
+  const bool skipped_end = s.config.rules.trading_end &&
+      md::new_york_time(time).date > md::new_york_time(previous_time).date;
   for (const auto id : open_ids(s)) {
     const auto& o = s.orders[id - 1];
     auto last = std::numeric_limits<Timestamp>::max();
     for (const auto& symbol : order_symbols(o.request)) last = std::min(last, s.contracts.at(symbol).last_trade_time());
-    if (time >= last)
+    if (skipped_end && !o.system && !kept_within(o) && !closing_only(s, o))
+      cancel_order(s, id, {Reason::OUTSIDE_PLAN_HOURS, "Working opening order reached the end of the plan's trading window",
+          static_cast<double>(md::new_york_time(time).seconds / 60), static_cast<double>(*s.config.rules.trading_end),
+          s.contracts.at(order_symbols(o.request).front()).underlying}, events);
+    else if (const auto d = entry_check(s, o); !d.ok())
+      cancel_order(s, id, d, events);
+    else if (time >= last)
       cancel_order(s, id, failure(Reason::EXPIRED, "A contract reached its last trade"), events);
     else if (!o.system && cutoff > 0 && time >= last - cutoff)
       cancel_order(s, id, failure(Reason::EXPIRY_CUTOFF, "A contract reached the account's pre-expiry cutoff"), events);
@@ -1763,6 +1784,7 @@ Decision group_check(const State& s, const OrderRequest& r) {
 }
 Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept) {
   if (const auto d = account_check(s, closing_only(s, o)); !d.ok()) return d;
+  if (const auto d = entry_check(s, o); !d.ok()) return d;
   try { (void)clean_annotation(o.request.note, o.request.tags); }
   catch (const TradingError& e) { return failure(e.code(), e.what()); }
   if (stage == Stage::Accept && !o.request.group.empty())
@@ -1918,6 +1940,7 @@ void observe_equity(State& s, Events& events);
 /// not), or a sale or buy-back of delivered shares.
 void count_trade(State& s) {
   if (counts_executions(s.config.rules)) ++s.evaluation.day_executions;
+  if (s.config.rules.inactivity_days > 0) s.evaluation.last_activity = s.time;
 }
 void count_execution(State& s, const Order& order) {
   if (!order.system) count_trade(s);
@@ -2586,6 +2609,7 @@ void lock_day(State& s, const PlanVerdict& verdict, Money equity, Events& events
 /// What the plan's rules read of the account now, at marked `equity`.
 PlanInputs plan_inputs(const State& s, Money equity) {
   PlanInputs in;
+  in.time = s.time;
   in.equity = equity;
   // Cash plus the positions' cost: the closed balance, as if nothing were open.
   in.balance = s.ledger.account().cash;
@@ -2636,6 +2660,8 @@ void observe_equity(State& s, Events& events) {
 std::string_view liquidation_label(const Evaluation& e, bool decided) {
   const auto code = decided ? e.decision_code : e.day_lock;
   if (code == Reason::DAILY_LOSS_LIMIT) return "daily_loss";
+  if (code == Reason::TIME_LIMIT) return "time_limit";
+  if (code == Reason::INACTIVITY) return "inactivity";
   if (decided) return e.status == EvaluationStatus::Passed ? "target" : "drawdown";
   return "day_lock";
 }
@@ -4050,6 +4076,7 @@ Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit,
 
 PlanInputs plan_inputs(const TradingSnapshot& s) {
   PlanInputs in;
+  in.time = s.time;
   in.equity = s.equity;
   in.balance = s.account.cash;
   for (const auto& p : s.positions) in.balance = in.balance + p.position.basis;
@@ -4143,13 +4170,13 @@ struct TradingSession::Impl {
   /// A new session's first record, and the first after recovery, are checkpoints.
   ChangeRecorder recorder;
   /// Whether moving the clock alone to `time` could change anything. Flat with
-  /// no open orders, and once the attempt has its start time, time drives no
-  /// rule: no DAY or expiry cancellation, trigger, mark, freshness flag, loss
-  /// or evaluation change. Rollover is its own command.
+  /// no open orders, and once the attempt has its start time, only an overdue
+  /// calendar rule can decide it. Rollover is its own command.
   bool idle(Timestamp time) const {
     const auto& s = state;
     return !stopped && time >= s.time && s.ledger.positions().empty() && s.ledger.stocks().empty() &&
            s.evaluation.started > 0 && s.evaluation.cycle_started > 0 &&
+           !evaluate_time_rules(s.evaluation, s.config.rules, time).decided() &&
            s.guardrails.cooldown_until <= s.time &&
            open_ids(s).empty() && s.alerts.items.empty();
   }
@@ -5624,6 +5651,8 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
     if (reduce_only && !reduces)
       return CommandResult{failure(Reason::INVALID_ORDER, "Stock trades only reduce the shares exercise and assignment delivered"), {}, 0};
     if (const auto d = account_check(s, reduces); !d.ok()) return CommandResult{d, {}, 0};
+    if (!reduces)
+      if (const auto d = plan_entry_check(s.config.rules, symbol, s.time); !d.ok()) return CommandResult{d, {}, 0};
     if (!reduces) {
       if (md::is_index_underlying(symbol))
         return CommandResult{failure(Reason::INVALID_ORDER, "Index underlyings settle in cash and have no shares to trade"), {}, 0};

@@ -8923,6 +8923,52 @@
             "minimum": 0,
             "maximum": 100,
             "description": "Percent of equity minus the plan floor at entry/change, rounded down to micro-dollars. Zero disables; ignored without a floor. The tighter active risk limit applies."
+          },
+          "time_limit_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 366,
+            "description": "Calendar days; zero disables. Evaluation phase only; expires after the deadline date."
+          },
+          "inactivity_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 366,
+            "description": "Calendar days; zero disables. Own executions reset activity; system closes do not."
+          },
+          "underlyings": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z0-9.]{1,12}$"
+            },
+            "maxItems": 32,
+            "uniqueItems": true,
+            "description": "Allowed opening underlyings; empty permits all. SPX includes SPXW options."
+          },
+          "trading_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
+          },
+          "trading_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
           }
         },
         "required": [
@@ -9839,6 +9885,72 @@
               }
             ],
             "description": "Once a decided attempt is flat, decided_equity - liquidated_equity: what closing at the bid or ask cost."
+          },
+          "time_limit_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Configured evaluation time window in calendar days; null when disabled."
+          },
+          "deadline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last allowed plan trading date, YYYY-MM-DD; null when the evaluation time limit is off or not started."
+          },
+          "days_left": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Calendar days from the current plan trading date to the deadline, never negative; null when off or not started."
+          },
+          "last_activity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Timestamp of the last own execution, or attempt start; null when inactivity is off or not started."
+          },
+          "inactive_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Calendar days since the last activity plan trading date, never negative; null when off or not started."
+          },
+          "inactivity_deadline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last allowed plan trading date before inactivity failure, YYYY-MM-DD; null when off or not started."
           }
         },
         "required": [
@@ -17404,6 +17516,52 @@
                         "minimum": 0,
                         "maximum": 100,
                         "description": "Percent of equity minus the plan floor at entry/change, rounded down to micro-dollars. Zero disables; ignored without a floor. The tighter active risk limit applies."
+                      },
+                      "time_limit_days": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 366,
+                        "description": "Calendar days; zero disables. Evaluation phase only; expires after the deadline date."
+                      },
+                      "inactivity_days": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 366,
+                        "description": "Calendar days; zero disables. Own executions reset activity; system closes do not."
+                      },
+                      "underlyings": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[A-Z0-9.]{1,12}$"
+                        },
+                        "maxItems": 32,
+                        "uniqueItems": true,
+                        "description": "Allowed opening underlyings; empty permits all. SPX includes SPXW options."
+                      },
+                      "trading_start": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
+                      },
+                      "trading_end": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
                       }
                     },
                     "required": [],
@@ -19570,6 +19728,52 @@
             "minimum": 0,
             "maximum": 100,
             "description": "Percent of equity minus the plan floor at entry/change, rounded down to micro-dollars. Zero disables; ignored without a floor. The tighter active risk limit applies."
+          },
+          "time_limit_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 366,
+            "description": "Calendar days; zero disables. Evaluation phase only; expires after the deadline date."
+          },
+          "inactivity_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 366,
+            "description": "Calendar days; zero disables. Own executions reset activity; system closes do not."
+          },
+          "underlyings": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z0-9.]{1,12}$"
+            },
+            "maxItems": 32,
+            "uniqueItems": true,
+            "description": "Allowed opening underlyings; empty permits all. SPX includes SPXW options."
+          },
+          "trading_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
+          },
+          "trading_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
           }
         },
         "required": [

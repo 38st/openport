@@ -76,6 +76,9 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"consistency_basis", kConsistencyBases[static_cast<int>(r.consistency_basis)]},
           {"min_trading_days", r.min_trading_days}, {"min_profitable_days", r.min_profitable_days},
           {"profitable_day_profit", positive(r.profitable_day_profit)}, {"day_end", clock_text(r.day_end_minutes)},
+          {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days}, {"underlyings", r.underlyings},
+          {"trading_start", r.trading_start ? json(clock_text(*r.trading_start)) : json(nullptr)},
+          {"trading_end", r.trading_end ? json(clock_text(*r.trading_end)) : json(nullptr)},
           {"buy_only", r.buy_only}, {"defined_risk", r.defined_risk}, {"buying_power", r.buying_power},
           {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin == MarginMode::Portfolio ? "portfolio" : "strategy"},
           {"account_type", r.account_type == AccountType::Cash ? "cash" : r.account_type == AccountType::Ira ? "ira" : "margin"},
@@ -763,6 +766,7 @@ json account_json(const TradingView& view) {
     daily_loss = {{"limit", r.daily_loss_limit.str()}, {"basis", kDailyLossBases[static_cast<int>(r.daily_loss_basis)]},
                   {"action", kBreachActions[static_cast<int>(r.daily_loss_action)]}, {"reference", level->reference.str()},
                   {"level", level->level.str()}, {"room", (s.equity - level->level).str()}};
+  const auto timed = time_rule_progress(e, r, s.time);
   const bool liquidated = decided && in.flat;
   json payouts = json::array();
   for (const auto& p : e.payouts)
@@ -813,6 +817,12 @@ json account_json(const TradingView& view) {
                                           : json(nullptr)},
               {"consistency_target", money(consistency_target(e, r, in))},
               {"daily_loss", daily_loss},
+              {"time_limit_days", r.time_limit_days > 0 ? json(r.time_limit_days) : json(nullptr)},
+              {"deadline", timed.deadline ? json(md::format_date(*timed.deadline)) : json(nullptr)},
+              {"days_left", timed.days_left ? json(*timed.days_left) : json(nullptr)},
+              {"last_activity", time_or_null(timed.last_activity)},
+              {"inactive_days", timed.inactive_days ? json(*timed.inactive_days) : json(nullptr)},
+              {"inactivity_deadline", timed.inactivity_deadline ? json(md::format_date(*timed.inactivity_deadline)) : json(nullptr)},
               {"day_lock", e.day_lock == Reason::NONE ? json(nullptr) : json(to_string(e.day_lock))},
               {"day_locked_at", time_or_null(e.day_locked_at)},
               {"exit_equity", s.exit_equity.str()}, {"exit_cost", (s.equity - s.exit_equity).str()},
@@ -1554,7 +1564,8 @@ AccountRules parse_rules(const json& j) {
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
-          "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"});
+          "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
+          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end"});
   AccountRules rules;
   // Accept read-back rules in a custom request, but always derive the identity.
   if (j.contains("plan_id") && !j.at("plan_id").is_null() && !j.at("plan_id").is_string())
@@ -1591,6 +1602,16 @@ AccountRules parse_rules(const json& j) {
   if (j.contains("require_stop_loss")) rules.require_stop_loss = boolean_field(j, "require_stop_loss");
   if (has("max_trade_risk")) rules.max_trade_risk = decimal_field(j, "max_trade_risk");
   if (j.contains("max_trade_risk_percent")) rules.max_trade_risk_percent = integer_field(j, "max_trade_risk_percent");
+  if (j.contains("time_limit_days")) rules.time_limit_days = integer_field(j, "time_limit_days");
+  if (j.contains("inactivity_days")) rules.inactivity_days = integer_field(j, "inactivity_days");
+  if (j.contains("underlyings")) {
+    const auto& symbols = j.at("underlyings");
+    if (!symbols.is_array() || !std::all_of(symbols.begin(), symbols.end(), [](const json& symbol) { return symbol.is_string(); }))
+      throw std::invalid_argument("underlyings must be an array of uppercase symbols");
+    rules.underlyings = symbols.get<std::vector<std::string>>();
+  }
+  if (has("trading_start")) rules.trading_start = clock_field(j, "trading_start");
+  if (has("trading_end")) rules.trading_end = clock_field(j, "trading_end");
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");

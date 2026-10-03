@@ -1407,3 +1407,11 @@ commands or change any journal bytes; driver 6 and scenario revisions are unchan
 F15 plan contract caps are opt-in: `max_contracts_held` is journaled only when nonzero. Existing plans keep their journal bytes; driver 6 and scenario revisions are unchanged.
 
 F60 stop and trade-risk rules likewise omit `require_stop_loss`, `max_trade_risk` and `max_trade_risk_percent` at their off defaults. Only opted-in plans record the new fields and decisions; existing journal bytes and driver/scenario versions are unchanged. Preview risk fields are derived, never journaled.
+
+F62/F58/F31 add optional plan time limits, inactivity, underlying whitelists and
+opening hours without changing the replay driver or scenario revision. Rules at
+their defaults and zero `last_activity` are omitted from reducer journals; existing
+plans keep identical journal bytes. Configured plans record their rules, own-execution
+activity timestamps and non-default `TIME_LIMIT`/`INACTIVITY` decision codes.
+Hours cancellations record `OUTSIDE_PLAN_HOURS` with numeric clock evidence.
+Recovery and `--verify-run` use the recorded market clock and rules.

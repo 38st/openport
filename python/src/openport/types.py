@@ -185,6 +185,11 @@ class PayoutStatus(TypedDict):
 
 
 class AccountRules(TypedDict, total=False):
+    time_limit_days: int
+    inactivity_days: int
+    underlyings: list[str]
+    trading_start: str | None
+    trading_end: str | None
     plan_id: str | None
     plan: str | None
     phase: str

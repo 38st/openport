@@ -427,6 +427,20 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
                          : key == "daily_loss_action" ? std::initializer_list<const char*>{"lock", "fail"}
                                                       : std::initializer_list<const char*>{"total", "positive_days"});
         rules[key] = value;
+      } else if (key == "trading_start" || key == "trading_end") {
+        if (value.is_null()) { rules[key] = nullptr; continue; }
+        if (!value.is_string()) throw std::invalid_argument("plan rules " + key + " must be HH:MM New York time");
+        const auto text = value.get<std::string>();
+        const auto digit = [&](std::size_t i) { return text[i] >= '0' && text[i] <= '9'; };
+        if (text.size() != 5 || text[2] != ':' || !digit(0) || !digit(1) || !digit(3) || !digit(4))
+          throw std::invalid_argument("plan rules " + key + " must be HH:MM New York time");
+        const auto h = (text[0] - '0') * 10 + text[1] - '0', m = (text[3] - '0') * 10 + text[4] - '0';
+        if (h > 24 || m > 59 || (h == 24 && m != 0)) throw std::invalid_argument("Invalid plan trading hour");
+        rules[key] = h * 60 + m;
+      } else if (key == "underlyings") {
+        if (!value.is_array() || !std::all_of(value.begin(), value.end(), [](const json& symbol) { return symbol.is_string(); }))
+          throw std::invalid_argument("plan rules underlyings must be an array of uppercase symbols");
+        rules[key] = value;
       } else if (key == "margin") {
         if (value != "strategy" && value != "portfolio") throw std::invalid_argument("Unknown margin");
         rules[key] = value == "strategy" ? trading::MarginMode::Strategy : trading::MarginMode::Portfolio;

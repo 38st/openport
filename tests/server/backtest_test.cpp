@@ -358,6 +358,19 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
   const auto custom = server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "1000"},
       {"rules", {{"profit_target", "100"}, {"max_drawdown", "50"}, {"drawdown_mode", "end_of_day"}}}}}, {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
   EXPECT_EQ(custom.config.rules.max_drawdown, Money::parse("50"));
+  auto timed = good;
+  timed["plan"] = {{"initial_cash", "10000"}, {"rules", {{"profit_target", "100"}, {"time_limit_days", 30},
+      {"inactivity_days", 14}, {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"}}}};
+  const auto time_rules = server::parse_backtest(timed, definitions, scenarios, {}).config.rules;
+  EXPECT_EQ(time_rules.time_limit_days, 30); EXPECT_EQ(time_rules.inactivity_days, 14);
+  EXPECT_EQ(time_rules.underlyings, std::vector<std::string>{"SPX"});
+  EXPECT_EQ(time_rules.trading_start, 570); EXPECT_EQ(time_rules.trading_end, 960);
+  for (const auto& patch : std::vector<json>{{{"time_limit_days", 367}}, {{"inactivity_days", 1.5}},
+      {{"underlyings", "SPX"}}, {{"trading_end", nullptr}}, {{"trading_start", "09:60"}}}) {
+    auto bad = timed; bad["plan"]["rules"].update(patch);
+    EXPECT_THROW((void)server::parse_backtest(bad, definitions, scenarios, {}), std::exception);
+  }
+
   test::RecordingFile storage;
   const auto file = recorded_day(storage.directory, {2026, 9, 14});
   auto duplicate = good; duplicate.erase("scenarios"); duplicate.erase("seed");

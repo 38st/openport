@@ -97,6 +97,7 @@ target_sources(openport_tests PRIVATE
   trading/funded_test.cpp
   trading/plan_rules_test.cpp
   trading/trade_rules_test.cpp
+  trading/time_rules_test.cpp
   trading/multileg_test.cpp
   trading/orders_test.cpp
 )

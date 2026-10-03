@@ -1556,6 +1556,9 @@ side, no buying-power check. All rule money is exact.
 | `min_trading_days` | A pass needs this many trading days with an execution of the trader's own orders (0–366) |
 | `min_profitable_days` | A pass needs this many days whose profit reaches `profitable_day_profit` and is above zero (0–366) |
 | `profitable_day_profit` | The profit a day needs to count as profitable; zero counts any day above zero |
+| `time_limit_days`, `inactivity_days` | Calendar-day limits, 0 (off) to 366; the time limit is evaluation-only |
+| `underlyings` | Up to 32 allowed underlying symbols; empty permits all |
+| `trading_start`, `trading_end` | Optional New York minutes internally, `HH:MM` or null on the API; both set or both off, start inclusive and end exclusive |
 | `day_end_minutes` | Minutes after New York midnight at which the plan's trading day ends, 975 (16:15) to 1440 (24:00); default 1020 (17:00). API `day_end` as `HH:MM` |
 | `payouts` | Funded phase: qualifying days, withdrawal share, trader split, minimum and caps (see Funded accounts and payouts) |
 
@@ -1566,7 +1569,7 @@ trigger price, without fees or slippage, and is not a guaranteed loss bound. Sha
 entries cannot attach brackets, so a stop-required plan refuses them; with only a
 risk cap, a long share entry risks its purchase price and a short is unbounded.
 
-Outcomes use **fully marked equity**: every position has a mark, fresh or not. A
+Equity-based outcomes use **fully marked equity**: every position has a mark, fresh or not. A
 position without any mark defers the decision rather than counting as zero. Every
 transaction runs the monitor after its command and the daily-loss check, as well as
 after each atomic fill and before matching a new quote batch: it records
@@ -1591,11 +1594,13 @@ running plan decisions again. The terminal explains leftover positions on the
 Dashboard and Positions page and allows their closing tickets.
 `Evaluation::decision_code`
 names the rule that decided it: `PROFIT_TARGET`, `DRAWDOWN_FLOOR` or
-`DAILY_LOSS_LIMIT`.
+`DAILY_LOSS_LIMIT`, `TIME_LIMIT` or `INACTIVITY`. Calendar failures run before the
+command, without requiring marks.
 
 **System orders** perform liquidation and expiry auto-close: market IOC orders with
 `system = true` and client IDs `system:drawdown:N` (a failed attempt), `system:target:N`
-(a passed one), `system:daily_loss:N` (the plan's daily loss limit, locking the day or
+(a passed one), `system:time_limit:N` or `system:inactivity:N` (calendar failures),
+`system:daily_loss:N` (the plan's daily loss limit, locking the day or
 failing the attempt), `system:expiry:N` (the expiry cutoff) or `system:soft_floor:N` (a
 personal soft floor while the attempt is still active; once the plan decides the
 attempt or locks the day, its own label wins, even when the soft floor latched in the
@@ -1767,6 +1772,50 @@ status, decision and its code, plus one `EvaluationDay` per finished trading dat
 and close equity, peak and floor after that day's ratchet, net realised P&L after fees,
 whether it qualified toward a payout, its executions when a rule counts them, and the
 plan limit that locked it, if any), appended at `roll_day`.
+
+### Evaluation time, inactivity and opening restrictions
+
+Optional `time_limit_days` and `inactivity_days` are whole calendar-day counts,
+0 (off) to 366. `time_limit_days` is evaluation-only; funded plans reject it.
+The deadline is the attempt start's **plan trading date** plus N calendar days.
+An active attempt fails with `TIME_LIMIT` on the first transaction whose plan
+trading date is **after** the deadline. A pass decided earlier stands. Dates
+follow `day_end` and the business-day calendar, including weekends, holidays and
+New York daylight saving; the counts between dates are calendar days.
+
+Inactivity works in evaluation and funded phases. The attempt start is the initial
+activity. Each execution of your own option order (including partial fills and
+bracket exits), or your share trade, resets activity. System liquidations, expiry,
+exercise, assignment, quotes, submissions and cancellations do not. More than N
+calendar days between the current plan trading date and the last activity's plan
+trading date fails the attempt with `INACTIVITY`, before an overdue order can execute.
+The normal post-decision liquidation follows both failures. Market time drives these
+rules even in empty batches; missing marks do not postpone a calendar deadline.
+
+`underlyings` is an optional list of up to 32 distinct symbols of 1–12 uppercase
+letters, digits or dots; empty allows all. It restricts opening or adding options
+and shares by **underlying**, not option root: `SPX` allows both SPX and SPXW options.
+Other openings receive `INSTRUMENT_NOT_ALLOWED`, with that underlying in `scope`.
+Reducing orders, managed exits and system closes remain allowed.
+
+`trading_start` and `trading_end` are optional `HH:MM` New York wall-clock times.
+Set both, with start before end, or leave both null/omitted. Start is inclusive,
+end exclusive; `00:00` is valid and `24:00` is valid for the end. The window applies
+every day, including overnight and curb sessions; product-session checks still
+apply. Outside it, openings receive `OUTSIDE_PLAN_HOURS`, with the current New York
+minute in `actual`, the nearest window boundary in `limit`, and the underlying in
+`scope`. At the first transaction outside the window, working opening orders cancel
+with that reason before matching. A gap into the next day’s window still cancels
+orders that crossed the previous window’s end. Reducing orders and bracket exits
+keep working under their normal sessions and expiry rules.
+
+Account `evaluation` adds `time_limit_days`, `deadline`, `days_left`, `last_activity`,
+`inactive_days` and `inactivity_deadline`. Disabled rules report null; progress is
+also null until the attempt starts. `days_left` is never negative. Dashboard shows
+the time left and warns within seven calendar days of inactivity expiry. Custom
+plan editing, plan facts, Rules and option, strategy and share tickets show the
+restrictions; tickets block known openings. Old plans default to off and keep their
+existing journal bytes.
 
 ### Plan objectives and the daily loss limit
 
@@ -2561,6 +2610,11 @@ compilers/architectures, although recovery restores the recorded doubles.
 
 ## Reason codes
 
+`TIME_LIMIT` fails an overdue evaluation; `INACTIVITY` fails an attempt after too
+many calendar days without an own execution. `INSTRUMENT_NOT_ALLOWED` refuses
+opening options or shares outside the plan whitelist. `OUTSIDE_PLAN_HOURS` refuses
+opening orders and cancels working openings outside the plan window.
+
 | Code(s) | Meaning |
 | --- | --- |
 | `NONE` | Success |
@@ -2978,7 +3032,8 @@ Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
 defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, inside_fill_percent, fees, margin, account_type, house_margin_percent,
 pm_vol_shock, buying_power, expiry_cutoff_seconds, lock_at_start, profit_basis, daily_loss_limit,
 daily_loss_basis, daily_loss_action, consistency_percent, consistency_basis, min_trading_days,
-min_profitable_days, profitable_day_profit, day_end}`.
+min_profitable_days, profitable_day_profit, day_end, time_limit_days, inactivity_days,
+underlyings, trading_start, trading_end}`.
 `fees` is the optional [fee schedule](#fees).
 `defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `inside_fill_percent`, `margin`, `account_type`,
 `house_margin_percent`, `pm_vol_shock` and every field from `lock_at_start` on are optional when creating or
