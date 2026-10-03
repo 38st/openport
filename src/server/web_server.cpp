@@ -323,7 +323,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
     const bool account_read = read && (path == "/api/account" || path == "/api/account/equity" ||
         path == "/api/account/pass-odds" || path == "/api/portfolio" || path == "/api/orders" ||
         path == "/api/fills" || path == "/api/risk" || path == "/api/risk/profile" || path == "/api/trades" ||
-        path == "/api/trades.csv" || path == "/api/fills.csv" || path == "/api/playbooks");
+        path == "/api/trades.csv" || path == "/api/fills.csv" || path == "/api/playbooks" || path == "/api/alerts");
     if ((!market_read && account != sandbox) || (read && !market_read && !account_read) ||
         (!read && path.starts_with("/api/playbooks")))
       return api_error(403, "SCOPE_REQUIRED", "Sandbox tokens may access only their own account and the demo market");
@@ -334,7 +334,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
   const bool trade = path == "/orders" || path == "/orders/preview" || path == "/orders/cancel" ||
       path.starts_with("/orders/") || path == "/positions/close" || path == "/positions/close/preview" || path == "/positions/exercise" || path == "/stocks/close" || path == "/stocks/trade" || path == "/stocks/trade/preview" ||
       path == "/positions/abandon" || path == "/positions/instruction" ||
-      path.starts_with("/playbooks/staged/") ||
+      path.starts_with("/playbooks/staged/") || path == "/alerts" || path.starts_with("/alerts/") ||
       path == "/trades/group" || path == "/trades/ungroup" ||
       ((path.starts_with("/trades/") || path.starts_with("/days/")) && path.ends_with("/note"));
   const bool permitted = (create_sandbox && sandbox.empty()) || has("admin") || (read ? has("read") || !policy.require_token :

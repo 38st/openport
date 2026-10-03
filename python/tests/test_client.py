@@ -160,6 +160,9 @@ def test_base_url_rejects_ambiguous_credentials(url):
     ("portfolio", (), "GET", "/api/portfolio", "Portfolio"),
     ("fills", (), "GET", "/api/fills", "FillsResponse"),
     ("trades", (), "GET", "/api/trades", "TradesResponse"),
+    ("alerts", (), "GET", "/api/alerts", "AlertsResponse"),
+    ("create_alert", ("account", "equity", "at_or_below", "99000"), "POST", "/api/alerts", "AlertResponse"),
+    ("delete_alert", ("1",), "DELETE", "/api/alerts/1", "AlertDeleted"),
     ("risk", (), "GET", "/api/risk", "Risk"),
     ("risk_profile", ("SPX",), "GET", "/api/risk/profile", "RiskProfile"),
     ("probability", ("SPX", [0, 7], [5900]), "GET", "/api/underlyings/SPX/probability", "Probability"),
@@ -308,3 +311,24 @@ def test_share_trade_does_not_retry_an_uncertain_write(stub):
     with pytest.raises(ApiError):
         Client(stub.url, "secret", retries=3, backoff=0).trade_stock("SPY", "buy", 100)
     assert len(stub.requests) == 1
+
+
+def test_alerts_keep_decimal_levels_and_scope_in_live_replay_and_history(stub):
+    from conftest import shaped
+    original = stub.respond
+    def respond(method, target, headers, body):
+        original(method, target, headers, body)
+        return 201, shaped("AlertResponse")
+    stub.respond = respond
+    client = Client(stub.url, "secret", "practice")
+    legs = [{"symbol": "SPXW  261022C05000000", "side": "buy", "ratio": 1},
+            {"symbol": "SPXW  261022C05100000", "side": "sell", "ratio": 2}]
+    client.create_alert("spread", "mark", "at_or_below", "-0.123456", legs=legs, repeat=True, label="Credit")
+    assert stub.requests[-1][3] == {"scope": "spread", "metric": "mark", "direction": "at_or_below",
+                                  "level": "-0.123456", "legs": legs, "repeat": True, "label": "Credit"}
+    client.for_replay().create_alert("underlying", "iv30", "at_or_above", "25", symbol="SPX")
+    assert stub.requests[-1][1] == "/api/replay/alerts?account=main"
+    client.for_history("run-1").alerts()
+    assert stub.requests[-1][1] == "/api/replay/history/run-1/alerts?account=main"
+    client.delete_alert("7/8")
+    assert stub.requests[-1][0:2] == ("DELETE", "/api/alerts/7%2F8?account=practice")

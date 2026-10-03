@@ -268,6 +268,22 @@ json exit_json(const std::optional<ExitSpec>& e) {
   return {{"trigger", trigger_json(e->trigger)}, {"limit_price", money(e->limit_price)}};
 }
 json id_or_null(OrderId id) { return id == 0 ? json(nullptr) : json(std::to_string(id)); }
+json alert_json(const Alert& a) {
+  constexpr const char* scopes[] = {"contract", "spread", "underlying", "account"};
+  const auto& c = a.spec.condition;
+  json legs = nullptr;
+  if (c.scope == AlertScope::Spread) {
+    legs = json::array();
+    for (const auto& leg : c.legs) legs.push_back({{"symbol", leg.symbol}, {"side", leg.side == Side::Buy ? "buy" : "sell"}, {"ratio", leg.ratio}});
+  }
+  return {{"id", std::to_string(a.id)}, {"label", a.spec.label}, {"scope", scopes[static_cast<int>(c.scope)]},
+          {"metric", c.metric}, {"symbol", c.symbol.empty() ? json(nullptr) : json(c.symbol)}, {"legs", legs},
+          {"direction", c.direction == TriggerDirection::AtOrBelow ? "at_or_below" : "at_or_above"},
+          {"level", c.level.str()}, {"repeat", a.spec.repeat}, {"created_at", md::format_timestamp(a.created)},
+          {"actor", a.actor}, {"armed", a.armed}, {"fired", a.fired},
+          {"fired_at", a.fired > 0 ? json(md::format_timestamp(a.fired_at)) : json(nullptr)},
+          {"value", a.value ? json(a.value->str()) : json(nullptr)}};
+}
 const char* tif_name(TimeInForce tif) {
   switch (tif) {
     case TimeInForce::Day: return "day";
@@ -1051,7 +1067,8 @@ json risk_json(const TradingView& view) {
 
 int reason_status(Reason reason) {
   if (reason == Reason::INVALID_RULES) return 400;
-  if (reason == Reason::UNKNOWN_ORDER || reason == Reason::UNKNOWN_CONTRACT || reason == Reason::UNKNOWN_TRADE) return 404;
+  if (reason == Reason::UNKNOWN_ORDER || reason == Reason::UNKNOWN_CONTRACT || reason == Reason::UNKNOWN_TRADE ||
+      reason == Reason::UNKNOWN_ALERT) return 404;
   if (reason == Reason::ORDER_TERMINAL || reason == Reason::DUPLICATE_CLIENT_ID) return 409;
   if (reason == Reason::JOURNAL_IO || reason == Reason::JOURNAL_CORRUPT ||
       reason == Reason::JOURNAL_LOCKED) return 503;
@@ -1180,6 +1197,14 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       body["tags"] = a == s.annotations.end() ? json::array() : json(a->second.tags);
       break;
     }
+    case TradingCommand::Kind::CreateAlert: {
+      const auto it = std::find_if(s.alerts.begin(), s.alerts.end(), [&](const Alert& a) { return a.id == reply.alert_id; });
+      if (it == s.alerts.end()) return api_error(503, "TRADING_UNAVAILABLE", "Alert publication missing");
+      status = 201;
+      body["alert"] = alert_json(*it);
+      break;
+    }
+    case TradingCommand::Kind::DeleteAlert: body["deleted"] = std::to_string(command.alert_id); break;
     case TradingCommand::Kind::CreateSandbox:
     case TradingCommand::Kind::CreateAccount:
       status = 201;
@@ -1502,6 +1527,12 @@ bool valid_account(std::string_view id) {
 }
 TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   TradingCommand command;
+  if (request.method == "DELETE" && path.starts_with("/api/alerts/")) {
+    if (!request.body.empty()) throw std::invalid_argument("DELETE must have no body");
+    command.kind = TradingCommand::Kind::DeleteAlert;
+    command.alert_id = identifier(path.substr(std::string_view("/api/alerts/").size()));
+    return command;
+  }
   if (request.method == "DELETE") {
     if (!request.body.empty()) throw std::invalid_argument("DELETE must have no body");
     command.kind = TradingCommand::Kind::Cancel;
@@ -1610,6 +1641,37 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
         command.tags.push_back(tag.get<std::string>());
       }
     }
+    return command;
+  }
+  if (path == "/api/alerts") {
+    // POST /api/alerts: what to watch, a direction and an inclusive level.
+    fields(body, {"scope", "metric", "direction", "level"}, {"label", "symbol", "legs", "repeat"});
+    command.kind = TradingCommand::Kind::CreateAlert;
+    auto& c = command.alert.condition;
+    const auto scope = string_field(body, "scope");
+    constexpr const char* scopes[] = {"contract", "spread", "underlying", "account"};
+    const auto found = std::find(std::begin(scopes), std::end(scopes), scope);
+    if (found == std::end(scopes)) throw std::invalid_argument("scope must be contract, spread, underlying or account");
+    c.scope = static_cast<AlertScope>(found - std::begin(scopes));
+    c.metric = string_field(body, "metric");
+    const auto direction = string_field(body, "direction");
+    if (direction != "at_or_below" && direction != "at_or_above") throw std::invalid_argument("direction must be at_or_below or at_or_above");
+    c.direction = direction == "at_or_below" ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove;
+    c.level = decimal_field(body, "level");
+    if (body.contains("symbol") && !body.at("symbol").is_null()) c.symbol = string_field(body, "symbol");
+    if (body.contains("legs") && !body.at("legs").is_null()) {
+      if (!body.at("legs").is_array()) throw std::invalid_argument("legs must be an array");
+      for (const auto& item : body.at("legs")) {
+        fields(item, {"symbol", "side", "ratio"});
+        const auto side = string_field(item, "side");
+        if (side != "buy" && side != "sell") throw std::invalid_argument("A leg's side must be buy or sell");
+        c.legs.push_back({symbol_field(item), side == "buy" ? Side::Buy : Side::Sell, integer_field(item, "ratio")});
+      }
+    }
+    if (body.contains("label")) command.alert.label = string_field(body, "label");
+    if (body.contains("repeat")) command.alert.repeat = boolean_field(body, "repeat");
+    // The reducer's own check, so malformed terms are a 400 like any malformed request.
+    try { validate_alert(command.alert); } catch (const TradingError& e) { throw std::invalid_argument(e.what()); }
     return command;
   }
   if (path == "/api/positions/exercise") {
@@ -2168,7 +2230,8 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto path = request.target.substr(0, question);
   if (path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
       path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/account/equity" &&
-      path != "/api/trades" && path != "/api/plans" && path != "/api/accounts" && path != "/api/risk/profile") return {};
+      path != "/api/trades" && path != "/api/plans" && path != "/api/accounts" && path != "/api/risk/profile" &&
+      path != "/api/alerts") return {};
   if (path == "/api/risk/profile") {
     const auto pairs = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
     if (!pairs) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
@@ -2222,6 +2285,11 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   if (path == "/api/risk") return ApiResponse{200, risk_json(*view).dump()};
   if (path == "/api/account") return ApiResponse{200, account_json(*view).dump()};
   if (path == "/api/trades") return ApiResponse{200, trades_json(*view, status, attempt == "current").dump()};
+  if (path == "/api/alerts") {
+    json alerts = json::array();
+    for (const auto& alert : s.alerts) alerts.push_back(alert_json(alert));
+    return ApiResponse{200, json{{"account_version", std::to_string(s.account_version)}, {"alerts", alerts}}.dump()};
+  }
   if (csv) {
     json rows = json::array();
     const bool fills = path == "/api/fills.csv";
@@ -2285,10 +2353,10 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       path == "/api/positions/abandon" || path == "/api/positions/instruction" ||
       path == "/api/risk/kill" || path == "/api/settlements" ||
       path == "/api/account/reset" || path == "/api/account/payout" ||
-      path == "/api/trades/group" || path == "/api/trades/ungroup")) ||
+      path == "/api/trades/group" || path == "/api/trades/ungroup" || path == "/api/alerts")) ||
       (request.method == "PUT" && (path == "/api/risk/limits" || path == "/api/risk/guardrails" || path.starts_with("/api/orders/") ||
                                    ((path.starts_with("/api/trades/") || path.starts_with("/api/days/")) && path.ends_with("/note")))) ||
-      (request.method == "DELETE" && path.starts_with("/api/orders/"));
+      (request.method == "DELETE" && (path.starts_with("/api/orders/") || path.starts_with("/api/alerts/")));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
   std::string account;
   if (!pairs || pairs->size() > 1 || (pairs->size() == 1 && (!pairs->contains("account") || !valid_account(pairs->at("account"))) ) ||

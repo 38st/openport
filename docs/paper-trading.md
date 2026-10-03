@@ -1939,6 +1939,39 @@ its history across attempts, and they are allowed whatever the account's state o
 session. The snapshot's `annotations` maps each trade's ID to its note, tags and the
 time it last changed.
 
+### Account alerts
+
+An account keeps up to 100 alerts. Each watches one value, fires when it reaches an
+inclusive level, and is kept in the journal with the account, so it fires whether or not
+the terminal is open, survives a restart and fires at the same steps when a replay is
+[verified on the same build and platform](runtime.md#verifying-a-run). A one-shot alert fires once; with `repeat` it fires again each time its
+condition returns after a fresh value showed it lapsed.
+
+| Scope | `symbol` / `legs` | Metrics |
+| --- | --- | --- |
+| `contract` | A registered padded OSI | `bid`, `ask`, `mark`, `iv` (smile IV in vol points), `delta`, `gamma`, `theta`, `vega` (per unit, from the contract's valuation) |
+| `spread` | Two to four `legs` (`symbol`, `side`, `ratio`) | `mark`: the net mark per unit, buys adding and sells subtracting |
+| `underlying` | An underlying, such as `SPX` or `VIX` | `price`, `iv30`, `iv7`, `term_ratio`: the values [conditional orders](#conditional-and-bracket-orders) watch |
+| `account` | None | `equity`, `day_pnl` (equity less the day's opening equity), `unrealised`, `floor_room` (to the plan floor or the soft floor, whichever is nearer), `buying_power`, `dollar_delta`, `vega`, `theta` |
+
+Alerts are checked after each market batch and when created, so one whose condition
+already holds fires at once. Quotes and marks count while they are within the quote age,
+valuations and underlying values within the valuation age; account measures need complete
+marks (exposures complete valuations; buying power also fresh working-order quotes).
+A missing or stale value neither fires an alert nor rearms it. The server supplies the quotes and valuations of contracts that alerts watch,
+and the values of underlyings, like those of the account's own orders. Levels may be
+negative, as for a day P&L or a put's delta. Each firing is recorded as an `alert_fired`
+event and in the alert's `fired`, `fired_at` and `value`; the terminal announces it, and
+[external notifications](runtime.md#external-notifications) forward it as the `alert`
+event from live accounts. Replay and scenario accounts' alerts fire in the terminal only.
+Alerts change no orders or positions: they are allowed whatever the account's state, and
+a reset keeps them. In **Alerts → Account alerts**, choose the scope and measure,
+enter the inclusive level and optionally enable repeat. A spread takes two to four
+explicit legs with ratios from 1 to 10, or can start from held legs; the saved legs
+stay fixed when positions change. Firings show their time and value in the list.
+Alerts keep working only while the server and its feed are running. A restart
+restores their state but cannot evaluate market moves during the downtime.
+
 ### Day notes
 
 `annotate_day(day, plan, review, time)` replaces the account's note for a New York
@@ -2300,6 +2333,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
 | `INVALID_NOTE`, `UNKNOWN_TRADE` | An order or trade note or tag past its limits, or a note on a fill that opens no trade |
+| `INVALID_ALERT`, `UNKNOWN_ALERT` | Alert terms that do not fit their scope, or a 101st alert; an alert ID the account does not have |
 | `INVALID_GROUP` | An order's `group` names no open round trip or whole trade holding one on its underlying; grouping names a fully closed trade, mixed underlyings or too few round trips; or ungrouping names a closed round trip |
 | `DEFINED_RISK` | A defined-risk plan's order, bracket exit or exercise would leave a short option uncovered, now or once the open orders fill |
 
@@ -2557,6 +2591,9 @@ focus at the top of the ticket.
 | `GET /api/account` | Rules (including `phase`, `lock_balance`, `lock_at_start`, `profit_basis`, the daily loss limit, consistency, minimum days, `day_end` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `balance`, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target; on the balance basis, measured on the balance), decision and `decision_code`, current day, finished `days[]` with `realised`, `qualifying`, `attribution`, equity low/high with times, `profit`, `profitable`, `executions` and `locked`, attempt closest-floor distance/time, `qualifying_days`, `cycle_started`, `payouts[]`, `objectives[]` (code, met, actual, required, message), `trading_days`, `profitable_days`, `best_day`, `consistency_target`, `daily_loss` (limit, basis, action, reference, level, room), `day_lock` and `day_locked_at`, `exit_equity` and `exit_cost`, and once a decided attempt is flat `liquidated_equity` and `liquidation_cost`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, round trips by trade ID: join their trades into one (a closed round trip can name a whole trade still holding an open one), or take each listed open round trip out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
+| `GET /api/alerts` | Version and the account's `alerts`, oldest first: `id`, `label`, `scope`, `metric`, `symbol`, `legs`, `direction`, `level`, `repeat`, `created_at`, `actor`, `armed` (waiting for its condition), `fired` (times), `fired_at` and `value` (when and at what it last fired) |
+| `POST /api/alerts` | `scope`, `metric`, `direction` and decimal-string `level`, with `symbol` or `legs` as the scope needs and optional `label` (100 bytes) and `repeat`; 201 returns version and the alert (see [account alerts](#account-alerts)). Malformed terms are 400; an unregistered contract `UNKNOWN_CONTRACT` (404); a 101st alert `INVALID_ALERT` (422) |
+| `DELETE /api/alerts/{id}` | No body; returns version and `deleted`, or `UNKNOWN_ALERT` (404) |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing), their `funded-*` accounts (`unlocked_by` names the evaluation), `static-25k/50k/100k` and `locking-25k/50k/100k` (see [plan presets with objectives](#plan-presets-with-objectives)); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |

@@ -1026,6 +1026,16 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         if (command.kind == TradingCommand::Kind::Submit)
           for (const auto& symbol : order_symbols(command.order)) symbols.insert(symbol);
         if (command.kind == TradingCommand::Kind::Settle) symbols.insert(command.symbol);
+        if (command.kind == TradingCommand::Kind::CreateAlert) {
+          if (command.alert.condition.scope == AlertScope::Contract) symbols.insert(command.alert.condition.symbol);
+          for (const auto& leg : command.alert.condition.legs) symbols.insert(leg.symbol);
+        }
+      }
+      // Alerts on contracts the account does not trade still need their quotes.
+      for (const auto& alert : session.snapshot()->alerts) {
+        if (!alert.armed && !alert.spec.repeat) continue;
+        if (alert.spec.condition.scope == AlertScope::Contract) symbols.insert(alert.spec.condition.symbol);
+        for (const auto& leg : alert.spec.condition.legs) symbols.insert(leg.symbol);
       }
       // A stalled feed cannot replenish resting-order liquidity, and nothing trades
       // while a circuit breaker halts the market: then quotes are not offered, and age.
@@ -1124,10 +1134,19 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
       };
       for (const auto& order : session.snapshot()->open_orders)
         if (order.status == OrderStatus::Armed) watch(order.request);
+      // Alerts on an underlying read the same values.
+      const auto watch_alert = [&](const AlertSpec& spec) {
+        if (spec.condition.scope == AlertScope::Underlying)
+          watched.emplace(spec.condition.symbol, spec.condition.metric == "price" ? "" : spec.condition.metric);
+      };
+      for (const auto& alert : session.snapshot()->alerts)
+        if (alert.armed || alert.spec.repeat) watch_alert(alert.spec);
       for (const auto& pending : commands)
         if ((pending.command.account.empty() ? kMainAccount : std::string_view(pending.command.account)) == account.id &&
-            pending.command.kind == TradingCommand::Kind::Submit)
-          watch(pending.command.order);
+            (pending.command.kind == TradingCommand::Kind::Submit || pending.command.kind == TradingCommand::Kind::CreateAlert)) {
+          if (pending.command.kind == TradingCommand::Kind::Submit) watch(pending.command.order);
+          else watch_alert(pending.command.alert);
+        }
       std::vector<Indicator> indicators;
       for (const auto& [symbol, study] : watched) {
         const auto m = metrics(symbol);
@@ -1461,11 +1480,14 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         case TradingCommand::Kind::ExerciseInstruction:
           result = session.instruct_exercise(c.symbol, c.do_not_exercise, market_time_);
           break;
+        case TradingCommand::Kind::CreateAlert: result = session.create_alert(c.alert, market_time_); break;
+        case TradingCommand::Kind::DeleteAlert: result = session.delete_alert(c.alert_id, market_time_); break;
         case TradingCommand::Kind::CreateSandbox:
         case TradingCommand::Kind::CreateAccount: break;  // handled above
       }
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;
+      reply.alert_id = result.alert_id;
       reply.replayed = result.replayed;
       if (!dry_run(c.kind)) publish_trading();
       const auto& orders = session.snapshot()->recent_orders;

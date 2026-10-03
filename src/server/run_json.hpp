@@ -31,6 +31,8 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
       {"underlying", c.underlying}, {"account", c.account}, {"name", c.name}, {"trade", c.trade}, {"shares", c.shares},
       {"day", c.day}, {"plan", c.plan}, {"review", c.review}, {"note", c.note}, {"tags", c.tags},
       {"quantity", c.quantity}, {"actor", c.actor}};
+  if (c.kind == TradingCommand::Kind::CreateAlert) j["alert"] = c.alert;
+  if (c.kind == TradingCommand::Kind::DeleteAlert) j["alert_id"] = c.alert_id;
   // Later fields are recorded only when set, so earlier commands keep their bytes.
   if (c.stock_price) j["stock_price"] = {{"symbol", c.stock_price->symbol}, {"time", c.stock_price->time}, {"price", c.stock_price->price}};
   if (c.do_not_exercise) j["do_not_exercise"] = true;
@@ -69,6 +71,8 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
     c.stock_price = trading::StockPrice{p.at("symbol").get<std::string>(), p.at("time").get<md::Timestamp>(), p.at("price").get<trading::Money>()};
   }
   trading::added_field(j, "actor", c.actor);
+  trading::added_field(j, "alert", c.alert);
+  trading::added_field(j, "alert_id", c.alert_id);
   trading::added_field(j, "do_not_exercise", c.do_not_exercise);
   trading::added_field(j, "trades", c.trades);
   trading::added_field(j, "close_limit", c.close_pricing.limit);
