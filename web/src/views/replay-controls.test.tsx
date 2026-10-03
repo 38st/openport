@@ -35,6 +35,8 @@ beforeEach(() => {
   client.setQueryData(["replay-listing"], listing)
   client.setQueryData(["plans"], { plans: [{ id: "intraday-25k", name: "Intraday 25K", rules: { phase: "evaluation" } }] })
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open", 0, "main", () => {}, "live", null, switchSource))
+  vi.spyOn(api, "liveAccounts").mockResolvedValue({ accounts: [{ id: "main", name: "Main", trading: status.trading!, equity: "100000.00" }] })
+  client.setQueryData(["live-accounts"], { accounts: [{ id: "main", name: "Main", trading: status.trading!, equity: "100000.00" }] })
   vi.spyOn(api, "replay").mockResolvedValue(listing)
   vi.spyOn(api, "startReplay").mockResolvedValue({ replay })
   vi.spyOn(api, "deleteReplay").mockResolvedValue({ deleted: "saved-run" })
@@ -231,4 +233,13 @@ it("labels a run's sessions by date and steps to a New York date and time", asyn
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open", 0, "main", () => {}, "replay", { ...replay, sessions, time: "2026-09-16T22:00:00Z" }, switchSource))
   await act(async () => root.render(<QueryClientProvider client={client}><ReplayBanner /></QueryClientProvider>))
   expect(host.textContent).toContain("closed until the overnight session · 3 of 3")
+})
+
+
+it("copies a selected live account's settings into a replay", async () => {
+  dataSource.set("replay")
+  await render()
+  await change("Copy limits and guardrails from", "main")
+  await click("Start")
+  expect(api.startReplay).toHaveBeenCalledWith({ demo: "selloff" }, 10, "open", expect.objectContaining({ copy_settings_from: "main" }))
 })

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "openport/server/api.hpp"
+#include "openport/server/plans.hpp"
 #include "openport/server/web_policy.hpp"
 #include "support/scripted_market.hpp"
 

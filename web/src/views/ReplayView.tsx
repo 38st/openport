@@ -1,3 +1,4 @@
+import { CopySettingsPicker } from "../components/CopySettingsPicker"
 import { useQuery } from "@tanstack/react-query"
 import { useRef, useState } from "react"
 import { api, type ReplaySource, type ReplayStart } from "../api/client"
@@ -134,12 +135,13 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
   const [speed, setSpeed] = useState(10)
   const plans = usePlans()
   const [plan, setPlan] = useState("practice")
+  const [copyFrom, setCopyFrom] = useState("")
   const [startAt, setStartAt] = useState("")
   const [paused, setPaused] = useState(false)
   const [seedMode, setSeedMode] = useState("fresh")
   const [seed, setSeed] = useState("")
   const [deleting, setDeleting] = useState<string>()
-  const options = (scenario: boolean): ReplayStart => ({ plan, ...(startAt ? { start_at: startAt } : {}), paused,
+  const options = (scenario: boolean): ReplayStart => ({ plan, ...(copyFrom ? { copy_settings_from: copyFrom } : {}), ...(startAt ? { start_at: startAt } : {}), paused,
     ...(scenario && seedMode !== "fresh" ? { seed: seedMode === "scenario" ? "scenario" : seed } : {}) })
   const badSeed = seedMode === "typed" && (!/^\d{1,20}$/.test(seed) || BigInt(seed || "0") > 18446744073709551615n)
   const replay = (live.source.startsWith("history:") ? null : live.replay) ?? listing.data?.replay ?? null
@@ -155,8 +157,8 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
     <Panel title="Start controls">
       <div className="flex flex-wrap items-end gap-3 text-xs">
         <label>Plan<select aria-label="Replay plan" className="trade-input" value={plan} onChange={(event) => setPlan(event.target.value)}>
-          <option value="practice">Practice</option>
-          {(plans.data?.plans ?? []).filter((p) => p.id !== "practice" && p.rules.phase !== "funded").map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <option value="practice">Practice · practice</option>
+          {(plans.data?.plans ?? []).filter((p) => p.id !== "practice" && p.rules.phase !== "funded").map((p) => <option key={p.id} value={p.id}>{p.name} · {p.id}</option>)}
         </select></label>
         <label>Start at (New York)<input aria-label="Start at" type="time" className="trade-input" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>
         <label>Scenario seed<select aria-label="Seed mode" className="trade-input" value={seedMode} onChange={(event) => setSeedMode(event.target.value)}>
@@ -165,6 +167,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
         {seedMode === "typed" && <label>Seed<input aria-label="Seed" inputMode="numeric" className="trade-input" value={seed} onChange={(event) => setSeed(event.target.value)} /></label>}
         <label className="flex items-center gap-2"><input type="checkbox" checked={paused} onChange={(event) => setPaused(event.target.checked)} />Pause at start</label>
       </div>
+      <div className="mt-3"><CopySettingsPicker value={copyFrom} onChange={setCopyFrom} disabled={controls.pending} /></div>
       <p className="mt-2 text-xs text-muted">Leave the time blank for the open. Overnight times from 20:15 belong to the evening before the session date; morning times belong to that date.
         A scenario of several sessions starts at the time’s first occurrence in them; step to a later day once it runs.</p>
       {badSeed && <p className="mt-2 text-xs text-warn">Enter a whole seed from 0 to 18446744073709551615.</p>}
@@ -245,7 +248,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
         {listing.data.history.map((run) => <div key={run.id} className="flex flex-wrap items-center gap-3 rounded-md border border-border p-3 text-xs">
           <span className="font-medium">{run.file}</span><Badge tone="neutral">replay</Badge>
           <span>{run.demo ? "simulated" : "recording"}{run.seed ? ` · seed ${run.seed}` : ""}</span>
-          <span>{run.date} · {run.start_at || "open"} · {run.plan_name ?? run.plan}</span>
+          <span>{run.date} · {run.start_at || "open"} · {run.plan_name ?? run.plan}{run.plan_id ? ` · ${run.plan_id}` : ""}</span>
           <Badge tone={run.result === "pass" ? "positive" : run.result === "fail" ? "warn" : "neutral"}>{run.result}</Badge>
           <span>P&amp;L {run.pnl === null ? "—" : formatMoney(run.pnl)}{run.valuation_complete === false ? " (incomplete marks)" : ""}</span>
           {run.error && <span className="text-warn">{run.error}</span>}

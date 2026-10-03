@@ -1,3 +1,4 @@
+import { PendingSettingsNotice } from "./PendingSettingsNotice"
 import { useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -32,6 +33,7 @@ export function PersonalRules({ risk }: { risk: Risk }) {
       <div className="flex gap-2">{risk.guardrails && <button type="button" className="trade-button" disabled={!trading?.enabled} onClick={() => setEditing(true)}>Edit guardrails</button>}
         <button type="button" className="trade-button" disabled={!trading?.enabled} onClick={() => setLimits(true)}>Edit risk limits</button></div></div>
     <p className="text-xs text-muted">Your rules, separate from the plan. Zero turns a field off. Tightening applies now; disabling or loosening a guardrail waits for the next trading day.</p>
+    <PendingSettingsNotice requiresReset={risk.pending_requires_reset} />
     {state && <p className="text-xs tabular">{state.opening_trades} opening fills today · Soft floor {formatMoney(state.soft_floor)}
       {state.cooldown_seconds > 0 && <> · Cooldown {Math.ceil(state.cooldown_seconds / 60)} market minutes left</>}
       {!!state.latched.length && <span className="text-warn"> · Reduce-only: {state.latched.join(", ")}</span>}</p>}

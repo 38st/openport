@@ -1,3 +1,4 @@
+import { PendingSettingsNotice } from "../components/PendingSettingsNotice"
 import { useQueryClient } from "@tanstack/react-query"
 import { useState, type ReactNode } from "react"
 import { useBriefMarket } from "../api/brief"
@@ -146,6 +147,7 @@ export function BriefAccountPanel({ account, risk }: { account?: Account; risk?:
         {risk?.kill.latched && <p className="text-warn">Reduce-only: {risk.kill.reason ?? "kill switch"}</p>}
         {guardrails ? <Rows>{guardrailRows(guardrails).map(([label, value]) => <Row key={label} label={label}>{value}</Row>)}</Rows> : <Missing reason="guardrails unavailable" />}
         {!!risk?.breach?.underlyings.length && (risk.breach.room != null || risk.breach.soft_room != null) && <div><p className="text-muted">{risk.breach.room != null ? "Floor" : "Soft floor"} breach levels · model estimates</p>{risk.breach.underlyings.map(row => <p key={row.underlying}>{row.underlying}: {row.complete ? `down ${row.down ? price(row.spot + row.down.points) : "—"} / up ${row.up ? price(row.spot + row.up.points) : "—"}` : "incomplete valuation"}</p>)}<p className="text-[11px] text-faint">Unchanged volatility, one underlying at a time. Missing crossings are not a safety bound.</p></div>}
+        <PendingSettingsNotice requiresReset={risk?.pending_requires_reset} />
         {risk?.pending_guardrails && <div className="text-warn"><p className="mb-1">Pending guardrails · next trading day</p><Rows>{guardrailRows(risk.pending_guardrails).map(([label, value]) => <Row key={label} label={label}>{value}</Row>)}</Rows></div>}
         {risk?.pending_limits && <div className="text-warn"><p className="mb-1">Pending limits · next trading day</p><Rows>{pendingLimits(risk.limits, risk.pending_limits).map(([label, value]) => <Row key={label!} label={label!}>{value}</Row>)}</Rows></div>}
       </div>
