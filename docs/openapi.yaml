@@ -9134,6 +9134,28 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "required": [
+                "size_scaling"
+              ],
+              "properties": {
+                "size_scaling": {
+                  "type": "object"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "phase"
+              ],
+              "properties": {
+                "phase": {
+                  "const": "funded"
+                }
+              }
+            }
           }
         ]
       },
@@ -18097,6 +18119,28 @@
                             }
                           }
                         }
+                      },
+                      {
+                        "if": {
+                          "required": [
+                            "size_scaling"
+                          ],
+                          "properties": {
+                            "size_scaling": {
+                              "type": "object"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "phase"
+                          ],
+                          "properties": {
+                            "phase": {
+                              "const": "funded"
+                            }
+                          }
+                        }
                       }
                     ]
                   },
@@ -20562,6 +20606,28 @@
               "properties": {
                 "time_limit_days": {
                   "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "size_scaling"
+              ],
+              "properties": {
+                "size_scaling": {
+                  "type": "object"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "phase"
+              ],
+              "properties": {
+                "phase": {
+                  "const": "funded"
                 }
               }
             }

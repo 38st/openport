@@ -23,7 +23,9 @@ def test_time_rules_types_and_request_schemas():
     rules = {"profit_target": None, "max_drawdown": None, "drawdown_mode": "intraday",
              "buy_only": False, "buying_power": True, "expiry_cutoff_seconds": 0,
              "max_contracts_held": 5, "require_stop_loss": True,
-             "max_trade_risk": "123.456789", "max_trade_risk_percent": 25}
+             "max_trade_risk": "123.456789", "max_trade_risk_percent": 25,
+             "scaling": [{"profit": "0.00", "contracts": 2}, {"profit": "100.00", "contracts": 3}],
+             "size_scaling": None}
     for path in ("AccountRulesInput", "BacktestRequest/properties/plan/oneOf/1/properties/rules"):
         validator = jsonschema.Draft202012Validator(
             {"$ref": "urn:openport#/components/schemas/" + path}, registry=contract.registry)
@@ -34,12 +36,21 @@ def test_time_rules_types_and_request_schemas():
         enabled = {**base, "time_limit_days": 366, "inactivity_days": 1,
                    "underlyings": ["SPX", "BRK.B"], "trading_start": "00:00", "trading_end": "24:00"}
         validator.validate(enabled)
-        validator.validate({**enabled, "phase": "funded", "time_limit_days": 0, "profit_target": "0.00",
-                            "payouts": {"qualifying_profit": "0.00", "qualifying_days": 1, "withdrawal_percent": 50,
-                                        "split_percent": 80, "minimum": "0.00", "caps": []}})
+        size_scaling = {"profit_percent": 10, "payouts": 2, "days": 80, "increase_percent": 25,
+                        "max_balance": "200000.00"}
+        funded = {**enabled, "phase": "funded", "time_limit_days": 0, "profit_target": "0.00",
+                  "size_scaling": size_scaling,
+                  "payouts": {"qualifying_profit": "0.00", "qualifying_days": 1, "withdrawal_percent": 50,
+                              "split_percent": 80, "minimum": "0.00", "caps": []}}
+        validator.validate(funded)
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate({**funded, "time_limit_days": 30})
+        for evaluation in ({**enabled, "size_scaling": size_scaling},
+                           {**enabled, "phase": "evaluation", "size_scaling": size_scaling}):
+            with pytest.raises(jsonschema.ValidationError):
+                validator.validate(evaluation)
         if path != "AccountRulesInput":
-            funded = {**enabled, "phase": "funded", "time_limit_days": 0, "profit_target": "0.00",
-                      "payouts": {"qualifying_days": 1}}
+            funded = {**funded, "payouts": {"qualifying_days": 1}}
             validator.validate(funded)
             for patch in ({"payouts": None}, {"payouts": {}}, {"phase": "evaluation"}):
                 with pytest.raises(jsonschema.ValidationError):
@@ -84,7 +95,8 @@ def test_read_back_rules_remain_valid_create_and_reset_inputs():
              "account_type": "margin", "house_margin_percent": 0, "pm_vol_shock": 10,
              "time_limit_days": 30, "inactivity_days": 14, "underlyings": ["SPX"],
              "trading_start": "09:30", "trading_end": "16:00", "max_contracts_held": 5,
-             "require_stop_loss": True, "max_trade_risk": "123.456789", "max_trade_risk_percent": 25}
+             "require_stop_loss": True, "max_trade_risk": "123.456789", "max_trade_risk_percent": 25,
+             "scaling": [{"profit": "0.00", "contracts": 2}], "size_scaling": None}
     contract = Contract("", None, SPEC)
     for name, extra in (("CreateAccountRequest", {"name": "Combined"}), ("ResetRequest", {"reason": "Edit"})):
         validator = jsonschema.Draft202012Validator(

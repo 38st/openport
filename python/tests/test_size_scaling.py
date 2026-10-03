@@ -6,7 +6,7 @@ import pytest
 
 from conftest import SPEC, shaped
 from openport import Client
-from openport.types import AccountRules, SizeScaling, SizeScale, SizeScalingStatus
+from openport.types import AccountRules, Evaluation, SizeScaling, SizeScale, SizeScalingStatus
 from tools.contract_test import Contract
 
 
@@ -14,6 +14,8 @@ def test_size_scaling_types_and_contract():
     for wire in (SizeScaling, SizeScale, SizeScalingStatus):
         assert set(get_type_hints(wire)) == set(SPEC["components"]["schemas"][wire.__name__]["properties"])
     assert get_type_hints(AccountRules)["size_scaling"] == SizeScaling | None
+    assert get_type_hints(Evaluation)["size_scaling"] == SizeScalingStatus | None
+    assert "size_scaling" in Evaluation.__optional_keys__
     contract = Contract("", None, SPEC)
     validator = jsonschema.Draft202012Validator({"$ref": "urn:openport#/components/schemas/SizeScaling"}, registry=contract.registry)
     rule = dict(profit_percent=10, payouts=2, days=80, increase_percent=25, max_balance="200000.000001")

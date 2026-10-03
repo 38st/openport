@@ -6,7 +6,7 @@ import pytest
 
 from conftest import SPEC, shaped
 from openport import Client
-from openport.types import AccountRules, ScalingStep, ScalingStatus
+from openport.types import AccountRules, Evaluation, ScalingStep, ScalingStatus
 from tools.contract_test import Contract
 
 
@@ -15,6 +15,8 @@ def test_scaling_types_and_optional_rules():
     for wire in (ScalingStep, ScalingStatus):
         assert set(get_type_hints(wire)) == set(schemas[wire.__name__]["properties"])
     assert get_type_hints(AccountRules)["scaling"] == list[ScalingStep]
+    assert get_type_hints(Evaluation)["scaling"] == ScalingStatus | None
+    assert "scaling" in Evaluation.__optional_keys__
     contract = Contract("", None, SPEC)
     validator = jsonschema.Draft202012Validator({"$ref": "urn:openport#/components/schemas/AccountRulesInput"}, registry=contract.registry)
     rules = dict(profit_target=None, max_drawdown=None, drawdown_mode="intraday", buy_only=False,
