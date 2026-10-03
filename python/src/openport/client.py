@@ -364,6 +364,10 @@ class Client:
         """Continue a saved run a crash interrupted; settings may give speed and paused."""
         return self._request("POST", "/replay", {"resume": run_id, **settings}, control=True)
 
+    def restart_replay(self, run_id: str, *, at: str | None = None, **settings) -> ReplayResult:
+        """New run with source commands through at inclusive; defaults to its start, paused."""
+        return self._request("POST", "/replay", {"restart": run_id, **({"at": at} if at is not None else {}), **settings}, control=True)
+
     def control_replay(self, **settings) -> ReplayResult:
         return self._request("PUT", "/replay", settings, control=True)
 

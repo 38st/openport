@@ -62,7 +62,7 @@ ReplayProvider::ReplayProvider(Options options)
   if (!valid_speed(options_.speed))
     throw std::invalid_argument("replay: speed must be max, 1, 2, 5, 10, 30, 60, 120 or 300");
   if (!options_.clock) options_.clock = std::make_shared<SystemReplayClock>();
-  seeking_ = options_.start_at > 0 || options_.paused;
+  seeking_ = options_.start_at > 0 || options_.paused || options_.start_through > 0;
   preparing_ = seeking_.load();
   if (options_.start_at == 0 && options_.paused) options_.start_at = reader_.header().started;
   set_paused(options_.paused);
@@ -88,9 +88,9 @@ void ReplayProvider::set_paused(bool paused) {
   if (paused && !paused_.load()) paused_at_ = options_.clock->now().time_since_epoch().count();
   {
     const std::lock_guard lock(control_mutex_);
+    if (!paused || !paused_.load()) pause_settled_ = false;
     paused_ = paused;
     pause_at_ = 0;
-    pause_settled_ = false;
     if (paused && stepping_.load()) abort_requested_ = true;
   }
   wake();
@@ -143,7 +143,7 @@ bool ReplayProvider::pace(ReplayClock::TimePoint& deadline, int basis) {
       std::unique_lock lock(control_mutex_);
       pause_settled_ = true;
       control_.notify_all();
-      control_.wait(lock, [&] { return !paused_.load() || seeking_.load() || stopping_.load(); });
+      control_.wait(lock, [&] { return !paused_.load() || !pause_settled_ || seeking_.load() || stopping_.load(); });
       lock.unlock();
       if (stopping_.load()) return false;
       // Time spent paused does not count against the gap.
@@ -376,6 +376,17 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
     while (!stopping_.load() && next) {
       {
         std::unique_lock lock(control_mutex_);
+        if (preparing_.load() && options_.start_through > 0 && next->time > options_.start_through) {
+          lock.unlock();
+          if (!synchronize()) break;
+          lock.lock();
+          market_time_ = options_.start_through;
+          settled_ = options_.start_through;
+          seeking_ = false;
+          preparing_ = false;
+          deadline = options_.clock->now();
+          paused_at_ = deadline.time_since_epoch().count();
+        }
         const auto paced_target = pause_at_.load();
         if ((step_pending_ && (abort_requested_ || next->time > step_target_)) ||
             (paced_target > 0 && next->time > paced_target)) {
@@ -427,7 +438,7 @@ void ReplayProvider::run_deterministic(md::Subscription subscription, md::EventS
       previous = receipt;
       next = batches.next();
       next_time_ = next ? next->time : 0;
-      if (preparing_.load() && receipt >= options_.start_at && (!next || next->received > receipt)) {
+      if (preparing_.load() && options_.start_through == 0 && receipt >= options_.start_at && (!next || next->received > receipt)) {
         if (paused_.load() && !synchronize()) break;
         seeking_ = false;
         preparing_ = false;

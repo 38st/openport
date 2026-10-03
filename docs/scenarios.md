@@ -316,6 +316,30 @@ settles. A paused skip is queued visibly as `skip_pending`; `skip:false` cancels
 the same settled target as `until`; state shows `pause_at` while it plays. Manual
 speed, pause, until, abort or stop clears that target.
 
+## Restarting a drill with its commands
+
+`POST /api/replay {"restart":"ID","at":"10:30:15"}` starts a **new** durable run
+using the source's recording or scenario, date, seed, revision, plan, copied risk
+settings, analytics, dividends and playbook definitions. It re-executes the source's
+journaled commands **through T inclusive**, keeping the identical journal prefix;
+commands after T are not scheduled. Then it pauses with the book, analytics and
+account settled through T. Later orders belong only to the new run. `at` accepts
+New York `HH:MM[:SS]` or a dated time (New York unless zoned). Omit it to restart at
+the source's own start. Speed defaults to the source's; optional `paused:false`
+continues after rebuilding the prefix. An active source is replaced and archived;
+its journal is unchanged. The new sidecar/history names `restarted_from:{id,at}`.
+The terminal offers **Restart from…** on active and finished runs.
+
+Targets before the source's start or after its last settled market time are 400;
+unknown ids are 404. Verification of the source in progress is 409
+`VERIFICATION_RUNNING`. Missing/changed recordings or scenarios, older drivers,
+changed calendars, torn/inconsistent journals and runs that changed their recording
+part way return 409 `REPLAY_NOT_RESTARTABLE`. These refusals preserve the source.
+Restart uses driver 6's existing recovery and byte verification; old sidecars need
+no new fields. The new journal passes the same `--verify-run` as the source.
+`start_at` for ordinary starts still names receipt time; restart `at` names market
+time, so delayed recordings do not move commands to their receipt timestamps.
+
 ## Saved runs
 
 When paper trading and writes are enabled, every run gets a `FileJournal` in

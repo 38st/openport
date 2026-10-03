@@ -42,6 +42,7 @@ class ReplayProvider final : public md::Provider {
     md::Timestamp max_gap = 0;
     std::function<std::future<void>()> synchronize = {};
     md::Timestamp known_end = 0;  ///< Trusted generated scenario window, avoiding a discovery scan.
+    md::Timestamp start_through = 0;  ///< Restart preparation uses market time, including through T.
   };
 
   /// 0 (as fast as possible), 1, 2, 5, 10, 30, 60, 120 or 300 times real time.

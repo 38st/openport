@@ -6578,6 +6578,22 @@
               "null"
             ],
             "description": "Pending play_until market target; null when absent, settled, aborted or superseded."
+          },
+          "restarted_from": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "at"
+            ],
+            "description": "Optional provenance of a restart; at is its inclusive market-time target."
           }
         },
         "required": [
@@ -15299,6 +15315,14 @@
             "maxLength": 40,
             "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
             "description": "Live source account ID (main allowed). Copies active limits and guardrails only, including underlying overrides, into initial journaled settings. Pending values and runtime latches/counters are not copied. Unknown source: 404 UNKNOWN_ACCOUNT."
+          },
+          "restart": {
+            "type": "string",
+            "description": "Start a new durable run from a source id, copying settings and re-executing journaled commands through at (inclusive), with a byte-identical prefix. Only at, speed and paused may accompany it. Defaults: source start, source speed, paused true. Source journal is unchanged; active source is replaced. Requires driver 6, unchanged inputs/calendar and a clean complete source prefix. 404 unknown, 400 outside source time range, 409 REPLAY_NOT_RESTARTABLE or VERIFICATION_RUNNING."
+          },
+          "at": {
+            "type": "string",
+            "description": "Restart market time: HH:MM[:SS] or a dated time in New York unless zoned. Omit for the source run start. Must not exceed the source run end."
           }
         },
         "required": []

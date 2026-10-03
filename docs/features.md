@@ -152,7 +152,8 @@ simulation's limits.
 
   - **Reproducible runs**: playback speed leaves batches, fills and journals unchanged.
     Relative and next-snapshot steps, batch-boundary abort/pause/stop, visible queued
-    skips, and start times with seconds support repeatable drills.
+    skips, paced play-to targets, and start times with seconds support repeatable drills.
+    Restart from a time with the same commands into a new, verifiable journal.
     Step to a market time with `PUT /api/replay {"until":"10:30"}`, or a date and time
     in the terminal; check a saved run with **Finished runs → Verify** or
     `openportd --verify-run JOURNAL`. Final journal heads and counts detect missing
@@ -380,6 +381,8 @@ special opening quotation; live providers keep manual imports.
 - [x] Scenario library: simulated drills with fresh or repeatable seeds, start times and
       replay journals that are kept
 - [x] Deterministic replay batches, verifiable run journals and synchronous market-time stepping
+- [x] F32 replay control: relative/next-snapshot steps, paced play-to, batch-boundary abort,
+      queued-skip feedback, seconds in start times, and restart with the same commands
 - [x] In-app run verification, persisted final head/count, damaged-run warnings and shareable JSON receipts
 - [x] Multi-day and cross-session scenario runs: regular, curb and overnight sessions over
       several days on one account, steppable to a date and time, with journals that verify

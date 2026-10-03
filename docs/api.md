@@ -93,6 +93,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `PUT /api/replay {"play_until":"14:30:15","speed":60}` | Paced playback through the target; returns immediately with `pause_at`. Same targets as until, optional speed. Pause, speed, until, abort and stop clear it |
 | `PUT /api/replay {"abort":true}` | Interrupt a step at its next settled batch and pause. `paused:true` and DELETE also interrupt; the step returns `aborted:true` |
 | `PUT /api/replay {"skip":true}` | While paused, queue visibly as `skip_pending:true` for the next resume; `skip:false` cancels |
+| `POST /api/replay {"restart":"ID","at":"10:30:15"}` | New run, same inputs/settings and journaled commands through T inclusive, paused by default; optional speed/paused, at omitted uses source start. Source journal kept; state/history carry `restarted_from:{id,at}` |
 | `GET /api/replay/history` | Saved runs with final `journal` head/count/bytes, `journal_found`, and `torn`/`bytes_cut` or `truncated`/`mismatch` integrity warnings |
 | `POST /api/replay/history/ID/verify`, `GET /api/replay/history/ID/verify` | Start background verification (202, replay scope) or read `idle/running/passed/failed`; GET `?format=receipt` downloads the final JSON result |
 | `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, equity history (`account/equity`), portfolio, trades, fills or settlements; delete its journal |
