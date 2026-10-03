@@ -44,7 +44,7 @@ describe("checked API core types", () => {
       expect(source).toMatch(/export type CreateAccountRequest = [^\n]+& MarginModel/)
     }
   })
-  it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus",
+  it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
     "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
     "ProfileLevel", "ProfileHorizon"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
@@ -67,5 +67,17 @@ it("keeps extended TIFs and sparse order metadata in the wire contract", () => {
   for (const key of ["good_till", "limit_ticks"]) {
     expect(source).toContain(`${key}?:`)
     expect(spec.components.schemas.Order!.properties![key]).toBeDefined()
+  }
+})
+
+it("keeps alert request fields and optional terms in sync", () => {
+  const body = /export interface AlertRequest \{([^}]+)\}/.exec(source)![1]!
+  const fields = [...body.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]
+  const schema = spec.components.schemas.AlertRequest!
+  const scope = /export type AlertScope = ([^\n]+)/.exec(source)![1]!
+  expect(fields.map((field) => field[1]).sort()).toEqual(Object.keys(schema.properties!).sort())
+  for (const [, field, optional, type] of fields) {
+    expect(normalize(type === "AlertScope" ? scope : type!)).toBe(wireType(schema.properties![field!]!))
+    expect(schema.required?.includes(field!)).toBe(!optional)
   }
 })

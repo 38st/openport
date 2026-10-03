@@ -150,12 +150,15 @@ simulation's limits.
   forward term structure; earlier generator revisions stay reproducible.
   [Scenario format](scenarios.md).
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
-  the terminal and as browser notifications with an optional chime while it is open;
+  the terminal and as browser notifications with an optional chime while it is open.
+  Account alerts on an option's quote, implied volatility or Greeks, a spread's net mark,
+  an underlying's price or IV, or equity, day P&L, floor room and exposure are kept by
+  the server and forwarded to notification channels with the terminal closed;
   assignments, exercises at expiry and dividends are always announced. Floor room,
   daily loss, guardrails, pending limits and a nearby profit target also raise alerts,
   once per threshold per account and trading day.
 - **External notifications**: send fills, rejected orders, floor warnings, rule trips,
-  assignments, exercises, ready playbooks and stalled feeds to Discord, Telegram,
+  assignments, exercises, ready playbooks, account alerts and stalled feeds to Discord, Telegram,
   ntfy or a webhook. Each channel has filters and a test button in Alerts settings.
   Delivery runs separately from trading; replays and drills never send.
 
@@ -305,6 +308,7 @@ the simulation's limits.
 - [x] GTC limit orders, order notes and tags, spread brackets and held-spread exits
 - [x] EXTO/GTC_EXTO protection in all product sessions, timestamp GTD, and limit flatten in GTH/curb
 - [x] Orders conditional on another underlying, an IV study or the time of day, verified in replays
+- [x] Account alerts on options, spreads, Greeks, IV and account measures, forwarded off-screen
 - [x] Roll the put or call side of a four-leg strategy
 - [x] Trade notes and tags, with reports by tag, and price and fill alerts
 - [x] Fill context, trade and strategy excursions, CSV export and day plans and reviews
