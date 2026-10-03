@@ -2904,8 +2904,14 @@ read only at startup; protect it and restart the server to rotate credentials.
 | --- | --- |
 | `read` | Every API GET, CSV export and WebSocket ticks |
 | `trade:ACCOUNT` / `trade:*` | Orders and previews, cancels, flatten, exercise, stock closure, notes and sending or dismissing playbook stages on the named account / all live accounts |
-| `replay` | Start, control and stop replays, and trade their isolated accounts |
+| `replay` | Start, control and stop replays; trade, reset, set limits/guardrails and operate the kill switch on their isolated accounts |
 | `admin` | Everything, including limits, guardrails, kill switch, resets, payouts, settlements, account creation/rename/archive/delete, playbook definitions and modes, and replay history deletion |
+
+`POST /api/replay/account/reset`, `PUT /api/replay/risk/limits`,
+`PUT /api/replay/risk/guardrails` and `POST /api/replay/risk/kill` accept `replay`
+or `admin`. Live counterparts still require admin. Normal validation, revision
+checks and queued loosening apply inside replay too. Reset can apply pending
+settings when the run has no later trading day.
 
 The legacy write token has `admin` scope and actor name `legacy`. Writes always
 check the token they carry: an unknown one gets 403 `WRITE_TOKEN_REQUIRED`, and a

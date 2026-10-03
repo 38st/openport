@@ -486,6 +486,25 @@ TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
   }
 }
 
+TEST(WebPolicy, ReplayScopeConfiguresOnlyTheIsolatedAccount) {
+  server::WritePolicy policy{"0.0.0.0", "", {},
+      server::parse_token_file("run replay run-secret\ntrader trade:* trade-secret\nowner admin owner-secret"), true};
+  for (const auto& [method, path] : std::vector<std::pair<std::string, std::string>>{
+      {"POST", "/account/reset"}, {"PUT", "/risk/limits"}, {"PUT", "/risk/guardrails"}, {"POST", "/risk/kill"}}) {
+    for (const auto* secret : {"run-secret", "trade-secret", "owner-secret"}) {
+      for (const bool replay : {false, true}) {
+        server::ApiRequest request{method, std::string(replay ? "/api/replay" : "/api") + path};
+        request.content_type = "application/json";
+        request.authorization = std::string("Bearer ") + secret;
+        const auto rejected = server::check_api_write(request, policy);
+        const bool permitted = std::string_view(secret) == "owner-secret" || (replay && std::string_view(secret) == "run-secret");
+        EXPECT_EQ(!rejected, permitted) << request.target << secret;
+        if (rejected) { EXPECT_EQ(rejected->status, 403); EXPECT_NE(rejected->body.find("SCOPE_REQUIRED"), std::string::npos); }
+      }
+    }
+  }
+}
+
 TEST(WebPolicy, EverySpellingOfTheAccountIsScopedAsTheRoutesReadIt) {
   // Routes percent-decode query keys and values (%61 is "a"), so the scope check reads
   // the account through the same parser and cannot be sidestepped by encoding it.
