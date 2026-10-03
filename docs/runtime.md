@@ -110,8 +110,8 @@ supported and cause no release request.
 ## Command-line validation
 
 `openportd` defaults to Cboe delayed data for SPX, SPY, QQQ, IWM and DIA, as does
-the Docker image. `--symbols` replaces that subscription. The revision 3 demo feed
-uses SPX, SPY, QQQ, XSP, NDX, RUT and VIX.
+the Docker image. `--symbols` replaces that subscription. At revision 3 and later,
+the demo feed uses SPX, SPY, QQQ, XSP, NDX, RUT and VIX.
 
 Ports must be integers from 1 through 65,535. Poll intervals and probe timeout
 seconds must be positive integers. Expiry counts must be nonnegative integers;
@@ -557,7 +557,7 @@ assignment and dividends between them, and its state lists its `sessions`. All a
 historical reconstructions. Status keeps `provider.simulated`; the terminal shows
 the scenario and seed with the simulated label. Generated recordings are cached by
 scenario, date and seed, with four completed entries retained. Generation uses
-fixed version 1, at output revision 3 (see [scenarios](scenarios.md)); unsupported
+fixed version 1, at output revision 4 (see [scenarios](scenarios.md)); unsupported
 versions are rejected.
 
 Each run's account journal is retained in `replays/` beside `--paper-journal`, on
@@ -637,7 +637,8 @@ The journal carries recording name, absolute path, byte size and SHA-256, or sce
 id, source hash, generator version and output revision, date and seed. Built-ins are checked against the
 embedded source; user scenarios are reopened at their recorded path. Keep original
 recordings and user scenario files there. Generated cache files are unnecessary for
-scenario verification. The initial plan, analytics settings, dividends, calendar
+scenario verification. The initial plan, analytics settings, dividends (including the
+revision 4 scenario calendar, overridden by explicit session entries), calendar
 and command times are recorded too. Older account journals still load but have no
 run inputs to verify. New replay runs require an unused journal path.
 
@@ -666,7 +667,11 @@ in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2,
 Without `--symbols`, the feed subscribes to SPX, SPY, QQQ, XSP, NDX, RUT and VIX. Other symbols and
 nonzero `--expiries` or `--window` are rejected.
 
-Revision 3 adds those four indices to every selected demo day, without changing
+Revision 4 adds American ETF option prices and a simulated quarterly SPY/QQQ dividend
+calendar, with ex-date price drops and known payments included in option forwards.
+The [scenario rules](scenarios.md) define dates, amounts and precedence.
+`--option revision=3` retains the earlier European ETF prices and explicit session
+dividends only. Revision 3 adds those four indices to every selected demo day, without changing
 that built-in's Replay source or symbol list. `--option revision=2` retains the old
 three-symbol feed, generator output and twelve-day rotation; `revision=1` selects
 the original chain. Use the same revision and `days` options when resuming an older
@@ -699,6 +704,10 @@ engine retains live accounts and write protection; Replay still runs beside it.
 
 Cboe chart and proxy history, holiday downloads and volatility-series writes are
 off. `--dividends massive` is rejected; a supplied dividend file remains usable.
+At revision 4, without a `--dividends` source, the generated calendar also supplies
+live account payments, American analytics, EX_DIVIDEND and early-assignment warnings.
+An explicit file (even an empty one) replaces that account calendar; it does not
+alter simulated prices. Earlier revisions do not add generated account dividends.
 Candles stay in memory unless `--candle-dir` is explicit. The default journal is
 `~/.openport/demo/paper-journal.jsonl`; accounts and replay history derive their
 directories beside it. Journals do not record their feed, so keep any explicit demo

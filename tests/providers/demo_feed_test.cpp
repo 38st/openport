@@ -115,7 +115,7 @@ TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
   for (const auto& option : std::vector<std::pair<std::string, std::string>>{
       {"speed", "max"}, {"speed", "0"}, {"speed", "3"}, {"speed", "1.0"}, {"speed", "301"},
       {"days", ""}, {"days", "trend,"}, {"days", ",trend"}, {"days", "missing"},
-      {"revision", "0"}, {"revision", "4"}, {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
+      {"revision", "0"}, {"revision", "5"}, {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
     EXPECT_THROW((void)providers::make_provider({"demo", "", {option}}), std::invalid_argument);
   }
   provider = providers::make_provider({"demo", "", {{"days", "chop,trend,chop"}}});
@@ -147,6 +147,8 @@ TEST(DemoFeed, EarlierRevisionsKeepTheirSymbolsAndRotation) {
     EXPECT_THROW(demo->validate({{"XSP"}}), std::invalid_argument);
   }
   EXPECT_THROW((void)providers::make_provider({"demo", "", {{"revision", "2"}, {"days", "index-spike"}}}), std::invalid_argument);
+  EXPECT_NO_THROW((void)providers::make_provider({"demo", "", {{"revision", "4"}}}));
+  EXPECT_NO_THROW((void)providers::make_provider({"demo", "", {{"revision", "3"}}}));
   providers::DemoProvider demo(settings());
   EXPECT_NO_THROW(demo.validate({{"XSP", "NDX", "RUT", "VIX"}}));
 }
@@ -433,6 +435,63 @@ TEST(DemoFeed, RestartPartWayThroughADateResumesItAfterTheSavedTime) {
   EXPECT_EQ(breaker.previous_close->date, (md::Date{2026, 9, 17}));
   EXPECT_GT(breaker.previous_close->price, 0);
   engine.stop();
+}
+
+TEST(DemoFeed, GeneratedDividendsReachLiveSharesAndWarningsUnlessASourceIsExplicit) {
+  for (const int mode : {0, 1, 2}) {
+    SCOPED_TRACE(mode);  // generated, explicit empty source, legacy revision
+    auto clock = std::make_shared<DemoClock>();
+    auto feed = settings(clock);
+    feed.days = {"chop"};
+    feed.started = md::new_york_to_utc({2026, 9, 18}, 12, 0);
+    if (mode == 2) feed.revision = 3;
+    providers::DemoProvider provider(feed);
+    server::Engine::Options options;
+    options.demo_dividends = mode != 1;
+    options.analytics.deamericanize = false;
+    server::Engine engine(provider, {{"SPY"}}, options);
+    engine.start();
+    const auto first = md::new_york_to_utc({2026, 9, 17}, 9, 30);
+    ASSERT_TRUE(eventually([&] { const auto view = engine.trading_view(); return view && view->snapshot->time >= first; }));
+    server::TradingCommand order;
+    order.order.client_order_id = "shares";
+    order.order.symbol = md::parse_osi("SPY260925C00580000")->osi_symbol();
+    order.order.quantity = 1;
+    order.order.type = trading::OrderType::Market;
+    order.order.tif = trading::TimeInForce::Ioc;
+    const auto bought = submit(engine, order);
+    ASSERT_TRUE(bought.decision.ok()) << bought.decision.message;
+    server::TradingCommand exercise;
+    exercise.kind = server::TradingCommand::Kind::Exercise;
+    exercise.symbol = order.order.symbol;
+    exercise.quantity = 1;
+    const auto held = submit(engine, exercise);
+    ASSERT_TRUE(held.decision.ok()) << held.decision.message;
+    EXPECT_EQ(std::any_of(held.view->warnings.begin(), held.view->warnings.end(),
+        [](const auto& warning) { return warning.code == "EX_DIVIDEND"; }), mode == 0);
+    order.order.client_order_id = "covered-call";
+    order.order.side = trading::Side::Sell;
+    const auto short_call = submit(engine, order);
+    ASSERT_TRUE(short_call.decision.ok()) << short_call.decision.message;
+    EXPECT_EQ(std::any_of(short_call.view->warnings.begin(), short_call.view->warnings.end(),
+        [](const auto& warning) { return warning.code == "EARLY_ASSIGNMENT"; }), mode == 0);
+    order.order.client_order_id = "buy-back";
+    order.order.side = trading::Side::Buy;
+    ASSERT_TRUE(submit(engine, order).decision.ok());
+    clock->through(24300s);
+    const auto ex = md::new_york_to_utc({2026, 9, 18}, 9, 30);
+    ASSERT_TRUE(eventually([&] { return engine.trading_view()->snapshot->time >= ex; }));
+    const auto view = engine.trading_view();
+    if (mode == 0) {
+      ASSERT_EQ(view->snapshot->dividends.size(), 1U);
+      const auto expected = providers::demo_dividends({2026, 9, 18}, {2026, 9, 18}).front().per_share;
+      EXPECT_EQ(view->snapshot->dividends[0].per_share, expected);
+      EXPECT_EQ(view->snapshot->dividends[0].amount, expected * 100);
+    } else {
+      EXPECT_TRUE(view->snapshot->dividends.empty());
+    }
+    engine.stop();
+  }
 }
 
 TEST(DemoFeed, ConsecutiveDaysFillRollAndSettleWithLivePaperAccounts) {

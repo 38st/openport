@@ -15,7 +15,7 @@ class DemoProvider final : public md::Provider {
     int speed = 1;
     md::Timestamp started = 0;  ///< Zero selects the server's start time.
     std::shared_ptr<ReplayClock> clock;
-    int revision = kScenarioRevision;  ///< Keep 1 or 2 for an earlier feed's output and rotation.
+    int revision = kScenarioRevision;  ///< Keep 1-3 for an earlier feed's output and rotation.
   };
   explicit DemoProvider(Options options);
   ~DemoProvider() override;
@@ -37,6 +37,7 @@ class DemoProvider final : public md::Provider {
   [[nodiscard]] md::Timestamp time() const noexcept { return time_.load(); }
   [[nodiscard]] const std::vector<std::string>& symbols() const { return symbols_; }
   [[nodiscard]] const std::vector<Scenario>& days() const { return days_; }
+  [[nodiscard]] int revision() const noexcept { return options_.revision; }
   [[nodiscard]] md::Date first_date() const { return first_date_; }
   [[nodiscard]] const std::filesystem::path& directory() const { return directory_; }
   void validate(const md::Subscription& subscription) const;
