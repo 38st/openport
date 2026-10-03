@@ -61,9 +61,9 @@ json fill_fees_json(const std::optional<FillFees>& f) {
   return {{"commission", f->commission.str()}, {"clearing", f->clearing.str()}, {"regulatory", f->regulatory.str()},
           {"index", f->index.str()}};
 }
-json rules_json(const AccountRules& r) {
+json rules_json(const AccountRules& r, Money initial_cash) {
   const bool funded = r.phase == Phase::Funded;
-  json result = {{"plan", nullable(r.plan)}, {"phase", funded ? "funded" : "evaluation"},
+  json result = {{"plan", nullable(r.plan)}, {"plan_id", nullable(preset_id(initial_cash, r))}, {"phase", funded ? "funded" : "evaluation"},
           {"profit_target", positive(r.profit_target)}, {"max_drawdown", positive(r.max_drawdown)},
           {"drawdown_mode", kDrawdownModes[static_cast<int>(r.drawdown_mode)]},
           {"lock_balance", positive(r.lock_balance)}, {"lock_at_start", r.lock_at_start},
@@ -720,13 +720,13 @@ json account_json(const TradingView& view) {
                        {"trader_share", p.trader_share.str()}, {"balance", p.balance.str()}});
   json attempts = json::array();
   for (const auto& a : s.attempts)
-    attempts.push_back({{"attempt", a.attempt}, {"plan", nullable(a.plan)}, {"started", md::format_timestamp(a.started)},
+    attempts.push_back({{"attempt", a.attempt}, {"plan", nullable(a.plan)}, {"plan_id", nullptr}, {"started", md::format_timestamp(a.started)},
                         {"ended", md::format_timestamp(a.ended)}, {"starting_balance", a.starting_balance.str()},
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
                         {"decision", nullable(a.decision)},
                         {"decision_code", a.status == EvaluationStatus::Active ? json(nullptr) : json(to_string(a.decision_code))}});
   return {{"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},
-          {"rules", rules_json(r)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
+          {"rules", rules_json(r, view.config.initial_cash)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"guardrails", guardrails_json(view.config.guardrails)}, {"guardrail_state", guardrail_state_json(s)},
           {"evaluation", {
               {"enabled", r.evaluation()}, {"attempt", e.attempt}, {"status", status_name(e.status)},
@@ -1024,7 +1024,7 @@ json plans_json() {
   json plans = json::array();
   for (const auto& p : plan_presets())
     plans.push_back({{"id", p.id}, {"name", p.name}, {"summary", p.summary},
-                     {"initial_cash", p.initial_cash.str()}, {"rules", rules_json(p.rules)},
+                     {"initial_cash", p.initial_cash.str()}, {"rules", rules_json(p.rules, p.initial_cash)},
                      {"unlocked_by", nullable(p.unlocked_by)}});
   return {{"plans", plans}};
 }
@@ -1237,7 +1237,8 @@ ApiResponse command_response(const TradingCommand& command, const TradingReply& 
       status = 201;
       body = {{"account", {{"id", reply.account}, {"name", command.name},
                            {"account_version", std::to_string(s.account_version)},
-                           {"plan", nullable(view.config.rules.plan)}, {"equity", s.equity.str()}}}};
+                           {"plan", nullable(view.config.rules.plan)}, {"plan_id", nullable(preset_id(view.config.initial_cash, view.config.rules))},
+                           {"equity", s.equity.str()}}}};
       break;
   }
   return {status, body.dump()};
@@ -2067,7 +2068,7 @@ json trading_status_json(const TradingStatus& status) {
           {"kill_latched", status.kill_latched}, {"write", status.write},
           {"fee_per_contract", status.fee_per_contract.str()},
           {"initial_cash", status.initial_cash.str()},
-          {"plan", nullable(status.plan)}, {"evaluation", nullable(status.evaluation)}};
+          {"plan", nullable(status.plan)}, {"plan_id", nullable(status.plan_id)}, {"evaluation", nullable(status.evaluation)}};
 }
 json accounts_json(const MetricsSource& source, const ApiAccess& access, bool archived = false) {
   json list = json::array();

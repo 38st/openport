@@ -2494,6 +2494,14 @@ and permanently reserves the ID. The durable destination directory is the deleti
 tombstone; startup completes interrupted moves. Retained files are not served over
 HTTP. An already dispatched notification may finish after deletion.
 
+Account creation replies, account lists/status `trading`, account `rules`, and replay
+history summaries report `plan_id` beside the plan name. It is derived from the
+stored name, starting cash and objective rules, including old journals; execution,
+fee and margin overrides do not change it. Custom or unrecognized rules return
+null. Compact past-attempt summaries lack full rules and report null rather than
+guessing from the display name. Replay control's existing `plan` remains its starting
+preset ID; history `plan_id` describes the recovered account's current rules.
+
 ### Commands and views
 
 The engine thread alone owns every session. A bounded FIFO inbox (256 pending

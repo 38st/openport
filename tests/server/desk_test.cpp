@@ -243,6 +243,7 @@ TEST(Desk, AccountLifecycleSurvivesRestartAndReservesDeletedIds) {
     ASSERT_EQ(desk.accounts().size(), 2U);
     EXPECT_EQ(desk.accounts()[1].name, "Renamed 東京");
     EXPECT_TRUE(desk.accounts()[1].archived);
+    EXPECT_EQ(desk.accounts()[1].trading.plan_id, "eod-50k");
     change.account = "evaluation";
     change.name.clear();
     change.archived = false;
@@ -274,6 +275,20 @@ TEST(Desk, AccountLifecycleSurvivesRestartAndReservesDeletedIds) {
   EXPECT_TRUE(std::filesystem::exists(options.paper_accounts / "deleted/evaluation-2/evaluation-2.jsonl"));
   EXPECT_EQ(command(desk, create, market.time, market.time).account, "evaluation-3");
   desk.stop();
+}
+
+TEST(Desk, PresetIdKeepsBrokerOverridesAndRejectsCustomObjectives) {
+  for (const auto& plan : server::plan_presets()) {
+    auto rules = plan.rules;
+    EXPECT_EQ(server::preset_id(plan.initial_cash, rules), plan.id);
+    rules.slippage_ticks = 1;
+    rules.fill_latency_ms = 1000;
+    rules.margin = trading::MarginMode::Portfolio;
+    rules.house_margin_percent = 20;
+    EXPECT_EQ(server::preset_id(plan.initial_cash, rules), plan.id);
+    rules.profit_target += Money::from_double(1);
+    EXPECT_TRUE(server::preset_id(plan.initial_cash, rules).empty());
+  }
 }
 
 TEST(Desk, OnlyExplicitReplayJournalsBatchSyncs) {

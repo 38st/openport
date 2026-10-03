@@ -375,6 +375,7 @@ export interface ReplayDemo { goal?: string; session?: "regular" | "overnight"; 
 export interface ReplayHistory extends ReplayState {
   id: string
   /** The plan's display name; plan is its id. Absent from older servers. */
+  plan_id?: string | null
   plan_name?: string
   result: "pass" | "fail" | "open"
   pnl: string | null

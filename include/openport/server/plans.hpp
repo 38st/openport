@@ -42,5 +42,7 @@ struct PlanPreset {
 /// own. Only the fill model's execution settings (slippage, latency, impact, inside fills) and the
 /// account's margin (mode, account type, house margin, vol shock) may differ.
 [[nodiscard]] bool follows_plan(const PlanPreset& plan, trading::Money initial_cash, const trading::AccountRules& rules);
+/// Derive from recovered configuration, including old journals. Empty for custom rules.
+[[nodiscard]] std::string preset_id(trading::Money initial_cash, const trading::AccountRules& rules);
 
 }  // namespace openport::server
