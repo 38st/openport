@@ -537,7 +537,7 @@ void Desk::start_trading() {
   if (!options_.run_input.empty()) {
     nlohmann::json start{{"kind", "start"}, {"input", nlohmann::json::parse(options_.run_input)},
         {"calendar", md::scheduled_days()}, {"analytics", options_.analytics}, {"dividends", dividends_}, {"symbols", subscription_.underlyings}};
-    if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? (options_.opening_settlement ? 5 : 4) : 3;
+    if (options_.instant_batches) start["driver"] = !options_.closing_rollover ? 2 : inputs_first() ? (options_.opening_settlement ? (options_.playbook_cancel_labels ? 6 : 5) : 4) : 3;
     if (playbooks_ && (!options_.initial_playbooks.empty() || !playbooks_->catalogue().at("definitions").empty())) start["playbooks"] = playbooks_->catalogue();
     record_input(start.dump(), options_.initial_actor);
     if (options_.resume) {
@@ -1409,7 +1409,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           reply.residuals = result.residuals;
           break;
         }
-        case TradingCommand::Kind::Cancel: result = session.cancel(c.order_id, market_time_); break;
+        case TradingCommand::Kind::Cancel: result = session.cancel(c.order_id, market_time_, c.cancel_reason); break;
         case TradingCommand::Kind::Guardrails:
         case TradingCommand::Kind::Limits:
           if (c.expected_revision != before->risk.limits_revision) {

@@ -4226,12 +4226,14 @@ FlattenPreview TradingSession::preview_close_positions(std::optional<std::string
   result.after = what_if_account(after, base, close_variances);
   return result;
 }
-CommandResult TradingSession::cancel(OrderId id, Timestamp time) {
+CommandResult TradingSession::cancel(OrderId id, Timestamp time, Reason reason) {
+  if (reason != Reason::USER_CANCEL && reason != Reason::PLAYBOOK_TIME_STOP)
+    throw TradingError(Reason::INVALID_REASON, "Invalid cancellation reason");
   return impl_->transact(time, "cancel", [&](State& s, Events& events) {
     if (id == 0 || id > s.orders.size()) return CommandResult{failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), {}, 0};
     if (!s.orders.at(static_cast<std::size_t>(id - 1)).open())
       return CommandResult{failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
-    cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
+    cancel_order(s, id, failure(reason, reason == Reason::PLAYBOOK_TIME_STOP ? "Playbook time stop" : "Cancelled by caller"), events);
     return CommandResult{{}, id, 0};
   });
 }

@@ -1,5 +1,6 @@
 import specText from "../../../docs/openapi.yaml?raw"
 import marketTypes from "./types.ts?raw"
+import playbookTypes from "./playbook-types.ts?raw"
 import tradingTypes from "./trading-types.ts?raw"
 import { describe, expect, it } from "vitest"
 
@@ -92,4 +93,12 @@ it("keeps the preview sizing basis and nullability in sync", () => {
   const declared = /max_units_basis\?: ([^\n]+)/.exec(source)![1]!
   expect(normalize(declared)).toBe(wireType(spec.components.schemas.OrderPreview!.properties!.max_units_basis!))
   expect(spec.components.schemas.OrderPreview!.required).toContain("max_units_basis")
+})
+
+it("publishes a stage HTTP order separately from the legacy request", () => {
+  const stage = spec.components.schemas.StagedOrder!.properties!
+  expect(wireType(stage.order!)).toBe("NewOrder")
+  expect(wireType(stage.request!)).toBe("object")
+  expect(playbookTypes).toContain("order?: NewOrder")
+  expect(playbookTypes).toContain("request?: Record<string, unknown>")
 })

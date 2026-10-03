@@ -182,6 +182,7 @@ struct TradingCommand {
   std::string actor = "unknown";
   trading::OrderRequest order;
   trading::OrderId order_id = 0;
+  trading::Reason cancel_reason = trading::Reason::USER_CANCEL;
   trading::Limits limits;
   trading::Guardrails guardrails;
   double floor_share = 0.5;

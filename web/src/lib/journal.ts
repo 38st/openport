@@ -248,7 +248,7 @@ export function exitLabel(trade: Trade): string | null {
     case "stop_loss": return "stop"
     case "take_profit": return "target"
     case "flatten": return "flatten"
-    case "playbook": return "playbook"
+    case "playbook": return "playbook time stop"
     case "system": return trade.system_reason === "expiry" ? "auto-closed before expiry"
       : trade.system_reason === "soft_floor" ? "liquidated: soft floor" : `liquidated${trade.system_reason ? `: ${trade.system_reason}` : ""}`
     case "settlement": case "exercise": case "assignment": case "abandon": case "reset": return trade.closed_by ?? trade.closure

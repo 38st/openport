@@ -250,9 +250,10 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     // Driver 2 batches each market instant whole, driver 3 also rolls the day over on the
     // closing marks before a new date's quotes, and driver 4 also records each command's
     // input before its transactions. Driver 5 settles AM options on opening prints.
+    // Driver 6 also labels playbook time-stop cancellations.
     // Older runs replay as they were recorded.
     const auto driver = start.value("driver", 1);
-    if (driver < 1 || driver > 5) throw std::runtime_error("Unsupported run driver version");
+    if (driver < 1 || driver > 6) throw std::runtime_error("Unsupported run driver version");
     const bool instants = driver >= 2;
     auto batches = std::make_unique<providers::ReplayBatches>(*reader, subscription, instants);
     // Every build that writes a driver version also attributes every record, so only a
@@ -265,6 +266,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     options.closing_rollover = driver >= 3;
     options.inputs_first = driver >= 4;
     options.opening_settlement = driver >= 5;
+    options.playbook_cancel_labels = driver >= 6;
     options.candles = std::make_shared<CandleStore>();
     options.run_input = input.dump();
     if (start.contains("playbooks") && !start.at("playbooks").is_null()) options.initial_playbooks = start.at("playbooks").dump();

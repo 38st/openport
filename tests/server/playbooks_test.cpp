@@ -11,6 +11,7 @@
 #include "openport/trading/history.hpp"
 #include "server/strategy_template.hpp"
 #include "server/run_json.hpp"
+#include "server/paper_json.hpp"
 #include "support/recording.hpp"
 #include "support/scripted_market.hpp"
 
@@ -102,6 +103,34 @@ TEST(Playbooks, ConditionsFailClosedAndWindowsUseNewYorkWeekdays) {
   inputs.day_open = 106; EXPECT_FALSE(server::playbook_conditions(setup, inputs, 1));
   setup["conditions"]["price"] = {{"reference", "level"}, {"direction", "below"}, {"value", 110}};
   EXPECT_TRUE(server::playbook_conditions(setup, inputs, 1));
+}
+TEST(Playbooks, ConditionReasonsNameTheFirstFailureAndItsInputs) {
+  auto setup = definition();
+  const server::PlaybookInputs inputs{5912.3, 5920, 5920, .12, 1.2, .94};
+  for (const auto& [conditions, expected] : std::vector<std::pair<json, std::string>>{
+      {{{"dte", {{"min", 0}, {"max", 1}}}, {"iv_rank", {{"min", .3}, {"max", 1}}}}, "DTE 3.2 is outside 0.0-1.0"},
+      {{{"iv_rank", {{"min", .3}, {"max", 1}}}}, "IV rank 0.12 is outside 0.30-1.00"},
+      {{{"vrp_min", 2}}, "VRP 1.2 is not above 2.0"},
+      {{{"term_inverted", true}}, "Term structure is not inverted (9d/30d 0.94)"},
+      {{{"price", {{"reference", "day_open"}, {"direction", "above"}, {"value", 0}}}}, "Price 5912.30 is not above day open 5920.00 + 0.00"},
+      {{{"price", {{"reference", "prior_close"}, {"direction", "above"}, {"value", -2}}}}, "Price 5912.30 is not above prior close 5920.00 - 2.00"},
+      {{{"price", {{"reference", "level"}, {"direction", "below"}, {"value", 5900}}}}, "Price 5912.30 is not below 5900.00"}}) {
+    setup["conditions"] = conditions;
+    EXPECT_EQ(server::playbook_condition_reason(setup, inputs, 3.2), expected);
+  }
+  for (const auto& [conditions, expected] : std::vector<std::pair<json, std::string>>{
+      {{{"dte", {{"min", 0}, {"max", 1}}}}, "DTE unavailable (no expiry)"},
+      {{{"iv_rank", {{"min", .3}, {"max", 1}}}}, "IV rank unavailable (no IV history)"},
+      {{{"vrp_min", 2}}, "VRP unavailable (missing IV or realized volatility)"},
+      {{{"term_inverted", true}}, "Term structure unavailable (missing 9d or 30d IV)"},
+      {{{"price", {{"reference", "day_open"}, {"direction", "above"}, {"value", 0}}}}, "Day open unavailable (no 09:30 minute)"},
+      {{{"price", {{"reference", "prior_close"}, {"direction", "above"}, {"value", 0}}}}, "Prior close unavailable"},
+      {{{"price", {{"reference", "level"}, {"direction", "above"}, {"value", 0}}}}, "Price unavailable"}}) {
+    setup["conditions"] = conditions;
+    EXPECT_EQ(server::playbook_condition_reason(setup, {}, analytics::kNaN), expected);
+  }
+  setup["conditions"] = {{"iv_rank", {{"min", .12}, {"max", .12}}}, {"term_inverted", false}};
+  EXPECT_FALSE(server::playbook_condition_reason(setup, inputs, 0));
 }
 TEST(PlaybookTemplates, MatchesOriginalWebPickerGoldenCases) {
   std::ifstream input(std::filesystem::path(OPENPORT_TEST_DATA_DIR) / "template-parity.json");
@@ -208,6 +237,11 @@ TEST(PassOdds, SeedIsRepeatableAndOlderMissingExtremaAreNotInvented) {
   server::TradingCommand request;
   const auto restored = json(request).get<server::TradingCommand>();
   EXPECT_EQ(restored.kind, server::TradingCommand::Kind::Submit);
+  EXPECT_EQ(restored.cancel_reason, trading::Reason::USER_CANCEL);
+  EXPECT_FALSE(json(request).contains("cancel_reason"));
+  request.kind = server::TradingCommand::Kind::Cancel;
+  request.cancel_reason = trading::Reason::PLAYBOOK_TIME_STOP;
+  EXPECT_EQ(json(request).get<server::TradingCommand>().cancel_reason, trading::Reason::PLAYBOOK_TIME_STOP);
 }
 struct ScenarioFixture {
   test::RecordingFile file;
@@ -320,14 +354,17 @@ TEST(Playbooks, ScenarioAutoEntriesAndTimeStopsReproduceJournalAndVerification) 
   server::Playbooks store;
   auto setup = fixture.setup();
   setup["conditions"]["price"] = {{"reference", "day_open"}, {"direction", "above"}, {"value", -1000}};
+  setup["management"]["take_profit_percent"] = 1;
+  setup["management"]["stop_credit_multiple"] = 100;
   setup["sizing"] = {{"floor_share", .8}};
   store.change({{"action", "create"}, {"definition", setup}}, "main", true);
   store.change({{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, "main", true);
   std::string golden;
-  for (int repeat = 0; repeat < 2; ++repeat) {
+  for (int repeat = 0; repeat < 4; ++repeat) {
     md::RecordingReader reader(fixture.file.path);
     const auto journal = fixture.file.directory / ("auto-" + std::to_string(repeat) + ".jsonl");
     server::Desk::Options options; options.replay = true;
+    options.playbook_cancel_labels = repeat >= 2;
     options.paper_journal = journal;
     options.initial_playbooks = store.catalogue().dump();
     options.paper.initial_cash = money("50000");
@@ -352,6 +389,19 @@ TEST(Playbooks, ScenarioAutoEntriesAndTimeStopsReproduceJournalAndVerification) 
     for (const auto& order : view->snapshot->recent_orders) {
       EXPECT_EQ(order.actor, "system") << order.request.client_order_id;
     }
+    const auto expected_reason = repeat >= 2 ? trading::Reason::PLAYBOOK_TIME_STOP : trading::Reason::USER_CANCEL;
+    int cancelled_exits = 0;
+    for (const auto& order : view->snapshot->recent_orders) {
+      if (order.parent && order.status == trading::OrderStatus::Cancelled) {
+        ++cancelled_exits;
+        EXPECT_EQ(order.reason.code, expected_reason);
+      }
+    }
+    EXPECT_GE(cancelled_exits, 2);
+    const auto recovered = trading::TradingSession::recover(trading::FileJournal::read(journal));
+    for (const auto& order : recovered.snapshot()->recent_orders) {
+      if (order.parent && order.status == trading::OrderStatus::Cancelled) { EXPECT_EQ(order.reason.code, expected_reason); }
+    }
     const auto report = server::playbook_report(store.catalogue(), *view).at("morning");
     EXPECT_EQ(report.at("all").at("trades"), 1);
     EXPECT_EQ(report.at("all").at("adherence"), 1);
@@ -362,7 +412,7 @@ TEST(Playbooks, ScenarioAutoEntriesAndTimeStopsReproduceJournalAndVerification) 
     malformed.snapshot = snapshot;
     EXPECT_NO_THROW(server::playbook_report(store.catalogue(), malformed));
     std::ifstream input(journal); std::ostringstream bytes; bytes << input.rdbuf();
-    if (repeat == 0) { golden = bytes.str(); } else { EXPECT_EQ(bytes.str(), golden); }
+    if (repeat % 2 == 0) { golden = bytes.str(); } else { EXPECT_EQ(bytes.str(), golden); }
     desk.stop();
     const auto verified = server::verify_run(journal);
     EXPECT_TRUE(verified.matched) << verified.message;
@@ -503,6 +553,89 @@ server::ApiResponse api(DeskSource& source, std::string method, std::string rout
                           [&](server::ApiResponse value) { reply = std::move(value); });
   return reply;
 }
+TEST(PlaybookApi, StageHttpOrderRoundTripsThroughTheSubmissionParser) {
+  ScenarioFixture fixture;
+  md::RecordingReader reader(fixture.file.path);
+  server::Desk::Options options; options.replay = true;
+  server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading();
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto first = batches.next(); ASSERT_TRUE(first);
+  desk.replay_batch(first->events, first->received, first->time);
+  DeskSource source(desk);
+  auto setup = fixture.setup();
+  setup["management"]["take_profit_percent"] = 50;
+  setup["management"]["stop_credit_multiple"] = 2;
+  ASSERT_EQ(api(source, "POST", "/api/playbooks", setup).status, 200);
+  ASSERT_EQ(api(source, "PUT", "/api/playbooks/morning/mode", {{"mode", "stage"}}).status, 200);
+  const auto publication = json::parse(api(source, "GET", "/api/playbooks").body);
+  ASSERT_EQ(publication.at("staged").size(), 1U) << publication.dump();
+  const auto stage = publication.at("staged")[0];
+  const auto& body = stage.at("order");
+  EXPECT_TRUE(body.at("limit_price").is_string());
+  EXPECT_EQ(body.at("type"), "limit");
+  EXPECT_EQ(body.at("time_in_force"), "gtc");
+  EXPECT_FALSE(body.contains("symbol"));
+  EXPECT_FALSE(body.at("bracket").at("take_profit").contains("trigger"));
+  EXPECT_FALSE(body.at("bracket").at("stop_loss").contains("limit_price"));
+  const auto sent = api(source, "POST", "/api/orders", body);
+  ASSERT_EQ(sent.status, 201) << sent.body;
+  const auto id = std::stoull(json::parse(sent.body).at("order").at("id").get<std::string>());
+  const auto& submitted = desk.trading_view()->snapshot->recent_orders[id - 1].request;
+  EXPECT_EQ(json(submitted), stage.at("request"));
+  EXPECT_EQ(server::order_request_json(submitted), body);
+  EXPECT_EQ(api(source, "GET", "/api/orders/999999").status, 404);
+  EXPECT_EQ(api(source, "GET", "/api/orders/not-an-id").status, 400);
+  ASSERT_EQ(api(source, "PUT", "/api/playbooks/morning/mode", {{"mode", "auto"}}).status, 200);
+  while (const auto batch = batches.next()) {
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    if (desk.market_time() >= md::new_york_to_utc(fixture.scenario.date, 9, 33)) break;
+  }
+  const auto orders = json::parse(api(source, "GET", "/api/orders").body).at("orders");
+  int labelled = 0;
+  for (const auto& order : orders) {
+    if (!order.at("reason").is_null() && order.at("reason").at("code") == "PLAYBOOK_TIME_STOP") {
+      ++labelled;
+      const auto detail = api(source, "GET", "/api/orders/" + order.at("id").get<std::string>());
+      EXPECT_NE(detail.body.find("Playbook time stop"), std::string::npos);
+    }
+  }
+  EXPECT_GE(labelled, 1);
+  EXPECT_NE(api(source, "GET", "/api/trades.csv").body.find("PLAYBOOK_TIME_STOP"), std::string::npos);
+}
+TEST(PlaybookApi, TimeStopLabelsAnUnfilledEntry) {
+  ScenarioFixture fixture;
+  md::RecordingReader reader(fixture.file.path);
+  server::Desk::Options options; options.replay = true;
+  server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading();
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto first = batches.next(); ASSERT_TRUE(first);
+  desk.replay_batch(first->events, first->received, first->time);
+  DeskSource source(desk);
+  ASSERT_EQ(api(source, "POST", "/api/playbooks", fixture.setup()).status, 200);
+  ASSERT_EQ(api(source, "PUT", "/api/playbooks/morning/mode", {{"mode", "stage"}}).status, 200);
+  const auto publication = json::parse(api(source, "GET", "/api/playbooks").body);
+  ASSERT_EQ(publication.at("staged").size(), 1U) << publication.dump();
+  auto body = publication.at("staged")[0].at("order");
+  // Single-contract conditional entries may open; conditional combos only close.
+  for (const auto& leg : body.at("legs")) if (leg.at("side") == "buy") body["symbol"] = leg.at("symbol");
+  body.erase("legs"); body.erase("limit_price");
+  body["side"] = "buy"; body["type"] = "market"; body["time_in_force"] = "ioc";
+  body["trigger"] = {{"source", "underlying"}, {"direction", "at_or_below"}, {"level", "1.00"}};
+  const auto sent = api(source, "POST", "/api/orders", body);
+  ASSERT_EQ(sent.status, 201) << sent.body;
+  const auto id = json::parse(sent.body).at("order").at("id").get<std::string>();
+  ASSERT_EQ(api(source, "PUT", "/api/playbooks/morning/mode", {{"mode", "auto"}}).status, 200);
+  while (const auto batch = batches.next()) {
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    if (desk.market_time() >= md::new_york_to_utc(fixture.scenario.date, 9, 33)) break;
+  }
+  const auto cancelled = json::parse(api(source, "GET", "/api/orders/" + id).body).at("order");
+  EXPECT_EQ(cancelled.at("status"), "cancelled");
+  EXPECT_EQ(cancelled.at("filled_quantity"), 0);
+  EXPECT_EQ(cancelled.at("reason").at("code"), "PLAYBOOK_TIME_STOP");
+}
 TEST(PlaybookApi, VersionReadsAndAutoRefusalUseAccountCommandPath) {
   server::Desk desk("test", {}, {{"SPX"}}, {}); desk.start_trading();
   DeskSource source(desk);
@@ -590,6 +723,7 @@ TEST(Playbooks, ConditionsExpireStagesAndFloorSizingRequiresAnActualFloor) {
   setup["version"] = 1; setup["conditions"]["price"] = {{"reference", "level"}, {"direction", "above"}, {"value", 100000}};
   reply = command(desk, {{"action", "update"}, {"definition", setup}}, desk.market_time());
   EXPECT_TRUE(json::parse(reply.playbook_result).at("staged").empty());
+  EXPECT_NE(reply.playbook_result.find("is not above 100000.00"), std::string::npos);
   setup["version"] = 2; setup["conditions"] = json::object(); setup["sizing"] = {{"floor_share", .5}};
   reply = command(desk, {{"action", "update"}, {"definition", setup}}, desk.market_time());
   EXPECT_TRUE(json::parse(reply.playbook_result).at("staged").empty());

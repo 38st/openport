@@ -15,6 +15,8 @@ struct PlaybookInputs {
 };
 void validate_playbook(const nlohmann::json& definition);
 bool playbook_window(const nlohmann::json& definition, md::Timestamp time);
+/// First failure in DTE, IV rank, VRP, term structure, price order; nullopt when all pass.
+std::optional<std::string> playbook_condition_reason(const nlohmann::json& definition, const PlaybookInputs& inputs, double dte);
 bool playbook_conditions(const nlohmann::json& definition, const PlaybookInputs& inputs, double dte);
 std::string playbook_tag(const nlohmann::json& definition);
 /// Exits for an entry at `entry` (signed: negative is a credit). The take-profit sits on

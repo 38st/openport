@@ -20,6 +20,8 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
   if (!playbooks_ || playbook_running_) return;
   Running running(playbook_running_);
   bool evaluated = false;
+  const auto cancel_reason = inputs_first() && options_.playbook_cancel_labels
+      ? trading::Reason::PLAYBOOK_TIME_STOP : trading::Reason::USER_CANCEL;
   for (auto& account : accounts_) {
     if (!account.session || !account.failure.empty() || !playbooks_->enabled(account.id)) continue;
     evaluated = true;
@@ -94,7 +96,7 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
         for (const auto& candidate : working) {
           const auto contracts = trading::order_symbols(candidate.request);
           if (std::any_of(contracts.begin(), contracts.end(), [&](const auto& symbol) { return std::find(symbols.begin(), symbols.end(), symbol) != symbols.end(); }))
-            account.session->cancel(candidate.id, market_time_);
+            account.session->cancel(candidate.id, market_time_, cancel_reason);
         }
       } else {
         const auto symbols = trading::order_symbols(order);
@@ -126,7 +128,7 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       return reply;
     };
     playbooks_->evaluate(account.id, options_.replay, market_time_, metrics_, *view, inputs, preview, send,
-        [&](trading::OrderId id) { account.session->cancel(id, market_time_); });
+        [&](trading::OrderId id) { account.session->cancel(id, market_time_, cancel_reason); });
   }
   if (evaluated) publish_trading();
 }

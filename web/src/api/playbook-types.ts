@@ -1,3 +1,4 @@
+import type { NewOrder } from "./trading-types"
 import type { StrategyTemplate } from "../lib/strategy"
 export interface Playbook {
   id: string; version?: number; name: string; description: string; underlyings: string[]
@@ -24,6 +25,10 @@ export interface PlaybookTrade {
   buying_power?: string; return_on_buying_power?: number | null
 }
 export interface StagedOrder {
+  /** HTTP order body; absent from older servers. */
+  order?: NewOrder
+  /** Legacy internal journal encoding, unsuitable for HTTP submission. */
+  request?: Record<string, unknown>
   id: string; playbook: string; version: number; name: string; underlying: string; units: number; net: string
   management?: Playbook["management"]; max_loss: string | null; max_loss_basis: string; close_by: string; simulated: true
   legs: { symbol: string; side: string; ratio: number; strike: number; type: string; expiry: string }[]

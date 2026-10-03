@@ -125,6 +125,8 @@ class Stub:
             self.order_bodies[key] = body
             order = shaped("Order", id="1", client_order_id=key, actor="agent", status="working", quantity=body["quantity"])
             return 201 if first else 200, {"account_version": "1", "order": order, "fills": []}
+        if path.startswith("/api/orders/") and method == "GET":
+            return 200, {"account_version": "2", "order": shaped("Order", id=path.rsplit("/", 1)[-1], actor="agent", status="cancelled")}
         if path.startswith("/api/orders/") and method in {"DELETE", "PUT"}:
             return 200, {"account_version": "2", "order": shaped("Order", actor="agent", status="cancelled"), "fills": []}
         if path.endswith(".csv"):

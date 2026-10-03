@@ -18,7 +18,7 @@ const label = "Simulated trading on recorded or generated days. Not a prediction
 const state: BacktestState = { id: "000001", status: "running", phase: "days", completed: 1, total: 4, label, report: null }
 const distribution = { values: ["-20.00", "40.00"], min: "-20.00", p25: "-20.00", median: "-20.00", p75: "-20.00", max: "40.00", mean: "10.00" }
 const result = { started: "2026-09-14T13:30:00Z", ended: "2026-09-14T20:15:00Z", pnl: "40.00", last_mark_pnl: "40.00", valuation_complete: true, quality_flags: [], max_drawdown: "20.00", min_floor_distance: "80.00", outcome: "open" as const,
-  decision: "", rule_trips: [], trades: [], fills: [], stock_fills: [], stock_trades: [], adherence: null, entry_reasons: { "test:SPX": "Entry conditions unmet or required data missing" }, open_positions: 0, journal: "days/000001.jsonl", journal_head: "abc" }
+  decision: "", rule_trips: [], trades: [], fills: [], stock_fills: [], stock_trades: [], adherence: null, entry_reasons: { "test:SPX": "IV rank unavailable (no IV history)" }, open_positions: 0, journal: "days/000001.jsonl", journal_head: "abc" }
 const report: BacktestReport = { schema: 1, simulated: true, label, status: "completed", playbook: newPlaybook,
   days: [{ ...result, date: "2026-09-14", input: { kind: "scenario", id: "fade", seed: "18446744073709551610" } }],
   attempts: [{ ...result, first_day: 0, last_day: 0, days: 1 }], errors: [],
@@ -102,7 +102,7 @@ describe("Backtest page", { timeout: renderTimeout }, () => {
     expect(host.textContent).toContain("Observed 2026-09-14T13:30:00Z to 2026-09-14T20:15:00Z")
     expect(host.textContent).toContain("0 passed · 0 failed · 1 open")
     expect(host.textContent).toContain("Trade expectancy—")
-    expect(host.textContent).toContain("Entry conditions unmet or required data missing")
+    expect(host.textContent).toContain("IV rank unavailable (no IV history)")
   })
   it("labels partial results and incomplete marks", async () => {
     await render(<BacktestReportView report={{ ...report, status: "cancelled", days: [{ ...report.days[0]!, pnl: null, valuation_complete: false }], errors: [{ day: 0, message: "Truncated recording" }] }} />)

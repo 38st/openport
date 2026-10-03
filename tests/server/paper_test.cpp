@@ -2066,8 +2066,8 @@ TEST(PaperRecovery, SettlementProvenanceIsDurableAndStopReleasesJournalWriter) {
   EXPECT_EQ(trade["settlement_value"], record["value"]);
   EXPECT_EQ(trade["settlement_source"], record["source"]["kind"]);
   const auto csv = server::handle_api({"GET", "/api/trades.csv"}, replacement).body;
-  EXPECT_NE(csv.find("settlement_value,settlement_source\r\n"), std::string::npos);
-  EXPECT_NE(csv.find("5012.00,provider_closing_print\r\n"), std::string::npos);
+  EXPECT_NE(csv.find("settlement_value,settlement_source,time_stop_orders\r\n"), std::string::npos);
+  EXPECT_NE(csv.find("5012.00,provider_closing_print,\r\n"), std::string::npos);
   const auto missing = server::handle_api({"GET", "/api/settlements?account=missing"}, replacement);
   EXPECT_EQ(missing.status, 404);
   EXPECT_EQ(json::parse(missing.body)["error"]["code"], "UNKNOWN_ACCOUNT");

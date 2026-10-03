@@ -4,6 +4,8 @@
 #include "openport/trading/types.hpp"
 
 namespace openport::server {
+/// An order body accepted by POST /api/orders (sparse optional terms, decimal money).
+nlohmann::json order_request_json(const trading::OrderRequest& order);
 nlohmann::json trading_status_json(const TradingStatus& status);
 /// Each account's ID, name and trading status, for status and ticks.
 nlohmann::json account_ticks_json(const EngineStatus& status);
