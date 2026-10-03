@@ -1919,6 +1919,45 @@ TEST(ReproducibleRun, WalkingChangesAndInsideFillsVerifyWithIdenticalBytes) {
   }
 }
 
+TEST(ReproducibleRun, OverrideRemovalVerifiesWithCurrentAndLegacyDriverBytes) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  for (const bool current : {false, true}) {
+    const auto journal = file.directory / (current ? "overrides-7.jsonl" : "overrides-6.jsonl");
+    {
+      md::RecordingReader reader(file.path);
+      server::Desk::Options options;
+      options.run_input = server::recording_input(file.path);
+      options.replay = true;
+      options.remove_redundant_overrides = current;
+      options.paper_journal = journal;
+      options.paper.rules.max_drawdown = Money::parse("1000");
+      options.paper.limits.underlying_overrides["SPX"] = {2e6, 2e4};
+      server::Desk desk("replay (synthetic)", reader.header().capabilities, reader.header().subscription, options);
+      desk.start_trading();
+      providers::ReplayBatches batches(reader, reader.header().subscription);
+      bool changed = false;
+      while (const auto batch = batches.next()) {
+        desk.replay_batch(batch->events, batch->received, batch->time);
+        if (!changed) {
+          server::TradingCommand request;
+          request.kind = server::TradingCommand::Kind::Limits;
+          request.expected_revision = desk.trading_view()->snapshot->risk.limits_revision;
+          request.limits = desk.trading_view()->config.limits;
+          request.limits.underlying_overrides.clear();
+          const auto reply = command(desk, request, batch->time, batch->received);
+          ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+          EXPECT_EQ(bool(desk.trading_view()->snapshot->pending_limits), !current);
+          changed = true;
+        }
+      }
+      desk.stop();
+    }
+    const auto verified = server::verify_run(journal);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+
 TEST(ReproducibleRun, ConservativeFillsHaveIdenticalBytesAndPassCliVerification) {
   test::RecordingFile file;
   write_stream(file.path, true);
