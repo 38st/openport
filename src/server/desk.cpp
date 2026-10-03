@@ -1071,7 +1071,10 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     if (!spot || !std::isfinite(spot->last) || spot->last <= 0) continue;
     check_circuit_breaker(*spot);
     const auto date = new_york_date(spot->ts);
-    if (!opening_source().empty() && spot->ts >= md::new_york_to_utc(date, 9, 30)) {
+    const auto open = md::new_york_to_utc(date, 9, 30);
+    if (!opening_source().empty() && spot->ts >= open &&
+        (options_.replay || spot->ts <= open + kOpeningPrintWait)) {
+      // Replay drivers retain their recorded behavior; live restarts cannot invent an open.
       // Ingress order matters: premarket prints and later revisions never replace it.
       opening_prints_.try_emplace(std::make_pair(spot->symbol, date), *spot);
       const auto oldest = md::date_from_days(md::days_since_epoch(date) - 7);

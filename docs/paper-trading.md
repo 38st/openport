@@ -2988,11 +2988,15 @@ with neither, the position waits and its `settle_by` reads `manual`.
 In demo and new replays (driver 5 and later), an AM position settles on the first valid
 underlying print received at or after 09:30 ET on its expiry date. Premarket
 prints and prints from other dates do not count; later prints do not replace the
-first. This is an approximation of the official special opening quotation, which
+first. Live demo prints must arrive within five minutes of 09:30 (through 09:35 ET),
+so a late restart cannot mistake an intraday print for the open. Replay driver 5
+keeps its recorded behavior; replays see the opening print from the beginning.
+This is an approximation of the official special opening quotation, which
 can differ materially from the underlying's opening print. Sources are
 `demo_opening_print`, `scenario_opening_print` or `recorded_opening_print`, with
 provider, underlying symbol and quote time. Waiting AM positions show
-`settle_by: "opening_print"`. If no qualifying print arrives they continue to wait;
+`settle_by: "opening_print"`. If no qualifying print arrives they continue to wait, with `settle_by: "manual"`
+after 09:35 ET so the trader knows to import;
 a manual import after expiry but before the print still settles exactly once.
 Live real-provider AM positions retain `settle_by: "manual"` and the explicit
 `POST /api/settlements` import (the terminal's Settle button). Their feed does not

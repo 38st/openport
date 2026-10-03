@@ -60,6 +60,9 @@ struct CircuitBreakerStatus {
     md::Timestamp market_time, md::Timestamp wall_time, std::chrono::seconds delay,
     md::Timestamp max_quote_age, const std::vector<MarketHalt>& halts = {});
 
+/// A live demo restart may only capture an AM opening print through 09:35 ET.
+inline constexpr md::Timestamp kOpeningPrintWait = 5 * md::kNanosPerMinute;
+
 /// How long after the regular close an expired PM position waits for its closing
 /// print before the last print before the close may stand in; past it, a position
 /// with neither settles by hand.
