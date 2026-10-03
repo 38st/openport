@@ -114,12 +114,14 @@ simulation's limits.
   chosen prices by chosen dates.
 - **Playbooks**: versioned setups with entry windows and conditions, shared strategy
   templates, preview sizing and spread exits. Trade, Brief and Dashboard stage orders
-  for review; replays and scenarios can send them automatically. The Playbooks page
+  for review; live paper accounts, replays and scenarios can send them automatically. The Playbooks page
   compares adherence and expectancy, and the Journal filters by playbook. Dashboard
   and playbook pass odds are labelled estimates from past results, not predictions.
   Failed conditions name their inputs and thresholds; stages include an HTTP order
   body for review or submission. Automatic time-stop cancellations and closes are
-  labelled in orders, Journal details and trade CSV. [Rules and limits](playbooks.md).
+  labelled in orders, Journal details and trade CSV. Live Auto records forward-test
+  windows and results, resumes after restart, and compares each version with its
+  latest saved backtest; Brief and Dashboard show automatic trading activity. [Rules and limits](playbooks.md).
 - **Batch backtests**: run a pinned playbook over recorded, imported or seeded
   scenario days, with independent daily results and carried-account evaluation
   attempts. The CLI, API and Backtest page keep reports and verifiable journals.
@@ -305,7 +307,8 @@ special opening quotation; live providers keep manual imports.
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels
       that name the binding floor, buying power or limit
 - [x] Specific playbook condition reasons, staged orders in HTTP shape and time-stop labels (F51, partial)
-- [ ] Automated forward testing on live paper (F51)
+- [x] Automated forward testing on live paper, persisted version windows, restart recovery,
+      journal-derived results and matching-version backtest comparison (F51)
 - [x] Seeded demo soak with JSON run identity, counters and exit status (F73)
 - [x] F57 part 1: named-account lifecycle, preset IDs, copied limits/guardrails and replay reset guidance
 - [ ] F57 remaining work: token management, HTTP underlying overrides and fill-model startup flag

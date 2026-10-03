@@ -711,6 +711,13 @@ bytes. Older cancel commands omit the optional `cancel_reason` and default to
 `USER_CANCEL`; existing account journals and saved reports still load. Resuming
 an interrupted run requires the current driver, as before.
 
+Live paper Auto also persists account/version forward-test windows in the optional
+`forward_tests` key of `playbooks.json`. Modes resume after restart, with entry
+limits and overlap read from the recovered journal and overdue time stops retried
+on the first fresh market update. Replay copies omit these records. This does not
+change replay driver 6, existing replay/backtest journal bytes, or reducer schema;
+new live automatic commands use the existing journal encoding.
+
 Verification currently compares exact hashes on the same build/platform. Math-library
 changes can alter analytic floating-point fields; see the platform qualification in
 [architecture](architecture.md#reproducible-runs). Journal compaction changes hashes,

@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <charconv>
 #include <fstream>
 #include <iomanip>
 #include <locale>
+#include <limits>
 #include <sstream>
 #include <numeric>
 #include <set>
@@ -21,6 +23,14 @@ namespace {
 using nlohmann::json;
 using namespace trading;
 [[noreturn]] void invalid(const std::string& message) { throw std::invalid_argument(message); }
+OrderId decimal_id(const json& value, std::string_view field) {
+  if (!value.is_string()) invalid(std::string(field) + " must be a decimal order ID");
+  const auto text = value.get<std::string>();
+  OrderId id = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), id);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || id == 0) invalid("Invalid " + std::string(field));
+  return id;
+}
 void text_field(const json& value, std::size_t maximum, std::string_view field, bool empty = false) {
   if (!value.is_string()) invalid(std::string(field) + " must be text");
   const auto text = value.get<std::string>();
@@ -115,10 +125,16 @@ std::vector<Trip> trips(const TradingView& view, const std::vector<Lifecycle>& h
 }
 bool guardrails_allow(const json& definition, const TradingView& view, md::Timestamp time, OrderId before = 0) {
   const auto id = definition.at("id").get<std::string>();
+  auto first_order = view.snapshot->evaluation.first_order;
+  if (before && before < first_order) {
+    first_order = 1;
+    for (const auto& attempt : view.snapshot->attempts)
+      if (attempt.first_order <= before) first_order = std::max(first_order, attempt.first_order);
+  }
   int entries = 0;
   for (const auto& order : view.snapshot->recent_orders) {
     if (before != 0 && order.id >= before) break;
-    if (order.id < view.snapshot->evaluation.first_order || order.parent || order.system || order.request.note.starts_with("Playbook automatic time stop") || !tagged(order, id)) continue;
+    if (order.id < first_order || order.parent || order.system || order.request.note.starts_with("Playbook automatic time stop") || !tagged(order, id)) continue;
     if (order.status == OrderStatus::Rejected || (order.status == OrderStatus::Cancelled && order.filled_quantity == 0)) continue;
     if (md::new_york_time(order.accepted_at).date == md::new_york_time(time).date) ++entries;
   }
@@ -131,9 +147,38 @@ bool guardrails_allow(const json& definition, const TradingView& view, md::Times
     return before ? *trip.closed < time || (*trip.closed == time && trip.closed_by < before) : *trip.closed <= time;
   };
   for (const auto& trip : trips(view, history))
-    if (trip.order->id >= view.snapshot->evaluation.first_order && (!before || trip.order->id < before) && tagged(*trip.order, id) && trip.closed && closed_first(trip) &&
+    if (trip.order->id >= first_order && (!before || trip.order->id < before) && tagged(*trip.order, id) && trip.closed && closed_first(trip) &&
         trip.net < Money{} && time < *trip.closed + cooldown) return false;
   return true;
+}
+json report_rows(const json& rows) {
+  const auto stats = [&](int filter) {
+    int count = 0, wins = 0, losses = 0, r_count = 0, passed = 0, measured = 0, bp_count = 0;
+    Money total, win_total, loss_total;
+    double r_total = 0, bp_total = 0;
+    for (const auto& row : rows) {
+      if (filter >= 0 && row.at("followed").get<bool>() != (filter == 1)) continue;
+      passed += row.at("passed_rules").get<int>(); measured += row.at("measured_rules").get<int>();
+      if (row.at("closed").is_null()) continue;
+      ++count;
+      const auto net = Money::parse(row.at("net").get<std::string>());
+      total = total + net;
+      if (net > Money{}) { ++wins; win_total = win_total + net; }
+      if (net < Money{}) { ++losses; loss_total = loss_total - net; }
+      if (row.at("r").is_number()) { ++r_count; r_total += row.at("r").get<double>(); }
+      if (row.at("return_on_buying_power").is_number()) { ++bp_count; bp_total += row.at("return_on_buying_power").get<double>(); }
+    }
+    // Wins over decided trades: a breakeven is neither, as in the Journal and backtests.
+    return json{{"trades", count}, {"win_rate", wins + losses ? json(static_cast<double>(wins) / (wins + losses)) : json(nullptr)},
+        {"average_win", wins ? json(win_total.prorate(1, wins).str()) : json(nullptr)},
+        {"average_loss", losses ? json((-loss_total).prorate(1, losses).str()) : json(nullptr)},
+        {"expectancy", count ? json(total.prorate(1, count).str()) : json(nullptr)},
+        {"profit_factor", loss_total > Money{} ? json(win_total.dollars() / loss_total.dollars()) : json(nullptr)},
+        {"no_losses", wins > 0 && losses == 0}, {"average_r", r_count ? json(r_total / r_count) : json(nullptr)},
+        {"average_return_on_buying_power", bp_count ? json(bp_total / bp_count) : json(nullptr)},
+        {"adherence", measured ? json(static_cast<double>(passed) / measured) : json(nullptr)}};
+  };
+  return {{"trades", rows}, {"all", stats(-1)}, {"followed", stats(1)}, {"deviated", stats(0)}};
 }
 }
 void validate_playbook(const json& definition) {
@@ -311,7 +356,7 @@ Playbooks::Playbooks(std::filesystem::path file, Json initial) : file_(std::move
     if (!input) invalid("Cannot read playbooks.json");
     catalogue_ = json::parse(input);
   }
-  strict_keys(catalogue_, {"schema", "definitions", "modes"});
+  strict_keys(catalogue_, {"schema", "definitions", "modes", "forward_tests"});
   if (catalogue_.at("schema") != 1 || !catalogue_.at("definitions").is_object() || !catalogue_.at("modes").is_object()) invalid("Invalid playbooks.json schema");
   for (const auto& [id, item] : catalogue_.at("definitions").items()) {
     strict_keys(item, {"versions", "deleted"});
@@ -327,6 +372,26 @@ Playbooks::Playbooks(std::filesystem::path file, Json initial) : file_(std::move
     if (!modes.is_object()) invalid("Invalid account playbook modes");
     for (const auto& [id, mode] : modes.items())
       if (!catalogue_.at("definitions").contains(id) || (mode != "off" && mode != "stage" && mode != "auto")) invalid("Invalid saved playbook mode");
+  }
+  if (catalogue_.contains("forward_tests")) {
+    if (!catalogue_.at("forward_tests").is_array()) invalid("Invalid forward-test windows");
+    for (const auto& window : catalogue_.at("forward_tests")) {
+      strict_keys(window, {"account", "playbook", "version", "started", "ended", "actor", "first_order", "end_order"});
+      text_field(window.at("account"), 100, "account");
+      text_field(window.at("actor"), 100, "actor");
+      const auto id = window.at("playbook").get<std::string>();
+      if (!catalogue_.at("definitions").contains(id)) invalid("Unknown forward-test playbook");
+      integer(window.at("version"), 1, static_cast<int>(catalogue_.at("definitions").at(id).at("versions").size()), "version");
+      const auto start = md::parse_datetime(window.at("started").get<std::string>(), md::Zone::Utc);
+      if (!start || *start <= 0) invalid("Invalid forward-test start");
+      if (!window.at("ended").is_null()) {
+        const auto end = md::parse_datetime(window.at("ended").get<std::string>(), md::Zone::Utc);
+        if (!end || *end < *start) invalid("Invalid forward-test end");
+      }
+      const auto first = decimal_id(window.at("first_order"), "first_order");
+      if (!window.at("end_order").is_null() && decimal_id(window.at("end_order"), "end_order") < first) invalid("Invalid forward-test order range");
+      if (window.at("ended").is_null() != window.at("end_order").is_null()) invalid("Incomplete forward-test end");
+    }
   }
 }
 void Playbooks::save(const Json& next) {
@@ -344,7 +409,8 @@ void Playbooks::save(const Json& next) {
   catalogue_ = next;
   ++revision_;
 }
-Playbooks::Json Playbooks::change(const Json& command, std::string_view account, bool replay) {
+Playbooks::Json Playbooks::change(const Json& command, std::string_view account, bool replay, md::Timestamp now,
+    std::string_view actor, const std::map<std::string, trading::OrderId>& next_orders) {
   strict_keys(command, {"action", "definition", "id", "version", "mode", "staged"});
   const auto action = command.at("action").get<std::string>();
   if (action == "dismiss") {
@@ -384,14 +450,43 @@ Playbooks::Json Playbooks::change(const Json& command, std::string_view account,
     if (action == "delete") {
       if (command.at("version") != definitions.at(id).at("versions").back().at("version")) invalid("Playbook changed; reload before deleting");
       definitions[id]["deleted"] = true;
+      if (!replay) for (auto& modes : next.at("modes")) if (modes.contains(id)) modes[id] = "off";
     } else {
       const auto& value = command.at("mode");
       if (value != "off" && value != "stage" && value != "auto") invalid("Mode must be off, stage or auto");
       const auto mode = value.get<std::string>();
-      if (mode == "auto" && !replay) invalid("Auto mode is only available on replay or scenario accounts; live-feed practice accounts cannot send automatically");
+      if (mode == "auto" && !replay && now <= 0) invalid("Waiting for market time before enabling live auto");
       next["modes"][std::string(account)][id] = mode;
     }
   } else invalid("Unknown playbook action");
+  if (!replay) {
+    // Mode changes and version replacement share one atomic catalogue write.
+    auto& windows = next["forward_tests"];
+    if (windows.is_null()) windows = json::array();
+    const auto boundary = [&](const std::string& owner) { return std::to_string(next_orders.contains(owner) ? next_orders.at(owner) : 1); };
+    for (auto& window : windows) {
+      if (!window.at("ended").is_null()) continue;
+      const auto owner = window.at("account").get<std::string>();
+      const auto id = window.at("playbook").get<std::string>();
+      const auto& record = definitions.at(id);
+      if (record.at("deleted") == true || record.at("versions").back().at("version") != window.at("version") ||
+          next.at("modes").value(owner, json::object()).value(id, "off") != "auto") {
+        const auto started = *md::parse_datetime(window.at("started").get<std::string>(), md::Zone::Utc);
+        window["ended"] = md::format_timestamp(std::max(now, started));
+        window["end_order"] = next_orders.contains(owner) ? boundary(owner) : std::to_string(std::numeric_limits<OrderId>::max());
+      }
+    }
+    for (const auto& [owner, modes] : next.at("modes").items()) for (const auto& [id, mode] : modes.items()) {
+      const auto& record = definitions.at(id);
+      if (mode != "auto" || record.at("deleted") == true) continue;
+      const bool running = std::any_of(windows.begin(), windows.end(), [&](const auto& window) {
+        return window.at("account") == owner && window.at("playbook") == id && window.at("ended").is_null();
+      });
+      if (!running && now > 0) windows.push_back({{"account", owner}, {"playbook", id},
+          {"version", record.at("versions").back().at("version")}, {"started", md::format_timestamp(now)},
+          {"ended", nullptr}, {"actor", actor}, {"first_order", boundary(owner)}, {"end_order", nullptr}});
+    }
+  }
   save(next);
   staged_.clear();
   return publication(account, replay);
@@ -407,7 +502,17 @@ Playbooks::Json Playbooks::publication(std::string_view account, bool replay) co
   result["modes"] = catalogue_.at("modes").value(owner, json::object());
   result["staged"] = staged_.contains(owner) ? staged_.at(owner) : json::array();
   result["reasons"] = reasons_.contains(owner) ? reasons_.at(owner) : json::object();
-  result["auto_allowed"] = replay;
+  result["auto_allowed"] = true;
+  result.erase("forward_tests");
+  if (!replay) {
+    result["forward_tests"] = json::object();
+    for (const auto& [id, record] : catalogue_.at("definitions").items()) {
+      (void)record;
+      result["forward_tests"][id] = {{"windows", json::array()}};
+    }
+    for (const auto& window : catalogue_.value("forward_tests", json::array()))
+      if (window.at("account") == owner) result["forward_tests"][window.at("playbook").get<std::string>()]["windows"].push_back(window);
+  }
   result["simulated"] = true;
   return result;
 }
@@ -455,12 +560,12 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
   const auto modes = catalogue_.at("modes").value(account, json::object());
   const auto history = lives(*current);
   const auto round_trips = trips(*current, history);
-  if (replay) for (const auto& working : current->snapshot->open_orders) {
+  for (const auto& working : current->snapshot->open_orders) {
     const auto* definition = order_definition(catalogue_, working);
     if (definition && !working.parent && modes.value(definition->at("id").get<std::string>(), "off") == "auto" &&
         now >= playbook_deadline(*definition, working.accepted_at)) cancel(working.id);
   }
-  if (replay) for (const auto& trip : round_trips) {
+  for (const auto& trip : round_trips) {
     const auto* definition = order_definition(catalogue_, *trip.order);
     if (!definition || trip.closed || trip.legs.empty() || modes.value(definition->at("id").get<std::string>(), "off") != "auto" ||
         now < playbook_deadline(*definition, trip.legs.front()->opened)) continue;
@@ -489,7 +594,7 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
   }
   for (const auto& [id, record] : catalogue_.at("definitions").items()) {
     const auto mode = modes.value(id, "off");
-    if (record.at("deleted") == true || mode == "off" || (mode == "auto" && !replay)) continue;
+    if (record.at("deleted") == true || mode == "off") continue;
     const auto& definition = record.at("versions").back();
     for (const auto& item : definition.at("underlyings")) {
       const auto symbol = item.get<std::string>();
@@ -500,6 +605,17 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
         if (now >= playbook_deadline(definition, now)) invalid("Past the management deadline");
         if (const auto found = suppressed_.find(stage_key); found != suppressed_.end() && found->second.first == md::new_york_time(now).date)
           invalid(found->second.second);
+        if (!replay && mode == "auto") for (const auto& previous : current->snapshot->recent_orders) {
+          if (previous.status != OrderStatus::Rejected || !tagged(previous, id) || previous.actor != "system" ||
+              md::new_york_time(previous.accepted_at).date != md::new_york_time(now).date) continue;
+          const auto evidence = json::parse(previous.request.note, nullptr, false);
+          if (!evidence.is_object() || (!evidence.contains("automatic") || evidence.at("automatic") != true)) continue;
+          for (const auto& contract : order_symbols(previous.request)) {
+            const auto found = current->contracts.find(contract);
+            if (found != current->contracts.end() && found->second.underlying == symbol)
+              invalid("Automatic entry refused for this day: " + previous.reason.message);
+          }
+        }
         if (!guardrails_allow(definition, *current, now)) invalid("Playbook entry limit or loss cooldown");
         if (!metrics.contains(symbol)) invalid("Waiting for underlying data");
         const auto& underlying = *metrics.at(symbol);
@@ -582,7 +698,7 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
   }
 }
 
-nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
+nlohmann::json playbook_report(const json& catalogue, const TradingView& view, bool current_attempt) {
   const auto history = lives(view);
   const auto round_trips = trips(view, history);
   json reports = json::object();
@@ -590,7 +706,7 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
     (void)record;
     json rows = json::array();
     for (const auto& trip : round_trips) {
-      if (!tagged(*trip.order, id) || trip.order->id < view.snapshot->evaluation.first_order) continue;
+      if (!tagged(*trip.order, id) || (current_attempt && trip.order->id < view.snapshot->evaluation.first_order)) continue;
       const auto* definition = order_definition(catalogue, *trip.order);
       if (!definition || trip.legs.empty()) continue;
       const auto& order = *trip.order;
@@ -656,34 +772,74 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view) {
           {"return_on_buying_power", trip.closed && buying_power > Money{} ? json(trip.net.dollars() / buying_power.dollars()) : json(nullptr)}, {"rules", rules}, {"passed_rules", passed}, {"measured_rules", measured}, {"followed", followed},
           {"r", trip.closed && planned && *planned > Money{} ? json(trip.net.dollars() / planned->dollars()) : json(nullptr)}});
     }
-    const auto stats = [&](int filter) {
-      int count = 0, wins = 0, losses = 0, r_count = 0, passed = 0, measured = 0, bp_count = 0;
-      Money total, win_total, loss_total;
-      double r_total = 0, bp_total = 0;
-      for (const auto& row : rows) {
-        if (filter >= 0 && row.at("followed").get<bool>() != (filter == 1)) continue;
-        passed += row.at("passed_rules").get<int>(); measured += row.at("measured_rules").get<int>();
-        if (row.at("closed").is_null()) continue;
-        ++count;
-        const auto net = Money::parse(row.at("net").get<std::string>());
-        total = total + net;
-        if (net > Money{}) { ++wins; win_total = win_total + net; }
-        if (net < Money{}) { ++losses; loss_total = loss_total - net; }
-        if (row.at("r").is_number()) { ++r_count; r_total += row.at("r").get<double>(); }
-        if (row.at("return_on_buying_power").is_number()) { ++bp_count; bp_total += row.at("return_on_buying_power").get<double>(); }
-      }
-      // Wins over decided trades: a breakeven is neither, as in the Journal and backtests.
-      return json{{"trades", count}, {"win_rate", wins + losses ? json(static_cast<double>(wins) / (wins + losses)) : json(nullptr)},
-          {"average_win", wins ? json(win_total.prorate(1, wins).str()) : json(nullptr)},
-          {"average_loss", losses ? json((-loss_total).prorate(1, losses).str()) : json(nullptr)},
-          {"expectancy", count ? json(total.prorate(1, count).str()) : json(nullptr)},
-          {"profit_factor", loss_total > Money{} ? json(win_total.dollars() / loss_total.dollars()) : json(nullptr)},
-          {"no_losses", wins > 0 && losses == 0}, {"average_r", r_count ? json(r_total / r_count) : json(nullptr)},
-          {"average_return_on_buying_power", bp_count ? json(bp_total / bp_count) : json(nullptr)},
-          {"adherence", measured ? json(static_cast<double>(passed) / measured) : json(nullptr)}};
-    };
-    reports[id] = {{"trades", rows}, {"all", stats(-1)}, {"followed", stats(1)}, {"deviated", stats(0)}};
+    reports[id] = report_rows(rows);
   }
   return reports;
+}
+nlohmann::json playbook_forward_report(const json& publication, const TradingView& view) {
+  auto result = publication.value("forward_tests", json::object());
+  if (result.empty()) return result;
+  const auto reports = playbook_report(publication, view, false);
+  for (auto& [id, forward] : result.items()) {
+    json rows = json::array(), versions = json::object();
+    std::set<OrderId> entries;
+    int rejected = 0, time_stops = 0;
+    double days = 0;
+    bool running = false;
+    for (const auto& window : forward.at("windows")) {
+      const auto start = *md::parse_datetime(window.at("started").get<std::string>(), md::Zone::Utc);
+      const auto end = window.at("ended").is_null() ? view.snapshot->time : *md::parse_datetime(window.at("ended").get<std::string>(), md::Zone::Utc);
+      days += static_cast<double>(std::max<md::Timestamp>(0, end - start)) / (24 * 60 * md::kNanosPerMinute);
+      running = running || window.at("ended").is_null();
+      const auto first = decimal_id(window.at("first_order"), "first_order");
+      const auto last = window.at("end_order").is_null() ? std::numeric_limits<OrderId>::max() : decimal_id(window.at("end_order"), "end_order");
+      for (const auto& order : view.snapshot->recent_orders) {
+        if (order.id < first || order.id >= last || order.accepted_at < start ||
+            (!window.at("ended").is_null() && order.accepted_at > end) || order.parent || order.system || order.actor != "system" || !tagged(order, id)) continue;
+        const auto* definition = order_definition(publication, order);
+        if (!definition || definition->at("version") != window.at("version")) continue;
+        const auto evidence = json::parse(order.request.note, nullptr, false);
+        if (!evidence.is_object() || (!evidence.contains("automatic") || evidence.at("automatic") != true)) continue;
+        if (order.status == OrderStatus::Rejected) ++rejected;
+        else entries.insert(order.id);
+      }
+    }
+    for (const auto& row : reports.at(id).at("trades")) {
+      const auto order_id = decimal_id(row.at("order"), "order");
+      if (!entries.contains(order_id)) continue;
+      const auto opened = row.at("opened").get<std::string>();
+      const bool in_window = std::any_of(forward.at("windows").begin(), forward.at("windows").end(), [&](const auto& window) {
+        return window.at("version") == row.at("version") && order_id >= decimal_id(window.at("first_order"), "first_order") &&
+            (window.at("end_order").is_null() || order_id < decimal_id(window.at("end_order"), "end_order")) &&
+            opened >= window.at("started").template get<std::string>() &&
+            (window.at("ended").is_null() || opened <= window.at("ended").template get<std::string>());
+      });
+      if (!in_window) continue;
+      rows.push_back(row);
+      const auto version = std::to_string(row.at("version").get<int>());
+      if (!versions.contains(version)) versions[version] = json::array();
+      versions[version].push_back(row);
+    }
+    // Count each filled automatic close once, including closes after a window ended.
+    for (const auto& order : view.snapshot->recent_orders) {
+      const std::string prefix = "Playbook automatic time stop; entry ";
+      if (order.actor != "system" || !order.filled_quantity || !order.request.note.starts_with(prefix)) continue;
+      const auto entry = order.request.note.substr(prefix.size());
+      if (entries.contains(decimal_id(entry, "entry"))) ++time_stops;
+    }
+    for (const auto& window : forward.at("windows")) {
+      const auto version = std::to_string(window.at("version").get<int>());
+      if (!versions.contains(version)) versions[version] = json::array();
+    }
+    for (auto& value : versions) value = report_rows(value);
+    forward["running"] = running;
+    forward["days_running"] = days;
+    forward["entries"] = entries.size();
+    forward["rejected_entries"] = rejected;
+    forward["time_stops"] = time_stops;
+    forward["report"] = report_rows(rows);
+    forward["versions"] = versions;
+  }
+  return result;
 }
 }  // namespace openport::server

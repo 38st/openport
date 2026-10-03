@@ -28,6 +28,8 @@ export interface BacktestReport {
 }
 export interface BacktestState {
   id: string; status: "running" | "cancelling" | "cancelled" | "completed" | "failed" | "interrupted"
+  /** Compact saved report identity and stats on GET /api/backtests. */
+  playbook?: { id: string; version: number }; summary?: BacktestReport["summary"]
   phase: string; directory?: string; completed: number; total: number; label: string; error?: string; report: BacktestReport | null
 }
 export interface BacktestListing { active: string | null; runs: BacktestState[]; label: string }

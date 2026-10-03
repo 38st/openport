@@ -90,7 +90,21 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       // Order::system is reserved for reducer liquidation and must not bypass risk.
       command.actor = "system";
       const bool time_stop = order.note.starts_with("Playbook automatic time stop");
+      if (time_stop && !options_.replay) {
+        // Check feed/session freshness before cancelling working protection. A mode
+        // command can evaluate while the feed is stopped, without a new snapshot.
+        for (const auto& symbol : trading::order_symbols(order)) {
+          const auto contract = view->contracts.find(symbol);
+          if (contract == view->contracts.end()) continue;
+          const auto& underlying = contract->second.underlying;
+          const auto time = view->market_times.find(underlying);
+          reply.decision = paper_acceptance(underlying, time == view->market_times.end() ? 0 : time->second,
+              driver_time, capabilities_.delay, account.session->config().limits.max_quote_age, breaker_.halts);
+          if (!reply.decision.ok()) return reply;
+        }
+      }
       if (time_stop) {
+        if (!options_.replay) account.session->set_actor("system");
         const auto symbols = trading::order_symbols(order);
         const auto working = account.session->snapshot()->open_orders;
         for (const auto& candidate : working) {
@@ -128,7 +142,7 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       return reply;
     };
     playbooks_->evaluate(account.id, options_.replay, market_time_, metrics_, *view, inputs, preview, send,
-        [&](trading::OrderId id) { account.session->cancel(id, market_time_, cancel_reason); });
+        [&](trading::OrderId id) { if (!options_.replay) account.session->set_actor("system"); account.session->cancel(id, market_time_, cancel_reason); });
   }
   if (evaluated) publish_trading();
 }
@@ -149,7 +163,12 @@ void Desk::playbook_command(const TradingCommand& command, TradingReply& reply, 
       update_trading({}, pending, driver_time);
       apply_command(pending.front(), market_time_, driver_time);
       if (!reply.decision.ok() || !reply.error_code.empty()) throw std::invalid_argument(reply.decision.message);
-    } else playbooks_->change(change, account, options_.replay);
+    } else {
+      std::map<std::string, trading::OrderId> next_orders;
+      for (const auto& owner : accounts_) if (owner.session)
+        next_orders[owner.id] = owner.session->snapshot()->recent_orders.size() + 1;
+      playbooks_->change(change, account, options_.replay, market_time_, command.actor, next_orders);
+    }
     evaluate_playbooks(driver_time);
     reply.playbook_result = playbooks_->publication(account, options_.replay).dump();
   } catch (const std::exception& error) {

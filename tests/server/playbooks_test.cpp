@@ -2,6 +2,8 @@
 #include <sstream>
 #include <gtest/gtest.h>
 #include "openport/server/playbooks.hpp"
+#include "openport/server/plans.hpp"
+#include "support/contract_capture.hpp"
 #include "openport/server/desk.hpp"
 #include "openport/server/api.hpp"
 #include "openport/server/run.hpp"
@@ -75,15 +77,17 @@ TEST(Playbooks, EditsVersionAndArchiveRetainsHistoryOnDisk) {
   EXPECT_EQ(record.at("versions")[1].at("version"), 2);
   EXPECT_THROW(recovered.change({{"action", "create"}, {"definition", definition()}}, "main", false), std::invalid_argument);
 }
-TEST(Playbooks, LivePracticeCannotEnableAutoAndBindingsAreAccountSpecific) {
+TEST(Playbooks, LiveAutoBindingsAreAccountSpecific) {
   server::Playbooks store;
   store.change({{"action", "create"}, {"definition", definition()}}, "main", false);
   const json automatic{{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}};
-  EXPECT_THROW(store.change(automatic, "main", false), std::invalid_argument);
-  EXPECT_THROW(store.change(automatic, "practice", false), std::invalid_argument);
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  EXPECT_NO_THROW(store.change(automatic, "main", false, now));
+  EXPECT_NO_THROW(store.change(automatic, "practice", false, now));
   EXPECT_NO_THROW(store.change(automatic, "main", true));
   EXPECT_EQ(store.publication("main", true).at("modes").at("morning"), "auto");
-  EXPECT_TRUE(store.publication("practice", false).at("modes").empty());
+  EXPECT_EQ(store.publication("practice", false).at("modes").at("morning"), "auto");
+  EXPECT_TRUE(store.publication("other", false).at("modes").empty());
 }
 TEST(Playbooks, StartupFinishesRemovingBindingsOfADeletedAccount) {
   test::RecordingFile file;
@@ -291,6 +295,188 @@ struct ScenarioFixture {
     return value;
   }
 };
+TEST(Playbooks, LiveAutoRecoversEntryAndOverdueTimeStopWithoutDuplicates) {
+  ScenarioFixture fixture;
+  md::RecordingReader reader(fixture.file.path);
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto first = batches.next(); ASSERT_TRUE(first);
+  server::Desk::Options options;
+  options.paper_journal = fixture.file.directory / "main.jsonl";
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  {
+    server::Desk desk("live test", reader.header().capabilities, reader.header().subscription, options);
+    desk.start_trading(); desk.replay_batch(first->events, first->received, first->time);
+    ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", fixture.setup()}}, desk.market_time()).decision.ok());
+    ASSERT_TRUE(command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, desk.market_time()).decision.ok());
+    auto view = desk.trading_view();
+    ASSERT_EQ(view->snapshot->recent_orders.size(), 1U);
+    EXPECT_EQ(view->snapshot->recent_orders.front().actor, "system");
+    EXPECT_EQ(view->snapshot->recent_orders.front().status, trading::OrderStatus::Filled);
+    const auto forward = server::playbook_forward_report(json::parse(view->playbooks_json), *view).at("morning");
+    EXPECT_TRUE(forward.at("running").get<bool>());
+    EXPECT_EQ(forward.at("entries"), 1);
+    EXPECT_EQ(forward.at("report").at("all").at("trades"), 0);
+    desk.stop();
+  }
+  {
+    server::Desk desk("live test", reader.header().capabilities, reader.header().subscription, options);
+    desk.start_trading(); desk.replay_batch(first->events, first->received, first->time);
+    ASSERT_EQ(desk.trading_view()->snapshot->recent_orders.size(), 1U);
+    // Skip the deadline while the server is down; its first newer snapshot catches up.
+    while (const auto batch = batches.next()) {
+      if (batch->time < first->time + 3 * md::kNanosPerMinute) continue;
+      desk.replay_batch(batch->events, batch->received, batch->time);
+      break;
+    }
+    const auto view = desk.trading_view();
+    ASSERT_EQ(view->snapshot->recent_orders.size(), 2U);
+    EXPECT_TRUE(view->snapshot->positions.empty());
+    EXPECT_TRUE(view->snapshot->recent_orders.back().request.note.starts_with("Playbook automatic time stop"));
+    EXPECT_EQ(view->snapshot->recent_orders.back().actor, "system");
+    const auto forward = server::playbook_forward_report(json::parse(view->playbooks_json), *view).at("morning");
+    EXPECT_EQ(forward.at("windows").size(), 1U);
+    EXPECT_EQ(forward.at("entries"), 1);
+    EXPECT_EQ(forward.at("time_stops"), 1);
+    EXPECT_EQ(forward.at("rejected_entries"), 0);
+    EXPECT_EQ(forward.at("report").at("all"), server::playbook_report(json::parse(view->playbooks_json), *view).at("morning").at("all"));
+    EXPECT_EQ(forward.at("report").at("all").at("trades"), 1);
+    EXPECT_NEAR(forward.at("days_running").get<double>(), 3.0 / 1440, 1e-9);
+    EXPECT_EQ(forward.at("versions").at("1"), forward.at("report"));
+    ASSERT_TRUE(command(desk, {{"action", "mode"}, {"id", "morning"}, {"mode", "stage"}}, desk.market_time()).decision.ok());
+    desk.stop();
+  }
+  server::Playbooks recovered(fixture.file.directory / "playbooks.json");
+  const auto windows = recovered.publication("main", false).at("forward_tests").at("morning").at("windows");
+  ASSERT_EQ(windows.size(), 1U);
+  EXPECT_FALSE(windows.front().at("ended").is_null());
+  EXPECT_EQ(windows.front().at("end_order"), "3");
+}
+TEST(Playbooks, LiveStaleFeedBlocksEntryAndCloseUntilAFreshSnapshot) {
+  ScenarioFixture fixture;
+  md::RecordingReader reader(fixture.file.path);
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto first = batches.next(); ASSERT_TRUE(first);
+  server::Desk::Options options;
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  options.paper.limits.max_quote_age = 30 * md::kNanosPerSecond;
+  server::Desk desk("live test", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading(); desk.replay_batch(first->events, first->received, first->time);
+  ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", fixture.setup()}}, desk.market_time()).decision.ok());
+  server::TradingCommand mode;
+  mode.kind = server::TradingCommand::Kind::Playbook;
+  mode.note = json{{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}.dump();
+  server::TradingReply reply;
+  // Market clock stays at 09:30; the driver's 09:32 shows this feed has stopped.
+  desk.command(mode, [&](auto result) { reply = std::move(result); }, first->time, first->received + 2 * md::kNanosPerMinute);
+  ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+  EXPECT_TRUE(desk.trading_view()->snapshot->recent_orders.empty());
+  EXPECT_NE(reply.playbook_result.find("stalled"), std::string::npos);
+  const auto next = batches.next(); ASSERT_TRUE(next);
+  desk.replay_batch(next->events, next->received, next->time);
+  ASSERT_EQ(desk.trading_view()->snapshot->recent_orders.size(), 1U);
+  // Force evaluation past close_by while no fresh underlying snapshot has arrived.
+  desk.command(mode, [&](auto result) { reply = std::move(result); }, first->time + 3 * md::kNanosPerMinute, first->received + 3 * md::kNanosPerMinute);
+  ASSERT_EQ(desk.trading_view()->snapshot->recent_orders.size(), 1U);
+  EXPECT_FALSE(desk.trading_view()->snapshot->positions.empty());
+  while (const auto batch = batches.next()) {
+    if (batch->time < first->time + 3 * md::kNanosPerMinute) continue;
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    break;
+  }
+  ASSERT_EQ(desk.trading_view()->snapshot->recent_orders.size(), 2U);
+  EXPECT_TRUE(desk.trading_view()->snapshot->positions.empty());
+}
+TEST(Playbooks, LiveAutoTradesNamedPracticeAndEvaluationAccounts) {
+  for (const auto* plan : {"practice", "eod-100k"}) {
+    SCOPED_TRACE(plan);
+    ScenarioFixture fixture;
+    md::RecordingReader reader(fixture.file.path);
+    providers::ReplayBatches batches(reader, reader.header().subscription);
+    const auto first = batches.next(); ASSERT_TRUE(first);
+    server::Desk::Options options;
+    options.paper_journal = fixture.file.directory / "main.jsonl";
+    options.paper_accounts = fixture.file.directory / "accounts";
+    options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+    server::Desk desk("live test", reader.header().capabilities, reader.header().subscription, options);
+    desk.start_trading(); desk.replay_batch(first->events, first->received, first->time);
+    server::TradingCommand create;
+    create.kind = server::TradingCommand::Kind::CreateAccount;
+    create.name = "Forward"; create.rules = server::find_plan(plan)->rules;
+    create.initial_cash = server::find_plan(plan)->initial_cash;
+    server::TradingReply reply;
+    desk.command(create, [&](auto result) { reply = std::move(result); }, first->time, first->received);
+    ASSERT_FALSE(reply.account.empty()) << reply.decision.message;
+    const auto account = reply.account;
+    ASSERT_TRUE(command(desk, {{"action", "create"}, {"definition", fixture.setup()}}, desk.market_time()).decision.ok());
+    server::TradingCommand mode;
+    mode.account = account; mode.actor = "alice"; mode.kind = server::TradingCommand::Kind::Playbook;
+    mode.note = json{{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}.dump();
+    desk.command(mode, [&](auto result) { reply = std::move(result); }, first->time, first->received);
+    ASSERT_TRUE(reply.decision.ok()) << reply.decision.message;
+    ASSERT_EQ(desk.trading_view(account)->snapshot->recent_orders.size(), 1U) << reply.playbook_result;
+    EXPECT_TRUE(desk.trading_view()->snapshot->recent_orders.empty());
+    const auto view = desk.trading_view(account);
+    const auto forward = server::playbook_forward_report(json::parse(view->playbooks_json), *view).at("morning");
+    EXPECT_EQ(forward.at("entries"), 1);
+    EXPECT_EQ(forward.at("windows")[0].at("actor"), "alice");
+    EXPECT_EQ(forward.at("windows")[0].at("account"), account);
+    desk.stop();
+  }
+}
+TEST(Playbooks, JournaledAutomaticRejectionSurvivesRestartAndCountsOnlySubmissions) {
+  test::RecordingFile file;
+  test::ScriptedMarket market; market.time = md::new_york_to_utc({2026, 9, 22}, 9, 35);
+  const auto path = file.directory / "playbooks.json";
+  server::Playbooks store(path);
+  store.change({{"action", "create"}, {"definition", definition()}}, "main", false);
+  store.change({{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}}, "main", false, market.time);
+  trading::TradingSession session({}, market.time);
+  market.seed(session);
+  session.set_actor("system");
+  session.trip_kill("test", market.time);
+  auto rejected = market.market("playbook:rejected");
+  rejected.tags = {"playbook:morning@v1"}; rejected.note = R"({"automatic":true})";
+  EXPECT_FALSE(session.submit(rejected, market.time).decision.ok());
+  session.reset_kill("test", market.time);
+  server::TradingView view; view.snapshot = session.snapshot(); view.contracts = session.contracts(); view.config = session.config();
+  server::Playbooks recovered(path);
+  bool sent = false;
+  recovered.evaluate("main", false, market.time, {}, view, [](const auto&, const auto&) { return server::PlaybookInputs{}; },
+      [](const auto&, double) { return trading::OrderPreview{}; }, [&](const auto&) { sent = true; return server::TradingReply{}; }, [](auto) {});
+  EXPECT_FALSE(sent);
+  EXPECT_NE(recovered.publication("main", false).at("reasons").at("morning:SPX").get<std::string>().find("Automatic entry refused for this day"), std::string::npos);
+  const auto forward = server::playbook_forward_report(recovered.publication("main", false), view).at("morning");
+  EXPECT_EQ(forward.at("rejected_entries"), 1);
+  EXPECT_EQ(forward.at("entries"), 0);
+  EXPECT_EQ(forward.at("report").at("all").at("trades"), 0);
+}
+TEST(Playbooks, ForwardWindowsVersionArchiveAndLegacyCatalogues) {
+  test::RecordingFile file;
+  const auto now = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  server::Playbooks legacy;
+  legacy.change({{"action", "create"}, {"definition", definition()}}, "main", true);
+  EXPECT_FALSE(legacy.catalogue().contains("forward_tests"));
+  server::Playbooks store(file.directory / "playbooks.json", legacy.catalogue());
+  const json automatic{{"action", "mode"}, {"id", "morning"}, {"mode", "auto"}};
+  store.change(automatic, "main", false, now, "alice");
+  store.change(automatic, "main", false, now, "alice");
+  store.change(automatic, "practice", false, now, "bob");
+  auto edit = definition(); edit["version"] = 1;
+  store.change({{"action", "update"}, {"definition", edit}}, "main", false, now + md::kNanosPerMinute, "editor");
+  for (const auto* owner : {"main", "practice"}) {
+    const auto windows = store.publication(owner, false).at("forward_tests").at("morning").at("windows");
+    ASSERT_EQ(windows.size(), 2U);
+    EXPECT_EQ(windows.front().at("ended"), windows.back().at("started"));
+    EXPECT_EQ(windows.back().at("version"), 2);
+    EXPECT_EQ(windows.back().at("actor"), "editor");
+  }
+  store.change({{"action", "delete"}, {"id", "morning"}, {"version", 2}}, "main", false, now + 2 * md::kNanosPerMinute);
+  server::Playbooks recovered(file.directory / "playbooks.json");
+  EXPECT_EQ(recovered.catalogue(), store.catalogue());
+  EXPECT_EQ(recovered.publication("main", false).at("modes").at("morning"), "off");
+  for (const auto& window : recovered.catalogue().at("forward_tests")) { EXPECT_FALSE(window.at("ended").is_null()); }
+  EXPECT_FALSE(recovered.publication("main", true).contains("forward_tests"));
+}
 TEST(Playbooks, StagingUsesPreviewWithoutJournalOrdersAndExpiresOrDismisses) {
   ScenarioFixture fixture;
   md::RecordingReader reader(fixture.file.path);
@@ -563,6 +749,7 @@ class DeskSource final : public server::MetricsSource {
   server::EngineStatus status() const override { server::EngineStatus value; value.trading = desk_.trading_status(); value.accounts = desk_.accounts(); return value; }
   using MetricsSource::trading_view;
   std::shared_ptr<const server::TradingView> trading_view() const override { return desk_.trading_view(); }
+  std::shared_ptr<const server::TradingView> trading_view(std::string_view account) const override { return desk_.trading_view(account); }
   md::Timestamp wall_time() const override { return desk_.market_time(); }
   bool post_trading(server::TradingCommand request, server::TradingCompletion complete) override {
     desk_.command(std::move(request), std::move(complete), desk_.market_time(), desk_.market_time()); return true;
@@ -575,6 +762,32 @@ server::ApiResponse api(DeskSource& source, std::string method, std::string rout
   server::handle_api_async({std::move(method), std::move(route), body.is_null() ? "" : body.dump()}, source,
                           [&](server::ApiResponse value) { reply = std::move(value); });
   return reply;
+}
+TEST(PlaybookApi, LiveForwardPublicationIncludesWindowsAndJournalStats) {
+  ScenarioFixture fixture;
+  md::RecordingReader reader(fixture.file.path);
+  providers::ReplayBatches batches(reader, reader.header().subscription);
+  const auto first = batches.next(); ASSERT_TRUE(first);
+  server::Desk::Options options;
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("live test", reader.header().capabilities, reader.header().subscription, options);
+  desk.start_trading(); desk.replay_batch(first->events, first->received, first->time);
+  DeskSource source(desk);
+  ASSERT_EQ(api(source, "POST", "/api/playbooks", fixture.setup()).status, 200);
+  const auto enabled = api(source, "PUT", "/api/playbooks/morning/mode", {{"mode", "auto"}});
+  ASSERT_EQ(enabled.status, 200) << enabled.body;
+  test::capture_contract("playbooks", "PUT", "/api/playbooks/morning/mode", enabled);
+  while (const auto batch = batches.next()) {
+    desk.replay_batch(batch->events, batch->received, batch->time);
+    if (desk.market_time() >= first->time + 2 * md::kNanosPerMinute) break;
+  }
+  const auto response = api(source, "GET", "/api/playbooks?account=main");
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto forward = json::parse(response.body).at("forward_tests").at("morning");
+  EXPECT_EQ(forward.at("report").at("all").at("trades"), 1);
+  EXPECT_EQ(forward.at("time_stops"), 1);
+  EXPECT_EQ(forward.at("windows")[0].at("account"), "main");
+  test::capture_contract("playbooks", "GET", "/api/playbooks?account=main", response);
 }
 TEST(PlaybookApi, StageHttpOrderRoundTripsThroughTheSubmissionParser) {
   ScenarioFixture fixture;
@@ -659,7 +872,7 @@ TEST(PlaybookApi, TimeStopLabelsAnUnfilledEntry) {
   EXPECT_EQ(cancelled.at("filled_quantity"), 0);
   EXPECT_EQ(cancelled.at("reason").at("code"), "PLAYBOOK_TIME_STOP");
 }
-TEST(PlaybookApi, VersionReadsAndAutoRefusalUseAccountCommandPath) {
+TEST(PlaybookApi, VersionReadsAndMissingMarketTimeUseAccountCommandPath) {
   server::Desk desk("test", {}, {{"SPX"}}, {}); desk.start_trading();
   DeskSource source(desk);
   ASSERT_EQ(api(source, "POST", "/api/playbooks", definition()).status, 200);
@@ -777,6 +990,11 @@ TEST(Playbooks, AdherenceDetectsWindowSizeExitTimeAndLossCooldownDeviations) {
   const auto rules = report.at("trades")[1].at("rules");
   EXPECT_TRUE(rules.at("entry_window").get<bool>());
   for (const auto* rule : {"size", "exits", "time_stop", "guardrails"}) { EXPECT_FALSE(rules.at(rule).get<bool>()) << rule; }
+  ASSERT_TRUE(session.reset_account(config.initial_cash, config.rules, "Next attempt", market.time).decision.ok());
+  view.snapshot = session.snapshot();
+  const auto retained = server::playbook_report(store.catalogue(), view, false).at("morning");
+  EXPECT_EQ(retained.at("trades")[1].at("rules").at("guardrails"), false);
+  EXPECT_TRUE(server::playbook_report(store.catalogue(), view).at("morning").at("trades").empty());
 }
 TEST(Playbooks, OlderRunWithoutCatalogueStillVerifiesAndArchivesUseRecordedVersions) {
   ScenarioFixture fixture;

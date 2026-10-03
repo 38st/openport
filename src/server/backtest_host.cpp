@@ -33,7 +33,14 @@ struct BacktestHost::Impl {
     auto state = read_json(directory / "state.json");
     if (!current.is_null() && current.at("id") == id) state = current;
     else if (state.at("status") == "running" || state.at("status") == "cancelling") state["status"] = "interrupted";
-    if (report && std::filesystem::is_regular_file(directory / "report.json")) state["report"] = read_json(directory / "report.json");
+    if (std::filesystem::is_regular_file(directory / "report.json")) {
+      const auto saved_report = read_json(directory / "report.json");
+      if (report) state["report"] = saved_report;
+      else if (saved_report.contains("playbook") && saved_report.contains("summary")) {
+        state["playbook"] = {{"id", saved_report.at("playbook").at("id")}, {"version", saved_report.at("playbook").at("version")}};
+        state["summary"] = saved_report.at("summary");
+      }
+    }
     return state;
   }
 };

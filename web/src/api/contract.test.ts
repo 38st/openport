@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest"
 // openapi.yaml uses JSON syntax, a YAML subset; no YAML dependency is needed.
 interface Schema { $ref?: string; type?: string; const?: string; anyOf?: Schema[]; items?: Schema; properties?: Record<string, Schema>; required?: string[]; additionalProperties?: Schema | boolean }
 const spec = JSON.parse(specText) as { components: { schemas: Record<string, Schema> } }
-const source = [marketTypes, tradingTypes].join("\n")
+const source = [marketTypes, tradingTypes, playbookTypes].join("\n")
   .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "")
 const normalize = (value: string) => value.split("|").map((part) => part.trim()).sort().join(" | ")
 function wireType(schema: Schema): string {
@@ -51,7 +51,7 @@ describe("checked API core types", () => {
   })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
     "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
-    "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "RunJournal", "RunInput", "VerificationRun", "RunVerification"])("%s matches OpenAPI fields, types and nullability", (name) => {
+    "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "RunJournal", "RunInput", "VerificationRun", "RunVerification", "ForwardTestWindow", "ForwardTest", "PlaybookReport"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
     const fields = [...body!.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]
