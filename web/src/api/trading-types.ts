@@ -858,6 +858,7 @@ export interface Risk {
   pending_guardrails?: Guardrails | null
   pending_applied_day?: string | null
   pending_applied_at?: string | null
+  pending_requires_reset?: boolean
   pending_effective?: "next_trading_day" | null
   account_version: string
   limits_revision: string
@@ -879,7 +880,7 @@ export interface OrderChange { quantity?: number; limit_price?: Money; trigger_l
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
 export interface AccountListItem { id: string; name: string; archived?: boolean; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
-export type CreateAccountRequest = { name: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
+export type CreateAccountRequest = { name: string; copy_settings_from?: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; plan_id?: string | null; equity: Money } }
 /** Delivered shares a flatten could not close, as held after it, and why. */
 export interface KeptStock { symbol: string; shares: number; reason: Decision }

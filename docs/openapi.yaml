@@ -12651,6 +12651,10 @@
           },
           "scenarios": {
             "$ref": "#/components/schemas/Scenarios"
+          },
+          "pending_requires_reset": {
+            "type": "boolean",
+            "description": "Pending limits or guardrails exist and this replay ends before a later plan trading day. Reset the replay account while it is writable to apply them now. False for live accounts, no pending settings, or a replay with a later trading day."
           }
         },
         "required": [
@@ -12663,7 +12667,8 @@
           "aggregate",
           "underlyings",
           "scenarios",
-          "warnings"
+          "warnings",
+          "pending_requires_reset"
         ]
       },
       "OrdersResponse": {
@@ -13047,6 +13052,13 @@
                   "itemized"
                 ],
                 "description": "Overrides rules.fees for the new attempt. Flat uses the server fee; itemized uses an illustrative schedule: $1 open, $0 close, $10 commission cap per leg per order, $0.10 clearing, $0.02 regulatory, $0.60 on SPX and SPXW, $5 exercise per contract."
+              },
+              "copy_settings_from": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40,
+                "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+                "description": "Live source account ID (main allowed). Copies active limits and guardrails only, including underlying overrides, into initial journaled settings. Pending values and runtime latches/counters are not copied. Unknown source: 404 UNKNOWN_ACCOUNT."
               }
             },
             "required": [
@@ -14862,6 +14874,13 @@
           "resume": {
             "type": "string",
             "description": "A saved run's id: continue a run a crash interrupted (its history entry has interrupted true). It re-executes the run's recorded inputs against its journal, unpaced, then continues from the last market time it recorded, paused unless paused is false; only speed and paused may accompany it. A run that has ended, was recorded by an older driver or changed its recording part way, or whose recording, scenario or exchange calendar changed, returns 409 REPLAY_NOT_RESUMABLE. A run whose re-executed inputs differ from its journal stops trading and writes nothing."
+          },
+          "copy_settings_from": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+            "description": "Live source account ID (main allowed). Copies active limits and guardrails only, including underlying overrides, into initial journaled settings. Pending values and runtime latches/counters are not copied. Unknown source: 404 UNKNOWN_ACCOUNT."
           }
         },
         "required": []

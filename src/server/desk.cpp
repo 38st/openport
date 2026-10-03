@@ -613,6 +613,17 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
     reply.decision.message = "This server keeps a single paper account";
     return;
   }
+  const auto* source = c.copy_settings_from.empty() ? nullptr : find_account(c.copy_settings_from);
+  if (!c.copy_settings_from.empty() && !source) {
+    reply.error_code = "UNKNOWN_ACCOUNT";
+    reply.decision.message = "No settings source account " + c.copy_settings_from;
+    return;
+  }
+  if (source && !source->session) {
+    reply.error_code = "TRADING_UNAVAILABLE";
+    reply.decision.message = "The settings source account is unavailable";
+    return;
+  }
   auto base = slug(c.name);
   if (base.empty() || base == kMainAccount) base = "account";
   auto id = sandbox ? c.account : base;
@@ -642,6 +653,12 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
     auto config = options_.paper;
     config.rules = sandbox ? find_plan("practice")->rules : c.rules;
     config.initial_cash = sandbox ? find_plan("practice")->initial_cash : c.initial_cash;
+    if (source) {
+      config.limits = source->session->config().limits;
+      config.guardrails = source->session->config().guardrails;
+      validate_limits(config.limits);
+      validate_guardrails(config.guardrails);
+    }
     auto [journal, recovery] = open_journal(file, journal_options(options_));
     if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists at " + file.string());
     created = journal;
@@ -777,6 +794,8 @@ void Desk::publish_trading() {
     if (account.session) {
       const auto& session = *account.session;
       view = std::make_shared<TradingView>();
+      view->replay_start = options_.replay_start;
+      view->replay_end = options_.replay_end;
       view->snapshot = session.snapshot();
       if (playbooks_) {
         // Quote batches publish far more often than playbooks change.

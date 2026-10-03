@@ -340,6 +340,7 @@ class ArchivedReplay final : public MetricsSource {
     view_ = std::make_shared<TradingView>();
     view_->snapshot = end_open_orders(session.snapshot());
     view_->config = session.config();
+    view_->replay_start = view_->replay_end = view_->snapshot->time;
     view_->contracts = session.contracts();
     view_->valuations = session.valuations();
     // The equity history beside the journal, read as it is: an archive never compacts it.
@@ -925,7 +926,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
     } else if (options_.engine.write_mode == "disabled") {
       complete(api_error(403, "WRITE_DISABLED", "Replay writes are disabled"));
     } else if (request.method == "POST") {
-      const auto body = parse_body(request, {"file", "demo", "scenario", "speed", "plan", "seed", "date", "start_at", "paused", "resume"});
+      const auto body = parse_body(request, {"file", "demo", "scenario", "speed", "plan", "seed", "date", "start_at", "paused", "resume", "copy_settings_from"});
       if (body.contains("resume")) {
         for (const auto& [key, value] : body.items())
           if (key != "resume" && key != "speed" && key != "paused") throw std::invalid_argument("resume takes only speed and paused besides it");
@@ -934,6 +935,18 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         resume(body.at("resume").get<std::string>(), body.contains("speed") ? speed_field(body) : 1,
                body.value("paused", true), complete);
         return;
+      }
+      std::shared_ptr<const TradingView> settings;
+      if (body.contains("copy_settings_from")) {
+        if (!body.at("copy_settings_from").is_string()) throw std::invalid_argument("copy_settings_from must be an account id");
+        const auto id = body.at("copy_settings_from").get<std::string>();
+        if (id.empty() || id.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") != std::string::npos ||
+            !query_account("/api/account?account=" + id))
+          throw std::invalid_argument("copy_settings_from must be an account id");
+        if (options_.settings_source) settings = options_.settings_source(id);
+        if (!settings) { complete(api_error(404, "UNKNOWN_ACCOUNT", "No settings source account " + id)); return; }
+        trading::validate_limits(settings->config.limits);
+        trading::validate_guardrails(settings->config.guardrails);
       }
       // demo: true plays the default day; a day's id plays that one.
       const providers::Scenario* day = nullptr;
@@ -1051,6 +1064,10 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       }
       engine.paper.rules = plan->rules;
       engine.paper.initial_cash = plan->initial_cash;
+      if (settings) {
+        engine.paper.limits = settings->config.limits;
+        engine.paper.guardrails = settings->config.guardrails;
+      }
       // Copy definitions, never live-feed bindings, into this isolated run.
       if (!engine.paper_journal.empty()) {
         const auto definitions = engine.paper_journal.parent_path() / "playbooks.json";

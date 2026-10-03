@@ -108,6 +108,7 @@ struct TradingView {
   std::string playbooks_json;  ///< Immutable catalogue and transient stages for this account.
   bool opening_settlement = false;  ///< This source settles AM options on the opening print.
   std::optional<RunIdentity> run;  ///< The replay run, for replay accounts.
+  md::Timestamp replay_start = 0, replay_end = 0;  ///< Risk-setting rollover horizon; zero for live accounts.
 };
 
 /// The market's implied variance of an underlying's log price from its analytics'
@@ -204,6 +205,7 @@ struct TradingCommand {
   std::string account;           ///< The account it acts on; empty for the main account.
   std::string name;              ///< CreateAccount: the new account's display name.
   std::optional<bool> archived;   ///< UpdateAccount: freeze or resume the account.
+  std::string copy_settings_from = {};  ///< CreateAccount: copy active limits and guardrails.
   std::uint64_t trade = 0;        ///< Annotate: the trade, by its opening fill's ID.
   bool shares = false;            ///< Annotate: a share round trip, by its opening stock fill ("s" + ID).
   md::Date day;

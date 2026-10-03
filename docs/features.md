@@ -124,7 +124,7 @@ simulation's limits.
   scenario days, with independent daily results and carried-account evaluation
   attempts. The CLI, API and Backtest page keep reports and verifiable journals.
   Results are simulated trading, not predictions or investment advice.
-- **Accounts**: preset IDs beside plan names; rename, archive/unarchive and delete named accounts (deleted files are retained); several named accounts at once, say a 50K evaluation beside a practice
+- **Accounts**: copy active limits and guardrails into new accounts or replays; replay notices when queued settings need a reset; preset IDs beside plan names; rename, archive/unarchive and delete named accounts (deleted files are retained); several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market. Public
   demo visitors can create private sandbox accounts on simulated prices, removed
   after 24 hours unused or a server restart.
@@ -300,6 +300,8 @@ special opening quotation; live providers keep manual imports.
 - [x] Specific playbook condition reasons, staged orders in HTTP shape and time-stop labels (F51, partial)
 - [ ] Automated forward testing on live paper (F51)
 - [x] Seeded demo soak with JSON run identity, counters and exit status (F73)
+- [x] F57 part 1: named-account lifecycle, preset IDs, copied limits/guardrails and replay reset guidance
+- [ ] F57 remaining work: token management, HTTP underlying overrides and fill-model startup flag
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,

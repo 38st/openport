@@ -10,9 +10,11 @@
 
 namespace openport::server {
 namespace {
-Engine::Options driver_options(md::Provider& provider, Engine::Options options) {
+Engine::Options driver_options(md::Provider& provider, const md::Subscription& subscription, Engine::Options options) {
   if (auto* replay = dynamic_cast<providers::ReplayProvider*>(&provider)) {
     options.replay = true;
+    options.replay_start = replay->header().started;
+    options.replay_end = replay->end_time(subscription);
     // Named accounts and visitor sandboxes belong to the live feed, never a replay's copy of its options.
     options.paper_accounts.clear();
     options.sandboxes.reset();
@@ -34,7 +36,7 @@ Engine::Options driver_options(md::Provider& provider, Engine::Options options) 
 }  // namespace
 
 Engine::Engine(md::Provider& provider, md::Subscription subscription, Options options)
-    : provider_(provider), subscription_(std::move(subscription)), options_(driver_options(provider, options)),
+    : provider_(provider), subscription_(std::move(subscription)), options_(driver_options(provider, subscription_, options)),
       queue_(md::kEventQueueCapacity, options.paper_enabled || options.replay),
       desk_(std::string(provider.name()), provider.capabilities(), subscription_, options_) {
   replay_ = dynamic_cast<providers::ReplayProvider*>(&provider_);

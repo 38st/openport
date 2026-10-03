@@ -35,6 +35,8 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
       {"quantity", c.quantity}, {"actor", c.actor}};
   if (c.kind == TradingCommand::Kind::CreateAlert) j["alert"] = c.alert;
   if (c.kind == TradingCommand::Kind::DeleteAlert) j["alert_id"] = c.alert_id;
+  if (c.archived) j["archived"] = *c.archived;
+  if (!c.copy_settings_from.empty()) j["copy_settings_from"] = c.copy_settings_from;
   // Later fields are recorded only when set, so earlier commands keep their bytes.
   if (c.cancel_reason != trading::Reason::USER_CANCEL) j["cancel_reason"] = c.cancel_reason;
   if (c.stock_price) j["stock_price"] = {{"symbol", c.stock_price->symbol}, {"time", c.stock_price->time}, {"price", c.stock_price->price}};
@@ -75,6 +77,8 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   }
   trading::added_field(j, "cancel_reason", c.cancel_reason);
   trading::added_field(j, "actor", c.actor);
+  trading::added_field(j, "archived", c.archived);
+  trading::added_field(j, "copy_settings_from", c.copy_settings_from);
   trading::added_field(j, "alert", c.alert);
   trading::added_field(j, "alert_id", c.alert_id);
   trading::added_field(j, "do_not_exercise", c.do_not_exercise);
