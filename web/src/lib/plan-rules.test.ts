@@ -81,6 +81,14 @@ describe("custom plans", () => {
       payouts: { ...base.payouts!, consistency_percents: [40], buffer: "2100.00", buffer_payouts: 2 } } })
     expect(restored).toMatchObject({ phase: "funded", payout_consistency_percents: "40", payout_buffer: "2100.00", buffer_payouts: "2" })
   })
+  it("clears hidden pass objectives when converting an evaluation template to funded", () => {
+    const form = { ...planForm({ initial_cash: "100000.00", rules }), phase: "funded" as const,
+      consistency_percent: "40", min_trading_days: "4", min_profitable_days: "2", profitable_day_profit: "250" }
+    const result = customPlan(form, rules)
+    expect("error" in result ? result : result.rules).toMatchObject({ phase: "funded", profit_target: null,
+      consistency_percent: 0, min_trading_days: 0, min_profitable_days: 0, profitable_day_profit: null })
+    expect(customPlan({ ...form, consistency_percent: "x", profitable_day_profit: "x" }, rules)).not.toHaveProperty("error")
+  })
   it("names the first problem before the server sees it", () => {
     const form = planForm({ initial_cash: "100000.00", rules })
     expect(customPlan({ ...form, name: " " }, rules)).toEqual({ error: "Name the plan" })
