@@ -687,6 +687,26 @@ TEST_F(PaperEngine, CancelFillOrderingKillAndRevisionChecks) {
   expect_error(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "2"}, {"limits", limits}}), 422, "INVALID_LIMITS");
 }
 
+TEST_F(PaperEngine, UnderlyingOverridesRoundTripAndValidateWithoutASubscription) {
+  auto limits = read(*engine, "/api/risk")["limits"];
+  limits["underlying_overrides"] = {{"SPX", {{"dollar_delta", 500000}, {"vega", 5000}}},
+                                     {"QQQ", {{"dollar_delta", 2000000}, {"vega", 20000}}}};
+  auto reply = write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "1"}, {"limits", limits}});
+  ASSERT_EQ(reply.status, 200) << reply.body;
+  EXPECT_EQ(json::parse(reply.body)["limits"]["underlying_overrides"], limits["underlying_overrides"]);
+  EXPECT_EQ(read(*engine, "/api/risk")["limits"]["underlying_overrides"], limits["underlying_overrides"]);
+  for (const auto& bad : {json::array(), json(nullptr), json{{"spx", {{"dollar_delta", 1}, {"vega", 1}}}},
+                         json{{"SPX", {{"dollar_delta", "1"}, {"vega", 1}}}}}) {
+    limits["underlying_overrides"] = bad;
+    expect_error(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "2"}, {"limits", limits}}), 400, "INVALID_REQUEST");
+  }
+  limits["underlying_overrides"] = {{"SPX", {{"dollar_delta", -1}, {"vega", 1}}}};
+  expect_error(write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "2"}, {"limits", limits}}), 422, "INVALID_LIMITS");
+  limits.erase("underlying_overrides");
+  reply = write(*engine, "PUT", "/api/risk/limits", {{"expected_revision", "2"}, {"limits", limits}});
+  ASSERT_EQ(reply.status, 200);
+  EXPECT_EQ(json::parse(reply.body)["limits"]["underlying_overrides"], json::object());
+}
 TEST_F(PaperEngine, OrderReasonsCarryTheirNumbersAndScope) {
   seed();
   auto resting = order(market, "resting", "3.50");

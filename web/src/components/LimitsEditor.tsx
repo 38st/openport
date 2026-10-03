@@ -17,6 +17,9 @@ function draftOf(limits: Limits) {
     max_quote_age_seconds: String(limits.max_quote_age_seconds), max_valuation_age_seconds: String(limits.max_valuation_age_seconds),
   }
 }
+function overridesOf(limits: Limits) {
+  return Object.entries(limits.underlying_overrides ?? {}).map(([symbol, caps]) => ({ symbol, delta: String(caps.dollar_delta), vega: String(caps.vega) }))
+}
 const fields: { key: keyof ReturnType<typeof draftOf>; label: string; money?: boolean; integer?: boolean }[] = [
   { key: "max_order_contracts", label: "Max contracts / order", integer: true },
   { key: "price_band_absolute", label: "Absolute price band ($)", money: true },
@@ -30,6 +33,7 @@ const fields: { key: keyof ReturnType<typeof draftOf>; label: string; money?: bo
 export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; trading: TradingStatus; onClose: () => void }) {
   const [revision, setRevision] = useState(initial.limits_revision)
   const [draft, setDraft] = useState(() => draftOf(initial.pending_limits ?? initial.limits))
+  const [overrides, setOverrides] = useState(() => overridesOf(initial.pending_limits ?? initial.limits))
   const [error, setError] = useState<unknown>()
   const [pending, setPending] = useState(false)
   const busy = useRef(false)
@@ -37,7 +41,10 @@ export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; tra
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
   const conflict = error instanceof ApiError && error.code === "LIMITS_REVISION"
-  const valid = fields.every(({ key, money, integer }) => money ? validMoney(draft[key]) : draft[key].trim() !== "" && Number.isFinite(Number(draft[key])) && Number(draft[key]) >= 0 && (!integer || Number.isSafeInteger(Number(draft[key]))))
+  const validOverrides = overrides.every(({ symbol, delta, vega }) => /^[A-Z0-9.]{1,16}$/.test(symbol) &&
+    [delta, vega].every((value) => value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0)) &&
+    new Set(overrides.map(({ symbol }) => symbol)).size === overrides.length
+  const valid = validOverrides && fields.every(({ key, money, integer }) => money ? validMoney(draft[key]) : draft[key].trim() !== "" && Number.isFinite(Number(draft[key])) && Number(draft[key]) >= 0 && (!integer || Number.isSafeInteger(Number(draft[key]))))
   async function save() {
     if (busy.current || !valid || conflict || writeBlocked(trading, token)) return
     busy.current = true; setPending(true); setError(undefined)
@@ -46,6 +53,7 @@ export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; tra
       price_band_relative: Number(draft.price_band_relative), max_daily_loss: draft.max_daily_loss,
       aggregate: { dollar_delta: Number(draft.aggregate_delta), vega: Number(draft.aggregate_vega) },
       per_underlying: { dollar_delta: Number(draft.underlying_delta), vega: Number(draft.underlying_vega) },
+      underlying_overrides: Object.fromEntries(overrides.map(({ symbol, delta, vega }) => [symbol, { dollar_delta: Number(delta), vega: Number(vega) }])),
       max_quote_age_seconds: Number(draft.max_quote_age_seconds), max_valuation_age_seconds: Number(draft.max_valuation_age_seconds),
     }
     try { await api.updateLimits(revision, limits, trading.write); if (sameSession()) onClose() }
@@ -57,7 +65,7 @@ export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; tra
     busy.current = true; setPending(true)
     try {
       const latest = await api.risk()
-      if (sameSession()) { setRevision(latest.limits_revision); setDraft(draftOf(latest.pending_limits ?? latest.limits)); setError(undefined) }
+      if (sameSession()) { setRevision(latest.limits_revision); setDraft(draftOf(latest.pending_limits ?? latest.limits)); setOverrides(overridesOf(latest.pending_limits ?? latest.limits)); setError(undefined) }
     } catch (failure) { if (sameSession()) setError(failure) }
     finally { busy.current = false; if (sameSession()) setPending(false) }
   }
@@ -67,6 +75,16 @@ export function LimitsEditor({ initial, trading, onClose }: { initial: Risk; tra
     <WriteAccess trading={trading} />
     <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void save() }}>
       <fieldset disabled={pending} className="grid min-w-0 grid-cols-2 gap-3"><legend className="sr-only">Limits</legend>{fields.map(({ key, label, integer }) => <label key={key} className="trade-label">{label}<input className="trade-input" inputMode={integer ? "numeric" : "decimal"} value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: e.target.value })} required /></label>)}</fieldset>
+      <fieldset disabled={pending} className="space-y-3 min-w-0"><legend className="text-sm font-medium">Underlying overrides</legend>
+        <p className="text-xs text-muted">Each row replaces the common cap for that symbol. Removing it returns to the common cap; any loosening waits for rollover.</p>
+        <div className="overflow-x-auto"><table className="w-full text-xs"><thead><tr><th>Underlying</th><th>Dollar delta</th><th>Vega</th><th><span className="sr-only">Actions</span></th></tr></thead>
+          <tbody>{overrides.map((row, index) => <tr key={index}>
+            {(["symbol", "delta", "vega"] as const).map((key) => <td key={key}><input aria-label={`Override ${index + 1} ${key}`} className="trade-input" value={row[key]} inputMode={key === "symbol" ? "text" : "decimal"} required onChange={(e) => setOverrides(overrides.map((item, i) => i === index ? { ...item, [key]: e.target.value } : item))} /></td>)}
+            <td><button type="button" className="trade-button" aria-label={`Remove override ${index + 1}`} onClick={() => setOverrides(overrides.filter((_, i) => i !== index))}>Remove</button></td>
+          </tr>)}</tbody></table></div>
+        <button type="button" className="trade-button" onClick={() => setOverrides([...overrides, { symbol: "", delta: draft.underlying_delta, vega: draft.underlying_vega }])}>Add underlying override</button>
+        {!validOverrides && <p className="text-xs text-warn">Use unique symbols (1–16 uppercase letters, digits or dots) and nonnegative numeric caps.</p>}
+      </fieldset>
       <TradingError error={error} />
       {conflict && <div className="space-y-2 text-sm"><p>The limits changed elsewhere. Reload the current limits, review your changes and save again.</p><button type="button" className="trade-button" disabled={pending} onClick={() => void reload()}>Reload current limits (replace edits)</button></div>}
       <button type="submit" className="trade-button" disabled={!valid || pending || conflict || writeBlocked(trading, token)}>{pending ? "Saving…" : "Save limits"}</button>

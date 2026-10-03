@@ -31,6 +31,6 @@ export function RiskPanel({ risk }: { risk: Risk }) {
     <PersonalRules risk={risk} />
     {!risk.complete && <p className="text-sm text-warn">Risk valuation incomplete · some analytics are unavailable.</p>}
     <p className="text-xs text-muted">Daily loss {formatMoney(risk.daily_loss)} / {formatMoney(risk.limits.max_daily_loss)} · Limits revision {risk.limits_revision}</p>
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"><RiskBucket label="Aggregate" bucket={risk.aggregate} />{Object.entries(risk.underlyings).map(([symbol, bucket]) => <RiskBucket key={symbol} label={symbol} bucket={bucket} />)}</div>
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"><RiskBucket label="Aggregate" bucket={risk.aggregate} />{Object.entries(risk.underlyings).map(([symbol, bucket]) => <RiskBucket key={symbol} label={`${symbol} · ${risk.limits.underlying_overrides?.[symbol] ? "Override" : "Common limit"}`} bucket={bucket} />)}</div>
   </div>
 }

@@ -12488,6 +12488,16 @@
           },
           "max_valuation_age_seconds": {
             "type": "number"
+          },
+          "underlying_overrides": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[A-Z0-9.]{1,16}$"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RiskCaps"
+            },
+            "description": "Optional full replacement map; omission or {} removes all overrides. Unsubscribed symbols are allowed. Each cap is finite and nonnegative. Tightening applies immediately in evaluations; loosening, including removal to a looser common cap, waits for rollover. GET includes active and pending maps."
           }
         },
         "required": [

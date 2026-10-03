@@ -78,6 +78,44 @@ TEST(TradingFloor, PracticeLimitsAreImmediateAndOverridesCannotBeLoosenedByRemov
   EXPECT_DOUBLE_EQ(evaluation.config().limits.underlying_overrides.at("SPX").dollar_delta, 100);
   ASSERT_TRUE(evaluation.snapshot()->pending_limits);
 }
+TEST(TradingFloor, OverrideChangesAndRolloverRecoverWithBothRemovalDirections) {
+  File file; ScriptedMarket f;
+  auto c = config();
+  c.limits.per_underlying = {1000, 100};
+  c.limits.underlying_overrides["SPX"] = {2000, 200};
+  c.limits.underlying_overrides["QQQ"] = {500, 50};
+  std::string expected;
+  {
+    TradingSession s(c, f.time, FileJournal::create(file.path)); f.seed(s);
+    auto limits = c.limits; limits.underlying_overrides.clear();
+    limits.underlying_overrides["IWM"] = {2000, 50};
+    ASSERT_TRUE(s.set_limits(limits, f.time).decision.ok());
+    EXPECT_FALSE(s.config().limits.underlying_overrides.contains("SPX"));
+    EXPECT_EQ(s.config().limits.underlying_overrides.at("QQQ").dollar_delta, 500);
+    EXPECT_EQ(s.config().limits.underlying_overrides.at("IWM").dollar_delta, 1000);
+    EXPECT_EQ(s.config().limits.underlying_overrides.at("IWM").vega, 50);
+    ASSERT_TRUE(s.snapshot()->pending_limits);
+    expected = s.snapshot_json();
+  }
+  {
+    auto restored = TradingSession::recover(FileJournal::read(file.path), FileJournal::resume(file.path));
+    EXPECT_EQ(restored.snapshot_json(), expected);
+    roll(restored, f);
+    EXPECT_FALSE(restored.snapshot()->pending_limits);
+    EXPECT_FALSE(restored.config().limits.underlying_overrides.contains("QQQ"));
+    EXPECT_EQ(restored.config().limits.underlying_overrides.at("IWM").dollar_delta, 2000);
+    expected = restored.snapshot_json();
+  }
+  EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), expected);
+  TradingSession tightening(c, f.time);
+  auto limits = c.limits; limits.underlying_overrides.erase("SPX");
+  tightening.set_limits(limits, f.time);
+  EXPECT_FALSE(tightening.snapshot()->pending_limits);
+  TradingSession legacy(c, f.time);
+  legacy.set_limits(limits, f.time, false);
+  EXPECT_TRUE(legacy.snapshot()->pending_limits);
+  EXPECT_TRUE(legacy.config().limits.underlying_overrides.contains("SPX"));
+}
 TEST(TradingFloor, AttemptResetAppliesPendingAndClearsGuardrailProgress) {
   ScriptedMarket f;
   auto c = config();
