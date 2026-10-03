@@ -46,6 +46,35 @@ void sample(TradeReview& review, Money value, Timestamp time, std::optional<doub
   if (!review.best || value > review.best->pnl) review.best = Excursion{value, time, underlying};
   review.finished = finished;
 }
+// Only entries carrying the new rule add state; historical reviews keep their
+// exact encoding. The peak and first trigger survive recovery with the review.
+void sample_trailing(State& s, TradeReview& review, const Order& order, const std::vector<const Lifecycle*>& legs) {
+  if (review.finished || order.request.note.find("\"trailing_stop\"") == std::string::npos) return;
+  const auto evidence = Json::parse(order.request.note, nullptr, false);
+  if (!evidence.is_object() || !evidence.contains("trailing_stop") || !evidence.at("trailing_stop").is_object()) return;
+  const auto& rule = evidence.at("trailing_stop");
+  if (!rule.contains("percent") || !rule.at("percent").is_number()) return;
+  const double percent = rule.at("percent");
+  if (!std::isfinite(percent) || percent <= 0 || percent > 100) return;
+  Money total;
+  for (const auto* life : legs) {
+    total = total + life->gross;
+    if (!life->quantity) continue;
+    const auto book = s.books.find(life->symbol);
+    if (book == s.books.end()) return;
+    const auto& quote = book->second.quote;
+    if (!valid_quote(quote) || quote.time > s.time || s.time - quote.time > s.config.limits.max_quote_age) return;
+    const auto price = life->quantity > 0 ? quote.bid : quote.ask;
+    if (!price || *price <= Money{}) return;
+    total = total + (*price * life->contract.multiplier) * life->quantity - life->basis;
+  }
+  if (!review.trailing) review.trailing = TrailingReview{};
+  auto& trail = *review.trailing;
+  if (trail.triggered) return;
+  trail.peak = std::max(trail.peak, total);
+  const auto fraction = static_cast<std::int64_t>(std::llround(percent * 1000000));
+  if (trail.peak > Money{} && total <= trail.peak.prorate(100000000 - fraction, 100000000)) trail.triggered = s.time;
+}
 bool unfinished_review(const SharedMap<std::string, TradeReview>& reviews, const std::string& key) {
   const auto found = reviews.find(key);
   return found == reviews.end() || !found->second.finished;
@@ -205,6 +234,7 @@ void sample_reviews(State& s, const std::vector<const Lifecycle*>& lives, const 
     if (!review->planned_risk) review->planned_risk = structure_risk(legs);
     if (!review->planned_risk) review->planned_risk = covered_debit(legs);
     combined(*review, legs);
+    sample_trailing(s, *review, order, legs);
     if (review->finished) --unfinished;
   }
   for (const auto& [group, members] : trades) {

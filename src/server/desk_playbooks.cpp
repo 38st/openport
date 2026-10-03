@@ -35,18 +35,33 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       const auto reference = conditions.contains("price") ? conditions.at("price").at("reference").get<std::string>() : std::string();
       const auto today = md::new_york_time(snapshot->as_of).date;
       const auto previous = md::previous_business_day(today);
-      if (reference == "prior_close") {
+      if (reference == "prior_close" || conditions.contains("gap")) {
         const auto official = official_closes_.find({symbol, previous});
         if (official != official_closes_.end()) result.prior_close = official->second.price;
       }
       std::vector<md::Bar> days;
-      if (options_.candles && (reference == "prior_close" || conditions.contains("vrp_min")))
+      if (options_.candles && (reference == "prior_close" || conditions.contains("vrp_min") || conditions.contains("gap") || conditions.contains("technical")))
         days = options_.candles->daily_history(symbol);
       for (const auto& day : days) if (md::new_york_time(day.start).date == previous && !std::isfinite(result.prior_close)) result.prior_close = day.close;
-      if (options_.candles && reference == "day_open") {
+      if (options_.candles && (reference == "day_open" || conditions.contains("gap"))) {
         // Require the opening minute itself; a partial day's first print is not its open.
         for (const auto& bar : options_.candles->bars(symbol, BarInterval::Minute, 10000))
           if (bar.start == md::new_york_to_utc(today, 9, 30)) result.day_open = bar.open;
+      }
+      if (conditions.contains("vix")) {
+        const auto vix = book_.underlyings().find("VIX");
+        // An option-implied forward is not the VIX index level.
+        if (vix != book_.underlyings().end() && vix->second.spot_ts > 0 && vix->second.spot_ts <= snapshot->as_of &&
+            snapshot->as_of - vix->second.spot_ts <= 5 * md::kNanosPerMinute && vix->second.spot > 0)
+          result.vix = vix->second.spot;
+      }
+      if (options_.candles && conditions.contains("technical")) {
+        for (const auto& bar : days)
+          if (md::new_york_time(bar.start).date < today) result.daily_closes.push_back(bar.close);
+        for (const auto& bar : options_.candles->bars(symbol, BarInterval::Minute, 10000))
+          if (bar.start + md::kNanosPerMinute <= snapshot->as_of) result.minute_closes.push_back(bar.close);
+        for (auto* closes : {&result.daily_closes, &result.minute_closes})
+          if (closes->size() > 1000) closes->erase(closes->begin(), closes->end() - 1000);
       }
       if (conditions.contains("iv_rank") || conditions.contains("vrp_min") || conditions.contains("term_inverted")) {
         const auto volatility = cached_volatility(snapshot);
@@ -89,7 +104,10 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       // Automatic submissions are the system's, and carry the playbook's tag.
       // Order::system is reserved for reducer liquidation and must not bypass risk.
       command.actor = "system";
-      const bool time_stop = order.note.starts_with("Playbook automatic time stop");
+      const bool time_stop = order.note.starts_with("Playbook automatic ");
+      const auto close_reason = order.note.starts_with("Playbook automatic trailing stop") ? trading::Reason::PLAYBOOK_TRAILING_STOP
+          : order.note.starts_with("Playbook automatic DTE stop") ? trading::Reason::PLAYBOOK_DTE_STOP
+          : order.note.starts_with("Playbook automatic days in trade stop") ? trading::Reason::PLAYBOOK_DAYS_IN_TRADE_STOP : cancel_reason;
       if (time_stop && !options_.replay) {
         // Check feed/session freshness before cancelling working protection. A mode
         // command can evaluate while the feed is stopped, without a new snapshot.
@@ -103,6 +121,10 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
           if (!reply.decision.ok()) return reply;
         }
       }
+      if (time_stop && close_reason != cancel_reason) {
+        const auto check = preview(order, 1.0);
+        if (!check.decision.ok()) { reply.decision = check.decision; return reply; }
+      }
       if (time_stop) {
         if (!options_.replay) account.session->set_actor("system");
         const auto symbols = trading::order_symbols(order);
@@ -110,7 +132,7 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
         for (const auto& candidate : working) {
           const auto contracts = trading::order_symbols(candidate.request);
           if (std::any_of(contracts.begin(), contracts.end(), [&](const auto& symbol) { return std::find(symbols.begin(), symbols.end(), symbol) != symbols.end(); }))
-            account.session->cancel(candidate.id, market_time_, cancel_reason);
+            account.session->cancel(candidate.id, market_time_, close_reason);
         }
       } else {
         const auto symbols = trading::order_symbols(order);
@@ -142,7 +164,10 @@ void Desk::evaluate_playbooks(md::Timestamp driver_time) {
       return reply;
     };
     playbooks_->evaluate(account.id, options_.replay, market_time_, metrics_, *view, inputs, preview, send,
-        [&](trading::OrderId id) { if (!options_.replay) account.session->set_actor("system"); account.session->cancel(id, market_time_, cancel_reason); });
+        [&](trading::OrderId id, trading::Reason reason) {
+          if (!options_.replay) account.session->set_actor("system");
+          account.session->cancel(id, market_time_, reason == trading::Reason::PLAYBOOK_TIME_STOP ? cancel_reason : reason);
+        });
   }
   if (evaluated) publish_trading();
 }

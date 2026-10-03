@@ -196,3 +196,9 @@ without credentials (loopback with no legacy token, `--require-token` or sandbox
 named tokens alone leave it open), `token` requires a credential with the route's
 scope, and `disabled` means no credential can write on that non-loopback bind.
 A supplied token is always checked, even in `open` mode.
+
+Playbook definitions optionally accept `conditions.technical`, `vix`, `gap` and
+`management.trailing_stop`, `close_at_dte`, `max_days_in_trade`, `stop_loss_percent`.
+[Playbook rules](playbooks.md) specify strict validation, indicator history and exit
+semantics. Pinned backtest definitions retain these optional fields; old reports
+remain readable. Adherence rule keys are extended only for configured exits.

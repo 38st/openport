@@ -137,13 +137,15 @@ inline void from_json(const Json& j, Order& o) {
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Excursion, pnl, time, spot)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TrailingReview, peak, triggered)
 inline void to_json(Json& j, const TradeReview& r) {
   j = Json{{"worst", r.worst}, {"best", r.best}, {"planned_risk", r.planned_risk}, {"finished", r.finished}};
   if (r.since) j["since"] = *r.since;
+  if (r.trailing) j["trailing"] = *r.trailing;
 }
 inline void from_json(const Json& j, TradeReview& r) {
   j.at("worst").get_to(r.worst); j.at("best").get_to(r.best); j.at("planned_risk").get_to(r.planned_risk);
-  j.at("finished").get_to(r.finished); added_field(j, "since", r.since);
+  j.at("finished").get_to(r.finished); added_field(j, "since", r.since); added_field(j, "trailing", r.trailing);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DayNote, plan, review, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillQuote, bid, ask, bid_size, ask_size, left, quoted)

@@ -122,6 +122,9 @@ simulation's limits.
   labelled in orders, Journal details and trade CSV. Live Auto records forward-test
   windows and results, resumes after restart, and compares each version with its
   latest saved backtest; Brief and Dashboard show automatic trading activity. [Rules and limits](playbooks.md).
+- **Playbook rule breadth (F52, part 1)**: completed-bar SMA/EMA, Wilder RSI and
+  Bollinger entries, VIX levels and signed opening gaps; trailing-profit, calendar
+  DTE, trading-day deadlines and debit bracket stops across live Auto, replay and backtests.
 - **Batch backtests**: run a pinned playbook over recorded, imported or seeded
   scenario days, with independent daily results and carried-account evaluation
   attempts. The CLI, API and Backtest page keep reports and verifiable journals.
@@ -305,6 +308,9 @@ settle AM positions on the expiry opening print, an approximation of the officia
 special opening quotation; live providers keep manual imports.
 
 ## Roadmap
+
+- [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
+- [ ] Backtest comparison/combination, per-day evaluation rows and saved-run retention (F52, next part)
 
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels

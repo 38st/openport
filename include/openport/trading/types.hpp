@@ -32,10 +32,10 @@ enum class Reason {
   // Plan decisions and objectives: what decided an attempt, what locked its day,
   // and what a pass still waits for.
   PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
-  ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP
+  ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::PLAYBOOK_TIME_STOP;
+inline constexpr Reason kLastReason = Reason::PLAYBOOK_DAYS_IN_TRADE_STOP;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -298,6 +298,10 @@ struct Excursion {
   Timestamp time = 0;
   std::optional<double> spot;
 };
+struct TrailingReview {
+  Money peak;  ///< Gross strategy P&L at closing natural prices; fees excluded.
+  Timestamp triggered = 0;
+};
 struct TradeReview {
   std::optional<Excursion> worst;
   std::optional<Excursion> best;
@@ -306,6 +310,7 @@ struct TradeReview {
   /// A whole-trade review that began part way through the trade: its extremes
   /// run from this time (the account grouped its round trips then).
   std::optional<Timestamp> since = {};
+  std::optional<TrailingReview> trailing = {};
 };
 /// The book a fill traded against, as the account held it: both sides and their
 /// displayed sizes, what was left of the taken side's paper budget before the

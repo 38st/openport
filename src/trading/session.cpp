@@ -4227,13 +4227,15 @@ FlattenPreview TradingSession::preview_close_positions(std::optional<std::string
   return result;
 }
 CommandResult TradingSession::cancel(OrderId id, Timestamp time, Reason reason) {
-  if (reason != Reason::USER_CANCEL && reason != Reason::PLAYBOOK_TIME_STOP)
+  if (reason != Reason::USER_CANCEL && reason != Reason::PLAYBOOK_TIME_STOP && reason != Reason::PLAYBOOK_TRAILING_STOP &&
+      reason != Reason::PLAYBOOK_DTE_STOP && reason != Reason::PLAYBOOK_DAYS_IN_TRADE_STOP)
     throw TradingError(Reason::INVALID_REASON, "Invalid cancellation reason");
   return impl_->transact(time, "cancel", [&](State& s, Events& events) {
     if (id == 0 || id > s.orders.size()) return CommandResult{failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), {}, 0};
     if (!s.orders.at(static_cast<std::size_t>(id - 1)).open())
       return CommandResult{failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
-    cancel_order(s, id, failure(reason, reason == Reason::PLAYBOOK_TIME_STOP ? "Playbook time stop" : "Cancelled by caller"), events);
+    cancel_order(s, id, failure(reason, reason == Reason::PLAYBOOK_TIME_STOP ? "Playbook time stop" : reason == Reason::PLAYBOOK_TRAILING_STOP ? "Playbook trailing stop" :
+        reason == Reason::PLAYBOOK_DTE_STOP ? "Playbook DTE stop" : reason == Reason::PLAYBOOK_DAYS_IN_TRADE_STOP ? "Playbook days in trade stop" : "Cancelled by caller"), events);
     return CommandResult{{}, id, 0};
   });
 }

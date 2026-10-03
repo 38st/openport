@@ -1,5 +1,6 @@
 #include "openport/server/playbooks.hpp"
 #include "strategy_template.hpp"
+#include "openport/analytics/technical.hpp"
 #include "paper_json.hpp"
 #include "../trading/state.hpp"
 #include "openport/trading/history.hpp"
@@ -134,7 +135,7 @@ bool guardrails_allow(const json& definition, const TradingView& view, md::Times
   int entries = 0;
   for (const auto& order : view.snapshot->recent_orders) {
     if (before != 0 && order.id >= before) break;
-    if (order.id < first_order || order.parent || order.system || order.request.note.starts_with("Playbook automatic time stop") || !tagged(order, id)) continue;
+    if (order.id < first_order || order.parent || order.system || order.request.note.starts_with("Playbook automatic ") || !tagged(order, id)) continue;
     if (order.status == OrderStatus::Rejected || (order.status == OrderStatus::Cancelled && order.filled_quantity == 0)) continue;
     if (md::new_york_time(order.accepted_at).date == md::new_york_time(time).date) ++entries;
   }
@@ -209,7 +210,7 @@ void validate_playbook(const json& definition) {
   std::set<int> unique;
   for (const auto& day : weekdays) { integer(day, 1, 5, "weekday"); if (!unique.insert(day.get<int>()).second) invalid("Duplicate weekday"); }
   const auto& conditions = field(definition, "conditions");
-  strict_keys(conditions, {"price", "iv_rank", "vrp_min", "term_inverted", "dte"});
+  strict_keys(conditions, {"price", "iv_rank", "vrp_min", "term_inverted", "dte", "technical", "vix", "gap"});
   if (conditions.contains("price")) {
     const auto& price = conditions.at("price");
     strict_keys(price, {"reference", "direction", "value"});
@@ -222,6 +223,35 @@ void validate_playbook(const json& definition) {
   if (conditions.contains("vrp_min")) bounded_number(conditions.at("vrp_min"), -1000, 1000, "vrp_min");
   if (conditions.contains("term_inverted") && !conditions.at("term_inverted").is_boolean()) invalid("term_inverted must be boolean");
   if (conditions.contains("dte")) range(conditions.at("dte"), 0, 3650, "dte");
+  if (conditions.contains("vix")) range(conditions.at("vix"), 0, 1000, "vix");
+  if (conditions.contains("gap")) {
+    const auto& gap = conditions.at("gap");
+    strict_keys(gap, {"min_percent", "max_percent"});
+    const double low = bounded_number(field(gap, "min_percent", "gap.min_percent"), -100, 10000, "gap.min_percent");
+    if (bounded_number(field(gap, "max_percent", "gap.max_percent"), -100, 10000, "gap.max_percent") < low)
+      invalid("gap.min_percent must not exceed max_percent");
+  }
+  if (conditions.contains("technical")) {
+    const auto& technical = conditions.at("technical");
+    if (!technical.is_array() || technical.empty() || technical.size() > 20) invalid("technical must contain 1–20 conditions");
+    for (const auto& rule : technical) {
+      const auto& indicator = field(rule, "indicator", "technical.indicator");
+      if (indicator != "sma" && indicator != "ema" && indicator != "rsi" && indicator != "bollinger") invalid("technical.indicator must be sma, ema, rsi or bollinger");
+      strict_keys(rule, indicator == "rsi" ? std::initializer_list<std::string_view>{"indicator", "interval", "period", "min", "max"}
+          : indicator == "bollinger" ? std::initializer_list<std::string_view>{"indicator", "interval", "period", "direction", "k"}
+          : std::initializer_list<std::string_view>{"indicator", "interval", "period", "direction"});
+      const auto& interval = field(rule, "interval", "technical.interval");
+      if (interval != "minute" && interval != "day") invalid("technical.interval must be minute or day");
+      integer(field(rule, "period", "technical.period"), 2, 500, "technical.period");
+      if (indicator == "rsi") {
+        const double low = bounded_number(field(rule, "min", "technical.min"), 0, 100, "technical.min");
+        if (bounded_number(field(rule, "max", "technical.max"), 0, 100, "technical.max") < low) invalid("technical.min must not exceed max");
+      } else {
+        direction(field(rule, "direction", "technical.direction"));
+        if (indicator == "bollinger") bounded_number(field(rule, "k", "technical.k"), 0.000001, 10, "technical.k");
+      }
+    }
+  }
   const auto& structure = field(definition, "structure");
   strict_keys(structure, {"template", "expiry"});
   validate_template(field(structure, "template", "structure.template"));
@@ -232,18 +262,32 @@ void validate_playbook(const json& definition) {
   if (sizing.contains("units")) integer(sizing.at("units"), 1, 100000, "units");
   else bounded_number(sizing.at("floor_share"), 0.000001, 1, "floor_share");
   const auto& management = field(definition, "management");
-  strict_keys(management, {"take_profit_percent", "stop_credit_multiple", "stop_underlying", "close_by", "max_hold_days"});
+  strict_keys(management, {"take_profit_percent", "stop_credit_multiple", "stop_underlying", "close_by", "max_hold_days", "max_days_in_trade", "close_at_dte", "stop_loss_percent", "trailing_stop"});
   if (minute(field(management, "close_by", "management.close_by")) < minute(window.at("end"))) invalid("close_by must be at or after the entry window end");
   if (management.contains("take_profit_percent")) bounded_number(management.at("take_profit_percent"), 0.000001, 1000, "take_profit_percent");
   if (management.contains("stop_credit_multiple")) bounded_number(management.at("stop_credit_multiple"), 1.000001, 100, "stop_credit_multiple");
   if (management.contains("stop_underlying")) {
-    if (management.contains("stop_credit_multiple")) invalid("Choose one stop rule");
+    if (management.contains("stop_credit_multiple") || management.contains("stop_loss_percent")) invalid("Choose one bracket stop rule");
     const auto& stop = management.at("stop_underlying");
     strict_keys(stop, {"level", "direction"});
     bounded_number(field(stop, "level", "underlying stop level"), 0.000001, 1000000, "underlying stop level");
     direction(field(stop, "direction", "underlying stop direction"));
   }
   if (management.contains("max_hold_days")) integer(management.at("max_hold_days"), 1, 365, "max_hold_days");
+  if (management.contains("max_days_in_trade")) {
+    integer(management.at("max_days_in_trade"), 1, 365, "max_days_in_trade");
+    if (management.contains("max_hold_days")) invalid("Choose max_hold_days or max_days_in_trade");
+  }
+  if (management.contains("close_at_dte")) integer(management.at("close_at_dte"), 0, 3650, "close_at_dte");
+  if (management.contains("stop_loss_percent")) {
+    bounded_number(management.at("stop_loss_percent"), 0.000001, 100, "stop_loss_percent");
+    if (management.contains("stop_credit_multiple")) invalid("Choose one bracket stop rule");
+  }
+  if (management.contains("trailing_stop")) {
+    const auto& trail = management.at("trailing_stop");
+    strict_keys(trail, {"percent"});
+    bounded_number(field(trail, "percent", "trailing_stop.percent"), 0.000001, 100, "trailing_stop.percent");
+  }
   const auto& guardrails = field(definition, "guardrails");
   strict_keys(guardrails, {"max_entries_per_day", "cooldown_minutes"});
   integer(field(guardrails, "max_entries_per_day", "guardrails.max_entries_per_day"), 1, 1000, "max_entries_per_day");
@@ -266,7 +310,7 @@ std::optional<std::string> playbook_condition_reason(const json& definition, con
     text << std::fixed << std::setprecision(digits) << value;
     return text.str();
   };
-  const auto range_reason = [&](const char* name, double value, const json& limits, int digits, const char* missing) -> std::optional<std::string> {
+  const auto range_reason = [&](const std::string& name, double value, const json& limits, int digits, const std::string& missing) -> std::optional<std::string> {
     if (!std::isfinite(value)) return missing;
     if (value < limits.at("min").get<double>() || value > limits.at("max").get<double>())
       return std::string(name) + " " + fixed(value, digits) + " is outside " + fixed(limits.at("min"), digits) + "-" + fixed(limits.at("max"), digits);
@@ -302,6 +346,38 @@ std::optional<std::string> playbook_condition_reason(const json& definition, con
       return "Price " + fixed(inputs.spot, 2) + " is not " + price.at("direction").get<std::string>() + " " + target;
     }
   }
+  if (conditions.contains("vix"))
+    if (auto reason = range_reason("VIX", inputs.vix, conditions.at("vix"), 2, "VIX unavailable (no current VIX spot)")) return reason;
+  if (conditions.contains("gap")) {
+    if (!std::isfinite(inputs.day_open)) return "Gap unavailable (no 09:30 minute)";
+    if (!std::isfinite(inputs.prior_close) || inputs.prior_close <= 0) return "Gap unavailable (no prior close)";
+    const auto& gap = conditions.at("gap");
+    if (auto reason = range_reason("Gap percent", 100 * (inputs.day_open - inputs.prior_close) / inputs.prior_close,
+        json{{"min", gap.at("min_percent")}, {"max", gap.at("max_percent")}}, 2, "Gap unavailable")) return reason;
+  }
+  if (conditions.contains("technical")) for (const auto& rule : conditions.at("technical")) {
+    const auto indicator = rule.at("indicator").get<std::string>();
+    const auto interval = rule.at("interval").get<std::string>();
+    const auto period = rule.at("period").get<std::size_t>();
+    const auto& closes = interval == "day" ? inputs.daily_closes : inputs.minute_closes;
+    const auto needed = period + (indicator == "rsi" ? 1 : 0);
+    const std::string name = (indicator == "sma" ? "SMA" : indicator == "ema" ? "EMA" : indicator == "rsi" ? "RSI" : "Bollinger") +
+        std::string("(") + std::to_string(period) + ", " + interval + ")";
+    if (closes.size() < needed) return name + " unavailable: " + std::to_string(closes.size()) + " of " + std::to_string(needed) +
+        (interval == "day" ? " daily bars" : " minute bars");
+    const double value = indicator == "sma" ? analytics::sma(closes, period) : indicator == "ema" ? analytics::ema(closes, period)
+        : indicator == "rsi" ? analytics::rsi(closes, period)
+        : analytics::bollinger(closes, period, rule.at("k").get<double>() * (rule.at("direction") == "above" ? 1 : -1));
+    if (!std::isfinite(value)) return name + " unavailable (invalid closes)";
+    if (indicator == "rsi") {
+      if (auto reason = range_reason(name, value, rule, 2, name + " unavailable")) return reason;
+    } else {
+      if (!std::isfinite(inputs.spot)) return "Price unavailable";
+      if (!(rule.at("direction") == "above" ? inputs.spot > value : inputs.spot < value))
+        return "Price " + fixed(inputs.spot, 2) + " is not " + rule.at("direction").get<std::string>() + " " + name +
+            (indicator == "bollinger" ? (rule.at("direction") == "above" ? " upper band " : " lower band ") : " ") + fixed(value, 2);
+    }
+  }
   return std::nullopt;
 }
 bool playbook_conditions(const json& definition, const PlaybookInputs& inputs, double dte) {
@@ -332,6 +408,11 @@ Bracket playbook_bracket(const json& management, Money entry, Money tick) {
     if (entry >= Money{}) invalid("A credit-multiple stop needs a credit entry");
     bracket.stop_loss = ExitSpec{Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove, snap(-entry.dollars() * management.at("stop_credit_multiple").get<double>())}, {}};
   }
+  if (management.contains("stop_loss_percent")) {
+    if (entry <= Money{}) invalid("A debit-percent stop needs a debit entry");
+    bracket.stop_loss = ExitSpec{Trigger{TriggerSource::Combo, TriggerDirection::AtOrAbove,
+        snap(-entry.dollars() * (1 - management.at("stop_loss_percent").get<double>() / 100))}, {}};
+  }
   if (management.contains("stop_underlying")) {
     const auto& stop = management.at("stop_underlying");
     bracket.stop_loss = ExitSpec{Trigger{TriggerSource::Underlying, stop.at("direction") == "below" ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove, Money::from_double(stop.at("level").get<double>())}, {}};
@@ -343,7 +424,12 @@ md::Timestamp playbook_deadline(const json& definition, md::Timestamp opened) {
   auto date = md::new_york_time(opened).date;
   // Without a hold allowance the position closes the entry day. A hold allowance
   // moves close_by to that calendar day, clamped to the preceding business day.
-  date = md::date_from_days(md::days_since_epoch(date) + management.value("max_hold_days", 0));
+  if (management.contains("max_days_in_trade"))
+    for (int day = 0; day < management.at("max_days_in_trade").get<int>(); ++day) {
+      do { date = md::date_from_days(md::days_since_epoch(date) + 1); }
+      while (!md::market_session(md::new_york_to_utc(date, 12, 0)).open);
+    }
+  else date = md::date_from_days(md::days_since_epoch(date) + management.value("max_hold_days", 0));
   while (!md::market_session(md::new_york_to_utc(date, 12, 0)).open) date = md::previous_business_day(date);
   const int close = std::min(minute(management.at("close_by")), md::regular_close_hour(date) * 60);
   return md::new_york_to_utc(date, close / 60, close % 60);
@@ -562,13 +648,33 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
   const auto round_trips = trips(*current, history);
   for (const auto& working : current->snapshot->open_orders) {
     const auto* definition = order_definition(catalogue_, working);
-    if (definition && !working.parent && modes.value(definition->at("id").get<std::string>(), "off") == "auto" &&
-        now >= playbook_deadline(*definition, working.accepted_at)) cancel(working.id);
+    if (!definition || working.parent || modes.value(definition->at("id").get<std::string>(), "off") != "auto") continue;
+    const auto& management = definition->at("management");
+    if (now >= playbook_deadline(*definition, working.accepted_at))
+      cancel(working.id, management.contains("max_days_in_trade") ? Reason::PLAYBOOK_DAYS_IN_TRADE_STOP : Reason::PLAYBOOK_TIME_STOP);
+    else if (management.contains("close_at_dte")) for (const auto& symbol : order_symbols(working.request)) {
+      const auto contract = current->contracts.find(symbol);
+      if (contract != current->contracts.end() && md::years_between(now, contract->second.expiry_time()) * 365 <= management.at("close_at_dte").get<int>()) {
+        cancel(working.id, Reason::PLAYBOOK_DTE_STOP);
+        break;
+      }
+    }
   }
   for (const auto& trip : round_trips) {
     const auto* definition = order_definition(catalogue_, *trip.order);
-    if (!definition || trip.closed || trip.legs.empty() || modes.value(definition->at("id").get<std::string>(), "off") != "auto" ||
-        now < playbook_deadline(*definition, trip.legs.front()->opened)) continue;
+    if (!definition || trip.closed || trip.legs.empty() || modes.value(definition->at("id").get<std::string>(), "off") != "auto") continue;
+    const auto& management = definition->at("management");
+    std::string exit;
+    if (now >= playbook_deadline(*definition, trip.legs.front()->opened))
+      exit = management.contains("max_days_in_trade") ? "days in trade stop" : "time stop";
+    if (exit.empty() && management.contains("close_at_dte"))
+      for (const auto* life : trip.legs)
+        if (life->quantity && md::years_between(now, life->contract.expiry_time()) * 365 <= management.at("close_at_dte").get<int>()) exit = "DTE stop";
+    if (exit.empty() && management.contains("trailing_stop")) {
+      const auto review = current->snapshot->strategy_reviews.find(std::to_string(trip.order->id));
+      if (review != current->snapshot->strategy_reviews.end() && review->second.trailing && review->second.trailing->triggered) exit = "trailing stop";
+    }
+    if (exit.empty()) continue;
     OrderRequest close;
     close.client_order_id = "pb-close:" + std::to_string(trip.order->id) + ":" + std::to_string(now);
     close.type = OrderType::Market;
@@ -576,7 +682,7 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
     close.quantity = 1;
     close.tags = {playbook_tag(*definition)};
     // Actor hook: the Desk submission callback marks this command as automatic.
-    close.note = "Playbook automatic time stop; entry " + std::to_string(trip.order->id);
+    close.note = "Playbook automatic " + exit + "; entry " + std::to_string(trip.order->id);
     Quantity units = 0;
     for (const auto* life : trip.legs) if (life->quantity) units = std::gcd(units, std::abs(life->quantity));
     if (!units) continue;
@@ -629,6 +735,9 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
           if (structure.at("template").contains("farExpiry") && template_chain(underlying, slice).at("expiry").at("id") == structure.at("template").at("farExpiry")) far = &slice;
         }
         if (!selected) invalid("No expiry in the requested DTE range");
+        if (definition.at("management").contains("close_at_dte") &&
+            md::years_between(now, selected->expiry_time) * 365 <= definition.at("management").at("close_at_dte").get<int>())
+          invalid("Past the DTE management deadline");
         if (const auto failed = playbook_condition_reason(definition, inputs(symbol, definition.at("conditions")), md::years_between(now, selected->expiry_time) * 365)) invalid(*failed);
         const auto setup = build_template(structure.at("template"), template_chain(underlying, *selected), far ? template_chain(underlying, *far) : json(nullptr));
         OrderRequest order;
@@ -667,6 +776,11 @@ void Playbooks::evaluate(const std::string& account, bool replay, md::Timestamp 
         order.note = json{{"playbook", playbook_tag(definition)}, {"max_units", units}, {"floor_share", share},
             {"close_by", md::format_timestamp(playbook_deadline(definition, now))},
             {"automatic", mode == "auto"}, {"max_loss", final_preview.max_loss ? json(final_preview.max_loss->str()) : json(nullptr)}}.dump();
+        if (definition.at("management").contains("trailing_stop")) {
+          auto evidence = json::parse(order.note);
+          evidence["trailing_stop"] = definition.at("management").at("trailing_stop");
+          order.note = evidence.dump();
+        }
         // The stage keeps its ID while the same contracts are selected, so a send
         // clicked on a moving market still finds it; the price and size it sends are
         // the latest, and the normal order checks run again. The client order ID is
@@ -747,7 +861,7 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view, b
           }
         }
       }
-      bool exits = false;
+      bool exits = false, debit_stop = false;
       try {
         Money net;
         for (const auto* life : trip.legs) net = net + life->open_notional * life->direction;
@@ -755,6 +869,7 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view, b
         const auto required = playbook_bracket(definition->at("management"), entry, playbook_tick(order.request));
         const auto actual = order.request.bracket.value_or(Bracket{});
         exits = actual == required;
+        debit_stop = actual.stop_loss == required.stop_loss;
       } catch (const std::exception&) {}
       const bool timely = trip.closed && *trip.closed <= playbook_deadline(*definition, opened);
       // As the live check did, when the entry arrived.
@@ -762,6 +877,24 @@ nlohmann::json playbook_report(const json& catalogue, const TradingView& view, b
       json rules{{"entry_window", window}, {"size", size}, {"exits", exits},
           {"time_stop", trip.closed || view.snapshot->time >= playbook_deadline(*definition, opened) ? json(timely) : json(nullptr)},
           {"guardrails", guarded}};
+      const auto& management = definition->at("management");
+      if (management.contains("max_days_in_trade")) rules["max_days_in_trade"] = rules.at("time_stop");
+      if (management.contains("close_at_dte")) {
+        auto deadline = trip.legs.front()->contract.expiry_time();
+        for (const auto* life : trip.legs) deadline = std::min(deadline, life->contract.expiry_time());
+        deadline -= management.at("close_at_dte").get<int>() * (24 * 60 * md::kNanosPerMinute);
+        rules["close_at_dte"] = trip.closed || view.snapshot->time >= deadline ? json(trip.closed && *trip.closed <= deadline) : json(nullptr);
+      }
+      if (management.contains("stop_loss_percent")) rules["stop_loss_percent"] = debit_stop;
+      if (management.contains("trailing_stop")) {
+        const auto review = view.snapshot->strategy_reviews.find(std::to_string(order.id));
+        rules["trailing_stop"] = nullptr;
+        if (review != view.snapshot->strategy_reviews.end() && review->second.trailing) {
+          const auto triggered = review->second.trailing->triggered;
+          if (triggered) rules["trailing_stop"] = trip.closed && *trip.closed <= triggered;
+          else if (trip.closed) rules["trailing_stop"] = true;
+        }
+      }
       bool followed = true;
       int passed = 0, measured = 0;
       for (const auto& value : rules) if (value.is_boolean()) { ++measured; if (value.get<bool>()) ++passed; else followed = false; }

@@ -2405,6 +2405,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `MIN_TRADING_DAYS`, `MIN_PROFITABLE_DAYS`, `CONSISTENCY` | Objective codes: what a pass still waits for |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
 | `RISK_CHANGED` | Fill/limit-change recheck failed; original cause at the start of the message, its `actual`, `limit` and `scope` kept on the order |
+| `PLAYBOOK_TRAILING_STOP`, `PLAYBOOK_DTE_STOP`, `PLAYBOOK_DAYS_IN_TRADE_STOP` | Automatic playbook trailing, DTE or business-day deadline cancelled working protection; see [playbook rules](playbooks.md) |
 | `PLAYBOOK_TIME_STOP` | Automatic playbook deadline cancelled an entry or working exit; message `Playbook time stop`. Older replay drivers retain `USER_CANCEL` |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder (a stop exit's re-arms instead), explicit cancellation, the end of a DAY order's session (a triggered one's activation session) or an EXTO trading date |
 | `SESSION_CLOSED`, `EXPIRED`, `AWAITING_SETTLEMENT` | Outside the product's sessions (or an AM-settled series after its last regular close), expiry or last-trade boundary, or pending settlement quality flag |

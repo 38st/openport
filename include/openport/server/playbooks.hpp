@@ -12,10 +12,12 @@ inline constexpr std::string_view kOutsideEntryWindow = "Outside entry window";
 struct PlaybookInputs {
   double spot = analytics::kNaN, prior_close = analytics::kNaN, day_open = analytics::kNaN;
   double iv_rank = analytics::kNaN, vrp = analytics::kNaN, term_ratio = analytics::kNaN;
+  double vix = analytics::kNaN;
+  std::vector<double> minute_closes = {}, daily_closes = {};
 };
 void validate_playbook(const nlohmann::json& definition);
 bool playbook_window(const nlohmann::json& definition, md::Timestamp time);
-/// First failure in DTE, IV rank, VRP, term structure, price order; nullopt when all pass.
+/// First failure in DTE, IV rank, VRP, term structure, price, VIX, gap, technical order; nullopt when all pass.
 std::optional<std::string> playbook_condition_reason(const nlohmann::json& definition, const PlaybookInputs& inputs, double dte);
 bool playbook_conditions(const nlohmann::json& definition, const PlaybookInputs& inputs, double dte);
 std::string playbook_tag(const nlohmann::json& definition);
@@ -36,7 +38,7 @@ class Playbooks {
  public:
   using Json = nlohmann::json;
   using Preview = std::function<trading::OrderPreview(const trading::OrderRequest&, double)>;
-  using Cancel = std::function<void(trading::OrderId)>;
+  using Cancel = std::function<void(trading::OrderId, trading::Reason)>;
   using Send = std::function<TradingReply(const trading::OrderRequest&)>;
   explicit Playbooks(std::filesystem::path file = {}, Json initial = nullptr);
   [[nodiscard]] bool enabled(std::string_view account) const;

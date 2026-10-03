@@ -2441,7 +2441,9 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
       for (const auto& fill : s.recent_fills) fill_orders[std::to_string(fill.id)] = fill.order_id;
       std::map<OrderId, json> time_stops;
       for (const auto& order : s.recent_orders) {
-        if (order.reason.code != Reason::PLAYBOOK_TIME_STOP && !order.request.note.starts_with("Playbook automatic time stop")) continue;
+        if (order.reason.code != Reason::PLAYBOOK_TIME_STOP && order.reason.code != Reason::PLAYBOOK_TRAILING_STOP &&
+            order.reason.code != Reason::PLAYBOOK_DTE_STOP && order.reason.code != Reason::PLAYBOOK_DAYS_IN_TRADE_STOP &&
+            !order.request.note.starts_with("Playbook automatic ")) continue;
         const auto related = order.parent ? order.parent : order.id;
         if (!time_stops.contains(related)) time_stops[related] = json::array();
         time_stops[related].push_back({{"order_id", std::to_string(order.id)}, {"reason", decision_json(order.reason)}, {"note", order.request.note}});
