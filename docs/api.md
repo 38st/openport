@@ -56,6 +56,15 @@ Example schedule for custom rules (omitted fields default to zero):
          "index":{"SPX":"0.60","SPXW":"0.60"},"exercise":"5.00"}}
 ```
 
+`GET /api/account` returns a funded account's next payout quote in `payout` (null
+outside the funded phase). `consistency_percent` is the next payout's optional
+limit; `cycle_profit`, `best_day: {day, profit}` (nullable) and `consistency_needed`
+show net realised cycle consistency. `POST /api/account/payout` takes
+`{"amount":"100.00"}` and returns the updated account. An unmet consistency rule
+uses `PAYOUT_NOT_ELIGIBLE`, after qualifying days and before the minimum check.
+Custom funded rules accept `payouts.consistency_percents` (empty disables;
+1–100 integers indexed by payout number, last repeating).
+
 The web terminal uses these routes, so anything it does can be scripted:
 
 | Route | Does |

@@ -129,6 +129,7 @@ export const fundedAccount: Account = {
   },
   payout: {
     eligible: false, blocked: { code: "PAYOUT_NOT_ELIGIBLE", message: "Not enough qualifying days in this payout cycle", actual: 3, limit: 8 },
+    consistency_percent: null, cycle_profit: "850.00", best_day: { day: "2026-09-23", profit: "300.00" }, consistency_needed: "0.00",
     number: 2, active: true, flat: true, qualifying_days: 3, required_days: 8, qualifying_profit: "200.00",
     profit: "6050.00", withdrawable: "3025.00", cap: "3000.00", maximum: "3000.00", minimum: "1000.00", trader_share: "2400.00",
     withdrawal_percent: 50, split_percent: 80,

@@ -566,6 +566,7 @@ struct PayoutRules {
   std::int64_t split_percent = 80;       ///< Trader's share of each payout.
   Money minimum;
   std::vector<Money> caps;  ///< Per payout number; the last repeats; empty is uncapped.
+  std::vector<std::int64_t> consistency_percents;  ///< Best day's share of cycle profit; last repeats, empty disables.
   bool operator==(const PayoutRules&) const = default;
 };
 

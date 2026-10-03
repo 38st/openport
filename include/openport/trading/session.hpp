@@ -149,6 +149,11 @@ struct PayoutQuote {
   Money maximum;                 ///< min(withdrawable, cap), leaving equity above a locked floor.
   Money minimum;
   Money trader_share;            ///< split_percent of the maximum.
+  std::optional<std::int64_t> consistency_percent;  ///< This payout number's best-day limit.
+  Money cycle_profit;            ///< Net realised on this cycle's finished days and the day in progress.
+  std::optional<Money> best_day;  ///< Largest positive day in the cycle; earliest wins ties.
+  md::Date best_day_date;
+  Money consistency_needed;      ///< Additional cycle profit needed, rounded up to whole cents.
 };
 [[nodiscard]] PayoutQuote payout_quote(const TradingSnapshot& snapshot, const AccountRules& rules);
 /// The held book's risk profile (see risk_profile) as a snapshot publishes it: its
