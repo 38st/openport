@@ -619,3 +619,55 @@ it.each(["passed", "failed"] as const)("allows a close after the attempt %s and 
   await click("Submit order")
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ side: "sell", quantity: 3 }), trading.write)
 })
+
+it("blocks an opening single order without its plan's required stop", async () => {
+  vi.mocked(api.account).mockResolvedValue({ ...account, rules: { ...account.rules, buy_only: false, require_stop_loss: true } })
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
+    { ...account, rules: { ...account.rules, buy_only: false, require_stop_loss: true } })
+  await render()
+  expect(host.textContent).toContain("Stop-loss required by this plan")
+  expect(button("Submit order").disabled).toBe(true)
+  await act(async () => field("Protect with a stop-loss").click())
+  expect(button("Submit order").disabled).toBe(false)
+  await click("Submit order")
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ bracket: expect.objectContaining({ stop_loss: expect.any(Object) }) }), "open")
+})
+
+it("includes a strategy's required stop in preview and blocks an unprotected entry", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
+  vi.mocked(api.account).mockResolvedValue({ ...account, rules: { ...account.rules, buy_only: false, require_stop_loss: true } })
+  vi.spyOn(api, "previewOrder").mockRejectedValue(new Error("fixture preview"))
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
+    { ...account, rules: { ...account.rules, buy_only: false, require_stop_loss: true } })
+  client.setQueryData(tradingQueries(0, "17", true).portfolio.queryKey, { ...portfolio, positions: [] })
+  const legs: StrategyLeg[] = [
+    { symbol: selection.symbol, underlying: "SPX", side: "buy", ratio: 1, type: "call", strike: 7000, expiry: expiry.id, quote },
+    { symbol: "SPXW  261016C07005000", underlying: "SPX", side: "sell", ratio: 1, type: "call", strike: 7005, expiry: expiry.id,
+      quote: { ...quote, symbol: "SPXW  261016C07005000", bid: 2, ask: 2.2, mid: 2.1 } },
+  ]
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <StrategyTicket legs={legs} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(host.textContent).toContain("Stop-loss required by this plan")
+  expect(button("Submit strategy order").disabled).toBe(true)
+  await act(async () => field("Spread exits").click())
+  await setField("Stop level", "-1.00")
+  expect(button("Submit strategy order").disabled).toBe(false)
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)) })
+  expect(vi.mocked(api.previewOrder).mock.calls.at(-1)?.[0]).toHaveProperty("bracket.stop_loss.trigger.level", "-1.00")
+  await click("Submit strategy order")
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ bracket: expect.objectContaining({ stop_loss: expect.any(Object) }) }), "open")
+})
+
+it("keeps an unprotected reducing single order available under a stop-required plan", async () => {
+  vi.mocked(api.account).mockResolvedValue({ ...account, rules: { ...account.rules, buy_only: false, require_stop_loss: true } })
+  const held = { ...portfolio, positions: [{ ...portfolio.positions[0]!, symbol: selection.symbol, quantity: 1 }] }
+  vi.mocked(api.portfolio).mockResolvedValue(held)
+  client.setQueryData(tradingQueries(0, "17", true).portfolio.queryKey, held)
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
+    { ...account, rules: { ...account.rules, buy_only: false, require_stop_loss: true } })
+  await render()
+  await choose("Side", "Sell")
+  expect(button("Submit order").disabled).toBe(false)
+  expect(host.textContent).not.toContain("Stop-loss required by this plan")
+})

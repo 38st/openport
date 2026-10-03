@@ -101,3 +101,18 @@ describe("custom plans", () => {
     expect(customPlan({ ...form, initial_cash: "0" }, rules)).toEqual({ error: "The starting balance must be above zero" })
   })
 })
+
+it("edits trade-entry rules and validates their ranges", () => {
+  const base = { ...rules, max_contracts_held: 5, require_stop_loss: true, max_trade_risk: "200.50", max_trade_risk_percent: 10 }
+  const form = planForm({ initial_cash: "10000", rules: base })
+  expect(form).toMatchObject({ max_contracts_held: "5", require_stop_loss: "yes", max_trade_risk: "200.50", max_trade_risk_percent: "10" })
+  const result = customPlan(form, base)
+  expect("error" in result ? result : result.rules).toMatchObject({ max_contracts_held: 5, require_stop_loss: true, max_trade_risk: "200.50", max_trade_risk_percent: 10 })
+  for (const max_contracts_held of ["-1", "100001", "1.5"])
+    expect(customPlan({ ...form, max_contracts_held }, base)).toHaveProperty("error")
+  for (const max_trade_risk_percent of ["-1", "101", "0.5"])
+    expect(customPlan({ ...form, max_trade_risk_percent }, base)).toHaveProperty("error")
+  expect(customPlan({ ...form, max_trade_risk: "-1" }, base)).toHaveProperty("error")
+  const off = customPlan({ ...form, max_contracts_held: "", require_stop_loss: "no", max_trade_risk: "", max_trade_risk_percent: "" }, base)
+  expect("error" in off ? off : off.rules).toMatchObject({ max_contracts_held: 0, require_stop_loss: false, max_trade_risk: null, max_trade_risk_percent: 0 })
+})

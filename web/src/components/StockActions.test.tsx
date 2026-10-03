@@ -116,6 +116,22 @@ describe("disposing of a worthless position", () => {
 
 
 describe("trading shares", () => {
+  it("blocks unprotected share entries but keeps reductions available", async () => {
+    vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
+      { ...status.underlyings[0]!, symbol: "SPY", spot: 510 },
+    ] } as ReturnType<typeof useLive>)
+    vi.spyOn(api, "portfolio").mockResolvedValue({ ...portfolio, stocks: [{ symbol: "SPY", shares: 100 }] } as typeof portfolio)
+    vi.spyOn(api, "account").mockResolvedValue({ ...account, rules: { ...account.rules, require_stop_loss: true } })
+    vi.spyOn(api, "previewStock").mockRejectedValue(new Error("fixture preview"))
+    await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>
+      <TradeSharesDialog trading={status.trading!} onClose={() => {}} /></QueryClientProvider>))
+    await waitForRender(() => expect(host.textContent).toContain("Stop-loss required by this plan"))
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Buy 100 SPY")!.disabled).toBe(true)
+    await waitForRender(() => expect(host.textContent).toContain("You hold 100 long"))
+    await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Sell")!.click())
+    expect(host.textContent).not.toContain("Stop-loss required by this plan")
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Sell 100 SPY")!.disabled).toBe(false)
+  })
   it("names opens, adds, reductions, closes and reversals", () => {
     expect(shareEffect(0, "buy", 100)).toBe("opens")
     expect(shareEffect(100, "buy", 50)).toBe("adds to")

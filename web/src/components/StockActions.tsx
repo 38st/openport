@@ -108,6 +108,7 @@ export function TradeSharesDialog({ initial, trading, onClose }: { initial?: str
   const decided = account?.evaluation.enabled && account.evaluation.status !== "active"
   const refused = decided && !reduces ? "The evaluation is decided. Only trades that reduce shares toward zero are allowed; opening requires a new attempt."
     : trading.kill_latched && !reduces ? "Kill switch latched · reduce-only: only trades that reduce shares toward zero are allowed."
+    : rules?.require_stop_loss && !reduces ? "Stop-loss required by this plan. Share entries cannot attach a protective stop."
     : rules?.buy_only && shortSale ? `${rules.plan ?? "This plan"} is buy-only: share sales may only close shares you hold.`
     : rules?.defined_risk && shortSale ? "This plan allows defined risk only, and short shares can lose without limit."
     : null
