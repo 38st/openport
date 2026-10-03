@@ -8,6 +8,7 @@
 
 #include "openport/md/contract.hpp"
 #include "openport/md/time.hpp"
+#include "openport/trading/dividends.hpp"
 
 namespace openport::providers {
 
@@ -90,9 +91,16 @@ struct ScenarioWindow {
 /// least as wide as then, and opens with each underlying's previous close. The contracts
 /// both list keep their identifiers, quotes and sizes. Revision 3 adds XSP, NDX/NDXP,
 /// RUT/RUTW and VIX/VIXW, their ticks and sessions, and stops AM quotes at their last
-/// regular close. Runs record the revision; one
+/// regular close. Revision 4 prices American ETF options with discrete quarterly
+/// dividends, also reflected in spot prices. Runs record the revision; one
 /// recorded without it regenerates revision 1.
-inline constexpr int kScenarioRevision = 3;
+inline constexpr int kScenarioRevision = 4;
+/// Deterministic simulated quarterly ETF dividends, inclusive of both dates.
+[[nodiscard]] std::vector<trading::Dividend> demo_dividends(md::Date first, md::Date last);
+/// Known payments through the run's listed ETF expiries. Session entries replace
+/// generated payments for the same symbol/date; revisions 1-3 have only explicit entries.
+[[nodiscard]] std::vector<trading::Dividend> scenario_dividends(const Scenario& scenario, md::Date date,
+                                                               int revision = kScenarioRevision);
 /// The option contracts a scenario lists on `date`, in the order it defines them.
 [[nodiscard]] std::vector<md::OptionContract> scenario_chain(const Scenario& scenario, md::Date date,
                                                              int revision = kScenarioRevision);

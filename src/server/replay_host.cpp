@@ -1036,15 +1036,14 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
         return options_.engine;
       }();
       session->durable = history_->writable();
-      // A scenario's own dividends go ex on its sessions' dates, in place of any the
-      // server knows for the same symbol and date.
+      // Simulated dividends replace the server's on the same symbol/date; explicit
+      // session entries already replace generated ones in this shared schedule.
       if (demo) {
-        for (std::size_t i = 0; i < day->sessions.size(); ++i) {
-          for (const auto& dividend : day->sessions[i].dividends) {
-            const auto ex_date = session->windows[i].date;
-            std::erase_if(engine.dividends, [&](const auto& d) { return d.symbol == dividend.symbol && d.ex_date == ex_date; });
-            engine.dividends.push_back({dividend.symbol, ex_date, trading::Money::from_double(dividend.per_share)});
-          }
+        for (const auto& dividend : providers::scenario_dividends(*day, date)) {
+          std::erase_if(engine.dividends, [&](const auto& d) {
+            return d.symbol == dividend.symbol && d.ex_date == dividend.ex_date;
+          });
+          engine.dividends.push_back(dividend);
         }
       }
       engine.paper.rules = plan->rules;
