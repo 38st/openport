@@ -22,6 +22,7 @@ struct JournalRecord {
 struct JournalRecovery {
   std::vector<JournalRecord> records;
   bool truncated_final_line = false;
+  std::size_t bytes_cut = 0;  ///< Bytes a repair would remove from the torn final line.
   std::string head;
 };
 /// What FileJournal::repair did.

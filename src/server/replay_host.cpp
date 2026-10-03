@@ -296,6 +296,7 @@ struct ReplayHost::Session {
   int generator = 0;
   md::Timestamp target = 0;
   bool durable = false;
+  mutable bool finalized = false;  // handoff_mutex_
   /// A scenario run's sessions; empty for a recording.
   std::vector<providers::ScenarioWindow> windows;
   // The engine reads the provider, so it is declared after it and stops first.
@@ -334,8 +335,17 @@ struct ReplayHost::Session {
 /// Read-only recovered accounts reuse all of the existing account and trade routes.
 class ArchivedReplay final : public MetricsSource {
  public:
-  explicit ArchivedReplay(const std::filesystem::path& file) {
+  explicit ArchivedReplay(const std::filesystem::path& file, json* diagnostic = nullptr) {
     const auto recovery = trading::FileJournal::read(file.string());
+    integrity_ = {{"journal_found", {{"transactions", recovery.records.size()}, {"head", recovery.head},
+                                      {"bytes", std::filesystem::file_size(file)}}}};
+    if (recovery.truncated_final_line) {
+      integrity_["torn"] = true;
+      integrity_["bytes_cut"] = recovery.bytes_cut;
+      integrity_["integrity_message"] = file.filename().string() + ": torn final line; --repair-journals would cut " +
+          std::to_string(recovery.bytes_cut) + " bytes (stop the server first)";
+    }
+    if (diagnostic) *diagnostic = integrity_;
     const auto session = trading::TradingSession::recover(recovery);
     view_ = std::make_shared<TradingView>();
     view_->snapshot = end_open_orders(session.snapshot());
@@ -372,6 +382,7 @@ class ArchivedReplay final : public MetricsSource {
     std::ifstream metadata(std::filesystem::path(file).replace_extension(".json"));
     if (metadata) simulated_ = json::parse(metadata).value("demo", false);
   }
+  const json& integrity() const { return integrity_; }
   std::vector<std::string> symbols() const override { return {}; }
   std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string&) const override { return {}; }
   using MetricsSource::trading_view;  // the account-id overload answers for the main account
@@ -394,6 +405,7 @@ class ArchivedReplay final : public MetricsSource {
  private:
   std::shared_ptr<TradingView> view_;
   bool simulated_ = false;
+  json integrity_;
 };
 
 class ReplayHost::History {
@@ -418,19 +430,35 @@ class ReplayHost::History {
   /// Rewrites a retired run's metadata with its final playback state, which then
   /// reads finished. A crash leaves the start state that create wrote.
   void finish(const Session& session) const {
-    if (!writable_ || !session.durable || session.id.empty()) return;
-    const auto file = directory_ / (session.id + ".json");
-    const auto staged = directory_ / (session.id + ".json.tmp");
+    if (!writable_ || !session.durable || session.id.empty() || session.finalized) return;
+    auto value = session.state();
+    if (session.provider->finished()) {
+      const auto view = session.engine->trading_view();
+      if (!view || view->journal_head.empty()) return;
+      value["journal"] = {{"transactions", view->journal_transactions}, {"head", view->journal_head},
+                          {"bytes", std::filesystem::file_size(journal(session.id))}};
+    }
+    save(session.id, value);
+    session.finalized = session.provider->finished();
+  }
+  void save(const std::string& id, const json& value) const {
+    const auto file = directory_ / (id + ".json");
+    const auto staged = directory_ / (id + ".json.tmp");
     std::error_code ec;
-    if (!std::filesystem::exists(file, ec)) return;
     {
       std::ofstream metadata(staged);
-      metadata << session.state().dump() << '\n';
+      metadata << value.dump() << '\n';
       metadata.close();
-      if (!metadata) { std::filesystem::remove(staged, ec); return; }
+      if (!metadata) {
+        std::filesystem::remove(staged, ec);
+        throw std::runtime_error("Cannot write replay metadata for " + id);
+      }
     }
     std::filesystem::rename(staged, file, ec);
-    if (ec) std::filesystem::remove(staged, ec);
+    if (ec) {
+      std::filesystem::remove(staged, ec);
+      throw std::runtime_error("Cannot replace replay metadata for " + id);
+    }
   }
   /// A saved run's metadata as its last start or retirement wrote it, or null.
   json metadata(const std::string& id) const {
@@ -470,7 +498,7 @@ class ReplayHost::History {
     const auto found = cache_.find(id);
     if (found != cache_.end() && found->second.modified == modified && found->second.bytes == bytes) return found->second.account;
     auto account = recover(path);
-    summaries_[id] = {modified, bytes, summarize(account->trading_view())};
+    summaries_[id] = {modified, bytes, summarize_archive(*account)};
     if (cache_.size() >= 16) cache_.erase(cache_.begin());
     cache_[id] = {modified, bytes, account};
     return account;
@@ -490,14 +518,14 @@ class ReplayHost::History {
       json item{{"id", id}, {"file", id}, {"demo", false}, {"result", "open"}, {"pnl", nullptr}};
       bool finalized = current;
       try {
-        if (current) {
-          item.update(active->state());
-        } else {
+        if (current) finish(*active);
+        {
           std::ifstream metadata(std::filesystem::path(file).replace_extension(".json"));
           if (metadata) item.update(json::parse(metadata));
           finalized = item.value("finished", false);
         }
-        item.update(current ? summarize(active->engine->trading_view()) : summary(id, file));
+        item.update(summary(id, file));
+        item.update(integrity(id, item));
       } catch (const std::exception& error) {
         if (!std::filesystem::exists(file, ec)) continue;  // deleted while listing
         item["error"] = error.what();
@@ -519,6 +547,36 @@ class ReplayHost::History {
       item["read_only"] = true;
       out.push_back(std::move(item));
     }
+    return out;
+  }
+  json integrity(const std::string& id, const json& found) const {
+    json out = json::object();
+    for (const auto* key : {"journal_found", "torn", "bytes_cut", "integrity_message"})
+      if (found.contains(key)) out[key] = found.at(key);
+    const auto saved = metadata(id);
+    if (saved.is_object() && saved.contains("journal")) {
+      const auto& expected = saved.at("journal");
+      out["journal"] = expected;
+      if (found.contains("journal_found")) {
+        const auto& actual = found.at("journal_found");
+        if (expected.at("transactions") != actual.at("transactions") || expected.at("head") != actual.at("head") ||
+            expected.at("bytes") != actual.at("bytes")) {
+          out["mismatch"] = true;
+          out["truncated"] = actual.at("transactions") < expected.at("transactions") || actual.at("bytes") < expected.at("bytes");
+          const auto message = id + ": journal differs; expected " + expected.at("transactions").dump() +
+              " transactions, found " + actual.at("transactions").dump() + "; expected head " +
+              expected.at("head").get<std::string>() + ", found " + actual.at("head").get<std::string>();
+          out["integrity_message"] = out.value("integrity_message", std::string()) +
+              (out.contains("integrity_message") ? "; " : "") + message;
+        }
+      }
+    }
+    return out;
+  }
+  json details(const std::string& id) const {
+    const auto value = summary(id, journal(id));
+    auto out = integrity(id, value);
+    if (value.contains("error")) out["error"] = value.at("error");
     return out;
   }
   void remove(const std::string& id) const {
@@ -549,9 +607,14 @@ class ReplayHost::History {
             {"plan_id", preset_id(view->config.initial_cash, view->config.rules).empty() ? json(nullptr) : json(preset_id(view->config.initial_cash, view->config.rules))},
             {"time", md::format_timestamp(view->snapshot->time)}};
   }
-  std::shared_ptr<ArchivedReplay> recover(const std::filesystem::path& path) const {
+  static json summarize_archive(const ArchivedReplay& account) {
+    auto value = summarize(account.trading_view());
+    value.update(account.integrity());
+    return value;
+  }
+  std::shared_ptr<ArchivedReplay> recover(const std::filesystem::path& path, json* diagnostic = nullptr) const {
     ++recoveries_;  // Caller holds cache_mutex_. Count attempts, including damaged journals.
-    return std::make_shared<ArchivedReplay>(path);
+    return std::make_shared<ArchivedReplay>(path, diagnostic);
   }
   json summary(const std::string& id, const std::filesystem::path& path) const {
     std::error_code ec;
@@ -565,9 +628,10 @@ class ReplayHost::History {
     try {
       const auto cached = cache_.find(id);
       const auto account = cached != cache_.end() && cached->second.modified == modified && cached->second.bytes == bytes
-          ? cached->second.account : recover(path);
-      value = summarize(account->trading_view());
-    } catch (const std::exception& error) { value = {{"error", error.what()}}; }
+          ? cached->second.account : recover(path, &value);
+      value = summarize_archive(*account);
+    } catch (const std::filesystem::filesystem_error& error) { value["error"] = error.code().message(); }
+    catch (const std::exception& error) { value["error"] = error.what(); }
     summaries_[id] = {modified, bytes, value};
     return value;
   }
@@ -626,8 +690,18 @@ void ReplayHost::work() {
     Job job;
     {
       std::unique_lock lock(jobs_mutex_);
-      jobs_ready_.wait(lock, [&] { return closing_ || !jobs_.empty(); });
+      jobs_ready_.wait_for(lock, std::chrono::milliseconds(100), [&] { return closing_ || !jobs_.empty(); });
       if (closing_) return;
+      if (jobs_.empty()) {
+        lock.unlock();
+        const std::lock_guard control_lock(control_mutex_);
+        const std::lock_guard handoff(handoff_mutex_);
+        const auto session = current();
+        if (session && session->provider->finished()) {
+          try { history_->finish(*session); } catch (const std::exception&) { /* Retry on the next poll or explicit read. */ }
+        }
+        continue;
+      }
       job = std::move(jobs_.front());
       jobs_.pop_front();
     }
@@ -678,6 +752,11 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
   const auto rest = target.substr(prefix.size());
   if (!rest.empty() && rest.front() != '?' && rest.front() != '/') return false;
   const bool controls = rest.empty() || rest.front() == '?';
+  if (rest == "/history" && request.method == "GET") {
+    const std::lock_guard handoff(handoff_mutex_);
+    complete(ok({{"history", history_->list(current())}}));
+    return true;
+  }
   const bool saved = rest.starts_with("/history/");
   // Changes wait their turn on the control thread; a step there never holds this one.
   if ((controls && request.method != "GET") || (saved && request.method == "DELETE")) {
@@ -757,10 +836,28 @@ void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complet
       complete(api_error(403, "REPLAY_READ_ONLY", "Finished replay accounts are read-only"));
       return;
     }
+    if (session && session->id == id) history_->finish(*session);
+    const auto details = history_->details(id);
+    if (details.contains("error")) {
+      auto response = api_error(422, "REPLAY_HISTORY_FAILED", details.at("error").get<std::string>());
+      auto value = json::parse(response.body);
+      for (const auto& [key, detail] : details.items()) if (key != "error") value[key] = detail;
+      response.body = value.dump();
+      complete(std::move(response));
+      return;
+    }
     const auto archived = history_->open(id);
     ApiRequest forwarded = request;
     forwarded.target = slash == std::string_view::npos ? "/api/account" : "/api" + std::string(route.substr(slash));
-    handle_api_async(forwarded, *archived, [archived, complete](ApiResponse response) { complete(std::move(response)); });
+    const bool account = forwarded.target == "/api/account";
+    handle_api_async(forwarded, *archived, [archived, complete, details, account](ApiResponse response) {
+      if (account && response.status == 200) {
+        auto value = json::parse(response.body);
+        value.update(details);
+        response.body = value.dump();
+      }
+      complete(std::move(response));
+    });
   } catch (const UnknownRun& error) {
     complete(api_error(404, "NOT_FOUND", error.what()));
   } catch (const trading::TradingError& error) {

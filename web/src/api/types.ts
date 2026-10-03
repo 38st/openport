@@ -372,7 +372,19 @@ export interface ReplayRecording {
 }
 /** A simulated day the demo market plays, in these symbols. */
 export interface ReplayDemo { goal?: string; session?: "regular" | "overnight"; date?: string; seed?: string; generator?: number; id?: string; title?: string; description?: string; provider: string; symbols: string[]; started: string; sessions?: ReplaySession[]; end?: string }
+export interface RunJournal {
+  transactions: number
+  head: string
+  bytes: number
+}
 export interface ReplayHistory extends ReplayState {
+  journal?: RunJournal
+  journal_found?: RunJournal
+  torn?: boolean
+  bytes_cut?: number
+  truncated?: boolean
+  mismatch?: boolean
+  integrity_message?: string
   id: string
   /** The plan's display name; plan is its id. Absent from older servers. */
   plan_id?: string | null

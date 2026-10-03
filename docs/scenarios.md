@@ -357,6 +357,12 @@ and simulated/recording labels. The account switcher also lists them. Their rout
 are `/api/replay/history/ID/account`, `/account/equity`, `/portfolio`, `/trades` and
 `/fills`; they do not become live accounts. The equity history is read from the
 `ID.jsonl.equity.csv` beside the journal and never rewritten.
+History listings and account reads compare the saved final journal head/count/bytes
+with the current journal. `torn` and `bytes_cut` identify an incomplete final line;
+`truncated`/`mismatch` and `integrity_message` identify missing or changed records.
+The warning names the run, expected/found counts and `--repair-journals` for torn
+lines. Older runs without a final checkpoint still load.
+
 `DELETE /api/replay/history/ID` removes the journal, its metadata, playbooks and
 equity-history sidecars, whether or not the journal still verifies, so an edited or
 torn run can be deleted too; the terminal asks for confirmation. A running run cannot

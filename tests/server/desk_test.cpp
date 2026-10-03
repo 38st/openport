@@ -1430,6 +1430,53 @@ TEST(ReplayRun, KeptJournalFlushesAtPauseStepFinishStopAndTeardown) {
     const auto recovered = trading::FileJournal::read(journal.string());
     EXPECT_LT(syncs.load(), recovered.records.size());
     EXPECT_TRUE(server::verify_run(journal).matched);
+    const auto metadata = json::parse(read_file(std::filesystem::path(journal).replace_extension(".json")));
+    EXPECT_EQ(metadata.at("journal").at("transactions"), recovered.records.size());
+    EXPECT_EQ(metadata.at("journal").at("head"), recovered.head);
+    EXPECT_EQ(metadata.at("journal").at("bytes"), std::filesystem::file_size(journal));
+  }
+}
+
+TEST(ReplayRun, HistoryFlagsTornAndCleanlyTruncatedJournalsAndCachesSummaries) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  server::ReplayHost host({file.directory, options, false});
+  const auto started = replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"speed", 0}});
+  ASSERT_EQ(started.status, 201) << started.body;
+  const auto id = json::parse(started.body).at("replay").at("id").get<std::string>();
+  const auto path = file.directory / "replays" / (id + ".jsonl");
+  ASSERT_TRUE(test::recording_eventually([&] { return json::parse(host.tick()).at("replay").at("finished").get<bool>(); }));
+  // EOF persists without needing a stop or history listing.
+  ASSERT_TRUE(test::recording_eventually([&] {
+    return json::parse(read_file(std::filesystem::path(path).replace_extension(".json"))).contains("journal");
+  }));
+  ASSERT_EQ(replay_call(host, "DELETE", "/api/replay").status, 200);
+  const auto original = read_file(path);
+  const auto records = trading::FileJournal::read(path.string());
+  const auto boundary = original.rfind('\n', original.size() - 2) + 1;
+  for (const bool torn : {true, false}) {
+    { std::ofstream out(path, std::ios::binary); out << original.substr(0, torn ? original.size() - 5 : boundary); }
+    const auto list = [&] { return json::parse(replay_call(host, "GET", "/api/replay/history").body).at("history"); };
+    const auto item = list().at(0);
+    EXPECT_EQ(item.value("torn", false), torn);
+    EXPECT_TRUE(item.at("truncated"));
+    EXPECT_TRUE(item.at("mismatch"));
+    EXPECT_EQ(item.at("journal").at("transactions"), records.records.size());
+    EXPECT_EQ(item.at("journal_found").at("transactions"), records.records.size() - 1);
+    if (torn) {
+      EXPECT_EQ(item.at("bytes_cut"), original.size() - 5 - boundary);
+      EXPECT_NE(item.at("integrity_message").get<std::string>().find("--repair-journals"), std::string::npos);
+    }
+    EXPECT_EQ(item.dump().find(file.directory.string()), std::string::npos);
+    const auto reads = host.history_recoveries();
+    EXPECT_EQ(list().at(0), item);
+    EXPECT_EQ(host.history_recoveries(), reads);
+    const auto account = replay_call(host, "GET", "/api/replay/history/" + id + "/account");
+    ASSERT_EQ(account.status, 200) << account.body;
+    EXPECT_TRUE(json::parse(account.body).at("mismatch"));
+    EXPECT_EQ(json::parse(account.body).value("torn", false), torn);
   }
 }
 
