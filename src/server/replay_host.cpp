@@ -266,9 +266,9 @@ class ReplayHost::DemoRecordings {
     (void)start(day, day.date, day.seed);
   }
   /// The day's recording: ready, awaited, or generated now. A failure is retried next time.
-  std::filesystem::path get(const providers::Scenario& day, md::Date date, std::uint64_t seed) {
-    const auto key = day.id + "|" + md::format_date(date) + "|" + std::to_string(seed);
-    const auto attempt = start(day, date, seed);
+  std::filesystem::path get(const providers::Scenario& day, md::Date date, std::uint64_t seed, int revision = providers::kScenarioRevision) {
+    const auto key = day.id + "|" + md::format_date(date) + "|" + std::to_string(seed) + "|" + std::to_string(revision);
+    const auto attempt = start(day, date, seed, revision);
     try {
       return attempt.file.get();
     } catch (...) {
@@ -283,8 +283,8 @@ class ReplayHost::DemoRecordings {
     unsigned number = 0;
     std::shared_future<std::filesystem::path> file;
   };
-  Attempt start(const providers::Scenario& day, md::Date date, std::uint64_t seed) {
-    const auto key = day.id + "|" + md::format_date(date) + "|" + std::to_string(seed);
+  Attempt start(const providers::Scenario& day, md::Date date, std::uint64_t seed, int revision = providers::kScenarioRevision) {
+    const auto key = day.id + "|" + md::format_date(date) + "|" + std::to_string(seed) + "|" + std::to_string(revision);
     const std::lock_guard lock(mutex_);
     if (const auto it = days_.find(key); it != days_.end()) return it->second;
     if (directory_.empty()) {
@@ -299,8 +299,8 @@ class ReplayHost::DemoRecordings {
     // Each attempt writes its own file, so a retry never meets a failed one's.
     const unsigned number = ++attempts_;
     const auto path = directory_ / (std::to_string(number) + ".oprec");
-    Attempt attempt{number, std::async(std::launch::async, [path, day, date, seed] {
-                              providers::write_scenario_recording(path, day, date, seed);
+    Attempt attempt{number, std::async(std::launch::async, [path, day, date, seed, revision] {
+                              providers::write_scenario_recording(path, day, date, seed, revision);
                               return path;
                             }).share()};
     days_.emplace(key, attempt);
@@ -910,11 +910,17 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
     if (request.target == "/api/replay" && options_.engine.write_mode != "disabled") {
       bool interrupt = request.method == "DELETE";
       if (request.method == "PUT") {
-        const auto body = json::parse(request.body, nullptr, false);
-        interrupt = body.is_object() && body.size() == 1 &&
-            (body.value("abort", json(false)) == json(true) || body.value("paused", json(false)) == json(true));
+        try {
+          const auto body = parse_body(request, {"speed", "paused", "skip", "until", "play_until", "abort"});
+          if (body.contains("speed")) (void)speed_field(body);
+          const bool valid_skip = !body.contains("skip") || body.at("skip").is_boolean();
+          interrupt = (body.size() == 1 && body.value("abort", json(false)) == json(true)) ||
+              (valid_skip && body.value("paused", json(false)) == json(true) &&
+               !body.contains("until") && !body.contains("play_until") && !body.contains("abort"));
+        } catch (const std::exception&) { /* The control thread returns the validation error. */ }
       }
-      if (interrupt) if (const auto session = current()) session->provider->abort();
+      if (interrupt) if (const auto session = current(); session && (request.method == "DELETE" || !session->provider->fast_forwarding()))
+        session->provider->abort();
     }
     enqueue(request, complete);
     return true;
@@ -1182,6 +1188,8 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
       return refuse("The exchange calendar has changed since the run started");
     const auto& input = start.at("input");
     const providers::Scenario* day = nullptr;
+    std::optional<providers::Scenario> source_scenario;
+    int revision = providers::kScenarioRevision;
     std::filesystem::path recording;
     md::Date date;
     std::uint64_t seed = 0;
@@ -1192,9 +1200,20 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
       }
       for (const auto& scenario : scenarios_) if (scenario.id == input.at("id").get<std::string>()) day = &scenario;
       if (!day) return refuse("The run's scenario is no longer listed");
+      if (restart && !day->builtin) {
+        source_scenario = providers::read_scenario(day->source_file);
+        day = &*source_scenario;
+      }
       date = input.at("date").get<md::Date>();
       seed = input.at("seed").get<std::uint64_t>();
-      if (json::parse(scenario_input(*day, date, seed)) != input) return refuse("The scenario or its generator has changed since the run started");
+      auto identity = json::parse(scenario_input(*day, date, seed));
+      if (restart) {
+        revision = input.value("revision", 1);
+        if (revision < 1 || revision > providers::kScenarioRevision) return refuse("Unsupported scenario revision");
+        if (input.contains("revision")) identity["revision"] = revision;
+        else identity.erase("revision");
+      }
+      if (identity != input) return refuse("The scenario or its generator has changed since the run started");
     } else {
       recording = input.at("file").get<std::string>();
       std::error_code ec;
@@ -1265,7 +1284,7 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
       session->restarted_from = {{"id", id}, {"at", md::format_timestamp(target)}};
     }
     providers::ReplayProvider::Options playback;
-    playback.file = day ? demos_->get(*day, date, seed) : recording;
+    playback.file = day ? demos_->get(*day, date, seed, revision) : recording;
     playback.speed = speed;
     if (!session->windows.empty()) playback.known_end = session->windows.back().last;
     // The recorded batches replay unpaced, and playback continues from the last one.
@@ -1329,16 +1348,15 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
       const std::lock_guard lock(mutex_);
       old = std::exchange(session_, session);
     }
+    if (restart) created.clear();
     if (old) {
       old->engine->stop();
+      old->restarting = false;
       history_->finish(*old);
     }
     // Its metadata now reads as a run playing again, as a crash would leave it.
     history_->finish(*session);
-    if (restart) {
-      created.clear();
-      if (!paused) session->provider->set_paused(false);
-    }
+    if (restart && !paused) session->provider->set_paused(false);
     handoff.unlock();
     old.reset();
     complete(ok({{"replay", session->state()}}, 201));

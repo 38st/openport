@@ -319,6 +319,43 @@ TEST(MultiDayReplay, ScenarioSecondsAndRestartKeepTheSeedPlanSettingsAndCommandP
   ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
   const auto verified = server::verify_run(journal);
   EXPECT_TRUE(verified.matched) << verified.message;
+  // A supported older generator revision on driver 6 regenerates at its saved
+  // revision, even when this host has already cached the current revision.
+  const auto scenario = providers::read_scenario(scenarios / "seconds.json");
+  providers::write_scenario_recording(file.path, scenario, scenario.date, scenario.seed, 1);
+  const auto legacy_journal = file.directory / "replays" / "revision-one.jsonl";
+  {
+    md::RecordingReader reader(file.path);
+    server::Desk::Options legacy;
+    legacy.replay = true;
+    legacy.paper_journal = legacy_journal;
+    legacy.analytics.deamericanize = false;
+    auto identity = json::parse(server::scenario_input(scenario, scenario.date, scenario.seed));
+    identity["revision"] = 1;
+    legacy.run_input = identity.dump();
+    server::Desk desk("replay (demo)", reader.header().capabilities, reader.header().subscription, legacy);
+    desk.start_trading();
+    providers::ReplayBatches batches(reader, reader.header().subscription);
+    while (const auto batch = batches.next()) {
+      if (batch->time > md::new_york_to_utc(scenario.date, 9, 30, 30)) break;
+      desk.replay_batch(batch->events, batch->received, batch->time);
+    }
+    desk.stop();
+  }
+  { std::ofstream sidecar(file.directory / "replays" / "revision-one.json");
+    sidecar << json{{"id", "revision-one"}, {"file", "Seconds"}, {"date", "2026-09-16"}, {"finished", true},
+        {"start_at", ""}, {"plan", "practice"}, {"settled_through", at(30, 30)}}; }
+  const auto legacy_restart = call(host, "POST", "/api/replay", {{"restart", "revision-one"}, {"at", "09:30:30"}});
+  ASSERT_EQ(legacy_restart.status, 201) << legacy_restart.body;
+  const auto legacy_id = json::parse(legacy_restart.body).at("replay").at("id").get<std::string>();
+  const auto copied = file.directory / "replays" / (legacy_id + ".jsonl");
+  EXPECT_EQ(trading::FileJournal::read(legacy_journal.string()).head, trading::FileJournal::read(copied.string()).head);
+  ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
+  EXPECT_TRUE(server::verify_run(copied).matched);
+  { std::ofstream changed(scenarios / "seconds.json", std::ios::app); changed << "\n"; }
+  const auto changed = call(host, "POST", "/api/replay", {{"restart", id}, {"at", "09:30:30"}});
+  EXPECT_EQ(changed.status, 409) << changed.body;
+  EXPECT_EQ(json::parse(changed.body).at("error").at("code"), "REPLAY_NOT_RESTARTABLE");
 }
 
 }  // namespace

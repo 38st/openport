@@ -1724,11 +1724,18 @@ TEST(ReplayRun, AStepHoldsNoCallerAndRefusesWritesUntilItSettles) {
   EXPECT_EQ(refused.status, 409) << refused.body;
   EXPECT_EQ(json::parse(refused.body).at("error").at("code"), "REPLAY_STEPPING");
   EXPECT_EQ(step.wait_for(0s), std::future_status::timeout);
+  std::promise<server::ApiResponse> invalid_done;
+  auto invalid = invalid_done.get_future();
+  server::ApiRequest oversized{"PUT", "/api/replay", std::string("{\"paused\":true}") + std::string(64 * 1024, ' ')};
+  oversized.content_type = "application/json";
+  ASSERT_TRUE(host.handle(oversized, [&](server::ApiResponse response) { invalid_done.set_value(std::move(response)); }));
   release.set_value();
   ASSERT_EQ(step.wait_for(5min), std::future_status::ready);
   const auto settled = step.get();
   ASSERT_EQ(settled.status, 200) << settled.body;
   EXPECT_EQ(json::parse(settled.body).at("replay").at("stepping"), false);
+  EXPECT_EQ(json::parse(settled.body).at("aborted"), false);
+  EXPECT_EQ(invalid.get().status, 400);
   EXPECT_EQ(json::parse(settled.body).at("settled_through"), md::format_timestamp(market.time + 8 * md::kNanosPerSecond));
   EXPECT_TRUE(handled.get());
   EXPECT_EQ(replay_call(host, "POST", "/api/replay/orders", order).status, 201);
@@ -1765,7 +1772,7 @@ TEST(ReplayRun, RelativeStepsSecondsAndQueuedSkipsAreExplicit) {
 }
 
 TEST(ReplayRun, AbortPauseAndDeleteInterruptStepsAndPreserveTheSettledJournal) {
-  for (const auto* action : {"abort", "paused", "delete"}) {
+  for (const auto* action : {"abort", "paused", "paused-speed", "delete"}) {
     test::RecordingFile file;
     write_stream(file.path, true);
     const test::ScriptedMarket market;
@@ -1795,7 +1802,7 @@ TEST(ReplayRun, AbortPauseAndDeleteInterruptStepsAndPreserveTheSettledJournal) {
     std::promise<server::ApiResponse> completed;
     auto interrupted = completed.get_future();
     server::ApiRequest request{std::string(action) == "delete" ? "DELETE" : "PUT", "/api/replay",
-        std::string(action) == "delete" ? "{}" : json{{action, true}}.dump()};
+        std::string(action) == "delete" ? "{}" : std::string(action) == "paused-speed" ? json{{"paused", true}, {"speed", 60}}.dump() : json{{action, true}}.dump()};
     request.content_type = "application/json";
     ASSERT_TRUE(host.handle(request, [&](server::ApiResponse response) { completed.set_value(std::move(response)); }));
     EXPECT_EQ(json::parse(host.tick()).at("replay").at("stepping"), true);
