@@ -87,6 +87,7 @@ export interface MarketHalt {
 }
 
 export interface CircuitBreaker {
+  inactive_reason?: "MISSING_PREVIOUS_CLOSE" | null
   symbol: string
   day: string | null
   previous_close: { date: string; price: number } | null
