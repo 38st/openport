@@ -144,7 +144,7 @@ export function CancelOrderDialog({ order, trading, onClose, onDone }: {
 }) {
   const write = useWrite(trading)
   return <Dialog title={`Cancel order #${order.id}`} onClose={onClose}>
-    <p className="text-sm">Cancel the remaining {order.remaining_quantity} units of {orderLabel(order)}?</p>
+    <p className="text-sm">Cancel the remaining {order.remaining_quantity} {order.remaining_quantity === 1 ? "unit" : "units"} of {orderLabel(order)}?</p>
     {order.role && <p className="text-sm text-warn">This bracket exit protects a position; the position stays open without it.</p>}
     <WriteAccess trading={trading} />
     <TradingError error={write.error} />
