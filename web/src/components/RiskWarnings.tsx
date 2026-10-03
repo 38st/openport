@@ -4,6 +4,7 @@ import { Badge } from "./ui"
 const titles: Record<RiskWarning["code"], string> = {
   DELTA_LIMIT: "Over the delta limit", VEGA_LIMIT: "Over the vega limit", DELTA_HEADROOM: "Delta limit within reach",
   SOFT_FLOOR: "At the soft floor", SOFT_FLOOR_ROLLOVER: "Soft floor at rollover", FLOOR_RATCHET: "Floor rises tonight",
+  SOFT_FLOOR_UNUSED: "Percent floor unused",
   EXPIRY_DELIVERY: "Delivery at expiry", EARLY_ASSIGNMENT: "Early assignment", EX_DIVIDEND: "Ex-dividend",
 }
 /** The held book's warnings, most urgent first, as the server words them; nothing when there are none. */

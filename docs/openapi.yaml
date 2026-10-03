@@ -1517,7 +1517,7 @@
       ],
       "post": {
         "summary": "POST /api/account/reset",
-        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin.",
+        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin. Applies pending settings. Preserves daily PROFIT_LOCK and TRADE_LIMIT latches, opening-order count and active cooldown; clears and re-checks SOFT_FLOOR against new equity. A carried absolute floor at or above the new balance is allowed and reported in the account warnings as SOFT_FLOOR.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -8724,7 +8724,8 @@
             ]
           },
           "buy_only": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Trader sells must reduce held longs. Long-put exercise must not leave short shares after working share sells; otherwise BUY_ONLY. Protective put exercise is allowed. Expiry auto-exercise and assignment still deliver shares."
           },
           "defined_risk": {
             "type": "boolean"
@@ -14611,16 +14612,20 @@
             "$ref": "#/components/schemas/Money"
           },
           "soft_floor_percent": {
-            "type": "number"
+            "type": "number",
+            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 puts the floor at the peak and latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED)."
           },
           "max_opening_trades": {
-            "type": "number"
+            "type": "number",
+            "description": "Opening orders per trading day: an order counts once, however many partial fills it takes; an atomic multi-leg execution counts once. The order reaching the limit may finish; other opening orders are cancelled."
           },
           "cooldown_loss": {
-            "$ref": "#/components/schemas/Money"
+            "$ref": "#/components/schemas/Money",
+            "description": "Other closing fills also start cooldown when realised loss before fees strictly exceeds this amount."
           },
           "cooldown_minutes": {
-            "type": "number"
+            "type": "number",
+            "description": "Market minutes of cooldown after a triggered closing stop fills, including standalone, trailing, OCO and bracket stops. Profit targets alone do not start it."
           },
           "profit_lock": {
             "$ref": "#/components/schemas/Money"
@@ -15390,7 +15395,8 @@
               "FLOOR_RATCHET",
               "EXPIRY_DELIVERY",
               "EARLY_ASSIGNMENT",
-              "EX_DIVIDEND"
+              "EX_DIVIDEND",
+              "SOFT_FLOOR_UNUSED"
             ]
           },
           "severity": {
@@ -16445,7 +16451,7 @@
             "type": "string"
           },
           "guardrails": {
-            "$ref": "#/components/schemas/Guardrails"
+            "$ref": "#/components/schemas/GuardrailsInput"
           }
         },
         "required": [
@@ -22203,6 +22209,43 @@
         "required": [
           "day",
           "profit"
+        ]
+      },
+      "GuardrailsInput": {
+        "type": "object",
+        "properties": {
+          "soft_floor": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "soft_floor_percent": {
+            "type": "integer",
+            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 puts the floor at the peak and latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED).",
+            "minimum": 0,
+            "maximum": 99
+          },
+          "max_opening_trades": {
+            "type": "number",
+            "description": "Opening orders per trading day: an order counts once, however many partial fills it takes; an atomic multi-leg execution counts once. The order reaching the limit may finish; other opening orders are cancelled."
+          },
+          "cooldown_loss": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Other closing fills also start cooldown when realised loss before fees strictly exceeds this amount."
+          },
+          "cooldown_minutes": {
+            "type": "number",
+            "description": "Market minutes of cooldown after a triggered closing stop fills, including standalone, trailing, OCO and bracket stops. Profit targets alone do not start it."
+          },
+          "profit_lock": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "soft_floor",
+          "soft_floor_percent",
+          "max_opening_trades",
+          "cooldown_loss",
+          "cooldown_minutes",
+          "profit_lock"
         ]
       }
     }

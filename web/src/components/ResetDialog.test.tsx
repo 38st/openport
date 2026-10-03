@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
-import { account, plans, status } from "../test/trading-fixtures"
+import { account, plans, risk, status } from "../test/trading-fixtures"
 import { NewAccountDialog } from "./AccountSwitcher"
 import { ResetDialog } from "./ResetDialog"
 
@@ -22,6 +22,7 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   client.setQueryData(["plans"], { plans })
   client.setQueryData(tradingQueries(0, "17", true).account.queryKey, account)
+  client.setQueryData(tradingQueries(0, "17", true).risk.queryKey, risk)
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
   vi.spyOn(api, "resetAccount").mockResolvedValue(account)
 })
@@ -132,4 +133,24 @@ it("inherits a plan's margin settings until the trader changes them", async () =
   expect(host.textContent).toContain("House margin adds 30% to the scan")
   await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
   expect(api.resetAccount).toHaveBeenCalledWith({ plan: plan.id, reason: `Start ${plan.name}` }, "open")
+})
+
+
+it.each([
+  ["100000", null, true], ["100001", null, true], ["99999.999999", null, false],
+  ["200000", "100000", true], ["200000", "99999.999999", false], ["200000", "0", false],
+])("warns before reset using the effective absolute floor (%s, pending %s)", async (floor, pending, warns) => {
+  const g = { soft_floor: floor as string, soft_floor_percent: 0, max_opening_trades: 0, cooldown_loss: "0", cooldown_minutes: 0, profit_lock: "0" }
+  client.setQueryData(tradingQueries(0, "17", true).risk.queryKey,
+    { ...risk, guardrails: g, pending_guardrails: pending == null ? null : { ...g, soft_floor: pending } })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial="intraday-100k" onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(host.querySelector('[role="alert"]')?.textContent?.includes("soft floor will latch at once") ?? false).toBe(warns)
+  if (warns) {
+    expect(host.textContent).toContain("a lower setting is pending until rollover, and a reset applies pending settings")
+  }
+  // A warning is informative; the trader can still start this attempt.
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false)
+  expect(host.textContent).toContain("opening-order count and active cooldown carry over")
 })

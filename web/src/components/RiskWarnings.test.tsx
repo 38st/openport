@@ -24,6 +24,13 @@ describe("risk warnings", () => {
     expect(html).toContain("Account</span>")
     expect(html).toContain('role="status"')
   })
+  it("shows an unused percent floor as informational", () => {
+    const html = renderToStaticMarkup(<RiskWarnings warnings={[{ code: "SOFT_FLOOR_UNUSED", severity: "info", scope: "aggregate", symbol: null,
+      message: "This plan has no drawdown floor", actual: null, limit: null }]} />)
+    expect(html).toContain("Percent floor unused")
+    expect(html).toContain('role="status"')
+    expect(html).not.toContain('role="alert"')
+  })
   it("shows nothing without warnings, as from an older server", () => {
     expect(renderToStaticMarkup(<RiskWarnings warnings={[]} />)).toBe("")
     expect(renderToStaticMarkup(<RiskWarnings />)).toBe("")

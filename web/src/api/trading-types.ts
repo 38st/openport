@@ -307,7 +307,7 @@ export interface AttemptSummary {
  * delivery applies only to contracts still held if a close cannot fill.
  */
 export interface RiskWarning {
-  code: "DELTA_LIMIT" | "VEGA_LIMIT" | "DELTA_HEADROOM" | "SOFT_FLOOR" | "SOFT_FLOOR_ROLLOVER" | "FLOOR_RATCHET" | "EXPIRY_DELIVERY" | "EARLY_ASSIGNMENT" | "EX_DIVIDEND"
+  code: "DELTA_LIMIT" | "VEGA_LIMIT" | "DELTA_HEADROOM" | "SOFT_FLOOR" | "SOFT_FLOOR_ROLLOVER" | "SOFT_FLOOR_UNUSED" | "FLOOR_RATCHET" | "EXPIRY_DELIVERY" | "EARLY_ASSIGNMENT" | "EX_DIVIDEND"
   severity: "warning" | "info"
   /** The underlying, or "aggregate" for the account. */
   scope: string
@@ -1015,7 +1015,9 @@ export interface SettlementResponse { account_version: string; position_closed: 
 
 export interface Guardrails {
   soft_floor: Money
+  /** New requests accept 0–99; stored settings may still contain 100. */
   soft_floor_percent: number
+  /** An order counts once, however many partial fills it takes. */
   max_opening_trades: number
   cooldown_loss: Money
   cooldown_minutes: number

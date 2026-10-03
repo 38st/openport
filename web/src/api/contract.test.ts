@@ -51,7 +51,7 @@ describe("checked API core types", () => {
     }
   })
   it.each(["AttemptSummary", "PayoutRules", "PayoutStatus", "PayoutBestDay", "Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
-    "AccountDamage", "JournalSize", "EquityHistory", "VerificationCost", "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
+    "Guardrails", "GuardrailState", "AccountDamage", "JournalSize", "EquityHistory", "VerificationCost", "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
     "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "Limits", "TokenStatus", "RunJournal", "RunInput", "VerificationRun", "RunVerification", "ForwardTestWindow", "ForwardTest", "PlaybookReport"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
@@ -173,4 +173,15 @@ it("keeps replay control feedback and restart provenance optional on old sidecar
   for (const field of ["restart", "at"])
     expect(spec.components.schemas.ReplayStart!.properties).toHaveProperty(field)
   expect(spec.components.schemas.ReplayResponse!.properties).toHaveProperty("aborted")
+})
+
+
+it("keeps soft floor warning codes and request-only range validation in sync", () => {
+  const schema = JSON.parse(specText).components.schemas
+  const body = /export interface RiskWarning \{([^}]+)\}/.exec(source)![1]!
+  expect(normalize(/code: ([^\n]+)/.exec(body)![1]!)).toBe(normalize(schema.RiskWarning.properties.code.enum.map((v: string) => JSON.stringify(v)).join(" | ")))
+  expect(schema.RiskWarning.properties.code.enum).toContain("SOFT_FLOOR_UNUSED")
+  expect(schema.GuardrailsInput.properties.soft_floor_percent).toMatchObject({ type: "integer", minimum: 0, maximum: 99 })
+  expect(schema.Guardrails.properties.soft_floor_percent.maximum).toBeUndefined()
+  expect(schema.GuardrailsRequest.properties.guardrails.$ref).toBe("#/components/schemas/GuardrailsInput")
 })

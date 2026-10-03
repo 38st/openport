@@ -1,12 +1,12 @@
 import { useRef, useState } from "react"
 import { api } from "../api/client"
-import { useAccount, useRefreshTrading, usePlans, useTradingSession } from "../api/trading"
+import { useAccount, useRefreshTrading, usePlans, useRisk, useTradingSession } from "../api/trading"
 import type { FeeModel, FillModel, Plan, TradingStatus } from "../api/trading-types"
 import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
 import { lockReason, offeredPlans, payoutRuleFacts } from "../lib/payouts"
 import { dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact, timeRuleFacts, tradeRuleFacts } from "../lib/plan-rules"
-import { formatMoney } from "../lib/trading"
+import { compareMoney, formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { customPlan, PlanEditor, planForm, type PlanForm } from "./PlanEditor"
@@ -47,6 +47,7 @@ const CUSTOM = "custom"
 export function ResetDialog({ trading, attempt, initial, onClose }: { trading: TradingStatus; attempt: number; initial?: string; onClose: () => void }) {
   const plans = usePlans()
   const account = useAccount().data
+  const risk = useRisk()
   const token = useWriteToken()
   const refresh = useRefreshTrading()
   const sameSession = useTradingSession()
@@ -65,7 +66,11 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const [form, setForm] = useState<PlanForm | null>(null)
   const base = bases.find((p) => p.id === baseId) ?? bases.find((p) => p.rules.profit_target) ?? bases[0] ?? null
   const custom = choice === CUSTOM && base && form ? customPlan(form, base.rules) : null
-  const ready = custom ? !("error" in custom) : selected != null
+  const ready = !!risk.data && (custom ? !("error" in custom) : selected != null)
+  const balance = custom && !("error" in custom) ? custom.initial_cash : selected?.initial_cash
+  const softFloor = (risk.data?.pending_guardrails ?? risk.data?.guardrails)?.soft_floor
+  const floorWarning = compareMoney(softFloor, "0") === 1 && balance != null &&
+    (compareMoney(balance, softFloor) === -1 || compareMoney(balance, softFloor) === 0)
   const planDefaults = planMargin(custom && !("error" in custom) ? custom.rules : selected?.rules)
   function chooseCustom() {
     setChoice(CUSTOM)
@@ -111,9 +116,12 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
       <p className="text-sm text-muted">
         Attempt {attempt + 1} starts fresh: working orders are cancelled, open positions close at their last mark,
         and cash returns to the plan's starting balance. Your trade history is kept.
+        Today's profit lock, trade limit, opening-order count and active cooldown carry over.
+        The soft floor is checked against the new balance.
       </p>
       <WriteAccess trading={trading} />
       <TradingError error={plans.error} />
+      <TradingError error={risk.error} />
       <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void submit() }}>
         {groups.map((group) => (
           <fieldset key={group.title} className="space-y-2" disabled={pending}>
@@ -169,6 +177,12 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
         <FeeModelPicker value={feeModel} onChange={setFeeModel} disabled={pending} flat={trading.fee_per_contract} />
         <MarginSettings value={margin ?? planDefaults} onChange={setMargin} disabled={pending} />
         {plans.isLoading && <p className="text-sm text-muted">Loading plans…</p>}
+        {floorWarning && <p role="alert" className="text-sm text-warn">
+          Your absolute soft floor of {formatMoney(softFloor)} is at or above this plan's starting balance of {formatMoney(balance)}.
+          The soft floor will latch at once and refuse opening orders. Lower it in personal guardrails before resetting;
+          a lower setting is pending until rollover, and a reset applies pending settings.
+        </p>}
+        {risk.isLoading && <p className="text-sm text-muted">Checking personal guardrails…</p>}
         <TradingError error={error} />
         <button type="submit" className="trade-button" disabled={!ready || pending || writeBlocked(trading, token)}>
           {pending ? "Starting…" : custom && !("error" in custom) ? `Start ${custom.rules.plan}` : selected && choice !== CUSTOM ? `Start ${selected.name}` : "Choose a plan"}

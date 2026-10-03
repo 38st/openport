@@ -1266,9 +1266,9 @@ Guardrails belong to the account, separately from its plan, and default to off.
 | Field | Meaning; zero disables |
 | --- | --- |
 | `soft_floor` | Decimal dollar equity level above the plan floor |
-| `soft_floor_percent` | Whole percent, 0–100, of the plan's drawdown distance to keep above its current floor; the higher of this level and `soft_floor` wins |
-| `max_opening_trades` | Number of opening executions per trading day; a partial execution counts once and an atomic multi-leg execution counts once |
-| `cooldown_minutes` | Market minutes without new opening orders after a stop-loss exit, up to 1440 |
+| `soft_floor_percent` | Whole percent, 0–99, of the plan's drawdown distance to keep above its current floor; the higher of this level and `soft_floor` wins. New requests for 100 return `INVALID_LIMITS`: it puts the floor at the peak and latches at once. Stored 100 settings still load. On practice (no drawdown floor), the percent does nothing and raises an informational `SOFT_FLOOR_UNUSED` warning |
+| `max_opening_trades` | Number of opening orders per trading day; an order counts once, however many partial fills it takes, and an atomic multi-leg execution counts once |
+| `cooldown_minutes` | Market minutes without new opening orders after a triggered closing stop fills, up to 1440 |
 | `cooldown_loss` | A closing fill's realised loss before fees must exceed this dollar amount to also start the configured cooldown |
 | `profit_lock` | Day's marked P&L at or above this dollar amount makes the account reduce-only |
 
@@ -1279,18 +1279,39 @@ fail the attempt. `TRADE_LIMIT` and `PROFIT_LOCK` leave positions open and cance
 opening orders. Working opening orders cancelled by a guardrail carry its code and
 message, as new ones refused by it do, not `KILL_SWITCH`: `TRADE_LIMIT` with the day's
 opening trades against the limit, `PROFIT_LOCK` and `SOFT_FLOOR` with the level, and
-`COOLDOWN` with the time it ends. All three last until
-rollover. `COOLDOWN` lasts until the journaled `cooldown_until`, including across rollover; wall time does not shorten it. A later stop restarts it, and a longer
-cooldown setting extends one already active. Closing orders, Flatten and exits keep
-working under all four reasons. Manual reset cannot bypass an active guardrail.
+`COOLDOWN` with the time it ends. `PROFIT_LOCK` and `TRADE_LIMIT` last until
+rollover, including across an account reset. `SOFT_FLOOR` lasts until rollover or an
+account reset, which re-checks it against the new attempt's equity. The order whose
+first opening execution reaches `TRADE_LIMIT` can finish its remaining partial fills;
+other working opening orders are cancelled, and new opening orders are refused.
+Another latch can still stop the remaining fills. `COOLDOWN` lasts until the journaled
+`cooldown_until`, including across rollover and account resets; wall time does not
+shorten it. A later stop restarts it, and a longer cooldown setting extends one already active. Closing orders, Flatten and exits keep
+working under all four reasons. The kill-switch reset cannot bypass an active guardrail.
+
+Cooldown starts after any trader's triggered closing stop fills: a standalone stop or
+stop-limit with an option or underlying trigger, a trailing stop, the stop side of an
+OCO pair, or a bracket stop-loss. It does not require a realised loss; `cooldown_loss`
+adds other closing fills whose realised loss before fees strictly exceeds the threshold.
+Profit-target limits alone do not start a cooldown.
 
 Guardrails are tighten-only within the day on every account, including practice.
 Enabling a rule, raising a soft floor, lowering a trade/profit/loss threshold or
 lengthening a cooldown applies now. Other changes appear in `pending_guardrails`
-until rollover. Starting a new attempt applies pending settings and clears their
-progress; personal settings otherwise persist. A soft floor still above equity can
-trip again after rollover. The existing kill latch is shared; a manual or daily-loss
-trip still requires its own reset after the personal rule expires.
+until rollover. Starting a new attempt applies pending settings and keeps today's
+`PROFIT_LOCK` and `TRADE_LIMIT` latches, opening-order count and active `cooldown_until`.
+It clears only the old attempt's `SOFT_FLOOR` latch and re-checks the floor against
+new equity; personal settings persist. Lowering or disabling a daily discipline rule
+through pending settings does not clear its existing latch before rollover.
+
+An absolute soft floor can carry into a smaller plan. If the starting balance is at
+or below the active absolute floor (or the pending floor the reset will apply), the
+reset is allowed, but the soft floor latches at once. The terminal warns before
+confirmation, and the reset response's account `warnings` list includes `SOFT_FLOOR`.
+Lower the floor in personal guardrails before resetting: a lower setting is pending
+until rollover, and a reset applies pending settings. A soft floor still at or above
+equity can trip again after rollover or reset. The existing kill latch is shared;
+a manual or daily-loss trip still requires its own reset after the personal rule expires.
 
 `GET /api/risk` includes active and pending settings, `pending_effective`
 (`next_trading_day` or null), the last `pending_applied_at`/`pending_applied_day` (a
@@ -1487,7 +1508,8 @@ in words, and `actual` and `limit` numbers whose meaning depends on the code:
 | --- | --- | --- |
 | `DELTA_LIMIT`, `VEGA_LIMIT` | A bucket's held exposure is over its limit: orders that add to it are refused, while closes and hedges still go | The absolute exposure and the limit |
 | `DELTA_HEADROOM` | An underlying is within max(1%, one standard deviation of its move to today's close) of a move that takes its dollar delta to its own limit or the account's. Per 1% move, dollar delta changes by dollar gamma plus 1% of itself; this is a first-order estimate | The signed percent move, and the threshold |
-| `SOFT_FLOOR` | Equity is at or below the soft floor, which closes positions and refuses opening orders until rollover | Equity and the soft floor |
+| `SOFT_FLOOR` | Equity is at or below the soft floor, which latches at once, closes positions and refuses opening orders; lower settings wait until rollover or an account reset applies them | Equity and the soft floor |
+| `SOFT_FLOOR_UNUSED` | Informational: a percent soft floor is set on a plan without a drawdown floor, where it does nothing; use an absolute floor instead | No numeric threshold |
 | `SOFT_FLOOR_ROLLOVER` | At rollover the soft floor would be at or above today's equity: pending guardrails apply, and a percent soft floor follows a ratcheted plan floor | Equity and that soft floor |
 | `FLOOR_RATCHET` | An active end-of-day drawdown floor that tonight's close at today's equity would raise (and lock, at a lock balance) | The floor tomorrow and today |
 | `EXPIRY_DELIVERY` | An American equity or ETF option expiring today a cent or more in the money, without a do-not-exercise instruction: held into expiry it is exercised or assigned and delivers shares, together the strike. Before an account's pre-expiry cutoff, names that time and the market close; only contracts still held because a close cannot fill are delivered | Buying power once every option expiring in the money today has delivered at today's price, and zero; `info` before the cutoff, otherwise `warning` when buying power is negative |
@@ -1527,7 +1549,7 @@ side, no buying-power check. All rule money is exact.
 | `profit_target` | Pass when profit under `profit_basis` reaches the target and every objective below is met (zero disables) |
 | `max_drawdown` | Fail when equity touches peak − drawdown (zero disables) |
 | `drawdown_mode` | `Intraday`: the peak follows every fully marked equity high. `EndOfDay`: the peak moves only at rollover, from the last fully marked equity observed on the finished date. `Static` (API `static`): the floor stays at the starting balance − drawdown for the whole attempt and counts as locked from the start, while the peak still follows every high. The peak is the high-water mark the floor follows; an account without a target or drawdown (practice) keeps it the same way, although no rule reads it |
-| `buy_only` | A sell must close contracts already held, counting working and armed sells on the same contract; otherwise `BUY_ONLY`. A manual (untriggered) close that only the account's own armed stop sells keep from fitting supersedes them: it cancels them with `POSITION_CLOSED`, newest first and only as many as it needs, and keeps them if it is refused anyway. Preview shows the same |
+| `buy_only` | A sell must close contracts already held, counting working and armed sells on the same contract; otherwise `BUY_ONLY`. A manual (untriggered) close that only the account's own armed stop sells keep from fitting supersedes them: it cancels them with `POSITION_CLOSED`, newest first and only as many as it needs, and keeps them if it is refused anyway. Preview shows the same. A requested long-put exercise that would sell more shares than the long shares held (after any working share sells) returns `BUY_ONLY`; exercising a protective put against held shares is allowed. Share trades currently execute synchronously, without working share orders. Expiry auto-exercise and assignment still deliver shares: `buy_only` governs trader orders and exercise requests, not expiry delivery |
 | `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Open orders count as if every sell they offer filled and no buy did (a multi-leg order fills whole; a bracket's two exits sell its position once), so a working sell can never take the long a short needs. Bracket exits and exercise keep shorts covered too. Off in every preset; custom rules take it |
 | `max_contracts_held` | Option contracts held (sum of absolute position quantities), plus opening contracts of working orders and this order, may not exceed this cap (0 disables; 1–100000). Counts combo leg ratios and reserves closing capacity only once across working orders. Shares and managed exits do not count. Opening entries and quantity changes refuse with `MAX_CONTRACTS_HELD`, projected count and cap; reducing and system closes remain available |
 | `require_stop_loss` | Every opening order needs a bracket `stop_loss` trigger (default false); otherwise `STOP_REQUIRED`. An option stop triggers below for a long entry, above for a short; a combo stop triggers above on its closing signed net. Underlying triggers also qualify. A target or a limit alone is not a protective stop. User cancellation of that stop, including cancel-all, or reducing its protected size, refuses while its position is open; cancelling an unfilled entry leaves its filled part's stop intact. Closing, flattening, OCO fills, partial stop re-arming and automatic playbook exits keep their normal behavior |
@@ -2684,7 +2706,7 @@ opening orders and cancels working openings outside the plan window.
 | `MAX_CONTRACTS_HELD` | Projected held options plus working opening contracts exceed the plan cap; `actual` and `limit` are contract counts, `scope` is `account` |
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |
 | `DELTA_LIMIT`, `VEGA_LIMIT` | The order raises worst reachable exposure above an underlying/aggregate limit |
-| `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; opening orders and manual latch resets are refused while closing orders and exits remain available |
+| `SOFT_FLOOR`, `TRADE_LIMIT`, `COOLDOWN`, `PROFIT_LOCK` | Personal guardrail is active; new opening orders and manual latch resets are refused while closing orders and exits remain available |
 | `DAILY_LOSS_LIMIT` | The plan's daily loss limit locked the day (opening orders refused and open orders cancelled until rollover) or failed the attempt |
 | `PROFIT_TARGET`, `DRAWDOWN_FLOOR` | Decision codes: the target passed the attempt, or the floor failed it |
 | `MIN_TRADING_DAYS`, `MIN_PROFITABLE_DAYS`, `CONSISTENCY` | Objective codes: what a pass still waits for |

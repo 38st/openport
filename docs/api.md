@@ -144,6 +144,17 @@ attempts accept closing orders, Flatten and disposal, while opening orders still
 return `EVALUATION_CLOSED`. `GET /api/account/equity` includes the exact decision
 observation before any same-time liquidation samples.
 
+Personal guardrails accept `soft_floor_percent` from 0 to 99 on new writes; 100 returns
+`INVALID_LIMITS` because it latches at the peak immediately. Stored 100 settings remain
+readable. `SOFT_FLOOR_UNUSED` is an informational risk warning for a percent floor on a
+plan without drawdown. Account resets return the account's usual `warnings`, including
+`SOFT_FLOOR` when a retained absolute floor meets or exceeds the new balance. Resets
+apply pending settings while preserving daily profit/trade latches, opening-order
+count and active cooldown; they clear and re-check the equity-based soft floor.
+Opening orders count once through partial fills. Trader-triggered closing stops start
+the configured cooldown. A buy-only long-put exercise that would create short shares
+returns `BUY_ONLY`; expiry delivery is unchanged. See [Personal guardrails](paper-trading.md#personal-guardrails).
+
 Margin settings are returned in account rules. Invalid values or a cash/IRA account
 without strategy margin and enforced buying power return HTTP 400 `INVALID_RULES`.
 Account-type trading restrictions reject with `ACCOUNT_TYPE`.

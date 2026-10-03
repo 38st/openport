@@ -114,7 +114,7 @@ function guardrailRows(guardrails: Guardrails) {
   return [
     ["Soft floor equity", Number(guardrails.soft_floor) > 0 ? formatMoney(guardrails.soft_floor) : "Off"],
     ["Soft floor reserve", guardrails.soft_floor_percent ? `${guardrails.soft_floor_percent}% of drawdown` : "Off"],
-    ["Opening fills", guardrails.max_opening_trades || "Off"],
+    ["Opening orders", guardrails.max_opening_trades || "Off"],
     ["Cooldown", guardrails.cooldown_minutes ? `${guardrails.cooldown_minutes} min · loss > ${formatMoney(guardrails.cooldown_loss)} or stop-out` : "Off"],
     ["Profit lock", Number(guardrails.profit_lock) > 0 ? formatMoney(guardrails.profit_lock) : "Off"],
   ] as const
@@ -139,11 +139,11 @@ export function BriefAccountPanel({ account, risk }: { account?: Account; risk?:
       <Row label="Closest floor room">{evaluation?.closest_floor != null ? <span title={stamp(evaluation.closest_floor_at)}>{formatMoney(evaluation.closest_floor)} · {stamp(evaluation.closest_floor_at)}</span> : <Missing reason="not recorded" />}</Row>
     </Rows>
     <div className="mt-2 border-t border-border pt-2"><div className="flex flex-wrap items-baseline justify-between gap-x-2"><span className="text-[11px] uppercase text-muted">Today’s loss allowance</span><span className="text-lg tabular">{allowance.value != null ? formatMoney(allowance.value) : "—"}</span></div><p className="text-[11px] text-muted">{allowance.reason}{allowance.value != null && " · smallest active room"}</p></div>
-    {guardrails && <p className="mt-2 text-[11px] text-muted">Opening fills {state?.opening_trades ?? "—"}/{guardrails.max_opening_trades || "unlimited"} · cooldown {guardrails.cooldown_minutes ? `${guardrails.cooldown_minutes}m` : "off"} · profit lock {Number(guardrails.profit_lock) > 0 ? formatMoney(guardrails.profit_lock) : "off"}</p>}
+    {guardrails && <p className="mt-2 text-[11px] text-muted">Opening orders {state?.opening_trades ?? "—"}/{guardrails.max_opening_trades || "unlimited"} · cooldown {guardrails.cooldown_minutes ? `${guardrails.cooldown_minutes}m` : "off"} · profit lock {Number(guardrails.profit_lock) > 0 ? formatMoney(guardrails.profit_lock) : "off"}</p>}
     <details className="mt-2 text-xs"><summary className="cursor-pointer text-muted">Guardrails & limits{risk?.pending_limits || risk?.pending_guardrails ? " · changes pending" : ""}{!!state?.latched.length || risk?.kill.latched ? " · reduce-only" : ""}</summary>
       <div className="mt-2 space-y-2">
         {allowance.parts.map(part => <p key={part.label}>{part.label}: {formatMoney(part.value)}</p>)}
-        {state && <p>{state.opening_trades} opening fills · {state.latched.join(", ") || "no guardrail latch"}{state.cooldown_seconds > 0 && ` · ${state.cooldown_seconds}s until ${stamp(state.cooldown_until)}`}</p>}
+        {state && <p>{state.opening_trades} opening orders · {state.latched.join(", ") || "no guardrail latch"}{state.cooldown_seconds > 0 && ` · ${state.cooldown_seconds}s until ${stamp(state.cooldown_until)}`}</p>}
         {risk?.kill.latched && <p className="text-warn">Reduce-only: {risk.kill.reason ?? "kill switch"}</p>}
         {guardrails ? <Rows>{guardrailRows(guardrails).map(([label, value]) => <Row key={label} label={label}>{value}</Row>)}</Rows> : <Missing reason="guardrails unavailable" />}
         {!!risk?.breach?.underlyings.length && (risk.breach.room != null || risk.breach.soft_room != null) && <div><p className="text-muted">{risk.breach.room != null ? "Floor" : "Soft floor"} breach levels · model estimates</p>{risk.breach.underlyings.map(row => <p key={row.underlying}>{row.underlying}: {row.complete ? `down ${row.down ? price(row.spot + row.down.points) : "—"} / up ${row.up ? price(row.spot + row.up.points) : "—"}` : "incomplete valuation"}</p>)}<p className="text-[11px] text-faint">Unchanged volatility, one underlying at a time. Missing crossings are not a safety bound.</p></div>}
