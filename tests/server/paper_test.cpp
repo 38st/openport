@@ -2560,7 +2560,7 @@ TEST(PaperPlans, PresetsListExactRules) {
                   {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0},
                   {"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
                   {"trading_start", nullptr}, {"trading_end", nullptr}, {"flat_time", nullptr}, {"no_overnight", false},
-                  {"scaling", json::array()}});
+                  {"scaling", json::array()}, {"size_scaling", nullptr}});
     return rules;
   };
   const auto scaling = plans[19];
@@ -2671,6 +2671,84 @@ TEST_F(PaperEngine, ScalingFundedPresetRequiresItsOwnPassedEvaluation) {
   EXPECT_EQ(account["evaluation"]["scaling"]["limit"], 2);
   EXPECT_EQ(account["evaluation"]["scaling"]["profit"], "0.00");
   engine->stop();
+}
+
+TEST_F(PaperEngine, SizeScalingRulesParseValidateAndExposeReviewAndAttemptProvenance) {
+  seed();
+  auto account = read(*engine, "/api/account");
+  EXPECT_EQ(account["rules"]["size_scaling"], nullptr);
+  EXPECT_EQ(account["evaluation"]["size_scaling"], nullptr);
+  auto rules = account["rules"];
+  rules["plan"] = "Custom capital growth";
+  rules["phase"] = "funded";
+  rules["profit_target"] = nullptr;
+  rules["payouts"] = {{"qualifying_profit", "1"}, {"qualifying_days", 1}, {"withdrawal_percent", 50},
+      {"split_percent", 80}, {"minimum", "1"}, {"caps", json::array()}};
+  const json size{{"profit_percent", 10}, {"payouts", 2}, {"days", 80}, {"increase_percent", 25}, {"max_balance", "100000.00"}};
+  rules["size_scaling"] = size;
+  const auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset",
+      {{"initial_cash", "50000"}, {"rules", r}, {"reason", "capital growth test"}}); };
+  auto response = reset(rules);
+  ASSERT_EQ(response.status, 200) << response.body;
+  account = json::parse(response.body);
+  EXPECT_EQ(account["rules"]["size_scaling"], size);
+  const auto status = account["evaluation"]["size_scaling"];
+  EXPECT_EQ(status["size"], "50000.00"); EXPECT_EQ(status["original"], "50000.00");
+  EXPECT_EQ(status["max_balance"], "100000.00"); EXPECT_EQ(status["next_size"], "62500.00");
+  EXPECT_EQ(status["period_days"], 0); EXPECT_EQ(status["days_required"], 80);
+  EXPECT_EQ(status["period_profit"], "0.00"); EXPECT_EQ(status["profit_required"], "5000.00");
+  EXPECT_EQ(status["period_payouts"], 0); EXPECT_EQ(status["payouts_required"], 2);
+  EXPECT_EQ(status["period_started"], account["evaluation"]["day"]);
+  EXPECT_EQ(status["history"], json::array());
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"profit_percent", 0}, {"profit_percent", 101}, {"payouts", -1}, {"payouts", 101},
+      {"days", 0}, {"days", 367}, {"increase_percent", 0}, {"increase_percent", 101}, {"max_balance", "49999"}}) {
+    auto bad = rules; bad["size_scaling"][key] = value;
+    expect_error(reset(bad), 400, "INVALID_RULES");
+  }
+  for (const auto& value : std::vector<json>{false, 5, json::array(), {{"profit_percent", 10}}}) {
+    auto bad = rules; bad["size_scaling"] = value;
+    expect_error(reset(bad), 400, "INVALID_REQUEST");
+  }
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"days", 1.5}, {"payouts", "2"}, {"profit_percent", true}, {"increase_percent", nullptr},
+      {"max_balance", 100000}, {"unknown", 1}}) {
+    auto bad = rules; bad["size_scaling"][key] = value;
+    expect_error(reset(bad), 400, "INVALID_REQUEST");
+  }
+  auto evaluation = rules; evaluation["phase"] = "evaluation"; evaluation["payouts"] = nullptr;
+  expect_error(reset(evaluation), 400, "INVALID_RULES");
+  auto disabled = rules; disabled["size_scaling"] = nullptr;
+  response = reset(disabled);
+  ASSERT_EQ(response.status, 200) << response.body;
+  account = json::parse(response.body);
+  EXPECT_EQ(account["evaluation"]["size_scaling"], nullptr);
+  EXPECT_EQ(account["attempts"].back()["rules"]["size_scaling"], size);
+}
+
+TEST_F(PaperEngine, SizeScalingAccountViewReportsTheCapitalCreditAndNewReview) {
+  seed();
+  const json rules{{"plan", "Size review"}, {"phase", "funded"}, {"profit_target", nullptr}, {"max_drawdown", "5000"},
+      {"drawdown_mode", "intraday"}, {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0},
+      {"payouts", {{"qualifying_profit", "10"}, {"qualifying_days", 1}, {"withdrawal_percent", 50},
+          {"split_percent", 80}, {"minimum", "10"}, {"caps", json::array()}}},
+      {"size_scaling", {{"profit_percent", 1}, {"payouts", 0}, {"days", 1}, {"increase_percent", 25}, {"max_balance", "100000"}}}};
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "size view"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "size-open", "4.20")).status, 201);
+  market.next(); quote("10.00", "10.20");
+  auto close = order(market, "size-close", "10.00"); close["side"] = "sell";
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", close).status, 201);
+  market.time = md::new_york_to_utc({2026, 9, 23}, 10, 0); quote();
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["evaluation"]["day"] == "2026-09-23"; }));
+  const auto account = read(*engine, "/api/account");
+  const auto& size = account["evaluation"]["size_scaling"];
+  EXPECT_EQ(size["size"], "62500.00"); EXPECT_EQ(size["original"], "50000.00");
+  EXPECT_EQ(size["period_days"], 0); EXPECT_EQ(size["period_profit"], "0.00");
+  EXPECT_EQ(size["profit_required"], "625.00"); EXPECT_EQ(size["next_size"], "75000.00");
+  EXPECT_EQ(size["history"], (json::array({{{"day", "2026-09-23"}, {"old", "50000.00"}, {"size", "62500.00"}}})));
+  EXPECT_EQ(account["payout"]["profit"], "578.70");
+  EXPECT_EQ(account["rules"]["max_drawdown"], "6250.00");
 }
 
 TEST_F(PaperEngine, ScalingRulesAccountViewPreviewsOrdersAndValidation) {

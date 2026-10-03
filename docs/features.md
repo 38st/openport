@@ -337,6 +337,7 @@ special opening quotation; live providers keep manual imports.
 ## Roadmap
 
 - [x] F39 funded scaling plan: closed-balance thresholds set the next session’s option-contract limit, with working openings, fill checks and terminal editing
+- [x] F63 funded account-size scaling: periodic profit/payout reviews, linear capital growth capped at a maximum, proportional loss limits, journal recovery, custom rule editing and funded progress/history.
 
 - [x] F38 payout buffer: retain starting balance plus a safety net for every payout or the first N
 - [x] F37 payout consistency: net realised best-day limits per payout cycle, escalating percentages and remaining profit

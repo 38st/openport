@@ -202,8 +202,8 @@ json result_for(Desk& desk, const BacktestRequest& request, const std::filesyste
   json flags = json::array();
   for (const auto flag : snapshot.quality_flags) flags.push_back(trading::to_string(flag));
   return {{"started", md::format_timestamp(snapshot.evaluation.started)}, {"ended", md::format_timestamp(snapshot.time)},
-      {"pnl", snapshot.valuation_complete ? json((snapshot.equity - request.config.initial_cash).str()) : json(nullptr)},
-      {"last_mark_pnl", (snapshot.equity - request.config.initial_cash).str()}, {"valuation_complete", snapshot.valuation_complete},
+      {"pnl", snapshot.valuation_complete ? json((snapshot.equity - snapshot.evaluation.starting_balance).str()) : json(nullptr)},
+      {"last_mark_pnl", (snapshot.equity - snapshot.evaluation.starting_balance).str()}, {"valuation_complete", snapshot.valuation_complete},
       {"quality_flags", flags}, {"max_drawdown", measurements.drawdown.str()},
       {"min_floor_distance", distance ? json(distance->str()) : json(nullptr)}, {"outcome", outcome(snapshot.evaluation.status)},
       {"decision", snapshot.evaluation.decision}, {"rule_trips", trips}, {"trades", stats.at("trades")},
@@ -219,7 +219,7 @@ json evaluation_day(const trading::TradingSnapshot& start, const trading::Tradin
   return {{"date", md::format_date(day.date)}, {"day_index", index}, {"ended", md::format_timestamp(end.time)},
       {"start_balance", before.balance.str()}, {"end_balance", now.balance.str()},
       {"start_equity", start.equity.str()}, {"end_equity", end.equity.str()},
-      {"pnl", start.valuation_complete && end.valuation_complete ? json((end.equity - start.equity).str()) : json(nullptr)},
+      {"pnl", start.valuation_complete && end.valuation_complete ? json((end.equity - start.equity - (end.evaluation.starting_balance - start.evaluation.starting_balance)).str()) : json(nullptr)},
       {"valuation_complete", end.valuation_complete}, {"floor", floor ? json(evaluation.floor.str()) : json(nullptr)},
       {"floor_distance", floor && end.valuation_complete ? json((end.equity - evaluation.floor).str()) : json(nullptr)},
       {"target", rules.profit_target.str()}, {"target_progress", trading::attempt_profit(evaluation, rules, now).str()},
@@ -450,6 +450,17 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       } else if (key == "phase") {
         choice(value, key, {"evaluation", "funded"});
         rules[key] = value == "funded" ? trading::Phase::Funded : trading::Phase::Evaluation;
+      } else if (key == "size_scaling") {
+        if (value.is_null()) { rules[key] = nullptr; continue; }
+        keys(value, {"profit_percent", "payouts", "days", "increase_percent", "max_balance"});
+        const auto integer = [&](const char* name) {
+          const auto& v = required(value, name, name);
+          if (!v.is_number_integer() || (v.is_number_unsigned() && v.get<std::uint64_t>() > INT64_MAX))
+            throw std::invalid_argument(std::string("size_scaling ") + name + " must be a signed 64-bit integer");
+          return v.get<std::int64_t>();
+        };
+        rules[key] = trading::SizeScaling{integer("profit_percent"), integer("payouts"), integer("days"),
+            integer("increase_percent"), decimal(required(value, "max_balance", "max_balance"), "size_scaling max_balance")};
       } else if (key == "scaling") {
         if (!value.is_array()) throw std::invalid_argument("scaling must be an array");
         std::vector<trading::ScalingStep> steps;
@@ -478,6 +489,8 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     if (plan.contains("fee_per_contract")) result.config.fee_per_contract = decimal(plan.at("fee_per_contract"), "plan fee_per_contract");
   }
   trading::validate_rules(result.config.rules);
+  if (result.config.rules.size_scaling && result.config.rules.size_scaling->max_balance < result.config.initial_cash)
+    throw trading::TradingError(trading::Reason::INVALID_RULES, "Account size scaling maximum must be at least the starting balance");
   const bool custom_funded = plan.is_object() && result.config.rules.phase == trading::Phase::Funded;
   if (result.config.initial_cash <= Money{} || result.config.fee_per_contract < Money{} ||
       (!custom_funded && (result.config.rules.phase != trading::Phase::Evaluation || result.config.rules.profit_target <= Money{})))

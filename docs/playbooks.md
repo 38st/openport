@@ -404,6 +404,12 @@ use `PayoutRules` defaults. A funded backtest carries these rules in its journal
 and account views but does not request withdrawals automatically; a surviving
 funded attempt stays open. An evaluation example is:
 
+Custom funded backtests also accept `size_scaling` with `profit_percent`, `payouts`,
+`days`, `increase_percent` and decimal-string `max_balance`. Each periodic review
+counts finished plan days and realised profit plus withdrawals; qualifying accounts
+receive a capital credit based on the original size. It is excluded from reported
+P&L, raises the floor, and scales the loss limits. Absent/null disables the rule.
+
 ```json
 {"initial_cash":"50000","rules":{"plan":"Example evaluation",
  "profit_target":"6000","max_drawdown":"3000","drawdown_mode":"end_of_day",

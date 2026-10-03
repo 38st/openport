@@ -444,6 +444,31 @@ TEST(Backtest, CustomFundedRulesCarryPayoutConsistencyAndBufferThroughTheRunner)
   EXPECT_EQ(report.at("attempts").at(0).at("outcome"), "open");
 }
 
+TEST(Backtest, CustomFundedSizeScalingAcceptsExactMoneyAndValidatesTypesAndRanges) {
+  const auto definitions = catalogue();
+  const auto& scenarios = providers::builtin_scenarios();
+  json rules{{"phase", "funded"}, {"payouts", {{"qualifying_days", 1}}},
+      {"size_scaling", {{"profit_percent", 1}, {"payouts", 0}, {"days", 2},
+          {"increase_percent", 25}, {"max_balance", "20000.000001"}}}};
+  const auto parse = [&](const json& settings) {
+    return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"}, {"rules", settings}}},
+        {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
+  };
+  const auto parsed = parse(rules);
+  ASSERT_TRUE(parsed.config.rules.size_scaling);
+  EXPECT_EQ(parsed.config.rules.size_scaling->max_balance, Money::parse("20000.000001"));
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"days", 0}, {"days", 367}, {"payouts", -1}, {"profit_percent", 101}, {"increase_percent", 0},
+      {"max_balance", "9999"}, {"days", 1.5}, {"payouts", "0"}, {"max_balance", 20000}, {"unknown", 1}}) {
+    auto bad = rules; bad["size_scaling"][key] = value;
+    EXPECT_THROW((void)parse(bad), std::exception);
+  }
+  auto evaluation = rules; evaluation["phase"] = "evaluation"; evaluation.erase("payouts"); evaluation["profit_target"] = "100";
+  EXPECT_THROW((void)parse(evaluation), trading::TradingError);
+  rules["size_scaling"] = nullptr;
+  EXPECT_FALSE(parse(rules).config.rules.size_scaling);
+}
+
 TEST(Backtest, CustomScalingRulesKeepExactThresholdsAndValidateSteps) {
   const auto definitions = catalogue();
   const auto& scenarios = providers::builtin_scenarios();

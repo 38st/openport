@@ -105,6 +105,17 @@ remain allowed. There is no grace period. The appended `funded-scaling-50k` pres
 requires a passed `intraday-50k` evaluation, like the other funded preset gates.
 See [Scaling plan](paper-trading.md#funded-accounts-and-payouts).
 
+Custom funded account/reset and backtest rules accept nullable `size_scaling`:
+`{profit_percent, payouts, days, increase_percent, max_balance}`. Counts are whole
+numbers: profit/increase 1–100, payouts 0–100, days 1–366; maximum balance is a
+money string at least the starting balance. Evaluation-phase use or invalid ranges
+are `INVALID_RULES`; wrong types are `INVALID_REQUEST`. Disabled API rules expose
+null. Every completed review restarts; qualifying active accounts receive linear
+capital growth from the original balance. `evaluation.size_scaling` exposes size,
+original/max/next size, review start/day count, net profit and payouts versus
+requirements, and `{day, old, size}` history (schemas `SizeScaling`,
+`SizeScalingStatus`). Withdrawals are added back to review profit; growth is not P&L.
+
 The web terminal uses these routes, so anything it does can be scripted:
 
 | Route | Does |

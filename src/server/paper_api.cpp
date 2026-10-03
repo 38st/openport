@@ -90,6 +90,12 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"max_trade_risk_percent", r.max_trade_risk_percent},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
+  result["size_scaling"] = nullptr;
+  if (r.size_scaling) {
+    const auto& v = *r.size_scaling;
+    result["size_scaling"] = {{"profit_percent", v.profit_percent}, {"payouts", v.payouts}, {"days", v.days},
+        {"increase_percent", v.increase_percent}, {"max_balance", v.max_balance.str()}};
+  }
   result["scaling"] = json::array();
   for (const auto& step : r.scaling)
     result["scaling"].push_back({{"profit", step.profit.str()}, {"contracts", step.contracts}});
@@ -784,6 +790,20 @@ json account_json(const TradingView& view) {
                {"held", contracts_held(s.positions, [](const auto& p) { return p.position.quantity; })},
                {"profit", (in.balance - e.starting_balance).str()}, {"next", next}};
   }
+  json size_scaling = nullptr;
+  if (r.size_scaling && e.size_scaling) {
+    const auto& rule = *r.size_scaling;
+    const auto& period = *e.size_scaling;
+    json history = json::array();
+    for (const auto& h : period.history)
+      history.push_back({{"day", md::format_date(h.day)}, {"old", h.old.str()}, {"size", h.size.str()}});
+    size_scaling = {{"size", e.starting_balance.str()}, {"original", period.original.str()},
+        {"max_balance", rule.max_balance.str()}, {"period_started", md::format_date(period.period_started)},
+        {"period_days", period.period_days}, {"days_required", rule.days},
+        {"period_profit", size_scaling_profit(e, in.balance).str()}, {"profit_required", size_scaling_required(e, rule).str()},
+        {"period_payouts", e.payouts.size() - period.payouts_at_start}, {"payouts_required", rule.payouts},
+        {"next_size", (e.starting_balance + size_scaling_increase(e, rule)).str()}, {"history", history}};
+  }
   const bool liquidated = decided && in.flat;
   json payouts = json::array();
   for (const auto& p : e.payouts)
@@ -843,6 +863,7 @@ json account_json(const TradingView& view) {
               {"flat_time", r.flat_time ? json(clock_text(*r.flat_time)) : json(nullptr)},
               {"flat_now", plan_flat_now(r, s.time)},
               {"scaling", scaling},
+              {"size_scaling", size_scaling},
               {"day_lock", e.day_lock == Reason::NONE ? json(nullptr) : json(to_string(e.day_lock))},
               {"day_locked_at", time_or_null(e.day_locked_at)},
               {"exit_equity", s.exit_equity.str()}, {"exit_cost", (s.equity - s.exit_equity).str()},
@@ -1616,7 +1637,7 @@ AccountRules parse_rules(const json& j) {
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
           "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
-          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling"});
+          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling", "size_scaling"});
   AccountRules rules;
   // Accept read-back rules in a custom request, but always derive the identity.
   if (j.contains("plan_id") && !j.at("plan_id").is_null() && !j.at("plan_id").is_string())
@@ -1654,6 +1675,12 @@ AccountRules parse_rules(const json& j) {
   if (has("max_trade_risk")) rules.max_trade_risk = decimal_field(j, "max_trade_risk");
   if (j.contains("max_trade_risk_percent")) rules.max_trade_risk_percent = integer_field(j, "max_trade_risk_percent");
   parse_time_rules(j, rules);
+  if (j.contains("size_scaling") && !j.at("size_scaling").is_null()) {
+    const auto& v = j.at("size_scaling");
+    fields(v, {"profit_percent", "payouts", "days", "increase_percent", "max_balance"});
+    rules.size_scaling = SizeScaling{integer_field(v, "profit_percent"), integer_field(v, "payouts"),
+        integer_field(v, "days"), integer_field(v, "increase_percent"), decimal_field(v, "max_balance")};
+  }
   if (j.contains("scaling")) {
     if (!j.at("scaling").is_array()) throw std::invalid_argument("scaling must be an array");
     for (const auto& step : j.at("scaling")) {

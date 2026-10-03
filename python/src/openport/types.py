@@ -184,6 +184,35 @@ class PayoutStatus(TypedDict):
     buffer_balance: str | None
 
 
+class SizeScaling(TypedDict):
+    profit_percent: int
+    payouts: int
+    days: int
+    increase_percent: int
+    max_balance: str
+
+
+class SizeScale(TypedDict):
+    day: str
+    old: str
+    size: str
+
+
+class SizeScalingStatus(TypedDict):
+    size: str
+    original: str
+    max_balance: str
+    period_started: str
+    period_days: int
+    days_required: int
+    period_profit: str
+    profit_required: str
+    period_payouts: int
+    payouts_required: int
+    next_size: str
+    history: list[SizeScale]
+
+
 class ScalingStep(TypedDict):
     profit: str
     contracts: int
@@ -240,6 +269,7 @@ class AccountRules(TypedDict, total=False):
     expiry_cutoff_seconds: int
     payouts: PayoutRules | None
     scaling: list[ScalingStep]
+    size_scaling: SizeScaling | None
     fees: FeeSchedule
 
 

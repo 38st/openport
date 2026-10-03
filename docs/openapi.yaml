@@ -9045,6 +9045,16 @@
               "$ref": "#/components/schemas/ScalingStep"
             },
             "description": "Empty disables. First profit is zero; profits strictly increase; contracts do not decrease. Gross option contracts held, each leg counted, shares excluded. Closed balance less start selects the next session limit at rollover; losses can lower it. Excess openings are refused with SCALING_LIMIT, without a grace period."
+          },
+          "size_scaling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SizeScaling"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -9058,7 +9068,8 @@
           "buying_power",
           "expiry_cutoff_seconds",
           "payouts",
-          "plan_id"
+          "plan_id",
+          "size_scaling"
         ],
         "allOf": [
           {
@@ -10126,6 +10137,16 @@
               }
             ],
             "description": "Limit in force and contracts held; profit is closed balance less start. Next is the first step with a higher limit, even if reached today: it applies only after rollover. Null without scaling."
+          },
+          "size_scaling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SizeScalingStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -10153,7 +10174,8 @@
           "floor_locked",
           "qualifying_days",
           "cycle_started",
-          "payouts"
+          "payouts",
+          "size_scaling"
         ]
       },
       "AttemptSummary": {
@@ -17977,6 +17999,16 @@
                           "$ref": "#/components/schemas/ScalingStep"
                         },
                         "description": "Empty disables. First profit is zero; profits strictly increase; contracts do not decrease. Gross option contracts held, each leg counted, shares excluded. Closed balance less start selects the next session limit at rollover; losses can lower it. Excess openings are refused with SCALING_LIMIT, without a grace period."
+                      },
+                      "size_scaling": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/SizeScaling"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [],
@@ -20449,6 +20481,16 @@
               "$ref": "#/components/schemas/ScalingStep"
             },
             "description": "Empty disables. First profit is zero; profits strictly increase; contracts do not decrease. Gross option contracts held, each leg counted, shares excluded. Closed balance less start selects the next session limit at rollover; losses can lower it. Excess openings are refused with SCALING_LIMIT, without a grace period."
+          },
+          "size_scaling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SizeScaling"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -22334,6 +22376,131 @@
             ]
           }
         }
+      },
+      "SizeScaling": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Funded only. Periodic reviews require net realised profit and completed payouts over finished plan days. Growth is a percentage of the original starting balance, capped at max_balance (at least the starting balance). Null disables.",
+        "properties": {
+          "profit_percent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "payouts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "increase_percent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "max_balance": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "profit_percent",
+          "payouts",
+          "days",
+          "increase_percent",
+          "max_balance"
+        ]
+      },
+      "SizeScale": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date"
+          },
+          "old": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "size": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "day",
+          "old",
+          "size"
+        ]
+      },
+      "SizeScalingStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "size": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "original": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "max_balance": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "period_started": {
+            "type": "string",
+            "format": "date"
+          },
+          "period_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 366
+          },
+          "days_required": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366
+          },
+          "period_profit": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "profit_required": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "period_payouts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "payouts_required": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "next_size": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SizeScale"
+            }
+          }
+        },
+        "required": [
+          "size",
+          "original",
+          "max_balance",
+          "period_started",
+          "period_days",
+          "days_required",
+          "period_profit",
+          "profit_required",
+          "period_payouts",
+          "payouts_required",
+          "next_size",
+          "history"
+        ]
       }
     }
   }
