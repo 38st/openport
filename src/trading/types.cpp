@@ -190,6 +190,8 @@ void validate_limits(const Limits& l) {
 }
 void validate_rules(const AccountRules& r) {
   const auto& p = r.payouts;
+  if (p.buffer < Money{} || p.buffer_payouts < 0 || p.buffer_payouts > 100)
+    throw TradingError(Reason::INVALID_RULES, "The payout buffer must be nonnegative and buffer_payouts from 0 to 100");
   if (p.consistency_percents.size() > 64 ||
       !std::all_of(p.consistency_percents.begin(), p.consistency_percents.end(), [](auto percent) { return percent >= 1 && percent <= 100; }))
     throw TradingError(Reason::INVALID_RULES, "Payout consistency takes at most 64 percentages, each from 1 to 100");

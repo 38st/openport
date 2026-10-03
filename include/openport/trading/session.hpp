@@ -154,6 +154,7 @@ struct PayoutQuote {
   std::optional<Money> best_day;  ///< Largest positive day in the cycle; earliest wins ties.
   md::Date best_day_date;
   Money consistency_needed;      ///< Additional cycle profit needed, rounded up to whole cents.
+  std::optional<Money> buffer_balance;  ///< Starting balance plus buffer, while it applies.
 };
 [[nodiscard]] PayoutQuote payout_quote(const TradingSnapshot& snapshot, const AccountRules& rules);
 /// The held book's risk profile (see risk_profile) as a snapshot publishes it: its

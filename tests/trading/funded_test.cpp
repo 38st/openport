@@ -168,6 +168,90 @@ TEST(TradingFunded, ConsistencyValidatesEveryPercent) {
   EXPECT_THROW(validate_rules(rules), TradingError);
 }
 
+TEST(TradingFunded, BufferCapsTheFirstTwoPayoutsThenLifts) {
+  ScriptedMarket f;
+  auto rules = funded("100");
+  rules.payouts.withdrawal_percent = 100;
+  rules.payouts.caps.clear();
+  rules.payouts.buffer = m("250");
+  rules.payouts.buffer_payouts = 2;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 23});
+  auto q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.buffer_balance, m("10250"));
+  EXPECT_EQ(q.maximum, Money{});
+  EXPECT_EQ(q.trader_share, Money{});
+  EXPECT_EQ(q.blocked.message, "Equity must stay above the payout buffer of $10250.00");
+  EXPECT_EQ(s.request_payout(m("10"), f.time).decision.code, Reason::PAYOUT_NOT_ELIGIBLE);
+  profit_day(s, f, "100");
+  next_day(s, f, {2026, 9, 24});
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.withdrawable, m("300"));
+  EXPECT_EQ(q.maximum, m("50"));
+  EXPECT_EQ(q.trader_share, m("40"));
+  EXPECT_EQ(s.request_payout(m("50.01"), f.time).decision.code, Reason::INVALID_PAYOUT);
+  ASSERT_TRUE(s.request_payout(m("50"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->equity, m("10250")); // Equality is allowed by the buffer cap.
+  EXPECT_EQ(payout_quote(*s.snapshot(), rules).buffer_balance, m("10250"));
+  profit_day(s, f, "100");
+  next_day(s, f, {2026, 9, 25});
+  EXPECT_EQ(payout_quote(*s.snapshot(), rules).maximum, m("100"));
+  ASSERT_TRUE(s.request_payout(m("100"), f.time).decision.ok());
+  EXPECT_FALSE(payout_quote(*s.snapshot(), rules).buffer_balance);
+  profit_day(s, f, "100");
+  next_day(s, f, {2026, 9, 28});
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.maximum, m("349.99")); // The locked floor still applies.
+  ASSERT_TRUE(s.request_payout(q.maximum, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->equity, m("10000.01"));
+}
+
+TEST(TradingFunded, BufferUsesTheAttemptsStartingBalanceAndWholeCents) {
+  ScriptedMarket f;
+  auto rules = funded();
+  rules.max_drawdown = Money{};
+  rules.lock_balance = Money{};
+  rules.payouts.withdrawal_percent = 100;
+  rules.payouts.caps.clear();
+  rules.payouts.buffer = m("20.000001");
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.reset_account(m("20000"), rules, "different start", f.time).decision.ok());
+  profit_day(s, f, "100");
+  next_day(s, f, {2026, 9, 23});
+  auto q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.buffer_balance, m("20020.000001"));
+  EXPECT_EQ(q.maximum, m("79.99"));
+  ASSERT_TRUE(s.request_payout(q.maximum, f.time).decision.ok());
+  EXPECT_EQ(payout_quote(*s.snapshot(), rules).buffer_balance, m("20020.000001"));
+  profit_day(s, f, "100");
+  next_day(s, f, {2026, 9, 24});
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.maximum, m("100"));
+  ASSERT_TRUE(s.request_payout(q.maximum, f.time).decision.ok());
+  EXPECT_TRUE(payout_quote(*s.snapshot(), rules).buffer_balance); // Zero payouts means every cycle.
+}
+
+TEST(TradingFunded, BufferValidatesAmountAndPayoutCount) {
+  for (const auto count : {-1, 101}) {
+    auto rules = funded();
+    rules.payouts.buffer_payouts = count;
+    try { validate_rules(rules); FAIL(); }
+    catch (const TradingError& e) { EXPECT_EQ(e.code(), Reason::INVALID_RULES); }
+  }
+  auto rules = funded();
+  rules.payouts.buffer = m("-0.000001");
+  EXPECT_THROW(validate_rules(rules), TradingError);
+  rules.payouts.buffer = Money{};
+  rules.payouts.buffer_payouts = 100;
+  EXPECT_NO_THROW(validate_rules(rules));
+  ScriptedMarket f;
+  TradingSession s(config(rules), f.time);
+  EXPECT_FALSE(payout_quote(*s.snapshot(), rules).buffer_balance); // Zero buffer disables even with a count.
+}
+
 TEST(TradingFunded, FloorLocksAtTheLockBalanceAndStopsTrailing) {
   ScriptedMarket f;
   AccountRules rules;
@@ -491,6 +575,8 @@ TEST(TradingFunded, JournalRecoveryRestoresPayoutsAndQualifyingDays) {
     const auto recorded = nlohmann::json::parse(entry.payload)["state"]["config"]["rules"]["payouts"];
     EXPECT_EQ(recorded.size(), 6); // The original funded journal fields and bytes.
     EXPECT_FALSE(recorded.contains("consistency_percents"));
+    EXPECT_FALSE(recorded.contains("buffer"));
+    EXPECT_FALSE(recorded.contains("buffer_payouts"));
   }
   EXPECT_TRUE(s.config().rules.payouts.consistency_percents.empty());
   std::filesystem::remove_all(directory);
@@ -503,6 +589,8 @@ TEST(TradingFunded, ConsistencyJournalRecoversRulesAndTheCycle) {
   const auto path = (directory / "funded.jsonl").string();
   auto rules = funded();
   rules.payouts.consistency_percents = {50, 60};
+  rules.payouts.buffer = m("50");
+  rules.payouts.buffer_payouts = 2;
   ScriptedMarket f;
   std::string expected;
   {
@@ -522,6 +610,7 @@ TEST(TradingFunded, ConsistencyJournalRecoversRulesAndTheCycle) {
   EXPECT_EQ(s.config().rules, rules);
   const auto q = payout_quote(*s.snapshot(), s.config().rules);
   EXPECT_EQ(q.consistency_percent, 60);
+  EXPECT_EQ(q.buffer_balance, m("10050"));
   EXPECT_EQ(q.cycle_profit, m("93.50"));
   EXPECT_EQ(q.best_day_date, (md::Date{2026, 9, 24}));
   EXPECT_EQ(q.consistency_needed, m("62.34"));

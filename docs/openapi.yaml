@@ -8578,6 +8578,18 @@
             "maxItems": 64,
             "default": [],
             "description": "Best positive day at most this percent of net realised cycle profit; indexed by payout number, last repeats, empty disables."
+          },
+          "buffer": {
+            "$ref": "#/components/schemas/Money",
+            "default": "0.00",
+            "description": "Nonnegative equity retained above the attempt starting balance; zero disables."
+          },
+          "buffer_payouts": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 0,
+            "description": "Applies to the first N payouts; zero applies to every payout."
           }
         },
         "required": [
@@ -9352,6 +9364,17 @@
           "consistency_needed": {
             "$ref": "#/components/schemas/Money",
             "description": "Additional cycle profit required for the current best day, rounded up to whole cents; zero when met or disabled. Profit must also be positive."
+          },
+          "buffer_balance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Starting balance plus buffer while it applies to this payout."
           }
         },
         "required": [
@@ -9374,7 +9397,8 @@
           "consistency_percent",
           "cycle_profit",
           "best_day",
-          "consistency_needed"
+          "consistency_needed",
+          "buffer_balance"
         ]
       },
       "Evaluation": {
@@ -17261,7 +17285,7 @@
                     },
                     "required": [],
                     "additionalProperties": false,
-                    "description": "Unspecified evaluation rules use AccountRules defaults. expiry_cutoff is nanoseconds. Funded rules are refused."
+                    "description": "Unspecified rules use AccountRules defaults; expiry_cutoff is nanoseconds. Custom funded rules accept phase: funded and payouts (decimal money, consistency_percents and buffer_payouts integers). Funded backtests do not withdraw automatically; funded preset IDs remain refused."
                   },
                   "fee_per_contract": {
                     "$ref": "#/components/schemas/Money"

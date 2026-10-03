@@ -3975,6 +3975,13 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
   // withdrawal, a locked one does not.
   if (rules.max_drawdown > Money{} && e.floor_locked)
     q.maximum = std::min(q.maximum, whole_cents(s.equity - e.floor - Money::from_micros(10'000)));
+  bool buffer_blocks = false;
+  if (p.buffer > Money{} && (p.buffer_payouts == 0 || q.number <= static_cast<std::uint64_t>(p.buffer_payouts))) {
+    q.buffer_balance = e.starting_balance + p.buffer;
+    const auto room = whole_cents(s.equity - *q.buffer_balance);
+    buffer_blocks = room <= Money{};
+    q.maximum = std::min(q.maximum, room);
+  }
   q.minimum = p.minimum;
   q.trader_share = q.maximum.prorate(p.split_percent, 100);
   auto block = [&](Reason code, std::string message, std::optional<double> actual = {}, std::optional<double> limit = {}) {
@@ -3992,7 +3999,8 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
           q.cycle_profit > Money{} ? std::optional<double>{q.best_day.value_or(Money{}).dollars() / q.cycle_profit.dollars() * 100} : std::nullopt,
           static_cast<double>(*q.consistency_percent));
   if (q.maximum <= Money{} || q.maximum < q.minimum)
-    block(Reason::PAYOUT_NOT_ELIGIBLE, "The payout available is below the minimum", q.maximum.dollars(), q.minimum.dollars());
+    block(Reason::PAYOUT_NOT_ELIGIBLE, buffer_blocks ? "Equity must stay above the payout buffer of " + dollars(*q.buffer_balance)
+                                                   : "The payout available is below the minimum", q.maximum.dollars(), q.minimum.dollars());
   return q;
 }
 
