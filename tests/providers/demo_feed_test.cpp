@@ -270,9 +270,11 @@ TEST(DemoFeed, RotatesWithoutStoppedStatusPreservesIdsAndDeletesFiles) {
   clock->through(24300s);
   ASSERT_TRUE(eventually([&] { const std::lock_guard lock(mutex); return dates.size() >= 2; }));
   EXPECT_FALSE(std::filesystem::exists(directory / "2026-09-18.oprec"));
+  EXPECT_FALSE(std::filesystem::exists(directory / "2026-09-18.oprec.end"));
   clock->through(48600s);
   ASSERT_TRUE(eventually([&] { const std::lock_guard lock(mutex); return dates.size() >= 3; }));
   EXPECT_FALSE(std::filesystem::exists(directory / "2026-09-21.oprec"));
+  EXPECT_FALSE(std::filesystem::exists(directory / "2026-09-21.oprec.end"));
   provider.stop();
   for (const auto& event : sink.snapshot()) {
     if (const auto* status = std::get_if<md::ProviderStatus>(&event)) {
