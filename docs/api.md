@@ -350,3 +350,18 @@ Custom account/reset/backtest rules accept `min_hold_seconds` (0–3600) and the
 Custom plan rules also accept boolean `no_hedging` and `no_counter_positions` (default false). `HEDGING` is a reducer refusal; `COUNTER_POSITION` is a server refusal before order journaling. Both return HTTP 422, and previews return the same reason with structured direction `evidence` (underlying, order/held dollar delta, and other account ID for cross-account checks). Pure reductions are exempt. Only the ordering account’s cross-account setting counts; see [direction rules](paper-trading.md#direction-rules-f65).
 
 `max_volume_percent` is an optional whole percent 0–100 (0 disables) on custom account/reset/backtest rules. The server gate checks each option leg’s absolute held plus opening contracts against current-date volume, with exact integer arithmetic. Missing/stale volume refuses. `MAX_VOLUME_SHARE` returns HTTP 422 and `evidence: {contract, contracts, volume, percent}` (volume null if unknown); previews report the same reason. Backtests lacking volume, including generated scenarios, reject the enabled rule with HTTP 400. See [volume-share rule](paper-trading.md#volume-share-rule-f66).
+
+### Saved event calendars and opening restrictions (F17/F59)
+
+`GET /api/calendar/events?from=2026-09-01&to=2026-10-01` (read scope) returns
+`{"events":[...]}` from `--event-calendar`. Filters accept dates or ISO timestamps;
+from is inclusive and to exclusive; corporate dates compare at UTC midnight.
+Unknown/duplicate parameters, bad dates and reversed ranges return 400.
+Create/reset rules accept `events`, `news_before_minutes`, `news_after_minutes`,
+`news_action`, `hold_restrictions`, `hold_cutoff`; invalid values return 422
+`INVALID_RULES`. Rules round trip in account, plan and attempt responses. Backtests
+accept the same fields. Account evaluation exposes `next_event` and `active_events`.
+NEWS_BLACKOUT HTTP evidence contains UTC actual/limit strings; HOLD_RESTRICTED has
+actual null, cutoff HH:MM limit, and scope `kind:underlying` or `kind:account`.
+The underlying summary's `expiries[].dividends[].ex_date` can be imported into
+saved ex_dividend events. See [paper trading](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).

@@ -1474,3 +1474,22 @@ The desk checks `no_counter_positions` on its single owner thread, using each li
 ### Volume-share gate
 
 `max_volume_percent` reads ChainBook volume at pre-trade acceptance on the desk owner thread, for each option leg of opening submissions and increased-size modifications, including playbooks and previews. It checks `(abs(held) + opening) * 100 <= percent * volume` using wide integer arithmetic. Volume must be a current-market-trading-date, nonnegative whole count with no future timestamp; unknown or stale data returns `MAX_VOLUME_SHARE` with null volume evidence. Shares and pure reductions bypass the cap. Refusals are not journaled and later fills are not re-gated, so reducer recovery remains deterministic without volume. Backtests scan input recordings for usable current-date volume and reject the enabled rule with HTTP 400 if absent; current scenario generators have no volume. See [volume-share semantics](paper-trading.md#volume-share-rule-f66).
+
+### Plan event catalogue (F17/F59)
+
+`openportd --event-calendar FILE` loads optional CSV `kind,time,symbol,session,label`.
+Blank lines, `#` comments and the exact header are skipped; five comma-separated
+columns are required (no quoted commas). Errors name the line. News timestamps
+must be exact UTC ISO-8601 ending in Z; other times are YYYY-MM-DD. Earnings
+sessions are before_open (empty defaults to it) or after_close; other kinds leave
+session empty. News may leave symbol empty; other kinds require an uppercase
+underlying. Labels have at most 64 characters; at most 256 entries. The read-scope route
+`GET /api/calendar/events` serves this sorted/deduplicated catalogue for import.
+This option is separate from `--events`, the market-data event log.
+
+Only the account's saved rules.events decide F17/F59 outcomes. Create/reset journal
+news_before_minutes, news_after_minutes, news_action, hold_restrictions and
+hold_cutoff when nondefault. Holding plans also journal their business-day calendar.
+Once-only calendar actions and crossed holding boundaries are journaled; recovery
+never rereads the server CSV. Off-default omission keeps old plans' journal bytes
+unchanged. Replay driver and scenario revisions are unchanged.

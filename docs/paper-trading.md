@@ -1597,6 +1597,9 @@ side, no buying-power check. All rule money is exact.
 | `time_limit_days`, `inactivity_days` | Calendar-day limits, 0 (off) to 366; the time limit is evaluation-only |
 | `underlyings` | Up to 32 allowed underlying symbols; empty permits all |
 | `trading_start`, `trading_end` | Optional New York minutes internally, `HH:MM` or null on the API; both set or both off, start inclusive and end exclusive |
+| `events` | Up to 256 saved news/earnings/ex-dividend/split events; sorted and deduplicated |
+| `news_before_minutes`, `news_after_minutes`, `news_action` | 0–240 minutes each; both zero off; `block` (default) or `flatten` |
+| `hold_restrictions`, `hold_cutoff` | Set of weekend, earnings, ex_dividend, split; empty off; cutoff `HH:MM` ET, default 15:45, before day_end |
 | `day_end_minutes` | Minutes after New York midnight at which the plan's trading day ends, 975 (16:15) to 1440 (24:00); default 1020 (17:00). API `day_end` as `HH:MM` |
 | `scaling` | Optional steps `{profit, contracts}`: the finished day’s closed-balance profit selects the next session’s cap on option contracts held; each leg counts, shares do not. Empty disables (see Scaling plan below) |
 | `size_scaling` | Funded only: optional periodic profit/payout reviews grow account capital linearly from the original size, capped at a maximum. Absent/null disables (see Account size scaling below) |
@@ -1911,6 +1914,66 @@ available. Invalid `flat_time` or non-boolean `no_overnight` returns HTTP 422
 `INVALID_RULES` on account create/reset. Off defaults are omitted from journals,
 so old plans retain identical bytes and older journals recover unchanged. Replay
 driver and scenario revisions are unchanged.
+
+### News blackouts and holding restrictions (F17, F59)
+
+Both rules use one **saved plan event calendar**, `events`, with at most 256 entries.
+An event has `kind` (`news`, `earnings`, `ex_dividend`, `split`), `time`, optional
+`label` (up to 64 characters), and an underlying `symbol` using the same 1–12 uppercase
+letters, digits or dots as `underlyings`. Only news may omit the symbol, meaning
+all underlyings. News time is an exact ISO-8601 UTC timestamp ending in `Z`;
+other events use a valid `YYYY-MM-DD` date. Earnings alone accepts `session`:
+`before_open` (default) or `after_close`. Input is sorted by time, kind, symbol,
+session and label and identical entries are deduplicated. Unknown fields, kinds,
+invalid dates, symbols, sessions or limits receive 422 `INVALID_RULES` with an
+explanation. The event list is journaled at create/reset, including nanoseconds.
+
+`news_before_minutes` and `news_after_minutes` are integers 0–240. Both zero
+turn the rule off. Each enabled news window is **[time − before, time + after)**.
+Inside it, scoped opening orders and previews receive `NEWS_BLACKOUT`; working
+opening orders cancel before matching at the first transaction inside the window.
+Reductions and exits keep working. `news_action: block` is the default;
+`flatten` also attempts one system liquidation per event (`system:news:N`). A gap
+that skips an entire window does nothing retroactively. Overlapping windows are
+independent and all active scopes restrict openings.
+
+`hold_restrictions` is a set of `weekend`, `earnings`, `ex_dividend`, `split`;
+empty disables it. `hold_cutoff` is New York `HH:MM`, default **15:45**, strictly
+before `day_end`. The last holding date is the last business date before Saturday
+for weekend (Thursday before a Friday holiday); before the event date for earnings
+before open, ex-dividend and splits; the event date for earnings after close. The business-day calendar
+is frozen into holding-enabled rules at create/reset for deterministic replay.
+
+At the first transaction at or after that cutoff, even after a gap, scoped opening
+orders cancel with `HOLD_RESTRICTED` and positions receive a single system-close
+attempt per holding date, restriction and scope (`system:hold:N`). Weekend covers all underlyings; corporate events cover
+both options and shares on their underlying. Openings stay blocked through that
+holding date's `day_end` (exclusive). System closes use the existing executable
+liquidity and integer micro-dollar money path; they do not invent fills when the
+market is closed or quotes are stale. Expired positions awaiting settlement are
+skipped. A position still held across the restricted boundary is recorded and
+fails the active attempt with decision `HOLD_RESTRICTED` at the next rollover,
+even if a later close succeeds. Existing post-failure liquidation then applies.
+This does not add flat-time or general no-overnight rules.
+
+HTTP evidence: `NEWS_BLACKOUT.actual` is the current UTC timestamp and `limit`
+is the window end, with `scope` the underlying or `account`. For `HOLD_RESTRICTED`,
+`actual` is null, `limit` is the cutoff `HH:MM` ET, and `scope` combines the kind
+and underlying (`earnings:SPY`) or account (`weekend:account`). The reducer journals
+timestamps as nanoseconds and cutoffs as New York minutes. Account `evaluation`
+adds `next_event` (earliest active/future restricting window, or null) and
+`active_events` (all active windows): kind, symbol/label or null, UTC start/end and
+active flag. Holding start is its cutoff; end is its plan day end.
+
+Custom PlanEditor edits all fields and event rows. Import server calendar reads
+`GET /api/calendar/events`; import known dividend ex-dates reads the selected
+underlyings' summary expiry dividend calendars (all subscribed underlyings when
+no allowlist is set). Imports become plan rules only when saved. Plan facts and
+Rules explain the restrictions, Dashboard reports the next/active window, and
+chain, option, strategy and share tickets block scoped openings while reductions
+remain available. The daemon's optional `--event-calendar FILE` never changes
+an existing account. Rules at off defaults and empty action state are omitted
+from journals, preserving older plans' exact bytes; old journals still recover.
 
 ### Plan objectives and the daily loss limit
 
@@ -2856,6 +2919,11 @@ compilers/architectures, although recovery restores the recorded doubles.
 
 ## Reason codes
 
+`NEWS_BLACKOUT` refuses/cancels scoped openings during an enabled news window.
+`HOLD_RESTRICTED` refuses/cancels openings after a holding cutoff and fails an
+attempt at rollover if a position crossed the boundary. See F17/F59 above for
+string timestamp/cutoff evidence and the `kind:scope` holding convention.
+
 `TIME_LIMIT` fails an overdue evaluation; `INACTIVITY` fails an attempt after too
 many calendar days without an own execution. `INSTRUMENT_NOT_ALLOWED` refuses
 opening options or shares outside the plan whitelist. `OUTSIDE_PLAN_HOURS` refuses
@@ -3290,7 +3358,8 @@ pm_vol_shock, buying_power, expiry_cutoff_seconds, lock_at_start, profit_basis, 
 daily_loss_basis, daily_loss_action, consistency_percent, consistency_basis, min_trading_days,
 trade_consistency_percent, min_trades, min_hold_seconds, microscalp_seconds, microscalp_percent,
 min_profitable_days, profitable_day_profit, day_end, time_limit_days, inactivity_days, flat_time, no_overnight,
-underlyings, trading_start, trading_end, scaling, size_scaling}`.
+underlyings, trading_start, trading_end, scaling, size_scaling, events, news_before_minutes, news_after_minutes,
+news_action, hold_restrictions, hold_cutoff}`.
 `fees` is the optional [fee schedule](#fees). `scaling` defaults to `[]` and uses decimal-string profit thresholds; see [Scaling plan](#funded-accounts-and-payouts).
 `defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `inside_fill_percent`, `margin`, `account_type`,
 `house_margin_percent`, `pm_vol_shock` and every field from `lock_at_start` on are optional when creating or

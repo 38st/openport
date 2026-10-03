@@ -522,3 +522,14 @@ special opening quotation; live providers keep manual imports.
 - [x] F65: custom plans can ban opening hedges within an account and counter positions across live accounts. Options and shares use current dollar-delta direction; previews and tickets explain refusals. The reducer enforces `no_hedging`; the desk enforces `no_counter_positions` before journaling, excluding archived/replay/sandbox accounts. Enable the latter on each trading account.
 
 - [x] F66: per-contract position caps as a whole percentage of current-date traded option volume, with exact ratio-aware checks, strict unknown/stale refusals, previews and terminal custom-plan controls. The server gate keeps volume outside reducer journals; backtests require recordings carrying volume.
+
+### Event restrictions (F17/F59)
+
+Plans share a saved event calendar for scoped news blackouts and weekend,
+earnings, ex-dividend and split holding restrictions. Configure `events`,
+`news_before_minutes`, `news_after_minutes`, `news_action`, `hold_restrictions`
+and `hold_cutoff` in custom plans. Imports use the daemon's `--event-calendar`
+catalogue or known dividend ex-dates; saving freezes them into the plan. Rules,
+Dashboard, chain and tickets explain active/next restrictions and permit reductions.
+Once-only system closes, boundary failures and the holding business calendar are
+journaled for deterministic recovery. See [rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).

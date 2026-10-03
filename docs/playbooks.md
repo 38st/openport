@@ -675,3 +675,10 @@ arriving later can therefore close automatically but fail adherence. Debit stops
 check submitted bracket levels. Trailing checks closure by its recorded first
 trigger; a closed trade with sampled evidence and no trigger passes, absent
 evidence is null. Stage/off stop automatic closes but do not erase trigger evidence.
+
+Event rules also apply to playbook entries: `events`, `news_before_minutes`,
+`news_after_minutes`, `news_action`, `hold_restrictions`, `hold_cutoff` use the same
+saved AccountRules calendar in live, replay and custom backtest plans. Blackouts
+and holding cutoffs block/cancel openings with NEWS_BLACKOUT/HOLD_RESTRICTED;
+managed exits and reductions remain available. System closes do not count as
+trader executions. See [F17/F59](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
