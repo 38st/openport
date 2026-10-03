@@ -190,6 +190,9 @@ void validate_limits(const Limits& l) {
 }
 void validate_rules(const AccountRules& r) {
   const auto& p = r.payouts;
+  if (p.consistency_percents.size() > 64 ||
+      !std::all_of(p.consistency_percents.begin(), p.consistency_percents.end(), [](auto percent) { return percent >= 1 && percent <= 100; }))
+    throw TradingError(Reason::INVALID_RULES, "Payout consistency takes at most 64 percentages, each from 1 to 100");
   const bool payouts_ok = p.qualifying_profit >= Money{} && p.qualifying_days >= 0 && p.qualifying_days <= 366 &&
       p.withdrawal_percent >= 0 && p.withdrawal_percent <= 100 && p.split_percent >= 0 && p.split_percent <= 100 &&
       p.minimum >= Money{} && p.caps.size() <= 64 &&

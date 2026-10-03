@@ -4204,7 +4204,7 @@
       ],
       "post": {
         "summary": "POST /api/stocks/trade",
-        "description": "Buy or sell 1\u201310,000,000 shares at a fresh underlying price during the stock regular session (09:30\u201316:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
+        "description": "Buy or sell 1–10,000,000 shares at a fresh underlying price during the stock regular session (09:30–16:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
         "x-scope": "trade",
         "responses": {
           "200": {
@@ -4244,7 +4244,7 @@
       ],
       "post": {
         "summary": "POST /api/stocks/trade/preview",
-        "description": "Buy or sell 1\u201310,000,000 shares at a fresh underlying price during the stock regular session (09:30\u201316:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Dry run only: accepted/rejected decision, signed cash cost, price, and account before/after; a rejected trade leaves holdings unchanged. Nothing is journaled. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
+        "description": "Buy or sell 1–10,000,000 shares at a fresh underlying price during the stock regular session (09:30–16:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Dry run only: accepted/rejected decision, signed cash cost, price, and account before/after; a rejected trade leaves holdings unchanged. Nothing is journaled. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
         "x-scope": "trade",
         "responses": {
           "200": {
@@ -4637,7 +4637,7 @@
     "/api/backtests/compare": {
       "get": {
         "summary": "Compare saved backtests",
-        "description": "Compare 2\u20138 distinct finished completed or partial reports. 400 invalid selection, 404 unknown run, 409 active run, 422 unavailable report. Daily P&L aligns over all supplied dates. Combined results sum independent daily passes, with no shared buying power, risk limits or plan floor. Absent dates contribute nothing; supplied unmarked or unfinished days make the combined day and subsequent cumulative values null. Legacy missing identities are flagged. Exact-money overflow returns 422 BACKTEST_COMPARISON_UNAVAILABLE.",
+        "description": "Compare 2–8 distinct finished completed or partial reports. 400 invalid selection, 404 unknown run, 409 active run, 422 unavailable report. Daily P&L aligns over all supplied dates. Combined results sum independent daily passes, with no shared buying power, risk limits or plan floor. Absent dates contribute nothing; supplied unmarked or unfinished days make the combined day and subsequent cumulative values null. Legacy missing identities are flagged. Exact-money overflow returns 422 BACKTEST_COMPARISON_UNAVAILABLE.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -4662,7 +4662,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Comma-separated 2\u20138 unique six-digit saved run IDs, in display order."
+            "description": "Comma-separated 2–8 unique six-digit saved run IDs, in display order."
           }
         ]
       }
@@ -5331,8 +5331,14 @@
             ]
           },
           "inactive_reason": {
-            "type": ["string", "null"],
-            "enum": ["MISSING_PREVIOUS_CLOSE", null],
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "MISSING_PREVIOUS_CLOSE",
+              null
+            ],
             "description": "Why price-triggered circuit breakers lack a reference. Null when ready; authored halts are independent. Optional on older servers."
           },
           "level": {
@@ -8489,7 +8495,7 @@
           },
           "write": {
             "$ref": "#/components/schemas/WriteMode",
-            "description": "Write policy for this account; see WriteMode. This describes credential requirements, not the supplied token\u2019s scopes."
+            "description": "Write policy for this account; see WriteMode. This describes credential requirements, not the supplied token’s scopes."
           },
           "fee_per_contract": {
             "$ref": "#/components/schemas/Money"
@@ -8561,6 +8567,17 @@
             "items": {
               "$ref": "#/components/schemas/Money"
             }
+          },
+          "consistency_percents": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "maxItems": 64,
+            "default": [],
+            "description": "Best positive day at most this percent of net realised cycle profit; indexed by payout number, last repeats, empty disables."
           }
         },
         "required": [
@@ -9296,6 +9313,45 @@
           },
           "split_percent": {
             "type": "number"
+          },
+          "consistency_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cycle_profit": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "best_day": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "day": {
+                    "type": "string"
+                  },
+                  "profit": {
+                    "$ref": "#/components/schemas/Money"
+                  }
+                },
+                "required": [
+                  "day",
+                  "profit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "consistency_needed": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Additional cycle profit required for the current best day, rounded up to whole cents; zero when met or disabled. Profit must also be positive."
           }
         },
         "required": [
@@ -9314,7 +9370,11 @@
           "minimum",
           "trader_share",
           "withdrawal_percent",
-          "split_percent"
+          "split_percent",
+          "consistency_percent",
+          "cycle_profit",
+          "best_day",
+          "consistency_needed"
         ]
       },
       "Evaluation": {
@@ -9622,7 +9682,7 @@
                 "type": "null"
               }
             ],
-            "description": "With a consistency rule, the profit (of its basis) the best day requires: best day \u00d7 100 / percent, rounded up to the cent."
+            "description": "With a consistency rule, the profit (of its basis) the best day requires: best day × 100 / percent, rounded up to the cent."
           },
           "daily_loss": {
             "anyOf": [

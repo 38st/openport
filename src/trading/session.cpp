@@ -3931,6 +3931,7 @@ PlanInputs plan_inputs(const TradingSnapshot& s) {
   return in;
 }
 PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
+  __extension__ using Wide = __int128;
   const auto& p = rules.payouts;
   const auto& e = s.evaluation;
   PayoutQuote q;
@@ -3940,6 +3941,32 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
   q.flat = s.positions.empty() && s.open_orders.empty();
   q.qualifying_days = e.qualifying_days;
   q.required_days = p.qualifying_days;
+  const auto add_day = [&](md::Date day, Money profit) {
+    q.cycle_profit = q.cycle_profit + profit;
+    if (profit > Money{} && (!q.best_day || profit > *q.best_day)) {
+      q.best_day = profit;
+      q.best_day_date = day;
+    }
+  };
+  // Like qualifying_days, a finished day belongs to the cycle in progress at
+  // rollover. The payout request's trading day belongs to the next cycle too.
+  for (const auto& day : e.days)
+    if (e.payouts.empty() || day.day >= e.payouts.back().day) add_day(day.day, day.realised);
+  if (e.started > 0) add_day(e.day, s.account.realised - s.account.fees - e.day_open_realised);
+  bool consistent = true;
+  if (!p.consistency_percents.empty()) {
+    q.consistency_percent = p.consistency_percents.at(std::min<std::size_t>(q.number, p.consistency_percents.size()) - 1);
+    const Wide best = q.best_day.value_or(Money{}).micros();
+    const Wide missing = best * 100 - static_cast<Wide>(q.cycle_profit.micros()) * *q.consistency_percent;
+    consistent = q.cycle_profit > Money{} && missing <= 0;
+    if (missing > 0) {
+      const Wide divisor = *q.consistency_percent * 10'000;
+      const Wide micros = (missing + divisor - 1) / divisor * 10'000;
+      if (micros > std::numeric_limits<std::int64_t>::max())
+        throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Payout consistency profit needed exceeds the money range");
+      q.consistency_needed = Money::from_micros(static_cast<std::int64_t>(micros));
+    }
+  }
   q.profit = s.equity - e.starting_balance;
   q.withdrawable = whole_cents(q.profit > Money{} ? q.profit.prorate(p.withdrawal_percent, 100) : Money{});
   if (!p.caps.empty()) q.cap = p.caps.at(std::min<std::size_t>(q.number, p.caps.size()) - 1);
@@ -3959,6 +3986,11 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
   if (static_cast<std::int64_t>(q.qualifying_days) < q.required_days)
     block(Reason::PAYOUT_NOT_ELIGIBLE, "Not enough qualifying days in this payout cycle",
           static_cast<double>(q.qualifying_days), static_cast<double>(q.required_days));
+  if (!consistent)
+    block(Reason::PAYOUT_NOT_ELIGIBLE, "Payout consistency requires a positive cycle profit and a best day of at most " +
+          std::to_string(*q.consistency_percent) + "% of its net realised profit",
+          q.cycle_profit > Money{} ? std::optional<double>{q.best_day.value_or(Money{}).dollars() / q.cycle_profit.dollars() * 100} : std::nullopt,
+          static_cast<double>(*q.consistency_percent));
   if (q.maximum <= Money{} || q.maximum < q.minimum)
     block(Reason::PAYOUT_NOT_ELIGIBLE, "The payout available is below the minimum", q.maximum.dollars(), q.minimum.dollars());
   return q;

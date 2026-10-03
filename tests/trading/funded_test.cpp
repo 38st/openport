@@ -50,6 +50,124 @@ void next_day(TradingSession& s, ScriptedMarket& f, md::Date day) {
   ASSERT_TRUE(s.roll_day(f.time).decision.ok());
 }
 
+// Exact net day profit from one round trip, including both fees.
+void profit_day(TradingSession& s, ScriptedMarket& f, std::string_view profit) {
+  quote(s, f, "4.00", "4.20");
+  ASSERT_TRUE(s.submit(f.market("day-open-" + std::to_string(f.observation)), f.time).decision.ok());
+  const auto bid = m("4.20") + (m(profit) + s.config().fee_per_contract * 2).prorate(1, 100);
+  quote(s, f, bid.str(), (bid + m("0.20")).str());
+  ASSERT_TRUE(s.submit(f.market("day-close-" + std::to_string(f.observation), 1, Side::Sell), f.time).decision.ok());
+}
+
+TEST(TradingFunded, ConsistencyCountsNetDaysIncludingTodayAndRestartsAtThePayoutDay) {
+  ScriptedMarket f;
+  auto rules = funded("5000");
+  rules.payouts.consistency_percents = {40};
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  profit_day(s, f, "300");
+  // Qualifying days block first, even though consistency is also unmet.
+  EXPECT_EQ(s.request_payout(m("10"), f.time).decision.limit, 1);
+  next_day(s, f, {2026, 9, 23});
+  auto q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.consistency_percent, 40);
+  EXPECT_EQ(q.cycle_profit, m("300"));
+  EXPECT_EQ(q.best_day, m("300"));
+  EXPECT_EQ(q.best_day_date, (md::Date{2026, 9, 22}));
+  EXPECT_EQ(q.consistency_needed, m("450"));
+  EXPECT_EQ(q.blocked.code, Reason::PAYOUT_NOT_ELIGIBLE);
+  EXPECT_EQ(q.blocked.actual, 100);
+  EXPECT_EQ(q.blocked.limit, 40);
+  EXPECT_NE(q.blocked.message.find("consistency"), std::string::npos);
+  EXPECT_EQ(s.request_payout(m("10"), f.time).decision.code, Reason::PAYOUT_NOT_ELIGIBLE);
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 24});
+  profit_day(s, f, "250");  // Today's $250 counts before rollover: exactly 40%.
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.cycle_profit, m("750"));
+  EXPECT_EQ(q.consistency_needed, Money{});
+  ASSERT_TRUE(q.blocked.ok());
+  ASSERT_TRUE(s.request_payout(m("10"), f.time).decision.ok());
+  q = payout_quote(*s.snapshot(), rules);
+  // The request day belongs to the new cycle in full, as with qualifying_days.
+  EXPECT_EQ(q.cycle_profit, m("250"));
+  EXPECT_EQ(q.best_day, m("250"));
+  EXPECT_EQ(q.best_day_date, (md::Date{2026, 9, 24}));
+  next_day(s, f, {2026, 9, 25});
+  profit_day(s, f, "200");
+  next_day(s, f, {2026, 9, 28});
+  profit_day(s, f, "175");
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.cycle_profit, m("625"));
+  EXPECT_EQ(q.best_day, m("250"));
+  EXPECT_EQ(q.consistency_needed, Money{});
+  ASSERT_TRUE(q.blocked.ok()); // The old $300 best would still block this payout.
+  ASSERT_TRUE(s.request_payout(m("10"), f.time).decision.ok());
+}
+
+TEST(TradingFunded, ConsistencyEscalatesByPayoutNumberAndRepeatsTheLastPercent) {
+  ScriptedMarket f;
+  auto rules = funded();
+  rules.payouts.consistency_percents = {20, 25, 30};
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  const std::vector<md::Date> dates{{2026,9,23}, {2026,9,24}, {2026,9,25}, {2026,9,28}, {2026,9,29},
+      {2026,9,30}, {2026,10,1}, {2026,10,2}, {2026,10,5}, {2026,10,6}, {2026,10,7}, {2026,10,8}, {2026,10,9}};
+  std::size_t day = 0;
+  for (const auto [percent, count] : {std::pair{20, 5}, {25, 4}, {30, 4}}) {
+    EXPECT_EQ(payout_quote(*s.snapshot(), rules).consistency_percent, percent);
+    for (int i = 0; i < count; ++i) {
+      profit_day(s, f, "60");
+      next_day(s, f, dates.at(day++));
+    }
+    ASSERT_TRUE(s.request_payout(m("10"), f.time).decision.ok());
+    EXPECT_EQ(payout_quote(*s.snapshot(), rules).cycle_profit, Money{});
+    EXPECT_FALSE(payout_quote(*s.snapshot(), rules).best_day);
+  }
+  EXPECT_EQ(payout_quote(*s.snapshot(), rules).consistency_percent, 30);
+}
+
+TEST(TradingFunded, ConsistencyIncludesLossesAndRoundsAdditionalProfitUpToCents) {
+  ScriptedMarket f;
+  auto rules = funded();
+  rules.payouts.consistency_percents = {30};
+  auto c = config(rules);
+  c.fee_per_contract = m("0.65005");
+  TradingSession s(c, f.time);
+  f.seed(s);
+  profit_day(s, f, "100.0001");
+  next_day(s, f, {2026, 9, 23});
+  profit_day(s, f, "-0.0001");
+  auto q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.cycle_profit, m("100"));
+  EXPECT_EQ(q.consistency_needed, m("233.34"));
+  profit_day(s, f, "-100");
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.cycle_profit, Money{});
+  EXPECT_EQ(q.consistency_needed, m("333.34"));
+  EXPECT_FALSE(q.blocked.actual);
+  profit_day(s, f, "-50");
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.cycle_profit, m("-50"));
+  EXPECT_EQ(q.consistency_needed, m("383.34"));
+  EXPECT_EQ(q.blocked.code, Reason::PAYOUT_NOT_ELIGIBLE);
+  EXPECT_FALSE(q.blocked.actual);
+}
+
+TEST(TradingFunded, ConsistencyValidatesEveryPercent) {
+  for (const auto percent : {0, -1, 101}) {
+    auto rules = funded();
+    rules.payouts.consistency_percents = {40, percent};
+    try { validate_rules(rules); FAIL(); }
+    catch (const TradingError& e) { EXPECT_EQ(e.code(), Reason::INVALID_RULES); }
+  }
+  auto rules = funded();
+  rules.payouts.consistency_percents = {1, 100};
+  EXPECT_NO_THROW(validate_rules(rules));
+  rules.payouts.consistency_percents.resize(65, 40);
+  EXPECT_THROW(validate_rules(rules), TradingError);
+}
+
 TEST(TradingFunded, FloorLocksAtTheLockBalanceAndStopsTrailing) {
   ScriptedMarket f;
   AccountRules rules;
@@ -367,6 +485,48 @@ TEST(TradingFunded, JournalRecoveryRestoresPayoutsAndQualifyingDays) {
   EXPECT_TRUE(e.days.at(0).qualifying);
   EXPECT_EQ(s.config().rules.payouts.caps.size(), 2);
   EXPECT_EQ(s.config().rules.phase, Phase::Funded);
+  const auto capture = std::make_shared<CapturingJournal>();
+  TradingSession::expand(FileJournal::read(path), *capture);
+  for (const auto& entry : capture->entries) {
+    const auto recorded = nlohmann::json::parse(entry.payload)["state"]["config"]["rules"]["payouts"];
+    EXPECT_EQ(recorded.size(), 6); // The original funded journal fields and bytes.
+    EXPECT_FALSE(recorded.contains("consistency_percents"));
+  }
+  EXPECT_TRUE(s.config().rules.payouts.consistency_percents.empty());
+  std::filesystem::remove_all(directory);
+}
+
+TEST(TradingFunded, ConsistencyJournalRecoversRulesAndTheCycle) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-consistency-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "funded.jsonl").string();
+  auto rules = funded();
+  rules.payouts.consistency_percents = {50, 60};
+  ScriptedMarket f;
+  std::string expected;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(path));
+    f.seed(s);
+    winning_trade(s, f);
+    next_day(s, f, {2026, 9, 23});
+    winning_trade(s, f);
+    next_day(s, f, {2026, 9, 24});
+    ASSERT_TRUE(s.request_payout(m("40"), f.time).decision.ok());
+    winning_trade(s, f);
+    next_day(s, f, {2026, 9, 25});
+    expected = s.snapshot_json();
+  }
+  auto s = TradingSession::recover(FileJournal::read(path), FileJournal::resume(path));
+  EXPECT_EQ(s.snapshot_json(), expected);
+  EXPECT_EQ(s.config().rules, rules);
+  const auto q = payout_quote(*s.snapshot(), s.config().rules);
+  EXPECT_EQ(q.consistency_percent, 60);
+  EXPECT_EQ(q.cycle_profit, m("93.50"));
+  EXPECT_EQ(q.best_day_date, (md::Date{2026, 9, 24}));
+  EXPECT_EQ(q.consistency_needed, m("62.34"));
+  winning_trade(s, f);
+  EXPECT_TRUE(payout_quote(*s.snapshot(), rules).blocked.ok());
   std::filesystem::remove_all(directory);
 }
 

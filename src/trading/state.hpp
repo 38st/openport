@@ -207,7 +207,23 @@ inline void from_json(const Json& j, GuardrailState& g) {
   added_field(j, "latched", g.latched); added_field(j, "owns_kill", g.owns_kill);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioConfig, spot_percent, vol_points, vol_floor)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PayoutRules, qualifying_profit, qualifying_days, withdrawal_percent, split_percent, minimum, caps)
+inline void to_json(Json& j, const PayoutRules& p) {
+  j = Json{{"qualifying_profit", p.qualifying_profit}, {"qualifying_days", p.qualifying_days},
+           {"withdrawal_percent", p.withdrawal_percent}, {"split_percent", p.split_percent}, {"minimum", p.minimum}, {"caps", p.caps}};
+  if (!p.consistency_percents.empty()) j["consistency_percents"] = p.consistency_percents;
+}
+inline void from_json(const Json& j, PayoutRules& p) {
+  j.at("qualifying_profit").get_to(p.qualifying_profit); j.at("qualifying_days").get_to(p.qualifying_days);
+  j.at("withdrawal_percent").get_to(p.withdrawal_percent); j.at("split_percent").get_to(p.split_percent);
+  j.at("minimum").get_to(p.minimum); j.at("caps").get_to(p.caps);
+  if (const auto it = j.find("consistency_percents"); it != j.end()) {
+    if (!it->is_array()) throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded payout consistency must be an array");
+    for (const auto& percent : *it)
+      if (!percent.is_number_integer() || percent < 1 || percent > 100)
+        throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded payout consistency must contain integers from 1 to 100");
+  }
+  added_field(j, "consistency_percents", p.consistency_percents);
+}
 inline void to_json(Json& j, MarginMode mode) { j = mode == MarginMode::Portfolio ? "portfolio" : "strategy"; }
 inline void from_json(const Json& j, MarginMode& mode) {
   const auto value = j.get<std::string>();
