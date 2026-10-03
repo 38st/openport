@@ -1,5 +1,6 @@
-import type { AccountRules, DailyLossBasis, Evaluation, Money, Objective } from "../api/trading-types"
+import type { Account, AccountRules, DailyLossBasis, Evaluation, Money, Objective } from "../api/trading-types"
 import { formatMoney, subtractMoney } from "./trading"
+import { newYorkDate } from "./journal"
 
 /** "18:00" as "6:00 pm"; "24:00" as "midnight". */
 export function clockText(clock: string): string {
@@ -71,6 +72,7 @@ export const decisionLabels: Record<string, string> = {
   PROFIT_TARGET: "profit target",
   DRAWDOWN_FLOOR: "drawdown floor",
   DAILY_LOSS_LIMIT: "daily loss limit",
+  FLAT_TIME: "mandatory flat time", OVERNIGHT_HOLD: "overnight hold",
   TIME_LIMIT: "evaluation time limit", INACTIVITY: "inactivity limit",
   INSTRUMENT_NOT_ALLOWED: "underlying not allowed", OUTSIDE_PLAN_HOURS: "outside plan trading hours",
 }
@@ -101,6 +103,8 @@ export function tradeRuleFacts(r: AccountRules): string[] {
 /** Optional time and product restrictions, shared by the plan chooser and Rules. */
 export function timeRuleEntries(r: AccountRules): { title: string; body: string }[] {
   return [
+    ...(r.flat_time ? [{ title: "Mandatory flat time", body: `Flat by ${r.flat_time} ET: options and shares close; openings blocked until ${dayEnd(r)} ET. Unfilled closes retry on fresh quotes.` }] : []),
+    ...(r.no_overnight ? [{ title: "No overnight holds", body: `Positions held at the ${dayEnd(r)} ET rollover fail the attempt (OVERNIGHT_HOLD); positions awaiting settlement are excluded` }] : []),
     ...(r.time_limit_days ? [{ title: "Evaluation time limit", body: `Evaluation ends after ${r.time_limit_days} calendar days` }] : []),
     ...(r.inactivity_days ? [{ title: "Inactivity limit", body: `Inactivity limit: ${r.inactivity_days} calendar days without your own execution` }] : []),
     ...(r.underlyings?.length ? [{ title: "Allowed underlyings", body: `Allowed underlyings: ${r.underlyings.join(", ")}${r.underlyings.includes("SPX") ? " (SPX includes SPXW options)" : ""}` }] : []),
@@ -109,9 +113,20 @@ export function timeRuleEntries(r: AccountRules): { title: string; body: string 
 }
 export function timeRuleFacts(r: AccountRules): string[] { return timeRuleEntries(r).map((entry) => entry.body) }
 const planClock = new Intl.DateTimeFormat("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+export function flatRuleNotice(r: AccountRules | undefined): string | null {
+  if (!r) return null
+  const parts = [
+    ...(r.flat_time ? [`Flat by ${r.flat_time} ET; positions will be closed and openings blocked until ${dayEnd(r)} ET.`] : []),
+    ...(r.no_overnight ? ["No overnight holds: positions at day rollover fail the attempt; awaiting settlement is excluded."] : []),
+  ]
+  return parts.length ? parts.join(" ") : null
+}
 /** Ticket checks use the account's market clock, including paused and delayed feeds. */
-export function planEntryNotice(r: AccountRules | undefined, underlying: string, time: string | undefined, reducing: boolean): string | null {
+export function planEntryNotice(r: AccountRules | undefined, underlying: string, time: string | undefined, reducing: boolean, account?: Pick<Account, "time" | "evaluation"> | null): string | null {
   if (!r || reducing) return null
+  const flat = account?.evaluation.flat_now != null && Date.parse(account.time) === Date.parse(time ?? "")
+    ? account.evaluation.flat_now : flatNow(r, time)
+  if (flat) return "FLAT_TIME: Flat time passed; openings blocked until the day ends. Closing orders still work."
   if (r.underlyings?.length && !r.underlyings.includes(underlying))
     return `INSTRUMENT_NOT_ALLOWED: ${underlying} is outside this plan's allowed underlyings (${r.underlyings.join(", ")}); closing orders still work.`
   const timestamp = Date.parse(time ?? "")
@@ -122,9 +137,22 @@ export function planEntryNotice(r: AccountRules | undefined, underlying: string,
   }
   return null
 }
-export function timeRuleNotices(e: Evaluation, r: AccountRules): string[] {
+export function flatNow(r: AccountRules, time: string | undefined): boolean {
+  const timestamp = Date.parse(time ?? "")
+  if (!r.flat_time || !Number.isFinite(timestamp)) return false
+  const day = newYorkDate(time!)
+  if (!day || day.weekday === 0 || day.weekday === 6) return false
+  const clock = planClock.format(timestamp)
+  return clock >= r.flat_time && clock < dayEnd(r)
+}
+export function timeRuleNotices(e: Evaluation, r: AccountRules, time?: string): string[] {
   if (e.status !== "active") return []
+  const minute = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3))
+  const timestamp = Date.parse(time ?? "")
+  const remaining = r.flat_time && Number.isFinite(timestamp) ? minute(r.flat_time) - minute(planClock.format(timestamp)) : null
   return [
+    ...((e.flat_now ?? flatNow(r, time)) ? ["Flat time passed; openings blocked until the day ends"]
+      : remaining != null && remaining > 0 && remaining <= 30 ? [`Flat by ${r.flat_time} ET, positions will be closed`] : []),
     ...(e.days_left != null && e.deadline ? [`Evaluation: ${e.days_left} calendar days left; deadline ${e.deadline}.`] : []),
     ...(r.inactivity_days && e.inactive_days != null && e.inactivity_deadline && r.inactivity_days - e.inactive_days <= 7
       ? [`Inactivity: ${Math.max(0, r.inactivity_days - e.inactive_days)} calendar days left to execute a trade; deadline ${e.inactivity_deadline}.`] : []),

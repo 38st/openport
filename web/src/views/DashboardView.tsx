@@ -123,7 +123,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
         </div>
       )}
       <DecisionPositionsNotice account={data} portfolio={portfolio.data} />
-      {timeRuleNotices(e, r).map((notice) => <p key={notice} role="status" className="rounded-lg border border-warn/50 bg-warn/5 p-4 text-sm">{notice}</p>)}
+      {timeRuleNotices(e, r, data.time).map((notice) => <p key={notice} role="status" className="rounded-lg border border-warn/50 bg-warn/5 p-4 text-sm">{notice}</p>)}
       {locked && (
         <div role="status" className="rounded-lg border border-warn/50 bg-warn/5 p-4">
           <div className="font-medium text-warn">Trading locked until the next trading day</div>

@@ -34,6 +34,18 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("strategy ticket", () => {
+  it("blocks flat-time openings and permits reducing every leg", () => {
+    const value = { ...any, time: "2026-09-23T19:45:00Z", rules: { ...any.rules, flat_time: "15:45" } }
+    const held = spread.map((leg) => ({ ...portfolio.positions[0]!, symbol: leg.symbol, quantity: leg.side === "buy" ? -1 : 1 }))
+    const ticket = <StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000}
+      trading={trading} onClose={() => {}} />
+    const opening = render(ticket, value, [], [])
+    expect(opening).toContain("FLAT_TIME")
+    expect(opening).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+    const closing = render(ticket, value, [], held)
+    expect(closing).not.toContain("FLAT_TIME")
+    expect(closing).not.toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+  })
   it("offers walking limits and describes inside fills", () => {
     const custom = { ...any, rules: { ...any.rules, inside_fill_percent: 50 } }
     const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, custom)

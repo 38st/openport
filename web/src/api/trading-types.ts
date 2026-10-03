@@ -74,6 +74,9 @@ export interface AccountRules {
   /** HH:MM New York; both null or a start-inclusive, end-exclusive window. */
   trading_start?: string | null
   trading_end?: string | null
+  /** Mandatory close time in New York, before day_end. */
+  flat_time?: string | null
+  no_overnight?: boolean
   buy_only: boolean
   /** Every short option needs a long of its type expiring with it or later; absent from older servers. */
   defined_risk?: boolean
@@ -223,6 +226,8 @@ export interface Evaluation {
   last_activity?: string | null
   inactive_days?: number | null
   inactivity_deadline?: string | null
+  flat_time?: string | null
+  flat_now?: boolean
   enabled: boolean
   attempt: number
   status: EvaluationStatus

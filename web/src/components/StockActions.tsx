@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { useWriteToken } from "../lib/write-token"
-import { planEntryNotice, planMarketTime } from "../lib/plan-rules"
+import { flatRuleNotice, planEntryNotice, planMarketTime } from "../lib/plan-rules"
 import { useAccount, usePortfolio } from "../api/trading"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
@@ -107,7 +107,7 @@ export function TradeSharesDialog({ initial, trading, onClose }: { initial?: str
   const reduces = effect === "reduces" || effect === "closes"
   const shortSale = side === "sell" && valid && held - n < 0
   const decided = account?.evaluation.enabled && account.evaluation.status !== "active"
-  const planNotice = planEntryNotice(rules, symbol, planMarketTime(account?.time, underlyings.find((u) => u.symbol === symbol)?.as_of, source !== "live" ? replay?.time : null), reduces)
+  const planNotice = planEntryNotice(rules, symbol, planMarketTime(account?.time, underlyings.find((u) => u.symbol === symbol)?.as_of, source !== "live" ? replay?.time : null), reduces, account)
   const refused = planNotice ?? (decided && !reduces ? "The evaluation is decided. Only trades that reduce shares toward zero are allowed; opening requires a new attempt."
     : trading.kill_latched && !reduces ? "Kill switch latched · reduce-only: only trades that reduce shares toward zero are allowed."
     : rules?.require_stop_loss && !reduces ? "Stop-loss required by this plan. Share entries cannot attach a protective stop."
@@ -144,6 +144,7 @@ export function TradeSharesDialog({ initial, trading, onClose }: { initial?: str
           {preview.data.reason && <p role="status" className="text-warn">{preview.data.reason.code}: {preview.data.reason.message}</p>}
         </> : <p>{preview.error ? "Preview unavailable; submitting still takes server checks." : "Enter shares to preview."}</p>}
       </section>
+      {!planNotice && flatRuleNotice(rules) && <p className="text-xs text-muted">{flatRuleNotice(rules)}</p>}
       {refused && <p role="status" className="text-sm text-warn">{refused}</p>}
       <WriteAccess trading={trading} />
       <TradingError error={write.error} />

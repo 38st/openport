@@ -117,6 +117,7 @@ describe("disposing of a worthless position", () => {
 
 describe("trading shares", () => {
   it.each([
+    { flat_time: "10:00", code: "FLAT_TIME" },
     { underlyings: ["SPX"], code: "INSTRUMENT_NOT_ALLOWED" },
     { trading_start: "10:30", trading_end: "16:00", code: "OUTSIDE_PLAN_HOURS" },
   ])("keeps share reductions available under $code", async ({ code, ...restrictions }) => {

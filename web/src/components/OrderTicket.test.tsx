@@ -689,3 +689,18 @@ it("blocks openings outside plan hours using market time", async () => {
   expect(host.textContent).toContain("OUTSIDE_PLAN_HOURS")
   expect(button("Submit order").disabled).toBe(true)
 })
+it("blocks flat-time openings but leaves reductions available", async () => {
+  const restricted = { ...account, time: "2026-09-23T19:45:00Z",
+    rules: { ...account.rules, buy_only: false, flat_time: "15:45" } }
+  const held = { ...portfolio, positions: [{ ...portfolio.positions[0]!, symbol: selection.symbol, quantity: 1 }] }
+  vi.mocked(api.account).mockResolvedValue(restricted)
+  vi.mocked(api.portfolio).mockResolvedValue(held)
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey, restricted)
+  client.setQueryData(tradingQueries(0, "17", true).portfolio.queryKey, held)
+  await render()
+  expect(host.textContent).toContain("FLAT_TIME")
+  expect(button("Submit order").disabled).toBe(true)
+  await choose("Side", "Sell")
+  expect(host.textContent).not.toContain("FLAT_TIME")
+  expect(button("Submit order").disabled).toBe(false)
+})

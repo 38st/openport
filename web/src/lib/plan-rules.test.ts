@@ -149,3 +149,33 @@ describe("time and instrument rules", () => {
     expect(timeRuleNotices(account.evaluation, rules)).toEqual([])
   })
 })
+
+it("round trips flat rules and matches server validation", () => {
+  const base = { ...rules, flat_time: "15:45", no_overnight: true }
+  const form = planForm({ initial_cash: "100000", rules: base })
+  expect(form.flat_time).toBe("15:45")
+  expect(form.no_overnight).toBe("yes")
+  expect(customPlan(form, rules)).toMatchObject({ rules: { flat_time: "15:45", no_overnight: true } })
+  for (const flat_time of ["17:00", "24:00", "9:30", "15:60"])
+    expect(customPlan({ ...form, flat_time }, rules)).toEqual({ error: "flat_time must be HH:MM New York time from 00:00 to 23:59, before day_end" })
+  expect(customPlan({ ...form, flat_time: "", no_overnight: "no" }, rules)).toMatchObject({ rules: { flat_time: null, no_overnight: false } })
+})
+it("blocks flat-time entries at the market clock and announces the deadline", () => {
+  const r = { ...rules, flat_time: "15:45", day_end: "18:00" }
+  const before = "2026-11-03T20:30:00Z", after = "2026-11-03T20:45:00Z"
+  expect(timeRuleNotices(account.evaluation, r, before)).toEqual(["Flat by 15:45 ET, positions will be closed"])
+  expect(timeRuleNotices(account.evaluation, r, after)).toEqual(["Flat time passed; openings blocked until the day ends"])
+  expect(planEntryNotice(r, "SPX", before, false)).toBeNull()
+  expect(planEntryNotice(r, "SPX", after, false)).toContain("FLAT_TIME")
+  expect(planEntryNotice(r, "SPX", after, true)).toBeNull()
+  expect(planEntryNotice(r, "SPX", "2026-11-03T23:00:00Z", false)).toBeNull()
+  expect(decisionLabel("OVERNIGHT_HOLD")).toBe("overnight hold")
+})
+
+it("uses the server flat flag for the same clock, including holidays", () => {
+  const holiday = { ...account, time: "2026-11-26T21:00:00Z", rules: { ...rules, flat_time: "15:45" },
+    evaluation: { ...account.evaluation, flat_now: false } }
+  expect(planEntryNotice(holiday.rules, "SPX", holiday.time, false, holiday)).toBeNull()
+  expect(timeRuleNotices(holiday.evaluation, holiday.rules, holiday.time)).toEqual([])
+  expect(planEntryNotice(holiday.rules, "SPX", "2026-11-28T21:00:00Z", false)).toBeNull()
+})

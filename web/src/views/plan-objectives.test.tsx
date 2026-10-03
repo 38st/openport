@@ -64,6 +64,18 @@ afterEach(async () => {
 })
 
 describe("plan objectives in the terminal", () => {
+  it("shows mandatory flat notices, plan facts and no-overnight rules", () => {
+    const value: Account = { ...planned, time: "2026-09-23T19:30:00Z",
+      rules: { ...planned.rules, flat_time: "15:45", no_overnight: true },
+      evaluation: { ...planned.evaluation, flat_time: "15:45", flat_now: false } }
+    expect(render(<DashboardView />, value)).toContain("Flat by 15:45 ET, positions will be closed")
+    expect(render(<DashboardView />, { ...value, time: "2026-09-23T19:45:00Z",
+      evaluation: { ...value.evaluation, flat_now: true } })).toContain("Flat time passed; openings blocked until the day ends")
+    const texts = ruleText(value).map((r) => renderToStaticMarkup(<>{r.body}</>)).join(" ")
+    expect(texts).toContain("Flat by 15:45 ET")
+    expect(texts).toContain("OVERNIGHT_HOLD")
+    expect(planFacts({ initial_cash: "100000", rules: value.rules }).join(" ")).toContain("positions awaiting settlement are excluded")
+  })
   it("shows evaluation and inactivity deadlines and configured entry restrictions", () => {
     const timed: Account = { ...planned, rules: { ...planned.rules, time_limit_days: 30, inactivity_days: 14,
       underlyings: ["SPX", "XSP"], trading_start: "09:30", trading_end: "16:00" }, evaluation: { ...planned.evaluation,

@@ -41,6 +41,8 @@ export interface PlanForm {
   underlyings: string
   trading_start: string
   trading_end: string
+  flat_time: string
+  no_overnight: "yes" | "no"
   strategies: "buy_only" | "defined_risk" | "any"
 }
 
@@ -70,6 +72,7 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     time_limit_days: r.time_limit_days ? String(r.time_limit_days) : "",
     inactivity_days: r.inactivity_days ? String(r.inactivity_days) : "",
     underlyings: r.underlyings?.join(", ") ?? "", trading_start: r.trading_start ?? "", trading_end: r.trading_end ?? "",
+    flat_time: r.flat_time ?? "", no_overnight: r.no_overnight ? "yes" : "no",
     strategies: r.buy_only ? "buy_only" : r.defined_risk ? "defined_risk" : "any",
   }
 }
@@ -109,6 +112,8 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
   const clock = (s: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s) || s === "24:00"
   if ((form.trading_start || form.trading_end) && (!clock(form.trading_start) || !clock(form.trading_end) || form.trading_start >= form.trading_end))
     return { error: "Set both trading hours as HH:MM ET, with the start before the end" }
+  if (form.flat_time && (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.flat_time) || form.flat_time >= form.day_end))
+    return { error: "flat_time must be HH:MM New York time from 00:00 to 23:59, before day_end" }
   const drawdown = amount(form.max_drawdown)
   if (form.lock === "balance" && !amount(form.lock_balance)) return { error: "Enter the balance the floor locks at" }
   const trailing = drawdown != null && form.drawdown_mode !== "static"
@@ -147,6 +152,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     max_trade_risk: amount(form.max_trade_risk), max_trade_risk_percent: count(form.max_trade_risk_percent),
     time_limit_days: form.phase === "funded" ? 0 : count(form.time_limit_days), inactivity_days: count(form.inactivity_days), underlyings,
     trading_start: form.trading_start || null, trading_end: form.trading_end || null,
+    flat_time: form.flat_time || null, no_overnight: form.no_overnight === "yes",
     buy_only: form.strategies === "buy_only", defined_risk: form.strategies === "defined_risk",
   }
   return { initial_cash: form.initial_cash.trim(), rules }
@@ -164,7 +170,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onChange: (form: PlanForm) => void; disabled?: boolean }) {
   const set = <K extends keyof PlanForm>(key: K) => (value: PlanForm[K]) => onChange({ ...form, [key]: value })
   const text = (key: keyof PlanForm, placeholder = "") => <input className="trade-input w-full" value={form[key]} placeholder={placeholder}
-    disabled={disabled} inputMode={["name", "day_end", "payout_caps", "payout_consistency_percents", "underlyings", "trading_start", "trading_end"].includes(key) ? "text" : "decimal"}
+    disabled={disabled} inputMode={["name", "day_end", "payout_caps", "payout_consistency_percents", "underlyings", "trading_start", "trading_end", "flat_time"].includes(key) ? "text" : "decimal"}
     onChange={(event) => set(key)(event.target.value as never)} />
   const choice = <K extends keyof PlanForm>(key: K, options: [PlanForm[K], string][]) => <select className="trade-input w-full"
     value={form[key]} disabled={disabled} onChange={(event) => set(key)(event.target.value as PlanForm[K])}>
@@ -213,6 +219,8 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
       <Field label="Allowed underlyings" hint="Comma-separated uppercase symbols; blank allows all. SPX includes SPXW options.">{text("underlyings", "SPX, XSP, VIX")}</Field>
       <Field label="Trading starts (ET)" hint="HH:MM; set both hours or leave both blank">{text("trading_start", "09:30")}</Field>
       <Field label="Trading ends (ET)" hint="Opening orders cancel at this time; exits keep working">{text("trading_end", "16:00")}</Field>
+      <Field label="Flat time (ET)" hint="HH:MM before day end; blank for none. Closes options and shares and blocks openings until day end.">{text("flat_time", "15:45")}</Field>
+      <Field label="No overnight holds" hint="Holding positions at day rollover fails the attempt. Positions awaiting settlement are excluded.">{choice("no_overnight", [["no", "Off"], ["yes", "Required"]])}</Field>
       <Field label="Strategies">{choice("strategies", [["buy_only", "Buy only, single leg"], ["defined_risk", "Defined risk"], ["any", "Any"]])}</Field>
     </fieldset>
   )
