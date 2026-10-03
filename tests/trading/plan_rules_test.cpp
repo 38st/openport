@@ -238,6 +238,95 @@ TEST(PlanRules, ScalingValidationAndDisabledJournalCompatibility) {
   EXPECT_EQ(old.snapshot()->evaluation.scaling_limit, 0);
 }
 
+TEST(ProgramCosts, ExactFeesLimitsPurchasesAndRecoveryLeaveTheLedgerAlone) {
+  ScriptedMarket f;
+  auto rules = plan();
+  rules.phase = Phase::Verification;
+  rules.evaluation_fee = m("100.000001"); rules.reset_fee = m("25.000002"); rules.max_resets = 1;
+  JournalFile file;
+  TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+  EXPECT_EQ(program_costs(*s.snapshot(), rules).total(), m("100.000001"));
+  EXPECT_EQ(s.snapshot()->equity, m("10000"));
+  auto changed = rules;
+  changed.slippage_ticks = 1; changed.reset_fee = m("30.000003");
+  ASSERT_TRUE(s.reset_account(m("10000"), changed, "restart", f.time).decision.ok());
+  auto costs = program_costs(*s.snapshot(), changed);
+  EXPECT_EQ(costs.evaluation, m("100.000001")); EXPECT_EQ(costs.reset, m("30.000003"));
+  EXPECT_EQ(costs.resets_used, 1); EXPECT_EQ(s.snapshot()->equity, m("10000"));
+  const auto refused = s.reset_account(m("10000"), rules, "exhausted", f.time);
+  EXPECT_EQ(refused.decision.code, Reason::RESET_LIMIT);
+  EXPECT_EQ(refused.decision.actual, 2); EXPECT_EQ(refused.decision.limit, 1);
+  EXPECT_EQ(s.snapshot()->attempts.size(), 1U);
+  EXPECT_EQ(program_costs(*s.snapshot(), changed).total(), m("130.000004"));
+  auto recovered = TradingSession::recover(FileJournal::read(file.path));
+  EXPECT_EQ(recovered.snapshot_json(), s.snapshot_json());
+  EXPECT_EQ(recovered.reset_account(m("10000"), rules, "still exhausted", f.time).decision.code, Reason::RESET_LIMIT);
+  rules.plan = "Different purchase";
+  ASSERT_TRUE(s.reset_account(m("10000"), rules, "purchase", f.time).decision.ok());
+  costs = program_costs(*s.snapshot(), rules);
+  EXPECT_EQ(costs.resets_used, 0); EXPECT_EQ(costs.total(), m("230.000005"));
+  // A zero-cost attempt removes its current fee field, preserving the earlier fees.
+  rules.plan = "Free practice"; rules.evaluation_fee = {}; rules.reset_fee = {}; rules.max_resets = 0;
+  ASSERT_TRUE(s.reset_account(m("10000"), rules, "free", f.time).decision.ok());
+  EXPECT_FALSE(Json::parse(s.snapshot_json()).contains("fee_charged"));
+  EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+  for (int i = 0; i < 3; ++i) { ASSERT_TRUE(s.reset_account(m("10000"), rules, "unlimited", f.time).decision.ok()); }
+  EXPECT_EQ(program_costs(*s.snapshot(), rules).resets_used, 3);
+}
+
+TEST(ProgramCosts, DefaultsKeepBytesAndNegativeOrFractionalSettingsAreRejected) {
+  const auto rules = plan();
+  const Json encoded = rules;
+  for (const auto* key : {"evaluation_fee", "reset_fee", "activation_fee", "max_resets"}) { EXPECT_FALSE(encoded.contains(key)); }
+  EXPECT_EQ(Json(encoded.get<AccountRules>()).dump(), encoded.dump());
+  for (const auto* key : {"evaluation_fee", "reset_fee", "activation_fee", "max_resets"}) {
+    auto bad = encoded; bad[key] = -1;
+    EXPECT_THROW(validate_rules(bad.get<AccountRules>()), TradingError);
+  }
+  auto fractional = encoded; fractional["max_resets"] = 1.5;
+  EXPECT_THROW(fractional.get<AccountRules>(), TradingError);
+  TradingSession free(config(rules), 0);
+  ASSERT_TRUE(free.reset_account(m("10000"), rules, "free", 0).decision.ok());
+  EXPECT_FALSE(Json(free.snapshot()->attempts.front()).contains("fee_charged"));
+  EXPECT_FALSE(Json::parse(free.snapshot_json()).contains("fee_charged"));
+}
+
+TEST(ProgramCosts, ActivationAndPayoutsSurviveResets) {
+  ScriptedMarket f;
+  auto rules = plan("100", "1000");
+  rules.phase = Phase::Verification; rules.min_trading_days = 2;
+  JournalFile file;
+  TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 5), f.time).decision.ok());
+  quote(s, f, "4.40", "4.60");
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Active);
+  next_day(s, f, {2026, 9, 23}, "4.40", "4.60");
+  ASSERT_TRUE(s.submit(f.market("second", 1, Side::Sell), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Passed);
+  auto funded = plan("0", "1000"); funded.phase = Phase::Funded; funded.payouts.qualifying_days = 1;
+  funded.activation_fee = m("20.000001"); funded.evaluation_fee = m("999");
+  ASSERT_TRUE(s.reset_account(m("10000"), funded, "activate", f.time, true).decision.ok());
+  EXPECT_EQ(program_costs(*s.snapshot(), funded).activation, m("20.000001"));
+  EXPECT_EQ(program_costs(*s.snapshot(), funded).evaluation, Money{});
+  EXPECT_EQ(s.snapshot()->attempts.front().rules->phase, Phase::Verification);
+  // Real payouts and an account reset keep the trader share across journal recovery.
+  quote(s, f, "4.00", "4.20");
+  ASSERT_TRUE(s.submit(f.market("funded open", 5), f.time).decision.ok());
+  quote(s, f, "4.60", "4.80");
+  ASSERT_TRUE(s.submit(f.market("funded close", 5, Side::Sell), f.time).decision.ok());
+  next_day(s, f, {2026, 9, 24});
+  ASSERT_TRUE(s.request_payout(m("50"), f.time).decision.ok());
+  EXPECT_EQ(program_costs(*s.snapshot(), funded).payouts_received, m("40"));
+  auto free = plan();
+  ASSERT_TRUE(s.reset_account(m("10000"), free, "after payout", f.time).decision.ok());
+  const auto restored = TradingSession::recover(FileJournal::read(file.path));
+  EXPECT_EQ(restored.snapshot_json(), s.snapshot_json());
+  const auto costs = program_costs(*restored.snapshot(), free);
+  EXPECT_EQ(costs.payouts_received, m("40"));
+  EXPECT_EQ(costs.payouts_received - costs.total(), m("19.999999"));
+}
+
 TEST(PlanRules, TheTradingDayEndsAtThePlansOwnTime) {
   // 17:30 New York time on a Tuesday counts toward Wednesday under the default
   // 17:00 end, but still toward Tuesday when the plan's day ends at 18:00.

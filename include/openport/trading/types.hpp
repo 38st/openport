@@ -36,10 +36,10 @@ enum class Reason {
   MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
   TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS,
   FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT, TRADE_CONSISTENCY, MIN_TRADES, MIN_HOLD, MICROSCALPING,
-  HEDGING, COUNTER_POSITION, MAX_VOLUME_SHARE, NEWS_BLACKOUT, HOLD_RESTRICTED
+  HEDGING, COUNTER_POSITION, MAX_VOLUME_SHARE, NEWS_BLACKOUT, HOLD_RESTRICTED, RESET_LIMIT
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::HOLD_RESTRICTED;
+inline constexpr Reason kLastReason = Reason::RESET_LIMIT;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -548,7 +548,7 @@ struct ScenarioConfig {
 /// floor never moves: it stays at the starting balance less the drawdown.
 enum class DrawdownMode { Intraday, EndOfDay, Static };
 /// An evaluation passes on its target; a funded account pays out instead.
-enum class Phase { Evaluation, Funded };
+enum class Phase { Evaluation, Funded, Verification };
 enum class MarginMode { Strategy, Portfolio };
 /// What a plan counts as profit, for its target, its consistency rule and its
 /// profitable days: fully marked equity, or the closed balance (cash plus the
@@ -656,6 +656,10 @@ struct AccountRules {
   std::int64_t pm_vol_shock = 0;
   bool buying_power = false;  ///< Enforce cash buying power under the selected margin mode.
   Timestamp expiry_cutoff = 0;  ///< Auto-close this long before a contract's last trade; zero disables.
+  Money evaluation_fee;       ///< Bookkeeping only: a fresh purchase.
+  Money reset_fee;            ///< Restarting the same program.
+  Money activation_fee;       ///< Entering a preset unlocked by a pass.
+  std::int64_t max_resets = 0; ///< Zero is unlimited.
   Phase phase = Phase::Evaluation;
   Money lock_balance;         ///< Once the floor reaches it, the floor stops trailing; zero disables.
   PayoutRules payouts;        ///< Funded phase only.
@@ -711,6 +715,9 @@ struct AccountRules {
   }
   bool operator==(const AccountRules&) const = default;
 };
+
+/// Compare program identity, ignoring execution, broker margin and program costs.
+[[nodiscard]] bool same_program_rules(AccountRules left, const AccountRules& right);
 
 struct SessionConfig {
   Money initial_cash = Money::from_micros(100'000'000'000);

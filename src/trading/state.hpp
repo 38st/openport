@@ -389,6 +389,10 @@ inline void to_json(Json& j, const AccountRules& r) {
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
+  if (r.evaluation_fee != Money{}) j["evaluation_fee"] = r.evaluation_fee;
+  if (r.reset_fee != Money{}) j["reset_fee"] = r.reset_fee;
+  if (r.activation_fee != Money{}) j["activation_fee"] = r.activation_fee;
+  if (r.max_resets != 0) j["max_resets"] = r.max_resets;
   if (r.fees) j["fees"] = *r.fees;
   if (r.inside_fill_percent != 0) j["inside_fill_percent"] = r.inside_fill_percent;
 }
@@ -409,7 +413,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "inside_fill_percent", r.inside_fill_percent);
   for (const auto* key : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "consistency_percent", "min_trading_days", "min_profitable_days", "day_end_minutes",
                           "house_margin_percent", "pm_vol_shock", "max_volume_percent", "max_contracts_held", "max_trade_risk_percent",
-                          "time_limit_days", "inactivity_days"})
+                          "time_limit_days", "inactivity_days", "max_resets"})
     if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
       throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded rule counts must be integers");
   added_field(j, "lock_at_start", r.lock_at_start); added_field(j, "profit_basis", r.profit_basis);
@@ -422,6 +426,8 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "consistency_percent", r.consistency_percent); added_field(j, "consistency_basis", r.consistency_basis);
   added_field(j, "min_trading_days", r.min_trading_days); added_field(j, "min_profitable_days", r.min_profitable_days);
   added_field(j, "profitable_day_profit", r.profitable_day_profit); added_field(j, "day_end_minutes", r.day_end_minutes);
+  added_field(j, "evaluation_fee", r.evaluation_fee); added_field(j, "reset_fee", r.reset_fee);
+  added_field(j, "activation_fee", r.activation_fee); added_field(j, "max_resets", r.max_resets);
   added_field(j, "fees", r.fees);
   added_field(j, "account_type", r.account_type); added_field(j, "house_margin_percent", r.house_margin_percent);
   added_field(j, "pm_vol_shock", r.pm_vol_shock);
@@ -550,6 +556,7 @@ inline void from_json(const Json& j, Evaluation& e) {
   added_field(j, "holding_violations", e.holding_violations);
   added_field(j, "event_actions", e.event_actions); added_field(j, "event_checked", e.event_checked);
 }
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AttemptFee, amount, kind)
 inline void to_json(Json& j, const AttemptSummary& a) {
   j = Json{{"attempt", a.attempt}, {"plan", a.plan}, {"started", a.started}, {"ended", a.ended},
            {"starting_balance", a.starting_balance}, {"final_equity", a.final_equity}, {"status", a.status},
@@ -560,6 +567,8 @@ inline void to_json(Json& j, const AttemptSummary& a) {
   if (a.decided_equity) j["decided_equity"] = *a.decided_equity;
   if (a.peak) j["peak"] = *a.peak;
   if (a.floor) j["floor"] = *a.floor;
+  if (a.fee_charged.amount != Money{}) j["fee_charged"] = a.fee_charged;
+  if (a.payouts_received != Money{}) j["payouts_received"] = a.payouts_received;
 }
 inline void from_json(const Json& j, AttemptSummary& a) {
   j.at("attempt").get_to(a.attempt); j.at("plan").get_to(a.plan); j.at("started").get_to(a.started);
@@ -571,6 +580,7 @@ inline void from_json(const Json& j, AttemptSummary& a) {
   added_field(j, "rules", a.rules); added_field(j, "decided_at", a.decided_at);
   added_field(j, "decided_equity", a.decided_equity);
   added_field(j, "peak", a.peak); added_field(j, "floor", a.floor);
+  added_field(j, "fee_charged", a.fee_charged); added_field(j, "payouts_received", a.payouts_received);
 }
 inline void to_json(Json& j, const Closure& c) {
   j = Json{{"symbol", c.symbol}, {"quantity", c.quantity}, {"price", c.price}, {"time", c.time}, {"kind", c.kind},
@@ -643,6 +653,7 @@ inline void to_json(Json& j, const TradingSnapshot& s) {
       {"soft_floor", s.soft_floor}, {"trip_attributions", s.trip_attributions}, {"groups", s.groups},
       {"group_reviews", s.group_reviews}};
   if (!s.alerts.empty()) j["alerts"] = s.alerts;
+  if (s.fee_charged.amount != Money{}) j["fee_charged"] = s.fee_charged;
 }
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
@@ -665,6 +676,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   added_field(j, "soft_floor", s.soft_floor); added_field(j, "trip_attributions", s.trip_attributions);
   added_field(j, "groups", s.groups); added_field(j, "group_reviews", s.group_reviews);
   added_field(j, "alerts", s.alerts);
+  added_field(j, "fee_charged", s.fee_charged);
 }
 
 namespace detail {
@@ -737,6 +749,7 @@ struct State {
   std::optional<Guardrails> pending_guardrails;
   GuardrailState guardrails;
   Timestamp pending_applied_at = 0;
+  AttemptFee fee_charged;
   std::vector<AttemptSummary> attempts;
   SharedVector<SettlementRecord> settlements;  ///< Derived from transactions, never serialized as state.
   SharedVector<Closure> closures;
@@ -822,6 +835,7 @@ inline void to_json(Json& j, const State& s) {
   // Absent until a conditional trigger first reads one, so other journals keep their bytes.
   if (!s.indicators.empty()) j["indicators"] = s.indicators;
   if (s.alerts.created > 0) j["alerts"] = s.alerts;
+  if (s.fee_charged.amount != Money{}) j["fee_charged"] = s.fee_charged;
 }
 inline void from_json(const Json& j, State& s) {
   s.trade_objectives.reset();
@@ -843,6 +857,7 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
   added_field(j, "indicators", s.indicators);
   added_field(j, "alerts", s.alerts);
+  added_field(j, "fee_charged", s.fee_charged);
   added_field(j, "do_not_exercise", s.do_not_exercise);
   added_field(j, "trips", s.trips); added_field(j, "trip_attribution", s.trip_attribution);
   added_field(j, "groups", s.groups); added_field(j, "group_reviews", s.group_reviews);

@@ -34,7 +34,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(TIME_LIMIT); CASE(INACTIVITY); CASE(INSTRUMENT_NOT_ALLOWED); CASE(OUTSIDE_PLAN_HOURS); CASE(FLAT_TIME); CASE(OVERNIGHT_HOLD);
     CASE(TRADE_CONSISTENCY); CASE(MIN_TRADES); CASE(MIN_HOLD); CASE(MICROSCALPING);
     CASE(HEDGING); CASE(COUNTER_POSITION); CASE(MAX_VOLUME_SHARE);
-    CASE(NEWS_BLACKOUT); CASE(HOLD_RESTRICTED);
+    CASE(NEWS_BLACKOUT); CASE(HOLD_RESTRICTED); CASE(RESET_LIMIT);
   }
 #undef CASE
   return "UNKNOWN";
@@ -210,6 +210,24 @@ void validate_time_rules(const AccountRules& r) {
       (r.trading_start && (*r.trading_start < 0 || *r.trading_end > 24 * 60 || *r.trading_start >= *r.trading_end)))
     throw TradingError(Reason::INVALID_RULES, "Set both trading_start and trading_end, between 00:00 and 24:00 New York, with start before end, or neither");
 }
+bool same_program_rules(AccountRules left, const AccountRules& right) {
+  auto execution = std::move(left);
+  execution.slippage_ticks = right.slippage_ticks;
+  execution.fill_latency_ms = right.fill_latency_ms;
+  execution.impact_ticks = right.impact_ticks;
+  execution.inside_fill_percent = right.inside_fill_percent;
+  execution.fees = right.fees;
+  // The account's margin is the trader's broker's, not the plan's.
+  execution.margin = right.margin;
+  execution.account_type = right.account_type;
+  execution.house_margin_percent = right.house_margin_percent;
+  execution.pm_vol_shock = right.pm_vol_shock;
+  execution.evaluation_fee = right.evaluation_fee;
+  execution.reset_fee = right.reset_fee;
+  execution.activation_fee = right.activation_fee;
+  execution.max_resets = right.max_resets;
+  return execution == right;
+}
 void validate_rules(const AccountRules& r) {
   if (r.size_scaling) {
     const auto& v = *r.size_scaling;
@@ -227,6 +245,9 @@ void validate_rules(const AccountRules& r) {
         (i > 0 && (step.profit <= r.scaling[i - 1].profit || step.contracts < r.scaling[i - 1].contracts)))
       throw TradingError(Reason::INVALID_RULES, "Scaling profits must strictly increase and contract limits must be non-decreasing, from 1 to 10000");
   }
+  if (r.evaluation_fee < Money{} || r.reset_fee < Money{} || r.activation_fee < Money{} ||
+      r.max_resets < 0 || r.max_resets > 1'000'000)
+    throw TradingError(Reason::INVALID_RULES, "Program fees must be nonnegative and max_resets from 0 to 1000000 (0 is unlimited)");
   const auto& p = r.payouts;
   if (p.buffer < Money{} || p.buffer_payouts < 0 || p.buffer_payouts > 100)
     throw TradingError(Reason::INVALID_RULES, "The payout buffer must be nonnegative and buffer_payouts from 0 to 100");
@@ -241,7 +262,7 @@ void validate_rules(const AccountRules& r) {
       r.expiry_cutoff >= md::kNanosPerDay || r.plan.size() > 64 || r.lock_balance < Money{} || !payouts_ok ||
       (r.drawdown_mode != DrawdownMode::Intraday && r.drawdown_mode != DrawdownMode::EndOfDay &&
        r.drawdown_mode != DrawdownMode::Static) ||
-      (r.phase != Phase::Evaluation && r.phase != Phase::Funded) ||
+      (r.phase != Phase::Evaluation && r.phase != Phase::Funded && r.phase != Phase::Verification) ||
       r.slippage_ticks < 0 || r.slippage_ticks > 10 ||
       r.fill_latency_ms < 0 || r.fill_latency_ms > 60'000 || r.impact_ticks < 0 || r.impact_ticks > 10 ||
       r.inside_fill_percent < 0 || r.inside_fill_percent > 100 ||

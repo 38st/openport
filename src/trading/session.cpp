@@ -1166,6 +1166,7 @@ TradingSnapshot snapshot_of(const State& s) {
   out.settlements = s.settlements;
   out.closures = s.closures;
   out.attempts = s.attempts;
+  out.fee_charged = s.fee_charged;
   out.stock_fills = s.stock_fills;
   out.dividends = s.dividends;
   out.closing_prints = s.closing_prints;
@@ -4514,6 +4515,12 @@ Json state_change(const State& before, const State& after) {
   }
   Json node{{"o", std::move(changes)}};
   if (had && !has) node["d"] = Json::array({"do_not_exercise"});
+  if (after.fee_charged.amount != Money{}) {
+    if (before.fee_charged != after.fee_charged) node["o"]["fee_charged"] = Json{{"v", after.fee_charged}};
+  } else if (before.fee_charged.amount != Money{}) {
+    if (!node.contains("d")) node["d"] = Json::array();
+    node["d"].push_back("fee_charged");
+  }
   return node;
 }
 /// When set, each record's change is also found by writing out both states,
@@ -4646,6 +4653,22 @@ PlanInputs plan_inputs(const TradingSnapshot& s) {
   in.net_realised = s.account.realised - s.account.fees;
   in.flat = s.positions.empty() && s.stocks.empty();
   return in;
+}
+ProgramCosts program_costs(const TradingSnapshot& snapshot, const AccountRules& rules) {
+  ProgramCosts out;
+  const auto add = [&](const AttemptFee& fee) {
+    if (fee.kind == "evaluation") out.evaluation = out.evaluation + fee.amount;
+    else if (fee.kind == "reset") out.reset = out.reset + fee.amount;
+    else if (fee.kind == "activation") out.activation = out.activation + fee.amount;
+  };
+  add(snapshot.fee_charged);
+  for (const auto& a : snapshot.attempts) { add(a.fee_charged); out.payouts_received = out.payouts_received + a.payouts_received; }
+  for (const auto& p : snapshot.evaluation.payouts) out.payouts_received = out.payouts_received + p.trader_share;
+  for (auto it = snapshot.attempts.rbegin(); it != snapshot.attempts.rend(); ++it) {
+    if (!it->rules || it->starting_balance != snapshot.evaluation.starting_balance || !same_program_rules(*it->rules, rules)) break;
+    ++out.resets_used;
+  }
+  return out;
 }
 PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
   __extension__ using Wide = __int128;
@@ -4831,7 +4854,10 @@ TradingSession::TradingSession(SessionConfig config, Timestamp time, std::shared
   impl_->journal = std::move(journal);
   impl_->snapshot = std::make_shared<TradingSnapshot>(snapshot_of(impl_->state));
   impl_->transact(time, "session_start", [](State& s, Events& events) {
-    event(events, "session_start", s.config);
+    s.fee_charged = {s.config.rules.evaluation_fee, s.config.rules.evaluation_fee > Money{} ? "evaluation" : ""};
+    Json start = s.config;
+    if (s.fee_charged.amount != Money{}) start["fee_charged"] = s.fee_charged;
+    event(events, "session_start", start);
     return CommandResult{};
   });
 }
@@ -5897,7 +5923,7 @@ CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
     return CommandResult{};
   });
 }
-CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time) {
+CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time, bool activated, bool archive_payouts) {
   require_reason(reason);
   normalize_event_rules(rules, true);
   validate_rules(rules);
@@ -5906,6 +5932,16 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     throw TradingError(Reason::INVALID_RULES, "Account size scaling maximum must be at least the starting balance");
   return impl_->transact(time, "account_reset", [&](State& s, Events& events) {
     const auto snapshot = snapshot_of(s);
+    const bool same = initial_cash == s.config.initial_cash && same_program_rules(rules, s.config.rules);
+    const auto costs = program_costs(snapshot, s.config.rules);
+    if (same && rules.max_resets > 0 && costs.resets_used >= rules.max_resets)
+      return CommandResult{{Reason::RESET_LIMIT, "This plan has no resets left; choose a different plan to start a new purchase",
+                            static_cast<double>(costs.resets_used + 1), static_cast<double>(rules.max_resets), {}}, {}, 0};
+    if (activated && (same || s.evaluation.status != EvaluationStatus::Passed))
+      return CommandResult{failure(Reason::PLAN_LOCKED, "Activation requires a pass into a different plan"), {}, 0};
+    const auto fee = same ? rules.reset_fee : activated ? rules.activation_fee : rules.evaluation_fee;
+    // Check aggregate overflow before changing anything, even though the fees never touch paper cash.
+    static_cast<void>(costs.total() + fee);
     for (const auto id : open_ids(s)) cancel_order(s, id, failure(Reason::ACCOUNT_RESET, reason), events);
     for (const auto& p : snapshot.positions) {
       const auto& position = p.position;
@@ -5923,7 +5959,10 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.attempts.push_back({e.attempt, s.config.rules.plan, e.started, s.time, e.starting_balance, snapshot.equity,
                           e.status, e.decision, e.first_order, e.first_fill, e.decision_code, s.config.rules, e.decided_at,
                           e.status == EvaluationStatus::Active ? std::nullopt : std::optional(e.decided_equity), e.peak,
-                          s.config.rules.max_drawdown > Money{} ? std::optional(e.floor) : std::nullopt});
+                          s.config.rules.max_drawdown > Money{} ? std::optional(e.floor) : std::nullopt, s.fee_charged, {}});
+    if (archive_payouts)
+      for (const auto& payout : e.payouts) s.attempts.back().payouts_received = s.attempts.back().payouts_received + payout.trader_share;
+    s.fee_charged = {fee, fee == Money{} ? "" : same ? "reset" : activated ? "activation" : "evaluation"};
     const auto attempt = e.attempt + 1;
     s.config.initial_cash = initial_cash;
     s.config.rules = std::move(rules);
@@ -5950,8 +5989,9 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.pending_applied_at = pending ? s.time : 0;
     s.day = plan_trading_date(s.config.rules, s.time);
     s.evaluation = fresh_evaluation(s, attempt);
-    event(events, "account_reset", Json{{"reason", reason}, {"attempt", attempt}, {"initial_cash", initial_cash},
-                                        {"rules", s.config.rules}});
+    Json reset{{"reason", reason}, {"attempt", attempt}, {"initial_cash", initial_cash}, {"rules", s.config.rules}};
+    if (s.fee_charged.amount != Money{}) reset["fee_charged"] = s.fee_charged;
+    event(events, "account_reset", reset);
     return CommandResult{};
   });
 }

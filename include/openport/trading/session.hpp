@@ -98,6 +98,7 @@ struct TradingSnapshot {
   std::vector<MarginUnderlying> margin;
   SharedVector<SettlementRecord> settlements;  ///< Oldest first, rebuilt from journal events.
   SharedVector<Closure> closures;     ///< Settlements and resets, in sequence.
+  AttemptFee fee_charged;
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
   SharedVector<StockFill> stock_fills;    ///< Every change in shares held, oldest first.
   SharedVector<DividendPayment> dividends;  ///< Dividends paid on held shares, oldest first.
@@ -131,6 +132,14 @@ struct TradingSnapshot {
 };
 /// What the plan's rules read of a published account (see PlanInputs).
 [[nodiscard]] PlanInputs plan_inputs(const TradingSnapshot& snapshot);
+/// Derived from journaled attempt fees and payout history; never changes the ledger.
+struct ProgramCosts {
+  Money evaluation, reset, activation, payouts_received;
+  std::int64_t resets_used = 0;
+  [[nodiscard]] Money total() const { return evaluation + reset + activation; }
+};
+[[nodiscard]] ProgramCosts program_costs(const TradingSnapshot& snapshot, const AccountRules& rules);
+
 /// A funded account's standing for its next payout: an active, flat account
 /// with the required qualifying days since the last payout. `blocked` is the
 /// first unmet requirement; when it is NONE, any whole-cent amount from
@@ -506,7 +515,9 @@ class TradingSession {
   /// Start a new attempt: cancel working orders, close positions at their last
   /// mark as Reset closures (no fills, no fees), restore cash, clear the kill
   /// latch and apply the given rules. Order and fill history is kept.
-  CommandResult reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time);
+  /// activated is a caller-verified prerequisite pass; archive_payouts is false only for old replay inputs.
+  CommandResult reset_account(Money initial_cash, AccountRules rules, std::string reason, Timestamp time,
+                              bool activated = false, bool archive_payouts = true);
   /// Withdraw a whole-cent amount from a funded account under its payout rules
   /// (see payout_quote). The withdrawal is not a loss: the day's baseline and
   /// an unlocked trailing peak move down with it. Resets the qualifying days.

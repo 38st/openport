@@ -254,6 +254,13 @@ struct PassOdds {
 [[nodiscard]] PassOdds pass_odds(const Evaluation& current, const AccountRules& rules,
     Money equity, const std::vector<EvaluationDay>& history, int days, int samples, std::uint64_t seed);
 
+/// The fee charged when an attempt starts; zero fees have no kind or journal field.
+struct AttemptFee {
+  Money amount;
+  std::string kind;
+  bool operator==(const AttemptFee&) const = default;
+};
+
 /// An earlier attempt, summarised when the account is reset.
 struct AttemptSummary {
   std::uint64_t attempt = 0;
@@ -272,6 +279,8 @@ struct AttemptSummary {
   std::optional<Money> decided_equity{};
   std::optional<Money> peak{};
   std::optional<Money> floor{};
+  AttemptFee fee_charged{};
+  Money payouts_received{};
 };
 
 /// Exercise: contracts exercised early into shares, at intrinsic value.
