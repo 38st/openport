@@ -77,6 +77,8 @@ class RecordingSink final : public EventSink {
   void publish(Event event) override;
   /// Call after publishers stop. Drains, writes a clean-end marker, and joins;
   /// storage failures remain observable through error() and a downstream status.
+  /// Events requiring market_controls stop recording with the same error reporting
+  /// if the header did not enable them; downstream delivery continues.
   void close();
   [[nodiscard]] std::string error() const;
   [[nodiscard]] RecordingStats stats() const;

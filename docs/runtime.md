@@ -411,7 +411,13 @@ loops; malformed data produces `Error`. Neither the daemon nor its web terminal
 exits automatically at replay EOF. The probe retains its readiness/timeout rules
 and stops waiting at EOF if it has not become ready.
 
-**Format v4.** Live writers and scenarios with stalls or halts use version 4.
+**Format v4.** The demo feed (`--provider demo`, including explicit `--demo-days`)
+and generated scenarios with stalls or halts use version 4. Other live providers
+keep version 2. Re-recording a replay uses version 4 only when its source header
+enables market controls; ordinary replay sources keep version 2. Writers choose
+the format from the provider before recording begins. A heartbeat or halt reaching
+a sink without `market_controls` stops recording with a visible error instead of
+writing an unsupported tag; downstream delivery continues.
 Readers accept versions 1–4; older builds refuse v4. Version 4 retains the v3 header
 and adds tag 10 (`SnapshotHeartbeat`: underlying string, timestamp i64), and tag 11
 (`TradingHalt`: start and exclusive end i64 timestamps). A heartbeat is a batch
@@ -428,7 +434,8 @@ NaN payloads, infinities, subnormals and signed zero. There is no native struct
 padding, locale-dependent text, or lossy numeric conversion.
 
 The uncompressed prefix is eight magic bytes `OPREC\r\n\0`, a `u32` version
-(2 for ordinary scenarios, 3 for imports, 4 for live/stress recordings), and a `u32` header-payload length. The payload, in order, is:
+(2 for ordinary live/scenario/replay recordings, 3 for imports, 4 for demo-feed and
+market-control recordings), and a `u32` header-payload length. The payload, in order, is:
 
 | Field | Encoding |
 | --- | --- |

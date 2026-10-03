@@ -67,6 +67,8 @@ TEST(Recording, EveryEventAndHeaderFieldRoundTripsBitExactly) {
   const auto& h = reader.header();
   EXPECT_EQ(h.provider, header.provider);
   EXPECT_EQ(h.started, header.started);
+  EXPECT_TRUE(h.market_controls);
+  EXPECT_EQ(contents(file.path).substr(8, 4), std::string("\4\0\0\0", 4));
   EXPECT_EQ(h.subscription.underlyings, header.subscription.underlyings);
   EXPECT_EQ(h.subscription.max_expiries, header.subscription.max_expiries);
   test::exact_double(header.subscription.strike_window, h.subscription.strike_window);
@@ -105,6 +107,34 @@ TEST(Recording, EmptySessionAndFalseCapabilitiesAreClean) {
   EXPECT_EQ(caps.delay, 0s);
   EXPECT_FALSE(reader.next());
   EXPECT_TRUE(reader.diagnostic().empty());
+}
+
+TEST(Recording, LegacyHeadersRefuseMarketControlsWithoutWritingUnsupportedTags) {
+  for (const bool imported : {false, true}) {
+    for (const md::Event event : {md::Event{md::SnapshotHeartbeat{"SPX", 100}}, md::Event{md::TradingHalt{100, 200}}}) {
+      SCOPED_TRACE(imported ? "v3" : "v2");
+      SCOPED_TRACE(event.index());
+      test::RecordingFile file;
+      test::EventCollector downstream;
+      auto header = test::recording_header();
+      header.imported = imported;
+      md::RecordingSink sink(file.path, header, downstream, {});
+      sink.publish(event);
+      sink.close();
+      EXPECT_NE(sink.error().find("require a v4 header with market_controls enabled"), std::string::npos);
+      EXPECT_EQ(sink.stats().events, 0U);
+      const auto events = downstream.snapshot();
+      ASSERT_EQ(events.size(), 2U);
+      ASSERT_TRUE(std::holds_alternative<md::ProviderStatus>(events.front()));
+      EXPECT_EQ(std::get<md::ProviderStatus>(events.front()).state, md::FeedState::Error);
+      EXPECT_EQ(std::get<md::ProviderStatus>(events.front()).message, sink.error());
+      test::exact_event(event, events.back());
+      EXPECT_EQ(contents(file.path).substr(8, 4), imported ? std::string("\3\0\0\0", 4) : std::string("\2\0\0\0", 4));
+      md::RecordingReader reader(file.path);
+      EXPECT_FALSE(reader.header().market_controls);
+      EXPECT_FALSE(reader.next());
+    }
+  }
 }
 
 TEST(Recording, RejectsBadMagicVersionAndMalformedOrTruncatedHeader) {

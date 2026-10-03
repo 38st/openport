@@ -320,6 +320,8 @@ special opening quotation; live providers keep manual imports.
 - [x] F26 stress-scenario authoring: abnormal books, quote stalls and stale marks,
   authored previous closes and market halts, all three circuit-breaker levels,
   wider strike ranges for 10%+ moves and margin floors, and early-close event scaling.
+  Demo and stress recordings support market controls in format v4; ordinary live
+  recordings retain format v2 compatibility.
 
 - [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
 - [x] F52: backtest comparison, combined independent daily P&L, per-day evaluation rows,

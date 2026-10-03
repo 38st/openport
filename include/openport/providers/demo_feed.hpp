@@ -21,6 +21,7 @@ class DemoProvider final : public md::Provider {
   ~DemoProvider() override;
   [[nodiscard]] std::string_view name() const noexcept override { return kDemoProvider; }
   [[nodiscard]] md::Capabilities capabilities() const noexcept override;
+  [[nodiscard]] bool market_controls() const noexcept override { return true; }
   void start(const md::Subscription& subscription, md::EventSink& sink) override;
   void stop() override;
   void set_driver(ReplayProvider::Driver driver);

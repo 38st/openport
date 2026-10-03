@@ -399,6 +399,7 @@ TEST(DemoFeed, RestartAfterLatestMainOrNamedJournalStillFills) {
     }
     engine.stop();
     md::RecordingReader recording(options.record_file);
+    EXPECT_TRUE(recording.header().market_controls);
     EXPECT_EQ(recording.header().started, first);
   }
 }

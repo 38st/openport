@@ -118,6 +118,8 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
   ASSERT_EQ(expected->options_priced, 246);
   EXPECT_EQ(expected->as_of, provider.as_of + 2 * md::kNanosPerSecond);
   md::RecordingReader reader(file.path);
+  EXPECT_FALSE(reader.header().market_controls);
+  EXPECT_FALSE(reader.header().imported);
   EXPECT_EQ(reader.header().started, 10 * md::kNanosPerDay);
   md::Timestamp previous = reader.header().started;
   std::size_t count = 0;
@@ -130,7 +132,8 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
   EXPECT_GT(count, original.status().events);  // records survive downstream coalescing
   EXPECT_TRUE(reader.diagnostic().empty());
   providers::ReplayProvider replay({.file = file.path, .speed = 0, .loop = false, .clock = {}});
-  options.record_file.clear();
+  EXPECT_FALSE(replay.market_controls());
+  options.record_file = file.directory / "re-recorded.oprec";
   options.clock = [] { return md::now(); };  // deliberately a different wall clock
   server::Engine replayed(replay, {{"SPX"}}, options);
   replayed.start();
@@ -139,7 +142,38 @@ TEST(EngineRecording, SyntheticSessionReplaysIdenticalSpotForwardsAndEveryExpiry
            replayed.metrics("SPX");
   }));
   replayed.stop();
+  EXPECT_TRUE(replayed.recording_error().empty());
+  EXPECT_FALSE(md::RecordingReader(options.record_file).header().market_controls);
   same_analytics(*expected, *replayed.metrics("SPX"));
+}
+
+TEST(EngineRecording, ReplayPreservesMarketControlCapabilityFromItsSourceHeader) {
+  test::RecordingFile file;
+  auto header = test::recording_header();
+  header.market_controls = true;
+  const auto at = md::new_york_to_utc({2026, 9, 16}, 10, 0);
+  test::record_events(file.path, {md::TradingHalt{at, at + md::kNanosPerMinute},
+                                 md::SnapshotHeartbeat{"SPX", at}}, header);
+  providers::ReplayProvider provider({.file = file.path, .speed = 0, .loop = false, .clock = {}});
+  EXPECT_TRUE(provider.market_controls());
+  server::Engine::Options options;
+  options.paper_enabled = false;
+  options.record_file = file.directory / "re-recorded.oprec";
+  server::Engine engine(provider, {{"SPX"}}, options);
+  engine.start();
+  ASSERT_TRUE(test::recording_eventually([&] {
+    return engine.status().feed_message.find("end of recording") != std::string::npos;
+  }));
+  engine.stop();
+  EXPECT_TRUE(engine.recording_error().empty());
+  md::RecordingReader reader(options.record_file);
+  EXPECT_TRUE(reader.header().market_controls);
+  int controls = 0;
+  while (const auto record = reader.next())
+    if (std::holds_alternative<md::TradingHalt>(record->event) ||
+        std::holds_alternative<md::SnapshotHeartbeat>(record->event)) ++controls;
+  EXPECT_EQ(controls, 2);
+  EXPECT_TRUE(reader.diagnostic().empty());
 }
 
 // U4: uptime is wall time since the engine started, not time on the market clock a
