@@ -263,6 +263,8 @@ struct OrderPreview {
   /// account, an order refused at any size for another reason, or a loss that
   /// cannot be projected.
   std::optional<Quantity> max_units;
+  /// Binding sizing constraint: "floor", "buying_power" or "limits"; empty when unavailable.
+  std::string max_units_basis;
   /// The same sizing with buying power and the limits alone, floor room aside.
   std::optional<Quantity> max_units_buying_power;
   /// The same sizing with the floor share and the pre-trade checks alone: without

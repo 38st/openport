@@ -14208,6 +14208,15 @@
               }
             ]
           },
+          "max_units_basis": {
+            "description": "Constraint binding max_units: floor share, available buying power, or pre-trade exposure/order-size limits. Null when sizing is unavailable. Ties prefer limits, then buying_power, then floor; floor is reported when it further reduces the feasible size.",
+            "anyOf": [
+              {"const": "floor"},
+              {"const": "buying_power"},
+              {"const": "limits"},
+              {"type": "null"}
+            ]
+          },
           "max_units_buying_power": {
             "anyOf": [
               {
@@ -14297,6 +14306,7 @@
           "breaches_floor",
           "breaches_soft_floor",
           "max_units",
+          "max_units_basis",
           "max_units_buying_power",
           "max_units_floor",
           "breach",

@@ -3111,6 +3111,7 @@ PreviewExecution executed(const State& before, const State& trial, OrderId id, P
 }
 struct Sizing {
   std::optional<Quantity> units;
+  std::string basis;
   std::optional<Quantity> buying_power;
   std::optional<Quantity> floor;
 };
@@ -3120,12 +3121,13 @@ struct Sizing {
 Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Quantity upper,
                   std::optional<Money> room, double floor_share) {
   Sizing out;
-  const auto none = [&] {
+  const auto none = [&](std::string basis) {
+    out.basis = std::move(basis);
     out.units = out.buying_power = 0;
     if (room) out.floor = 0;
     return out;
   };
-  if (upper < 1) return none();
+  if (upper < 1) return none("limits");
   const auto fits_limits = [&](Quantity quantity) {
     const auto& value = sized(quantity);
     return value.decision.ok() && value.buying_power_after && value.max_loss;
@@ -3142,7 +3144,7 @@ Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Qua
     // other refusal, or a loss that cannot be projected, leaves sizing unavailable.
     const auto code = sized(1).decision.code;
     if (code == Reason::BUYING_POWER || code == Reason::DELTA_LIMIT || code == Reason::VEGA_LIMIT ||
-        code == Reason::MAX_ORDER_CONTRACTS) return none();
+        code == Reason::MAX_ORDER_CONTRACTS) return none(code == Reason::BUYING_POWER ? "buying_power" : "limits");
     return out;
   }
   Quantity low = 1, high = upper;
@@ -3152,6 +3154,9 @@ Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Qua
     const auto middle = low + (high - low) / 2 + (high - low) % 2;
     if (fits_limits(middle)) low = middle; else high = middle - 1;
   }
+  // A cap at the order limit needs no extra projection. Otherwise the first
+  // refused size identifies the pre-trade constraint that stopped the search.
+  out.basis = low < upper && sized(low + 1).decision.code == Reason::BUYING_POWER ? "buying_power" : "limits";
   upper = low;
   // Scenario losses can first fall as an order hedges the book, then rise.
   // Their maximum of linear per-cell losses is convex: find its minimum before
@@ -3184,6 +3189,7 @@ Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Qua
   const auto best_power = low;
   if (*sized(best_power).buying_power_after < Money{}) {
     out.units = out.buying_power = 0;
+    out.basis = "buying_power";
     return out;
   }
   low = 1; high = best_power;
@@ -3198,7 +3204,9 @@ Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Qua
     if (*sized(middle).buying_power_after >= Money{}) low = middle; else high = middle - 1;
   }
   out.buying_power = low;
+  if (low < upper) out.basis = "buying_power";
   out.units = floor_fit(lower, low);
+  if (out.units < out.buying_power) out.basis = "floor";
   return out;
 }
 
@@ -4091,6 +4099,7 @@ OrderPreview TradingSession::preview(const OrderRequest& request, Timestamp time
   }
   const auto sizing = size_order(sized_preview, upper, floor_room(before), floor_share);
   result.max_units = sizing.units;
+  result.max_units_basis = sizing.basis;
   result.max_units_buying_power = sizing.buying_power;
   result.max_units_floor = sizing.floor;
   return result;
@@ -4147,6 +4156,7 @@ OrderPreview TradingSession::preview_change(OrderId id, const OrderChange& chang
   };
   const auto sizing = size_order(sized_preview, upper - order.filled_quantity, floor_room(before), floor_share);
   result.max_units = sizing.units;
+  result.max_units_basis = sizing.basis;
   result.max_units_buying_power = sizing.buying_power;
   result.max_units_floor = sizing.floor;
   return result;

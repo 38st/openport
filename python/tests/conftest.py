@@ -118,7 +118,7 @@ class Stub:
         if path == "/api/positions/close/preview":
             return 200, shaped("FlattenPreview", simulated=True)
         if path == "/api/orders/preview" or (path.startswith("/api/orders/") and path.endswith("/preview")):
-            return 200, shaped("OrderPreview", simulated=True)
+            return 200, shaped("OrderPreview", simulated=True, max_units_basis="limits")
         if path == "/api/orders" and method == "POST":
             key = body["client_order_id"]
             first = key not in self.order_bodies

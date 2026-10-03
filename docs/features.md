@@ -94,7 +94,9 @@ simulation's limits.
   bids for is abandoned at zero without a fee, and a long option can be
   told not to exercise at expiry. Server order
   previews show buying power, maximum loss, what fills at once and the full size's
-  fill schedule, and the size that fits buying power apart from the size that uses at
+  fill schedule, and the suggested size labelled by its binding constraint: floor,
+  buying power or limits (never floor room on floorless accounts). They separate
+  the size that fits buying power from the size that uses at
   most half the floor room; Edit order previews a change to a resting order the same way,
   while close and roll tickets start at the held quantity, cap it at the holding and
   omit opening-size suggestions. Flatten shows its dry run, what it would cancel and close and the account after it.
@@ -288,6 +290,10 @@ settle AM positions on the expiry opening print, an approximation of the officia
 special opening quotation; live providers keep manual imports.
 
 ## Roadmap
+
+- [x] F72: held-size close tickets, confirmed cancellations with persistent results,
+      fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels
+      that name the binding floor, buying power or limit
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,

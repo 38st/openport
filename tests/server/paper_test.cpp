@@ -266,6 +266,8 @@ TEST_F(PaperEngine, PreviewIsPureEvenBeforeContractRegistration) {
   const auto preview = json::parse(response.body);
   EXPECT_EQ(preview["decision"], "ok");
   EXPECT_EQ(preview["max_loss"], "420.65");
+  ASSERT_TRUE(preview.contains("max_units_basis"));
+  EXPECT_TRUE(preview["max_units_basis"] == "limits" || preview["max_units_basis"] == "buying_power");
   EXPECT_TRUE(preview["simulated"]);
   EXPECT_EQ(engine->trading_view()->snapshot->account_version, before->snapshot->account_version);
   EXPECT_TRUE(engine->trading_view()->contracts.empty());
