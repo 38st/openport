@@ -1098,17 +1098,22 @@ int reason_status(Reason reason) {
 }
 ApiResponse command_response(const TradingCommand& command, const TradingReply& reply) {
   if (!reply.error_code.empty())
-    return api_error(reply.error_code == "LIMITS_REVISION" || reply.error_code == "ACCOUNTS_UNSUPPORTED" ? 409
+    return api_error(reply.error_code == "INVALID_REQUEST" ? 400 : reply.error_code == "ACCOUNT_PROTECTED" ? 403 :
+                     reply.error_code == "ACCOUNT_ARCHIVED" || reply.error_code == "ACCOUNT_NOT_EMPTY" ||
+                     reply.error_code == "LIMITS_REVISION" || reply.error_code == "ACCOUNTS_UNSUPPORTED" ? 409
                      : reply.error_code == "UNKNOWN_ACCOUNT" ? 404 : 503,
                      reply.error_code, reply.decision.message);
   if (!reply.decision.ok()) return api_error(reason_status(reply.decision.code),
       std::string(to_string(reply.decision.code)), reply.decision.message, reply.decision);
+  if (!reply.account_result.empty()) return {200, reply.account_result};
   if (!reply.view || !reply.view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "No trading publication");
   const auto& view = *reply.view;
   const auto& s = *view.snapshot;
   json body{{"account_version", std::to_string(s.account_version)}};
   int status = 200;
   switch (command.kind) {
+    case TradingCommand::Kind::UpdateAccount:
+    case TradingCommand::Kind::DeleteAccount: break;  // handled above
     case TradingCommand::Kind::Submit:
     case TradingCommand::Kind::Cancel:
     case TradingCommand::Kind::Modify: {
@@ -1556,6 +1561,28 @@ std::optional<Walk> parse_walk(const json& j) {
 }
 TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   TradingCommand command;
+  if (path.starts_with("/api/accounts/")) {
+    command.account = path.substr(std::string_view("/api/accounts/").size());
+    if (!valid_account(command.account)) throw std::invalid_argument("Invalid account id");
+    if (request.method == "DELETE") {
+      if (!request.body.empty()) throw std::invalid_argument("DELETE must have no body");
+      command.kind = TradingCommand::Kind::DeleteAccount;
+    } else {
+      command.kind = TradingCommand::Kind::UpdateAccount;
+      const auto body = strict_json(request.body);
+      fields(body, {}, {"name", "archived"});
+      if (body.empty()) throw std::invalid_argument("Provide name or archived");
+      if (body.contains("name")) {
+        command.name = string_field(body, "name");
+        if (!valid_account_name(command.name)) throw std::invalid_argument("name must be 1 to 64 characters, none of them a control character");
+      }
+      if (body.contains("archived")) {
+        if (!body.at("archived").is_boolean()) throw std::invalid_argument("archived must be a boolean");
+        command.archived = body.at("archived").get<bool>();
+      }
+    }
+    return command;
+  }
   if (request.method == "DELETE" && path.starts_with("/api/alerts/")) {
     if (!request.body.empty()) throw std::invalid_argument("DELETE must have no body");
     command.kind = TradingCommand::Kind::DeleteAlert;
@@ -2042,12 +2069,12 @@ json trading_status_json(const TradingStatus& status) {
           {"initial_cash", status.initial_cash.str()},
           {"plan", nullable(status.plan)}, {"evaluation", nullable(status.evaluation)}};
 }
-json accounts_json(const MetricsSource& source, const ApiAccess& access) {
+json accounts_json(const MetricsSource& source, const ApiAccess& access, bool archived = false) {
   json list = json::array();
   for (const auto& account : source.status().accounts) {
-    if (!sandbox_visible(account, access)) continue;
+    if (!sandbox_visible(account, access) || (account.archived && !archived)) continue;
     const auto view = source.trading_view(account.id);
-    list.push_back({{"id", account.id}, {"name", account.name}, {"trading", trading_status_json(account.trading)},
+    list.push_back({{"id", account.id}, {"name", account.name}, {"archived", account.archived}, {"trading", trading_status_json(account.trading)},
                     {"equity", view && view->snapshot ? json(view->snapshot->equity.str()) : json(nullptr)}});
     if (account.sandbox_idle_seconds) list.back()["sandbox_idle_seconds"] = account.sandbox_idle_seconds;
   }
@@ -2056,6 +2083,7 @@ json accounts_json(const MetricsSource& source, const ApiAccess& access) {
 json account_ticks_json(const EngineStatus& status) {
   json list = json::array();
   for (const auto& account : status.accounts) {
+    if (account.archived) continue;
     list.push_back({{"id", account.id}, {"name", account.name}, {"trading", trading_status_json(account.trading)}});
     if (account.sandbox_idle_seconds) list.back()["sandbox_idle_seconds"] = account.sandbox_idle_seconds;
   }
@@ -2313,13 +2341,14 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   std::string account, status = "all", attempt = csv ? "all" : "current", from, to;
   std::optional<std::string> client_order_id;
   std::optional<Timestamp> since, until;
-  bool valid_query = pairs.has_value();
+  bool valid_query = pairs.has_value(), archived = false;
   for (const auto& [key, value] : pairs.value_or(std::map<std::string, std::string>{})) {
     if ((key == "from" || key == "to") && path == "/api/account/equity") {
       const auto parsed = md::parse_datetime(value, md::Zone::Utc);
       if (!parsed || *parsed < 0) valid_query = false;
       else if (key == "from") since = parsed; else until = parsed;
-    } else if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
+    } else if (key == "archived" && path == "/api/accounts" && (value == "true" || value == "false")) archived = value == "true";
+    else if (key == "account" && path != "/api/accounts" && valid_account(value)) account = value;
     else if (key == "status" && path == "/api/orders" && (value == "open" || value == "all")) status = value;
     else if (key == "client_order_id" && path == "/api/orders" && valid_client_order_id(value)) client_order_id = value;
     else if (key == "status" && (path == "/api/trades" || path == "/api/trades.csv") && (value == "open" || value == "closed" || value == "all")) status = value;
@@ -2332,7 +2361,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   if (since && until && *since > *until) valid_query = false;
   if (!valid_query) return api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter");
   if (path == "/api/plans") return ApiResponse{200, plans_json().dump()};
-  if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source, request.access)}}.dump()};
+  if (path == "/api/accounts") return ApiResponse{200, json{{"accounts", accounts_json(source, request.access, archived)}}.dump()};
   if (!known_account(source, account)) return api_error(404, "UNKNOWN_ACCOUNT", "No paper account " + account);
   const auto view = source.trading_view(account);
   if (!view || !view->snapshot) return api_error(503, "TRADING_UNAVAILABLE", "Paper trading is disabled or unavailable");
@@ -2462,11 +2491,12 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
       path == "/api/trades/group" || path == "/api/trades/ungroup" || path == "/api/alerts")) ||
       (request.method == "PUT" && (path == "/api/risk/limits" || path == "/api/risk/guardrails" || path.starts_with("/api/orders/") ||
                                    ((path.starts_with("/api/trades/") || path.starts_with("/api/days/")) && path.ends_with("/note")))) ||
-      (request.method == "DELETE" && (path.starts_with("/api/orders/") || path.starts_with("/api/alerts/")));
+      (request.method == "DELETE" && (path.starts_with("/api/orders/") || path.starts_with("/api/alerts/"))) ||
+      ((request.method == "PATCH" || request.method == "DELETE") && path.starts_with("/api/accounts/"));
   if (!route) { complete(api_error(404, "NOT_FOUND", "Unknown endpoint or method")); return; }
   std::string account;
   if (!pairs || pairs->size() > 1 || (pairs->size() == 1 && (!pairs->contains("account") || !valid_account(pairs->at("account"))) ) ||
-      (pairs->size() == 1 && path == "/api/accounts")) {
+      (pairs->size() == 1 && (path == "/api/accounts" || path.starts_with("/api/accounts/")))) {
     complete(api_error(400, "INVALID_REQUEST", "Unknown or invalid query parameter"));
     return;
   }
@@ -2484,7 +2514,7 @@ void handle_api_async(const ApiRequest& request, MetricsSource& source, ApiCompl
   }
   try {
     auto command = parse_command(request, path);
-    command.account = account;
+    if (!path.starts_with("/api/accounts/")) command.account = account;
     command.actor = request.actor;
     if (!source.post_trading(command, [command, complete](TradingReply reply) {
           complete(command_response(command, reply));

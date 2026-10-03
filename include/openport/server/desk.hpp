@@ -90,6 +90,7 @@ class Desk {
   void set_publication_sink(std::function<void(std::string_view, const TradingView&)> sink) {
     publication_sink_ = std::move(sink);
   }
+  void set_removal_sink(std::function<void(const std::string&)> sink) { removal_sink_ = std::move(sink); }
   void observe(const md::Event& event);
   bool refresh_analytics();
   void apply_analytics(std::shared_ptr<const analytics::UnderlyingMetrics> result, md::Timestamp time);
@@ -113,6 +114,7 @@ class Desk {
 
  private:
   std::function<void(std::string_view, const TradingView&)> publication_sink_;
+  std::function<void(const std::string&)> removal_sink_;
   /// One paper account: a reducer and its journal. Single-owner state.
   struct PaperAccount {
     std::string id;
@@ -122,9 +124,11 @@ class Desk {
     std::unique_ptr<EquityStore> equity;
     std::shared_ptr<const trading::TradingSnapshot> sampled_snapshot;
     std::shared_ptr<trading::Journal> journal;
+    bool archived = false;
   };
   PaperAccount* find_account(std::string_view id);
   void create_account(const TradingCommand& command, TradingReply& reply);
+  void manage_account(const TradingCommand& command, TradingReply& reply);
   void observe_trading(const md::Event& event);
   void publish_trading();
   void record_input(const std::string& input, const std::string& actor = "system", bool at_account_time = false);

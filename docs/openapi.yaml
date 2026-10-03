@@ -770,7 +770,7 @@
     "/api/accounts": {
       "get": {
         "summary": "GET /api/accounts",
-        "description": "Read the current publication.",
+        "description": "Lists active accounts. archived=true includes frozen accounts; each entry reports archived.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -786,7 +786,17 @@
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "archived",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ]
       },
       "post": {
         "summary": "POST /api/accounts",
@@ -4329,6 +4339,68 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SettlementsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/accounts/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "patch": {
+        "summary": "PATCH /api/accounts/{id}",
+        "x-scope": "admin",
+        "description": "Only named live accounts. 403 ACCOUNT_PROTECTED for main, replay or sandbox; 404 UNKNOWN_ACCOUNT; 400 INVALID_REQUEST. Archive freezes all account commands and market processing (409 ACCOUNT_ARCHIVED), including working orders; unarchive resumes them. Delete retains files in accounts/deleted/ID and permanently reserves the ID. 409 ACCOUNT_NOT_EMPTY unless archived first when positions, working orders or an unreadable journal remain. Metadata writes are atomic; startup completes interrupted deletion moves.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateAccountResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAccountRequest"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "DELETE /api/accounts/{id}",
+        "x-scope": "admin",
+        "description": "Only named live accounts. 403 ACCOUNT_PROTECTED for main, replay or sandbox; 404 UNKNOWN_ACCOUNT; 400 INVALID_REQUEST. Archive freezes all account commands and market processing (409 ACCOUNT_ARCHIVED), including working orders; unarchive resumes them. Delete retains files in accounts/deleted/ID and permanently reserves the ID. 409 ACCOUNT_NOT_EMPTY unless archived first when positions, working orders or an unreadable journal remain. Metadata writes are atomic; startup completes interrupted deletion moves.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteAccountResponse"
                 }
               }
             }
@@ -12844,13 +12916,18 @@
                 "type": "null"
               }
             ]
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Frozen and omitted from ordinary lists and status ticks."
           }
         },
         "required": [
           "id",
           "name",
           "trading",
-          "equity"
+          "equity",
+          "archived"
         ]
       },
       "AccountsResponse": {
@@ -14274,10 +14351,18 @@
           "max_units_basis": {
             "description": "Constraint binding max_units: floor share, available buying power, or pre-trade exposure/order-size limits. Null when sizing is unavailable. Ties prefer limits, then buying_power, then floor; floor is reported when it further reduces the feasible size.",
             "anyOf": [
-              {"const": "floor"},
-              {"const": "buying_power"},
-              {"const": "limits"},
-              {"type": "null"}
+              {
+                "const": "floor"
+              },
+              {
+                "const": "buying_power"
+              },
+              {
+                "const": "limits"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "max_units_buying_power": {
@@ -18725,6 +18810,59 @@
         "required": [
           "account_version",
           "settlements"
+        ]
+      },
+      "UpdateAccountRequest": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        }
+      },
+      "UpdateAccountResponse": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "archived": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "archived"
+            ]
+          }
+        },
+        "required": [
+          "account"
+        ]
+      },
+      "DeleteAccountResponse": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deleted"
         ]
       }
     }

@@ -263,7 +263,7 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
   if (access) *access = {};
   if (!request.target.starts_with("/api/") && request.target != "/ws") return {};
   const bool read = request.method == "GET";
-  if (!read && request.method != "POST" && request.method != "PUT" && request.method != "DELETE") return {};
+  if (!read && request.method != "POST" && request.method != "PUT" && request.method != "PATCH" && request.method != "DELETE") return {};
   if (request.ambiguous_headers || (!read && !websocket_origin_allowed(
           request.origin ? std::optional<std::string_view>(*request.origin) : std::nullopt,
           request.host, policy.allowed_origins)))

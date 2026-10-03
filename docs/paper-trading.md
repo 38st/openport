@@ -2473,6 +2473,27 @@ Without an accounts directory (`--paper-journal` empty in tests) the server keep
 one account, as a replay does, and account creation returns 409 `ACCOUNTS_UNSUPPORTED`,
 which a retry cannot change.
 
+`PATCH /api/accounts/{id}` takes `name` and/or boolean `archived`; `DELETE
+/api/accounts/{id}` deletes a named live account. Both require admin. Main, replay
+and sandbox accounts return 403 `ACCOUNT_PROTECTED`; an unknown ID returns 404
+`UNKNOWN_ACCOUNT`, malformed bodies 400 `INVALID_REQUEST`. Names use creation's
+validation; duplicate display names are allowed, and renaming never changes the ID.
+
+Archiving freezes the account, including working orders, positions, rollover,
+alerts and playbooks. Writes return 409 `ACCOUNT_ARCHIVED`. Unarchiving resumes
+processing, including those working orders. Archived accounts remain readable with
+`?account=ID`, but disappear from default lists and status ticks. `GET /api/accounts?archived=true`
+includes them with `archived: true`. The `<id>.archived` file is atomically replaced,
+as is `<id>.name`; missing archive files mean active. A combined patch writes the
+name before the archive flag, so a crash between them may preserve just the rename.
+
+Deletion refuses positions, working orders or unreadable journals with 409
+`ACCOUNT_NOT_EMPTY` unless archived first. It retains files under
+`accounts/deleted/<id>/`, releases the session and account observation/staging state,
+and permanently reserves the ID. The durable destination directory is the deletion
+tombstone; startup completes interrupted moves. Retained files are not served over
+HTTP. An already dispatched notification may finish after deletion.
+
 ### Commands and views
 
 The engine thread alone owns every session. A bounded FIFO inbox (256 pending
@@ -2703,6 +2724,7 @@ focus at the top of the ticket.
 | `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |
 | `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
 | `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
+| `PATCH /api/accounts/{id}`, `DELETE /api/accounts/{id}` | Admin: rename/archive/unarchive or delete a named account; see [accounts](#accounts) |
 | `POST /api/accounts` | `name` and a preset `plan`, or `initial_cash` and `rules`; 201 returns the new account's `id`, `name`, version, plan and equity (see [accounts](#accounts)) |
 
 Every route in this table except `/api/plans` and `/api/accounts` takes `account=ID`

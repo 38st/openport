@@ -444,6 +444,11 @@ TEST(WebPolicy, NamedTokensEnforceEveryRouteFamilyAndAccount) {
     EXPECT_TRUE(check("GET", path, "agent-secret"));
     EXPECT_FALSE(check("GET", path, "owner-secret"));
   }
+  for (const auto* method : {"PATCH", "DELETE"}) {
+    EXPECT_TRUE(check(method, "/api/accounts/practice", "agent-secret"));
+    EXPECT_TRUE(check(method, "/api/accounts/practice", "replay-secret"));
+    EXPECT_FALSE(check(method, "/api/accounts/practice", "owner-secret"));
+  }
   const std::vector<std::pair<std::string, std::string>> trades = {
       {"POST", "/alerts"}, {"DELETE", "/alerts/1"}, {"POST", "/orders"}, {"POST", "/orders/preview"}, {"PUT", "/orders/1"}, {"DELETE", "/orders/1"},
       {"POST", "/orders/cancel"}, {"POST", "/positions/close"}, {"POST", "/positions/exercise"},

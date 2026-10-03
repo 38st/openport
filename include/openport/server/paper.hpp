@@ -171,13 +171,15 @@ struct AccountStatus {
   std::string name;
   TradingStatus trading;
   std::int64_t sandbox_idle_seconds = 0;
+  bool archived = false;
 };
 
 struct TradingCommand {
   /// Recorded runs keep a kind's number: new kinds append.
   enum class Kind { Submit, Cancel, Limits, Trip, Reset, Settle, ResetAccount, Payout, Modify, CancelAll, ClosePositions, CreateAccount, Annotate,
                     Exercise, CloseStock, DayNote, Preview, Guardrails, Playbook, CreateSandbox, PreviewChange, WhatIf, PreviewClose,
-                    Abandon, ExerciseInstruction, Group, Ungroup, TradeStock, PreviewStock, CreateAlert, DeleteAlert };
+                    Abandon, ExerciseInstruction, Group, Ungroup, TradeStock, PreviewStock, CreateAlert, DeleteAlert,
+                    UpdateAccount, DeleteAccount };
   Kind kind = Kind::Submit;
   std::string actor = "unknown";
   trading::OrderRequest order;
@@ -200,6 +202,7 @@ struct TradingCommand {
   std::string underlying;        ///< CancelAll, ClosePositions and PreviewClose: one underlying, or empty for all.
   std::string account;           ///< The account it acts on; empty for the main account.
   std::string name;              ///< CreateAccount: the new account's display name.
+  std::optional<bool> archived;   ///< UpdateAccount: freeze or resume the account.
   std::uint64_t trade = 0;        ///< Annotate: the trade, by its opening fill's ID.
   bool shares = false;            ///< Annotate: a share round trip, by its opening stock fill ("s" + ID).
   md::Date day;
@@ -247,6 +250,7 @@ struct TradingReply {
   std::optional<trading::FlattenPreview> flatten;
   std::optional<trading::StockPreview> stock_preview;
   std::string playbook_result;
+  std::string account_result;  ///< Lifecycle response; also available without a working reducer.
 };
 using TradingCompletion = std::function<void(TradingReply)>;
 

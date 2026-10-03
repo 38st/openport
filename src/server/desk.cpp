@@ -32,6 +32,31 @@ void sync_directory(const std::filesystem::path& path) {
   if (!synced) throw TradingError(Reason::JOURNAL_IO, "Cannot sync journal directory");
 }
 
+void save_account_file(const std::filesystem::path& path, const std::string& text) {
+  const auto temporary = path.string() + ".tmp";
+  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) throw TradingError(Reason::JOURNAL_IO, "Cannot write account metadata");
+  const bool written = ::write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size());
+  const bool synced = written && ::fsync(fd) == 0;
+  ::close(fd);
+  if (!synced) throw TradingError(Reason::JOURNAL_IO, "Cannot sync account metadata");
+  std::filesystem::rename(temporary, path);
+  sync_directory(path.parent_path());
+}
+
+// A durable destination directory is the deletion tombstone. Startup finishes
+// any moves interrupted by a crash; its existence permanently reserves the ID.
+void retain_deleted_files(const std::filesystem::path& directory, const std::string& id) {
+  const auto destination = directory / "deleted" / id;
+  for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+    const auto name = entry.path().filename().string();
+    if (entry.is_regular_file() && name.starts_with(id + "."))
+      std::filesystem::rename(entry.path(), destination / entry.path().filename());
+  }
+  sync_directory(destination);
+  sync_directory(directory);
+}
+
 /// How close to the close the last print before it must be to settle on instead of
 /// a closing print that has not come within kLastPrintWait.
 constexpr md::Timestamp kLastPrintAge = 5 * md::kNanosPerMinute;
@@ -505,14 +530,23 @@ void Desk::start_trading() {
   }
   std::error_code ec;
   if (!options_.paper_accounts.empty() && std::filesystem::is_directory(options_.paper_accounts, ec)) {
+    const auto deleted = options_.paper_accounts / "deleted";
+    if (accounts_.front().session && std::filesystem::is_directory(deleted))
+      for (const auto& entry : std::filesystem::directory_iterator(deleted))
+        if (entry.is_directory() && account_id(entry.path().filename().string()))
+          retain_deleted_files(options_.paper_accounts, entry.path().filename().string());
     std::vector<std::filesystem::path> files;
     for (const auto& entry : std::filesystem::directory_iterator(options_.paper_accounts, ec))
-      if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string())) files.push_back(entry.path());
+      if (entry.path().extension() == ".jsonl" && account_id(entry.path().stem().string()) &&
+          !std::filesystem::exists(deleted / entry.path().stem())) files.push_back(entry.path());
     std::sort(files.begin(), files.end(), by_account_id);
     for (const auto& file : files) {
       PaperAccount account{file.stem().string(), file.stem().string(), nullptr, {}, nullptr, {}, {}};
       std::ifstream named(std::filesystem::path(file).replace_extension(".name"));
       if (std::string name; named && std::getline(named, name) && valid_account_name(name)) account.name = name;
+      std::ifstream archived(std::filesystem::path(file).replace_extension(".archived"));
+      std::string flag;
+      if (archived && std::getline(archived, flag)) account.archived = flag != "false";
       if (open(account, file, false)) accounts_.push_back(std::move(account));
     }
   }
@@ -587,7 +621,9 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
     reply.decision.message = "Sandbox account id is unavailable";
     return;
   }
-  for (int n = 2; find_account(id); ++n) id = base + "-" + std::to_string(n);
+  for (int n = 2; find_account(id) || (!sandbox &&
+      (std::filesystem::exists(options_.paper_accounts / "deleted" / id) ||
+       std::filesystem::exists(options_.paper_accounts / (id + ".jsonl")))); ++n) id = base + "-" + std::to_string(n);
   PaperAccount account{id, sandbox ? "Sandbox" : c.name, nullptr, {}, nullptr, {}, {}};
   const auto directory = sandbox ? options_.paper_journal.parent_path() / "sandboxes" / id : options_.paper_accounts;
   const auto file = directory / (id + ".jsonl");
@@ -609,12 +645,7 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
     auto [journal, recovery] = open_journal(file, journal_options(options_));
     if (recovery) throw TradingError(Reason::JOURNAL_CORRUPT, "An account journal already exists at " + file.string());
     created = journal;
-    {
-      std::ofstream out(named, std::ios::trunc);
-      out << account.name << '\n';
-      out.flush();
-      if (!out) throw TradingError(Reason::JOURNAL_IO, "Cannot write " + named.string());
-    }
+    save_account_file(named, account.name + '\n');
     account.journal = journal;
     account.session = std::make_unique<TradingSession>(config, market_time_, account.journal, c.actor);
     account.session->set_actor("system");
@@ -635,6 +666,61 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
   accounts_.insert(position, std::move(account));
   publish_trading();
   reply.account = id;
+}
+
+void Desk::manage_account(const TradingCommand& c, TradingReply& reply) {
+  const auto id = c.account.empty() ? std::string(kMainAccount) : c.account;
+  const auto refuse = [&](std::string code, std::string message) {
+    reply.error_code = std::move(code);
+    reply.decision.message = std::move(message);
+  };
+  if (id == kMainAccount || options_.replay || sandbox_ids_.contains(id) || id.starts_with("sandbox-")) {
+    refuse("ACCOUNT_PROTECTED", "Only named live accounts can be renamed, archived or deleted");
+    return;
+  }
+  auto* account = find_account(id);
+  if (!account) { refuse("UNKNOWN_ACCOUNT", "No paper account " + id); return; }
+  if (stopping_ || account->failure.starts_with("JOURNAL_LOCKED:")) {
+    refuse("TRADING_UNAVAILABLE", "The account is stopping or its journal is locked"); return;
+  }
+  try {
+    if (c.kind == TradingCommand::Kind::DeleteAccount) {
+      if (!account->archived && (!account->session || !account->session->snapshot()->positions.empty() ||
+          !account->session->snapshot()->stocks.empty() || !account->session->snapshot()->open_orders.empty())) {
+        refuse("ACCOUNT_NOT_EMPTY", "Archive the account before deleting it with positions, working orders or an unreadable journal");
+        return;
+      }
+      const auto deleted = options_.paper_accounts / "deleted";
+      std::filesystem::create_directories(deleted / id);
+      sync_directory(deleted / id);
+      sync_directory(deleted);
+      sync_directory(options_.paper_accounts);
+      // The tombstone committed: release every owner even if a file move fails.
+      std::erase_if(accounts_, [&](const auto& a) { return a.id == id; });
+      trading_views_.erase(id);
+      playbook_publications_.erase(id);
+      if (removal_sink_) removal_sink_(id);
+      publish_trading();
+      retain_deleted_files(options_.paper_accounts, id);
+      if (playbooks_) playbooks_->remove_account(id);
+      reply.account_result = nlohmann::json{{"deleted", id}}.dump();
+    } else {
+      if (!c.name.empty()) {
+        if (!valid_account_name(c.name)) { refuse("INVALID_REQUEST", "Invalid account name"); return; }
+        save_account_file(options_.paper_accounts / (id + ".name"), c.name + '\n');
+        account->name = c.name;
+      }
+      if (c.archived) {
+        save_account_file(options_.paper_accounts / (id + ".archived"), *c.archived ? "true\n" : "false\n");
+        account->archived = *c.archived;
+      }
+      reply.account_result = nlohmann::json{{"account", {{"id", id}, {"name", account->name}, {"archived", account->archived}}}}.dump();
+      publish_trading();
+    }
+    reply.account = id;
+  } catch (const std::exception& error) {
+    refuse("TRADING_UNAVAILABLE", error.what());
+  }
 }
 
 void Desk::flush_journals() {
@@ -701,7 +787,7 @@ void Desk::publish_trading() {
       }
       // An idle account's publication is as of the feed's market time, not its last
       // transaction: batches that change nothing are not transactions.
-      if (market_time_ > view->snapshot->time) {
+      if (!account.archived && market_time_ > view->snapshot->time) {
         auto clocked = std::make_shared<trading::TradingSnapshot>(*view->snapshot);
         clocked->time = market_time_;
         view->snapshot = std::move(clocked);
@@ -735,15 +821,15 @@ void Desk::publish_trading() {
         if (const auto variance = close_variance(metrics(underlying))) vols[underlying] = *variance;
       view->breach = session.breach(vols);
       view->warnings = session.warnings(vols, dividends_);
-      sample_equity(account);
+      if (!account.archived) sample_equity(account);
       if (account.equity) {
         view->equity_samples = account.equity->samples();
         view->equity_error = account.equity->error();
       }
     }
     TradingStatus status;
-    status.enabled = account.failure.empty() && view != nullptr;
-    status.reason = account.failure;
+    status.enabled = !account.archived && account.failure.empty() && view != nullptr;
+    status.reason = account.archived ? "ACCOUNT_ARCHIVED" : account.failure;
     status.write = status.enabled ? options_.write_mode : "disabled";
     const auto& config = view ? view->config : options_.paper;
     status.fee_per_contract = config.fee_per_contract;
@@ -758,8 +844,8 @@ void Desk::publish_trading() {
       }
     }
     statuses.push_back({account.id, account.name, std::move(status),
-        sandbox_ids_.contains(account.id) ? options_.sandboxes->idle().count() : 0});
-    if (view && publication_sink_) {
+        sandbox_ids_.contains(account.id) ? options_.sandboxes->idle().count() : 0, account.archived});
+    if (view && !account.archived && publication_sink_) {
       // Delivery observers cannot invalidate an already committed transaction.
       try { publication_sink_(account.id, *view); } catch (...) {}
     }
@@ -985,7 +1071,7 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
     if (latest != snapshots_.end() && complete->ts >= latest->second) vouched_at_[complete->underlying] = market_time_;
   }
   for (auto& account : accounts_) {
-    if (!account.session || !account.failure.empty()) continue;
+    if (account.archived || !account.session || !account.failure.empty()) continue;
     auto& session = *account.session;
     // An overnight session belongs to the next trading date, so a day ends when the
     // last session of the one before (curb) does, or at the plan's own boundary.
@@ -1251,12 +1337,18 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
   // Driver 4 records the command before its first transaction.
   if (!input_recorded && inputs_first() && recorded_input(c)) record_command(c, driver_time);
   auto* account = c.kind == TradingCommand::Kind::CreateAccount ? nullptr : find_account(c.account);
-  if (c.kind == TradingCommand::Kind::CreateAccount || c.kind == TradingCommand::Kind::CreateSandbox) {
+  if (c.kind == TradingCommand::Kind::UpdateAccount || c.kind == TradingCommand::Kind::DeleteAccount) {
+    manage_account(c, reply);
+    account = find_account(c.account);
+  } else if (c.kind == TradingCommand::Kind::CreateAccount || c.kind == TradingCommand::Kind::CreateSandbox) {
     create_account(c, reply);
     if (!reply.account.empty()) account = find_account(reply.account);
   } else if (!account) {
     reply.error_code = "UNKNOWN_ACCOUNT";
     reply.decision.message = "No paper account " + c.account;
+  } else if (account->archived) {
+    reply.error_code = "ACCOUNT_ARCHIVED";
+    reply.decision.message = "Unarchive this account before trading or changing its settings";
   } else if (!account->session || !account->failure.empty() || stopping_) {
     reply.error_code = "TRADING_UNAVAILABLE";
     reply.decision.message = account->failure.empty() ? "Trading is disabled or engine is stopping" : account->failure;
@@ -1489,6 +1581,8 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         case TradingCommand::Kind::DeleteAlert: result = session.delete_alert(c.alert_id, market_time_); break;
         case TradingCommand::Kind::CreateSandbox:
         case TradingCommand::Kind::CreateAccount: break;  // handled above
+        case TradingCommand::Kind::UpdateAccount:
+        case TradingCommand::Kind::DeleteAccount: break;
       }
       if (reply.error_code.empty()) reply.decision = result.decision;
       reply.order_id = result.order_id;
@@ -1565,7 +1659,7 @@ std::shared_ptr<const TradingView> Desk::trading_view(std::string_view account) 
 }
 bool Desk::active() const {
   return std::any_of(accounts_.begin(), accounts_.end(), [](const PaperAccount& account) {
-    return account.session && (!account.session->snapshot()->positions.empty() || !account.session->snapshot()->open_orders.empty());
+    return !account.archived && account.session && (!account.session->snapshot()->positions.empty() || !account.session->snapshot()->open_orders.empty());
   });
 }
 void Desk::observe(const md::Event& event) {

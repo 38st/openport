@@ -411,6 +411,15 @@ Playbooks::Json Playbooks::publication(std::string_view account, bool replay) co
   result["simulated"] = true;
   return result;
 }
+void Playbooks::remove_account(const std::string& account) {
+  staged_.erase(account);
+  reasons_.erase(account);
+  std::erase_if(suppressed_, [&](const auto& item) { return item.first.starts_with(account + ":"); });
+  auto next = catalogue_;
+  next["modes"].erase(account);
+  save(next);
+}
+
 trading::OrderRequest Playbooks::take(const std::string& account, const std::string& staged) {
   auto& list = staged_[account];
   if (!list.is_array()) invalid("Staged order expired; refresh playbooks");
