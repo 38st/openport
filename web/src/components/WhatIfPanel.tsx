@@ -3,7 +3,7 @@ import { api } from "../api/client"
 import type { NewOrder, Position, TradingStatus, WhatIfAccount, WhatIfResponse } from "../api/trading-types"
 import { legsLabel, osiLabel } from "../lib/journal"
 import { formatMoney } from "../lib/trading"
-import { addWhatIfCandidate, closingOrders, maxCandidates, updateWhatIf, useWhatIf, useWhatIfScope, type WhatIfDraft } from "../lib/what-if"
+import { addWhatIfCandidate, closingOrders, maxCandidates, updateWhatIf, useWhatIf, useWhatIfScope, whatIfNameError, type WhatIfDraft } from "../lib/what-if"
 import { useWrite } from "./OrderActions"
 import { TradingError, WriteAccess } from "./TradingControls"
 
@@ -93,6 +93,7 @@ export function WhatIfPanel({ positions, picked = [], trading }: { positions: re
   const write = useWrite(trading)
   const [result, setResult] = useState<WhatIfResponse | null>(null)
   const candidates = state.candidates
+  const nameErrors = candidates.map((c) => whatIfNameError(c.name))
   const update = (change: (candidates: WhatIfDraft[]) => WhatIfDraft[]) => {
     updateWhatIf(scope, (s) => ({ ...s, candidates: change(s.candidates) }))
     setResult(null)
@@ -117,12 +118,14 @@ export function WhatIfPanel({ positions, picked = [], trading }: { positions: re
       </label>}
     </div>
     {!candidates.length && <p className="text-xs text-muted">Build each candidate from a ticket's preview with Add to what-if, or close positions here; a candidate can hold up to four orders, such as closing the tested side and opening a new one.</p>}
-    <ol className="space-y-2">{candidates.map((c) => <li key={c.id} className="rounded-md border border-border p-2">
+    <ol className="space-y-2">{candidates.map((c, index) => <li key={c.id} className="rounded-md border border-border p-2">
       <div className="flex items-center gap-2">
-        <input className="trade-input !py-1 text-xs" aria-label="Candidate name" value={c.name} maxLength={64}
+        <input className="trade-input !py-1 text-xs" aria-label="Candidate name" value={c.name}
+          aria-invalid={!!nameErrors[index]} aria-describedby={nameErrors[index] ? `what-if-name-${c.id}` : undefined}
           onChange={(e) => update((list) => list.map((x) => x.id === c.id ? { ...x, name: e.target.value } : x))} />
         <button type="button" className="trade-button" aria-label={`Remove ${c.name}`} onClick={() => update((list) => list.filter((x) => x.id !== c.id))}>Remove</button>
       </div>
+      {nameErrors[index] && <p id={`what-if-name-${c.id}`} className="mt-1 text-xs text-warn">{nameErrors[index]}</p>}
       <ul className="mt-1 space-y-0.5 text-xs">{c.orders.map((order, index) => <li key={index} className="flex justify-between gap-2">
         <span>{whatIfOrderText(order)}</span>
         <button type="button" className="text-muted hover:text-foreground" aria-label={`Remove order ${index + 1} from ${c.name}`}
@@ -131,7 +134,7 @@ export function WhatIfPanel({ positions, picked = [], trading }: { positions: re
     </li>)}</ol>
     <WriteAccess trading={trading} />
     <TradingError error={write.error} />
-    <button type="button" className="trade-button" disabled={!candidates.length || candidates.some((c) => !c.name.trim()) || write.pending || write.blocked}
+    <button type="button" className="trade-button" disabled={!candidates.length || nameErrors.some(Boolean) || write.pending || write.blocked}
       onClick={() => void write.run(() => api.whatIf(candidates.map((c) => ({ name: c.name.trim(), orders: c.orders })), trading.write), setResult)}>
       {write.pending ? "Comparing…" : `Compare ${candidates.length || ""} ${candidates.length === 1 ? "candidate" : "candidates"}`.replace("  ", " ")}</button>
     {result && <Results result={result} />}

@@ -17754,7 +17754,8 @@
                 "name": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 64
+                  "maxLength": 64,
+                  "description": "Optional candidate name, 1 to 64 UTF-8 bytes when provided."
                 },
                 "orders": {
                   "type": "array",
