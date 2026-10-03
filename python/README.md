@@ -154,6 +154,9 @@ run = client.start_backtest("morning-put@2", "eod-50k", scenarios=20, seed="8172
 progress = client.get_backtest(run["id"])
 reports = client.list_backtests()
 client.cancel_backtest(run["id"])  # only while running
+comparison = client.compare_backtests(["000001", "000002"])
+client.keep_backtest("000001")  # exempt from automatic retention
+client.delete_backtest("000002")  # finished runs only; permanently removes all files
 ```
 
 Pass `days=[{"file": "day.oprec"}, ...]` for recordings, including imports, or

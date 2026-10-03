@@ -1,4 +1,5 @@
 import specText from "../../../docs/openapi.yaml?raw"
+import backtestTypes from "./backtest-types.ts?raw"
 import marketTypes from "./types.ts?raw"
 import playbookTypes from "./playbook-types.ts?raw"
 import tradingTypes from "./trading-types.ts?raw"
@@ -127,4 +128,24 @@ it("keeps archived account and history verification fields backward compatible",
       expect(normalize(type)).toBe(wireType(spec.components.schemas[name]!.properties![field]!).replace(/\binteger\b/g, "number"))
     }
   }
+})
+
+it("keeps backtest day rows and saved-run controls backward compatible on the wire", () => {
+  const schemas = spec.components.schemas
+  const day = /export interface BacktestEvaluationDay \{([\s\S]*?)\n\}/.exec(backtestTypes)![1]!
+  const fields = [...day.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]
+  expect(fields.map((field) => field[1]).sort()).toEqual(Object.keys(schemas.BacktestEvaluationDay!.properties!).sort())
+  for (const name of ["start_balance", "end_balance", "start_equity", "end_equity", "target", "target_progress", "peak"]) {
+    expect(wireType(schemas.BacktestEvaluationDay!.properties![name]!)).toBe("string")
+    expect(day).toContain(`${name}: string`)
+  }
+  for (const name of ["pnl", "floor", "floor_distance"]) {
+    expect(wireType(schemas.BacktestEvaluationDay!.properties![name]!)).toBe("null | string")
+    expect(day).toContain(`${name}: string | null`)
+  }
+  expect(backtestTypes).toContain("day_rows?: BacktestEvaluationDay[]")
+  expect(backtestTypes).toContain("keep?: boolean; bytes?: number")
+  expect(schemas.BacktestState!.required).not.toContain("keep")
+  expect(schemas.BacktestState!.required).not.toContain("bytes")
+  expect(Object.keys(schemas.BacktestComparison!.properties!)).toEqual(expect.arrayContaining(["runs", "daily", "combined", "different_inputs", "different_plans"]))
 })

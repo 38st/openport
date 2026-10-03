@@ -36,6 +36,7 @@ struct BacktestRequest {
 /// Progress counts finished independent days, then days consumed by attempts.
 [[nodiscard]] nlohmann::json run_backtest(const BacktestRequest& request, const std::filesystem::path& directory,
     const std::atomic_bool& cancel, const std::function<void(std::size_t, std::string_view)>& progress = {});
+[[nodiscard]] nlohmann::json compare_backtests(const nlohmann::json& runs);
 void write_backtest_report(const std::filesystem::path& file, const nlohmann::json& report);
 
 /// One background job per host. Completed reports are read from disk after restart.
@@ -46,6 +47,7 @@ class BacktestHost {
     analytics::AnalyticsOptions analytics;
     std::vector<trading::Dividend> dividends;
     bool enabled = true;
+    unsigned keep = 20;  ///< Finished unpinned runs retained on start; zero is unlimited.
   };
   explicit BacktestHost(Options options);
   ~BacktestHost();

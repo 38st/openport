@@ -127,7 +127,9 @@ simulation's limits.
   DTE, trading-day deadlines and debit bracket stops across live Auto, replay and backtests.
 - **Batch backtests**: run a pinned playbook over recorded, imported or seeded
   scenario days, with independent daily results and carried-account evaluation
-  attempts. The CLI, API and Backtest page keep reports and verifiable journals.
+  attempts with daily evaluation rows. Compare saved runs and chart the sum of
+  independent daily P&L. Pin, delete and automatically retain saved reports and
+  journals through the API and Backtest page; the CLI also writes verifiable reports.
   Results are simulated trading, not predictions or investment advice.
 - **Accounts**: several named accounts at once, say a 50K evaluation beside a practice
   book, each with its own journal, rules and positions on the same market. Rename,
@@ -310,7 +312,9 @@ special opening quotation; live providers keep manual imports.
 ## Roadmap
 
 - [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
-- [ ] Backtest comparison/combination, per-day evaluation rows and saved-run retention (F52, next part)
+- [x] F52: backtest comparison, combined independent daily P&L, per-day evaluation rows,
+      saved-run deletion, pins and bounded server retention
+- [ ] True joint multi-playbook backtests sharing account buying power and plan limits
 
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels

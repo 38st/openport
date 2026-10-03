@@ -3112,3 +3112,9 @@ metadata also check the 64 MiB reserve before writing. Equity errors include the
 failure wall time, sample market time and whether storage recovered; a successful
 retry rewrites retained in-memory samples before marking recovery. The terminal
 pages equity history in batches of 2,000; unpaged API reads remain available.
+
+Backtest attempt report schema 2 reads daily evaluation rows from the carried
+account's snapshots at input boundaries, without changing reducer commands or
+journal bytes. Saved-run comparisons and combined independent daily P&L do not
+share an account or its buying power, risk limits or drawdown floor. See
+[batch backtests](playbooks.md#batch-backtests) for retention, pins and deletion.

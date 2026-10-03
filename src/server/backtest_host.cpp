@@ -17,6 +17,30 @@ json read_json(const std::filesystem::path& path) {
   if (!input) throw std::runtime_error("Cannot read saved backtest");
   return json::parse(input);
 }
+struct UnsafePath : std::runtime_error { using std::runtime_error::runtime_error; };
+// Never follow a saved run or any child through a symlink, including metadata.
+std::uintmax_t tree_bytes(const std::filesystem::path& directory) {
+  if (std::filesystem::is_symlink(std::filesystem::symlink_status(directory))) throw UnsafePath("Backtest storage contains a symlink");
+  if (!std::filesystem::exists(directory)) return 0;
+  std::uintmax_t total = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(directory)) {
+    const auto status = entry.symlink_status();
+    if (std::filesystem::is_symlink(status)) throw UnsafePath("Backtest storage contains a symlink");
+    if (std::filesystem::is_regular_file(status)) {
+      std::error_code error;
+      const auto bytes = entry.file_size(error);
+      // Generated inputs and atomic-write temporaries can disappear during a read.
+      if (!error) total += bytes;
+      else if (error != std::errc::no_such_file_or_directory)
+        throw std::filesystem::filesystem_error("Cannot size backtest file", entry.path(), error);
+    }
+  }
+  return total;
+}
+bool finished(const json& state) {
+  const auto status = state.at("status").get<std::string>();
+  return status == "completed" || status == "cancelled" || status == "failed" || status == "interrupted";
+}
 }
 struct BacktestHost::Impl {
   Options options;
@@ -30,6 +54,7 @@ struct BacktestHost::Impl {
   ~Impl() { cancel = true; if (worker.joinable()) worker.join(); }
   json saved(const std::string& id, bool report) const {
     const auto directory = options.directory / id;
+    const auto size = tree_bytes(directory);
     auto state = read_json(directory / "state.json");
     if (!current.is_null() && current.at("id") == id) state = current;
     else if (state.at("status") == "running" || state.at("status") == "cancelling") state["status"] = "interrupted";
@@ -41,8 +66,35 @@ struct BacktestHost::Impl {
         state["summary"] = saved_report.at("summary");
       }
     }
+    state["keep"] = state.value("keep", false);
+    state["bytes"] = size;
     return state;
   }
+  std::vector<std::string> ids() const {
+    std::vector<std::string> result;
+    if (std::filesystem::is_directory(options.directory))
+      for (const auto& entry : std::filesystem::directory_iterator(options.directory))
+        if (run_id(entry.path().filename().string()) && !entry.is_symlink() && entry.is_directory() &&
+            std::filesystem::is_regular_file(entry.path() / "state.json")) result.push_back(entry.path().filename().string());
+    std::sort(result.begin(), result.end());
+    return result;
+  }
+  void purge(const std::string& id) {
+    (void)tree_bytes(options.directory / id);
+    std::filesystem::remove_all(options.directory / id);
+    if (!current.is_null() && current.at("id") == id) current = nullptr;
+  }
+  void retain() {
+    if (!options.keep) return;
+    std::vector<std::string> removable;
+    for (const auto& id : ids()) {
+      const auto state = saved(id, false);
+      if (finished(state) && !state.at("keep").get<bool>()) removable.push_back(id);
+    }
+    if (removable.size() <= options.keep) return;
+    for (std::size_t index = 0; index < removable.size() - options.keep; ++index) purge(removable[index]);
+  }
+
 };
 BacktestHost::BacktestHost(Options options) : impl_(std::make_unique<Impl>(std::move(options))) {}
 BacktestHost::~BacktestHost() = default;
@@ -51,21 +103,60 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
   if (path != "/api/backtests" && !path.starts_with("/api/backtests/")) return false;
   auto& host = *impl_;
   const auto id = path == "/api/backtests" ? std::string{} : path.substr(15);
-  if (!id.empty() && !run_id(id)) { complete(api_error(404, "NOT_FOUND", "Unknown backtest")); return true; }
+  if (!id.empty() && id != "compare" && !run_id(id)) { complete(api_error(404, "NOT_FOUND", "Unknown backtest")); return true; }
   ApiResponse response;
   try {
     const std::lock_guard lock(host.mutex);
-    if (request.method == "GET") {
+    if (std::filesystem::is_symlink(std::filesystem::symlink_status(host.options.directory))) throw UnsafePath("Backtest root is a symlink");
+    const auto question = request.target.find('?');
+    const auto query = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
+    if (!query) throw std::invalid_argument("Invalid query parameters");
+    const bool purge = request.method == "DELETE" && query->contains("purge") && query->at("purge") == "true";
+    for (const auto& [key, value] : *query) {
+      (void)value;
+      if (!(request.method == "GET" && id == "compare" && key == "ids") && !(purge && key == "purge"))
+        throw std::invalid_argument("Unknown backtest query parameter");
+    }
+    if (id == "compare" && request.method == "GET") {
+      if (!query->contains("ids")) throw std::invalid_argument("ids must name 2–8 distinct saved runs");
+      std::vector<std::string> selected;
+      std::istringstream input(query->at("ids"));
+      std::string item;
+      while (std::getline(input, item, ',')) {
+        if (!run_id(item) || std::find(selected.begin(), selected.end(), item) != selected.end())
+          throw std::invalid_argument("ids must name 2–8 distinct saved runs");
+        selected.push_back(item);
+      }
+      if (selected.size() < 2 || selected.size() > 8 || query->at("ids").back() == ',')
+        throw std::invalid_argument("ids must name 2–8 distinct saved runs");
+      json runs = json::array();
+      for (const auto& selected_id : selected) {
+        if (host.running && host.current.at("id") == selected_id) {
+          response = api_error(409, "BACKTEST_RUNNING", "Wait for backtests to finish before comparing"); break;
+        }
+        if (!std::filesystem::is_regular_file(host.options.directory / selected_id / "state.json")) {
+          response = api_error(404, "NOT_FOUND", "Unknown backtest"); break;
+        }
+        const auto state = host.saved(selected_id, true);
+        if (!finished(state)) { response = api_error(409, "BACKTEST_RUNNING", "Wait for backtests to finish before comparing"); break; }
+        if (!state.contains("report") || !state.at("report").is_object() || !state.at("report").contains("summary")) {
+          response = api_error(422, "BACKTEST_REPORT_UNAVAILABLE", "No completed or partial report is available"); break;
+        }
+        runs.push_back(state);
+      }
+      if (response.status == 200) {
+        try { response.body = compare_backtests(runs).dump(); }
+        catch (const trading::TradingError& error) { response = api_error(422, "BACKTEST_COMPARISON_UNAVAILABLE", error.what()); }
+      }
+    } else if (id == "compare") response = api_error(405, "METHOD_NOT_ALLOWED", "Unsupported comparison method");
+    else if (request.method == "GET") {
       if (!id.empty()) {
         if (!std::filesystem::is_regular_file(host.options.directory / id / "state.json")) response = api_error(404, "NOT_FOUND", "Unknown backtest");
         else response.body = host.saved(id, true).dump();
       } else {
         json runs = json::array();
-        std::vector<std::string> ids;
-        if (std::filesystem::is_directory(host.options.directory))
-          for (const auto& entry : std::filesystem::directory_iterator(host.options.directory))
-            if (run_id(entry.path().filename().string()) && entry.is_directory() && std::filesystem::is_regular_file(entry.path() / "state.json")) ids.push_back(entry.path().filename().string());
-        std::sort(ids.begin(), ids.end(), std::greater<>());
+        auto ids = host.ids();
+        std::reverse(ids.begin(), ids.end());
         for (const auto& item : ids) runs.push_back(host.saved(item, false));
         if (!host.current.is_null() && std::find(ids.begin(), ids.end(), host.current.at("id").get<std::string>()) == ids.end()) runs.insert(runs.begin(), host.current);
         response.body = json{{"runs", runs}, {"active", host.running ? host.current.at("id") : json(nullptr)}, {"label", kBacktestLabel}}.dump();
@@ -74,11 +165,36 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
       response = api_error(403, "WRITE_DISABLED", "Backtest writes are disabled");
     } else if (request.method == "DELETE") {
       if (!request.body.empty()) throw std::invalid_argument("DELETE must have no body");
-      if (!host.running || (!id.empty() && host.current.at("id") != id)) response = api_error(409, "BACKTEST_NOT_RUNNING", "No matching backtest is running");
+      if (purge) {
+        if (id.empty()) throw std::invalid_argument("Purging requires a saved run id");
+        if (host.running && host.current.at("id") == id) response = api_error(409, "BACKTEST_RUNNING", "Cancel the active run and wait before deleting it");
+        else if (!std::filesystem::is_regular_file(host.options.directory / id / "state.json")) response = api_error(404, "NOT_FOUND", "Unknown backtest");
+        else if (!finished(host.saved(id, false))) response = api_error(409, "BACKTEST_RUNNING", "Run is not finished");
+        else { host.purge(id); response.body = json{{"id", id}, {"deleted", true}}.dump(); }
+      } else if (!host.running || (!id.empty() && host.current.at("id") != id)) response = api_error(409, "BACKTEST_NOT_RUNNING", "No matching backtest is running");
       else {
         host.cancel = true;
         host.current["status"] = "cancelling";
         response.body = host.current.dump();
+      }
+    } else if (request.method == "PUT" && !id.empty()) {
+      const auto body = json::parse(request.body);
+      if (!body.is_object() || body.size() != 1 || !body.contains("keep") || !body.at("keep").is_boolean())
+        throw std::invalid_argument("Expected {keep: true|false}");
+      if (!host.current.is_null() && host.current.at("id") == id) {
+        if (std::filesystem::exists(host.options.directory / id)) (void)tree_bytes(host.options.directory / id);
+        auto state = host.current;
+        state["keep"] = body.at("keep");
+        if (std::filesystem::is_directory(host.options.directory / id)) write_backtest_report(host.options.directory / id / "state.json", state);
+        host.current = state;
+        response.body = state.dump();
+      } else if (!std::filesystem::is_regular_file(host.options.directory / id / "state.json")) response = api_error(404, "NOT_FOUND", "Unknown backtest");
+      else {
+        auto state = host.saved(id, false);
+        state["keep"] = body.at("keep");
+        state.erase("bytes"); state.erase("summary"); state.erase("playbook");
+        write_backtest_report(host.options.directory / id / "state.json", state);
+        response.body = host.saved(id, true).dump();
       }
     } else if (request.method == "POST" && id.empty()) {
       if (host.running) response = api_error(409, "BACKTEST_RUNNING", "A backtest is already running");
@@ -93,12 +209,17 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
         job.actor = request.actor;
         if (host.options.directory.empty()) throw std::invalid_argument("Backtest storage is unavailable");
         std::filesystem::create_directories(host.options.directory);
-        unsigned number = 1;
+        const auto sequence = host.options.directory / "sequence.json";
+        if (std::filesystem::is_symlink(std::filesystem::symlink_status(sequence)) ||
+            std::filesystem::is_symlink(std::filesystem::symlink_status(sequence.string() + ".tmp"))) throw UnsafePath("Backtest sequence is a symlink");
+        unsigned number = std::filesystem::is_regular_file(sequence) ? read_json(sequence).at("next").get<unsigned>() : 1;
         for (const auto& entry : std::filesystem::directory_iterator(host.options.directory)) {
           const auto name = entry.path().filename().string();
           if (run_id(name)) number = std::max(number, static_cast<unsigned>(std::stoul(name)) + 1);
         }
-        if (number > 999999) throw std::runtime_error("Backtest directory is full");
+        if (!number || number > 999999) throw std::runtime_error("Backtest directory is full");
+        write_backtest_report(sequence, {{"next", number + 1}});
+        host.retain();
         std::ostringstream name;
         name << std::setfill('0') << std::setw(6) << number;
         const auto directory = host.options.directory / name.str();
@@ -107,7 +228,7 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
         if (host.worker.joinable()) host.worker.join();
         host.cancel = false;
         host.current = {{"id", name.str()}, {"status", "running"}, {"phase", "days"}, {"completed", 0},
-            {"total", job.days.size() * 2}, {"directory", std::filesystem::absolute(directory).string()}, {"label", kBacktestLabel}, {"report", nullptr}};
+            {"keep", false}, {"bytes", 0}, {"total", job.days.size() * 2}, {"directory", std::filesystem::absolute(directory).string()}, {"label", kBacktestLabel}, {"report", nullptr}};
         host.running = true;
         try {
           host.worker = std::thread([&host, job = std::move(job), directory] {
@@ -144,7 +265,8 @@ bool BacktestHost::handle(const ApiRequest& request, const MetricsSource& source
       response.status = 200;
       response.body = host.current.dump();
     }
-  } catch (const std::invalid_argument& error) { response = api_error(400, "INVALID_REQUEST", error.what()); }
+  } catch (const UnsafePath& error) { response = api_error(409, "BACKTEST_UNSAFE_PATH", error.what()); }
+  catch (const std::invalid_argument& error) { response = api_error(400, "INVALID_REQUEST", error.what()); }
   catch (const json::exception& error) { response = api_error(400, "INVALID_REQUEST", error.what()); }
   catch (const std::exception& error) { response = api_error(500, "BACKTEST_IO", error.what()); }
   complete(std::move(response));
