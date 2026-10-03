@@ -5,7 +5,8 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { api, ApiError } from "../api/client"
 import { liveState, useLive } from "../api/live"
-import type { TradingStatus } from "../api/trading-types"
+import { tradingQueries } from "../api/trading"
+import type { HeldStrategy, TradingStatus } from "../api/trading-types"
 import { account, order, portfolio, quote, selection, status, trading } from "../test/trading-fixtures"
 import { OrderTicket } from "./OrderTicket"
 import { EditOrderDialog, FlattenDialog } from "./OrderActions"
@@ -74,6 +75,72 @@ function radio(group: string, option: string) {
 }
 async function choose(group: string, option: string) { await act(async () => radio(group, option).click()) }
 const checked = (group: string, option: string) => radio(group, option).getAttribute("aria-checked") === "true"
+
+describe.each(["single", "strategy"] as const)("%s ticket joining a whole trade", (ticket) => {
+  const trade: HeldStrategy = {
+    id: "7", underlying: "SPX", opened: "2026-09-22T14:00:00Z",
+    legs: [{ symbol: "SPXW  261016P06900000", quantity: -1, trade: "7" }, { symbol: "SPXW  261016P06890000", quantity: 1, trade: "8" }],
+    round_trips: 2, entries: 1, realised: "0.00", fees: "1.30", unrealised: "0.00", net: "-1.30",
+  }
+  const others = [{ ...trade, id: "9", underlying: "SPY" }, { ...trade, id: "10", legs: [] }]
+  async function renderTicket(strategies: HeldStrategy[]) {
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
+    vi.spyOn(api, "previewOrder").mockRejectedValue(new Error("fixture preview"))
+    const held = { ...portfolio, positions: [], strategies }
+    vi.mocked(api.portfolio).mockResolvedValue(held)
+    client.setQueryData(tradingQueries(0, "17", true).portfolio.queryKey, held)
+    const legs: StrategyLeg[] = trade.legs.map((leg, i) => ({
+      symbol: leg.symbol, underlying: "SPX", side: leg.quantity > 0 ? "buy" : "sell", ratio: 1, type: "put", strike: i ? 6890 : 6900, expiry: expiry.id,
+      quote: { ...quote, symbol: leg.symbol, bid: 5 - i, ask: 5.2 - i, mid: 5.1 - i },
+    }))
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      {ticket === "single" ? <OrderTicket selection={selection} quote={quote} trading={trading} onClose={() => {}} />
+        : <StrategyTicket legs={legs} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />}
+    </QueryClientProvider>))
+  }
+  async function previewAndSubmit() {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)) })
+    expect(api.previewOrder).toHaveBeenCalled()
+    await click(ticket === "single" ? "Submit order" : "Submit strategy order")
+    expect(api.submitOrder).toHaveBeenCalledTimes(1)
+    return [vi.mocked(api.previewOrder).mock.calls.at(-1)![0], vi.mocked(api.submitOrder).mock.calls[0]![0]]
+  }
+  it("lists open trades on the underlying and sends the chosen trade in previews and orders", async () => {
+    await renderTicket([trade, ...others])
+    const select = field("Join trade") as HTMLSelectElement
+    expect([...select.options].map((option) => option.textContent)).toEqual(["None", "SPX Oct 16 −6900P +6890P · #7"])
+    expect(select.value).toBe("")
+    await setField("Join trade", "7")
+    for (const body of await previewAndSubmit()) expect(body.group).toBe("7")
+  })
+  it("omits the group by default", async () => {
+    await renderTicket([trade])
+    for (const body of await previewAndSubmit()) expect(body).not.toHaveProperty("group")
+  })
+  it("omits the group after choosing None", async () => {
+    await renderTicket([trade])
+    await setField("Join trade", "7")
+    await setField("Join trade", "")
+    for (const body of await previewAndSubmit()) expect(body).not.toHaveProperty("group")
+  })
+  it("hides the field without an open trade on this underlying", async () => {
+    await renderTicket(others)
+    expect(host.textContent).not.toContain("Join trade")
+    for (const body of await previewAndSubmit()) expect(body).not.toHaveProperty("group")
+  })
+  it("omits a selected trade when it no longer holds any legs", async () => {
+    await renderTicket([trade])
+    await setField("Join trade", "7")
+    const held = { ...portfolio, positions: [], strategies: [] }
+    vi.mocked(api.portfolio).mockResolvedValue(held)
+    await act(async () => {
+      client.setQueryData(tradingQueries(0, "17", true).portfolio.queryKey, held)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(host.textContent).not.toContain("Join trade")
+    for (const body of await previewAndSubmit()) expect(body).not.toHaveProperty("group")
+  })
+})
 
 describe("order ticket interaction", () => {
   it("submits a walk", async () => {

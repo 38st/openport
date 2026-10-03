@@ -439,7 +439,8 @@ special opening quotation; live providers keep manual imports.
       and flagged where it falls back; planned risk for combo stops and covered calendars;
       positions with their round trip and the contract's lifetime this attempt
 - [x] Whole trades across rolls and adjustments, with their own review, and legs
-      entered one by one grouped into one trade; held strategies over the API
+      entered one by one grouped into one trade; both order tickets can join an open
+      whole trade; held strategies over the API
 - [x] Return on buying power for trades, strategies and whole trades, in the Journal,
       playbook reports and backtests
 - [x] Same-expiry strike rolls and whole-condor rolls, exits resized in place and DAY or
