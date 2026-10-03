@@ -7466,7 +7466,7 @@
       "Money": {
         "type": "string",
         "pattern": "^-?\\d+\\.\\d{2,6}$",
-        "description": "Exact decimal dollars. Never a JSON number."
+        "description": "Exact decimal dollars, never a JSON number. Strings preserve every meaningful micro-dollar with 2 to 6 decimal places, omitting trailing zeros beyond cents. Computed requirements, buying power under portfolio margin and prorated values can carry more than cents (for example, 2033.725875). Clients should parse these as exact decimals and round only for display; booked values remain exact integer micro-dollars."
       },
       "WriteMode": {
         "description": "open: a write without credentials is accepted (a loopback bind with no legacy token, --require-token or --sandboxes; named tokens alone leave it open), and a token sent anyway is still checked. token: writes need a token. disabled: no credential can write.",
