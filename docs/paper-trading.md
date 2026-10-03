@@ -2502,6 +2502,22 @@ null. Compact past-attempt summaries lack full rules and report null rather than
 guessing from the display name. Replay control's existing `plan` remains its starting
 preset ID; history `plan_id` describes the recovered account's current rules.
 
+`POST /api/accounts` and replay starts (`POST /api/replay`) accept
+`copy_settings_from: "main"` or another live account ID, including an archived
+account. They copy **active** limits (including underlying overrides) and personal
+guardrails, using the same validators as risk writes. Pending values, kill latches,
+opening counts and cooldown state are not copied. The new account's first journal
+record includes the settings; replay verification and recovery never consult the
+source again. Unknown sources return 404 `UNKNOWN_ACCOUNT`; malformed IDs return
+400 `INVALID_REQUEST`. Copying is not offered when resuming an existing run.
+
+Risk replies include `pending_requires_reset`. It is true when pending limits or
+guardrails exist and the replay's last complete batch does not reach a later plan
+trading day. Reset the replay account while it is writable to apply them now;
+resetting discards the current attempt's positions and orders as usual. Runs with a
+later trading day apply queued values at rollover and report false; another session
+on the same trading day does not suffice. Live accounts always report false.
+
 ### Commands and views
 
 The engine thread alone owns every session. A bounded FIFO inbox (256 pending

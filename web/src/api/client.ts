@@ -11,7 +11,7 @@ import { isSandboxToken, writeToken } from "../lib/write-token"
 
 /** What a replay plays: a recording in the recordings directory, or the demo market. */
 export type ReplaySource = { file: string } | { demo: true | string }
-export interface ReplayStart { plan?: string; start_at?: string; paused?: boolean; seed?: string; date?: string }
+export interface ReplayStart { copy_settings_from?: string; plan?: string; start_at?: string; paused?: boolean; seed?: string; date?: string }
 
 export class ApiError extends Error {
   constructor(

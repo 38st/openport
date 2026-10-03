@@ -1080,6 +1080,9 @@ json risk_json(const TradingView& view) {
           {"guardrail_state", guardrail_state_json(s)}, {"pending_applied_at", time_or_null(s.pending_applied_at)},
           {"pending_applied_day", s.pending_applied_at > 0 ? json(md::format_date(plan_trading_date(view.config.rules, s.pending_applied_at))) : json(nullptr)},
           {"pending_effective", s.pending_limits || s.pending_guardrails ? json("next_trading_day") : json(nullptr)},
+          {"pending_requires_reset", (s.pending_limits || s.pending_guardrails) && view.replay_end > 0 &&
+              plan_trading_date(view.config.rules, view.replay_end) <=
+              plan_trading_date(view.config.rules, std::max(s.time, view.replay_start))},
           {"time", md::format_timestamp(s.time)}, {"breach", breach_json(view.breach)}, {"warnings", warnings_json(view.warnings)},
           {"complete", s.risk.complete}, {"daily_loss", s.risk.daily_loss.str()},
           {"kill", kill_json(s)}, {"aggregate", bucket_json(s.risk.aggregate)}, {"underlyings", underlyings},
@@ -1806,9 +1809,13 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   if (path == "/api/accounts") {
     // A name, and either a preset plan or a starting balance and complete rules.
     fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model", "margin", "account_type",
-                            "house_margin_percent", "pm_vol_shock"});
+                            "house_margin_percent", "pm_vol_shock", "copy_settings_from"});
     command.kind = TradingCommand::Kind::CreateAccount;
     command.name = string_field(body, "name");
+    if (body.contains("copy_settings_from")) {
+      command.copy_settings_from = string_field(body, "copy_settings_from");
+      if (!valid_account(command.copy_settings_from)) throw std::invalid_argument("copy_settings_from must be an account id");
+    }
     if (!valid_account_name(command.name))
       throw std::invalid_argument("name must be 1 to 64 characters, none of them a control character");
     if (body.contains("plan")) {

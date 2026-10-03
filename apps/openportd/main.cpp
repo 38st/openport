@@ -628,6 +628,7 @@ int run(int argc, char** argv) {
   // Recorded days replay beside the live feed, each with its own paper account.
   server::ReplayHost::Options replay_options;
   replay_options.engine = engine_options;
+  replay_options.settings_source = [&engine](std::string_view id) { return engine.trading_view(id); };
   replay_options.scenario_dir = settings.scenario_dir;
   if (!settings.record_dir.empty())
     replay_options.recordings = settings.record_dir;

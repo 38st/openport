@@ -476,6 +476,57 @@ void drill_recording(const std::filesystem::path& path) {
   sink.close();
 }
 
+TEST(ReplayHost, CopiedSettingsVerifyAndSingleDayPendingSettingsRequireReset) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  drill_recording(file.path);
+  server::ReplayHost::Options options;
+  options.recordings = file.directory;
+  options.demo = false;
+  options.engine.paper_journal = file.directory / "main.jsonl";
+  auto source = std::make_shared<server::TradingView>();
+  source->config.limits.aggregate.dollar_delta = 250'000;
+  source->config.guardrails.max_opening_trades = 3;
+  options.settings_source = [source](std::string_view id) { return id == "main" ? source : nullptr; };
+  server::ReplayHost host(options);
+  const auto request = json{{"file", "session.oprec"}, {"plan", "eod-50k"}, {"copy_settings_from", "main"},
+      {"paused", true}, {"start_at", "10:00"}, {"speed", 0}};
+  auto bad = request;
+  bad["copy_settings_from"] = "missing";
+  EXPECT_EQ(call(host, "POST", "/api/replay", bad.dump()).status, 404);
+  bad["copy_settings_from"] = 42;
+  EXPECT_EQ(call(host, "POST", "/api/replay", bad.dump()).status, 400);
+  const auto start = call(host, "POST", "/api/replay", request.dump());
+  ASSERT_EQ(start.status, 201) << start.body;
+  const auto id = json::parse(start.body)["replay"]["id"].get<std::string>();
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  auto risk = json::parse(call(host, "GET", "/api/replay/risk").body);
+  EXPECT_EQ(risk["limits"]["aggregate"]["dollar_delta"], 250'000);
+  EXPECT_EQ(risk["guardrails"]["max_opening_trades"], 3);
+  EXPECT_EQ(risk["pending_requires_reset"], false);
+  risk["limits"]["aggregate"]["dollar_delta"] = 500'000;
+  const auto limits = call(host, "PUT", "/api/replay/risk/limits",
+      json{{"expected_revision", risk["limits_revision"]}, {"limits", risk["limits"]}}.dump());
+  ASSERT_EQ(limits.status, 200) << limits.body;
+  risk = json::parse(limits.body);
+  EXPECT_EQ(risk["pending_requires_reset"], true);
+  EXPECT_EQ(json::parse(call(host, "GET", "/api/replay/risk").body)["pending_requires_reset"], true);
+  risk["guardrails"]["max_opening_trades"] = 6;
+  ASSERT_EQ(call(host, "PUT", "/api/replay/risk/guardrails",
+      json{{"expected_revision", risk["limits_revision"]}, {"guardrails", risk["guardrails"]}}.dump()).status, 200);
+  ASSERT_EQ(call(host, "POST", "/api/replay/account/reset", R"({"plan":"eod-50k","reason":"Apply queued settings"})").status, 200);
+  risk = json::parse(call(host, "GET", "/api/replay/risk").body);
+  EXPECT_EQ(risk["limits"]["aggregate"]["dollar_delta"], 500'000);
+  EXPECT_EQ(risk["guardrails"]["max_opening_trades"], 6);
+  EXPECT_EQ(risk["pending_requires_reset"], false);
+  host.stop();
+  source.reset();
+  const auto verified = server::verify_run(file.directory / "replays" / (id + ".jsonl"));
+  EXPECT_TRUE(verified.matched) << verified.message;
+  const auto history = json::parse(call(host, "GET", "/api/replay/history/" + id + "/risk").body);
+  EXPECT_EQ(history["limits"]["aggregate"]["dollar_delta"], 500'000);
+}
+
 TEST(ReplayHost, DrillsReachTheEngineBeforeTradingAndKeepTheirJournalsAcrossRestart) {
   using nlohmann::json;
   test::RecordingFile file;
@@ -659,6 +710,7 @@ TEST(ReplayHost, FinishedRunsListTheirFinalPlaybackStateAndPlanId) {
     EXPECT_EQ(entry["settled_through"], "2026-09-16T19:55:00.000Z");
     EXPECT_EQ(entry["plan"], "intraday-25k");
     EXPECT_EQ(entry["plan_name"], "Intraday 25K");
+    EXPECT_EQ(entry["plan_id"], "intraday-25k");
   };
   host.stop();
   auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];

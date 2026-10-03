@@ -33,6 +33,7 @@ class Desk {
     std::string run_id;     ///< The run's id, named in its exports; empty without one.
     bool paper_enabled = true;
     bool replay = false;  ///< Publish the replay market clock and keep halt state isolated.
+    md::Timestamp replay_start = 0, replay_end = 0;  ///< Last complete market batch for pending-setting guidance.
     /// Driver 2, recorded in a run's start input: the driver applies every underlying's
     /// snapshot of one market time as one batch, and each underlying's quotes are offered
     /// at the market time its own snapshot arrived. False reproduces older runs, whose

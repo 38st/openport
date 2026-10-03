@@ -230,6 +230,13 @@ TEST(MultiDayReplay, StartsAndStepsToADateAndTimeInTheRunsSessions) {
   const auto replay = [&] { return json::parse(call(host, "GET", "/api/replay").body)["replay"]; };
   ASSERT_TRUE(test::recording_eventually([&] { return !replay()["fast_forwarding"].get<bool>(); }));
   EXPECT_EQ(replay()["time"], at(friday, 13, 0));
+  auto risk = json::parse(call(host, "GET", "/api/replay/risk").body);
+  risk["limits"]["aggregate"]["dollar_delta"] = 2'000'000;
+  const auto pending = call(host, "PUT", "/api/replay/risk/limits",
+      {{"expected_revision", risk["limits_revision"]}, {"limits", risk["limits"]}});
+  ASSERT_EQ(pending.status, 200) << pending.body;
+  EXPECT_EQ(json::parse(pending.body)["pending_requires_reset"], false);
+  EXPECT_FALSE(json::parse(pending.body)["pending_limits"].is_null());
   // In a run of several sessions a bare until is the time's next occurrence: Sunday evening.
   const auto evening = call(host, "PUT", "/api/replay", {{"until", "21:00"}});
   ASSERT_EQ(evening.status, 200) << evening.body;
@@ -243,6 +250,14 @@ TEST(MultiDayReplay, StartsAndStepsToADateAndTimeInTheRunsSessions) {
   // The account carried over the weekend: Friday closed and Monday is under way.
   const auto account = json::parse(call(host, "GET", "/api/replay/account").body);
   EXPECT_EQ(account["evaluation"]["day"], "2026-11-30");
+  risk = json::parse(call(host, "GET", "/api/replay/risk").body);
+  EXPECT_TRUE(risk["pending_limits"].is_null());
+  EXPECT_EQ(risk["limits"]["aggregate"]["dollar_delta"], 2'000'000);
+  risk["limits"]["aggregate"]["dollar_delta"] = 3'000'000;
+  const auto last_day = call(host, "PUT", "/api/replay/risk/limits",
+      {{"expected_revision", risk["limits_revision"]}, {"limits", risk["limits"]}});
+  ASSERT_EQ(last_day.status, 200) << last_day.body;
+  EXPECT_EQ(json::parse(last_day.body)["pending_requires_reset"], true);
   ASSERT_EQ(account["evaluation"]["days"].size(), 1U);
   EXPECT_EQ(account["evaluation"]["days"][0]["day"], "2026-11-27");
   host.stop();

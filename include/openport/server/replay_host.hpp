@@ -43,6 +43,8 @@ class ReplayHost {
     /// Listing prepares the default scenario with its own seed in the background.
     bool demo = true;
     std::filesystem::path scenario_dir = {};   ///< User additions and overrides.
+    /// Immutable live account publications, including main and archived accounts.
+    std::function<std::shared_ptr<const TradingView>(std::string_view)> settings_source = {};
   };
 
   explicit ReplayHost(Options options);

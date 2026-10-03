@@ -286,9 +286,64 @@ TEST(Desk, PresetIdKeepsBrokerOverridesAndRejectsCustomObjectives) {
     rules.margin = trading::MarginMode::Portfolio;
     rules.house_margin_percent = 20;
     EXPECT_EQ(server::preset_id(plan.initial_cash, rules), plan.id);
-    rules.profit_target += Money::from_double(1);
+    rules.profit_target = rules.profit_target + Money::from_double(1);
     EXPECT_TRUE(server::preset_id(plan.initial_cash, rules).empty());
   }
+}
+
+TEST(Desk, CopiesActiveSettingsAsInitialStateAndRecoversThem) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  server::Desk::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.paper_accounts = file.directory / "accounts";
+  options.paper.rules = server::find_plan("eod-50k")->rules;
+  options.paper.initial_cash = server::find_plan("eod-50k")->initial_cash;
+  options.paper.limits.aggregate.dollar_delta = 400'000;
+  options.paper.limits.underlying_overrides["SPX"] = {100'000, 1000};
+  options.paper.guardrails.max_opening_trades = 3;
+  {
+    server::Desk desk("test", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    desk.replay_batch(market_batch(market), market.time);
+    server::TradingCommand limits;
+    limits.kind = server::TradingCommand::Kind::Limits;
+    limits.expected_revision = desk.trading_view()->snapshot->risk.limits_revision;
+    limits.limits = options.paper.limits;
+    limits.limits.aggregate.dollar_delta = 800'000;
+    ASSERT_TRUE(command(desk, limits, market.time, market.time).decision.ok());
+    ASSERT_TRUE(desk.trading_view()->snapshot->pending_limits);
+    server::TradingCommand guardrails;
+    guardrails.kind = server::TradingCommand::Kind::Guardrails;
+    guardrails.expected_revision = desk.trading_view()->snapshot->risk.limits_revision;
+    guardrails.guardrails.max_opening_trades = 6;
+    ASSERT_TRUE(command(desk, guardrails, market.time, market.time).decision.ok());
+    ASSERT_TRUE(desk.trading_view()->snapshot->pending_guardrails);
+    server::TradingCommand create;
+    create.kind = server::TradingCommand::Kind::CreateAccount;
+    create.name = "Copy";
+    create.rules = options.paper.rules;
+    create.initial_cash = options.paper.initial_cash;
+    create.copy_settings_from = "missing";
+    EXPECT_EQ(command(desk, create, market.time, market.time).error_code, "UNKNOWN_ACCOUNT");
+    create.copy_settings_from = "main";
+    const auto result = command(desk, create, market.time, market.time);
+    ASSERT_EQ(result.account, "copy") << result.decision.message;
+    EXPECT_EQ(result.view->config.limits.aggregate.dollar_delta, 400'000);
+    EXPECT_EQ(result.view->config.limits.underlying_overrides.at("SPX").dollar_delta, 100'000);
+    EXPECT_EQ(result.view->config.guardrails.max_opening_trades, 3);
+    EXPECT_FALSE(result.view->snapshot->pending_limits);
+    EXPECT_FALSE(result.view->snapshot->pending_guardrails);
+    desk.stop();
+  }
+  server::Desk desk("test", {}, {{"SPX"}}, options);
+  desk.start_trading();
+  const auto copied = desk.trading_view("copy");
+  ASSERT_TRUE(copied);
+  EXPECT_EQ(copied->config.limits.aggregate.dollar_delta, 400'000);
+  EXPECT_EQ(copied->config.guardrails.max_opening_trades, 3);
+  EXPECT_FALSE(copied->snapshot->pending_limits);
+  desk.stop();
 }
 
 TEST(Desk, OnlyExplicitReplayJournalsBatchSyncs) {

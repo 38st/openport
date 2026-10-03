@@ -267,14 +267,14 @@ void ReplayProvider::set_driver(Driver driver, std::function<std::future<void>()
   driver_ = std::move(driver);
   if (barrier) options_.synchronize = std::move(barrier);
 }
-md::Timestamp ReplayProvider::end_time() {
+md::Timestamp ReplayProvider::end_time(const md::Subscription& subscription) {
   const std::lock_guard lock(end_mutex_);
   if (end_) return *end_;
   // A reader of its own batches the file as playback will, without touching playback.
   md::Timestamp last = 0;
   try {
     md::RecordingReader reader(options_.file);
-    ReplayBatches batches(reader, subscription_);
+    ReplayBatches batches(reader, subscription.underlyings.empty() ? subscription_ : subscription);
     while (!stopping_.load()) {
       const auto batch = batches.next();
       if (!batch) break;

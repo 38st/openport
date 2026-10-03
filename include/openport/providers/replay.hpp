@@ -69,7 +69,7 @@ class ReplayProvider final : public md::Provider {
   /// past the recording's last batch throws before anything plays.
   void until(md::Timestamp target);
   /// The market time of the recording's last complete batch, read once on first use.
-  [[nodiscard]] md::Timestamp end_time();
+  [[nodiscard]] md::Timestamp end_time(const md::Subscription& subscription = {});
   [[nodiscard]] md::Timestamp settled_through() const { return settled_.load(); }
   [[nodiscard]] md::Timestamp market_time() const { return market_time_.load(); }
   [[nodiscard]] const std::filesystem::path& file() const { return options_.file; }
