@@ -91,6 +91,7 @@ target_sources(openport_tests PRIVATE
   trading/evaluation_test.cpp
   trading/conditional_test.cpp
   trading/condition_test.cpp
+  trading/alert_test.cpp
   trading/funded_test.cpp
   trading/plan_rules_test.cpp
   trading/multileg_test.cpp

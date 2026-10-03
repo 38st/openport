@@ -1020,6 +1020,7 @@ TradingSnapshot snapshot_of(const State& s) {
   }
   for (const auto& [symbol, attribution] : out.attributions) out.attribution += attribution;
   out.exit_equity = exit_equity_of(s, out);
+  out.alerts = s.alerts.items;
   return out;
 }
 /// Rules only act on fully marked equity: every position has a mark, fresh or not.
@@ -2823,6 +2824,110 @@ std::optional<Money> floor_room(const State& s) {
   if (snapshot.soft_floor) room = room ? std::min(*room, snapshot.equity - *snapshot.soft_floor) : snapshot.equity - *snapshot.soft_floor;
   return room;
 }
+/// The value an alert watches now, when it is known and fresh: quotes and marks
+/// within the quote age, valuations and indicators within the valuation age,
+/// and account measures on complete marks (exposures on complete valuations).
+std::optional<Money> alert_value(const State& s, const AlertCondition& c, const std::function<const Measures&()>& measures) {
+  const auto recent = [&](Timestamp time, Timestamp age) { return time <= s.time && s.time - time <= age; };
+  const auto money = [](double value) -> std::optional<Money> {
+    if (!std::isfinite(value)) return std::nullopt;
+    try { return Money::from_double(value); } catch (const TradingError&) { return std::nullopt; }
+  };
+  const auto mark = [&](const std::string& symbol) -> std::optional<Money> {
+    const auto it = s.marks.find(symbol);
+    if (it == s.marks.end() || !recent(it->second.time, s.config.limits.max_quote_age)) return std::nullopt;
+    return it->second.price;
+  };
+  switch (c.scope) {
+    case AlertScope::Contract: {
+      if (c.metric == "mark") return mark(c.symbol);
+      if (c.metric == "bid" || c.metric == "ask") {
+        const auto book = s.books.find(c.symbol);
+        if (book == s.books.end() || !markable_quote(book->second.quote) ||
+            !recent(book->second.quote.time, s.config.limits.max_quote_age)) return std::nullopt;
+        return c.metric == "bid" ? book->second.quote.bid : book->second.quote.ask;
+      }
+      const auto it = s.valuations.find(c.symbol);
+      if (it == s.valuations.end() || !valid_valuation(it->second) || !recent(it->second.time, s.config.limits.max_valuation_age))
+        return std::nullopt;
+      const auto& v = it->second;
+      return money(c.metric == "iv" ? v.smile_iv * 100 : c.metric == "delta" ? v.delta : c.metric == "gamma" ? v.gamma
+                   : c.metric == "theta" ? v.theta : v.vega);
+    }
+    case AlertScope::Spread: {
+      Money net;
+      for (const auto& leg : c.legs) {
+        const auto price = mark(leg.symbol);
+        if (!price) return std::nullopt;
+        net = net + (leg.side == Side::Buy ? *price : -*price) * leg.ratio;
+      }
+      return net;
+    }
+    case AlertScope::Underlying: {
+      const auto it = s.indicators.find(indicator_key(c.symbol, c.metric == "price" ? "" : c.metric));
+      if (it == s.indicators.end() || !recent(it->second.time, s.config.limits.max_valuation_age)) return std::nullopt;
+      return it->second.price;
+    }
+    case AlertScope::Account: {
+      const auto& m = measures();
+      if (c.metric == "buying_power") {
+        if (!m.valuation_complete || !m.risk.complete) return std::nullopt;
+        // Working reservations also depend on their legs' current quotes.
+        for (const auto id : open_ids(s))
+          for (const auto& symbol : order_symbols(s.orders[id - 1].request))
+            if (!quote_check(s, symbol).ok()) return std::nullopt;
+        return m.buying_power.available;
+      }
+      if (c.metric == "dollar_delta" || c.metric == "vega" || c.metric == "theta") {
+        if (!m.risk.complete) return std::nullopt;
+        const auto& e = m.risk.aggregate.position;
+        return money(c.metric == "dollar_delta" ? e.dollar_delta : c.metric == "vega" ? e.vega : e.theta);
+      }
+      if (!m.valuation_complete) return std::nullopt;
+      if (c.metric == "equity") return m.equity;
+      if (c.metric == "day_pnl") return m.equity - s.start_equity;
+      if (c.metric == "unrealised") return m.unrealised;
+      // Floor room: to the plan's floor and the personal soft floor, whichever is nearer.
+      std::optional<Money> room;
+      if (s.config.rules.max_drawdown > Money{}) room = m.equity - s.evaluation.floor;
+      if (m.soft_floor) room = room ? std::min(*room, m.equity - *m.soft_floor) : m.equity - *m.soft_floor;
+      return room;
+    }
+  }
+  return std::nullopt;
+}
+/// Each alert fires as its condition is reached: a one-shot alert once, a
+/// repeating one again each time the condition returns after a known value
+/// showed it lapsed.
+void check_alerts(State& s, Events& events) {
+  if (s.alerts.items.empty()) return;
+  std::optional<Measures> measured;
+  const std::function<const Measures&()> measures = [&]() -> const Measures& {
+    if (!measured) measured = measure(s);
+    return *measured;
+  };
+  for (auto& alert : s.alerts.items) {
+    if (!alert.armed && !alert.spec.repeat) continue;
+    const auto& c = alert.spec.condition;
+    std::optional<Money> value;
+    try { value = alert_value(s, c, measures); }
+    catch (const TradingError& error) {
+      // An unrepresentable alert value must not stop market processing.
+      if (error.code() != Reason::ARITHMETIC_OVERFLOW) throw;
+    }
+    if (!value) continue;
+    if (!(c.direction == TriggerDirection::AtOrBelow ? *value <= c.level : *value >= c.level)) {
+      alert.armed = true;
+      continue;
+    }
+    if (!alert.armed) continue;
+    alert.armed = false;
+    ++alert.fired;
+    alert.fired_at = s.time;
+    alert.value = *value;
+    event(events, "alert_fired", Json{{"alert", alert}});
+  }
+}
 void check_floor_share(double floor_share) {
   if (!std::isfinite(floor_share) || floor_share <= 0 || floor_share > 1)
     throw TradingError(Reason::INVALID_ORDER, "floor_share must be greater than zero and at most one");
@@ -3325,6 +3430,9 @@ Json state_change(const State& before, const State& after) {
   // Indicators are written once there is one, and never emptied again.
   if (before.indicators.empty() && !after.indicators.empty()) changes["indicators"] = Json{{"v", after.indicators}};
   else if (auto change = field_change(before.indicators, after.indicators)) changes["indicators"] = std::move(*change);
+  // Alerts likewise, once the account has created one.
+  if (before.alerts.created == 0 && after.alerts.created > 0) changes["alerts"] = Json{{"v", after.alerts}};
+  else if (auto change = field_change(before.alerts, after.alerts)) changes["alerts"] = std::move(*change);
   // Exercise instructions are written only while there are any (see to_json).
   const bool had = !before.do_not_exercise.empty(), has = !after.do_not_exercise.empty();
   if (has && !had) changes["do_not_exercise"] = Json{{"v", after.do_not_exercise}};
@@ -3497,7 +3605,7 @@ struct TradingSession::Impl {
     return !stopped && time >= s.time && s.ledger.positions().empty() && s.ledger.stocks().empty() &&
            s.evaluation.started > 0 && s.evaluation.cycle_started > 0 &&
            s.guardrails.cooldown_until <= s.time &&
-           open_ids(s).empty();
+           open_ids(s).empty() && s.alerts.items.empty();
   }
 
   CommandResult transact(Timestamp time, std::string_view type,
@@ -4273,6 +4381,7 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     match_symbols(s, changed, events);
     // Triggers read the batch's books and valuations after resting orders match.
     check_triggers(s, events);
+    check_alerts(s, events);
     return CommandResult{};
   });
 }
@@ -4728,6 +4837,42 @@ CommandResult TradingSession::group_trades(std::vector<std::uint64_t> trades, bo
     Json ids = Json::array();
     for (const auto id : trades) ids.push_back(std::to_string(id));
     event(events, together ? "trades_grouped" : "trades_ungrouped", Json{{"trades", ids}});
+    return CommandResult{};
+  });
+}
+CommandResult TradingSession::create_alert(AlertSpec spec, Timestamp time) {
+  validate_alert(spec);
+  return impl_->transact(time, "alert", [&](State& s, Events& events) {
+    const auto& c = spec.condition;
+    std::vector<std::string> symbols;
+    if (c.scope == AlertScope::Contract) symbols.push_back(c.symbol);
+    for (const auto& leg : c.legs) symbols.push_back(leg.symbol);
+    for (const auto& symbol : symbols)
+      if (!s.contracts.contains(symbol))
+        return CommandResult{failure(Reason::UNKNOWN_CONTRACT, "An alert's contracts must be registered canonical OSI definitions"), {}, 0};
+    if (s.alerts.items.size() >= kMaxAlerts)
+      return CommandResult{failure(Reason::INVALID_ALERT, "An account keeps at most 100 alerts; delete one first"), {}, 0};
+    if (s.alerts.created == std::numeric_limits<std::uint64_t>::max()) throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Alert IDs exhausted");
+    Alert alert;
+    alert.id = ++s.alerts.created;
+    alert.spec = std::move(spec);
+    alert.created = s.time;
+    alert.actor = s.actor;
+    s.alerts.items.push_back(alert);
+    event(events, "alert_created", Json{{"alert", alert}});
+    check_alerts(s, events);
+    CommandResult result;
+    result.alert_id = alert.id;
+    return result;
+  });
+}
+CommandResult TradingSession::delete_alert(std::uint64_t id, Timestamp time) {
+  return impl_->transact(time, "alert", [&](State& s, Events& events) {
+    auto& items = s.alerts.items;
+    const auto it = std::find_if(items.begin(), items.end(), [&](const Alert& a) { return a.id == id; });
+    if (it == items.end()) return CommandResult{failure(Reason::UNKNOWN_ALERT, "No alert " + std::to_string(id)), {}, 0};
+    event(events, "alert_deleted", Json{{"alert", *it}});
+    items.erase(it);
     return CommandResult{};
   });
 }

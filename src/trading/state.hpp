@@ -50,8 +50,21 @@ inline void from_json(const Json& j, Trigger& t) {
   added_field(j, "symbol", t.symbol); added_field(j, "study", t.study); added_field(j, "minute", t.minute);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExitSpec, trigger, limit_price)
+inline void to_json(Json& j, AlertScope scope) {
+  constexpr const char* names[] = {"contract", "spread", "underlying", "account"};
+  j = names[static_cast<int>(scope)];
+}
+inline void from_json(const Json& j, AlertScope& scope) {
+  const auto name = j.get<std::string>();
+  constexpr const char* names[] = {"contract", "spread", "underlying", "account"};
+  for (int i = 0; i < 4; ++i) if (name == names[i]) { scope = static_cast<AlertScope>(i); return; }
+  throw TradingError(Reason::JOURNAL_CORRUPT, "Unknown recorded alert scope");
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Bracket, stop_loss, take_profit)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Leg, symbol, side, ratio)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AlertCondition, scope, metric, symbol, legs, direction, level)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AlertSpec, label, condition, repeat)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Alert, id, spec, created, actor, armed, fired, fired_at, value)
 inline void to_json(Json& j, const OrderRequest& r) {
   j = Json{{"client_order_id", r.client_order_id}, {"symbol", r.symbol}, {"side", r.side}, {"type", r.type}, {"tif", r.tif},
            {"quantity", r.quantity}, {"limit_price", r.limit_price}, {"trigger", r.trigger}, {"bracket", r.bracket},
@@ -413,7 +426,23 @@ inline void from_json(const Json& j, MarkedPosition& p) {
   added_field(j, "no_bid", p.no_bid); added_field(j, "do_not_exercise", p.do_not_exercise);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(MarkedStock, position, mark, mark_time, market_value, unrealised, fresh)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(TradingSnapshot, account_version, time, account, equity, start_of_day_equity, unrealised, valuation_complete, journal_failed, positions, stocks, open_orders, recent_orders, recent_fills, risk, scenarios, quality_flags, evaluation, buying_power, closures, attempts, annotations, attribution, attributions, stock_fills, dividends, closing_prints, day_notes, trade_reviews, strategy_reviews, pending_limits, pending_guardrails, guardrails, pending_applied_at, soft_floor, trip_attributions, groups, group_reviews)
+inline void to_json(Json& j, const TradingSnapshot& s) {
+  j = Json{
+      {"account_version", s.account_version}, {"time", s.time}, {"account", s.account},
+      {"equity", s.equity}, {"start_of_day_equity", s.start_of_day_equity}, {"unrealised", s.unrealised},
+      {"valuation_complete", s.valuation_complete}, {"journal_failed", s.journal_failed}, {"positions", s.positions},
+      {"stocks", s.stocks}, {"open_orders", s.open_orders}, {"recent_orders", s.recent_orders},
+      {"recent_fills", s.recent_fills}, {"risk", s.risk}, {"scenarios", s.scenarios},
+      {"quality_flags", s.quality_flags}, {"evaluation", s.evaluation}, {"buying_power", s.buying_power},
+      {"closures", s.closures}, {"attempts", s.attempts}, {"annotations", s.annotations},
+      {"attribution", s.attribution}, {"attributions", s.attributions}, {"stock_fills", s.stock_fills},
+      {"dividends", s.dividends}, {"closing_prints", s.closing_prints}, {"day_notes", s.day_notes},
+      {"trade_reviews", s.trade_reviews}, {"strategy_reviews", s.strategy_reviews}, {"pending_limits", s.pending_limits},
+      {"pending_guardrails", s.pending_guardrails}, {"guardrails", s.guardrails}, {"pending_applied_at", s.pending_applied_at},
+      {"soft_floor", s.soft_floor}, {"trip_attributions", s.trip_attributions}, {"groups", s.groups},
+      {"group_reviews", s.group_reviews}};
+  if (!s.alerts.empty()) j["alerts"] = s.alerts;
+}
 inline void from_json(const Json& j, TradingSnapshot& s) {
   j.at("account_version").get_to(s.account_version); j.at("time").get_to(s.time); j.at("account").get_to(s.account);
   j.at("equity").get_to(s.equity); j.at("start_of_day_equity").get_to(s.start_of_day_equity);
@@ -434,6 +463,7 @@ inline void from_json(const Json& j, TradingSnapshot& s) {
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
   added_field(j, "soft_floor", s.soft_floor); added_field(j, "trip_attributions", s.trip_attributions);
   added_field(j, "groups", s.groups); added_field(j, "group_reviews", s.group_reviews);
+  added_field(j, "alerts", s.alerts);
 }
 
 namespace detail {
@@ -446,6 +476,11 @@ struct Book {
 struct Mark {
   Money price;
   Timestamp time = 0;
+};
+/// The account's alerts, and how many it has created: IDs are never reused.
+struct AlertBook {
+  std::uint64_t created = 0;
+  std::vector<Alert> items;
 };
 /// Where a held position's current stretch at one size began: its size, mark
 /// and, when valid, valuation. Today's P&L by Greek runs from here.
@@ -520,6 +555,8 @@ struct State {
   /// The latest values conditional triggers watch, by indicator_key. Entries are
   /// only replaced, never removed, and the field is journaled once it has one.
   std::map<std::string, Mark> indicators;
+  /// Journaled once the account has created an alert, so other journals keep their bytes.
+  AlertBook alerts;
   SharedVector<StockFill> stock_fills;
   SharedVector<DividendPayment> dividends;
   SharedMap<std::string, ClosingPrint> closing_prints;
@@ -556,6 +593,7 @@ inline void reindex(State& s) {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Book, quote, bid_left, ask_left)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Mark, price, time)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Reference, quantity, mark, valuation)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(AlertBook, created, items)
 /// Every journaled field of State, once: its JSON writer and the journal's
 /// change finder (state_change) both come from this list.
 #define OPENPORT_STATE_FIELDS(X) \
@@ -572,6 +610,7 @@ inline void to_json(Json& j, const State& s) {
   if (!s.do_not_exercise.empty()) j["do_not_exercise"] = s.do_not_exercise;
   // Absent until a conditional trigger first reads one, so other journals keep their bytes.
   if (!s.indicators.empty()) j["indicators"] = s.indicators;
+  if (s.alerts.created > 0) j["alerts"] = s.alerts;
 }
 inline void from_json(const Json& j, State& s) {
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
@@ -591,6 +630,7 @@ inline void from_json(const Json& j, State& s) {
   added_field(j, "pending_limits", s.pending_limits); added_field(j, "pending_guardrails", s.pending_guardrails);
   added_field(j, "guardrails", s.guardrails); added_field(j, "pending_applied_at", s.pending_applied_at);
   added_field(j, "indicators", s.indicators);
+  added_field(j, "alerts", s.alerts);
   added_field(j, "do_not_exercise", s.do_not_exercise);
   added_field(j, "trips", s.trips); added_field(j, "trip_attribution", s.trip_attribution);
   added_field(j, "groups", s.groups); added_field(j, "group_reviews", s.group_reviews);
