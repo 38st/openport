@@ -27,6 +27,7 @@ export interface PlanForm extends SizeScalingForm {
   daily_loss_limit: string
   daily_loss_basis: DailyLossBasis
   daily_loss_action: "lock" | "fail"
+  min_trades: string
   trade_consistency_percent: string
   consistency_percent: string
   consistency_basis: "total" | "positive_days"
@@ -70,6 +71,7 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     lock: r.lock_at_start ? "start" : r.lock_balance ? "balance" : "none", lock_balance: r.lock_balance ?? "",
     daily_loss_limit: r.daily_loss_limit ?? "", daily_loss_basis: r.daily_loss_basis ?? "equity", daily_loss_action: r.daily_loss_action ?? "lock",
     consistency_percent: r.consistency_percent ? String(r.consistency_percent) : "", consistency_basis: r.consistency_basis ?? "total",
+    min_trades: r.min_trades ? String(r.min_trades) : "",
     trade_consistency_percent: r.trade_consistency_percent ? String(r.trade_consistency_percent) : "",
     min_trading_days: r.min_trading_days ? String(r.min_trading_days) : "",
     min_profitable_days: r.min_profitable_days ? String(r.min_profitable_days) : "",
@@ -101,7 +103,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     ["Maximum trade risk", form.max_trade_risk], ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.phase === "funded" ? "" : form.profitable_day_profit]] as const)
     if ((required || value.trim() !== "") && !validMoney(value.trim())) return { error: `${label} must be a dollar amount` }
   if (!(Number(form.initial_cash) > 0)) return { error: "The starting balance must be above zero" }
-  for (const [label, value, most] of [...(form.phase === "evaluation" ? [["Trade consistency", form.trade_consistency_percent, 100], ["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
+  for (const [label, value, most] of [...(form.phase === "evaluation" ? [["Minimum trades", form.min_trades, 10000], ["Trade consistency", form.trade_consistency_percent, 100], ["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
     ["Minimum profitable days", form.min_profitable_days, 366], ["Evaluation time limit", form.time_limit_days, 366]] : []),
     ["Inactivity limit", form.inactivity_days, 366]] as [string, string, number][]) {
     const n = count(value)
@@ -168,6 +170,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     lock_at_start: trailing && form.lock === "start", lock_balance: trailing && form.lock === "balance" ? amount(form.lock_balance) : null,
     daily_loss_limit: amount(form.daily_loss_limit), daily_loss_basis: form.daily_loss_basis, daily_loss_action: form.daily_loss_action,
     consistency_percent: form.phase === "funded" ? 0 : count(form.consistency_percent), consistency_basis: form.consistency_basis,
+    min_trades: form.phase === "funded" ? 0 : count(form.min_trades),
     trade_consistency_percent: form.phase === "funded" ? 0 : count(form.trade_consistency_percent),
     min_trading_days: form.phase === "funded" ? 0 : count(form.min_trading_days),
     min_profitable_days: form.phase === "funded" ? 0 : count(form.min_profitable_days),
@@ -219,6 +222,7 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
       {form.phase === "evaluation" && <>
         <Field label="Consistency: best day at most %" hint="Blank for none">{text("consistency_percent", "none")}</Field>
         <Field label="Of">{choice("consistency_basis", [["total", "The total profit"], ["positive_days", "The profitable days' total"]])}</Field>
+        <Field label="Minimum closed trades" hint="Whole option trades, including system closures">{text("min_trades", "0")}</Field>
         <Field label="Trade consistency: best trade at most %" hint="Net profit of a closed whole option trade; blank for none">{text("trade_consistency_percent", "none")}</Field>
         <Field label="Minimum trading days">{text("min_trading_days", "0")}</Field>
         <Field label="Minimum profitable days">{text("min_profitable_days", "0")}</Field>

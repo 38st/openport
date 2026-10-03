@@ -234,3 +234,13 @@ it("edits and explains trade consistency with integer validation", () => {
   for (const value of ["-1", "101", "1.5"]) expect(customPlan({ ...form, trade_consistency_percent: value }, rules)).toHaveProperty("error")
   expect(objectiveValue({ code: "TRADE_CONSISTENCY", met: false, actual: 75, required: 40, message: "" })).toBe("75% of 40% max")
 })
+
+it("edits minimum closed trades and clears evaluation rules when funded", () => {
+  const form = { ...planForm({ initial_cash: "100000", rules }), min_trades: "10" }
+  const result = customPlan(form, rules)
+  expect("error" in result ? null : result.rules.min_trades).toBe(10)
+  for (const min_trades of ["-1", "10001", "1.5"]) expect(customPlan({ ...form, min_trades }, rules)).toHaveProperty("error")
+  expect(objectiveFacts({ ...rules, min_trades: 10 })).toContain("At least 10 closed whole trades")
+  const funded = customPlan({ ...form, phase: "funded", trade_consistency_percent: "40" }, rules)
+  expect("error" in funded ? null : funded.rules).toMatchObject({ min_trades: 0, trade_consistency_percent: 0 })
+})
