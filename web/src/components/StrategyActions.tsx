@@ -162,6 +162,7 @@ export function SpreadExitsDialog({ group, trading, onClose }: { group: Strategy
     order.legs?.length === plan.legs.length && order.legs.every((leg) => plan.legs.some((held) =>
       held.symbol === leg.symbol && held.side === leg.side && held.ratio === leg.ratio)))
   const [editing, setEditing] = useState<Order | null>(null)
+  const [confirmCancel, setConfirmCancel] = useState(false)
   const [clientId] = useState(() => crypto.randomUUID())
   const exits = useSpreadExits(group.cost, comboTickCents(plan.legs.map((leg) => leg.symbol.slice(0, 6).trim())), true)
   if (editing) return <EditOrderDialog order={editing} trading={trading} onClose={() => setEditing(null)} onDone={() => setEditing(null)} />
@@ -188,9 +189,13 @@ export function SpreadExitsDialog({ group, trading, onClose }: { group: Strategy
           ? `${order.trigger.level}${order.limit_price != null ? `, limit ${order.limit_price}` : ""}` : order.limit_price}</span>
         <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => setEditing(order)}>Change</button>
       </div>)}
-      <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => void write.run(async () => {
+      {confirmCancel ? <div className="space-y-2">
+        <p className="text-sm text-warn">Cancel {active.length} exits? The position stays open without their protection.</p>
+        <button className="trade-button mr-2" disabled={write.pending} onClick={() => setConfirmCancel(false)}>Keep exits</button>
+        <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => void write.run(async () => {
         for (const order of active) await api.cancelOrder(order.id, trading.write)
-      }, onClose)}>Cancel exits</button>
+        }, onClose)}>{write.pending ? "Cancelling…" : "Confirm cancel exits"}</button>
+      </div> : <button className="trade-button" disabled={write.pending || write.blocked} onClick={() => setConfirmCancel(true)}>Cancel exits</button>}
     </> : <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); void submit() }}>
       <fieldset disabled={write.pending}>{exits.fields}</fieldset>
       <button className="trade-button" disabled={!exits.valid || !exits.bracket || write.pending || write.blocked || orders.isPending || !!orders.error}>Set exits</button>
