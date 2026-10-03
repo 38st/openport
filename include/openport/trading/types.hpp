@@ -36,10 +36,10 @@ enum class Reason {
   MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
   TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS,
   FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT, TRADE_CONSISTENCY, MIN_TRADES, MIN_HOLD, MICROSCALPING,
-  HEDGING, COUNTER_POSITION
+  HEDGING, COUNTER_POSITION, MAX_VOLUME_SHARE
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::COUNTER_POSITION;
+inline constexpr Reason kLastReason = Reason::MAX_VOLUME_SHARE;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -55,6 +55,10 @@ struct RuleEvidence {
   double order_dollar_delta = 0;
   double held_dollar_delta = 0;
   std::string other_account = {};
+  std::string contract = {};
+  Quantity contracts = 0;
+  std::optional<std::int64_t> volume = {};
+  std::int64_t percent = 0;
 };
 /// actual/limit are populated for numeric checks; scope is the underlying or "aggregate".
 struct Decision {
@@ -666,6 +670,7 @@ struct AccountRules {
   std::int64_t day_end_minutes = kDayEndMinutes;
   std::optional<FeeSchedule> fees;  ///< Empty keeps SessionConfig::fee_per_contract.
   Quantity max_contracts_held = 0;  ///< Held options plus working opening contracts, 1-100000; zero disables.
+  std::int64_t max_volume_percent = 0;  ///< Server gate: whole percent of current-date traded option volume, 0-100.
   bool no_hedging = false;  ///< Opening orders cannot oppose held delta on their underlying.
   bool no_counter_positions = false;  ///< Server gate against other live accounts' held delta.
   bool require_stop_loss = false;  ///< Opening option orders need a protective bracket stop.

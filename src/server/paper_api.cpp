@@ -87,7 +87,7 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"account_type", r.account_type == AccountType::Cash ? "cash" : r.account_type == AccountType::Ira ? "ira" : "margin"},
           {"house_margin_percent", r.house_margin_percent}, {"pm_vol_shock", r.pm_vol_shock},
           {"max_contracts_held", r.max_contracts_held},
-          {"no_hedging", r.no_hedging}, {"no_counter_positions", r.no_counter_positions},
+          {"max_volume_percent", r.max_volume_percent}, {"no_hedging", r.no_hedging}, {"no_counter_positions", r.no_counter_positions},
           {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", positive(r.max_trade_risk)},
           {"max_trade_risk_percent", r.max_trade_risk_percent},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
@@ -115,6 +115,9 @@ json scope_json(const std::string& scope) {
 }
 /// A reason with its numeric evidence: how far a check was exceeded, and where.
 json rule_evidence_json(const RuleEvidence& e) {
+  if (!e.contract.empty())
+    return {{"contract", e.contract}, {"contracts", e.contracts},
+            {"volume", e.volume ? json(*e.volume) : json(nullptr)}, {"percent", e.percent}};
   json result{{"underlying", e.underlying}, {"order_dollar_delta", e.order_dollar_delta}, {"held_dollar_delta", e.held_dollar_delta}};
   if (!e.other_account.empty()) result["other_account"] = e.other_account;
   return result;
@@ -1648,7 +1651,7 @@ AccountRules parse_rules(const json& j) {
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
-          "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "max_contracts_held", "no_hedging", "no_counter_positions", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
+          "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "max_volume_percent", "max_contracts_held", "no_hedging", "no_counter_positions", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
           "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling", "size_scaling"});
   if (j.contains("microscalp_seconds") != j.contains("microscalp_percent"))
     throw TradingError(Reason::INVALID_RULES, "Set microscalp_seconds and microscalp_percent together");
@@ -1690,6 +1693,7 @@ AccountRules parse_rules(const json& j) {
   if (has("profitable_day_profit")) rules.profitable_day_profit = decimal_field(j, "profitable_day_profit");
   if (has("day_end")) rules.day_end_minutes = clock_field(j, "day_end");
   if (j.contains("max_contracts_held")) rules.max_contracts_held = integer_field(j, "max_contracts_held");
+  if (j.contains("max_volume_percent")) rules.max_volume_percent = integer_field(j, "max_volume_percent");
   if (j.contains("no_hedging")) rules.no_hedging = boolean_field(j, "no_hedging");
   if (j.contains("no_counter_positions")) rules.no_counter_positions = boolean_field(j, "no_counter_positions");
   if (j.contains("require_stop_loss")) rules.require_stop_loss = boolean_field(j, "require_stop_loss");

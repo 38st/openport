@@ -1471,11 +1471,42 @@ Decision Desk::opening_gate(const PaperAccount& account, const OrderRequest& ord
       std::any_of(accounts_.begin(), accounts_.end(), [&](const auto& other) {
         return other.id != account.id && !other.archived && other.session && !sandbox_ids_.contains(other.id);
       });
-  if (!counter) return {};
+  const auto percent = session.config().rules.max_volume_percent;
+  if (!counter && percent == 0) return {};
   const auto exposure = session.opening_order(order, time, market, preceding);
-  if (!exposure.decision.ok()) return exposure.decision;
+  if (!exposure.decision.ok() && (counter || exposure.decision.code != Reason::MISSING_VALUATION)) return exposure.decision;
   if (exposure.opening) {
-    if (const auto d = counter_position_gate(account, exposure.dollar_delta, time); !d.ok()) return d;
+    if (counter)
+      if (const auto d = counter_position_gate(account, exposure.dollar_delta, time); !d.ok()) return d;
+    if (percent != 0) for (const auto& [symbol, opening] : exposure.contracts) {
+      Quantity held = 0;
+      for (const auto& position : session.snapshot()->positions)
+        if (position.position.contract.osi_symbol() == symbol) held = position.position.quantity;
+      if (const auto it = preceding.find(symbol); it != preceding.end() && __builtin_add_overflow(held, it->second, &held))
+        return {Reason::ARITHMETIC_OVERFLOW, "Chained holdings overflow", {}, {}, symbol};
+      __extension__ using Wide = __int128;
+      const Wide contracts = (held < 0 ? -static_cast<Wide>(held) : held) + opening;
+      if (contracts > std::numeric_limits<Quantity>::max())
+        return {Reason::ARITHMETIC_OVERFLOW, "Volume-share contract count overflow", {}, {}, symbol};
+      const auto id = instruments_.find(symbol);
+      const auto* option = id == instruments_.end() ? nullptr : book_.option(id->second);
+      std::optional<std::int64_t> volume;
+      // The feed carries doubles; accept only exact, whole contract counts.
+      if (option && option->volume_ts > 0 && option->volume_ts <= time &&
+          md::trading_date(option->volume_ts) == md::trading_date(time) && std::isfinite(option->volume) &&
+          option->volume >= 0 && option->volume <= 9'007'199'254'740'991.0 && std::trunc(option->volume) == option->volume)
+        volume = static_cast<std::int64_t>(option->volume);
+      if (!volume || contracts * 100 > static_cast<Wide>(percent) * *volume) {
+        RuleEvidence evidence;
+        evidence.contract = symbol; evidence.contracts = static_cast<Quantity>(contracts);
+        evidence.volume = volume; evidence.percent = percent;
+        return {Reason::MAX_VOLUME_SHARE, symbol + ": held plus opening contracts " + std::to_string(evidence.contracts) +
+            " exceeds " + std::to_string(percent) + "% of current-date volume " +
+            (volume ? std::to_string(*volume) : "unknown (missing, invalid or stale)"),
+            static_cast<double>(contracts), volume ? std::optional(static_cast<double>(*volume) * static_cast<double>(percent) / 100) : std::nullopt,
+            symbol, evidence};
+      }
+    }
   }
   // Chained entries are accepted with their parent, so take the same server gate
   // now. Execution later remains entirely inside the deterministic reducer.

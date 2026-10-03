@@ -42,6 +42,100 @@ server::TradingReply command(server::Desk& desk, server::TradingCommand request,
   if (!result) throw std::runtime_error("Desk did not complete command");
   return *result;
 }
+TEST(Desk, VolumeShareGateChecksKnownUnknownStaleVolumeAndOpeningContracts) {
+  test::ScriptedMarket market;
+  server::Desk::Options options;
+  options.paper.rules.max_volume_percent = 10;
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("test", {}, {{"SPX", "SPY"}}, options);
+  desk.start_trading();
+  desk.replay_batch(market_batch(market), market.time);
+  const auto volume = [&](double contracts, md::Timestamp time) {
+    desk.replay_batch({md::OptionVolume{0, time, contracts}}, market.time);
+  };
+  server::TradingCommand entry; entry.order = market.limit("one", 1, "4.00");
+  for (const auto phase : {0, 1, 2, 3}) {
+    if (phase == 1) volume(100, market.time - 24 * 60 * md::kNanosPerMinute);
+    if (phase == 2) volume(0, market.time);
+    if (phase == 3) volume(10.5, market.time);
+    const auto count = desk.trading_view()->snapshot->recent_orders.size();
+    const auto refused = command(desk, entry, market.time, market.time);
+    EXPECT_EQ(refused.decision.code, trading::Reason::MAX_VOLUME_SHARE);
+    ASSERT_TRUE(refused.decision.evidence);
+    EXPECT_EQ(refused.decision.evidence->contract, market.symbol());
+    EXPECT_EQ(refused.decision.evidence->contracts, 1);
+    EXPECT_EQ(refused.decision.evidence->percent, 10);
+    if (phase == 2) { EXPECT_EQ(refused.decision.evidence->volume, 0); }
+    else { EXPECT_FALSE(refused.decision.evidence->volume); }
+    EXPECT_EQ(desk.trading_view()->snapshot->recent_orders.size(), count);
+    entry.kind = server::TradingCommand::Kind::Preview;
+    const auto preview = command(desk, entry, market.time, market.time);
+    ASSERT_TRUE(preview.preview);
+    EXPECT_EQ(preview.preview->decision.code, trading::Reason::MAX_VOLUME_SHARE);
+    entry.kind = server::TradingCommand::Kind::Submit;
+  }
+  volume(10, market.time);
+  const auto resting = command(desk, entry, market.time, market.time);
+  ASSERT_TRUE(resting.decision.ok()) << resting.decision.message;
+  server::TradingCommand change;
+  change.kind = server::TradingCommand::Kind::Modify;
+  change.order_id = *resting.order_id; change.change.quantity = 2;
+  EXPECT_EQ(command(desk, change, market.time, market.time).decision.code, trading::Reason::MAX_VOLUME_SHARE);
+  change.kind = server::TradingCommand::Kind::PreviewChange;
+  const auto preview = command(desk, change, market.time, market.time);
+  ASSERT_TRUE(preview.preview);
+  EXPECT_EQ(preview.preview->decision.code, trading::Reason::MAX_VOLUME_SHARE);
+  volume(20, market.time);
+  change.kind = server::TradingCommand::Kind::Modify;
+  ASSERT_TRUE(command(desk, change, market.time, market.time).decision.ok());
+  change.kind = server::TradingCommand::Kind::Cancel;
+  ASSERT_TRUE(command(desk, change, market.time, market.time).decision.ok());
+  entry.order = market.market("held");
+  ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  entry.order = market.market("held-plus-opening", 2);
+  const auto refused = command(desk, entry, market.time, market.time);
+  EXPECT_EQ(refused.decision.code, trading::Reason::MAX_VOLUME_SHARE);
+  ASSERT_TRUE(refused.decision.evidence);
+  EXPECT_EQ(refused.decision.evidence->contracts, 3);
+  volume(0, market.time);
+  entry.order = market.market("reduce", 1, trading::Side::Sell);
+  EXPECT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  // Shares never enter the volume cap.
+  desk.replay_batch({md::UnderlyingQuote{"SPY", market.time, 500, 500, 500}, md::SnapshotComplete{"SPY", market.time}}, market.time);
+  server::TradingCommand stock;
+  stock.kind = server::TradingCommand::Kind::TradeStock; stock.symbol = "SPY"; stock.quantity = 1;
+  EXPECT_TRUE(command(desk, stock, market.time, market.time).decision.ok());
+  desk.stop();
+}
+
+TEST(Desk, VolumeShareChecksEveryComboRatioWithAnExactPercentBoundaryInReplay) {
+  test::ScriptedMarket market, other;
+  other.contract.strike += 5;
+  server::Desk::Options options;
+  options.replay = true; options.paper.rules.max_volume_percent = 33;
+  options.paper.limits.aggregate = {1e9, 1e9}; options.paper.limits.per_underlying = {1e9, 1e9};
+  server::Desk desk("replay", {}, {{"SPX"}}, options);
+  desk.start_trading();
+  auto batch = market_batch(market);
+  batch.insert(batch.begin(), {md::ContractDefinition{1, other.contract}, md::OptionQuote{1, market.time, 4.0, 4.2, 20, 20}});
+  batch.push_back(md::OptionVolume{0, market.time, 100});
+  batch.push_back(md::OptionVolume{1, market.time, 3});
+  desk.replay_batch(batch, market.time);
+  server::TradingCommand entry;
+  entry.order = market.market("ratio"); entry.order.symbol.clear();
+  entry.order.legs = {{market.symbol(), trading::Side::Buy, 1}, {other.symbol(), trading::Side::Sell, 2}};
+  auto refused = command(desk, entry, market.time, market.time);
+  EXPECT_EQ(refused.decision.code, trading::Reason::MAX_VOLUME_SHARE);
+  ASSERT_TRUE(refused.decision.evidence);
+  EXPECT_EQ(refused.decision.evidence->contract, other.symbol());
+  EXPECT_EQ(refused.decision.evidence->contracts, 2);
+  desk.replay_batch({md::OptionVolume{1, market.time, 6}}, market.time);
+  EXPECT_EQ(command(desk, entry, market.time, market.time).decision.code, trading::Reason::MAX_VOLUME_SHARE); // 200 > 198.
+  desk.replay_batch({md::OptionVolume{1, market.time, 7}}, market.time);
+  EXPECT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+  desk.stop();
+}
+
 TEST(Desk, CounterPositionsGatePreviewsChangesChainsAndIgnoresArchivedAccounts) {
   test::RecordingFile file;
   test::ScriptedMarket market;

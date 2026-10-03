@@ -24,7 +24,7 @@ json catalogue() {
 std::string bytes(const std::filesystem::path& path) {
   std::ifstream input(path); std::ostringstream out; out << input.rdbuf(); return out.str();
 }
-std::filesystem::path recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false, bool breadth = false) {
+std::filesystem::path recorded_day(const std::filesystem::path& directory, md::Date date, bool loss = false, bool breadth = false, std::optional<double> volume = {}) {
   const auto path = directory / (md::format_date(date) + ".oprec");
   auto contract = *md::parse_osi("SPXW  260916P05000000");
   contract.expiry = date;
@@ -48,6 +48,10 @@ std::filesystem::path recorded_day(const std::filesystem::path& directory, md::D
     sink.publish(md::UnderlyingQuote{"SPX", time, 5000, 5000, 5000});
     sink.publish(md::OptionQuote{0, time, high, high + .1, 20, 20});
     sink.publish(md::OptionQuote{1, time, 8, 8.1, 20, 20});
+    if (volume) {
+      sink.publish(md::OptionVolume{0, time, *volume});
+      sink.publish(md::OptionVolume{1, time, *volume});
+    }
     sink.publish(md::SnapshotComplete{"SPX", time});
   }
   sink.close();
@@ -788,4 +792,30 @@ TEST(Backtest, CustomStopAndRiskRules) {
     auto invalid = rules; invalid[key] = value;
     EXPECT_THROW((void)parse(invalid), std::exception);
   }
+}
+
+TEST(Backtest, VolumeRuleRejectsMissingDataAndGatesRecordedPlaybookEntries) {
+  test::RecordingFile storage;
+  const auto missing = recorded_day(storage.directory, {2026, 9, 14});
+  const auto present = recorded_day(storage.directory, {2026, 9, 15}, false, false, 3);
+  const auto parse = [&](const std::filesystem::path& file, const json& percent) {
+    return server::parse_backtest({{"playbook", "batch"},
+        {"plan", {{"initial_cash", "10000"}, {"rules", {{"profit_target", "100"}, {"max_volume_percent", percent}}}}},
+        {"days", {{{"file", file.string()}}}}}, catalogue(), {}, {}, false);
+  };
+  try {
+    (void)parse(missing, 10);
+    FAIL() << "Expected a clear unsupported-volume error";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_NE(std::string(e.what()).find("current-date option volume"), std::string::npos);
+  }
+  EXPECT_NO_THROW((void)parse(missing, 0));
+  for (const auto& value : {json(-1), json(101), json(1.5), json(true)}) {
+    EXPECT_THROW((void)parse(present, value), std::exception);
+  }
+  const auto request = parse(present, 10);
+  EXPECT_EQ(request.config.rules.max_volume_percent, 10);
+  const auto report = server::run_backtest(request, storage.directory / "volume-report");
+  EXPECT_TRUE(report.at("days")[0].at("fills").empty());
+  EXPECT_NE(report.at("days")[0].at("entry_reasons").dump().find("volume"), std::string::npos);
 }

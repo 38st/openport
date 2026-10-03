@@ -32,7 +32,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(MAX_CONTRACTS_HELD); CASE(STOP_REQUIRED); CASE(MAX_TRADE_RISK);
     CASE(TIME_LIMIT); CASE(INACTIVITY); CASE(INSTRUMENT_NOT_ALLOWED); CASE(OUTSIDE_PLAN_HOURS); CASE(FLAT_TIME); CASE(OVERNIGHT_HOLD);
     CASE(TRADE_CONSISTENCY); CASE(MIN_TRADES); CASE(MIN_HOLD); CASE(MICROSCALPING);
-    CASE(HEDGING); CASE(COUNTER_POSITION);
+    CASE(HEDGING); CASE(COUNTER_POSITION); CASE(MAX_VOLUME_SHARE);
   }
 #undef CASE
   return "UNKNOWN";
@@ -279,6 +279,8 @@ void validate_rules(const AccountRules& r) {
     throw TradingError(Reason::INVALID_RULES, "Trade consistency must be a whole percent from 0 to 100");
   if (r.day_end_minutes < 16 * 60 + 15 || r.day_end_minutes > 24 * 60)
     throw TradingError(Reason::INVALID_RULES, "The trading day ends between 16:15 and 24:00 New York time");
+  if (r.max_volume_percent < 0 || r.max_volume_percent > 100)
+    throw TradingError(Reason::INVALID_RULES, "Maximum volume percent must be an integer from 0 to 100");
   if (r.max_contracts_held < 0 || r.max_contracts_held > 100000)
     throw TradingError(Reason::INVALID_RULES, "The contracts held cap must be 0 to 100000; zero disables it");
   if (r.max_trade_risk < Money{} || r.max_trade_risk_percent < 0 || r.max_trade_risk_percent > 100)

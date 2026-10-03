@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
@@ -540,7 +541,26 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       const auto first = batches.next();
       if (!first || first->time <= 0) throw std::invalid_argument("Recording has no market time");
       day.date = md::trading_date(first->time);
+      if (result.config.rules.max_volume_percent != 0) {
+        const auto carries_volume = [&](const auto& batch) {
+          return std::any_of(batch.events.begin(), batch.events.end(), [&](const auto& event) {
+            const auto* volume = std::get_if<md::OptionVolume>(&event);
+            return volume && volume->ts > 0 && md::trading_date(volume->ts) == day.date &&
+                std::isfinite(volume->contracts) && volume->contracts >= 0 &&
+                volume->contracts <= 9'007'199'254'740'991.0 && std::trunc(volume->contracts) == volume->contracts;
+          });
+        };
+        bool volume = carries_volume(*first);
+        while (!volume) {
+          const auto batch = batches.next();
+          if (!batch) break;
+          volume = carries_volume(*batch);
+        }
+        if (!volume) throw std::invalid_argument("max_volume_percent requires current-date option volume in every backtest recording");
+      }
     } else {
+      if (result.config.rules.max_volume_percent != 0)
+        throw std::invalid_argument("max_volume_percent is unavailable for scenario backtests: generated data has no option volume");
       keys(entry, {"scenario", "date", "seed"});
       const auto& id = required(entry, "scenario", "day scenario");
       for (const auto& scenario : scenarios) if (id == scenario.id) day.scenario = scenario;

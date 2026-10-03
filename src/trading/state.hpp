@@ -38,7 +38,20 @@ inline void from_json(const Json& j, Reason& r) {
 template <class T> void added_field(const Json& j, const char* key, T& value) {
   if (const auto it = j.find(key); it != j.end()) it->get_to(value);
 }
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RuleEvidence, underlying, order_dollar_delta, held_dollar_delta, other_account)
+inline void to_json(Json& j, const RuleEvidence& e) {
+  if (!e.contract.empty()) {
+    j = Json{{"contract", e.contract}, {"contracts", e.contracts}, {"volume", e.volume}, {"percent", e.percent}};
+  } else {
+    j = Json{{"underlying", e.underlying}, {"order_dollar_delta", e.order_dollar_delta},
+             {"held_dollar_delta", e.held_dollar_delta}, {"other_account", e.other_account}};
+  }
+}
+inline void from_json(const Json& j, RuleEvidence& e) {
+  added_field(j, "underlying", e.underlying); added_field(j, "order_dollar_delta", e.order_dollar_delta);
+  added_field(j, "held_dollar_delta", e.held_dollar_delta); added_field(j, "other_account", e.other_account);
+  added_field(j, "contract", e.contract); added_field(j, "contracts", e.contracts);
+  added_field(j, "volume", e.volume); added_field(j, "percent", e.percent);
+}
 inline void to_json(Json& j, const Decision& d) {
   j = Json{{"code", d.code}, {"message", d.message}, {"actual", d.actual}, {"limit", d.limit}, {"scope", d.scope}};
   if (d.evidence) j["evidence"] = *d.evidence;
@@ -322,7 +335,7 @@ inline Json optional_rule_defaults() {
               {"account_type", d.account_type}, {"house_margin_percent", d.house_margin_percent},
               {"pm_vol_shock", d.pm_vol_shock},
               {"max_contracts_held", d.max_contracts_held},
-              {"no_hedging", d.no_hedging}, {"no_counter_positions", d.no_counter_positions},
+              {"max_volume_percent", d.max_volume_percent}, {"no_hedging", d.no_hedging}, {"no_counter_positions", d.no_counter_positions},
               {"require_stop_loss", d.require_stop_loss}, {"max_trade_risk", d.max_trade_risk},
               {"max_trade_risk_percent", d.max_trade_risk_percent},
               {"time_limit_days", d.time_limit_days}, {"inactivity_days", d.inactivity_days},
@@ -349,7 +362,7 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"account_type", r.account_type}, {"house_margin_percent", r.house_margin_percent},
                  {"pm_vol_shock", r.pm_vol_shock},
                  {"max_contracts_held", r.max_contracts_held},
-                 {"no_hedging", r.no_hedging}, {"no_counter_positions", r.no_counter_positions},
+                 {"max_volume_percent", r.max_volume_percent}, {"no_hedging", r.no_hedging}, {"no_counter_positions", r.no_counter_positions},
                  {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", r.max_trade_risk},
                  {"max_trade_risk_percent", r.max_trade_risk_percent},
                  {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days},
@@ -378,7 +391,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   r.impact_ticks = j.value("impact_ticks", std::int64_t{0});
   added_field(j, "inside_fill_percent", r.inside_fill_percent);
   for (const auto* key : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "consistency_percent", "min_trading_days", "min_profitable_days", "day_end_minutes",
-                          "house_margin_percent", "pm_vol_shock", "max_contracts_held", "max_trade_risk_percent",
+                          "house_margin_percent", "pm_vol_shock", "max_volume_percent", "max_contracts_held", "max_trade_risk_percent",
                           "time_limit_days", "inactivity_days"})
     if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
       throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded rule counts must be integers");
@@ -396,6 +409,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "account_type", r.account_type); added_field(j, "house_margin_percent", r.house_margin_percent);
   added_field(j, "pm_vol_shock", r.pm_vol_shock);
   added_field(j, "max_contracts_held", r.max_contracts_held);
+  added_field(j, "max_volume_percent", r.max_volume_percent);
   added_field(j, "no_hedging", r.no_hedging); added_field(j, "no_counter_positions", r.no_counter_positions);
   added_field(j, "require_stop_loss", r.require_stop_loss); added_field(j, "max_trade_risk", r.max_trade_risk);
   added_field(j, "max_trade_risk_percent", r.max_trade_risk_percent);

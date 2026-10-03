@@ -4278,11 +4278,12 @@ TEST(PaperAccounts, CreationSelectsAndValidatesFeeSchedules) {
     json rules{{"profit_target", nullptr}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
                {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0},
                {"fees", {{"open", "0.50"}}}};
-    rules["no_hedging"] = true; rules["no_counter_positions"] = true;
+    rules["no_hedging"] = true; rules["no_counter_positions"] = true; rules["max_volume_percent"] = 25;
     const auto custom = write(engine, "POST", "/api/accounts", {{"name", "Custom"}, {"initial_cash", "50000"}, {"rules", rules}});
     ASSERT_EQ(custom.status, 201) << custom.body;
     const auto custom_id = json::parse(custom.body)["account"]["id"].get<std::string>();
     const auto direction_rules = read(engine, "/api/account?account=" + custom_id)["rules"];
+    EXPECT_EQ(direction_rules["max_volume_percent"], 25);
     EXPECT_EQ(direction_rules["no_hedging"], true);
     EXPECT_EQ(direction_rules["no_counter_positions"], true);
     EXPECT_EQ(read(engine, "/api/account?account=" + custom_id)["rules"]["fees"]["open"], "0.50");
@@ -4432,6 +4433,34 @@ TEST(PaperAvailability, EquityPagesKeepEqualTimeSamplesAndUnpagedReads) {
   engine.stop();
 }
 }  // namespace
+
+TEST_F(PaperEngine, VolumeRuleRoundTripsAndExplainsUnknownVolumeInPreview) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["plan"] = "Volume share"; rules["max_volume_percent"] = 25;
+  const auto reset = [&](const json& r) {
+    return write(*engine, "POST", "/api/account/reset", {{"reason", "volume"}, {"initial_cash", "100000"}, {"rules", r}});
+  };
+  ASSERT_EQ(reset(rules).status, 200);
+  EXPECT_EQ(read(*engine, "/api/account")["rules"]["max_volume_percent"], 25);
+  const auto before = read(*engine, "/api/orders");
+  const auto request = order(market, "unknown-volume", "4.20");
+  const auto preview = write(*engine, "POST", "/api/orders/preview", request);
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  const auto reason = json::parse(preview.body)["reason"];
+  EXPECT_EQ(reason["code"], "MAX_VOLUME_SHARE");
+  EXPECT_EQ(reason["evidence"], (json{{"contract", market.symbol()}, {"contracts", 1}, {"volume", nullptr}, {"percent", 25}}));
+  const auto refused = write(*engine, "POST", "/api/orders", request);
+  ASSERT_EQ(refused.status, 422) << refused.body;
+  EXPECT_EQ(json::parse(refused.body)["error"]["evidence"], reason["evidence"]);
+  EXPECT_EQ(read(*engine, "/api/orders"), before);
+  test::capture_contract("volume-rule", "POST", "/api/orders/preview", preview);
+  test::capture_contract("volume-rule", "POST", "/api/orders", refused);
+  for (const auto& value : {json(-1), json(101), json(1.5), json(true), json(nullptr)}) {
+    auto bad = rules; bad["max_volume_percent"] = value;
+    EXPECT_EQ(reset(bad).status, 400);
+  }
+}
 
 TEST_F(PaperEngine, DirectionRulesRoundTripAndHedgingPreviewEvidence) {
   seed();

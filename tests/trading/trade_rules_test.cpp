@@ -652,7 +652,7 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   }
   const auto recovery = FileJournal::read(file.path);
   for (const auto& record : recovery.records)
-    for (const auto* field : {"no_hedging", "no_counter_positions", "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "short_profit", "first_stock_fill", "min_trades", "closed_trades", "trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
+    for (const auto* field : {"max_volume_percent", "no_hedging", "no_counter_positions", "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "short_profit", "first_stock_fill", "min_trades", "closed_trades", "trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
       EXPECT_EQ(record.payload.find(field), std::string::npos);
   auto s = TradingSession::recover(recovery);
   EXPECT_EQ(s.config().rules.max_contracts_held, 0);
@@ -667,6 +667,7 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   }
   JournalFile repeated;
   auto defaults = config();
+  defaults.rules.max_volume_percent = 0;
   defaults.rules.no_hedging = false;
   defaults.rules.no_counter_positions = false;
   defaults.rules.max_contracts_held = 0;
@@ -684,6 +685,24 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   for (std::size_t i = 0; i < recovery.records.size(); ++i) {
     EXPECT_EQ(again.records[i].payload, recovery.records[i].payload);
     EXPECT_EQ(again.records[i].hash, recovery.records[i].hash);
+  }
+}
+
+TEST(TradeRules, ServerVolumeRuleValidatesAndRecoversWithoutReducerVolumeInputs) {
+  AccountRules rules; rules.max_volume_percent = 25;
+  ScriptedMarket f;
+  JournalFile file;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("server-accepted"), f.time).decision.ok());
+  }
+  auto recovered = TradingSession::recover(FileJournal::read(file.path));
+  EXPECT_EQ(recovered.config().rules.max_volume_percent, 25);
+  EXPECT_EQ(recovered.snapshot()->positions.size(), 1U);
+  for (const auto percent : {-1, 101}) {
+    rules.max_volume_percent = percent;
+    EXPECT_THROW(validate_rules(rules), TradingError);
   }
 }
 
