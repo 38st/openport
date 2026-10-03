@@ -1577,11 +1577,9 @@ Decision account_check(const State& s, bool reducing = false, OrderId id = 0) {
     return failure(s.evaluation.day_lock, day_lock_message(s.evaluation.day_lock));
   return {};
 }
-/// Reserve closing capacity once per side, across all ordinary working orders.
-/// Exits stay within their positions and shares do not count toward this cap.
-Decision contracts_held_check(const State& s, const Order& candidate) {
-  const auto cap = s.config.rules.max_contracts_held;
-  if (cap == 0 || candidate.system || kept_within(candidate) || closing_only(s, candidate)) return {};
+/// Both contract caps reserve closing capacity once per side across working
+/// orders. Shares and managed exits never reserve option contracts.
+Quantity projected_contracts_held(const State& s, const Order& candidate) {
   std::map<std::string, std::pair<Quantity, Quantity>> pending;
   const auto add = [&](const Order& o) {
     if (o.system || kept_within(o) || o.request.exits_only || o.remaining() <= 0) return;
@@ -1611,9 +1609,33 @@ Decision contracts_held_check(const State& s, const Order& candidate) {
     count(std::max<Quantity>(0, sides.first - std::max<Quantity>(0, -q)));
     count(std::max<Quantity>(0, sides.second - std::max<Quantity>(0, q)));
   }
+  return projected;
+}
+Decision contracts_held_check(const State& s, const Order& candidate) {
+  const auto fixed = s.config.rules.max_contracts_held;
+  const auto scaling = s.evaluation.scaling_limit;
+  const bool scaled = scaling > 0 && (fixed == 0 || scaling < fixed);
+  const auto cap = scaled ? scaling : fixed;
+  if (cap == 0 || candidate.system || kept_within(candidate) || closing_only(s, candidate)) return {};
+  // An atomic reduction (including a roll) remains possible above a lowered cap.
+  __extension__ using Wide = __int128;
+  Wide change = 0;
+  const auto leg_change = [&](const std::string& symbol, Side side, Quantity quantity) {
+    const Wide before = held(s, symbol);
+    const Wide after = before + (side == Side::Buy ? static_cast<Wide>(quantity) : -static_cast<Wide>(quantity));
+    change += (after < 0 ? -after : after) - (before < 0 ? -before : before);
+  };
+  if (multi_leg(candidate.request)) {
+    for (const auto& leg : candidate.request.legs)
+      leg_change(leg.symbol, leg.side, magnitude(signed_contracts(leg, candidate.remaining())));
+  } else leg_change(candidate.request.symbol, candidate.request.side, candidate.remaining());
+  if (change <= 0) return {};
+  const auto projected = projected_contracts_held(s, candidate);
   if (projected > cap)
-    return {Reason::MAX_CONTRACTS_HELD, "Held options and working opening contracts exceed the plan cap",
-            static_cast<double>(projected), static_cast<double>(cap), "account"};
+    return {scaled ? Reason::SCALING_LIMIT : Reason::MAX_CONTRACTS_HELD,
+            scaled ? "Scaling plan: held options and working openings exceed this session's contract cap"
+                   : "Held options and working opening contracts exceed the plan cap",
+            static_cast<double>(projected), static_cast<double>(cap), scaled ? "aggregate" : "account"};
   return {};
 }
 /// Trade risk uses the same bounded expiry payoff as preview, but no fees and
@@ -1686,51 +1708,6 @@ Decision trade_rules_check(const State& s, const Order& o, Money equity) {
 /// accepted, and once triggered only the price it fills at is banded, so a market
 /// that gaps through the limit leaves it working instead of cancelled.
 enum class Stage { Accept, Activate, Fill };
-/// Reserve the opening part of every working user order, including armed orders.
-/// Closing capacity is shared once per side and symbol; closing orders cannot
-/// finance new openings by promising to free contracts. Combos count every leg.
-Decision scaling_check(const State& s, const Order& focus) {
-  const auto limit = s.evaluation.scaling_limit;
-  if (limit == 0 || closing_only(s, focus)) return {};
-  __extension__ using Wide = __int128;
-  const auto held_count = contracts_held(s.ledger.positions(), [](const auto& p) { return p.second.quantity; });
-  Wide changed = held_count;
-  const auto change = [&](const std::string& symbol, Side side, Quantity quantity) {
-    const Wide q = held(s, symbol);
-    const Wide after = q + (side == Side::Buy ? quantity : -quantity);
-    changed += (after < 0 ? -after : after) - (q < 0 ? -q : q);
-  };
-  if (multi_leg(focus.request)) {
-    for (const auto& leg : focus.request.legs) change(leg.symbol, leg.side, focus.remaining() * leg.ratio);
-  } else change(focus.request.symbol, focus.request.side, focus.remaining());
-  // An atomic reduction (including a roll) remains possible above a stepped-down cap.
-  if (changed <= held_count) return {};
-  std::map<std::string, std::pair<Wide, Wide>> capacity;
-  Wide total = held_count;
-  const auto reserve = [&](const Order& o) {
-    const auto leg = [&](const std::string& symbol, Side side, Quantity quantity) {
-      const Wide q = held(s, symbol);
-      auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Wide>(q, 0), std::max<Wide>(-q, 0)).first->second;
-      auto& left = side == Side::Buy ? short_left : long_left;
-      const auto closing = std::min<Wide>(quantity, left);
-      left -= closing;
-      total += quantity - closing;
-    };
-    if (multi_leg(o.request)) {
-      for (const auto& l : o.request.legs) leg(l.symbol, l.side, o.remaining() * l.ratio);
-    } else leg(o.request.symbol, o.request.side, o.remaining());
-  };
-  for (const auto id : open_ids(s)) {
-    const auto& o = s.orders[id - 1];
-    if (o.id != focus.id && !o.system && !kept_within(o)) reserve(o);
-  }
-  reserve(focus);
-  if (total > limit)
-    return {Reason::SCALING_LIMIT, "Scaling plan: held option contracts plus working openings exceed this session's limit; "
-            "each leg counts and the limit changes only after the trading day closes",
-            static_cast<double>(total), static_cast<double>(limit), "aggregate"};
-  return {};
-}
 /// The level an untriggered stop-limit's limit is banded around, if it has one.
 std::optional<Money> stop_level(const Order& o) {
   const auto& t = o.request.trigger;
@@ -1883,7 +1860,6 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
     if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
-  if (const auto d = scaling_check(s, o); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && stage != Stage::Fill) {
     const auto power = buying_power(s, o.id);
@@ -2007,7 +1983,6 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
     if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
-  if (const auto d = scaling_check(s, o); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && stage != Stage::Fill) {
     // Orders that free buying power are always allowed, including one whose fill

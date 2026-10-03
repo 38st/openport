@@ -68,6 +68,21 @@ AccountRules scaling_plan() {
   return r;
 }
 
+TEST(TradingPlanRules, BothContractCapsUseTheSameWorkingOpeningCount) {
+  for (const auto fixed : {1, 3}) {
+    ScriptedMarket f;
+    auto rules = scaling_plan();
+    rules.max_contracts_held = fixed;
+    TradingSession s(config(rules), f.time);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.limit("reserved", 1, "4.00"), f.time).decision.ok());
+    const auto result = s.submit(f.limit("too-many", 2, "4.00"), f.time);
+    EXPECT_EQ(result.decision.code, fixed == 1 ? Reason::MAX_CONTRACTS_HELD : Reason::SCALING_LIMIT);
+    EXPECT_EQ(result.decision.actual, 3);
+    EXPECT_EQ(result.decision.limit, fixed == 1 ? 1 : 2);
+  }
+}
+
 TEST(PlanRules, ScalingCountsHeldContractsWorkingOpeningsAndComboLegs) {
   ScriptedMarket f, g;
   g.contract = *md::parse_osi("SPXW261022C05010000");
