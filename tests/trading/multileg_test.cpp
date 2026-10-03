@@ -1,5 +1,8 @@
+#include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <tuple>
 #include <gtest/gtest.h>
 
@@ -183,6 +186,153 @@ TEST(TradingMargin, CombinedStructuresHoldNoMoreThanEachAlone) {
                                     margin(osi("SPXW261022P05000000"), 1), margin(osi("SPXW261022C04990000"), -1, "1500"),
                                     margin(osi("SPXW261023C04990000"), 1)};
   EXPECT_EQ(margin_requirement(book), Money{});
+}
+TEST(TradingMargin, VerticalsAndStraddlesChooseTheirCoversTogether) {
+  const std::vector<MarginLeg> a{{*md::parse_osi("SPY261029C00480000"), -1, m("2300"), 500.0},
+                                {*md::parse_osi("SPY261029P00520000"), -1, m("2300"), 500.0}};
+  const std::vector<MarginLeg> b{{*md::parse_osi("SPY261022C00480000"), 2, {}, 500.0},
+                                {*md::parse_osi("SPY261022P00480000"), -1, m("300"), 500.0},
+                                {*md::parse_osi("SPY261029P00490000"), 1, {}, 500.0}};
+  auto combined = a;
+  combined.insert(combined.end(), b.begin(), b.end());
+  EXPECT_EQ(margin_requirement(a), m("14600"));
+  EXPECT_EQ(margin_requirement(b), Money{});
+  // The long put covers the early 480 put, leaving the 520 put with the 480 call.
+  EXPECT_EQ(margin_requirement(combined), m("14600"));
+  std::map<MarginPartKind, Money> parts;
+  for (const auto& item : margin_breakdown(combined))
+    for (const auto& part : item.parts) parts[part.kind] = parts[part.kind] + part.requirement;
+  EXPECT_EQ(parts.at(MarginPartKind::Straddle), m("14600"));
+  EXPECT_EQ(parts.at(MarginPartKind::Vertical), Money{});
+}
+TEST(TradingMargin, ShareCoversLeaveTheRemainingExpiryItsWorstLoss) {
+  const MarginPolicy ira{AccountType::Ira, 0, 0};
+  const std::vector<MarginLeg> a{{*md::parse_osi("SPY261029P00480000"), -2, m("600"), 500.0},
+                                {*md::parse_osi("SPY261029P00510000"), 1, {}, 500.0}};
+  const std::vector<MarginLeg> b{{*md::parse_osi("SPY261029C00490000"), -2, m("2600"), 500.0},
+                                {*md::parse_osi("SPY261029C00500000"), 1, {}, 500.0}};
+  const std::vector<MarginStock> shares{{"SPY", 100, m("50000")}};
+  auto combined = a;
+  combined.insert(combined.end(), b.begin(), b.end());
+  EXPECT_EQ(margin_requirement(a, {}, ira), m("45000"));
+  EXPECT_EQ(margin_requirement(b, shares, ira), m("1000"));
+  EXPECT_EQ(margin_requirement(a, {}, ira) + margin_requirement(b, shares, ira), m("46000"));
+  // After one call takes the shares, the put ratio and call spread lose at
+  // opposite ends of the spot range: their shared worst loss is only 45,000.
+  EXPECT_EQ(margin_requirement(combined, shares, ira), m("45000"));
+  std::map<MarginPartKind, Money> parts;
+  for (const auto& item : margin_breakdown(combined, shares, ira))
+    for (const auto& part : item.parts) parts[part.kind] = parts[part.kind] + part.requirement;
+  EXPECT_EQ(parts.at(MarginPartKind::Covered), Money{});
+  EXPECT_EQ(parts.at(MarginPartKind::WorstLoss), m("45000"));
+}
+TEST(TradingMargin, RandomBooksCombineAndTheirBreakdownsAddUp) {
+  // The LCG and its upper bits are identical on libc++ and libstdc++.
+  std::uint32_t state = 42;
+  const auto next = [&]() {
+    state = state * 1664525U + 1013904223U;
+    return state >> 8;
+  };
+  std::vector<md::OptionContract> contracts;
+  for (const auto* underlying : {"SPY", "QQQ"})
+    for (const auto* expiry : {"261022", "261029"})
+      for (int strike = 480; strike <= 520; strike += 10)
+        for (const char type : {'C', 'P'})
+          contracts.push_back(*md::parse_osi(std::string(underlying) + expiry + type + "00" + std::to_string(strike) + "000"));
+  struct Book {
+    std::vector<Quantity> quantities;
+    std::array<Quantity, 2> shares{};
+  };
+  const auto random_book = [&]() {
+    Book book{std::vector<Quantity>(contracts.size()), {}};
+    const auto count = 1 + next() % 4;
+    for (std::uint32_t i = 0; i < count; ++i) {
+      const auto index = next() % contracts.size();
+      book.quantities[index] += static_cast<Quantity>(next() % 5) - 2;
+    }
+    for (auto& shares : book.shares)
+      if (next() % 3 == 0) shares = (static_cast<Quantity>(next() % 7) - 3) * 100;
+    return book;
+  };
+  const auto build = [&](const Book& book) {
+    std::vector<MarginLeg> legs;
+    for (std::size_t i = 0; i < contracts.size(); ++i) {
+      const auto q = book.quantities[i];
+      if (q == 0) continue;
+      const auto& contract = contracts[i];
+      const auto intrinsic = std::max(0, contract.type == pricing::OptionType::Call ? 500 - static_cast<int>(contract.strike) :
+                                                                                  static_cast<int>(contract.strike) - 500);
+      const auto value = Money::from_micros((intrinsic + 3) * 100'000'000LL);
+      legs.push_back({contract, q, q < 0 ? value * -q : Money{}, 500.0});
+    }
+    std::vector<MarginStock> stocks;
+    for (std::size_t i = 0; i < book.shares.size(); ++i) {
+      const auto shares = book.shares[i];
+      if (shares != 0) stocks.push_back({i == 0 ? "SPY" : "QQQ", shares, m("500") * std::abs(shares)});
+    }
+    return std::pair{legs, stocks};
+  };
+  const auto opposite = [](Quantity a, Quantity b) { return (a < 0 && b > 0) || (a > 0 && b < 0); };
+  for (const auto account : {AccountType::Margin, AccountType::Ira}) {
+    const MarginPolicy policy{account, 0, 0};
+    int checked = 0;
+    for (int iteration = 0; iteration < 6000; ++iteration) {
+      SCOPED_TRACE(::testing::Message() << "account=" << static_cast<int>(account) << " iteration=" << iteration);
+      const auto a = random_book(), b = random_book();
+      auto combined = a;
+      bool overlap = false;
+      for (std::size_t i = 0; i < contracts.size(); ++i) {
+        overlap = overlap || opposite(a.quantities[i], b.quantities[i]);
+        combined.quantities[i] += b.quantities[i];
+      }
+      for (std::size_t i = 0; i < a.shares.size(); ++i) {
+        overlap = overlap || opposite(a.shares[i], b.shares[i]);
+        combined.shares[i] += b.shares[i];
+      }
+      const auto [la, sa] = build(a);
+      const auto [lb, sb] = build(b);
+      const auto [lc, sc] = build(combined);
+      if (account == AccountType::Ira && (disallowed_shorts(la, sa, account) || disallowed_shorts(lb, sb, account) ||
+                                         disallowed_shorts(lc, sc, account))) continue;
+      std::set<std::string> netted;
+      const auto verify = [&](const auto& legs, const auto& stocks, bool constituent) {
+        const auto requirement = margin_requirement(legs, stocks, policy);
+        EXPECT_GE(requirement, Money{});
+        Money total;
+        for (const auto& underlying : margin_breakdown(legs, stocks, policy)) {
+          Money parts;
+          for (const auto& part : underlying.parts) {
+            if (constituent && part.kind == MarginPartKind::WorstLoss) netted.insert(underlying.underlying);
+            EXPECT_GE(part.requirement, Money{});
+            parts = parts + part.requirement;
+          }
+          EXPECT_EQ(parts, underlying.requirement);
+          total = total + underlying.requirement;
+        }
+        EXPECT_EQ(total, requirement);
+        return requirement;
+      };
+      const auto ra = verify(la, sa, true), rb = verify(lb, sb, true), rc = verify(lc, sc, false);
+      // Worst-loss netting is not optimized jointly with cross-expiry covers.
+      // Exclude only mixed-expiry underlyings where A or B used that netting;
+      // nonnegativity and breakdown totals above still apply to every book.
+      std::map<std::string, Timestamp> expiries;
+      bool mixed_worst = false;
+      for (const auto& item : lc) {
+        if (!netted.contains(item.contract.underlying)) continue;
+        const auto expiry = item.contract.expiry_time();
+        const auto [it, inserted] = expiries.emplace(item.contract.underlying, expiry);
+        if (!inserted && it->second != expiry) mixed_worst = true;
+      }
+      if (!overlap && !mixed_worst) {
+        EXPECT_LE(rc, ra + rb) << "requirements " << ra.str() << " + " << rb.str() << " < " << rc.str()
+                               << " A=" << ::testing::PrintToString(a.quantities) << " shares=" << ::testing::PrintToString(a.shares)
+                               << " B=" << ::testing::PrintToString(b.quantities) << " shares=" << ::testing::PrintToString(b.shares);
+        ++checked;
+      }
+    }
+    EXPECT_GT(checked, 500);
+  }
 }
 TEST(TradingMargin, CashAccountsSecurePutsAndPairOnlyWithShares) {
   const MarginPolicy cash{AccountType::Cash, 0, 0};

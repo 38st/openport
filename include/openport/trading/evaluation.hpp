@@ -382,22 +382,24 @@ struct MarginPolicy {
 /// cover too, whatever the option expires: long shares make a short call
 /// covered, for nothing more, short shares make a short put covered for its
 /// buy-back value, and a long call caps 100 short shares' requirement at its
-/// strike. The pairing holds the least in total, and verticals whose shorts
-/// expire together hold at most their combined worst loss then. Short puts and
-/// calls it leaves naked pair as Reg T straddles, each holding the greater naked
-/// requirement plus the other side's buy-back value, and a short still naked
-/// takes a vertical's short of the other type when a straddle saves more than
-/// the vertical did. Positions that expire together may instead need their
-/// worst loss at expiry, when that is bounded (no net short calls). Each
-/// underlying needs the least of pairing across expiries, with straddles and
-/// without, and taking each expiry on its own (the lesser of its verticals and
-/// worst loss, shares covering nothing). Longs need nothing: their premium is
-/// paid in full, as long shares are; short shares hold their value and half again.
+/// strike. Vertical, share-cover and Reg T straddle pairs are chosen together
+/// to maximize the saving against naked costs. A straddle holds the greater
+/// naked requirement plus the other side's buy-back value. Verticals whose
+/// shorts expire together hold at most their combined worst loss then.
+/// Positions that expire together may instead need their worst loss at expiry,
+/// when bounded (no net short calls). Each underlying needs the least of joint
+/// pairing across expiries, pairing without straddles (which can preserve a
+/// condor's shared worst loss), and taking each expiry on its own, both with
+/// shares covering nothing and with shares first taking their best covers.
+/// Worst-loss netting is not optimized jointly with pairing: a mixed-expiry
+/// underlying with a worst-loss-netted constituent can exceed the separate sum.
+/// Longs need nothing: their premium is paid in full, as long shares are; short
+/// shares hold their value and half again.
 /// A house percentage raises each naked requirement (beyond the buy-back value)
 /// and each short sale's margin (beyond the shares' value) by that much. A cash
-/// account or an IRA secures each short put no 100 short shares cover with its
-/// strike in cash, pairs no straddles, and a cash account nets no spreads either:
-/// its shorts pair only with shares.
+/// account or an IRA secures each unpaired short put with its strike in cash,
+/// pairs no straddles, and a cash account nets no spreads either: its shorts
+/// pair only with shares.
 [[nodiscard]] Money margin_requirement(const std::vector<MarginLeg>& legs, const std::vector<MarginStock>& stocks = {},
     const MarginPolicy& policy = {});
 enum class MarginPartKind {

@@ -1678,27 +1678,31 @@ long shares make a short call covered, which holds nothing more (the shares are 
 for and deliver on assignment); short shares make a short put covered, which holds its
 buy-back value (the short sale's proceeds buy the shares back on assignment); and a long
 call caps 100 short shares at its strike, a protected short, instead of 150% of their
-value. Shorts and their covers pair to hold the least in total (a minimum-cost
-assignment), so one short never takes the long that another short needed, across
-expiries or on equal strikes, and a long call goes to the short shares or to the short
-call where it saves more. Pairs of options whose shorts expire together hold at most
-their combined worst loss at that expiry, a later long counting at its intrinsic value
-then, so an iron condor's two wings are not both held. Short puts and short calls the
-pairing leaves naked then pair as Reg T straddles or combinations, of any strikes and
-expiries: each pair holds the greater naked requirement (buy-back value included) plus
-the other side's buy-back value, the greatest of each type pairing together, and a short
-still naked takes a vertical's short of the other type when a straddle saves more than
-the vertical did. Positions that expire together may instead need their worst loss at
-that expiry, when no net short calls make it unbounded. Each underlying needs the least
-of pairing across expiries, with straddles and without, and taking each expiry on its
-own (the lesser of its verticals and worst loss, with shares covering nothing). So a
-credit spread holds its width, an iron condor its wider wing (a calendar beside it adds
-nothing), a long butterfly nothing, a calendar nothing beyond its debit, a diagonal the
+value. Short puts and short calls also pair as Reg T straddles or combinations,
+of any strikes and expiries: each pair holds the greater naked requirement (buy-back
+value included) plus the other side's buy-back value. Verticals, share covers and
+straddles compete in one minimum-cost flow, maximizing the total saving against naked
+costs: each option contract takes at most one pair, and a long call goes to the short
+shares or short call where it saves more. Pairs of options whose shorts expire together
+hold at most their combined worst loss at that expiry, a later long counting at its
+intrinsic value then, so an iron condor's two wings are not both held. Positions that
+expire together may instead need their worst loss at that expiry, when no net short
+calls make it unbounded. Each underlying needs the least of joint pairing across
+expiries, pairing without straddles (which can preserve a condor's shared worst loss),
+and taking each expiry on its own (the lesser of its verticals and naked shorts or its
+bounded worst loss). That last candidate is tried both with shares covering nothing
+and with shares first taking the covers that save most, leaving the remaining options
+to net by expiry. So a credit spread holds its width, an iron condor its wider wing
+(a calendar beside it adds nothing), a long butterfly nothing, a calendar nothing beyond its debit, a diagonal the
 strike difference when its long is further out of the money, a covered call nothing
 beyond its shares, and a short strangle its greater side plus the other side's value.
-Structures combine without holding more than each would alone: a butterfly beside a
-calendar holds nothing. Long options and long shares are paid in full, so a protective
-put needs nothing beyond its premium; short shares no long call protects hold 150% of
+Structures whose requirements come entirely from pairs and unpaired positions combine
+without holding more than each would alone, provided no opposite positions net away.
+Worst-loss netting is evaluated after pairing, not optimized jointly with it: books on
+the same underlying with multiple expiries, where either constituent uses worst-loss
+netting, can still hold more than their separate sum because covers may be allocated
+away from that group. A butterfly beside a calendar can hold nothing. Long options
+and long shares are paid in full, so a protective put needs nothing beyond its premium; short shares no long call protects hold 150% of
 their value. A long that expires before its short does not cover it. (European puts can
 trade below intrinsic value before expiry; the pairing ignores that.)
 

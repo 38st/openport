@@ -4,7 +4,6 @@
 #include <limits>
 #include <functional>
 #include <map>
-#include <span>
 #include <vector>
 
 #include "openport/trading/evaluation.hpp"
@@ -131,17 +130,21 @@ struct Pairing {
   std::vector<Pair> pairs;
   std::vector<std::pair<const Unit*, Quantity>> unpaired_shorts, unpaired_longs;
 };
-/// Pairs one type's shorts with the longs (or shares) that cover them to hold
-/// the least in total: a min-cost flow (successive shortest paths) where each
-/// contract a pair covers saves its short's naked cost less the pair's cost.
-/// Any short may take any cover that lasts as long, so a greedy pass that lets
-/// one short take the cover another needed (across expiries, or on equal
-/// strikes) cannot happen. Without `spreads`, only shares cover.
-Pairing verticals(std::span<const Unit> shorts, std::span<const Unit> longs, bool spreads) {
-  // Nodes: source, shorts, longs, sink. Edge i's reverse is i ^ 1.
+/// Pair verticals, share covers and, when enabled, straddles in one min-cost
+/// flow. Each contract takes at most one pair, maximizing the saving against
+/// naked costs before verticals share their worst loss. Without `spreads`, only
+/// shares cover; without `straddles`, the two option types pair independently.
+Pairing pair_units(const Book& book, bool spreads, bool straddles = false) {
+  // X: short puts, long calls. Y: long puts, short calls. Shares join their type.
+  std::vector<const Unit*> x, y;
+  for (const auto& u : book.short_puts) x.push_back(&u);
+  for (const auto& u : book.long_calls) x.push_back(&u);
+  for (const auto& u : book.long_puts) y.push_back(&u);
+  for (const auto& u : book.short_calls) y.push_back(&u);
+  // Nodes: source, X, Y, sink. Edge i's reverse is i ^ 1.
   struct Edge { std::size_t to; Quantity capacity; std::int64_t cost; };
   std::vector<Edge> edges;
-  const std::size_t source = 0, sink = shorts.size() + longs.size() + 1;
+  const std::size_t source = 0, sink = x.size() + y.size() + 1;
   std::vector<std::vector<std::size_t>> out(sink + 1);
   const auto link = [&](std::size_t from, std::size_t to, Quantity capacity, std::int64_t cost) {
     out[from].push_back(edges.size());
@@ -149,19 +152,28 @@ Pairing verticals(std::span<const Unit> shorts, std::span<const Unit> longs, boo
     out[to].push_back(edges.size());
     edges.push_back({from, 0, -cost});
   };
-  std::vector<std::size_t> matches;  // Short-to-long edges, in (short, long) order.
-  for (std::size_t i = 0; i < shorts.size(); ++i) {
-    link(source, 1 + i, shorts[i].size, 0);
-    const auto naked_one = shorts[i].naked_one.micros();
-    for (std::size_t j = 0; j < longs.size(); ++j) {
-      if (!covers(longs[j], shorts[i]) || (!spreads && longs[j].leg && shorts[i].leg)) continue;
-      const auto saving = naked_one - std::min(naked_one, covered(shorts[i], longs[j], 1).micros());
+  std::vector<std::pair<std::size_t, Pair>> matches;
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    link(source, 1 + i, x[i]->size, 0);
+    const bool put = i < book.short_puts.size();
+    for (std::size_t j = 0; j < y.size(); ++j) {
+      const bool call = j >= book.long_puts.size();
+      Pair p{put ? x[i] : y[j], put ? y[j] : x[i], 1, put && call};
+      std::int64_t saving;
+      if (p.straddle) {
+        if (!straddles || !y[j]->leg) continue;
+        saving = straddle_saving(*x[i], *y[j]);
+      } else {
+        if (put == call || !covers(*p.cover, *p.short_unit) ||
+            (!spreads && p.cover->leg && p.short_unit->leg)) continue;
+        saving = (p.short_unit->naked_one - cost(p)).micros();
+      }
       if (saving <= 0) continue;
-      matches.push_back(edges.size());
-      link(1 + i, 1 + shorts.size() + j, std::min(shorts[i].size, longs[j].size), -saving);
+      matches.emplace_back(edges.size(), p);
+      link(1 + i, 1 + x.size() + j, std::min(x[i]->size, y[j]->size), -saving);
     }
   }
-  for (std::size_t j = 0; j < longs.size(); ++j) link(1 + shorts.size() + j, sink, longs[j].size, 0);
+  for (std::size_t j = 0; j < y.size(); ++j) link(1 + x.size() + j, sink, y[j]->size, 0);
   // Augment along the cheapest path while it still saves something. The residual
   // graph never has a negative cycle, so a queue-based Bellman-Ford finds it.
   constexpr auto unreached = std::numeric_limits<std::int64_t>::max();
@@ -195,84 +207,24 @@ Pairing verticals(std::span<const Unit> shorts, std::span<const Unit> longs, boo
     }
   }
   Pairing result;
-  std::vector<Quantity> short_left(shorts.size()), long_left(longs.size());
-  for (std::size_t i = 0; i < shorts.size(); ++i) short_left[i] = shorts[i].size;
-  for (std::size_t j = 0; j < longs.size(); ++j) long_left[j] = longs[j].size;
-  for (const auto e : matches) {
+  std::vector<Quantity> x_left, y_left;
+  for (const auto* u : x) x_left.push_back(u->size);
+  for (const auto* u : y) y_left.push_back(u->size);
+  for (const auto& [e, pair] : matches) {
     const auto n = edges[e ^ 1].capacity;  // The flow carried.
     if (n == 0) continue;
-    const auto i = edges[e ^ 1].to - 1, j = edges[e].to - 1 - shorts.size();
-    result.pairs.push_back({&shorts[i], &longs[j], n});
-    short_left[i] -= n;
-    long_left[j] -= n;
+    auto p = pair;
+    p.n = n;
+    result.pairs.push_back(p);
+    x_left[edges[e ^ 1].to - 1] -= n;
+    y_left[edges[e].to - 1 - x.size()] -= n;
   }
-  for (std::size_t i = 0; i < shorts.size(); ++i)
-    if (short_left[i] > 0) result.unpaired_shorts.emplace_back(&shorts[i], short_left[i]);
-  for (std::size_t j = 0; j < longs.size(); ++j)
-    if (long_left[j] > 0) result.unpaired_longs.emplace_back(&longs[j], long_left[j]);
-  return result;
-}
-/// What one contract of a vertical saves against its short naked.
-std::int64_t saving_one(const Pair& p) {
-  const auto naked_one = p.short_unit->naked_one.micros();
-  return naked_one - std::min(naked_one, covered(*p.short_unit, *p.cover, 1).micros());
-}
-/// Short puts and short calls that the verticals left naked pair as straddles,
-/// the greatest naked requirement of each type together, which saves the most
-/// when the larger requirement comes with the larger value, as it usually does.
-/// The shorts of one type still naked then take, greatest first, the short of
-/// a vertical of the other type where a straddle saves more than that vertical
-/// did; its long goes unpaired.
-void add_straddles(Pairing& pairing) {
-  std::vector<std::pair<const Unit*, Quantity>> puts, calls, kept;
-  for (const auto& entry : pairing.unpaired_shorts) {
-    if (!entry.first->leg) kept.push_back(entry);
-    else (entry.first->leg->contract.type == OptionType::Put ? puts : calls).push_back(entry);
-  }
-  if (puts.empty() && calls.empty()) return;
-  const auto greater = [](const auto& a, const auto& b) { return a.first->naked_one > b.first->naked_one; };
-  std::stable_sort(puts.begin(), puts.end(), greater);
-  std::stable_sort(calls.begin(), calls.end(), greater);
-  std::size_t a = 0, b = 0;
-  while (a < puts.size() && b < calls.size()) {
-    const auto n = std::min(puts[a].second, calls[b].second);
-    pairing.pairs.push_back({puts[a].first, calls[b].first, n, true});
-    if ((puts[a].second -= n) == 0) ++a;
-    if ((calls[b].second -= n) == 0) ++b;
-  }
-  auto& still_naked = a < puts.size() ? puts : calls;
-  for (auto i = a < puts.size() ? a : b; i < still_naked.size(); ++i) {
-    auto& [unit, left] = still_naked[i];
-    const bool put = unit->leg->contract.type == OptionType::Put;
-    while (left > 0) {
-      Pair* best = nullptr;
-      std::int64_t gain = 0;
-      for (auto& p : pairing.pairs) {
-        if (p.straddle || p.n == 0 || !p.short_unit->leg || (p.short_unit->leg->contract.type == OptionType::Put) == put) continue;
-        const auto saving = put ? straddle_saving(*unit, *p.short_unit) : straddle_saving(*p.short_unit, *unit);
-        if (const auto value = saving - saving_one(p); value > gain) { gain = value; best = &p; }
-      }
-      if (!best) break;
-      const auto n = std::min(left, best->n);
-      best->n -= n;
-      pairing.unpaired_longs.emplace_back(best->cover, n);
-      pairing.pairs.push_back({put ? unit : best->short_unit, put ? best->short_unit : unit, n, true});
-      left -= n;
-    }
-  }
-  std::erase_if(pairing.pairs, [](const Pair& p) { return p.n == 0; });
-  pairing.unpaired_shorts = std::move(kept);
-  for (const auto* side : {&puts, &calls})
-    for (const auto& entry : *side)
-      if (entry.second > 0) pairing.unpaired_shorts.push_back(entry);
-}
-/// Pairs each type's shorts as verticals, or only with shares without `spreads`.
-Pairing pair_units(const Book& book, bool spreads) {
-  auto result = verticals(book.short_puts, book.long_puts, spreads);
-  auto calls = verticals(book.short_calls, book.long_calls, spreads);
-  result.pairs.insert(result.pairs.end(), calls.pairs.begin(), calls.pairs.end());
-  result.unpaired_shorts.insert(result.unpaired_shorts.end(), calls.unpaired_shorts.begin(), calls.unpaired_shorts.end());
-  result.unpaired_longs.insert(result.unpaired_longs.end(), calls.unpaired_longs.begin(), calls.unpaired_longs.end());
+  for (std::size_t i = 0; i < x.size(); ++i)
+    if (x_left[i] > 0)
+      (i < book.short_puts.size() ? result.unpaired_shorts : result.unpaired_longs).emplace_back(x[i], x_left[i]);
+  for (std::size_t j = 0; j < y.size(); ++j)
+    if (y_left[j] > 0)
+      (j < book.long_puts.size() ? result.unpaired_longs : result.unpaired_shorts).emplace_back(y[j], y_left[j]);
   return result;
 }
 /// The worst loss at `expiry` of pairs whose shorts all expire then, with that
@@ -432,11 +384,34 @@ Money separate(const std::vector<const MarginLeg*>& all, const MarginStock* stoc
   }
   return total + other_shares(stock, 0, policy.house_percent, parts);
 }
-/// One underlying's requirement: the least of pairing across expiries, as
-/// verticals and, when that leaves a short option naked, with straddles too (a
-/// condor's shared worst loss may still hold less without them), and taking
-/// each expiry on its own. A cash account pairs shorts only with shares, and
-/// neither it nor an IRA pairs straddles.
+/// Shares take the pairs that save most on their own, then each expiry's
+/// remaining options hold their verticals and naked shorts, or bounded worst
+/// loss. This lets a share-covered call sit beside an expiry's cash-secured puts
+/// without leaving that expiry's offsetting long options unused.
+Money shares_first(const Book& book, const MarginStock* stock, const MarginPolicy& policy, Parts* parts) {
+  auto pairing = pair_units(book, false);
+  std::vector<MarginLeg> remaining;
+  for (const auto* side : {&pairing.unpaired_shorts, &pairing.unpaired_longs})
+    for (const auto& [unit, n] : *side) {
+      if (!unit->leg) continue;
+      auto leg = *unit->leg;
+      leg.value = leg.value.prorate(n, magnitude(leg.quantity));
+      leg.quantity = leg.quantity < 0 ? -n : n;
+      remaining.push_back(std::move(leg));
+    }
+  pairing.unpaired_shorts.clear();
+  pairing.unpaired_longs.clear();
+  std::vector<const MarginLeg*> options;
+  for (const auto& leg : remaining) options.push_back(&leg);
+  const auto held = across(pairing, stock, policy.house_percent, parts);
+  return held + separate(options, nullptr, policy, parts);
+}
+/// One underlying's requirement: the least of joint pairing across expiries,
+/// verticals and share covers alone (a condor's shared worst loss may hold less
+/// without straddles), and each expiry on its own, both before and after shares
+/// cover. A cash account pairs only with shares; neither it nor an IRA pairs
+/// straddles. Worst-loss savings are evaluated after pairing, so mixed-expiry
+/// books containing a worst-loss group need not be subadditive.
 Money underlying_requirement(const std::vector<const MarginLeg*>& all, const MarginStock* stock, const MarginPolicy& policy,
                              Parts* parts) {
   const bool spreads = policy.account != AccountType::Cash;
@@ -450,15 +425,14 @@ Money underlying_requirement(const std::vector<const MarginLeg*>& all, const Mar
     if (requirement < best) { best = requirement; best_parts.swap(candidate); }
     candidate.clear();
   };
-  const auto option = [](const auto& entry) { return entry.first->leg != nullptr; };
-  if (policy.account == AccountType::Margin && !book.short_puts.empty() && std::any_of(book.short_calls.begin(), book.short_calls.end(), [](const Unit& u) { return u.leg != nullptr; }) &&
-      std::any_of(pairing.unpaired_shorts.begin(), pairing.unpaired_shorts.end(), option)) {
-    auto straddled = pairing;
-    add_straddles(straddled);
-    consider(across(straddled, stock, policy.house_percent, explain));
+  if (policy.account == AccountType::Margin && !book.short_puts.empty() &&
+      std::any_of(book.short_calls.begin(), book.short_calls.end(), [](const Unit& u) { return u.leg != nullptr; }))
+    consider(across(pair_units(book, true, true), stock, policy.house_percent, explain));
+  // Without spreads, each expiry pairs nothing that the share-only flow did not.
+  if (spreads) {
+    consider(separate(all, stock, policy, explain));
+    if (stock && magnitude(stock->shares) >= kLot) consider(shares_first(book, stock, policy, explain));
   }
-  // Without spreads, an expiry on its own pairs nothing that pairing across expiries did not.
-  if (spreads) consider(separate(all, stock, policy, explain));
   if (parts) *parts = std::move(best_parts);
   return best;
 }
