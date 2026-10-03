@@ -3748,6 +3748,7 @@ TEST_F(PaperEngine, OrderChainsOverHttp) {
   EXPECT_EQ(open[0]["status"], "armed");
   EXPECT_EQ(write(*engine, "POST", "/api/orders", dip).status, 200);  // a retry answers once
   quote("3.80", "3.90");
+  engine->synchronize().get();  // The trading snapshot follows the analytics quote.
   const auto all = read(*engine, "/api/orders?status=all")["orders"];
   ASSERT_EQ(all.size(), 3);
   EXPECT_EQ(all[0]["client_order_id"], "dip:then");
