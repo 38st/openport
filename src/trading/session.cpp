@@ -1207,6 +1207,12 @@ Decision kill_decision(const State& s) {
 void record_kill(State& s, std::string action, std::string reason, std::string previous) {
   s.kill_history.push_back({s.time, std::move(action), std::move(reason), std::move(previous), s.actor});
 }
+/// Only the order that reached the trade limit may finish, and no other latch yields.
+bool completing_trade(const State& s, OrderId id) {
+  return id != 0 && id == s.guardrails.trade_limit_order && s.guardrails.owns_kill &&
+         s.kill_reason == "TRADE_LIMIT" && s.guardrails.latched.size() == 1 && s.guardrails.latched.front() == Reason::TRADE_LIMIT &&
+         s.time >= s.guardrails.cooldown_until;
+}
 void trip(State& s, const std::string& reason, Events& events) {
   if (!s.kill || (s.guardrails.owns_kill && s.kill_reason != reason)) {
     // A rule that replaces a personal guardrail's reason names the one it replaced.
@@ -1223,7 +1229,7 @@ void trip(State& s, const std::string& reason, Events& events) {
   // closes that together exceed the position, newest first, so older ones keep priority.
   const auto cancel_unless_closing = [&](OrderId id, bool include_working) {
     const auto& o = s.orders[id - 1];
-    if (o.open() && !o.system && !kept_within(o) && !closing_only(s, o, include_working))
+    if (o.open() && !o.system && !kept_within(o) && !completing_trade(s, id) && !closing_only(s, o, include_working))
       cancel_order(s, id, kill_decision(s), events);
   };
   const auto ids = open_ids(s);
@@ -1285,11 +1291,23 @@ void begin_cooldown(State& s, Events& events) {
   latch_guardrail(s, Reason::COOLDOWN, events);
 }
 void guardrail_fill(State& s, OrderId id, bool opening, Money realised_before, Events& events) {
-  if (opening) ++s.guardrails.opening_trades;
+  auto& order = s.orders.mut(static_cast<std::size_t>(id - 1));
   const auto& g = s.config.guardrails;
+  if (opening && !order.opening_counted) {
+    ++s.guardrails.opening_trades;
+    // Only partial openings need extra journal state; whole executions keep their encoding.
+    order.opening_counted = order.open();
+    if (g.max_opening_trades > 0 && s.guardrails.opening_trades == g.max_opening_trades && order.open())
+      s.guardrails.trade_limit_order = id;
+  }
+  if (s.guardrails.trade_limit_order == id && !order.open()) s.guardrails.trade_limit_order = 0;
+  const bool stopped = !opening && !order.system && (order.role == OrderRole::StopLoss ||
+      (order.role != OrderRole::TakeProfit && order.triggered_at > 0 && order.request.trigger &&
+       (order.request.trigger->source == TriggerSource::Option || order.request.trigger->source == TriggerSource::Underlying ||
+        order.request.trigger->source == TriggerSource::Combo)));
   if (g.max_opening_trades > 0 && s.guardrails.opening_trades >= g.max_opening_trades)
     latch_guardrail(s, Reason::TRADE_LIMIT, events);
-  if (s.orders.at(static_cast<std::size_t>(id - 1)).role == OrderRole::StopLoss ||
+  if (stopped ||
       (g.cooldown_loss > Money{} && s.ledger.account().realised - realised_before < -g.cooldown_loss))
     begin_cooldown(s, events);
 }
@@ -1517,12 +1535,12 @@ Decision walk_check(const Order& o, Money tick, Money cap_tick) {
     return failure(Reason::INVALID_ORDER, "A walk takes at most 1000 steps to its cap");
   return {};
 }
-Decision account_check(const State& s, bool reducing = false) {
+Decision account_check(const State& s, bool reducing = false, OrderId id = 0) {
   if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active && !reducing)
     return failure(Reason::EVALUATION_CLOSED, std::string("The evaluation has ") +
         (s.evaluation.status == EvaluationStatus::Passed ? "passed" : "failed") +
         "; only closing orders are allowed; reset the account to open positions in a new attempt");
-  if (s.kill && !reducing) return kill_decision(s);
+  if (s.kill && !reducing && !completing_trade(s, id)) return kill_decision(s);
   // A plan limit that locked the day leaves only closing orders until rollover.
   if (s.evaluation.day_lock != Reason::NONE && !reducing)
     return failure(s.evaluation.day_lock, day_lock_message(s.evaluation.day_lock));
@@ -1822,7 +1840,7 @@ Decision group_check(const State& s, const OrderRequest& r) {
   return failure(Reason::INVALID_GROUP, "group must name an open round trip, or a whole trade holding one, by its trade ID");
 }
 Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept) {
-  if (const auto d = account_check(s, closing_only(s, o)); !d.ok()) return d;
+  if (const auto d = account_check(s, closing_only(s, o), o.id); !d.ok()) return d;
   if (const auto d = entry_check(s, o); !d.ok()) return d;
   try { (void)clean_annotation(o.request.note, o.request.tags); }
   catch (const TradingError& e) { return failure(e.code(), e.what()); }
@@ -3098,10 +3116,14 @@ std::vector<RiskWarning> warnings_of(const State& s, const std::map<std::string,
   }
   const auto& rules = s.config.rules;
   const auto& e = s.evaluation;
+  if (s.config.guardrails.soft_floor_percent > 0 && rules.max_drawdown == Money{})
+    add("SOFT_FLOOR_UNUSED", false, "aggregate", {},
+        "Your soft floor percent does nothing on this plan because it has no drawdown floor; use an absolute soft floor instead", {}, {});
   const bool at_soft_floor = now.valuation_complete && now.soft_floor && now.equity <= *now.soft_floor;
   if (at_soft_floor)
     add("SOFT_FLOOR", true, "aggregate", {}, "Equity " + dollars(now.equity) + " is at or below your soft floor " +
-        dollars(*now.soft_floor) + ": it closes positions and refuses opening orders until rollover",
+        dollars(*now.soft_floor) + ": the soft floor latches at once, closes positions and refuses opening orders. "
+        "Lower it in personal guardrails; a lower setting is pending until rollover, and a reset applies pending settings",
         now.equity.dollars(), now.soft_floor->dollars());
   if (now.valuation_complete) {
     // Tonight's close at today's equity: an end-of-day floor ratchets, pending
@@ -4220,7 +4242,7 @@ Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit,
       validate_limits(c.limits);
       validate_scenarios(c.scenarios);
       validate_rules(c.rules);
-      validate_guardrails(c.guardrails);
+      validate_guardrails(c.guardrails, true);
       validated = config;
     }
     if (settlements && r.type == "settlement") {
@@ -5516,14 +5538,20 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     s.do_not_exercise = {};
     s.trips.clear();
     s.start_equity = initial_cash;
-    if (s.kill) record_kill(s, "reset", reason, s.kill_reason);
-    s.kill = false;
-    s.kill_reason.clear();
+    // The new ledger clears only the equity-based latch. Daily discipline survives the attempt.
+    std::erase(s.guardrails.latched, Reason::SOFT_FLOOR);
+    if (!s.guardrails.owns_kill || guardrail_reason(s) == Reason::NONE) {
+      if (s.kill) record_kill(s, "reset", reason, s.kill_reason);
+      s.kill = false;
+      s.kill_reason.clear();
+      s.guardrails.owns_kill = false;
+    }
     // The new attempt starts with any pending settings, and says when they applied.
     const bool pending = s.pending_limits || s.pending_guardrails;
     if (s.pending_limits) { s.config.limits = *s.pending_limits; s.pending_limits.reset(); ++s.limits_revision; }
     if (s.pending_guardrails) { s.config.guardrails = *s.pending_guardrails; s.pending_guardrails.reset(); ++s.limits_revision; }
-    s.guardrails = {};
+    s.guardrails.trade_limit_order = 0;
+    refresh_guardrail_latch(s, events);
     s.pending_applied_at = pending ? s.time : 0;
     s.day = plan_trading_date(s.config.rules, s.time);
     s.evaluation = fresh_evaluation(s, attempt);

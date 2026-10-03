@@ -93,16 +93,13 @@ TEST(TradingWarnings, TonightsRatchetAndASoftFloorAboveEquityAreWarned) {
   EXPECT_DOUBLE_EQ(*ratchet->actual, (equity - m("1000")).dollars());
   EXPECT_DOUBLE_EQ(*ratchet->limit, 9000);
   EXPECT_EQ(find(warnings, "SOFT_FLOOR_ROLLOVER"), nullptr);
-  // A soft floor the whole drawdown above the plan floor sits at 10,000 today, and
-  // follows the ratchet tonight to today's equity.
-  Guardrails g; g.soft_floor_percent = 100;
+  // The highest allowed new percentage keeps $10 of room after tonight's ratchet.
+  // Historical 100 settings still recover, but new writes cannot latch at the peak.
+  Guardrails g; g.soft_floor_percent = 99;
   ASSERT_TRUE(s.set_guardrails(g, f.time).decision.ok());
   warnings = s.warnings();
   EXPECT_EQ(find(warnings, "SOFT_FLOOR"), nullptr);
-  const auto* tonight = find(warnings, "SOFT_FLOOR_ROLLOVER");
-  ASSERT_NE(tonight, nullptr);
-  EXPECT_EQ(tonight->severity, "warning");
-  EXPECT_DOUBLE_EQ(*tonight->limit, equity.dollars());
+  EXPECT_EQ(find(warnings, "SOFT_FLOOR_ROLLOVER"), nullptr);
   // A soft floor above equity now closes the positions; the warning stays until rollover.
   g.soft_floor = equity + m("100");
   ASSERT_TRUE(s.set_guardrails(g, f.time).decision.ok());

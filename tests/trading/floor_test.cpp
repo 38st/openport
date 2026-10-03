@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -31,9 +32,196 @@ void roll(TradingSession& s, ScriptedMarket& f) {
   ASSERT_TRUE(s.roll_day(f.time).decision.ok());
 }
 struct File {
-  std::string path = (std::filesystem::temp_directory_path() / ("openport-floor-" + std::to_string(md::now()) + ".jsonl")).string();
-  ~File() { std::error_code ignored; std::filesystem::remove(path, ignored); }
+  std::filesystem::path directory;
+  std::string path;
+  File() {
+    std::string pattern = (std::filesystem::temp_directory_path() / "openport-floor-XXXXXX").string();
+    if (::mkdtemp(pattern.data()) == nullptr) throw std::runtime_error("mkdtemp failed");
+    directory = pattern;
+    path = (directory / "account.jsonl").string();
+  }
+  ~File() { std::error_code ignored; std::filesystem::remove_all(directory, ignored); }
 };
+
+
+TEST(TradingFloor, FloorPercentRejects100OnWritesButRecoversStored100) {
+  ScriptedMarket f;
+  auto c = config();
+  TradingSession s(c, f.time);
+  for (const auto percent : {-1, 100, 101}) {
+    auto g = c.guardrails; g.soft_floor_percent = percent;
+    try {
+      s.set_guardrails(g, f.time);
+      FAIL() << "accepted " << percent;
+    } catch (const TradingError& error) {
+      EXPECT_EQ(error.code(), Reason::INVALID_LIMITS);
+      if (percent == 100) { EXPECT_NE(std::string(error.what()).find("latches at once"), std::string::npos); }
+    }
+  }
+  auto g = c.guardrails; g.soft_floor_percent = 99;
+  ASSERT_TRUE(s.set_guardrails(g, f.time).decision.ok());
+  EXPECT_FALSE(s.snapshot()->risk.kill_latched);
+  // Rewrite the checkpoint before hashing it, as a historical file with 100.
+  File source, legacy;
+  { TradingSession original(c, f.time, FileJournal::create(source.path)); }
+  auto payload = Json::parse(FileJournal::read(source.path).records.front().payload);
+  payload["state"]["config"]["guardrails"]["soft_floor_percent"] = 100;
+  { auto out = FileJournal::create(legacy.path); out->append(f.time, "session_start", payload.dump()); }
+  auto recovered = TradingSession::recover(FileJournal::read(legacy.path));
+  EXPECT_EQ(recovered.config().guardrails.soft_floor_percent, 100);
+  f.seed(recovered);
+  EXPECT_EQ(recovered.snapshot()->risk.kill_reason, "SOFT_FLOOR");
+  EXPECT_EQ(recovered.submit(f.market("blocked"), f.time).decision.code, Reason::SOFT_FLOOR);
+}
+
+TEST(TradingFloor, PercentWithoutDrawdownWarnsAndAbsoluteFloorRechecksAtReset) {
+  ScriptedMarket f;
+  auto c = config(); c.rules = {}; c.guardrails.soft_floor_percent = 50;
+  TradingSession s(c, f.time);
+  const auto warnings = s.warnings();
+  ASSERT_EQ(warnings.size(), 1U);
+  EXPECT_EQ(warnings[0].code, "SOFT_FLOOR_UNUSED");
+  EXPECT_EQ(warnings[0].severity, "info");
+  EXPECT_FALSE(s.snapshot()->soft_floor);
+  auto g = c.guardrails; g.soft_floor = m("9000");
+  ASSERT_TRUE(s.set_guardrails(g, f.time).decision.ok());
+  ASSERT_TRUE(s.reset_account(m("9000"), {}, "smaller", f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->risk.kill_reason, "SOFT_FLOOR");
+  const auto after = s.warnings();
+  ASSERT_EQ(after.size(), 2U);
+  EXPECT_EQ(after[0].code, "SOFT_FLOOR");
+  EXPECT_NE(after[0].message.find("a reset applies pending settings"), std::string::npos);
+  g.soft_floor = m("8000");
+  ASSERT_TRUE(s.set_guardrails(g, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->risk.kill_reason, "SOFT_FLOOR");
+  ASSERT_TRUE(s.reset_account(m("9000"), {}, "apply lower floor", f.time).decision.ok());
+  EXPECT_FALSE(s.snapshot()->risk.kill_latched);
+  EXPECT_EQ(s.config().guardrails.soft_floor, m("8000"));
+}
+
+TEST(TradingFloor, ResetPreservesDailyLatchesAndCooldownThroughJournalRecovery) {
+  for (const auto reason : {Reason::PROFIT_LOCK, Reason::TRADE_LIMIT, Reason::COOLDOWN}) {
+    File file; ScriptedMarket f;
+    std::string expected;
+    Timestamp until = 0;
+    {
+      auto c = config(); c.fee_per_contract = {};
+      if (reason == Reason::PROFIT_LOCK) c.guardrails.profit_lock = m("50");
+      if (reason == Reason::TRADE_LIMIT) c.guardrails.max_opening_trades = 1;
+      if (reason == Reason::COOLDOWN) { c.guardrails.cooldown_minutes = 30; c.guardrails.cooldown_loss = m("1"); }
+      TradingSession s(c, f.time, FileJournal::create(file.path)); f.seed(s);
+      ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+      if (reason == Reason::PROFIT_LOCK) update(s, f, "5", "5.20");
+      if (reason == Reason::COOLDOWN) { ASSERT_TRUE(s.submit(f.market("close", 1, Side::Sell), f.time).decision.ok()); }
+      ASSERT_EQ(s.snapshot()->risk.kill_reason, to_string(reason));
+      until = s.snapshot()->guardrails.cooldown_until;
+      // Pending disabling applies to the new attempt but must not bypass the latch.
+      ASSERT_TRUE(s.set_guardrails({}, f.time).decision.ok());
+      const auto changes = s.snapshot()->kill_history.size();
+      ASSERT_TRUE(s.reset_account(m("10000"), c.rules, "another attempt", f.time).decision.ok());
+      EXPECT_EQ(s.snapshot()->kill_history.size(), changes) << "the discipline latch was never cleared";
+      EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+      EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, until);
+      EXPECT_EQ(s.submit(f.market("blocked"), f.time).decision.code, reason);
+      expected = s.snapshot_json();
+    }
+    auto recovered = TradingSession::recover(FileJournal::read(file.path));
+    EXPECT_EQ(recovered.snapshot_json(), expected);
+    EXPECT_EQ(recovered.submit(f.market("still-blocked"), f.time).decision.code, reason);
+    if (reason == Reason::COOLDOWN) {
+      recovered.on_quotes({}, {}, until);
+      EXPECT_FALSE(recovered.snapshot()->risk.kill_latched);
+    } else {
+      roll(recovered, f);
+      EXPECT_FALSE(recovered.snapshot()->risk.kill_latched);
+      EXPECT_EQ(recovered.snapshot()->guardrails.opening_trades, 0);
+    }
+  }
+}
+
+TEST(TradingFloor, PartialOpeningOrderFinishesAtLimitAcrossRecoveryButOtherOrdersCancel) {
+  File file; ScriptedMarket f;
+  OrderId id = 0;
+  {
+    auto c = config(); c.guardrails.max_opening_trades = 1;
+    TradingSession s(c, f.time, FileJournal::create(file.path)); f.seed(s, "4", "4.20", 1);
+    ASSERT_TRUE(s.submit(f.limit("other", 1, "3.50"), f.time).decision.ok());
+    const auto first = s.submit(f.limit("parts", 3), f.time);
+    ASSERT_TRUE(first.decision.ok()); id = *first.order_id;
+    ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+    EXPECT_EQ(s.snapshot()->open_orders[0].id, id);
+    EXPECT_EQ(s.snapshot()->open_orders[0].filled_quantity, 1);
+    EXPECT_EQ(s.snapshot()->recent_orders[0].reason.code, Reason::TRADE_LIMIT);
+    EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+    EXPECT_EQ(s.submit(f.market("new"), f.time).decision.code, Reason::TRADE_LIMIT);
+  }
+  auto s = TradingSession::recover(FileJournal::read(file.path));
+  for (int n = 0; n < 2; ++n) {
+    f.next(); s.on_quotes({f.quote("4", "4.20", 1)}, {f.valuation()}, f.time);
+    EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+  }
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+  EXPECT_EQ(s.snapshot()->positions[0].position.quantity, 3);
+  EXPECT_EQ(s.submit(f.market("new-after-fill"), f.time).decision.code, Reason::TRADE_LIMIT);
+}
+
+TEST(TradingFloor, AtomicComboCountsOnceAcrossPartialExecutions) {
+  ScriptedMarket a, b; b.contract.strike += 10;
+  auto c = config(); c.guardrails.max_opening_trades = 1;
+  TradingSession s(c, a.time); a.seed(s, "4", "4.20", 1); b.seed(s, "4", "4.20", 1);
+  auto r = a.limit("combo", 2, "0.20"); r.symbol.clear();
+  r.legs = {{a.symbol(), Side::Buy, 1}, {b.symbol(), Side::Sell, 1}};
+  ASSERT_TRUE(s.submit(r, a.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+  a.next(); b.next();
+  s.on_quotes({a.quote(), b.quote()}, {a.valuation(), b.valuation()}, a.time);
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 4U);
+}
+
+TEST(TradingFloor, AnotherLatchStillCancelsTheOrderFinishingAtTradeLimit) {
+  ScriptedMarket f; auto c = config(); c.guardrails.max_opening_trades = 1;
+  TradingSession s(c, f.time); f.seed(s, "4", "4.20", 1);
+  ASSERT_TRUE(s.submit(f.limit("parts", 3), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+  ASSERT_TRUE(s.trip_kill("manual", f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+}
+
+TEST(TradingFloor, StandaloneStopsTrailingAndOcoStopsStartCooldownOnFill) {
+  for (const auto kind : {"option", "underlying", "limit", "trailing", "oco", "target"}) {
+    SCOPED_TRACE(kind);
+    ScriptedMarket f; auto c = config(); c.guardrails.cooldown_minutes = 5;
+    // Stops start it even if the optional loss threshold is not reached.
+    c.guardrails.cooldown_loss = m("10000");
+    TradingSession s(c, f.time); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("entry"), f.time).decision.ok());
+    auto close = f.market("close", 1, Side::Sell);
+    close.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.90")};
+    const std::string type = kind;
+    if (type == "underlying") close.trigger = Trigger{TriggerSource::Underlying, TriggerDirection::AtOrBelow, m("4990")};
+    if (type == "limit") { close.type = OrderType::Limit; close.tif = TimeInForce::Gtc; close.limit_price = m("3.80"); }
+    if (type == "trailing") close.trigger->trail = Trail{TrailUnit::Amount, m("0.10")};
+    if (type == "oco" || type == "target") {
+      close.type = OrderType::Limit; close.tif = TimeInForce::Gtc; close.limit_price = m("5"); close.trigger.reset(); close.exits_only = true;
+      close.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.90")}, {}},
+                              ExitSpec{{}, m("5")}};
+    }
+    ASSERT_TRUE(s.submit(close, f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0);
+    if (type == "limit") {
+      f.next(); s.on_quotes({f.quote("3.60", "3.80")}, {f.valuation()}, f.time);
+      ASSERT_FALSE(s.snapshot()->positions.empty());
+      EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0) << "triggering without a fill starts no cooldown";
+    }
+    f.next(); auto v = f.valuation(); if (type == "underlying") v.spot = 4980;
+    s.on_quotes({f.quote(type == "target" ? "5" : "3.80", type == "target" ? "5.20" : "4")}, {v}, f.time);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, type == "target" ? 0 : f.time + 5 * md::kNanosPerMinute);
+  }
+}
 
 TEST(TradingFloor, EvaluationLimitsTightenNowLoosenAtRollIncludingMixedEdits) {
   ScriptedMarket f;
@@ -113,7 +301,7 @@ TEST(TradingFloor, OverrideChangesAndRolloverRecoverWithBothRemovalDirections) {
   EXPECT_FALSE(tightening.snapshot()->pending_limits);
   EXPECT_FALSE(tightening.config().limits.underlying_overrides.contains("SPX"));
 }
-TEST(TradingFloor, AttemptResetAppliesPendingAndClearsGuardrailProgress) {
+TEST(TradingFloor, AttemptResetAppliesPendingAndKeepsDailyDiscipline) {
   ScriptedMarket f;
   auto c = config();
   c.guardrails.max_opening_trades = 1;
@@ -128,8 +316,9 @@ TEST(TradingFloor, AttemptResetAppliesPendingAndClearsGuardrailProgress) {
   EXPECT_EQ(s.snapshot()->evaluation.attempt, 2);
   EXPECT_EQ(s.config().limits.max_order_contracts, 200);
   EXPECT_EQ(s.config().guardrails.max_opening_trades, 0);
-  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 0);
-  EXPECT_FALSE(s.snapshot()->risk.kill_latched);
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+  EXPECT_TRUE(s.snapshot()->risk.kill_latched);
+  EXPECT_EQ(s.submit(f.market("still-blocked"), f.time).decision.code, Reason::TRADE_LIMIT);
   EXPECT_FALSE(s.snapshot()->pending_guardrails);
 }
 TEST(TradingFloor, TradeLimitCountsOpeningExecutionsAndKeepsClosingOrdersAndFlatten) {

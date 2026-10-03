@@ -287,6 +287,7 @@ struct Order {
   std::optional<Quantity> limit_ticks = {};
   /// Last scheduled step or accepted manual change; zero before either.
   Timestamp walked_at = 0;
+  bool opening_counted = false; ///< A partial opening execution already counted this order.
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   /// The terms a retry must repeat to be answered with this order.
   [[nodiscard]] const OrderRequest& submission() const { return submitted ? *submitted : request; }
@@ -517,8 +518,10 @@ struct GuardrailState {
   Quantity opening_trades = 0;
   Timestamp cooldown_until = 0;
   std::vector<Reason> latched;
+  OrderId trade_limit_order = 0; ///< The order that reached the limit may finish its partial fills.
 };
-void validate_guardrails(const Guardrails& rules);
+/// Stored settings retain the historical allowance of 100 percent.
+void validate_guardrails(const Guardrails& rules, bool stored = false);
 [[nodiscard]] Limits tightened_limits(const Limits& current, const Limits& requested);
 [[nodiscard]] Guardrails tightened_guardrails(const Guardrails& current, const Guardrails& requested);
 

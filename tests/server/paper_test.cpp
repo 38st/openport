@@ -386,6 +386,65 @@ TEST_F(PaperEngine, WhatIfProjectsAHeldContractExitWithoutTrading) {
   EXPECT_EQ(read(*engine, "/api/fills")["fills"].size(), 1U);
 }
 
+
+TEST_F(PaperEngine, GuardrailPercentValidationAndUnusedWarning) {
+  seed();
+  auto risk = read(*engine, "/api/risk");
+  auto g = risk["guardrails"];
+  g["soft_floor_percent"] = 100;
+  const auto invalid = write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", g}});
+  expect_error(invalid, 422, "INVALID_LIMITS");
+  EXPECT_NE(json::parse(invalid.body)["error"]["message"].get<std::string>().find("latches at once"), std::string::npos);
+  g["soft_floor_percent"] = 99;
+  const auto okay = write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", g}});
+  ASSERT_EQ(okay.status, 200) << okay.body;
+  risk = json::parse(okay.body);
+  const auto warning = risk["warnings"].back();
+  EXPECT_EQ(warning["code"], "SOFT_FLOOR_UNUSED");
+  EXPECT_EQ(warning["severity"], "info");
+  EXPECT_EQ(risk["guardrail_state"]["soft_floor"], nullptr);
+  EXPECT_EQ(read(*engine, "/api/account")["warnings"].back(), warning);
+}
+
+TEST_F(PaperEngine, AccountResetWarnsForRetainedAbsoluteFloorAndAppliesPendingFloor) {
+  seed();
+  auto risk = read(*engine, "/api/risk");
+  auto g = risk["guardrails"]; g["soft_floor"] = "90000";
+  ASSERT_EQ(write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", g}}).status, 200);
+  auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "intraday-25k"}, {"reason", "smaller plan"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  auto account = json::parse(reset.body);
+  EXPECT_EQ(account["guardrail_state"]["latched"], json::array({"SOFT_FLOOR"}));
+  const auto warning = account["warnings"].back();
+  EXPECT_EQ(warning["code"], "SOFT_FLOOR");
+  EXPECT_NE(warning["message"].get<std::string>().find("latches at once"), std::string::npos);
+  EXPECT_NE(warning["message"].get<std::string>().find("a reset applies pending settings"), std::string::npos);
+  // Equality still warns, including when it comes from the pending setting.
+  for (const auto floor : {"25000", "24000"}) {
+    risk = read(*engine, "/api/risk"); g["soft_floor"] = floor;
+    ASSERT_EQ(write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", g}}).status, 200);
+    reset = write(*engine, "POST", "/api/account/reset", {{"plan", "intraday-25k"}, {"reason", "apply pending floor"}});
+    ASSERT_EQ(reset.status, 200) << reset.body;
+    account = json::parse(reset.body);
+    if (std::string_view(floor) == "25000") { EXPECT_EQ(account["warnings"].back()["code"], "SOFT_FLOOR"); }
+    else { EXPECT_TRUE(account["warnings"].empty()); EXPECT_TRUE(account["guardrail_state"]["latched"].empty()); }
+  }
+}
+
+TEST_F(PaperEngine, AccountResetKeepsTradeLimitThroughTheDesk) {
+  seed();
+  const auto risk = read(*engine, "/api/risk");
+  auto g = risk["guardrails"]; g["max_opening_trades"] = 1;
+  ASSERT_EQ(write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", g}}).status, 200);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "entry", "4.20")).status, 201);
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "another attempt"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  const auto account = json::parse(reset.body);
+  EXPECT_EQ(account["guardrail_state"]["opening_trades"], 1);
+  EXPECT_EQ(account["guardrail_state"]["latched"], json::array({"TRADE_LIMIT"}));
+  expect_error(write(*engine, "POST", "/api/orders", order(market, "new-entry", "4.20")), 422, "TRADE_LIMIT");
+}
+
 TEST_F(PaperEngine, PendingLimitsGuardrailsAndBreachAreExposedWithRevisionChecks) {
   seed();
   ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "eod-25k"}, {"reason", "evaluation"}}).status, 200);

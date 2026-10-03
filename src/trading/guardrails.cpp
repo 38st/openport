@@ -4,11 +4,13 @@
 #include <set>
 
 namespace openport::trading {
-void validate_guardrails(const Guardrails& g) {
+void validate_guardrails(const Guardrails& g, bool stored) {
+  if (!stored && g.soft_floor_percent == 100)
+    throw TradingError(Reason::INVALID_LIMITS, "Soft floor percent must be 0-99: 100 puts the soft floor at the peak, so it latches at once");
   if (g.soft_floor < Money{} || g.soft_floor_percent < 0 || g.soft_floor_percent > 100 ||
       g.max_opening_trades < 0 || g.cooldown_loss < Money{} || g.cooldown_minutes < 0 ||
       g.cooldown_minutes > 1440 || g.profit_lock < Money{})
-    throw TradingError(Reason::INVALID_LIMITS, "Guardrails must be nonnegative; floor percent is 0-100 and cooldown at most 1440 minutes");
+    throw TradingError(Reason::INVALID_LIMITS, "Guardrails must be nonnegative; floor percent is 0-99 and cooldown at most 1440 minutes");
 }
 Limits tightened_limits(const Limits& current, const Limits& requested) {
   auto result = requested;

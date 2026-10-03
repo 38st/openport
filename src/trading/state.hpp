@@ -130,6 +130,7 @@ inline void to_json(Json& j, const Order& o) {
   if (o.reduce_only) j["reduce_only"] = true;
   if (o.limit_ticks) j["limit_ticks"] = *o.limit_ticks;
   if (o.walked_at != 0) j["walked_at"] = o.walked_at;
+  if (o.opening_counted) j["opening_counted"] = true;
   // And a chained order's links.
   if (o.chained != 0) j["chained"] = o.chained;
   if (o.chained_from != 0) j["chained_from"] = o.chained_from;
@@ -145,6 +146,7 @@ inline void from_json(const Json& j, Order& o) {
   added_field(j, "ended_at", o.ended_at); added_field(j, "changes", o.changes);
   added_field(j, "limit_ticks", o.limit_ticks);
   added_field(j, "walked_at", o.walked_at);
+  added_field(j, "opening_counted", o.opening_counted);
   added_field(j, "chained", o.chained); added_field(j, "chained_from", o.chained_from);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FillContext, spot, spot_source, iv, delta, years, equity, floor_room, buying_power)
@@ -200,11 +202,16 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Exposure, dollar_delta, dollar_gamma_1pct, ve
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ExposureLimits, dollar_delta, vega)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Limits, max_order_contracts, price_band_absolute, price_band_relative, aggregate, per_underlying, underlying_overrides, max_daily_loss, max_quote_age, max_valuation_age)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Guardrails, soft_floor, soft_floor_percent, max_opening_trades, cooldown_loss, cooldown_minutes, profit_lock)
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(GuardrailState, opening_trades, cooldown_until, latched, owns_kill)
+inline void to_json(Json& j, const GuardrailState& g) {
+  j = Json{{"opening_trades", g.opening_trades}, {"cooldown_until", g.cooldown_until},
+           {"latched", g.latched}, {"owns_kill", g.owns_kill}};
+  if (g.trade_limit_order != 0) j["trade_limit_order"] = g.trade_limit_order;
+}
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(KillChange, time, action, reason, previous, actor)
 inline void from_json(const Json& j, GuardrailState& g) {
   added_field(j, "opening_trades", g.opening_trades); added_field(j, "cooldown_until", g.cooldown_until);
   added_field(j, "latched", g.latched); added_field(j, "owns_kill", g.owns_kill);
+  added_field(j, "trade_limit_order", g.trade_limit_order);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ScenarioConfig, spot_percent, vol_points, vol_floor)
 inline void to_json(Json& j, const PayoutRules& p) {
