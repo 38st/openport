@@ -50,6 +50,15 @@ token with `read,replay` or `admin`. Docker CI runs it after the smoke test, wit
 `pip install jsonschema pyyaml`. Static assets and WebSocket transport have their
 own C++ and web tests.
 
+For a demo-day soak against a dedicated local server (it replaces that server's
+replay), run `python3 tools/demo_soak.py http://127.0.0.1:9240 300 practice --seed 42
+--json soak.json`. `--json` or `--json -` writes only JSON to stdout and progress
+to stderr; omitting it keeps the text report. The sorted object includes every
+summary counter, refusals by code, URL, speed, plan, actual server seed as a decimal
+string, scenario, expiry, condor leg symbols, start/end market times and exit status
+(1 if a probe filled, otherwise 0). Seeds repeat the market; probe timing still
+depends on playback and HTTP scheduling. Offline tests: `python3 tools/demo_soak_test.py`.
+
 ## Pull requests
 
 - Keep each change to one purpose, with tests for the behaviour it adds or fixes.
