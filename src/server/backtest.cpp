@@ -272,7 +272,9 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     result.config.initial_cash = decimal(required(plan, "initial_cash", "plan initial_cash"), "plan initial_cash");
     json rules = result.config.rules;
     // The journal leaves out optional rules at their defaults; a plan may set them.
-    for (const auto& [key, value] : trading::optional_rule_defaults().items())
+    // Held in a local: iterating items() of a temporary reads it after it is destroyed.
+    const auto defaults = trading::optional_rule_defaults();
+    for (const auto& [key, value] : defaults.items())
       if (!rules.contains(key)) rules[key] = value;
     if (!required(plan, "rules", "plan rules").is_object()) throw std::invalid_argument("rules must be an object");
     const auto choice = [](const json& value, const std::string& key, std::initializer_list<const char*> names) {
