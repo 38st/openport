@@ -294,3 +294,11 @@ it("shows playbook time-stop cancellations and the automatic close note", () => 
   expect(journal).toContain("PLAYBOOK_TIME_STOP")
   expect(journal).toContain(close.note)
 })
+
+it.each(["TRAILING_STOP", "DTE_STOP", "DAYS_IN_TRADE_STOP"])("shows new playbook cancellation %s", code => {
+  const cancelled: Order = { ...stop, status: "cancelled", parent: fill.order_id,
+    reason: { code: `PLAYBOOK_${code}`, message: "Playbook exit", actual: null, limit: null, scope: null } }
+  const journal = render(<TradeDetail trade={trades[0]!} fills={[fill]} trading={trading} orders={[cancelled]} />)
+  expect(journal).toContain(`PLAYBOOK_${code}`)
+  expect(journal).toContain("Playbook exit")
+})

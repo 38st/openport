@@ -515,7 +515,7 @@ function Shares({ trades, trading }: { trades: ShareTrade[]; trading: TradingSta
 export function TradeDetail({ trade, fills, trading, orders = [] }: { trade: Trade; fills: Fill[]; trading: TradingStatus; orders?: Order[] }) {
   const orderIds = new Set(fills.map((fill) => fill.order_id))
   const timeStops = orders.filter((order) => (orderIds.has(order.id) || (order.parent && orderIds.has(order.parent))) &&
-    (order.reason?.code === "PLAYBOOK_TIME_STOP" || order.note?.startsWith("Playbook automatic time stop")))
+    (["PLAYBOOK_TIME_STOP", "PLAYBOOK_TRAILING_STOP", "PLAYBOOK_DTE_STOP", "PLAYBOOK_DAYS_IN_TRADE_STOP"].includes(order.reason?.code ?? "") || order.note?.startsWith("Playbook automatic ")))
   return <div className="space-y-4"><div className="grid gap-4 md:grid-cols-[16rem_1fr]">
     <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
       <dt className="text-muted">Entry cost</dt><dd className="tabular">{formatMoney(trade.cost)}</dd>
@@ -544,8 +544,8 @@ export function TradeDetail({ trade, fills, trading, orders = [] }: { trade: Tra
       </table>
     </div>
   </div>
-  {timeStops.map((order) => <p key={order.id} className="text-xs text-muted">Order #{order.id}: {order.reason?.code === "PLAYBOOK_TIME_STOP"
-    ? `cancelled · ${order.reason.message} (${order.reason.code})` : order.note}</p>)}
+  {timeStops.map((order) => <p key={order.id} className="text-xs text-muted">Order #{order.id}: {["PLAYBOOK_TIME_STOP", "PLAYBOOK_TRAILING_STOP", "PLAYBOOK_DTE_STOP", "PLAYBOOK_DAYS_IN_TRADE_STOP"].includes(order.reason?.code ?? "")
+    ? `cancelled · ${order.reason?.message} (${order.reason?.code})` : order.note}</p>)}
   <div className="grid gap-3 md:grid-cols-2"><ContextCard title="Entry context" context={trade.entry_context} /><ContextCard title="Exit context" context={trade.exit_context} /></div>
   <ReviewMetrics review={trade.review} />
   <TripAttribution attribution={trade.attribution} open={trade.status === "open"} />
