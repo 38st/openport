@@ -260,7 +260,7 @@ int run(int argc, char** argv) {
   std::unique_ptr<md::RecordingSink> recorder;
   if (!record_file.empty())
     recorder = std::make_unique<md::RecordingSink>(record_file,
-        md::RecordingHeader{std::string(provider->name()), caps, subscription, md::now()},
+        md::RecordingHeader{std::string(provider->name()), caps, subscription, md::now(), false, true},
         queue, md::RecordingSink::Options{});
   const auto started = std::chrono::steady_clock::now();
   // Stop while the queue is still alive, including exceptions during startup/output.
@@ -316,6 +316,8 @@ int run(int argc, char** argv) {
                      [&](md::UnderlyingQuote& e) { underlyings[e.symbol] = e; },
                      [&](md::UnderlyingClose&) { ++counts["official closes"]; },
                      [&](md::SnapshotComplete&) { ++counts["complete snapshots"]; },
+                     [&](md::SnapshotHeartbeat&) { ++counts["snapshot heartbeats"]; },
+                     [&](md::TradingHalt&) { ++counts["trading halts"]; },
                      [&](md::ProviderStatus& e) {
                        std::printf("status    %.*s: %s\n",
                                    static_cast<int>(md::to_string(e.state).size()),

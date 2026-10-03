@@ -44,6 +44,8 @@ TEST(Recording, EveryEventAndHeaderFieldRoundTripsBitExactly) {
       md::UnderlyingQuote{std::string("SP\0X", 4), hi, nan, tiny, -0.0},
       md::UnderlyingClose{"SPX", lo, {2026, 9, 23}, nan},
       md::SnapshotComplete{std::string("SP\0Y", 4), hi},
+      md::SnapshotHeartbeat{"SPX", hi},
+      md::TradingHalt{100, 200},
   };
   for (auto state : {md::FeedState::Connecting, md::FeedState::Live, md::FeedState::Delayed,
                      md::FeedState::Stale, md::FeedState::Error, md::FeedState::Stopped})
@@ -54,6 +56,7 @@ TEST(Recording, EveryEventAndHeaderFieldRoundTripsBitExactly) {
   contract.standard = true;
   events.push_back(md::ContractDefinition{0, contract});
   auto header = test::recording_header();
+  header.market_controls = true;
   header.started = lo;
   header.subscription.strike_window = nan;
   md::RecordingSink::Options options;
@@ -121,8 +124,8 @@ TEST(Recording, RejectsBadMagicVersionAndMalformedOrTruncatedHeader) {
   bytes[0] = '!';
   rejects(bytes, "magic");
   bytes = original;
-  bytes[8] = 4;
-  rejects(bytes, "version 4");
+  bytes[8] = 5;
+  rejects(bytes, "version 5");
   rejects(original.substr(0, 8), "truncated header");
   rejects(original.substr(0, 20), "truncated header");
   bytes = original;
@@ -200,6 +203,29 @@ TEST(Recording, IdleFlushBoundsTheCrashWindowAndCloseIsIdempotent) {
   ASSERT_TRUE(complete.next());
   EXPECT_FALSE(complete.next());
   EXPECT_TRUE(complete.diagnostic().empty());
+}
+
+TEST(Recording, FixedFramesKeepTheSameEofBoundaryWhetherCloseOrFlushWins) {
+  test::RecordingFile file;
+  test::DiscardEvents sink;
+  md::RecordingSink::Options options;
+  options.fixed_frames = true;
+  options.frame_bytes = 1;
+  options.clock = [] { return md::Timestamp{123}; };
+  std::string expected;
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    const auto path = file.directory / (std::to_string(attempt) + ".oprec");
+    md::RecordingSink recorder(path, {}, sink, options);
+    const auto header_size = std::filesystem::file_size(path);
+    recorder.publish(md::UnderlyingQuote{"SPX", 1, 2, 3, 2.5});
+    if (attempt % 2 == 0) {
+      ASSERT_TRUE(test::recording_eventually([&] { return std::filesystem::file_size(path) > header_size; }));
+    }
+    recorder.close();
+    ASSERT_TRUE(recorder.error().empty());
+    if (attempt == 0) expected = contents(path);
+    else { EXPECT_EQ(contents(path), expected); }
+  }
 }
 
 TEST(Recording, TruncatedLastFrameRecoversEveryCompleteRecordIncludingInsideTheFrame) {

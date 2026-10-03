@@ -22,10 +22,10 @@
 namespace openport::md {
 namespace {
 constexpr std::array<char, 8> kMagic{'O', 'P', 'R', 'E', 'C', '\r', '\n', '\0'};
-constexpr std::uint32_t kVersion = 3;
+constexpr std::uint32_t kVersion = 4;
 constexpr std::size_t kMaxRecord = 1024 * 1024;
 using Bytes = std::vector<char>;
-static_assert(std::variant_size_v<Event> == 10, "update the recording codec for new event types");
+static_assert(std::variant_size_v<Event> == 12, "update the recording codec for new event types");
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
 
 template <typename To, typename From>
@@ -132,11 +132,11 @@ Bytes encode_header(const RecordingHeader& h) {
   e.number<std::int32_t>(h.subscription.max_expiries);
   e.number(h.subscription.strike_window);
   e.number(h.started);
-  if (h.imported) e.byte(h.imported);
+  if (h.imported || h.market_controls) e.byte(h.imported);
   if (data.size() > kMaxRecord) invalid("header exceeds 1 MiB limit");
   Bytes prefix(kMagic.begin(), kMagic.end());
   Encoder p(prefix);
-  p.number(h.imported ? kVersion : std::uint32_t{2});
+  p.number(h.market_controls ? kVersion : h.imported ? std::uint32_t{3} : std::uint32_t{2});
   p.number(static_cast<std::uint32_t>(data.size()));
   prefix.insert(prefix.end(), data.begin(), data.end());
   return prefix;
@@ -163,6 +163,7 @@ RecordingHeader decode_header(std::span<const char> data, std::uint32_t version)
   h.subscription.strike_window = d.number<double>();
   h.started = d.number<Timestamp>();
   if (version >= 3) h.imported = d.byte(1);
+  h.market_controls = version >= 4;
   d.finish();
   return h;
 }
@@ -208,9 +209,12 @@ void encode_event(Bytes& bytes, Timestamp received, const Event& event) {
           e.number<std::int32_t>(v.date.month);
           e.number<std::int32_t>(v.date.day);
           e.number(v.price);
-        } else if constexpr (std::is_same_v<T, SnapshotComplete>) {
+        } else if constexpr (std::is_same_v<T, SnapshotComplete> || std::is_same_v<T, SnapshotHeartbeat>) {
           e.string(v.underlying);
           e.number(v.ts);
+        } else if constexpr (std::is_same_v<T, TradingHalt>) {
+          e.number(v.ts);
+          e.number(v.end);
         } else {
           e.number(v.id);
           e.number(v.ts);
@@ -244,7 +248,7 @@ RecordedEvent decode_event(std::span<const char> bytes, std::uint32_t version) {
   Decoder d(bytes);
   RecordedEvent out;
   out.received = d.number<Timestamp>();
-  switch (d.byte(version == 1 ? 8 : 9)) {
+  switch (d.byte(version >= 4 ? 11 : version == 1 ? 8 : 9)) {
     case 0: {
       ContractDefinition v;
       v.id = d.number<InstrumentId>();
@@ -299,6 +303,16 @@ RecordedEvent decode_event(std::span<const char> bytes, std::uint32_t version) {
       v.underlying = d.string();
       v.ts = d.number<Timestamp>();
       out.event = std::move(v);
+      break;
+    }
+    case 10:
+      out.event = SnapshotHeartbeat{d.string(), d.number<Timestamp>()};
+      break;
+    case 11: {
+      const auto start = d.number<Timestamp>();
+      const auto end = d.number<Timestamp>();
+      if (start <= 0 || end <= start || end - start > kNanosPerDay) invalid("invalid trading halt interval");
+      out.event = TradingHalt{start, end};
       break;
     }
     case 9:
@@ -369,11 +383,13 @@ struct RecordingSink::Impl {
         bool final;
         {
           std::unique_lock lock(mutex);
-          ready.wait_until(lock, deadline, [&] {
-            return closing || !failure.empty() || pending.size() >= options.frame_bytes;
-          });
+          const auto flush = [&] { return closing || !failure.empty() || pending.size() >= options.frame_bytes; };
+          if (options.fixed_frames) ready.wait(lock, flush);
+          else ready.wait_until(lock, deadline, flush);
           if (!failure.empty()) break;
-          final = closing;
+          // A full generated frame always precedes EOF, even when close races
+          // the worker. This keeps the final frame boundary deterministic too.
+          final = closing && (!options.fixed_frames || pending.size() < options.frame_bytes);
           batch.swap(pending);
           // Admit no new publications until this frame is written: a process
           // crash can then lose at most one outstanding frame, not two buffers.
@@ -452,6 +468,10 @@ struct RecordingSink::Impl {
       using T = std::decay_t<decltype(value)>;
       if constexpr (std::is_same_v<T, ContractDefinition>) symbols[value.id] = value.contract.underlying;
       else if constexpr (std::is_same_v<T, SnapshotComplete>) snapshots = true;
+      else if constexpr (std::is_same_v<T, SnapshotHeartbeat>) {
+        snapshots = true;
+        market_ends[value.underlying] = std::max(market_ends[value.underlying], value.ts);
+      }
       else if constexpr (std::is_same_v<T, UnderlyingQuote>) market_ends[value.symbol] = std::max(market_ends[value.symbol], value.ts);
       else if constexpr (std::is_same_v<T, OptionQuote> || std::is_same_v<T, OptionTrade>) {
         const auto found = symbols.find(value.id);

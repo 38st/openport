@@ -19,6 +19,7 @@ struct RecordingHeader {
   Subscription subscription;
   Timestamp started = 0;
   bool imported = false;
+  bool market_controls = false; ///< version 4 heartbeat and halt events
 };
 
 struct RecordedEvent {
@@ -62,6 +63,7 @@ class RecordingSink final : public EventSink {
     std::function<Timestamp()> clock = now;
     std::chrono::milliseconds flush_interval{1000};
     std::size_t frame_bytes = 4 * 1024 * 1024;
+    bool fixed_frames = false; ///< generated files flush only at size boundaries or close
     /// Optional syscall replacement for testing short storage/error paths.
     /// Must write the entire span or throw, and must not reenter this sink.
     std::function<void(int, std::span<const char>)> write{};

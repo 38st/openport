@@ -12,7 +12,8 @@ md::Timestamp market_time(const md::Event& event) {
   return std::visit([](const auto& value) -> md::Timestamp {
     using T = std::decay_t<decltype(value)>;
     if constexpr (std::is_same_v<T, md::OptionQuote> || std::is_same_v<T, md::OptionTrade> ||
-                  std::is_same_v<T, md::UnderlyingQuote>) return value.ts;
+                  std::is_same_v<T, md::UnderlyingQuote> || std::is_same_v<T, md::SnapshotHeartbeat> ||
+                  std::is_same_v<T, md::TradingHalt>) return value.ts;
     else return 0;
   }, event);
 }
@@ -24,7 +25,7 @@ ReplayBatches::ReplayBatches(md::RecordingReader& reader, const md::Subscription
   // Older recordings predate SnapshotComplete. They use the streaming clock
   // even when their header describes a polling provider.
   while (const auto record = reader_.next()) {
-    if (std::holds_alternative<md::SnapshotComplete>(record->event)) { snapshots_ = true; break; }
+    if (std::holds_alternative<md::SnapshotComplete>(record->event) || std::holds_alternative<md::SnapshotHeartbeat>(record->event)) { snapshots_ = true; break; }
   }
   if (!reader_.diagnostic().empty()) throw std::runtime_error("replay: " + reader_.diagnostic());
   reader_.rewind();
@@ -38,8 +39,10 @@ bool ReplayBatches::include(const md::Event& event) {
       return symbols_.contains(value.symbol);
     } else if constexpr (std::is_same_v<T, md::ProviderStatus>) {
       return value.underlying.empty() || symbols_.contains(value.underlying);
-    } else if constexpr (std::is_same_v<T, md::SnapshotComplete>) {
+    } else if constexpr (std::is_same_v<T, md::SnapshotComplete> || std::is_same_v<T, md::SnapshotHeartbeat>) {
       return symbols_.contains(value.underlying);
+    } else if constexpr (std::is_same_v<T, md::TradingHalt>) {
+      return true;
     } else {
       const auto it = admitted_.find(value.id);
       if (it == admitted_.end()) throw std::runtime_error("replay: event references undefined contract " + std::to_string(value.id));
@@ -68,8 +71,9 @@ std::optional<ReplayBatches::Part> ReplayBatches::read() {
     batch.received = record->received;
     const auto* complete = std::get_if<md::SnapshotComplete>(&record->event);
     if (complete) part.complete = complete->ts;
+    if (const auto* heartbeat = std::get_if<md::SnapshotHeartbeat>(&record->event)) part.complete = heartbeat->ts;
     batch.events.push_back(std::move(record->event));
-    if (snapshots_ && complete) break;
+    if (snapshots_ && part.complete) break;
   }
   if (batch.events.empty()) return {};
   batch.time = snapshots_ ? time_ : std::max(time_, end);

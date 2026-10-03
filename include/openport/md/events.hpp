@@ -121,8 +121,21 @@ struct SnapshotComplete {
   Timestamp ts = 0;  ///< the snapshot's market time
 };
 
+/// A polling boundary without a quote confirmation. It advances simulation time,
+/// while the underlying's last complete snapshot and quotes retain their age.
+struct SnapshotHeartbeat {
+  std::string underlying;
+  Timestamp ts = 0;
+};
+
+/// An authored market-wide halt, active on [ts, end). Quotes remain frozen.
+struct TradingHalt {
+  Timestamp ts = 0;
+  Timestamp end = 0;
+};
+
 using Event = std::variant<ContractDefinition, OptionQuote, OptionTrade, OpenInterest,
                            VendorGreeks, UnderlyingQuote, ProviderStatus, UnderlyingClose,
-                           SnapshotComplete, OptionVolume>;
+                           SnapshotComplete, OptionVolume, SnapshotHeartbeat, TradingHalt>;
 
 }  // namespace openport::md
