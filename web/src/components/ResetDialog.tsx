@@ -2,6 +2,7 @@ import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useAccount, useRefreshTrading, usePlans, useTradingSession } from "../api/trading"
 import type { FeeModel, FillModel, Plan, TradingStatus } from "../api/trading-types"
+import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
 import { lockReason, offeredPlans } from "../lib/payouts"
 import { dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact } from "../lib/plan-rules"
@@ -28,6 +29,7 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
     ...marginFacts(r),
     ...(r.slippage_ticks ? [`${r.slippage_ticks} ${r.slippage_ticks === 1 ? "tick" : "ticks"} of slippage`] : []),
     ...(r.fill_latency_ms ? [`${r.fill_latency_ms} ms fill latency on market time`] : []),
+    ...(r.inside_fill_percent ? [`Inside fills at ${r.inside_fill_percent}% across the spread`] : []),
     ...(r.impact_ticks ? [`${r.impact_ticks} extra ${r.impact_ticks === 1 ? "tick" : "ticks"} per displayed-size block`] : []),
     ...(r.expiry_cutoff_seconds > 0 ? [`Auto-close ${Math.round(r.expiry_cutoff_seconds / 60)} min before expiry`] : []),
     ...(dayEnd ? [dayEnd] : []),
@@ -83,7 +85,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
     setError(undefined)
     try {
       const fill = {
-        ...(fillModel === "conservative" ? { fill_model: fillModel } : {}),
+        ...(fillModel !== "as_displayed" ? { fill_model: fillModel } : {}),
         ...(feeModel === "itemized" ? { fee_model: feeModel } : {}),
       }
       const marginSettings = marginRequest(margin ?? planDefaults, planDefaults)
@@ -161,18 +163,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
               : custom && <p className="text-[11px] text-faint">{planFacts(custom).join(" · ")}</p>}
           </>}
         </div>}
-        <label className="block space-y-1 text-sm">
-          <span>Simulated fills</span>
-          <select className="trade-input w-full" value={fillModel} disabled={pending}
-            onChange={(event) => setFillModel(event.target.value as FillModel)}>
-            <option value="as_displayed">As displayed</option>
-            <option value="conservative">Conservative</option>
-          </select>
-        </label>
-        <p className="text-xs text-muted">{fillModel === "conservative"
-          ? "For delayed feeds: wait 1,000 ms on market time, add 1 tick of slippage, and 1 extra tick for each additional displayed-size block. The next available quote may arrive much later."
-          : "Fill immediately at the displayed bid or ask, up to the available displayed size, with no slippage."}
-          {" "}Applies to this account’s new attempt. Neither model knows queue position, hidden liquidity, or whether the market would have traded at all.</p>
+        <FillModelPicker value={fillModel} onChange={setFillModel} disabled={pending} />
         <FeeModelPicker value={feeModel} onChange={setFeeModel} disabled={pending} flat={trading.fee_per_contract} />
         <MarginSettings value={margin ?? planDefaults} onChange={setMargin} disabled={pending} />
         {plans.isLoading && <p className="text-sm text-muted">Loading plans…</p>}

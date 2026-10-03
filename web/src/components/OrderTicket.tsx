@@ -1,3 +1,4 @@
+import { useWalk } from "./WalkFields"
 import { FeeAmount } from "./FeeAmount"
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
@@ -192,7 +193,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
       : { trigger: { source: "underlying" as const, direction: opposite(stopDirection("underlying", side, selection.optionType)), level: targetLevel } } } : {}),
   } : undefined
   const bracketValid = !protect || ((stopOn || targetOn) && (!stopOn || stopValid) && (!targetOn || exitLevel(targetLevel)))
-  const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee)) &&
+  const walk = useWalk(type === "limit" && condition === "now" && ["day", "gtc"].includes(effectiveTif), limitPrice, side === "buy", "0.10", String(marketPrice ?? ""))
+  const valid = walk.valid && /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee)) &&
     (condition === "now" || trigger != null) && bracketValid && (effectiveTif !== "gtd" || good_till != null)
   const untradable = quote?.tradable !== true || quote.symbol !== selection.symbol
   const notice = paperNotice(selection.underlying, underlying)
@@ -214,6 +216,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     ...(type === "market" ? { type, time_in_force: effectiveTif as "ioc" | "exto" | "gtc_exto" | "gtd" } : { type, time_in_force: effectiveTif, limit_price: limitPrice }),
     ...(effectiveTif === "gtd" ? { good_till } : {}),
     ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
+    ...(walk.walk ? { walk: walk.walk } : {}),
   } : null
   const preview = useOrderPreview(draft, trading)
   const whatIfScope = useWhatIfScope()
@@ -236,6 +239,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         ...(type === "market" ? { type, time_in_force: effectiveTif as "ioc" | "exto" | "gtc_exto" | "gtd" } : { type, time_in_force: effectiveTif, limit_price: limitPrice }),
         ...(effectiveTif === "gtd" ? { good_till } : {}),
         ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
+        ...(walk.walk ? { walk: walk.walk } : {}),
         ...(tags ? { tags } : {}), ...(note ? { note } : {}),
       }
       setSubmitted(true)
@@ -347,6 +351,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
             <span className="text-xs text-muted">{formatMoney(limitPriceTick(root, limitPrice))} tick · {root}</span>
           </div>
         </div>}
+        {walk.fields}
         {rules?.fees ? <div className="trade-label col-span-2">Fees<div className="text-foreground">Itemized · see preview below</div></div>
           : serverFee == null ? <label className="trade-label col-span-2">Fee / contract ($, estimate)<input className="trade-input" inputMode="decimal" value={fee} placeholder="Not provided by server" onChange={(e) => setFee(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
           : <div className="trade-label col-span-2">Fee / contract<div className="tabular text-foreground">{formatMoney(serverFee)}</div></div>}
@@ -411,7 +416,9 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
       </fieldset>
       <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} impact={!!rules?.impact_ticks} market={type === "market"}
         preview={preview.data?.liquidity} ioc={type === "market" || tif === "ioc"} legs={[{ label: `${selection.strike} ${selection.optionType}`, quote, side, quantity: q }]} />
-      <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{rules?.fill_latency_ms || rules?.impact_ticks
+      <p role="status" className={`rounded-md border px-3 py-2 text-xs ${fill.marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>{rules?.inside_fill_percent && type === "limit" && condition === "now"
+        ? `Inside fills enabled at ${rules.inside_fill_percent}% across the spread, bounded by displayed size. See preview for execution now.`
+        : rules?.fill_latency_ms || rules?.impact_ticks
         ? "Simulated fills use the account’s latency and size impact. Displayed prices and quantities are estimates; the order may wait or fill at worse prices within its limit."
         : fill.message}</p>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
