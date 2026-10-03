@@ -653,3 +653,13 @@ TEST(BacktestApi, ComparisonAcceptsLegacyReportsAndRejectsInvalidSelection) {
   EXPECT_EQ(call(host, {"GET", "/api/backtests/compare?ids=000001,000003"}).status, 422);
 }
 }  // namespace
+
+TEST(Backtest, CustomContractCap) {
+  const auto parse = [](json cap) {
+    return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"},
+        {"rules", {{"profit_target", "100"}, {"max_contracts_held", cap}}}}}, {"scenarios", 1}, {"seed", 0}}, catalogue(), {}, {});
+  };
+  EXPECT_EQ(parse(5).config.rules.max_contracts_held, 5);
+  EXPECT_THROW((void)parse(100001), std::exception);
+  EXPECT_THROW((void)parse(1.5), std::exception);
+}

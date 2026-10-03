@@ -80,6 +80,7 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"slippage_ticks", r.slippage_ticks}, {"margin", r.margin == MarginMode::Portfolio ? "portfolio" : "strategy"},
           {"account_type", r.account_type == AccountType::Cash ? "cash" : r.account_type == AccountType::Ira ? "ira" : "margin"},
           {"house_margin_percent", r.house_margin_percent}, {"pm_vol_shock", r.pm_vol_shock},
+          {"max_contracts_held", r.max_contracts_held},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
   if (r.fill_latency_ms != 0) result["fill_latency_ms"] = r.fill_latency_ms;
@@ -1548,7 +1549,8 @@ AccountRules parse_rules(const json& j) {
          {"plan", "plan_id", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
-          "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent"});
+          "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
+          "max_contracts_held"});
   AccountRules rules;
   // Accept read-back rules in a custom request, but always derive the identity.
   if (j.contains("plan_id") && !j.at("plan_id").is_null() && !j.at("plan_id").is_string())
@@ -1581,6 +1583,7 @@ AccountRules parse_rules(const json& j) {
   if (has("min_profitable_days")) rules.min_profitable_days = integer_field(j, "min_profitable_days");
   if (has("profitable_day_profit")) rules.profitable_day_profit = decimal_field(j, "profitable_day_profit");
   if (has("day_end")) rules.day_end_minutes = clock_field(j, "day_end");
+  if (j.contains("max_contracts_held")) rules.max_contracts_held = integer_field(j, "max_contracts_held");
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");

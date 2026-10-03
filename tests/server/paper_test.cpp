@@ -2481,7 +2481,7 @@ TEST(PaperPlans, PresetsListExactRules) {
     rules.update({{"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
-                  {"profitable_day_profit", nullptr}, {"day_end", "17:00"}});
+                  {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0}});
     return rules;
   };
   const auto intraday = plans[3];
@@ -4185,3 +4185,29 @@ TEST(PaperAvailability, EquityPagesKeepEqualTimeSamplesAndUnpagedReads) {
   engine.stop();
 }
 }  // namespace
+
+TEST_F(PaperEngine, HeldContractRulesAndRefusalEvidence) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["plan"] = "Contract cap";
+  rules["max_contracts_held"] = 2;
+  auto reset = [&](const json& r) {
+    return write(*engine, "POST", "/api/account/reset", {{"reason", "cap test"}, {"initial_cash", "100000"}, {"rules", r}});
+  };
+  ASSERT_EQ(reset(rules).status, 200);
+  EXPECT_EQ(read(*engine, "/api/account")["rules"]["max_contracts_held"], 2);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "held", "4.20")).status, 201);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "working", "4.00")).status, 201);
+  const auto refused = write(*engine, "POST", "/api/orders", order(market, "excess", "4.00"));
+  expect_error(refused, 422, "MAX_CONTRACTS_HELD");
+  const auto error = json::parse(refused.body)["error"];
+  EXPECT_EQ(error["actual"], 3);
+  EXPECT_EQ(error["limit"], 2);
+  EXPECT_EQ(error["scope"], "account");
+  for (const json value : {json(-1), json(100001)}) {
+    rules["max_contracts_held"] = value;
+    expect_error(reset(rules), 400, "INVALID_RULES");
+  }
+  rules["max_contracts_held"] = 1.5;
+  expect_error(reset(rules), 400, "INVALID_REQUEST");
+}

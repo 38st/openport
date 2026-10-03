@@ -1468,6 +1468,45 @@ Decision account_check(const State& s, bool reducing = false) {
     return failure(s.evaluation.day_lock, day_lock_message(s.evaluation.day_lock));
   return {};
 }
+/// Reserve closing capacity once per side, across all ordinary working orders.
+/// Exits stay within their positions and shares do not count toward this cap.
+Decision contracts_held_check(const State& s, const Order& candidate) {
+  const auto cap = s.config.rules.max_contracts_held;
+  if (cap == 0 || candidate.system || kept_within(candidate) || closing_only(s, candidate)) return {};
+  std::map<std::string, std::pair<Quantity, Quantity>> pending;
+  const auto add = [&](const Order& o) {
+    if (o.system || kept_within(o) || o.request.exits_only || o.remaining() <= 0) return;
+    auto legs = o.request.legs;
+    if (legs.empty()) legs.push_back({o.request.symbol, o.request.side, 1});
+    for (const auto& leg : legs) {
+      auto& [buys, sells] = pending[leg.symbol];
+      auto& count = leg.side == Side::Buy ? buys : sells;
+      if (__builtin_add_overflow(count, magnitude(signed_contracts(leg, o.remaining())), &count))
+        throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Working contract count overflow");
+    }
+  };
+  for (const auto id : open_ids(s))
+    if (id != candidate.id) add(s.orders[id - 1]);
+  add(candidate);
+  Quantity projected = 0;
+  const auto count = [&](Quantity value) {
+    if (__builtin_add_overflow(projected, value, &projected))
+      throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Held contract count overflow");
+  };
+  for (const auto& [symbol, position] : s.ledger.positions()) {
+    (void)symbol;
+    count(magnitude(position.quantity));
+  }
+  for (const auto& [symbol, sides] : pending) {
+    const auto q = held(s, symbol);
+    count(std::max<Quantity>(0, sides.first - std::max<Quantity>(0, -q)));
+    count(std::max<Quantity>(0, sides.second - std::max<Quantity>(0, q)));
+  }
+  if (projected > cap)
+    return {Reason::MAX_CONTRACTS_HELD, "Held options and working opening contracts exceed the plan cap",
+            static_cast<double>(projected), static_cast<double>(cap), "account"};
+  return {};
+}
 /// When an order is checked: as it is accepted or changed, as its trigger is
 /// reached, or as it fills. A stop-limit's limit is set against its stop rather
 /// than the market: it is banded around an option or combo trigger's level when
@@ -1621,6 +1660,7 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
     return failure(Reason::PRICE_BAND, "The walk cap is outside the configured band around the net mid");
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
+  if (const auto d = contracts_held_check(s, o); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
@@ -1740,6 +1780,7 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   }
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
+  if (const auto d = contracts_held_check(s, o); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;

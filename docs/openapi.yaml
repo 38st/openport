@@ -8896,6 +8896,12 @@
               }
             ],
             "description": "Preset ID derived from balance and objective rules, ignoring execution, fee and margin overrides; null for custom rules."
+          },
+          "max_contracts_held": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "Held option contracts plus working opening contracts; shares excluded. Zero disables."
           }
         },
         "required": [
@@ -17326,6 +17332,12 @@
                       "expiry_cutoff": {
                         "type": "integer",
                         "minimum": 0
+                      },
+                      "max_contracts_held": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100000,
+                        "description": "Held option contracts plus working opening contracts; shares excluded. Zero disables."
                       }
                     },
                     "required": [],
@@ -19465,6 +19477,12 @@
               }
             ],
             "description": "Read-only derived metadata. Accepted and ignored when sending previously read rules; it never selects or changes a preset."
+          },
+          "max_contracts_held": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "Held option contracts plus working opening contracts; shares excluded. Zero disables."
           }
         },
         "required": [

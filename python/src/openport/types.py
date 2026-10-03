@@ -194,6 +194,7 @@ class AccountRules(TypedDict, total=False):
     lock_balance: str | None
     buy_only: bool
     defined_risk: bool
+    max_contracts_held: int
     slippage_ticks: int
     fill_latency_ms: int
     impact_ticks: int
