@@ -1156,6 +1156,8 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.cycle_started = s.time;
   e.first_order = static_cast<OrderId>(s.orders.size() + 1);
   e.first_fill = s.fills.size() + 1;
+  if (s.config.rules.phase == Phase::Evaluation && s.config.rules.microscalp_percent > 0)
+    e.first_stock_fill = s.stock_fills.size() + 1;
   e.day = s.day;
   e.day_open_equity = e.starting_balance;
   e.day_close_equity = e.starting_balance;
@@ -1946,7 +1948,36 @@ Decision group_check(const State& s, const OrderRequest& r) {
   }
   return failure(Reason::INVALID_GROUP, "group must name an open round trip, or a whole trade holding one, by its trade ID");
 }
+Decision hold_age_check(const State& s, Timestamp opened, const std::string& symbol) {
+  const auto required = s.config.rules.min_hold_seconds;
+  const auto elapsed = std::max<Timestamp>(0, s.time - opened);
+  if (required == 0 || elapsed >= required * md::kNanosPerSecond) return {};
+  const double seconds = static_cast<double>(elapsed) / md::kNanosPerSecond;
+  return {Reason::MIN_HOLD, "Held " + std::to_string(seconds) + " seconds; this plan requires " +
+          std::to_string(required) + " seconds before a user reduction", seconds, static_cast<double>(required), symbol};
+}
+Decision min_hold_check(const State& s, const Order& o) {
+  if (s.config.rules.min_hold_seconds == 0 || o.system || kept_within(o) || o.request.exits_only ||
+      o.request.trigger || o.oco != 0 || !o.request.oco.empty()) return {};
+  const auto closes = [&](const Lifecycle& life) {
+    if (life.closed) return false;
+    const auto opposite = [&](const std::string& symbol, Side side) {
+      return life.symbol == symbol && (life.quantity > 0) != (side == Side::Buy);
+    };
+    if (!multi_leg(o.request)) return opposite(o.request.symbol, o.request.side);
+    return std::any_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& l) { return opposite(l.symbol, l.side); });
+  };
+  if (s.reviewing.ready) {
+    for (const auto& [symbol, open] : s.reviewing.builder.open)
+      if (closes(open.life)) if (const auto d = hold_age_check(s, open.life.opened, symbol); !d.ok()) return d;
+  } else {
+    for (const auto& life : lifecycles(s.fills, s.closures, s.contracts))
+      if (closes(life)) if (const auto d = hold_age_check(s, life.opened, life.symbol); !d.ok()) return d;
+  }
+  return {};
+}
 Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept) {
+  if (const auto d = min_hold_check(s, o); !d.ok()) return d;
   if (const auto d = account_check(s, closing_only(s, o), o.id); !d.ok()) return d;
   if (const auto d = entry_check(s, o); !d.ok()) return d;
   try { (void)clean_annotation(o.request.note, o.request.tags); }
@@ -2920,17 +2951,25 @@ PlanInputs plan_inputs(const State& s, Money equity) {
 // Whole trades use the same grouping as the trade journal, so rolls count once.
 void refresh_trade_objectives(State& s) {
   const auto& rules = s.config.rules;
-  if (rules.phase != Phase::Evaluation || (rules.trade_consistency_percent == 0 && rules.min_trades == 0)) return;
+  if (rules.phase != Phase::Evaluation || (rules.trade_consistency_percent == 0 && rules.min_trades == 0 && rules.microscalp_percent == 0)) return;
   auto& e = s.evaluation;
   struct Whole { Money pnl; bool closed = true; std::uint64_t first = 0; };
   std::map<std::string, Whole> trades;
+  e.short_profit = {};
   for (const auto& life : lifecycles(s.fills, s.closures, s.contracts)) {
     if (life.first_fill < e.first_fill) continue;
+    if (rules.microscalp_percent > 0 && life.closed && *life.closed - life.opened < rules.microscalp_seconds * md::kNanosPerSecond)
+      e.short_profit = e.short_profit + std::max(Money{}, life.gross - life.fees);
     auto& trade = trades[trade_group(life, s.groups)];
     trade.pnl = trade.pnl + life.gross - life.fees;
     trade.closed = trade.closed && life.closed.has_value();
     if (trade.first == 0 || life.first_fill < trade.first) trade.first = life.first_fill;
   }
+  if (rules.microscalp_percent > 0)
+    for (const auto& life : share_lifecycles(s.stock_fills, s.dividends))
+      if (life.fills.front() >= e.first_stock_fill && life.closed &&
+          *life.closed - life.opened < rules.microscalp_seconds * md::kNanosPerSecond)
+        e.short_profit = e.short_profit + std::max(Money{}, life.gross + life.dividends);
   e.best_trade.reset();
   e.closed_trades = 0;
   std::uint64_t best_first = 0;
@@ -3893,30 +3932,31 @@ void supersede(State& s, const OrderRequest& request, const std::vector<OrderId>
     if (closing_only(s, candidate)) break;
   }
 }
-CommandResult place_order(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events);
+CommandResult place_order(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events, OrderId paired = 0);
 /// Places one order. On a buy-only plan a manual close that only its own armed stops
 /// keep from fitting cancels them (POSITION_CLOSED), newest first, as far as it needs
 /// to; if the close is refused anyway, the stops stay and it records that refusal.
-CommandResult place_one(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
+CommandResult place_one(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events, OrderId paired = 0) {
   const auto stops = rejection.ok() ? superseded_stops(s, request) : std::vector<OrderId>{};
-  if (stops.empty()) return place_order(s, std::move(request), time, rejection, events);
+  if (stops.empty()) return place_order(s, std::move(request), time, rejection, events, paired);
   State trial = s;
   Events trial_events = events;
   supersede(trial, request, stops, trial_events);
-  auto result = place_order(trial, request, time, rejection, trial_events);
+  auto result = place_order(trial, request, time, rejection, trial_events, paired);
   if (result.decision.ok()) {
     s = std::move(trial);
     events = std::move(trial_events);
     return result;
   }
-  return place_order(s, std::move(request), time, result.decision, events);
+  return place_order(s, std::move(request), time, result.decision, events, paired);
 }
-CommandResult place_order(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events) {
+CommandResult place_order(State& s, OrderRequest request, Timestamp time, const Decision& rejection, Events& events, OrderId paired) {
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = std::move(request);
   order.actor = s.actor;
   order.accepted_at = time;
+  if (s.config.rules.min_hold_seconds > 0) order.oco = paired;
   add_order(s, order);
   // Written until matching starts; nothing copies the orders before that.
   auto& stored = s.orders.mut_back();
@@ -3998,7 +4038,7 @@ CommandResult place(State& s, OrderRequest request, Timestamp time, const Decisi
   other.client_order_id = request.client_order_id + ":oco";
   const auto first = place_one(s, request, time, rejection, events);
   if (!first.decision.ok()) return first;
-  const auto second = place_one(s, std::move(other), time, {}, events);
+  const auto second = place_one(s, std::move(other), time, {}, events, *first.order_id);
   if (!second.decision.ok()) {
     s = before;
     events.erase(events.begin() + static_cast<std::ptrdiff_t>(recorded), events.end());
@@ -5956,6 +5996,11 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
   return impl_->transact(time, "stock_trade", [&](State& s, Events& events) {
     if (const auto d = account_type_check(s, {}, {{symbol, signed_shares}}); !d.ok()) return CommandResult{d, {}, 0};
     const auto shares = shares_held(s, symbol);
+    if (s.config.rules.min_hold_seconds > 0 && shares != 0 && (shares > 0) != (signed_shares > 0)) {
+      for (const auto& life : share_lifecycles(s.stock_fills, s.dividends))
+        if (life.symbol == symbol && !life.closed)
+          if (const auto d = hold_age_check(s, life.opened, symbol); !d.ok()) return CommandResult{d, {}, 0};
+    }
     const bool reduces = shares != 0 && (shares > 0) != (signed_shares > 0) &&
                          (shares > 0 ? -signed_shares <= shares : signed_shares <= -shares);
     if (reduce_only && !reduces)

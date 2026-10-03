@@ -1464,3 +1464,5 @@ prior journal bytes; no replay driver or scenario revision changes.
 F29 journals `trade_consistency_percent` only when nonzero and evaluation `best_trade` only when a positive closed whole trade exists under that rule. Summaries derive from reducer fills, closures and groups, including system closures; recovery repeats the same calculation. Off plans keep their bytes and hashes; driver/scenario revisions are unchanged.
 
 F30 adds `min_trades` only when nonzero and evaluation `closed_trades` only when nonzero under that rule. Counts derive from current-attempt reducer history; plans without it add no state or journal fields.
+
+F61 omits `min_hold_seconds`, `microscalp_seconds` and `microscalp_percent` at zero. Active microscalping records nonzero evaluation `short_profit` and a nondefault `first_stock_fill` attempt boundary; these derive from fills/closures and share fills, and reset with the attempt. Hold age is reconstructed from first opening fills, adding no timing state. Only opted-in OCO acceptance links its sibling before the hold check. Off journals, transaction hashes and replay/scenario revisions remain unchanged.

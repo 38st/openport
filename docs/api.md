@@ -344,3 +344,5 @@ unbounded/unknown risk). See [trade rules](paper-trading.md#account-rules-and-ev
 Custom account/reset and backtest rules accept `trade_consistency_percent` (integer 0–100). Account evaluation exposes nullable `best_trade: {id, pnl}` and `TRADE_CONSISTENCY` objective evidence (actual/required percent, message with trade ID and net P&L). Funded plans ignore the objective.
 
 `min_trades` (integer 0–10000) is also accepted on custom account/reset/backtest rules. Evaluation reports nullable `closed_trades` and `MIN_TRADES` actual/required counts, including system closures; funded plans ignore it.
+
+Custom account/reset/backtest rules accept `min_hold_seconds` (0–3600) and the paired `microscalp_seconds` (1–3600) / `microscalp_percent` (0–100); percent zero disables microscalping. Option/share order preview and submission report `MIN_HOLD` with `actual` seconds held, `limit` seconds required and symbol `scope`; protective/system exits bypass it. Evaluation exposes `MICROSCALPING` percentage evidence and nullable dollar `short_profit`.

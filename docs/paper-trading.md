@@ -1583,6 +1583,9 @@ side, no buying-power check. All rule money is exact.
 | `daily_loss_limit` | Dollars below `daily_loss_basis` that equity may not touch in one trading day (zero disables); see Plan objectives and the daily loss limit |
 | `daily_loss_basis` | `Equity` (default, the day's opening equity), `Balance` (its opening closed balance), `Higher` (the higher of the two) or `Peak` (the day's fully marked equity high, starting at its opening equity, so the limit trails the day's gains) |
 | `daily_loss_action` | `Lock` (default): close every position and refuse opening orders until the next trading day. `Fail`: fail the attempt |
+| `min_hold_seconds` | F61: ordinary user reductions need this many seconds of market time since the round trip's first opening fill (0–3600; 0 disables), for options and shares; `MIN_HOLD` reports seconds held and required |
+| `microscalp_seconds` | F61: a round trip closed strictly before this age is short (1–3600); set with `microscalp_percent`, or leave both zero |
+| `microscalp_percent` | F61: maximum whole percent of attempt profit from positive net P&L of short closed round trips (0–100); 0 disables; evaluation only |
 | `min_trades` | F30: minimum closed whole option trades to pass (0–10000; 0 disables); evaluation only |
 | `trade_consistency_percent` | F29: best profitable closed whole option trade, net of fees, at most this whole percent of attempt profit under `profit_basis` (1–100; 0 disables); evaluation only |
 | `consistency_percent` | A pass needs the best day's profit at most this whole percent (1–100) of `consistency_basis`; zero disables |
@@ -1984,6 +1987,30 @@ outside option trade groups. Counts reset with the attempt and recover from its
 journal. Funded plans ignore this evaluation objective. Pass odds keep the count so
 far and add no simulated trades; a still-unmet minimum therefore prevents a simulated
 pass. The API reports `closed_trades` (null while this rule is off).
+
+**Holding time and microscalping (F61).** An ordinary user order that reduces or
+reverses any too-young option position or share holding is refused with `MIN_HOLD`.
+The age starts at the round trip's first opening fill; adding and partially closing
+do not restart it. Time is elapsed market timestamps (including overnight), never
+wall-clock time. Exactly `min_hold_seconds` is allowed. Every closing leg is checked
+before accepting a combo. Preview returns the same refusal and seconds evidence.
+Protective conditional triggers, bracket stops/targets, OCO and trailing stops,
+flatten (including limit flatten), daily-loss exits, expiry cutoff, liquidation,
+exercise, assignment and settlement remain executable. Minimum hold applies in
+both evaluation and funded phases.
+
+`MICROSCALPING` sums only positive net P&L of completed option and share round trips
+whose final close is strictly before `microscalp_seconds` from first opening fill.
+Option fees and share dividends are included; losses do not offset short profits.
+Partial closes wait for the final close; holding exactly the threshold is not short.
+Protective and system closures are included. A pass needs
+`short_profit × 100 <= microscalp_percent × attempt profit` under `profit_basis`,
+using exact integer micro-dollar products. Zero short profit satisfies the condition;
+a breach only holds the pass back. Objective actual/required are percentages (actual
+null while attempt profit is nonpositive); `short_profit` reports the dollar sum,
+null when disabled. Funded plans ignore this objective. Set both microscalp fields
+together; percent zero disables (the threshold may be retained). Pass odds keep short profit so far and add no simulated
+round trips, just as they keep the whole-trade count and best trade.
 
 **What liquidation costs.** A pass on marked equity liquidates at the bid or ask, which
 can leave less than the equity that passed. `TradingSnapshot::exit_equity` is what
@@ -2844,6 +2871,8 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
 | `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
 | `TRADE_CONSISTENCY` | Best profitable closed whole trade must fit the attempt-profit percentage limit |
+| `MIN_HOLD` | User reduction is too young; `actual` and `limit` are seconds, `scope` is the option/share symbol |
+| `MICROSCALPING` | Positive net profit from short round trips exceeds its allowed share of attempt profit; pass waits |
 | `MIN_TRADES` | Pass waits for the required count of closed whole option trades |
 | `MAX_TRADE_RISK` | Entry risk exceeds its plan cap; `actual` and `limit` are dollars, `scope` is `trade`; actual is null for unbounded or unknown risk |
 | `MAX_CONTRACTS_HELD` | Projected held options plus working opening contracts exceed the plan cap; `actual` and `limit` are contract counts, `scope` is `account` |

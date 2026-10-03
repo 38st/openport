@@ -9067,6 +9067,24 @@
             "minimum": 0,
             "maximum": 10000,
             "description": "F30: minimum fully closed whole option trades; includes settlement, expiry, assignment and account liquidation. Zero disables; ignored in funded phase."
+          },
+          "min_hold_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "Minimum market-time age for ordinary user reductions, measured from first opening fill. Zero disables. Protective triggers, brackets, OCO, trailing stops, flatten and system exits bypass. MIN_HOLD reports actual and limit seconds."
+          },
+          "microscalp_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "Round trips with final close strictly before this many seconds are short. Set with microscalp_percent; seconds 1-3600 when active, zero allowed while disabled."
+          },
+          "microscalp_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
           }
         },
         "required": [
@@ -9168,8 +9186,38 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "microscalp_percent": {
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "microscalp_percent"
+              ]
+            },
+            "then": {
+              "required": [
+                "microscalp_seconds"
+              ],
+              "properties": {
+                "microscalp_seconds": {
+                  "minimum": 1
+                }
+              }
+            }
           }
-        ]
+        ],
+        "dependentRequired": {
+          "microscalp_seconds": [
+            "microscalp_percent"
+          ],
+          "microscalp_percent": [
+            "microscalp_seconds"
+          ]
+        }
       },
       "BuyingPower": {
         "type": "object",
@@ -9883,7 +9931,8 @@
                     "MIN_PROFITABLE_DAYS",
                     "CONSISTENCY",
                     "TRADE_CONSISTENCY",
-                    "MIN_TRADES"
+                    "MIN_TRADES",
+                    "MICROSCALPING"
                   ]
                 },
                 "met": {
@@ -9898,7 +9947,7 @@
                       "type": "null"
                     }
                   ],
-                  "description": "Dollars of profit, days, or the best day's percent of its basis (null before the basis is above zero)."
+                  "description": "Dollars for target; days or whole trades for minimum counts; percent for day/trade consistency and microscalping (null while the profit basis is nonpositive)."
                 },
                 "required": {
                   "type": "number"
@@ -10220,6 +10269,17 @@
             ],
             "minimum": 0,
             "description": "Closed whole option trades in this attempt; null unless min_trades is enabled in evaluation phase."
+          },
+          "short_profit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Positive net profit from completed short round trips; null unless microscalping is enabled in evaluation phase."
           }
         },
         "required": [
@@ -19762,7 +19822,92 @@
         "description": "Cancellation codes include PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP and PLAYBOOK_DAYS_IN_TRADE_STOP for automatic playbook exits (older runs retain USER_CANCEL). A reason code with its numeric evidence: actual against limit for a numeric check, and scope, the underlying or aggregate it applies to (null when a check has none). A check on one contract reports its underlying; the journal keeps the contract's OSI.",
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "NONE",
+              "INVALID_MONEY",
+              "ARITHMETIC_OVERFLOW",
+              "INVALID_CONTRACT",
+              "AMERICAN_UNSUPPORTED",
+              "NONSTANDARD_UNSUPPORTED",
+              "ROOT_UNSUPPORTED",
+              "UNKNOWN_CONTRACT",
+              "INVALID_ORDER",
+              "DUPLICATE_CLIENT_ID",
+              "INVALID_TICK",
+              "INVALID_QUOTE",
+              "STALE_QUOTE",
+              "MISSING_VALUATION",
+              "MAX_ORDER_CONTRACTS",
+              "PRICE_BAND",
+              "DELTA_LIMIT",
+              "VEGA_LIMIT",
+              "DAILY_LOSS",
+              "KILL_SWITCH",
+              "RISK_CHANGED",
+              "IOC_REMAINDER",
+              "USER_CANCEL",
+              "PLAYBOOK_TIME_STOP",
+              "PLAYBOOK_TRAILING_STOP",
+              "PLAYBOOK_DTE_STOP",
+              "PLAYBOOK_DAYS_IN_TRADE_STOP",
+              "SESSION_CLOSED",
+              "FEED_STALLED",
+              "DAY_END",
+              "EXPIRED",
+              "AWAITING_SETTLEMENT",
+              "INVALID_SETTLEMENT",
+              "ALREADY_SETTLED",
+              "UNKNOWN_ORDER",
+              "ORDER_TERMINAL",
+              "INVALID_LIMITS",
+              "INVALID_TIME",
+              "INVALID_SCENARIO",
+              "INVALID_REASON",
+              "JOURNAL_IO",
+              "JOURNAL_CORRUPT",
+              "JOURNAL_LOCKED",
+              "EVALUATION_CLOSED",
+              "BUYING_POWER",
+              "BUY_ONLY",
+              "EXPIRY_CUTOFF",
+              "ACCOUNT_RESET",
+              "INVALID_RULES",
+              "OCO_FILLED",
+              "POSITION_CLOSED",
+              "PAYOUT_UNAVAILABLE",
+              "PAYOUT_NOT_ELIGIBLE",
+              "INVALID_PAYOUT",
+              "PLAN_LOCKED",
+              "LIMIT_ONLY",
+              "INVALID_NOTE",
+              "UNKNOWN_TRADE",
+              "DEFINED_RISK",
+              "MARKET_HALTED",
+              "SOFT_FLOOR",
+              "TRADE_LIMIT",
+              "COOLDOWN",
+              "PROFIT_LOCK",
+              "RUN_ENDED",
+              "INVALID_GROUP",
+              "GTD_END",
+              "PROFIT_TARGET",
+              "DRAWDOWN_FLOOR",
+              "DAILY_LOSS_LIMIT",
+              "MIN_TRADING_DAYS",
+              "MIN_PROFITABLE_DAYS",
+              "CONSISTENCY",
+              "ACCOUNT_TYPE",
+              "INVALID_ALERT",
+              "UNKNOWN_ALERT",
+              "MAX_CONTRACTS_HELD",
+              "STOP_REQUIRED",
+              "MAX_TRADE_RISK",
+              "TRADE_CONSISTENCY",
+              "MIN_TRADES",
+              "MIN_HOLD",
+              "MICROSCALPING"
+            ]
           },
           "message": {
             "type": "string"
@@ -20598,6 +20743,24 @@
             "minimum": 0,
             "maximum": 10000,
             "description": "F30: minimum fully closed whole option trades; includes settlement, expiry, assignment and account liquidation. Zero disables; ignored in funded phase."
+          },
+          "min_hold_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "Minimum market-time age for ordinary user reductions, measured from first opening fill. Zero disables. Protective triggers, brackets, OCO, trailing stops, flatten and system exits bypass. MIN_HOLD reports actual and limit seconds."
+          },
+          "microscalp_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600,
+            "description": "Round trips with final close strictly before this many seconds are short. Set with microscalp_percent; seconds 1-3600 when active, zero allowed while disabled."
+          },
+          "microscalp_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Maximum share of attempt profit from positive net P&L of short closed option/share round trips. Set with microscalp_seconds; 0 disables, 1-100 enables. Evaluation only."
           }
         },
         "required": [
@@ -20694,8 +20857,38 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "microscalp_percent": {
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "microscalp_percent"
+              ]
+            },
+            "then": {
+              "required": [
+                "microscalp_seconds"
+              ],
+              "properties": {
+                "microscalp_seconds": {
+                  "minimum": 1
+                }
+              }
+            }
           }
-        ]
+        ],
+        "dependentRequired": {
+          "microscalp_seconds": [
+            "microscalp_percent"
+          ],
+          "microscalp_percent": [
+            "microscalp_seconds"
+          ]
+        }
       },
       "Lifetime": {
         "type": "object",

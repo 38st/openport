@@ -69,6 +69,8 @@ struct BestTrade {
 /// Rule progress for the current attempt. Fully marked equity (every position
 /// has a mark, fresh or not) drives equity rules; time and overnight rules need no marks.
 struct Evaluation {
+  Money short_profit;  ///< Positive net closed short-round-trip P&L, only with microscalping on.
+  std::uint64_t first_stock_fill = 1;  ///< Attempt boundary for microscalping shares; otherwise left at 1.
   std::uint64_t closed_trades = 0;  ///< Only counted with min_trades enabled.
   std::optional<BestTrade> best_trade;  ///< Kept only with trade consistency enabled.
   std::uint64_t attempt = 1;

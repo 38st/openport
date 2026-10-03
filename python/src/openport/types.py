@@ -3,9 +3,24 @@
 
 Unknown fields are preserved. Money and identifiers stay strings, not floats.
 """
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 JSON = dict[str, Any]
+PlanRuleReason = Literal["TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING"]
+
+
+class EvaluationObjective(TypedDict):
+    code: Literal["PROFIT_TARGET", "MIN_TRADING_DAYS", "MIN_PROFITABLE_DAYS", "CONSISTENCY", "TRADE_CONSISTENCY", "MIN_TRADES", "MICROSCALPING"]
+    met: bool
+    actual: float | None
+    required: float
+    message: str
+
+
+class BestTrade(TypedDict):
+    id: str
+    pnl: str
+
 
 
 class Provider(TypedDict):
@@ -253,6 +268,9 @@ class AccountRules(TypedDict, total=False):
     day_end: str
     buy_only: bool
     defined_risk: bool
+    min_hold_seconds: int
+    microscalp_seconds: int
+    microscalp_percent: int
     min_trades: int
     trade_consistency_percent: int
     max_contracts_held: int

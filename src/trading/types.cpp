@@ -31,7 +31,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY); CASE(ACCOUNT_TYPE); CASE(INVALID_ALERT); CASE(UNKNOWN_ALERT);
     CASE(MAX_CONTRACTS_HELD); CASE(STOP_REQUIRED); CASE(MAX_TRADE_RISK);
     CASE(TIME_LIMIT); CASE(INACTIVITY); CASE(INSTRUMENT_NOT_ALLOWED); CASE(OUTSIDE_PLAN_HOURS); CASE(FLAT_TIME); CASE(OVERNIGHT_HOLD);
-    CASE(TRADE_CONSISTENCY); CASE(MIN_TRADES);
+    CASE(TRADE_CONSISTENCY); CASE(MIN_TRADES); CASE(MIN_HOLD); CASE(MICROSCALPING);
   }
 #undef CASE
   return "UNKNOWN";
@@ -267,6 +267,11 @@ void validate_rules(const AccountRules& r) {
     throw TradingError(Reason::INVALID_RULES,
         "The daily loss limit and profitable-day profit must be nonnegative, the consistency percentage 0-100 and minimum "
         "days 0-366");
+  if (r.min_hold_seconds < 0 || r.min_hold_seconds > 3600 ||
+      r.microscalp_seconds < 0 || r.microscalp_seconds > 3600 ||
+      r.microscalp_percent < 0 || r.microscalp_percent > 100 ||
+      (r.microscalp_percent > 0 && r.microscalp_seconds == 0))
+    throw TradingError(Reason::INVALID_RULES, "Hold seconds must be 0-3600; microscalping needs seconds 1-3600 with percent 1-100; percent zero disables");
   if (r.min_trades < 0 || r.min_trades > 10000)
     throw TradingError(Reason::INVALID_RULES, "Minimum trades must be from 0 to 10000");
   if (r.trade_consistency_percent < 0 || r.trade_consistency_percent > 100)

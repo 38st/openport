@@ -516,3 +516,5 @@ special opening quotation; live providers keep manual imports.
 - [x] F29: per-trade consistency limits the best closed whole option trade to a percentage of attempt profit, with exact net P&L and pass-objective evidence.
 
 - [x] F30: minimum closed whole option trades to pass, including system and settlement closures.
+
+- [x] F61: minimum hold time refuses premature user reductions while protective/system exits execute; microscalping limits positive short-round-trip profit as a pass objective.

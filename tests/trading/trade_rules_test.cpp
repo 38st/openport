@@ -87,7 +87,7 @@ TEST(TradeRules, BestWholeTradeWaitsForEveryLegAndRecovers) {
   EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
 }
 
-TEST(TradeRules, MinimumTradesCountsLossesAndFlattenOnceAndResets) {
+TEST(TradeRules, MinimumTradesCountsLossesAndFlattenOnce) {
   ScriptedMarket f;
   AccountRules rules; rules.min_trades = 2;
   TradingSession s(config(rules), f.time);
@@ -108,6 +108,174 @@ TEST(TradeRules, MinimumTradesCountsLossesAndFlattenOnceAndResets) {
   EXPECT_EQ(objectives.back().required, 2);
   rules.min_trades = 10001;
   EXPECT_THROW(validate_rules(rules), TradingError);
+}
+
+TEST(TradeRules, MinimumHoldUsesFirstFillExactMarketAgeAndRecovers) {
+  ScriptedMarket f;
+  AccountRules rules; rules.min_hold_seconds = 60;
+  JournalFile file;
+  const auto opened = f.time;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+    f.time += 30 * md::kNanosPerSecond; ++f.observation; f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("add"), f.time).decision.ok());
+    const auto preview = s.preview(f.market("early", 1, Side::Sell), f.time);
+    EXPECT_EQ(preview.decision.code, Reason::MIN_HOLD);
+    EXPECT_EQ(preview.decision.actual, 30);
+    EXPECT_EQ(preview.decision.limit, 60);
+    EXPECT_EQ(preview.decision.scope, f.symbol());
+    EXPECT_EQ(s.submit(f.market("early", 1, Side::Sell), f.time).decision.code, Reason::MIN_HOLD);
+  }
+  auto s = TradingSession::recover(FileJournal::read(file.path), FileJournal::resume(file.path));
+  f.time = opened + 60 * md::kNanosPerSecond - 1; ++f.observation; f.seed(s);
+  EXPECT_EQ(s.preview(f.market("boundary", 1, Side::Sell), f.time).decision.code, Reason::MIN_HOLD);
+  ++f.time; ++f.observation; f.seed(s);
+  EXPECT_TRUE(s.submit(f.market("boundary", 1, Side::Sell), f.time).decision.ok());
+  EXPECT_TRUE(s.submit(f.market("final", 1, Side::Sell), f.time).decision.ok());
+}
+
+TEST(TradeRules, MinimumHoldRejectsAnyYoungComboLegAndShareReversal) {
+  ScriptedMarket f, g; g.contract.strike += 5;
+  AccountRules rules; rules.min_hold_seconds = 60;
+  TradingSession s(config(rules), f.time);
+  f.seed(s); g.seed(s);
+  ASSERT_TRUE(s.submit(f.market("old"), f.time).decision.ok());
+  f.time += 60 * md::kNanosPerSecond; ++f.observation; g.time = f.time; ++g.observation;
+  f.seed(s); g.seed(s);
+  ASSERT_TRUE(s.submit(g.market("young"), f.time).decision.ok());
+  auto combo = f.market("close"); combo.symbol.clear();
+  combo.legs = {{f.symbol(), Side::Sell, 1}, {g.symbol(), Side::Sell, 1}};
+  EXPECT_EQ(s.preview(combo, f.time).decision.code, Reason::MIN_HOLD);
+  EXPECT_EQ(s.submit(combo, f.time).decision.code, Reason::MIN_HOLD);
+  EXPECT_EQ(s.snapshot()->positions.size(), 2);
+  s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("500")}});
+  ASSERT_TRUE(s.trade_stock("SPY", 2, f.time).decision.ok());
+  EXPECT_EQ(s.preview_trade_stock("SPY", -3, f.time).decision.code, Reason::MIN_HOLD);
+  EXPECT_EQ(s.trade_stock("SPY", -1, f.time).decision.code, Reason::MIN_HOLD);
+  EXPECT_TRUE(s.close_positions({}, f.time).decision.ok());
+}
+
+TEST(TradeRules, MinimumHoldAllowsBracketsOcoFlattenAndDailyLossLiquidation) {
+  ScriptedMarket f;
+  AccountRules rules; rules.min_hold_seconds = 3600; rules.min_trades = 10;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  auto entry = stopped(f.market("protected"), "4.00");
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 1);
+  ASSERT_TRUE(s.submit(f.market("oco-entry"), f.time).decision.ok());
+  auto oco = f.limit("oco-close", 1, "5.00", Side::Sell);
+  oco.oco = {f.limit("sibling", 1, "5.10", Side::Sell)};
+  EXPECT_TRUE(s.submit(oco, f.time).decision.ok());
+  EXPECT_TRUE(s.close_positions({}, f.time).decision.ok());
+  rules.daily_loss_limit = m("15");
+  TradingSession t(config(rules), f.time);
+  f.seed(t);
+  ASSERT_TRUE(t.submit(f.market("loss", 2), f.time).decision.ok());
+  EXPECT_EQ(t.snapshot()->evaluation.day_lock, Reason::DAILY_LOSS_LIMIT);
+  EXPECT_TRUE(t.snapshot()->positions.empty());
+  EXPECT_EQ(t.snapshot()->evaluation.closed_trades, 1);
+}
+
+TEST(TradeRules, MicroscalpingUsesExactPositiveNetProfitAndFinalCloseAge) {
+  AccountRules rules; rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
+  Evaluation e; e.starting_balance = m("10000");
+  PlanInputs now{m("10200"), m("10200"), m("200"), true};
+  EXPECT_TRUE(evaluation_objectives(e, rules, now).front().met);
+  e.short_profit = m("100");
+  EXPECT_TRUE(evaluation_objectives(e, rules, now).front().met);
+  now.equity = m("10199.999999");
+  EXPECT_FALSE(evaluation_objectives(e, rules, now).front().met);
+  now.equity = m("10000");
+  EXPECT_FALSE(evaluation_objectives(e, rules, now).front().actual);
+  rules.profit_basis = ProfitBasis::Balance;
+  EXPECT_TRUE(evaluation_objectives(e, rules, now).front().met);
+  rules.phase = Phase::Funded;
+  EXPECT_TRUE(evaluation_objectives(e, rules, now).empty());
+}
+
+TEST(TradeRules, MicroscalpProfitSurvivesRecoveryAndExcludesLossesAndBoundary) {
+  ScriptedMarket f;
+  AccountRules rules; rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
+  JournalFile file;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("win"), f.time).decision.ok());
+    f.next(); f.seed(s, "5.00", "5.20");
+    ASSERT_TRUE(s.submit(f.market("win-close", 1, Side::Sell), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("78.70"));
+    ASSERT_TRUE(s.submit(f.market("loss"), f.time).decision.ok());
+    ASSERT_TRUE(s.submit(f.market("loss-close", 1, Side::Sell), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("78.70"));
+    f.next(); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("longer", 2), f.time).decision.ok());
+    const auto opened = f.time;
+    f.next(); f.seed(s, "5.00", "5.20");
+    ASSERT_TRUE(s.submit(f.market("partial", 1, Side::Sell), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("78.70"));
+    f.time = opened + 60 * md::kNanosPerSecond; ++f.observation; f.seed(s, "5.00", "5.20");
+    ASSERT_TRUE(s.submit(f.market("boundary", 1, Side::Sell), f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("78.70"));
+  }
+  auto s = TradingSession::recover(FileJournal::read(file.path), FileJournal::resume(file.path));
+  EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("78.70"));
+  f.next(); f.seed(s);
+  EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("78.70"));
+}
+
+TEST(TradeRules, SettlementClosesWholeTradesDespiteMinimumHold) {
+  ScriptedMarket f;
+  f.time = f.contract.last_trade_time() - 30 * md::kNanosPerSecond;
+  AccountRules rules; rules.min_hold_seconds = 60; rules.min_trades = 1;
+  rules.trade_consistency_percent = 100; rules.microscalp_seconds = 60; rules.microscalp_percent = 100;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("expiry"), f.time).decision.ok());
+  ASSERT_TRUE(s.settle(f.symbol(), m("5005"), f.contract.expiry_time()).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 1);
+  ASSERT_TRUE(s.snapshot()->evaluation.best_trade);
+  EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("79.35"));
+  EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("79.35"));
+}
+
+TEST(TradeRules, MicroscalpingSharesResetsAtSameTimestampAndRecoversBoundary) {
+  ScriptedMarket f;
+  AccountRules rules; rules.microscalp_seconds = 60; rules.microscalp_percent = 50; rules.min_trades = 2;
+  JournalFile file;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("500")}});
+    ASSERT_TRUE(s.trade_stock("SPY", 1, f.time).decision.ok());
+    s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("510")}});
+    ASSERT_TRUE(s.trade_stock("SPY", -1, f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("10"));
+    EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 0);  // Whole trades group options only.
+    ASSERT_TRUE(s.reset_account(m("10000"), rules, "new attempt", f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->evaluation.short_profit, Money{});
+    EXPECT_EQ(s.snapshot()->evaluation.first_stock_fill, 3);
+  }
+  auto s = TradingSession::recover(FileJournal::read(file.path), FileJournal::resume(file.path));
+  EXPECT_EQ(s.snapshot()->evaluation.first_stock_fill, 3);
+  s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("500")}});
+  EXPECT_EQ(s.snapshot()->evaluation.short_profit, Money{});
+  ASSERT_TRUE(s.trade_stock("SPY", 1, f.time).decision.ok());
+  s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("505")}});
+  ASSERT_TRUE(s.trade_stock("SPY", -1, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.short_profit, m("5"));
+}
+
+TEST(TradeRules, HoldingRulesValidatePairsAndRanges) {
+  AccountRules r;
+  r.min_hold_seconds = 3601; EXPECT_THROW(validate_rules(r), TradingError);
+  r.min_hold_seconds = 0; r.microscalp_percent = 25; EXPECT_THROW(validate_rules(r), TradingError);
+  r.microscalp_seconds = 3601; EXPECT_THROW(validate_rules(r), TradingError);
+  r.microscalp_seconds = 60; EXPECT_NO_THROW(validate_rules(r));
+  r.microscalp_percent = 101; EXPECT_THROW(validate_rules(r), TradingError);
+  r.microscalp_percent = 0; EXPECT_NO_THROW(validate_rules(r));
 }
 
 TEST(TradeRules, RequiredStopsProtectEntriesAndCannotBeCancelledWhileHeld) {
@@ -387,7 +555,7 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   }
   const auto recovery = FileJournal::read(file.path);
   for (const auto& record : recovery.records)
-    for (const auto* field : {"min_trades", "closed_trades", "trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
+    for (const auto* field : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "short_profit", "first_stock_fill", "min_trades", "closed_trades", "trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
       EXPECT_EQ(record.payload.find(field), std::string::npos);
   auto s = TradingSession::recover(recovery);
   EXPECT_EQ(s.config().rules.max_contracts_held, 0);

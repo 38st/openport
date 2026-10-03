@@ -2553,7 +2553,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   // These presets leave the later evaluation rules off.
   const auto off = [](json rules) {
     rules["plan_id"] = server::find_plan_named(rules.at("plan").get<std::string>())->id;
-    rules.update({{"min_trades", 0}, {"trade_consistency_percent", 0}, {"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
+    rules.update({{"min_hold_seconds", 0}, {"microscalp_seconds", 0}, {"microscalp_percent", 0}, {"min_trades", 0}, {"trade_consistency_percent", 0}, {"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
                   {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
@@ -4714,5 +4714,35 @@ TEST_F(PaperEngine, TradeConsistencyCustomRulesRoundTrip) {
   rules["trade_consistency_percent"] = 101;
   expect_error(reset(rules), 400, "INVALID_RULES");
   rules["trade_consistency_percent"] = 1.5;
+  expect_error(reset(rules), 400, "INVALID_REQUEST");
+}
+
+TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["plan"] = "Holding rules"; rules["min_hold_seconds"] = 60;
+  rules["microscalp_seconds"] = 30; rules["microscalp_percent"] = 25;
+  const auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset",
+      {{"reason", "F61"}, {"initial_cash", "100000"}, {"rules", r}}); };
+  ASSERT_EQ(reset(rules).status, 200);
+  const auto account = read(*engine, "/api/account");
+  EXPECT_EQ(account["rules"]["min_hold_seconds"], 60);
+  EXPECT_EQ(account["rules"]["microscalp_seconds"], 30);
+  EXPECT_EQ(account["rules"]["microscalp_percent"], 25);
+  EXPECT_EQ(account["evaluation"]["short_profit"], "0.00");
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open-held", "4.20")).status, 201);
+  auto close = order(market, "young-close", "4.00"); close["side"] = "sell";
+  const auto preview = write(*engine, "POST", "/api/orders/preview", close);
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  const auto p = json::parse(preview.body);
+  EXPECT_EQ(p["reason"]["code"], "MIN_HOLD");
+  EXPECT_EQ(p["reason"]["actual"], 0);
+  EXPECT_EQ(p["reason"]["limit"], 60);
+  const auto refused = write(*engine, "POST", "/api/orders", close);
+  expect_error(refused, 422, "MIN_HOLD");
+  EXPECT_EQ(json::parse(refused.body)["error"]["scope"], market.symbol());
+  rules["microscalp_seconds"] = 0;
+  expect_error(reset(rules), 400, "INVALID_RULES");
+  rules["microscalp_seconds"] = 30; rules["min_hold_seconds"] = 1.5;
   expect_error(reset(rules), 400, "INVALID_REQUEST");
 }

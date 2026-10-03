@@ -106,6 +106,15 @@ std::vector<Objective> objectives_with(const Evaluation& e, const AccountRules& 
                      (balance ? " on the closed balance" : "");
     out.push_back(std::move(o));
   }
+  if (rules.phase == Phase::Evaluation && rules.microscalp_percent > 0) {
+    Objective o{Reason::MICROSCALPING, e.short_profit == Money{} || consistent(e.short_profit, rules.microscalp_percent, profit),
+                std::nullopt, static_cast<double>(rules.microscalp_percent),
+                "Net positive profit " + dollars(e.short_profit) + " from round trips held under " +
+                    std::to_string(rules.microscalp_seconds) + " seconds; at most " +
+                    std::to_string(rules.microscalp_percent) + "% of attempt profit " + dollars(profit)};
+    if (profit > Money{}) o.actual = e.short_profit.dollars() / profit.dollars() * 100;
+    out.push_back(std::move(o));
+  }
   if (rules.phase == Phase::Evaluation && rules.min_trades > 0) {
     out.push_back({Reason::MIN_TRADES, e.closed_trades >= static_cast<std::uint64_t>(rules.min_trades),
                    static_cast<double>(e.closed_trades), static_cast<double>(rules.min_trades),
@@ -375,7 +384,9 @@ PassOdds pass_odds(const Evaluation& current, const AccountRules& rules, Money e
   int failed = 0;
   // The attempt's finished days count toward its objectives; the projection then
   // treats each simulated path as both equity and closed balance, flat at every
-  // observation, and assumes a trade on every simulated day.
+  // observation, and assumes an execution on every simulated day. Whole-trade
+  // counts, best trade and short-round-trip profit remain fixed: no new closed
+  // trades are invented by a sampled equity path.
   auto initial = current;
   initial.payouts.clear();
   const auto counted = needs_days(rules);

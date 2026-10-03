@@ -407,6 +407,9 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
     for (const auto& [key, value] : defaults.items())
       if (!rules.contains(key)) rules[key] = value;
     if (!required(plan, "rules", "plan rules").is_object()) throw std::invalid_argument("rules must be an object");
+    const auto& custom = plan.at("rules");
+    if (custom.contains("microscalp_seconds") != custom.contains("microscalp_percent"))
+      throw std::invalid_argument("Set microscalp_seconds and microscalp_percent together");
     const auto choice = [](const json& value, const std::string& key, std::initializer_list<const char*> names) {
       for (const auto* name : names)
         if (value == name) return;
