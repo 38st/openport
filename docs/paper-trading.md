@@ -660,7 +660,10 @@ limit moves with its level: the move is shortened to keep the limit on its tick,
 the two keep their distance, and the level only waits for the next whole tick. Moves
 are journaled with event `order_trailed`, orders report the level where it is now, and
 `PUT /api/orders/{id}` can still set it; it trails on from there. Bracket stops and
-held exits take a trail and a reference too.
+held exits take a trail and a reference too. `reference` and `trail` apply only to
+option, combo and own-underlying triggers; a trigger on another underlying, a study
+or the clock refuses either with 400. EXTO/GTC_EXTO stops keep activating in extended
+sessions, but trail only in the regular session.
 
 A trigger can also watch something other than the order's own market, so a rule such as
 "buy if VIX reaches 20" or "close at 15:30" runs unattended on any account:
@@ -732,15 +735,18 @@ A contract already held, opened without a bracket, takes the same pair: submit t
 order that closes it (`symbol` and the closing side, `quantity` at most the holding
 less what other working closing orders claim) with `exits_only: true` and a `bracket`.
 No entry fill is generated. The order itself is the take-profit, or the stop when
-there is no target, and its terms must match that exit: a GTC limit at the target (or
-at a stop-limit's price, with its trigger), or a market IOC with the stop's trigger.
+there is no target, and its terms must match that exit: a GTC, EXTO, GTC_EXTO or GTD
+limit at the target (or at a stop-limit's price, with its trigger), or a market IOC
+with the stop's trigger. Like held spread exits, EXTO/GTC_EXTO extend both exits to
+every product session, and GTD gives both its explicit deadline; triggered market
+exits also take EXTO, GTC_EXTO and GTD.
 The exits are those a bracket creates (`oco`, `stop_loss_order` and
 `take_profit_order` name them, client IDs `:stop` for the second), linked and
 re-armed alike, and they count once in exposure and buying power. They take an
 exit's checks, not an entry's, so they are accepted under the kill switch and in
-any session, waiting outside the regular one. Positions' **Exits…** dialog sets,
-changes and cancels them; `POST /api/orders/cancel` with `orders` cancels both in
-one transaction.
+any session, waiting outside the regular one unless EXTO/GTC_EXTO. Positions'
+**Exits…** dialog sets, changes and cancels them; `POST /api/orders/cancel` with
+`orders` cancels both in one transaction.
 
 ### Order chains: one-cancels-other and one-triggers-other
 
@@ -763,8 +769,9 @@ without `client_order_id` (it takes the order's own with a suffix) or `exits_onl
 A chained order may carry its own `then`, and a `then` its own `oco` (an order that,
 once filled, places a pair), up to four orders in all; an `oco` order takes no `oco` of
 its own, and held exits take neither. Orders report the pending `then` in the body's
-shape, `chained_order` once it is placed and `chained_from` on the order placed. An
-identical retry still answers with the first order. Bodies breaking these bounds are
+shape, including `good_till`, `walk` and `group` (null when unused), `chained_order`
+once it is placed and `chained_from` on the order placed. An identical retry still
+answers with the first order. Bodies breaking these bounds are
 400 `INVALID_REQUEST`, and the reducer refuses them with `INVALID_ORDER`.
 
 ## Multi-leg orders
@@ -1423,8 +1430,9 @@ and show an explicit failure without guessing when the endpoint is unavailable.
 `POST /api/orders/what-if` compares candidate adjustments against the held book before
 any is sent. It takes `candidates`, one to six, each with an optional `name` (at most 64
 UTF-8 bytes) and `orders`: one to four orders as `POST /api/orders` takes them, a client ID
-optional. A candidate's orders are checked in turn as submission checks them, each after
-the ones before it have filled, and filled in full at the preview's projected prices:
+optional; `then` and `oco` are refused with 400 because chains are not modelled.
+A candidate's orders are checked in turn as submission checks them, each after the
+ones before it have filled, and filled in full at the preview's projected prices:
 slipped far sides through the impact blocks for market orders, the limit for limit
 orders, fees included. Closing the tested side and opening a new spread is one candidate
 of two orders. It runs on a private copy of the account, like a preview: it writes no
@@ -2817,7 +2825,7 @@ focus at the top of the ticket.
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
 | `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`/`exto`/`gtc_exto`/`gtd`), `good_till` timestamp required only for GTD, optional `tags`, `note` and `walk` (see [walking limits](#walking-limits-f46)), optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level, reference?: bid_ask\|mid\|mark, trail?: {unit: amount\|percent\|ticks, value}}` (a trail's value a decimal string, or an integer for ticks; see [trailing stops](#conditional-and-bracket-orders)) and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to a held contract (with `symbol` and the closing `side`) or to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); optional `then` and `oco` chain further orders (see [order chains](#order-chains-one-cancels-other-and-one-triggers-other)); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, each leg's quote `liquidity`, and `warnings` about stops, targets and triggers already reached, a stop given only a limit price, or slippage that pushes a market order outside the band |
-| `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
+| `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional; `then`/`oco` refused with 400 because chains are not modelled); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
 | `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`, DAY/GTC `time_in_force`, and optional `walk` (null removes it); 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |

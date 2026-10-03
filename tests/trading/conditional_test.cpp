@@ -580,6 +580,37 @@ TEST(TradingConditional, HeldContractExitsAreAcceptedAfterTheCloseAndWaitForTheR
   EXPECT_EQ(s.snapshot()->recent_fills.back().price, m("3.40"));
 }
 
+TEST(TradingConditional, HeldContractExitsTakeExtendedSessionsButNotDay) {
+  for (const auto tif : {TimeInForce::Exto, TimeInForce::GtcExto, TimeInForce::Day}) {
+    ScriptedMarket f;
+    TradingSession s(roomy(), f.time);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.limit("entry", 1, "4.20"), f.time).decision.ok());
+    f.time = md::new_york_to_utc({2026, 9, 22}, 16, 30);
+    ++f.observation;
+    s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+    auto exits = held_exits(f, "exits", 1, stop_at("3.50"), target_at("5.00"));
+    exits.tif = tif;
+    const auto placed = s.submit(exits, f.time);
+    if (tif == TimeInForce::Day) {
+      EXPECT_EQ(placed.decision.code, Reason::INVALID_ORDER);
+      continue;
+    }
+    ASSERT_TRUE(placed.decision.ok()) << placed.decision.message;
+    ASSERT_TRUE(placed.order_id);
+    const auto target = *placed.order_id;
+    const auto stop = order(s, target).oco;
+    EXPECT_EQ(order(s, target).request.tif, tif);
+    EXPECT_EQ(order(s, target).status, OrderStatus::Working);
+    ASSERT_NE(stop, 0U);
+    EXPECT_EQ(order(s, stop).status, OrderStatus::Armed);
+    quote(s, f, "3.50", "3.70");
+    EXPECT_EQ(order(s, stop).status, OrderStatus::Filled);
+    EXPECT_EQ(order(s, target).reason.code, Reason::OCO_FILLED);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+  }
+}
+
 TEST(TradingConditional, CancellingAPairTakesBothExitsInOneTransaction) {
   ScriptedMarket f;
   TradingSession s(roomy(), f.time);

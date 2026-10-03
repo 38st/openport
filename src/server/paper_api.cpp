@@ -363,6 +363,8 @@ json chained_json(const OrderRequest& r) {
   return {{"symbol", multi ? json(nullptr) : json(r.symbol)}, {"side", multi ? json(nullptr) : json(side_name(r.side))},
           {"legs", legs}, {"type", r.type == OrderType::Limit ? "limit" : "market"},
           {"time_in_force", tif_name(r.tif)},
+          {"good_till", r.good_till ? time_or_null(*r.good_till) : json(nullptr)},
+          {"walk", walk_json(r.walk)}, {"group", nullable(r.group)},
           {"quantity", r.quantity}, {"limit_price", money(r.limit_price)}, {"trigger", trigger_json(r.trigger)},
           {"bracket", r.bracket ? json{{"stop_loss", exit_json(r.bracket->stop_loss)}, {"take_profit", exit_json(r.bracket->take_profit)}}
                                 : json(nullptr)},
@@ -1803,7 +1805,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (request.body.size() > 64 * 1024) throw std::invalid_argument("Body exceeds 64 KiB");
   auto body = strict_json(request.body);
-  // POST /api/orders/what-if: candidates, each a list of orders as POST /api/orders takes them.
+  // POST /api/orders/what-if: candidates, each a list of orders without chains.
   if (path == "/api/orders/what-if") {
     fields(body, {"candidates"});
     command.kind = TradingCommand::Kind::WhatIf;
@@ -1829,6 +1831,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
         single.method = "POST";
         single.body = order.dump();
         try {
+          if (order.contains("then") || order.contains("oco"))
+            throw std::invalid_argument("What-if does not model order chains; then and oco are not supported");
           requests.push_back(parse_command(single, "/api/orders").order);
         } catch (const std::invalid_argument& error) {
           throw std::invalid_argument(where + ".orders[" + std::to_string(i) + "]: " + error.what());

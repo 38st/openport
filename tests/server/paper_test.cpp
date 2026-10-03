@@ -15,6 +15,7 @@
 #include "openport/server/api.hpp"
 #include "openport/server/plans.hpp"
 #include "openport/server/web_policy.hpp"
+#include "server/paper_json.hpp"
 #include "support/scripted_market.hpp"
 
 namespace {
@@ -335,6 +336,54 @@ TEST_F(PaperEngine, WhatIfComparesCandidatesWithoutTrading) {
   const auto refused = write(*engine, "POST", "/api/orders/what-if", {{"candidates", json::array({{{"orders", json::array({buy, broken})}}})}});
   expect_error(refused, 400, "INVALID_REQUEST");
   EXPECT_NE(json::parse(refused.body)["error"]["message"].get<std::string>().find("candidates[0].orders[1]"), std::string::npos) << refused.body;
+}
+
+TEST_F(PaperEngine, WhatIfRefusesOrderChainsWithoutTrading) {
+  seed();
+  auto buy = order(market, "candidate", "4.20");
+  auto next = order(market, "", "3.90");
+  next.erase("client_order_id");
+  const auto before = read(*engine, "/api/account");
+  for (const auto* key : {"then", "oco"}) {
+    for (const auto& terms : {next, json(nullptr)}) {
+      auto chained = buy;
+      chained[key] = terms;
+      const auto response = write(*engine, "POST", "/api/orders/what-if",
+          {{"candidates", json::array({{{"orders", json::array({buy, chained})}}})}});
+      expect_error(response, 400, "INVALID_REQUEST");
+      const auto message = json::parse(response.body)["error"]["message"].get<std::string>();
+      EXPECT_NE(message.find("candidates[0].orders[1]"), std::string::npos);
+      EXPECT_NE(message.find("What-if does not model order chains"), std::string::npos);
+    }
+  }
+  EXPECT_EQ(read(*engine, "/api/account"), before);
+  EXPECT_TRUE(read(*engine, "/api/orders")["orders"].empty());
+  EXPECT_TRUE(read(*engine, "/api/fills")["fills"].empty());
+}
+
+TEST_F(PaperEngine, WhatIfProjectsAHeldContractExitWithoutTrading) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "entry", "4.20")).status, 201);
+  auto exits = order(market, "", "5.00");
+  exits.erase("client_order_id");
+  exits["side"] = "sell";
+  exits["time_in_force"] = "gtc";
+  exits["exits_only"] = true;
+  exits["bracket"] = {{"take_profit", {{"limit_price", "5.00"}}}};
+  const auto before = read(*engine, "/api/account");
+  const auto response = write(*engine, "POST", "/api/orders/what-if",
+      {{"candidates", json::array({{{"orders", json::array({exits})}}})}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto candidate = json::parse(response.body)["candidates"][0];
+  EXPECT_EQ(candidate["decision"], "ok");
+  EXPECT_EQ(candidate["orders"][0]["decision"], "ok");
+  ASSERT_FALSE(candidate["after"].is_null());
+  EXPECT_EQ(candidate["after"]["exposure"]["dollar_delta"], 0);
+  const auto after = read(*engine, "/api/account");
+  EXPECT_EQ(after["evaluation"], before["evaluation"]);
+  EXPECT_EQ(after["buying_power"], before["buying_power"]);
+  EXPECT_EQ(read(*engine, "/api/orders")["orders"].size(), 1U);
+  EXPECT_EQ(read(*engine, "/api/fills")["fills"].size(), 1U);
 }
 
 TEST_F(PaperEngine, PendingLimitsGuardrailsAndBreachAreExposedWithRevisionChecks) {
@@ -3275,6 +3324,11 @@ TEST_F(PaperEngine, TrailingTriggersAndTheirReferenceOverHttp) {
   const json spot{{"source", "underlying"}, {"direction", "at_or_below"}, {"level", "4990.00"}};
   refused(with(spot, {{"reference", "mid"}}));
   refused(with(spot, {{"trail", {{"unit", "ticks"}, {"value", 2}}}}));
+  const json trail{{"unit", "amount"}, {"value", "0.50"}};
+  refused(with(spot, {{"symbol", "VIX"}, {"level", "20.00"}, {"trail", trail}}));
+  refused(with(spot, {{"symbol", "VIX"}, {"level", "20.00"}, {"reference", "bid_ask"}}));
+  refused({{"source", "study"}, {"study", "iv30"}, {"direction", "at_or_above"}, {"level", "20.00"}, {"trail", trail}});
+  refused({{"source", "time"}, {"at", "15:30"}, {"trail", trail}});
   refused(with(stop, {{"trail", {{"unit", "percent"}, {"value", "100.00"}}}}));
   refused(with(stop, {{"trail", {{"unit", "ticks"}, {"value", 0}}}}));
   refused(with(stop, {{"trail", {{"unit", "feet"}, {"value", "1.00"}}}}));
@@ -3299,6 +3353,9 @@ TEST_F(PaperEngine, OrderChainsOverHttp) {
   const auto first = json::parse(placed.body)["order"];
   EXPECT_EQ(first["then"]["side"], "sell");
   EXPECT_EQ(first["then"]["limit_price"], "4.30");
+  EXPECT_TRUE(first["then"].at("good_till").is_null());
+  EXPECT_TRUE(first["then"].at("walk").is_null());
+  EXPECT_TRUE(first["then"].at("group").is_null());
   EXPECT_TRUE(first["then"]["then"].is_null());
   EXPECT_TRUE(first["chained_order"].is_null());
   ASSERT_TRUE(first["oco"].is_string());
@@ -3333,6 +3390,60 @@ TEST_F(PaperEngine, OrderChainsOverHttp) {
   for (int i = 0; i < 4; ++i) { (*tail)["then"] = target; tail = &(*tail)["then"]; }
   refused(deep);
   engine->stop();
+}
+
+TEST_F(PaperEngine, PendingChainsReportDeadlinesWalksAndGroups) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "entry", "4.20")).status, 201);
+  auto dip = order(market, "dip", "3.90");
+  auto next = order(market, "", "4.00");
+  next.erase("client_order_id");
+  next["time_in_force"] = "gtd";
+  next["good_till"] = md::format_timestamp(market.time + md::kNanosPerDay);
+  next["walk"] = {{"step", "0.05"}, {"seconds", 30}, {"limit", "4.20"}};
+  next["group"] = "1";
+  auto other = order(market, "", "3.80");
+  other.erase("client_order_id");
+  next["oco"] = other;
+  dip["then"] = next;
+  const auto placed = write(*engine, "POST", "/api/orders", dip);
+  ASSERT_EQ(placed.status, 201) << placed.body;
+  const auto first = json::parse(placed.body)["order"];
+  const auto& pending = first.at("then");
+  for (const auto* key : {"time_in_force", "good_till", "walk", "group"}) EXPECT_EQ(pending.at(key), next.at(key));
+  for (const auto* key : {"good_till", "walk", "group"}) EXPECT_TRUE(pending.at("oco").at(key).is_null());
+  EXPECT_EQ(read(*engine, "/api/orders/" + first["id"].get<std::string>())["order"]["then"], pending);
+}
+
+TEST_F(PaperEngine, OrderRequestBodiesRoundTripBracketAndTimeTriggers) {
+  seed();
+  for (const bool timed : {false, true}) {
+    auto request = market.limit(timed ? "timed" : "bracket", 1, "3.90");
+    if (timed) {
+      request.trigger = trading::Trigger{.source = trading::TriggerSource::Time,
+          .direction = trading::TriggerDirection::AtOrAbove, .level = {}, .minute = 15 * 60 + 30};
+    } else {
+      const trading::Trigger stop{.source = trading::TriggerSource::Option,
+          .direction = trading::TriggerDirection::AtOrBelow, .level = Money::parse("3.50")};
+      request.bracket = trading::Bracket{trading::ExitSpec{stop, {}}, trading::ExitSpec{{}, Money::parse("5.00")}};
+    }
+    const auto body = server::order_request_json(request);
+    const auto& trigger = timed ? body.at("trigger") : body.at("bracket").at("stop_loss").at("trigger");
+    EXPECT_FALSE(trigger.contains("reference"));
+    EXPECT_FALSE(trigger.contains("trail"));
+    if (timed) {
+      EXPECT_FALSE(trigger.contains("level"));
+      EXPECT_EQ(trigger.at("at"), "15:30");
+    }
+    const auto placed = write(*engine, "POST", "/api/orders", body);
+    ASSERT_EQ(placed.status, 201) << placed.body;
+    const auto id = std::stoull(json::parse(placed.body)["order"]["id"].get<std::string>());
+    const auto view = engine->trading_view();
+    ASSERT_GE(view->snapshot->recent_orders.size(), id);
+    const auto& parsed = view->snapshot->recent_orders.at(id - 1).request;
+    EXPECT_EQ(parsed, request);
+    EXPECT_EQ(server::order_request_json(parsed), body);
+  }
 }
 
 TEST_F(PaperEngine, HeldContractExitsAndAPairCancelOverHttp) {
