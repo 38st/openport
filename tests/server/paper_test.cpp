@@ -4729,6 +4729,10 @@ TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
   EXPECT_EQ(account["rules"]["min_hold_seconds"], 60);
   EXPECT_EQ(account["rules"]["microscalp_seconds"], 30);
   EXPECT_EQ(account["rules"]["microscalp_percent"], 25);
+  const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Holding rules account"}, {"initial_cash", "100000"}, {"rules", rules}});
+  ASSERT_EQ(created.status, 201) << created.body;
+  const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
+  EXPECT_EQ(read(*engine, "/api/account?account=" + id)["rules"]["microscalp_seconds"], 30);
   EXPECT_EQ(account["evaluation"]["short_profit"], "0.00");
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open-held", "4.20")).status, 201);
   auto close = order(market, "young-close", "4.00"); close["side"] = "sell";
@@ -4741,6 +4745,14 @@ TEST_F(PaperEngine, HoldingRulesRoundTripAndRefuseWithEvidence) {
   const auto refused = write(*engine, "POST", "/api/orders", close);
   expect_error(refused, 422, "MIN_HOLD");
   EXPECT_EQ(json::parse(refused.body)["error"]["scope"], market.symbol());
+  for (const auto* key : {"min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent"}) {
+    auto invalid = rules; invalid[key] = nullptr;
+    expect_error(reset(invalid), 400, "INVALID_REQUEST");
+  }
+  auto unpaired = rules; unpaired.erase("microscalp_percent");
+  expect_error(reset(unpaired), 400, "INVALID_RULES");
+  auto disabled = rules; disabled["microscalp_percent"] = 0;
+  ASSERT_EQ(reset(disabled).status, 200);
   rules["microscalp_seconds"] = 0;
   expect_error(reset(rules), 400, "INVALID_RULES");
   rules["microscalp_seconds"] = 30; rules["min_hold_seconds"] = 1.5;

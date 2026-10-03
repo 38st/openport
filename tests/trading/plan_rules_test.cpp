@@ -828,6 +828,17 @@ TEST(PlanRules, PassOddsHonourTheMinimumDays) {
   EXPECT_EQ(held.median_days_to_pass, 5.0);
   rules.min_trading_days = 20;
   EXPECT_EQ(pass_odds(e, rules, m("10000"), history, 10, 100, 7).pass, 0.0);
+  rules.min_trading_days = 0; rules.min_trades = 1;
+  EXPECT_EQ(pass_odds(e, rules, m("10000"), history, 10, 100, 7).pass, 0.0);
+  e.closed_trades = 1;
+  EXPECT_EQ(pass_odds(e, rules, m("10000"), history, 10, 100, 7).pass, 1.0);
+  rules.trade_consistency_percent = 50; e.best_trade = BestTrade{"1", m("400")};
+  EXPECT_EQ(pass_odds(e, rules, m("10000"), history, 10, 100, 7).pass, 0.0);
+  e.best_trade->pnl = m("100");
+  rules.microscalp_seconds = 60; rules.microscalp_percent = 25; e.short_profit = m("400");
+  EXPECT_EQ(pass_odds(e, rules, m("10000"), history, 10, 100, 7).pass, 0.0);
+  e.short_profit = m("25");
+  EXPECT_EQ(pass_odds(e, rules, m("10000"), history, 10, 100, 7).pass, 1.0);
 }
 
 }  // namespace

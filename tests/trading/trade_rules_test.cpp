@@ -278,6 +278,58 @@ TEST(TradeRules, HoldingRulesValidatePairsAndRanges) {
   r.microscalp_percent = 0; EXPECT_NO_THROW(validate_rules(r));
 }
 
+TEST(TradeRules, CombinedObjectivesHoldOnlyThePassAtExactBoundaries) {
+  AccountRules rules; rules.profit_target = m("100"); rules.min_trades = 2;
+  rules.trade_consistency_percent = 50; rules.microscalp_seconds = 60; rules.microscalp_percent = 25;
+  Evaluation e; e.starting_balance = m("10000"); e.peak = e.starting_balance;
+  e.best_trade = BestTrade{"1", m("100")}; e.short_profit = m("50"); e.closed_trades = 1;
+  const PlanInputs now{m("10200"), m("10200"), m("200"), true};
+  EXPECT_EQ(evaluate_plan(e, rules, now).status, EvaluationStatus::Active);
+  e.closed_trades = 2;
+  EXPECT_EQ(evaluate_plan(e, rules, now).status, EvaluationStatus::Passed);
+  e.short_profit = m("50.000001");
+  EXPECT_EQ(evaluate_plan(e, rules, now).status, EvaluationStatus::Active);
+  e.short_profit = m("50"); e.best_trade->pnl = m("100.000001");
+  EXPECT_EQ(evaluate_plan(e, rules, now).status, EvaluationStatus::Active);
+}
+
+TEST(TradeRules, RolledWholeTradeClosesOnlyAfterItsNewLeg) {
+  ScriptedMarket f, g; g.contract.strike += 5;
+  AccountRules rules; rules.min_trades = 1; rules.trade_consistency_percent = 100;
+  JournalFile file;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    f.seed(s); g.seed(s);
+    ASSERT_TRUE(s.submit(f.market("first"), f.time).decision.ok());
+    f.next(); g.next(); f.seed(s, "5.00", "5.20"); g.seed(s);
+    auto roll = f.market("roll"); roll.symbol.clear();
+    roll.legs = {{f.symbol(), Side::Sell, 1}, {g.symbol(), Side::Buy, 1}};
+    ASSERT_TRUE(s.submit(roll, f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 0);
+    EXPECT_FALSE(s.snapshot()->evaluation.best_trade);
+  }
+  auto s = TradingSession::recover(FileJournal::read(file.path), FileJournal::resume(file.path));
+  g.next(); g.seed(s, "5.00", "5.20");
+  ASSERT_TRUE(s.submit(g.market("finish", 1, Side::Sell), g.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 1);
+  ASSERT_TRUE(s.snapshot()->evaluation.best_trade);
+  EXPECT_EQ(s.snapshot()->evaluation.best_trade->id, "1");
+  EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
+}
+
+TEST(TradeRules, TradePercentagesCompareWideProductsWithoutFloatingRounding) {
+  AccountRules rules; rules.trade_consistency_percent = 50;
+  rules.microscalp_seconds = 60; rules.microscalp_percent = 50;
+  Evaluation e;
+  e.best_trade = BestTrade{"1", Money::from_micros(4'000'000'000'000'000'000)};
+  e.short_profit = e.best_trade->pnl;
+  PlanInputs now; now.equity = Money::from_micros(8'000'000'000'000'000'000);
+  for (const auto& objective : evaluation_objectives(e, rules, now)) EXPECT_TRUE(objective.met);
+  e.best_trade->pnl = e.best_trade->pnl + Money::from_micros(1);
+  e.short_profit = e.best_trade->pnl;
+  for (const auto& objective : evaluation_objectives(e, rules, now)) EXPECT_FALSE(objective.met);
+}
+
 TEST(TradeRules, RequiredStopsProtectEntriesAndCannotBeCancelledWhileHeld) {
   ScriptedMarket f;
   AccountRules rules;

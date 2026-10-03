@@ -1672,11 +1672,11 @@ AccountRules parse_rules(const json& j) {
   if (has("daily_loss_action")) rules.daily_loss_action = choice_field<BreachAction>(j, "daily_loss_action", kBreachActions);
   if (has("consistency_percent")) rules.consistency_percent = integer_field(j, "consistency_percent");
   if (has("consistency_basis")) rules.consistency_basis = choice_field<ConsistencyBasis>(j, "consistency_basis", kConsistencyBases);
-  if (has("min_hold_seconds")) rules.min_hold_seconds = integer_field(j, "min_hold_seconds");
-  if (has("microscalp_seconds")) rules.microscalp_seconds = integer_field(j, "microscalp_seconds");
-  if (has("microscalp_percent")) rules.microscalp_percent = integer_field(j, "microscalp_percent");
-  if (has("min_trades")) rules.min_trades = integer_field(j, "min_trades");
-  if (has("trade_consistency_percent")) rules.trade_consistency_percent = integer_field(j, "trade_consistency_percent");
+  if (j.contains("min_hold_seconds")) rules.min_hold_seconds = integer_field(j, "min_hold_seconds");
+  if (j.contains("microscalp_seconds")) rules.microscalp_seconds = integer_field(j, "microscalp_seconds");
+  if (j.contains("microscalp_percent")) rules.microscalp_percent = integer_field(j, "microscalp_percent");
+  if (j.contains("min_trades")) rules.min_trades = integer_field(j, "min_trades");
+  if (j.contains("trade_consistency_percent")) rules.trade_consistency_percent = integer_field(j, "trade_consistency_percent");
   if (has("min_trading_days")) rules.min_trading_days = integer_field(j, "min_trading_days");
   if (has("min_profitable_days")) rules.min_profitable_days = integer_field(j, "min_profitable_days");
   if (has("profitable_day_profit")) rules.profitable_day_profit = decimal_field(j, "profitable_day_profit");

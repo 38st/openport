@@ -61,6 +61,7 @@ struct SizeScalingProgress {
   std::vector<SizeScale> history;
 };
 
+/// Best profitable closed whole option trade, net of fees.
 struct BestTrade {
   std::string id;
   Money pnl;  ///< Positive net P&L of a fully closed whole option trade.
@@ -177,12 +178,10 @@ struct DayStats {
 };
 [[nodiscard]] DayStats day_stats(const Evaluation& evaluation, const AccountRules& rules, const PlanInputs& now);
 
-/// One condition a pass needs: the target first, then the minimum days and the
-/// consistency rule in force. `actual` and `required` are dollars for the target,
-/// days for the minimums and percent for consistency (the best day's share of its
-/// basis, against the rule's limit).
+/// One condition a pass needs: dollars for the target, counts for day/trade
+/// minimums, percentages for day/trade consistency and microscalping.
 struct Objective {
-  Reason code = Reason::NONE;  ///< PROFIT_TARGET, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS or CONSISTENCY.
+  Reason code = Reason::NONE;  ///< The target, minimum count, or consistency objective.
   bool met = false;
   std::optional<double> actual;  ///< Absent for consistency while the basis is not above zero.
   double required = 0;
