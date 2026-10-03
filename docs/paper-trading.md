@@ -1993,7 +1993,9 @@ shorts at their opening prices, with the entry's underlying price for the naked 
 (the strike without one), every contract it opened counted; fees are left out. A
 strategy's legs carry the same for the strategy together, `strategy_buying_power` and
 `strategy_return_on_buying_power` (once every leg has closed), and a whole trade its
-peak: at each opening, what its round trips open then needed, the most of those. The
+peak: after each opening execution (one entry order's fills at one instant), what
+its round trips still open in fill order needed, the most of those. A roll's closing
+legs are already closed then, even when it opens and closes at one market time. The
 playbook report and backtest summaries give `average_return_on_buying_power` over
 their closed trades, and the Journal, the Playbooks page and backtests show it. It is
 the account's strategy margin at entry; portfolio margin or later price changes do not

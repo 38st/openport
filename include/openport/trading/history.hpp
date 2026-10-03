@@ -117,8 +117,10 @@ class LifecycleBuilder {
 /// contract it opened. Fees are left out, as from planned risk.
 [[nodiscard]] Money entry_buying_power(const std::vector<const Lifecycle*>& legs);
 
-/// The most that `legs` needed at once: at each leg's opening, the buying power of
-/// the legs open then, as entry_buying_power counts it. A rolled or adjusted trade's
+/// The most that `legs` needed at once: after each opening execution (one entry
+/// order at one instant), the buying power of the legs still open in fill order,
+/// as entry_buying_power counts it. A roll's closing legs are already closed then;
+/// same-time settlements and resets count as closed. A rolled or adjusted trade's
 /// peak, as a trade's return on buying power divides by.
 [[nodiscard]] Money peak_buying_power(const std::vector<const Lifecycle*>& legs);
 
