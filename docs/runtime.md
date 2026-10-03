@@ -681,7 +681,7 @@ New runs record replay driver 5, which adds AM opening-print settlement. Verific
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an
 AM position is held into an expiry opening print. Resuming requires the current driver (6, below);
-older runs remain readable and verifiable. The scenario generator revision stays 3.
+older runs remain readable and verifiable. The scenario generator revision is 4; older recorded revisions regenerate as before.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
 So does a run a crash cut off, whichever record its journal ends at: each input and
 each transaction is its own append, and new runs record a command's input before the

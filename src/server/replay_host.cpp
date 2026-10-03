@@ -431,15 +431,17 @@ class ReplayHost::History {
   /// reads finished. A crash leaves the start state that create wrote.
   void finish(const Session& session) const {
     if (!writable_ || !session.durable || session.id.empty() || session.finalized) return;
+    const bool finalized = session.provider->finished();
     auto value = session.state();
-    if (session.provider->finished()) {
+    value["finished"] = finalized;
+    if (finalized) {
       const auto view = session.engine->trading_view();
       if (!view || view->journal_head.empty()) return;
       value["journal"] = {{"transactions", view->journal_transactions}, {"head", view->journal_head},
                           {"bytes", std::filesystem::file_size(journal(session.id))}};
     }
     save(session.id, value);
-    session.finalized = session.provider->finished();
+    session.finalized = finalized;
   }
   void save(const std::string& id, const json& value) const {
     const auto file = directory_ / (id + ".json");
@@ -527,10 +529,13 @@ class ReplayHost::History {
         item.update(summary(id, file));
         item.update(integrity(id, item));
         item["verification"] = verification(id);
+      } catch (const std::filesystem::filesystem_error& error) {
+        item["error"] = error.code().message();
       } catch (const std::exception& error) {
         if (!std::filesystem::exists(file, ec)) continue;  // deleted while listing
         item["error"] = error.what();
       }
+      item["id"] = id;  // A copied sidecar cannot redirect its journal's history routes.
       if (!item.contains("plan") && item.contains("plan_name")) item["plan"] = plan_id(item.at("plan_name").get<std::string>());
       // Metadata a crash left still holds the start state: the run is over, and it
       // settled through its last journaled time.

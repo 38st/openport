@@ -78,6 +78,10 @@ class Stub:
             return 202, shaped("BacktestState", id="000001", report=None)
         if path == "/api/backtests/000001":
             return 200, shaped("BacktestState", id="000001", report=None)
+        if path == "/api/replay/history":
+            return 200, {"history": self.history}
+        if path == "/api/replay/history/run-1/verify":
+            return (202 if method == "POST" else 200), {"status": "running" if method == "POST" else "passed", "message": "Run run-1 verified"}
         if path == "/api/replay":
             if method == "GET":
                 return 200, shaped("ReplayListing", replay=self.replay, history=self.history,
