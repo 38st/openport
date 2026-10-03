@@ -99,8 +99,8 @@ delivered (its settlement closure is at 0.00), as a broker's contrary exercise a
 does. `false` withdraws it. The instruction ends with the position: selling the
 contracts, exercising them early, abandoning them or a reset clears it. It also
 forfeits the cash settlement of an index long; a short cannot take an instruction
-(`INVALID_ORDER`). Both disposal commands allow the kill switch but reject a
-closed evaluation (`EVALUATION_CLOSED`).
+(`INVALID_ORDER`). Both disposal commands remain allowed under the kill switch
+and after an evaluation passes or fails.
 
 **Early assignment** follows the market rather than a model: at each day rollover
 (`roll_day`, overnight), holders exercise a short American equity or ETF option when
@@ -996,8 +996,7 @@ quantity cannot be changed on a reduce-only close. All combo, split, residual an
 kept-exit behavior above also applies. Shares still need their regular session.
 
 Before it cancels anything, a flatten checks what each close needs whatever the price:
-an attempt still open (`EVALUATION_CLOSED`), the underlying's feed
-(`FEED_STALLED`, `MARKET_HALTED`), and a session that takes its order type (market gets `LIMIT_ONLY`
+the underlying's feed (`FEED_STALLED`, `MARKET_HALTED`), and a session that takes its order type (market gets `LIMIT_ONLY`
 in overnight/curb; either gets `SESSION_CLOSED` between sessions) or, for shares, the
 stock market's regular session and a fresh price (`SESSION_CLOSED`, `STALE_QUOTE`).
 An underlying where every close is refused keeps its open orders, exits included,
@@ -1032,7 +1031,7 @@ expired and waits for its settlement (`INVALID_ORDER` "Someone bids for it" whil
 two-sided quote is fresh; a stale or missing quote is refused with its reason).
 Abandoning an expired position that would have settled in the money forfeits that
 value. The long's bracket exits and the orders selling it are cancelled with
-`POSITION_CLOSED`, since a sell would now open a short. It is allowed under the kill
+`POSITION_CLOSED`, since a sell would now open a short. It is allowed after a pass or failure, under the kill
 switch and personal guardrails, may not leave a defined-risk plan's short uncovered
 (`DEFINED_RISK`), and with `buying_power` a short it covered must still fit. The
 portfolio marks such positions `no_bid`. An expired position awaiting settlement
@@ -1220,7 +1219,7 @@ reserve this capacity: they shrink after each fill and cancel when the position 
 closed. Every fill rechecks the holding, so working closes cannot flip it.
 Reducing user orders skip the daily-loss allowance and fill projection; quote,
 session, price, coverage and other risk checks still apply. Passed or failed
-attempts retain their existing restrictions.
+attempts likewise accept reducing orders; opening orders require a new attempt.
 
 `reset_kill` requires a nonblank reason, records the reset, and immediately re-trips
 if the loss still breaches. The account remains reduce-only while latched. A new
@@ -1559,8 +1558,21 @@ intraday peak, fails on `equity <= floor` (the floor is breached by touching it)
 then locks the day or fails on the plan's daily loss limit, and otherwise passes
 once the target and every objective are met. Breaches are checked on every
 transaction in every mode; the mode only controls when the floor rises. The decision
-is sticky for the attempt: open user orders cancel with `EVALUATION_CLOSED`, new user
-orders reject with it, and every position is liquidated. `Evaluation::decision_code`
+is sticky for the attempt: open user orders cancel with `EVALUATION_CLOSED` and the
+system tries to liquidate every position. After a pass or failure, orders that only
+reduce held positions remain allowed, including Flatten (`close_positions`) and
+[disposing of worthless positions](#disposing-of-worthless-positions). Each closing
+leg must oppose a holding and fit within it after working user closes, as under the
+kill latch; an order that opens, adds or reverses rejects with `EVALUATION_CLOSED`.
+A resting closing limit can wait for executable liquidity. Ordinary closing orders
+still need a fresh executable book, closing-side liquidity and their eligible trading
+session; the system market IOC needs the regular session. System liquidation keeps
+retrying, but leaves contracts reserved by working user closes to those orders, and
+managed exits shrink with the position. The status, `decided_at`, `decided_equity`
+and decision code never change after the decision; later fills mark equity without
+running plan decisions again. The terminal explains leftover positions on the
+Dashboard and Positions page and allows their closing tickets.
+`Evaluation::decision_code`
 names the rule that decided it: `PROFIT_TARGET`, `DRAWDOWN_FLOOR` or
 `DAILY_LOSS_LIMIT`.
 
@@ -1831,16 +1843,32 @@ They have no funded counterpart. Like every preset, their parameters are this
 project's own, modelled on common prop-firm terms; custom rules can combine the
 same rules any other way.
 
+Each reset archives the attempt in the account view's top-level `attempts[]`.
+Alongside its plan, start/end, starting balance, final equity, status and decision,
+it keeps the full `rules` at reset (the same JSON shape as the current account's
+rules), `decided_at`, `decided_equity`, `peak` and `floor`. Decision time/equity are
+null for an active attempt reset; floor is null without a drawdown rule. Summaries
+from older builds return null for these unrecorded fields. The journal omits absent
+fields, so old summaries re-encode unchanged. The Dashboard's Attempts list shows
+the decision time/equity and a compact rules line, including fill settings.
+
 ### Equity extremes and history
 
 Each finished `EvaluationDay` keeps `low_equity`, `high_equity`, `low_at` and
 `high_at`. Current-day values use the `day_` prefix in `evaluation`. Only fully
 marked equity contributes, and ties keep the first time. `closest_floor` is the
-smallest equity minus floor observed during the attempt, with `closest_floor_at`.
+smallest equity minus floor observed through the attempt's decision, with
+`closest_floor_at`. The deciding observation counts, then both fields freeze:
+post-decision fills and later marks do not count. A drawdown failure therefore keeps
+`closest_floor = decided_equity - floor` (zero or negative), before liquidation costs.
 Older records leave these values null and times absent rather than inventing history.
 
 The engine stores marked equity once per market minute, at every fill, when the
-floor changes and when equity first reaches the target or the floor. Atomic spread legs
+floor changes and when equity first reaches the target or the floor. Every decision
+also keeps a sample at `decided_at` with exactly `decided_equity`, before any
+liquidation fill sample at the same time. This includes intraday and end-of-day
+plans, pass or failure, decisions without fills and `DAILY_LOSS_LIMIT` with action
+`Fail`; minute sampling never discards this observation. Atomic spread legs
 share their post-execution equity. When one update both marks equity and executes
 (a pass or breach liquidating at the bid, an exit on a new high), the mark before the
 execution is kept at the same time, so a passed attempt's history reaches the equity
@@ -2559,7 +2587,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `ACCOUNT_DAMAGED` | Read-only verified prefix; diagnose with `--repair-journals --dry-run`; restore a verified backup for mid-file damage |
 | `JOURNAL_IO`, `JOURNAL_CORRUPT` | Persistence stop condition or invalid/tampered recovery chain/schema |
 | `JOURNAL_LOCKED` | Journal already owned by another writer; analytics remain available |
-| `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
+| `EVALUATION_CLOSED` | The attempt passed or failed; closing orders, Flatten and disposal remain allowed. Reset before opening, adding to or reversing positions |
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
 | `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100, consistency limits outside 1-100 or more than 64 entries, or nonpositive caps, a negative payout buffer or buffer_payouts outside 0-100, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, inside fills outside 0-100%, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
@@ -2822,7 +2850,7 @@ position (Long Call, Close Short Put...), sets the limit from Bid/Mid/Ask, says 
 the order is marketable at the far side or will rest, and requests buying power and
 floor risk from the server preview. The web has no second copy of margin rules.
 Quoted premium estimates exclude slippage; the server preview includes the plan's
-slippage. Buy-only plans and decided attempts block submission with the reason.
+slippage. Buy-only plans block opening sells; decided attempts allow closing orders and block opening ones with the reason.
 Both tickets offer **Join trade** when their underlying has an open whole trade,
 labelled by its held contracts and trade ID. **None** is the default; choosing a
 trade sends its `group` with the preview and the order. Joining at submission keeps

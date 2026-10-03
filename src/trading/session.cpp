@@ -378,35 +378,36 @@ Quantity delivered(const md::OptionContract& c, Quantity contracts) {
 bool shadowed(const State& s, const Order& o) {
   return o.role != OrderRole::Normal && o.oco != 0 && o.oco < o.id && s.orders.at(static_cast<std::size_t>(o.oco - 1)).open();
 }
+/// Contracts not reserved by working user orders on the closing side. Managed
+/// exits shrink with the position and system IOCs are capped at execution too.
+Quantity closing_capacity(const State& s, const std::string& symbol, Side side, OrderId skip = 0, bool include_armed = true) {
+  const auto q = held(s, symbol);
+  auto capacity = side == Side::Sell ? std::max<Quantity>(q, 0) : std::max<Quantity>(-q, 0);
+  const auto reserve = [&](Quantity units, Quantity ratio) {
+    capacity -= units > capacity / ratio ? capacity : units * ratio;
+  };
+  for (const auto id : open_ids(s)) {
+    const auto& other = s.orders[id - 1];
+    if (other.system || kept_within(other) || other.id == skip) continue;
+    if (!include_armed && other.status == OrderStatus::Armed) continue;
+    if (multi_leg(other.request)) {
+      for (const auto& leg : other.request.legs)
+        if (leg.symbol == symbol && leg.side == side) reserve(other.remaining(), leg.ratio);
+    } else if (other.request.symbol == symbol && other.request.side == side) reserve(other.remaining(), 1);
+  }
+  return capacity;
+}
 /// Every leg must oppose its holding and fit within it after the other working
-/// user orders on that side. Bracket exits shrink after each fill and system
-/// closes are immediate IOC, so neither reserves a manual close's capacity.
+/// user orders on that side. Managed exits do not reserve a manual close's capacity.
 bool closing_only(const State& s, const Order& o, bool include_working, bool include_armed) {
   const auto closes = [&](const std::string& symbol, Side side, Quantity ratio) {
     const auto q = held(s, symbol);
     if (q == 0 || (side != Side::Buy && side != Side::Sell) ||
         (q > 0) == (side == Side::Buy) || o.remaining() <= 0 || ratio < 1 || ratio > kMaxRatio)
       return false;
-    auto capacity = magnitude(q);
-    const auto reserve = [&](Quantity units, Quantity weight) {
-      if (units > capacity / weight) return false;
-      capacity -= units * weight;
-      return true;
-    };
-    if (!reserve(o.remaining(), ratio)) return false;
-    if (!include_working) return true;
-    for (const auto id : open_ids(s)) {
-      const auto& other = s.orders[id - 1];
-      if (other.system || kept_within(other) || other.id == o.id) continue;
-      if (!include_armed && other.status == OrderStatus::Armed) continue;
-      if (multi_leg(other.request)) {
-        for (const auto& leg : other.request.legs)
-          if (leg.symbol == symbol && leg.side == side && !reserve(other.remaining(), leg.ratio)) return false;
-      } else if (other.request.symbol == symbol && other.request.side == side && !reserve(other.remaining(), 1)) {
-        return false;
-      }
-    }
-    return true;
+    if (o.remaining() > magnitude(q) / ratio) return false;
+    const auto capacity = include_working ? closing_capacity(s, symbol, side, o.id, include_armed) : magnitude(q);
+    return o.remaining() <= capacity / ratio;
   };
   if (multi_leg(o.request))
     return std::all_of(o.request.legs.begin(), o.request.legs.end(), [&](const Leg& leg) {
@@ -1457,11 +1458,11 @@ Decision walk_check(const Order& o, Money tick, Money cap_tick) {
   return {};
 }
 Decision account_check(const State& s, bool reducing = false) {
-  if (s.kill && !reducing) return kill_decision(s);
-  if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active)
+  if (s.config.rules.evaluation() && s.evaluation.status != EvaluationStatus::Active && !reducing)
     return failure(Reason::EVALUATION_CLOSED, std::string("The evaluation has ") +
         (s.evaluation.status == EvaluationStatus::Passed ? "passed" : "failed") +
-        "; reset the account to start a new attempt");
+        "; only closing orders are allowed; reset the account to open positions in a new attempt");
+  if (s.kill && !reducing) return kill_decision(s);
   // A plan limit that locked the day leaves only closing orders until rollover.
   if (s.evaluation.day_lock != Reason::NONE && !reducing)
     return failure(s.evaluation.day_lock, day_lock_message(s.evaluation.day_lock));
@@ -1855,7 +1856,9 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   const auto remaining_depth = side == Side::Buy ? book.ask_left : book.bid_left;
   const auto size = side == Side::Buy ? book.quote.ask_size : book.quote.bid_size;
   const auto position = held(s, o.request.symbol);
-  const auto capacity = o.request.side == Side::Sell ? std::max<Quantity>(position, 0) : std::max<Quantity>(-position, 0);
+  const auto capacity = o.system && s.evaluation.status != EvaluationStatus::Active
+      ? closing_capacity(s, o.request.symbol, o.request.side)
+      : o.request.side == Side::Sell ? std::max<Quantity>(position, 0) : std::max<Quantity>(-position, 0);
   // A long given away needs no bid, so no displayed size limits it.
   const auto budget = given ? capacity
       : s.config.rules.impact_ticks > 0 && !touch_stop(s, o) && !inside ? size - depth_used(size, remaining_depth) % size : remaining_depth;
@@ -2405,6 +2408,8 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
       !regular(contract->second, s.time) || !quote_check(s, symbol).ok())
     return;
   const auto side = q > 0 ? Side::Sell : Side::Buy;
+  const auto quantity = s.evaluation.status != EvaluationStatus::Active ? closing_capacity(s, symbol, side) : magnitude(q);
+  if (quantity == 0) return;
   const auto& book = s.books.at(symbol);
   if (s.config.rules.impact_ticks == 0 && (side == Side::Sell ? book.bid_left : book.ask_left) <= 0) return;
   for (const auto id : open_ids(s))
@@ -2412,7 +2417,7 @@ void flatten(State& s, const std::string& symbol, std::string_view why, Events& 
   Order order;
   order.id = static_cast<OrderId>(s.orders.size() + 1);
   order.request = {"system:" + std::string(why) + ":" + std::to_string(order.id), symbol, side,
-                   OrderType::Market, TimeInForce::Ioc, magnitude(q), {}, {}, {}, {}};
+                   OrderType::Market, TimeInForce::Ioc, quantity, {}, {}, {}, {}};
   order.accepted_at = s.time;
   order.day_end = s.config.rules.fill_latency_ms > 0 ? session_end(contract->second, s.time) : s.time;
   order.system = true;
@@ -2499,13 +2504,16 @@ void observe_equity(State& s, Events& events) {
       if (!e.day_low_equity || *equity < *e.day_low_equity) { e.day_low_equity = *equity; e.day_low_at = s.time; }
       if (!e.day_high_equity || *equity > *e.day_high_equity) { e.day_high_equity = *equity; e.day_high_at = s.time; }
     }
-    const auto verdict = evaluate_plan(e, rules, plan_inputs(s, *equity));
-    if (verdict.decided()) decide(s, verdict, *equity, events);
-    else if (verdict.lock) lock_day(s, verdict, *equity, events);
-    // Like the attempt itself, its closest approach starts at the first real market time.
-    if (rules.max_drawdown > Money{} && e.started > 0 && (!e.closest_floor || *equity - e.floor < *e.closest_floor)) {
-      e.closest_floor = *equity - e.floor;
-      e.closest_floor_at = s.time;
+    if (e.status == EvaluationStatus::Active) {
+      const auto verdict = evaluate_plan(e, rules, plan_inputs(s, *equity));
+      // Include the deciding observation, then freeze the closest approach. Fills
+      // after the decision still mark equity but never evaluate the attempt again.
+      if (rules.max_drawdown > Money{} && e.started > 0 && (!e.closest_floor || *equity - e.floor < *e.closest_floor)) {
+        e.closest_floor = *equity - e.floor;
+        e.closest_floor_at = s.time;
+      }
+      if (verdict.decided()) decide(s, verdict, *equity, events);
+      else if (verdict.lock) lock_day(s, verdict, *equity, events);
     }
     const auto soft_floor = soft_floor_of(s);
     const auto& g = s.config.guardrails;
@@ -5220,7 +5228,9 @@ CommandResult TradingSession::reset_account(Money initial_cash, AccountRules rul
     }
     const auto& e = s.evaluation;
     s.attempts.push_back({e.attempt, s.config.rules.plan, e.started, s.time, e.starting_balance, snapshot.equity,
-                          e.status, e.decision, e.first_order, e.first_fill, e.decision_code});
+                          e.status, e.decision, e.first_order, e.first_fill, e.decision_code, s.config.rules, e.decided_at,
+                          e.status == EvaluationStatus::Active ? std::nullopt : std::optional(e.decided_equity), e.peak,
+                          s.config.rules.max_drawdown > Money{} ? std::optional(e.floor) : std::nullopt});
     const auto attempt = e.attempt + 1;
     s.config.initial_cash = initial_cash;
     s.config.rules = std::move(rules);

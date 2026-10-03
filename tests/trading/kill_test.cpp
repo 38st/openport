@@ -218,7 +218,7 @@ TEST(TradingKill, SystemAutoCloseStillWorksWhileLatched) {
   EXPECT_TRUE(s.snapshot()->risk.kill_latched);
 }
 
-TEST(TradingKill, ClosingStillChecksDefinedRiskAndEvaluation) {
+TEST(TradingKill, ClosingStillChecksDefinedRiskAndSurvivesADecision) {
   ScriptedMarket a, b;
   b.contract.strike += 10;
   auto c = config();
@@ -235,9 +235,10 @@ TEST(TradingKill, ClosingStillChecksDefinedRiskAndEvaluation) {
   a.next(); b.next();
   s.on_quotes({a.quote("6", "6.20", 1), b.quote()}, {a.valuation(), b.valuation()}, a.time);
   ASSERT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Passed);
-  // The rule closes only part of the long on this quote, but the closed attempt
-  // still refuses user orders even if they would otherwise reduce it.
-  EXPECT_EQ(s.submit(a.market("decided", 1, Side::Sell), a.time).decision.code, Reason::EVALUATION_CLOSED);
+  // The rule closes only part of the long on this quote. The trader can close
+  // the rest despite both the kill latch and the decided attempt.
+  EXPECT_TRUE(s.submit(a.market("decided", 1, Side::Sell), a.time).decision.ok());
+  EXPECT_EQ(s.submit(a.market("opening"), a.time).decision.code, Reason::EVALUATION_CLOSED);
 }
 
 TEST(TradingKill, TheLatchKeepsItsHistoryAndSaysWhenAResetCanClearIt) {

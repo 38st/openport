@@ -768,7 +768,9 @@ json account_json(const TradingView& view) {
     attempts.push_back({{"attempt", a.attempt}, {"plan", nullable(a.plan)}, {"plan_id", nullptr}, {"started", md::format_timestamp(a.started)},
                         {"ended", md::format_timestamp(a.ended)}, {"starting_balance", a.starting_balance.str()},
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
-                        {"decision", nullable(a.decision)},
+                        {"decision", nullable(a.decision)}, {"rules", a.rules ? rules_json(*a.rules, a.starting_balance) : json(nullptr)},
+                        {"decided_at", time_or_null(a.decided_at)}, {"decided_equity", money(a.decided_equity)},
+                        {"peak", money(a.peak)}, {"floor", money(a.floor)},
                         {"decision_code", a.status == EvaluationStatus::Active ? json(nullptr) : json(to_string(a.decision_code))}});
   return {{"damaged", damage_json(view.damaged)}, {"journal_size", journal_json(view.journal_bytes, view.journal_transactions, view.run.has_value())},
           {"account_version", std::to_string(s.account_version)}, {"time", md::format_timestamp(s.time)},

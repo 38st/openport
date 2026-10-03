@@ -267,6 +267,12 @@ export interface AttemptSummary {
   decision: string | null
   /** Absent from older servers. */
   decision_code?: string | null
+  /** Rules and levels at reset; null in older journals, absent from older servers. */
+  rules?: AccountRules | null
+  decided_at?: string | null
+  decided_equity?: Money | null
+  peak?: Money | null
+  floor?: Money | null
 }
 /**
  * Something about the held book worth acting on. `actual` and `limit` depend on the

@@ -284,7 +284,10 @@ the day or fails the attempt; static and lock-at-start floors; minimum trading a
 profitable days and a best-day consistency rule that hold a pass back; a target counted
 on the closed balance; and a trading day that ends at the plan's own time. The
 Dashboard lists what a pass still needs, the daily loss room and what closing every
-position now would leave.
+position now would leave. Decided attempts still accept closing orders, Flatten
+and disposal of worthless longs. Equity history keeps the deciding observation,
+closest-floor tracking stops there, and archived attempts retain their rules,
+decision time/equity, peak and floor.
 On the default 15-minute delayed feed a pass is practice, not proof: any real-time chart
 shows where the market went next.
 `--plan` picks the main account's first plan; start a new attempt on any plan from the
@@ -461,6 +464,8 @@ special opening quotation; live providers keep manual imports.
 - [x] Marketable buy limits reserve their expected fill and armed buy stops their level;
       dividends paid in whole cents; an idle account's views as of the feed's time;
       working-order ladders that no longer slow every command
+- [x] F33: closing leftover positions after a decision, exact decision samples, frozen
+      closest-floor tracking and archived attempt rules and decision details
 - [x] F25: realistic itemized fee schedules, with per-leg caps, index fees, exercise
       and assignment charges, fee previews and fill breakdowns
 - [x] F69 demo and replay coverage: XSP, NDX/NDXP, RUT/RUTW and VIX/VIXW,

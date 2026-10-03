@@ -1319,6 +1319,16 @@ schedule and preserves commission caps across partial fills and restarts. New
 journal fields are optional; accounts without a schedule keep their existing
 journal bytes. See [fees](paper-trading.md#fees) for amounts and API examples.
 
+F33 keeps the replay driver version unchanged. Older journals recover their recorded
+outcomes and attempt summaries unchanged. New resets include optional attempt rules,
+decision time/equity, peak and floor in reducer state and the journal hash chain.
+Replaying the same inputs under this build can produce different journal bytes after
+a decision: closest-floor tracking freezes at the deciding observation, reducing
+commands are accepted, rejection messages explain closing, and system liquidation
+respects working user closes. Equity history also retains every decision mark; its
+CSV format is unchanged. Verification remains per build, not a promise of identical
+bytes across builds.
+
 F52 playbook rules keep driver 6 and existing definitions' journal bytes. Only
 entries using `trailing_stop` add the rule to their order note and an optional
 `trailing: {peak, triggered}` strategy-review field to reducer state. Peak is Money

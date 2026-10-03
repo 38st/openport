@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -153,6 +154,83 @@ TEST(EquityStore, ShareChangesAreSampledAndEightColumnHistoryStillLoads) {
   EXPECT_EQ(recovered.samples().back().stock_fill, 2U);
   EXPECT_TRUE(recovered.error().empty());
 }
+TEST(EquityStore, EveryDecisionIsRetainedBeforeLiquidationWithOrWithoutFills) {
+  for (const auto mode : {trading::DrawdownMode::Intraday, trading::DrawdownMode::EndOfDay}) {
+    for (const auto reason : {trading::Reason::PROFIT_TARGET, trading::Reason::DRAWDOWN_FLOOR, trading::Reason::DAILY_LOSS_LIMIT}) {
+      for (const bool liquidate : {false, true}) {
+        SCOPED_TRACE(::testing::Message() << static_cast<int>(mode) << " " << trading::to_string(reason) << " fills " << liquidate);
+        Directory dir;
+        const auto file = dir.path / "equity.csv";
+        EquityStore store(file);
+        test::ScriptedMarket f;
+        trading::SessionConfig c;
+        c.initial_cash = m("10000");
+        c.limits.aggregate = {1e9, 1e9}; c.limits.per_underlying = {1e9, 1e9};
+        c.rules.profit_target = m("100");
+        c.rules.max_drawdown = m(reason == trading::Reason::DAILY_LOSS_LIMIT ? "1000" : "100");
+        c.rules.drawdown_mode = mode;
+        if (reason == trading::Reason::DAILY_LOSS_LIMIT) {
+          c.rules.daily_loss_limit = m("100");
+          c.rules.daily_loss_action = trading::BreachAction::Fail;
+        }
+        trading::TradingSession s(c, f.time);
+        f.seed(s);
+        ASSERT_TRUE(s.submit(f.market("entry"), f.time).decision.ok());
+        const auto before = s.snapshot();
+        store.append({f.time, 1, before->equity, before->evaluation.floor, before->evaluation.peak, m("10100"), {}, 0});
+        f.next();
+        const bool pass = reason == trading::Reason::PROFIT_TARGET;
+        auto quote = f.quote(pass ? "6" : "2", pass ? "6.20" : "2.20");
+        if (!liquidate) { quote.bid.reset(); quote.bid_size = 0; quote.ask = m(pass ? "12.20" : "0.05"); }
+        s.on_quotes({quote}, {f.valuation()}, f.time);
+        const auto after = s.snapshot();
+        ASSERT_EQ(after->evaluation.decision_code, reason);
+        ASSERT_EQ(after->evaluation.status, pass ? trading::EvaluationStatus::Passed : trading::EvaluationStatus::Failed);
+        EXPECT_EQ(after->recent_fills.size(), liquidate ? 2U : 1U);
+        const auto samples = fill_equity_samples(s, *before);
+        for (const auto& sample : samples) store.append(sample);
+        const auto& points = store.samples();
+        const auto deciding = std::find_if(points.begin(), points.end(), [&](const EquitySample& sample) {
+          return sample.time == after->evaluation.decided_at && sample.equity == after->evaluation.decided_equity && sample.fill == 0;
+        });
+        ASSERT_NE(deciding, points.end());
+        EXPECT_EQ(deciding->floor, after->evaluation.floor);
+        if (mode == trading::DrawdownMode::EndOfDay) { EXPECT_EQ(deciding->tomorrow_floor, deciding->floor); }
+        if (liquidate) {
+          const auto fill = std::find_if(points.begin(), points.end(), [](const EquitySample& sample) { return sample.fill == 2; });
+          ASSERT_NE(fill, points.end());
+          EXPECT_LT(deciding, fill);
+          EXPECT_EQ(fill->time, deciding->time);
+          EXPECT_EQ(fill->equity, after->equity);
+        }
+        const EquityStore loaded(file);
+        EXPECT_EQ(loaded.samples().size(), points.size());
+        EXPECT_EQ(loaded.samples().at(static_cast<std::size_t>(deciding - points.begin())).equity, after->evaluation.decided_equity);
+      }
+    }
+  }
+}
+
+TEST(EquityStore, ADecisionCausedByAnEntryFillKeepsItsOwnEquityBeforeTheLiquidation) {
+  test::ScriptedMarket f;
+  trading::SessionConfig c;
+  c.rules.max_drawdown = m("10");
+  trading::TradingSession s(c, f.time);
+  f.seed(s);
+  const auto before = s.snapshot();
+  ASSERT_TRUE(s.submit(f.market("entry"), f.time).decision.ok());
+  const auto after = s.snapshot();
+  ASSERT_EQ(after->evaluation.status, trading::EvaluationStatus::Failed);
+  const auto samples = fill_equity_samples(s, *before);
+  const auto deciding = std::find_if(samples.begin(), samples.end(), [](const EquitySample& sample) { return sample.decision; });
+  ASSERT_NE(deciding, samples.end());
+  EXPECT_EQ(deciding->equity, after->evaluation.decided_equity);
+  EXPECT_EQ(deciding->time, after->evaluation.decided_at);
+  const auto liquidation = std::find_if(samples.begin(), samples.end(), [](const EquitySample& sample) { return sample.fill == 2; });
+  ASSERT_NE(liquidation, samples.end());
+  EXPECT_LT(deciding, liquidation);
+}
+
 TEST(EquityStore, StorageErrorKeepsFailureTimesAndRecoversRetainedSamples) {
   Directory directory;
   const auto file = directory.path / "blocked";

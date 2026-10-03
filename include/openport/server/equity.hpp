@@ -17,12 +17,13 @@ struct EquitySample {
   std::optional<trading::Money> tomorrow_floor;
   std::uint64_t fill = 0;  ///< Zero for a minute sample; otherwise the fill ID.
   std::uint64_t stock_fill = 0;  ///< A share change, at its committed transaction mark.
+  bool decision = false;  ///< Append-time retention hint; persisted as an ordinary mark.
 };
 /// Exact marked-equity changes from committed fills, led by the mark before the first
 /// option execution (fill zero), which can be a new high or the equity that decided the
 /// attempt. Atomic combo legs share one mark. Each sample carries the peak, floor and
 /// tomorrow's floor the reducer held at that point. The engine calls this after each
-/// reducer transaction with fills.
+/// reducer transaction, including decisions without fills.
 [[nodiscard]] std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session,
     const trading::TradingSnapshot& before);
 /// Reads a history file as it is, for an archive: nothing is compacted or rewritten.
@@ -30,7 +31,7 @@ struct EquitySample {
 [[nodiscard]] std::vector<EquitySample> read_equity_history(const std::filesystem::path& file, std::string& error);
 /// Engine-thread owned. Append-only CSV beside the journal, monetary values in
 /// micro-dollars, timestamps in nanoseconds. Keeps one plain mark per minute, every
-/// fill, floor changes and the first mark at or past the target or floor; the current
+/// fill, decision, floor changes and the first mark at or past the target or floor; the current
 /// attempt and at most 90 days / 100,000 samples of earlier attempts. Storage failures never throw.
 class EquityStore {
  public:

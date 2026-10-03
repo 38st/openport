@@ -208,6 +208,11 @@ struct AttemptSummary {
   OrderId first_order = 1;
   std::uint64_t first_fill = 1;
   Reason decision_code = Reason::NONE;  ///< As Evaluation::decision_code.
+  std::optional<AccountRules> rules{};  ///< Rules at reset; absent in older summaries.
+  Timestamp decided_at = 0;
+  std::optional<Money> decided_equity{};
+  std::optional<Money> peak{};
+  std::optional<Money> floor{};
 };
 
 /// Exercise: contracts exercised early into shares, at intrinsic value.

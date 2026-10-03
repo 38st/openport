@@ -412,6 +412,11 @@ inline void to_json(Json& j, const AttemptSummary& a) {
            {"starting_balance", a.starting_balance}, {"final_equity", a.final_equity}, {"status", a.status},
            {"decision", a.decision}, {"first_order", a.first_order}, {"first_fill", a.first_fill}};
   if (!implied_code(a.status, a.decision_code)) j["decision_code"] = a.decision_code;
+  if (a.rules) j["rules"] = *a.rules;
+  if (a.decided_at != 0) j["decided_at"] = a.decided_at;
+  if (a.decided_equity) j["decided_equity"] = *a.decided_equity;
+  if (a.peak) j["peak"] = *a.peak;
+  if (a.floor) j["floor"] = *a.floor;
 }
 inline void from_json(const Json& j, AttemptSummary& a) {
   j.at("attempt").get_to(a.attempt); j.at("plan").get_to(a.plan); j.at("started").get_to(a.started);
@@ -420,6 +425,9 @@ inline void from_json(const Json& j, AttemptSummary& a) {
   j.at("first_order").get_to(a.first_order); j.at("first_fill").get_to(a.first_fill);
   added_field(j, "decision_code", a.decision_code);
   a.decision_code = decision_code_of(a.status, a.decision_code);
+  added_field(j, "rules", a.rules); added_field(j, "decided_at", a.decided_at);
+  added_field(j, "decided_equity", a.decided_equity);
+  added_field(j, "peak", a.peak); added_field(j, "floor", a.floor);
 }
 inline void to_json(Json& j, const Closure& c) {
   j = Json{{"symbol", c.symbol}, {"quantity", c.quantity}, {"price", c.price}, {"time", c.time}, {"kind", c.kind},

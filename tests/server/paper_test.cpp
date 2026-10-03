@@ -2541,6 +2541,34 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(eod["rules"]["buy_only"], false);
 }
 
+TEST(PaperAttempts, OldSummariesExposeNullProvenance) {
+  class Source final : public server::MetricsSource {
+   public:
+    std::shared_ptr<server::TradingView> view = std::make_shared<server::TradingView>();
+    std::vector<std::string> symbols() const override { return {}; }
+    std::shared_ptr<const analytics::UnderlyingMetrics> metrics(const std::string&) const override { return {}; }
+    server::EngineStatus status() const override { return {}; }
+    using server::MetricsSource::trading_view;
+    std::shared_ptr<const server::TradingView> trading_view() const override { return view; }
+  } source;
+  test::ScriptedMarket market;
+  trading::TradingSession session({}, market.time);
+  auto snapshot = std::make_shared<trading::TradingSnapshot>(*session.snapshot());
+  trading::AttemptSummary old;
+  old.attempt = 1; old.started = market.time; old.ended = market.time;
+  old.status = trading::EvaluationStatus::Failed;
+  old.decision_code = trading::Reason::DRAWDOWN_FLOOR;
+  snapshot->attempts.push_back(old);
+  source.view->snapshot = snapshot;
+  source.view->config = session.config();
+  const auto attempt = read(source, "/api/account")["attempts"][0];
+  for (const auto* key : {"rules", "decided_at", "decided_equity", "peak", "floor"}) {
+    ASSERT_TRUE(attempt.contains(key)) << key;
+    EXPECT_TRUE(attempt[key].is_null()) << key;
+  }
+  EXPECT_EQ(attempt["decision_code"], "DRAWDOWN_FLOOR");
+}
+
 TEST_F(PaperEngine, AccountViewWithoutRulesHasNoTargetOrFloor) {
   const auto account = read(*engine, "/api/account");
   EXPECT_EQ(account["rules"]["plan"], nullptr);
@@ -2572,6 +2600,7 @@ TEST_F(PaperEngine, ResetToPresetStartsAttemptAndTradesSeparateAttempts) {
   EXPECT_EQ(trades[0]["attempt"], 1);
   EXPECT_EQ(read(*engine, "/api/orders?status=all")["orders"][0]["origin"], "user");
 
+  const auto before_reset = read(*engine, "/api/account");
   const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "intraday-25k"}, {"reason", "start evaluation"}});
   ASSERT_EQ(reset.status, 200) << reset.body;
   const auto account = json::parse(reset.body);
@@ -2586,6 +2615,11 @@ TEST_F(PaperEngine, ResetToPresetStartsAttemptAndTradesSeparateAttempts) {
   EXPECT_EQ(evaluation["target_equity"], "27500.00");
   EXPECT_EQ(evaluation["target_remaining"], "2500.00");
   EXPECT_EQ(account["attempts"][0]["final_equity"], "99989.35");
+  EXPECT_EQ(account["attempts"][0]["rules"], before_reset["rules"]);
+  EXPECT_EQ(account["attempts"][0]["peak"], before_reset["evaluation"]["peak"]);
+  EXPECT_EQ(account["attempts"][0]["floor"], nullptr);
+  EXPECT_EQ(account["attempts"][0]["decided_at"], nullptr);
+  EXPECT_EQ(account["attempts"][0]["decided_equity"], nullptr);
   EXPECT_EQ(read(*engine, "/api/account"), account);
 
   EXPECT_TRUE(read(*engine, "/api/trades")["trades"].empty());
@@ -2898,6 +2932,12 @@ TEST_F(PaperEngine, ResetRequestsAreStrict) {
 }
 
 TEST_F(PaperEngine, CustomDrawdownBreachLiquidatesWithSystemOrders) {
+  engine->stop(); engine.reset();
+  const auto path = paper_path();
+  auto options = paper_options(); options.paper_journal = path;
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
   seed();
   const json rules{{"plan", "Tight"}, {"profit_target", nullptr}, {"max_drawdown", "10.00"}, {"drawdown_mode", "intraday"},
                    {"buy_only", false}, {"buying_power", false}, {"expiry_cutoff_seconds", 0}};
@@ -2915,7 +2955,22 @@ TEST_F(PaperEngine, CustomDrawdownBreachLiquidatesWithSystemOrders) {
   EXPECT_EQ(read(*engine, "/api/portfolio")["cash"], "9978.70");
   EXPECT_EQ(json::parse(server::tick_message(*engine))["trading"]["evaluation"], "failed");
   expect_error(write(*engine, "POST", "/api/orders", order(market, "after", "4.20")), 422, "EVALUATION_CLOSED");
-  engine->stop();
+  const auto samples = read(*engine, "/api/account/equity")["samples"];
+  const auto point = std::find_if(samples.begin(), samples.end(), [&](const json& sample) {
+    return sample["time"] == account["evaluation"]["decided_at"] && sample["equity"] == account["evaluation"]["decided_equity"] && sample["fill"].is_null();
+  });
+  ASSERT_NE(point, samples.end());
+  const auto liquidation = std::find_if(samples.begin(), samples.end(), [](const json& sample) { return sample["fill"] == "2"; });
+  ASSERT_NE(liquidation, samples.end());
+  EXPECT_LT(point, liquidation);
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "archive decision"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  const auto archived = read(*engine, "/api/account")["attempts"].back();
+  EXPECT_EQ(archived["rules"], account["rules"]);
+  for (const auto* key : {"decided_at", "decided_equity", "peak", "floor", "decision_code"})
+    EXPECT_EQ(archived[key], account["evaluation"][key]) << key;
+  engine->stop(); engine.reset();
+  std::filesystem::remove_all(path.parent_path());
 }
 
 TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
@@ -2946,7 +3001,8 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   quote("29.15", "29.35");
   ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["evaluation"]["status"] == "passed"; }));
   // B37: the pass at 27,504.35 liquidated at the bid, below the target; nothing remains to go.
-  const auto passed = read(*engine, "/api/account")["evaluation"];
+  const auto passing_account = read(*engine, "/api/account");
+  const auto passed = passing_account["evaluation"];
   EXPECT_EQ(passed["decided_equity"], "27504.35");
   EXPECT_EQ(passed["equity"], "27493.70");
   EXPECT_EQ(passed["target_remaining"], "0.00");
@@ -2962,6 +3018,9 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   EXPECT_TRUE(account["evaluation"]["payouts"].empty());
   EXPECT_EQ(account["attempts"][2]["status"], "passed");
   EXPECT_EQ(account["attempts"][2]["plan"], "Intraday 25K");
+  EXPECT_EQ(account["attempts"][2]["rules"], passing_account["rules"]);
+  for (const auto* key : {"decided_at", "decided_equity", "peak", "floor"})
+    EXPECT_EQ(account["attempts"][2][key], passed[key]) << key;
   const auto payout = account["payout"];
   EXPECT_EQ(payout["eligible"], false);
   EXPECT_EQ(payout["blocked"]["code"], "PAYOUT_NOT_ELIGIBLE");
