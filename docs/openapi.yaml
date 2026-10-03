@@ -1517,7 +1517,7 @@
       ],
       "post": {
         "summary": "POST /api/account/reset",
-        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin. Applies pending settings. Preserves daily PROFIT_LOCK and TRADE_LIMIT latches, opening-order count and active cooldown; clears and re-checks SOFT_FLOOR against new equity. A carried absolute floor at or above the new balance is allowed and reported in the account warnings as SOFT_FLOOR.",
+        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin. Applies pending settings and clears manual/daily-loss kill latches. Preserves daily PROFIT_LOCK and TRADE_LIMIT latches, opening-order count and active cooldown; clears and re-checks SOFT_FLOOR against new equity. A carried absolute floor at or above the new balance is allowed and reported in the account warnings as SOFT_FLOOR.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -13736,7 +13736,7 @@
                 "type": "null"
               }
             ],
-            "description": "While latched: a personal guardrail's code until it expires (a cooldown's end, or the next trading day), or DAILY_LOSS with the marked loss and the limit while the loss still exceeds it."
+            "description": "Why POST /api/risk/kill action=reset cannot clear the latch now, not a prediction for POST /api/account/reset. Personal guardrails block the kill-switch reset until expiry; DAILY_LOSS includes the marked loss and limit while loss exceeds it. An account reset clears manual/daily-loss and re-checks SOFT_FLOOR, but preserves PROFIT_LOCK, TRADE_LIMIT and active cooldown."
           },
           "history": {
             "type": "array",
@@ -13751,7 +13751,7 @@
           "reset_blocked",
           "history"
         ],
-        "description": "The reduce-only kill latch: its reason, why a reset could not clear it now and when it can (null when a reset would clear it, or nothing is latched), and its last 50 trips, resets and releases, oldest first."
+        "description": "The kill latch blocks new opening orders; the partially filled order that reached TRADE_LIMIT may finish if no other rule blocks it. reset_blocked describes only the kill-switch reset (null when it would clear the latch, or nothing is latched). History contains the last 50 actual trips, resets and releases, oldest first; an account reset retaining the same latch adds no reset entry."
       },
       "KillChange": {
         "type": "object",
@@ -14617,7 +14617,7 @@
           },
           "max_opening_trades": {
             "type": "number",
-            "description": "Opening orders per trading day: an order counts once, however many partial fills it takes; an atomic multi-leg execution counts once. The order reaching the limit may finish; other opening orders are cancelled."
+            "description": "Opening orders per trading day: an order counts on its first opening fill only, even if later partial fills cross rollover; an atomic multi-leg execution counts once. The order reaching the limit may finish; other opening orders are cancelled."
           },
           "cooldown_loss": {
             "$ref": "#/components/schemas/Money",
@@ -14625,7 +14625,7 @@
           },
           "cooldown_minutes": {
             "type": "number",
-            "description": "Market minutes of cooldown after a triggered closing stop fills. Standalone option and combo price triggers must move adversely for the closing side; underlying triggers follow the held option's call/put direction or the held combo's net delta. Trailing stops and bracket stop-losses always count. Profit-taking triggers and take-profit exits do not start it unless cooldown_loss is exceeded."
+            "description": "Market minutes of cooldown after a triggered closing stop fills. Standalone option price triggers must move adversely for the closing side; combo triggers watch signed closing debit, where a rise is adverse; underlying triggers follow the held option's call/put direction or the held combo's net delta. Trailing stops and bracket stop-losses always count. Profit-taking triggers and take-profit exits do not start it unless cooldown_loss is exceeded."
           },
           "profit_lock": {
             "$ref": "#/components/schemas/Money"
@@ -22225,7 +22225,7 @@
           },
           "max_opening_trades": {
             "type": "number",
-            "description": "Opening orders per trading day: an order counts once, however many partial fills it takes; an atomic multi-leg execution counts once. The order reaching the limit may finish; other opening orders are cancelled."
+            "description": "Opening orders per trading day: an order counts on its first opening fill only, even if later partial fills cross rollover; an atomic multi-leg execution counts once. The order reaching the limit may finish; other opening orders are cancelled."
           },
           "cooldown_loss": {
             "$ref": "#/components/schemas/Money",
@@ -22233,7 +22233,7 @@
           },
           "cooldown_minutes": {
             "type": "number",
-            "description": "Market minutes of cooldown after a triggered closing stop fills. Standalone option and combo price triggers must move adversely for the closing side; underlying triggers follow the held option's call/put direction or the held combo's net delta. Trailing stops and bracket stop-losses always count. Profit-taking triggers and take-profit exits do not start it unless cooldown_loss is exceeded."
+            "description": "Market minutes of cooldown after a triggered closing stop fills. Standalone option price triggers must move adversely for the closing side; combo triggers watch signed closing debit, where a rise is adverse; underlying triggers follow the held option's call/put direction or the held combo's net delta. Trailing stops and bracket stop-losses always count. Profit-taking triggers and take-profit exits do not start it unless cooldown_loss is exceeded."
           },
           "profit_lock": {
             "$ref": "#/components/schemas/Money"

@@ -1114,7 +1114,7 @@ json bucket_json(const RiskBucket& b) {
                          {"vega_low", b.reachable.vega_low}, {"vega_high", b.reachable.vega_high}}},
           {"limits", exposure_limits(b.limits)}, {"delta_utilisation", b.delta_utilisation}, {"vega_utilisation", b.vega_utilisation}};
 }
-/// The latch, why a reset could not clear it now (null when it could), and its
+/// The latch, why the kill-switch reset could not clear it now (null when it could), and its
 /// last 50 trips, resets and releases, oldest first.
 json kill_json(const TradingSnapshot& s) {
   constexpr std::size_t kHistory = 50;

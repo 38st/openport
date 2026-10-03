@@ -185,3 +185,19 @@ it("keeps soft floor warning codes and request-only range validation in sync", (
   expect(schema.Guardrails.properties.soft_floor_percent.maximum).toBeUndefined()
   expect(schema.GuardrailsRequest.properties.guardrails.$ref).toBe("#/components/schemas/GuardrailsInput")
 })
+
+it("keeps kill-switch reset decisions and actual latch history in the wire contract", () => {
+  const schemas = JSON.parse(specText).components.schemas
+  for (const name of ["KillState", "KillChange"]) {
+    const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)![1]!
+    const fields = [...body.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]
+    expect(fields.map((field) => field[1]).sort()).toEqual(Object.keys(schemas[name].properties).sort())
+    for (const [, field, , type] of fields) {
+      const schema = schemas[name].properties[field!]
+      const wire = schema.enum ? normalize(schema.enum.map((v: string) => JSON.stringify(v)).join(" | ")) : wireType(schema)
+      expect(normalize(type!)).toBe(wire)
+      expect(schemas[name].required).toContain(field)
+    }
+  }
+  expect(schemas.KillState.properties.reset_blocked.description).toContain("not a prediction for POST /api/account/reset")
+})

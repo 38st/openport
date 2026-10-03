@@ -41,7 +41,8 @@ export function KillSwitch({ kill, trading }: { kill: KillState; trading: Tradin
     <div className={`rounded-md border p-3 text-sm ${kill.latched ? "border-danger text-danger" : "border-border text-muted"}`}>
       <strong>{kill.latched ? "LATCHED · reduce-only: closing orders and exits still work" : "Armed · trading permitted"}</strong>
       <p className="mt-1 break-words">{kill.reason ?? (kill.latched ? "No reason provided" : "Trip to cancel opening orders and allow only closing orders and exits.")}</p>
-      {kill.latched && kill.reset_blocked && <p className="mt-1 break-words text-xs">Reset now would not clear it: {kill.reset_blocked.message}</p>}
+      {kill.latched && kill.reset_blocked && <p className="mt-1 break-words text-xs">Kill-switch reset now would not clear it: {kill.reset_blocked.message}</p>}
+      {kill.latched && kill.reason === "TRADE_LIMIT" && <p className="mt-1 text-xs">The opening order that reached the limit may finish its partial fills. Other risk and plan checks still apply.</p>}
     </div>
     {kill.history && kill.history.length > 0 && <details className="text-xs text-muted">
       <summary className="cursor-pointer">History · {kill.history.length}</summary>
@@ -55,8 +56,10 @@ export function KillSwitch({ kill, trading }: { kill: KillState; trading: Tradin
     <label className="trade-label">Reason<input className="trade-input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder={kill.latched ? "Why is it safe to resume?" : "Why are you stopping trading?"} /></label>
     <button className="trade-button" type="button" disabled={blocked || !reason.trim()} onClick={() => { setError(undefined); setAction(kill.latched ? "reset" : "trip") }}>{kill.latched ? "Reset kill switch…" : "Trip kill switch…"}</button>
     {result && <p role="status" className="text-xs text-muted">{result}</p>}
-    {action && <Dialog title={action === "trip" ? "Confirm kill switch" : "Confirm trading reset"} onClose={() => { if (!pending) setAction(null) }}>
-      <p className="text-sm">{action === "trip" ? "Latch the kill switch in reduce-only mode? Orders that open or increase positions are cancelled. Closing orders, Flatten and bracket exits still work." : "Clear the latched kill switch and allow new orders? Risk limits will still apply."}</p>
+    {action && <Dialog title={action === "trip" ? "Confirm kill switch" : "Confirm kill-switch reset"} onClose={() => { if (!pending) setAction(null) }}>
+      <p className="text-sm">{action === "trip" ? "Latch the kill switch in reduce-only mode? Orders that open or increase positions are cancelled. Closing orders, Flatten and bracket exits still work."
+        : kill.reset_blocked ? `This kill-switch reset cannot clear the latch: ${kill.reset_blocked.message}`
+        : "Clear the latched kill switch and allow new orders? Risk limits will still apply."}</p>
       <p className="break-words text-sm text-muted">Reason: {reason}</p>
       <TradingError error={error} />
       <div className="flex gap-2"><button className="trade-button" disabled={pending || blocked} onClick={() => void confirm()}>{pending ? "Applying…" : action === "trip" ? "Confirm trip" : "Confirm reset"}</button><button className="trade-button" disabled={pending} onClick={() => setAction(null)}>Back</button></div>

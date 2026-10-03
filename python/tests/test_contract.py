@@ -20,6 +20,23 @@ def test_schema_references_and_required_types():
     walk(SPEC)
 
 
+def test_guardrail_input_rejects_100_but_stored_settings_remain_readable():
+    contract = Contract("", None, SPEC)
+    def validator(name):
+        return jsonschema.Draft202012Validator(
+            {"$ref": f"urn:openport#/components/schemas/{name}"}, registry=contract.registry)
+    guardrails = {"soft_floor": "0.00", "soft_floor_percent": 99, "max_opening_trades": 1,
+                  "cooldown_loss": "0.00", "cooldown_minutes": 5, "profit_lock": "0.00"}
+    validator("GuardrailsInput").validate(guardrails)
+    historical = {**guardrails, "soft_floor_percent": 100}
+    validator("Guardrails").validate(historical)
+    with pytest.raises(jsonschema.ValidationError):
+        validator("GuardrailsInput").validate(historical)
+    for percent in (-1, 100.5):
+        with pytest.raises(jsonschema.ValidationError):
+            validator("GuardrailsInput").validate({**guardrails, "soft_floor_percent": percent})
+
+
 def test_what_if_orders_match_submissions_without_chains():
     schemas = SPEC["components"]["schemas"]
     new = schemas["NewOrder"]

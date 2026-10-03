@@ -151,7 +151,10 @@ plan without drawdown. Account resets return the account's usual `warnings`, inc
 `SOFT_FLOOR` when a retained absolute floor meets or exceeds the new balance. Resets
 apply pending settings while preserving daily profit/trade latches, opening-order
 count and active cooldown; they clear and re-check the equity-based soft floor.
-Opening orders count once through partial fills. Trader-triggered closing stops start
+`kill.reset_blocked` describes the kill-switch reset, which cannot bypass any active
+personal guardrail; it does not describe an account reset. Kill history records actual
+changes, so retaining the same latch across an account reset adds no reset entry.
+Opening orders count at their first opening fill only, even through partial fills across rollover. Trader-triggered closing stops start
 the configured cooldown when the trigger direction is adverse to the held position;
 profit-taking triggers do not. Trailing stops and bracket stop-losses always count.
 A buy-only long-put exercise that would create short shares

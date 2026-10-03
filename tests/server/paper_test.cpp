@@ -419,6 +419,9 @@ TEST_F(PaperEngine, AccountResetWarnsForRetainedAbsoluteFloorAndAppliesPendingFl
   EXPECT_EQ(warning["code"], "SOFT_FLOOR");
   EXPECT_NE(warning["message"].get<std::string>().find("latches at once"), std::string::npos);
   EXPECT_NE(warning["message"].get<std::string>().find("a reset applies pending settings"), std::string::npos);
+  const auto kill = read(*engine, "/api/risk")["kill"];
+  EXPECT_EQ(kill["reset_blocked"]["code"], "SOFT_FLOOR");
+  EXPECT_NE(kill["reset_blocked"]["message"].get<std::string>().find("account reset"), std::string::npos);
   // Equality still warns, including when it comes from the pending setting.
   for (const auto floor : {"25000", "24000"}) {
     risk = read(*engine, "/api/risk"); g["soft_floor"] = floor;
@@ -429,6 +432,11 @@ TEST_F(PaperEngine, AccountResetWarnsForRetainedAbsoluteFloorAndAppliesPendingFl
     if (std::string_view(floor) == "25000") { EXPECT_EQ(account["warnings"].back()["code"], "SOFT_FLOOR"); }
     else { EXPECT_TRUE(account["warnings"].empty()); EXPECT_TRUE(account["guardrail_state"]["latched"].empty()); }
   }
+  const auto cleared = read(*engine, "/api/risk")["kill"];
+  EXPECT_EQ(cleared["latched"], false);
+  EXPECT_EQ(cleared["reset_blocked"], nullptr);
+  EXPECT_EQ(cleared["history"].back()["action"], "reset");
+  EXPECT_EQ(cleared["history"].back()["previous"], "SOFT_FLOOR");
 }
 
 TEST_F(PaperEngine, AccountResetKeepsTradeLimitThroughTheDesk) {
@@ -437,11 +445,19 @@ TEST_F(PaperEngine, AccountResetKeepsTradeLimitThroughTheDesk) {
   auto g = risk["guardrails"]; g["max_opening_trades"] = 1;
   ASSERT_EQ(write(*engine, "PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", g}}).status, 200);
   ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "entry", "4.20")).status, 201);
+  const auto before = read(*engine, "/api/risk")["kill"];
   const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "another attempt"}});
   ASSERT_EQ(reset.status, 200) << reset.body;
   const auto account = json::parse(reset.body);
   EXPECT_EQ(account["guardrail_state"]["opening_trades"], 1);
   EXPECT_EQ(account["guardrail_state"]["latched"], json::array({"TRADE_LIMIT"}));
+  const auto after = read(*engine, "/api/risk")["kill"];
+  EXPECT_EQ(after["history"], before["history"]);
+  EXPECT_EQ(after["reset_blocked"]["code"], "TRADE_LIMIT");
+  EXPECT_NE(after["reset_blocked"]["message"].get<std::string>().find("neither a kill-switch reset nor an account reset"), std::string::npos);
+  const auto refused = write(*engine, "POST", "/api/risk/kill", {{"action", "reset"}, {"reason", "try to resume"}});
+  expect_error(refused, 422, "TRADE_LIMIT");
+  EXPECT_EQ(json::parse(refused.body)["error"]["message"], after["reset_blocked"]["message"]);
   expect_error(write(*engine, "POST", "/api/orders", order(market, "new-entry", "4.20")), 422, "TRADE_LIMIT");
 }
 
@@ -3927,6 +3943,27 @@ TEST_F(PaperEngine, ContractFixture) {
   capture("POST", "/api/positions/close", json::object());
   capture("POST", "/api/orders/cancel", json::object());
   capture("POST", "/api/risk/kill", {{"action", "trip"}, {"reason", "test"}});
+  auto risk = capture("GET", "/api/risk");
+  auto guardrails = risk["guardrails"];
+  guardrails["soft_floor_percent"] = 100;
+  const auto invalid = write(*engine, "PUT", "/api/risk/guardrails",
+      {{"expected_revision", risk["limits_revision"]}, {"guardrails", guardrails}});
+  expect_error(invalid, 422, "INVALID_LIMITS");
+  test::capture_contract("paper", "PUT", "/api/risk/guardrails", invalid);
+  guardrails["soft_floor_percent"] = 99;
+  guardrails["max_opening_trades"] = 1;
+  risk = capture("PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", guardrails}});
+  EXPECT_EQ(risk["warnings"].back()["code"], "SOFT_FLOOR_UNUSED");
+  capture("POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "retain discipline"}});
+  risk = capture("GET", "/api/risk");
+  EXPECT_EQ(risk["kill"]["reset_blocked"]["code"], "TRADE_LIMIT");
+  const auto blocked = write(*engine, "POST", "/api/risk/kill", {{"action", "reset"}, {"reason", "cannot bypass"}});
+  expect_error(blocked, 422, "TRADE_LIMIT");
+  test::capture_contract("paper", "POST", "/api/risk/kill", blocked);
+  guardrails["soft_floor"] = "90000";
+  capture("PUT", "/api/risk/guardrails", {{"expected_revision", risk["limits_revision"]}, {"guardrails", guardrails}});
+  capture("POST", "/api/account/reset", {{"plan", "intraday-25k"}, {"reason", "carried floor"}});
+  capture("GET", "/api/risk");
 }
 
 TEST(PaperStocks, PositionDisposalContractFixture) {

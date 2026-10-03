@@ -147,6 +147,7 @@ it.each([
     <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial="intraday-100k" onClose={() => {}} />
   </QueryClientProvider>))
   expect(host.querySelector('[role="alert"]')?.textContent?.includes("soft floor will latch at once") ?? false).toBe(warns)
+  expect(host.textContent).toContain("Manual and daily-loss latches clear")
   if (warns) {
     expect(host.textContent).toContain("a lower setting is pending until rollover, and a reset applies pending settings")
   }

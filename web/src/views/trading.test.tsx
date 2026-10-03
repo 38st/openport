@@ -281,11 +281,18 @@ describe("paper trading fixtures", () => {
         { time: "2026-09-22T14:00:02Z", action: "trip", reason: "stepping away", previous: "DAILY_LOSS", actor: "trader" },
       ],
     }} trading={trading} />)
-    expect(history).toContain("Reset now would not clear it: A reset trips again while the marked loss $620.00 exceeds the limit of $100.00")
+    expect(history).toContain("Kill-switch reset now would not clear it: A reset trips again while the marked loss $620.00 exceeds the limit of $100.00")
     expect(history).toContain("History · 2")
     expect(history).toContain("Tripped: stepping away (replaced DAILY_LOSS)")
     expect(killChangeText({ time: "", action: "reset", reason: "back", previous: "pause", actor: "trader" })).toBe("Reset: back (cleared pause)")
     expect(killChangeText({ time: "", action: "release", reason: null, previous: "COOLDOWN", actor: "system" })).toBe("Released: COOLDOWN expired")
+    const daily = render(<KillSwitch kill={{ latched: true, reason: "TRADE_LIMIT",
+      reset_blocked: { code: "TRADE_LIMIT", message: "Neither a kill-switch reset nor an account reset clears it" },
+      history: [{ time: "2026-09-22T14:00:01Z", action: "trip", reason: "TRADE_LIMIT", previous: null, actor: "system" }],
+    }} trading={trading} />)
+    expect(daily).toContain("Neither a kill-switch reset nor an account reset clears it")
+    expect(daily).toContain("The opening order that reached the limit may finish its partial fills")
+    expect(daily).not.toContain("cleared TRADE_LIMIT")
   })
   it("exposes call and put bid/ask buttons and an untradable reason", () => {
     const html = render(<ChainView symbol="SPX" expiry={selection.expiry.id} onExpiry={() => {}} />)

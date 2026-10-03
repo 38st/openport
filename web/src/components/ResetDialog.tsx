@@ -117,7 +117,7 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
         Attempt {attempt + 1} starts fresh: working orders are cancelled, open positions close at their last mark,
         and cash returns to the plan's starting balance. Your trade history is kept.
         Today's profit lock, trade limit, opening-order count and active cooldown carry over.
-        The soft floor is checked against the new balance.
+        Manual and daily-loss latches clear. The soft floor is checked against the new balance.
       </p>
       <WriteAccess trading={trading} />
       <TradingError error={plans.error} />

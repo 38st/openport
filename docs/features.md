@@ -33,12 +33,6 @@ simulation's limits.
   beside the account's floor room, loss allowance, guardrails and open positions.
   Plan before the open and review after the close on market time, including replay.
   Key levels can be drawn on Trade's chart, with the choice saved in the browser.
-- Personal guardrails preserve daily discipline across attempts, count each opening
-  order once through partial fills, and start cooldowns on standalone and managed stops.
-  Price-triggered closes count as stops only in the held position's adverse direction;
-  profit-taking triggers do not start cooldowns. Trailing and bracket stops still count.
-  Percent floors accept 0–99 with a practice-plan hint; resets warn about absolute
-  floors at or above the new balance. Buy-only put exercise requires held shares.
 - **Trade**: the chain with an order ticket docked beside it, and a candle chart of the
   underlying (one-minute to daily, backfilled from Cboe's free history) showing your
   strikes, armed triggers and the selected expiry's expected move.
@@ -471,7 +465,7 @@ special opening quotation; live providers keep manual imports.
       playbook reports and backtests
 - [x] Same-expiry strike rolls and whole-condor rolls, exits resized in place and DAY or
       GTC changed on a resting order
-- [x] Guardrail reset persistence, soft-floor edge warnings, per-order trade limits, adverse-direction stop cooldowns and buy-only put exercise
+- [x] F34: 0–99 percent floors and unused/carried-floor warnings; daily discipline survives account reset; per-order opening counts; standalone, trailing, OCO and bracket stop cooldowns; buy-only put exercise requires held shares
 - [x] Kill latch history, when a reset can clear it, and guardrail refusals with their numbers
 - [x] Client order IDs scoped to an attempt and looked up by ID, conflicting reuses
       recorded nowhere, shorts closed first on auto-close, and a buy-only manual close

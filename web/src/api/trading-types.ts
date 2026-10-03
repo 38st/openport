@@ -936,8 +936,9 @@ export interface KillChange { time: string; action: "trip" | "reset" | "release"
 export interface KillState {
   latched: boolean
   reason: string | null
-  /** While latched, why a reset could not clear it now and when it can; absent on older servers, as is the history. */
+  /** Why POST /api/risk/kill action=reset cannot clear it; account reset separately preserves daily discipline and re-checks the soft floor. Absent on older servers, as is history. */
   reset_blocked?: Decision | null
+  /** Actual latch changes; retaining the same latch on account reset adds no reset entry. */
   history?: KillChange[]
 }
 export interface Scenarios {
@@ -1017,7 +1018,7 @@ export interface Guardrails {
   soft_floor: Money
   /** New requests accept 0–99; stored settings may still contain 100. */
   soft_floor_percent: number
-  /** An order counts once, however many partial fills it takes. */
+  /** An order counts at its first opening fill only, even when later partial fills cross rollover. */
   max_opening_trades: number
   cooldown_loss: Money
   /** Market minutes after an adverse-direction closing trigger, trailing stop or bracket stop-loss fills. */

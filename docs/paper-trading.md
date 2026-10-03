@@ -1225,7 +1225,8 @@ attempts likewise accept reducing orders; opening orders require a new attempt.
 if the loss still breaches. The account remains reduce-only while latched. A new
 trading day's baseline permits a reset; rollover alone does not clear a manual or
 daily-loss latch. While latched, `kill.reset_blocked` says why a reset could
-not clear it now and when it can: `DAILY_LOSS` with the marked loss and the limit
+not clear it now and when it can (this field describes `POST /api/risk/kill` with
+`action=reset`, not `POST /api/account/reset`): `DAILY_LOSS` with the marked loss and the limit
 while the loss still exceeds it (a reset works once it is back within the limit, or
 from the next trading day's baseline), or a personal guardrail's code until it
 expires. A refused reset answers with the same decision. Orders the latch refuses
@@ -1237,7 +1238,10 @@ first, with its market time and actor: a `trip` (with the reason it replaced, as
 manual trip lands on a daily-loss latch, which its `kill_trip` event also names), a
 `reset` (a kill-switch or account reset, with its reason and the latch reason it
 cleared) or a `release` (a personal guardrail that expired at rollover or its cooldown
-end).
+end). An account reset that retains the same personal latch adds no `reset` history
+entry. If its reason changes, history records a `trip` naming the reason it replaced.
+Account reset clears manual/daily-loss latches and re-checks `SOFT_FLOOR`, while
+preserving `PROFIT_LOCK`, `TRADE_LIMIT` and active cooldown.
 A reset cannot make stale data tradable.
 
 `roll_day` is an explicit command on a later trading date. It closes the finished day
@@ -1267,7 +1271,7 @@ Guardrails belong to the account, separately from its plan, and default to off.
 | --- | --- |
 | `soft_floor` | Decimal dollar equity level above the plan floor |
 | `soft_floor_percent` | Whole percent, 0–99, of the plan's drawdown distance to keep above its current floor; the higher of this level and `soft_floor` wins. New requests for 100 return `INVALID_LIMITS`: it puts the floor at the peak and latches at once. Stored 100 settings still load. On practice (no drawdown floor), the percent does nothing and raises an informational `SOFT_FLOOR_UNUSED` warning |
-| `max_opening_trades` | Number of opening orders per trading day; an order counts once, however many partial fills it takes, and an atomic multi-leg execution counts once |
+| `max_opening_trades` | Number of opening orders per trading day; an order counts once on its first opening fill, even if later partial fills cross rollover, and an atomic multi-leg execution counts once |
 | `cooldown_minutes` | Market minutes without new opening orders after a triggered closing stop fills, up to 1440 |
 | `cooldown_loss` | A closing fill's realised loss before fees must exceed this dollar amount to also start the configured cooldown |
 | `profit_lock` | Day's marked P&L at or above this dollar amount makes the account reduce-only |
@@ -1284,7 +1288,7 @@ rollover, including across an account reset. `SOFT_FLOOR` lasts until rollover o
 account reset, which re-checks it against the new attempt's equity. The order whose
 first opening execution reaches `TRADE_LIMIT` can finish its remaining partial fills;
 other working opening orders are cancelled, and new opening orders are refused.
-Another latch can still stop the remaining fills. `COOLDOWN` lasts until the journaled
+Other latches and all plan/risk checks can still stop the remaining fills. `COOLDOWN` lasts until the journaled
 `cooldown_until`, including across rollover and account resets; wall time does not
 shorten it. A later stop restarts it, and a longer cooldown setting extends one already active. Closing orders, Flatten and exits keep
 working under all four reasons. The kill-switch reset cannot bypass an active guardrail.
@@ -1306,7 +1310,7 @@ Enabling a rule, raising a soft floor, lowering a trade/profit/loss threshold or
 lengthening a cooldown applies now. Other changes appear in `pending_guardrails`
 until rollover. Starting a new attempt applies pending settings and keeps today's
 `PROFIT_LOCK` and `TRADE_LIMIT` latches, opening-order count and active `cooldown_until`.
-It clears only the old attempt's `SOFT_FLOOR` latch and re-checks the floor against
+Among personal latches, it clears only the old attempt's `SOFT_FLOOR` and re-checks the floor against
 new equity; personal settings persist. Lowering or disabling a daily discipline rule
 through pending settings does not clear its existing latch before rollover.
 
@@ -1794,7 +1798,9 @@ Fills recheck against the projected ledger and cancel the remainder with `RISK_C
 `reset_account(initial_cash, rules, reason, time)` starts a new attempt. It cancels
 working orders with `ACCOUNT_RESET`, records each open position as a `Reset` closure
 at its last mark (average price without one; no fill, no fee), archives an
-`AttemptSummary`, restores cash, clears the kill latch and applies the new rules. The
+`AttemptSummary`, restores cash and applies the new rules and pending settings. It
+clears manual/daily-loss latches and re-checks `SOFT_FLOOR`, but preserves today's
+`PROFIT_LOCK`, `TRADE_LIMIT`, opening-order count and active cooldown. The
 order and fill history is kept; `Evaluation::first_order/first_fill` mark where the
 attempt begins. Settlements, early exercises and early assignments are also recorded
 as closures.
@@ -3082,7 +3088,7 @@ focus at the top of the ticket.
 | `GET /api/risk` | Version, active/pending limits and guardrails, guardrail progress, pending activation, daily loss, kill state, aggregate/underlying buckets, scenario matrices and `breach` |
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; tighter fields apply now, looser evaluation fields are pending until rollover; 200 returns the risk view, 409 `LIMITS_REVISION` if the revision changed (refetch it and retry) |
 | `PUT /api/risk/guardrails` | `expected_revision` string and complete `guardrails`; tighter fields apply now, looser fields wait for rollover on all accounts; returns the risk view, or 409 `LIMITS_REVISION` as for limits |
-| `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs. The kill state here and in `GET /api/risk` is `{latched, reason, reset_blocked, history}`: why a reset could not clear the latch now (a decision, or null) and its last 50 trips, resets and releases (`{time, action, reason, previous, actor}`) |
+| `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs. The kill state here and in `GET /api/risk` is `{latched, reason, reset_blocked, history}`: why the kill-switch reset could not clear the latch now (a decision, or null; account reset follows the separate guardrail persistence rule) and its last 50 trips, resets and releases (`{time, action, reason, previous, actor}`) |
 | `GET /api/settlements` | Settlement references, cash, gross realised P&L, fee and nullable provenance, newest first across attempts; read scope |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance`, `lock_at_start`, `profit_basis`, the daily loss limit, consistency, minimum days, `day_end` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `balance`, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target; on the balance basis, measured on the balance), decision and `decision_code`, current day, finished `days[]` with `realised`, `qualifying`, `attribution`, equity low/high with times, `profit`, `profitable`, `executions` and `locked`, attempt closest-floor distance/time, `qualifying_days`, `cycle_started`, `payouts[]`, `objectives[]` (code, met, actual, required, message), `trading_days`, `profitable_days`, `best_day`, `consistency_target`, `daily_loss` (limit, basis, action, reference, level, room), `day_lock` and `day_locked_at`, `exit_equity` and `exit_cost`, and once a decided attempt is flat `liquidated_equity` and `liquidation_cost`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages, `consistency_percent`, `cycle_profit`, `best_day`, `consistency_needed` and `buffer_balance`; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
