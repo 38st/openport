@@ -6,7 +6,7 @@ Unknown fields are preserved. Money and identifiers stay strings, not floats.
 from typing import Any, Literal, TypedDict
 
 JSON = dict[str, Any]
-PlanRuleReason = Literal["HEDGING", "COUNTER_POSITION", "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING"]
+PlanRuleReason = Literal["MAX_VOLUME_SHARE", "HEDGING", "COUNTER_POSITION", "TRADE_CONSISTENCY", "MIN_TRADES", "MIN_HOLD", "MICROSCALPING"]
 
 
 class RuleEvidence(TypedDict, total=False):
@@ -14,6 +14,10 @@ class RuleEvidence(TypedDict, total=False):
     order_dollar_delta: float
     held_dollar_delta: float
     other_account: str
+    contract: str
+    contracts: int
+    volume: int | None
+    percent: int
 
 
 class Decision(TypedDict, total=False):
@@ -289,6 +293,7 @@ class AccountRules(TypedDict, total=False):
     microscalp_percent: int
     min_trades: int
     trade_consistency_percent: int
+    max_volume_percent: int
     no_hedging: bool
     no_counter_positions: bool
     max_contracts_held: int

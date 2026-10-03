@@ -9095,6 +9095,13 @@
             "type": "boolean",
             "default": false,
             "description": "Server pre-trade gate against opposite held dollar delta in other live accounts. Only the ordering account setting counts. Archived, replay and sandbox accounts are excluded. Refusal is not journaled; replay and single-account servers have no other accounts."
+          },
+          "max_volume_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 0,
+            "description": "Server pre-trade gate: per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Refusal is not journaled. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
           }
         },
         "required": [
@@ -18165,6 +18172,13 @@
                         "type": "boolean",
                         "default": false,
                         "description": "Server pre-trade gate against opposite held dollar delta in other live accounts. Only the ordering account setting counts. Archived, replay and sandbox accounts are excluded. Refusal is not journaled; replay and single-account servers have no other accounts."
+                      },
+                      "max_volume_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "default": 0,
+                        "description": "Server pre-trade gate: per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Refusal is not journaled. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
                       }
                     },
                     "required": [],
@@ -19931,7 +19945,8 @@
               "MIN_HOLD",
               "MICROSCALPING",
               "HEDGING",
-              "COUNTER_POSITION"
+              "COUNTER_POSITION",
+              "MAX_VOLUME_SHARE"
             ]
           },
           "message": {
@@ -20799,6 +20814,13 @@
             "type": "boolean",
             "default": false,
             "description": "Server pre-trade gate against opposite held dollar delta in other live accounts. Only the ordering account setting counts. Archived, replay and sandbox accounts are excluded. Refusal is not journaled; replay and single-account servers have no other accounts."
+          },
+          "max_volume_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 0,
+            "description": "Server pre-trade gate: per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Refusal is not journaled. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
           }
         },
         "required": [
@@ -22877,6 +22899,28 @@
           "other_account": {
             "type": "string",
             "description": "Other live account ID for COUNTER_POSITION."
+          },
+          "contract": {
+            "type": "string",
+            "description": "Canonical OSI for MAX_VOLUME_SHARE."
+          },
+          "contracts": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Absolute held contracts plus this leg’s opening contracts."
+          },
+          "volume": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Current-date traded contracts; null when unknown, invalid, future or stale."
+          },
+          "percent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
           }
         },
         "additionalProperties": false

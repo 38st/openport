@@ -183,3 +183,15 @@ it("shows trade risk and the plan cap alongside existing preview numbers", async
   await act(async () => root.render(<OrderPreviewPanel preview={{ data: { ...data, trade_risk: null, trade_risk_basis: "unbounded_or_unknown" }, error: null, loading: false }} onSize={() => {}} />))
   expect(host.textContent).toContain("Unbounded or unknown")
 })
+
+it("shows direction and volume refusal evidence from the server in tickets", async () => {
+  for (const [code, message] of [
+    ["HEDGING", "Opening SPY dollar delta -500 opposes held dollar delta 1000"],
+    ["COUNTER_POSITION", "Opening SPY dollar delta -500 opposes account other held dollar delta 1000"],
+    ["MAX_VOLUME_SHARE", "SPY option: held plus opening contracts 2 exceeds 10% of current-date volume unknown (missing, invalid or stale)"],
+  ] as const) {
+    const data = { ...preview, decision: code, reason: { code, message, actual: null, limit: null, scope: "SPY" } }
+    await act(async () => root.render(<OrderPreviewPanel preview={{ data, error: null, loading: false }} onSize={() => {}} />))
+    expect(host.textContent).toContain(message)
+  }
+})

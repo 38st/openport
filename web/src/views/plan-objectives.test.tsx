@@ -362,3 +362,13 @@ it("explains direction bans and the server gate in Rules and the editor", () => 
   expect(editor).toContain("No hedging")
   expect(editor).toContain("No counter positions")
 })
+
+it("explains the strict volume gate and exposes its editor field", () => {
+  const value: Account = { ...planned, rules: { ...planned.rules, max_volume_percent: 25 } }
+  const html = render(<RulesView />, value)
+  for (const text of ["Maximum share of option volume", "25%", "Unknown or stale volume refuses", "scenario backtests"])
+    expect(html).toContain(text)
+  const editor = renderToStaticMarkup(<PlanEditor form={planForm({ initial_cash: "100000", rules: value.rules })} onChange={() => {}} />)
+  expect(editor).toContain("Maximum volume %")
+  expect(editor).toContain('value="25"')
+})

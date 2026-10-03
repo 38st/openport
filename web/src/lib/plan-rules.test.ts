@@ -267,3 +267,14 @@ it("edits direction bans and retains them in funded plans", () => {
   expect("error" in funded ? funded : funded.rules).toMatchObject({ no_hedging: true, no_counter_positions: true })
   expect(planForm({ initial_cash: "100000", rules }).no_hedging).toBe("no")
 })
+
+it("validates whole volume percentages and restores the disabled default", () => {
+  const form = planForm({ initial_cash: "100000", rules })
+  expect(form.max_volume_percent).toBe("")
+  for (const max_volume_percent of ["1", "25", "100", "0", ""]) {
+    const result = customPlan({ ...form, max_volume_percent }, rules)
+    expect("error" in result ? result : result.rules.max_volume_percent).toBe(Number(max_volume_percent))
+  }
+  for (const max_volume_percent of ["-1", "101", "1.5", "NaN"])
+    expect(customPlan({ ...form, max_volume_percent }, rules)).toHaveProperty("error")
+})

@@ -520,3 +520,5 @@ special opening quotation; live providers keep manual imports.
 - [x] F61: minimum hold time refuses premature user reductions while protective/system exits execute; microscalping limits positive short-round-trip profit as a pass objective.
 
 - [x] F65: custom plans can ban opening hedges within an account and counter positions across live accounts. Options and shares use current dollar-delta direction; previews and tickets explain refusals. The reducer enforces `no_hedging`; the desk enforces `no_counter_positions` before journaling, excluding archived/replay/sandbox accounts. Enable the latter on each trading account.
+
+- [x] F66: per-contract position caps as a whole percentage of current-date traded option volume, with exact ratio-aware checks, strict unknown/stale refusals, previews and terminal custom-plan controls. The server gate keeps volume outside reducer journals; backtests require recordings carrying volume.

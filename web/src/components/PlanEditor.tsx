@@ -38,6 +38,7 @@ export interface PlanForm extends SizeScalingForm {
   min_profitable_days: string
   profitable_day_profit: string
   day_end: string
+  max_volume_percent: string
   no_hedging: "yes" | "no"
   no_counter_positions: "yes" | "no"
   max_contracts_held: string
@@ -84,6 +85,7 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     min_trading_days: r.min_trading_days ? String(r.min_trading_days) : "",
     min_profitable_days: r.min_profitable_days ? String(r.min_profitable_days) : "",
     profitable_day_profit: r.profitable_day_profit ?? "", day_end: dayEnd(r),
+    max_volume_percent: r.max_volume_percent ? String(r.max_volume_percent) : "",
     no_hedging: r.no_hedging ? "yes" : "no", no_counter_positions: r.no_counter_positions ? "yes" : "no",
     max_contracts_held: r.max_contracts_held ? String(r.max_contracts_held) : "",
     require_stop_loss: r.require_stop_loss ? "yes" : "no", max_trade_risk: r.max_trade_risk ?? "",
@@ -121,7 +123,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
   if (form.phase === "evaluation" && ((form.microscalp_seconds.trim() === "") !== (form.microscalp_percent.trim() === "") ||
       (count(form.microscalp_percent) > 0 && count(form.microscalp_seconds) === 0)))
     return { error: "Set both microscalp seconds and percent, or leave both off" }
-  for (const [label, value, most] of [["Minimum hold seconds", form.min_hold_seconds, 3600], ["Maximum contracts held", form.max_contracts_held, 100000],
+  for (const [label, value, most] of [["Maximum volume %", form.max_volume_percent, 100], ["Minimum hold seconds", form.min_hold_seconds, 3600], ["Maximum contracts held", form.max_contracts_held, 100000],
     ["Maximum trade risk %", form.max_trade_risk_percent, 100]] as const) {
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
@@ -190,6 +192,7 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     min_trading_days: form.phase === "funded" ? 0 : count(form.min_trading_days),
     min_profitable_days: form.phase === "funded" ? 0 : count(form.min_profitable_days),
     profitable_day_profit: form.phase === "funded" ? null : amount(form.profitable_day_profit), day_end: form.day_end,
+    max_volume_percent: count(form.max_volume_percent),
     no_hedging: form.no_hedging === "yes", no_counter_positions: form.no_counter_positions === "yes",
     max_contracts_held: count(form.max_contracts_held), require_stop_loss: form.require_stop_loss === "yes",
     max_trade_risk: amount(form.max_trade_risk), max_trade_risk_percent: count(form.max_trade_risk_percent),
@@ -272,6 +275,7 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
           <p className="text-[11px] text-muted">Each review starts a new period, whether it qualifies or not. Capital growth leaves profit unchanged and scales loss limits with account size.</p>
         </div>}
       </div>}
+      <Field label="Maximum volume %" hint="Held plus opening contracts per option, as a whole percent of today’s traded volume. Unknown volume refuses. Blank or 0 disables.">{text("max_volume_percent", "none")}</Field>
       <Field label="No hedging" hint="Opening delta cannot oppose this account’s held direction; reductions and exits remain available.">{choice("no_hedging", [["no", "Off"], ["yes", "On"]])}</Field>
       <Field label="No counter positions" hint="Server checks other live accounts. Set this on every account you trade.">{choice("no_counter_positions", [["no", "Off"], ["yes", "On"]])}</Field>
       <Field label="Maximum contracts held" hint="Held options plus working entries; shares excluded. Blank for none.">{text("max_contracts_held", "none")}</Field>

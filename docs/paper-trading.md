@@ -2869,6 +2869,7 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_CONTRACT`, `UNKNOWN_CONTRACT` | Invalid/conflicting terms, or missing resolved definition |
 | `INVALID_ORDER`, `DUPLICATE_CLIENT_ID`, `INVALID_TICK` | Malformed order, a key reused with other terms, invalid price increment |
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
+| `MAX_VOLUME_SHARE` | Held plus opening contracts exceed the plan percentage of current-date option volume, or that volume is unknown/stale (server gate) |
 | `HEDGING` | Opening dollar delta opposes held delta on the same underlying within this account (reducer rule) |
 | `COUNTER_POSITION` | Opening dollar delta opposes another live account on the same underlying (server gate; refusal is not journaled) |
 | `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
@@ -3640,3 +3641,44 @@ rather than a cap), `scope` (underlying), and structured `evidence` with
 `underlying`, `order_dollar_delta`, `held_dollar_delta`, and, for a counter position,
 `other_account`. Messages show the same evidence in terminal tickets. Rule fields
 are journaled only when true; plans with both off retain their journal bytes and hashes.
+
+### Volume-share rule (F66)
+
+`max_volume_percent` is a whole percent from 1 to 100; zero (the default)
+disables it. It is a **server pre-trade gate** reading `ChainBook`'s
+`md::OptionVolume`, not a reducer input. For every option leg of an opening
+order, including combo ratios, the exact check is
+`(abs(held contracts) + opening contracts) * 100 <= percent * traded volume`.
+Opening contracts are `quantity × ratio` minus contracts closing an opposite
+holding. A reversal counts its excess as opening; the formula still includes
+the absolute existing holding. The order's full net delta is irrelevant to
+this cap. Shares and purely reducing orders are exempt. Other working orders
+are not reserved against volume. Increased-size modifications check the new
+remaining quantity; chained children include their predecessors' hypothetical
+holdings. Managed exits remain available.
+
+Only finite, nonnegative whole contract totals, exactly represented by the
+feed (up to 2^53−1), with a timestamp no later than market time and on the
+**current market trading date** count. That date uses the market's evening
+rollover, independent of a plan's custom day end. Missing volume, invalid values,
+future observations and another trading date's volume refuse strictly; zero is
+known zero and permits no opening contracts. A previous day's volume is not a
+substitute for today's unknown volume.
+
+`MAX_VOLUME_SHARE` includes `evidence: {contract, contracts, volume, percent}`;
+`volume` is null when unknown/stale, `contracts` is held plus opening, and
+`contract` is canonical OSI. `actual` is that contract count, `limit` is the
+permitted count (null without usable volume), and HTTP `scope` is the underlying.
+The message includes these values for order and strategy tickets. Single-leg,
+multi-leg, modification and playbook paths and their previews share the gate.
+Acceptance checks today's observation; resting orders are not re-gated on later
+fills. A refusal never reaches the session journal. Accepted transactions and
+recovery need no volume inputs, and the rule field is omitted from journals
+when zero, preserving legacy bytes and transaction hashes.
+
+Backtests apply this same gate when recordings carry current-date option volume.
+Every requested recording must contain at least one usable current-date volume
+observation; individual contracts without one still refuse at entry. Backtest
+requests without volume return a clear HTTP 400. Scenario backtests currently
+produce no volume and also return 400 when the rule is enabled. Replay of recorded
+volume needs no driver or scenario revision change.
