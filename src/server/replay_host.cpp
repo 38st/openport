@@ -526,6 +526,7 @@ class ReplayHost::History {
         }
         item.update(summary(id, file));
         item.update(integrity(id, item));
+        item["verification"] = verification(id);
       } catch (const std::exception& error) {
         if (!std::filesystem::exists(file, ec)) continue;  // deleted while listing
         item["error"] = error.what();
@@ -548,6 +549,47 @@ class ReplayHost::History {
       out.push_back(std::move(item));
     }
     return out;
+  }
+  json stamp(const std::string& id) const {
+    const auto file = journal(id);
+    if (file.empty()) throw UnknownRun(id);
+    return {{"bytes", std::filesystem::file_size(file)},
+            {"modified", std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::filesystem::last_write_time(file).time_since_epoch()).count())}};
+  }
+  const std::string& verifying() const { return verifying_; }
+  json verification(const std::string& id) const {
+    auto saved = metadata(id);
+    auto value = verifying_ == id ? verification_ : saved.is_object() ? saved.value("verification", json::object()) : json::object();
+    if (value.empty()) return {{"status", "idle"}, {"message", "This run has not been verified"}};
+    if (!value.contains("stamp") || value.at("stamp") != stamp(id))
+      return {{"status", "idle"}, {"message", "Journal changed since verification; verify it again"}};
+    if (value.value("status", "") == "running" && verifying_ != id)
+      return {{"status", "idle"}, {"message", "Verification was interrupted; verify it again"}};
+    value.erase("stamp");
+    return value;
+  }
+  void begin_verification(const std::string& id, const json& fingerprint) {
+    auto value = metadata(id);
+    if (!value.is_object()) value = json::object();
+    const json running{{"status", "running"}, {"message", "Verifying " + id}, {"stamp", fingerprint}, {"build", OPENPORT_VERSION}};
+    value["verification"] = running;
+    save(id, value);
+    verifying_ = id;
+    verification_ = running;
+  }
+  void verification_progress(std::uint64_t done, std::uint64_t total) {
+    verification_["transactions"] = done;
+    verification_["progress"] = total ? static_cast<double>(done) / static_cast<double>(total) : 0.0;
+  }
+  void end_verification(const std::string& id, json result, const json& fingerprint) {
+    result["stamp"] = fingerprint;
+    auto value = metadata(id);
+    if (!value.is_object()) value = json::object();
+    value["verification"] = result;
+    verifying_.clear();
+    verification_ = json::object();
+    save(id, value);
   }
   json integrity(const std::string& id, const json& found) const {
     json out = json::object();
@@ -576,6 +618,7 @@ class ReplayHost::History {
   json details(const std::string& id) const {
     const auto value = summary(id, journal(id));
     auto out = integrity(id, value);
+    out["verification"] = verification(id);
     if (value.contains("error")) out["error"] = value.at("error");
     return out;
   }
@@ -651,6 +694,8 @@ class ReplayHost::History {
   mutable std::uint64_t recoveries_ = 0;
   std::filesystem::path directory_;
   bool writable_;
+  std::string verifying_;  // handoff_mutex_ protects verification and sidecar writes
+  json verification_;
 };
 
 ReplayHost::ReplayHost(Options options)
@@ -670,7 +715,8 @@ ReplayHost::~ReplayHost() {
   jobs_ready_.notify_all();
   if (worker_.joinable()) worker_.join();
   for (auto& job : left) job.complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
-  stop();
+  try { stop(); }
+  catch (const std::exception& error) { std::fprintf(stderr, "Replay shutdown: %s\n", error.what()); }
 }
 
 void ReplayHost::enqueue(const ApiRequest& request, const ApiCompletion& complete) {
@@ -725,6 +771,8 @@ void ReplayHost::set_dividends(std::vector<trading::Dividend> dividends) {
 
 void ReplayHost::stop() {
   const std::lock_guard control_lock(control_mutex_);
+  verifier_.request_stop();
+  if (verifier_.joinable()) verifier_.join();
   stop_session();
 }
 
@@ -759,7 +807,7 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
   }
   const bool saved = rest.starts_with("/history/");
   // Changes wait their turn on the control thread; a step there never holds this one.
-  if ((controls && request.method != "GET") || (saved && request.method == "DELETE")) {
+  if ((controls && request.method != "GET") || (saved && (request.method == "DELETE" || request.method == "POST"))) {
     enqueue(request, complete);
     return true;
   }
@@ -826,17 +874,77 @@ void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complet
       if (session && session->id == id) stop_session();
       session.reset();
       const std::lock_guard handoff(handoff_mutex_);
+      if (history_->verifying() == id) {
+        complete(api_error(409, "VERIFICATION_RUNNING", "Wait for verification before deleting this run"));
+        return;
+      }
       history_->remove(id);
       complete(ok({{"deleted", id}}));
       return;
     }
     const std::lock_guard handoff(handoff_mutex_);
     if (history_->journal(id).empty()) return unknown();
+    if (session && session->id == id) history_->finish(*session);
+    const auto suffix = slash == std::string_view::npos ? std::string_view{} : route.substr(slash);
+    if (suffix == "/verify" || suffix.starts_with("/verify?")) {
+      const auto question = suffix.find('?');
+      const auto query = query_parameters(question == std::string_view::npos ? std::string_view{} : suffix.substr(question + 1));
+      if (!query || (!query->empty() && (*query != std::map<std::string, std::string>{{"format", "receipt"}} || request.method != "GET"))) {
+        complete(api_error(400, "INVALID_REQUEST", "Verification accepts only GET format=receipt"));
+        return;
+      }
+      if (request.method == "GET") {
+        const auto value = history_->verification(id);
+        const bool receipt = !query->empty();
+        if (receipt && value.at("status") != "passed" && value.at("status") != "failed") {
+          complete(api_error(409, "VERIFICATION_UNAVAILABLE", "Verify this run before downloading its receipt"));
+          return;
+        }
+        auto response = ok(value);
+        if (receipt) response.download = slug(id) + "-verification.json";
+        complete(std::move(response));
+        return;
+      }
+      if (request.method != "POST") {
+        complete(api_error(405, "METHOD_NOT_ALLOWED", "Use GET or POST for verification"));
+        return;
+      }
+      if (!history_->writable() || options_.engine.write_mode == "disabled") {
+        complete(api_error(403, "WRITE_DISABLED", "Replay history is read-only"));
+        return;
+      }
+      if (!history_->verifying().empty()) {
+        complete(api_error(409, "VERIFICATION_RUNNING", "Already verifying " + history_->verifying() + "; wait for it to finish"));
+        return;
+      }
+      (void)parse_body(request, {});
+      if (verifier_.joinable()) verifier_.join();
+      const auto fingerprint = history_->stamp(id);
+      const auto file = history_->journal(id);
+      history_->begin_verification(id, fingerprint);
+      const auto accepted = history_->verification(id);
+      verifier_ = std::jthread([this, id, file, fingerprint](std::stop_token stop) {
+        const auto verified = verify_run(file, stop, [this](std::uint64_t done, std::uint64_t total) {
+          if (options_.verification_progress) options_.verification_progress(done, total);
+          const std::lock_guard lock(handoff_mutex_);
+          history_->verification_progress(done, total);
+        });
+        json value{{"status", verified.matched ? "passed" : "failed"}, {"message", verified.message},
+                   {"transactions", verified.transactions}, {"equity", verified.matched ? json(verified.equity.str()) : json(nullptr)},
+                   {"head", verified.head.empty() ? json(nullptr) : json(verified.head)}, {"build", OPENPORT_VERSION},
+                   {"time", verified.time > 0 ? json(md::format_timestamp(verified.time)) : json(nullptr)},
+                   {"finished_at", md::format_timestamp(md::now())}, {"run", verified.run}, {"progress", 1.0}};
+        const std::lock_guard lock(handoff_mutex_);
+        try { history_->end_verification(id, std::move(value), fingerprint); }
+        catch (const std::exception& error) { std::fprintf(stderr, "Replay verification: %s\n", error.what()); }
+      });
+      complete(ok(accepted, 202));
+      return;
+    }
     if (request.method != "GET") {
       complete(api_error(403, "REPLAY_READ_ONLY", "Finished replay accounts are read-only"));
       return;
     }
-    if (session && session->id == id) history_->finish(*session);
     const auto details = history_->details(id);
     if (details.contains("error")) {
       auto response = api_error(422, "REPLAY_HISTORY_FAILED", details.at("error").get<std::string>());
@@ -849,7 +957,7 @@ void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complet
     const auto archived = history_->open(id);
     ApiRequest forwarded = request;
     forwarded.target = slash == std::string_view::npos ? "/api/account" : "/api" + std::string(route.substr(slash));
-    const bool account = forwarded.target == "/api/account";
+    const bool account = forwarded.target.substr(0, forwarded.target.find('?')) == "/api/account";
     handle_api_async(forwarded, *archived, [archived, complete, details, account](ApiResponse response) {
       if (account && response.status == 200) {
         auto value = json::parse(response.body);
@@ -858,6 +966,10 @@ void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complet
       }
       complete(std::move(response));
     });
+  } catch (const json::exception& error) {
+    complete(api_error(400, "INVALID_REQUEST", error.what()));
+  } catch (const std::invalid_argument& error) {
+    complete(api_error(400, "INVALID_REQUEST", error.what()));
   } catch (const UnknownRun& error) {
     complete(api_error(404, "NOT_FOUND", error.what()));
   } catch (const trading::TradingError& error) {
@@ -886,6 +998,13 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     if (!history_->writable()) {
       complete(api_error(403, "WRITE_DISABLED", "Replay history is read-only"));
       return;
+    }
+    {
+      const std::lock_guard handoff(handoff_mutex_);
+      if (history_->verifying() == id) {
+        complete(api_error(409, "VERIFICATION_RUNNING", "Wait for verification before resuming this run"));
+        return;
+      }
     }
     const auto metadata = history_->metadata(id);
     if (!metadata.is_object()) return refuse("The run's metadata is missing or unreadable");

@@ -160,3 +160,11 @@ Pass `days=[{"file": "day.oprec"}, ...]` for recordings, including imports, or
 explicit scenario entries with `scenario`, `date` and `seed`. Dates must increase.
 The `replay` scope permits starts and cancellation. See the
 [batch contract](../docs/playbooks.md#batch-backtests) for attempt rules and journals.
+
+Finished replay runs can be verified without stopping live playback:
+`client.verify_replay(run_id)` starts the background job;
+`client.replay_verification(run_id)` reads `idle/running/passed/failed`, progress
+and the message. `client.replay_verification(run_id, receipt=True)` returns the
+shareable JSON result with run inputs, plan, final equity/count/head, build and
+verification times. A changed journal invalidates the saved result. Starts need
+replay write scope; reads and receipts need read access.

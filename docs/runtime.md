@@ -635,6 +635,34 @@ the saved final checkpoint.
 
 ### Verifying a run
 
+The terminal's **Finished runs → Verify** starts the same verifier in the background:
+`POST /api/replay/history/ID/verify` returns 202 and `status: "running"`.
+It needs replay or admin scope and enabled writes; disabled access returns
+403 `WRITE_DISABLED`. An active run returns 409 `REPLAY_RUNNING`. Only one
+verification runs per server; another start returns 409 `VERIFICATION_RUNNING`.
+The target cannot be deleted or resumed until verification ends. Other replay and
+live engines keep running, with their own calendars and clocks. Verification opens
+no provider connection. Server shutdown cancels between replay operations and joins
+the worker (an in-progress input read or scenario generation completes first).
+
+`GET /api/replay/history/ID/verify` needs read access and returns `status`
+(`idle`, `running`, `passed`, `failed`), `message`, and progress when available.
+Terminal results include `transactions`, decimal-string `equity`, `head`, verifying
+`build`, final market `time`, wall-clock `finished_at`, and `run` identity/inputs.
+Equity/head may be null on failure. The latest result is saved in the metadata
+sidecar and included as `verification` in history/account reads. Changing journal
+size or modification time invalidates it to `idle`; a verification interrupted by
+server shutdown/restart can be started again.
+
+GET the same route with `?format=receipt` to download a small JSON receipt of a
+passed or failed result (409 `VERIFICATION_UNAVAILABLE` before one exists or after
+invalidation). It names the run and plan, recording SHA-256 or scenario source hash,
+id, revision, seed and date, final equity/count/head, build and both times, without
+absolute paths. This is an unsigned local verification report, not independently
+authenticated proof; share the journal and original inputs for independent checking.
+
+The command-line equivalent is:
+
 ```sh
 openportd --verify-run /path/to/replays/run.jsonl
 ```

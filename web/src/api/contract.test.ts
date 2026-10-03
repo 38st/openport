@@ -51,7 +51,7 @@ describe("checked API core types", () => {
   })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
     "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
-    "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "RunJournal"])("%s matches OpenAPI fields, types and nullability", (name) => {
+    "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "RunJournal", "RunInput", "VerificationRun", "RunVerification"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
     const fields = [...body!.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]
@@ -117,4 +117,14 @@ it("keeps account management and copied-setting fields in sync", () => {
   expect(source).toContain("copy_settings_from?: string")
   expect(wireType(spec.components.schemas.Risk!.properties!.pending_requires_reset!)).toBe("boolean")
   expect(source).toContain("pending_requires_reset?: boolean")
+})
+
+it("keeps archived account and history verification fields backward compatible", () => {
+  for (const name of ["Account", "ReplayHistory"]) {
+    const body = new RegExp(`export interface ${name}(?: extends ReplayState)? \\{([\\s\\S]*?)\\n\\}`).exec(source)![1]!
+    for (const field of ["journal", "journal_found", "torn", "bytes_cut", "truncated", "mismatch", "integrity_message", "verification"]) {
+      const type = new RegExp(`${field}\\?: ([^\\n]+)`).exec(body)![1]!
+      expect(normalize(type)).toBe(wireType(spec.components.schemas[name]!.properties![field]!).replace(/\binteger\b/g, "number"))
+    }
+  }
 })

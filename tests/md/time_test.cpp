@@ -1,6 +1,7 @@
 #include "openport/md/time.hpp"
 
 #include <gtest/gtest.h>
+#include <future>
 
 #include <atomic>
 #include <set>
@@ -465,3 +466,24 @@ TEST(Time, AnnouncementsReachEveryThreadsNextAnswer) {
   EXPECT_TRUE(scheduled_days().empty());
 }
 }  // namespace
+
+TEST(Time, RecordedCalendarScopeIsThreadLocalAndRestoresNestedScopes) {
+  using namespace openport::md;
+  const Date day{2026, 9, 22};
+  const auto global = scheduled_days();
+  const auto original = regular_close_hour(day);
+  {
+    const ScheduledDaysScope recorded({{day, "Recorded early close", false, 13, 0}});
+    EXPECT_EQ(regular_close_hour(day), 13);
+    EXPECT_EQ(scheduled_days().front().name, "Recorded early close");
+    auto other = std::async(std::launch::async, [&] {
+      EXPECT_EQ(scheduled_days(), global);
+      EXPECT_EQ(regular_close_hour(day), original);
+    });
+    other.get();
+    { const ScheduledDaysScope nested({}); EXPECT_EQ(regular_close_hour(day), 16); }
+    EXPECT_EQ(regular_close_hour(day), 13);
+  }
+  EXPECT_EQ(scheduled_days(), global);
+  EXPECT_EQ(regular_close_hour(day), original);
+}

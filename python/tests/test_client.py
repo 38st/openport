@@ -190,6 +190,8 @@ def test_base_url_rejects_ambiguous_credentials(url):
     ("close_stock", ("SPY", 100), "POST", "/api/stocks/close", "Portfolio"),
     ("trade_stock", ("SPY", "buy", 100), "POST", "/api/stocks/trade", "Portfolio"),
     ("preview_stock", ("SPY", "sell", 50), "POST", "/api/stocks/trade/preview", "StockPreview"),
+    ("verify_replay", ("run-1",), "POST", "/api/replay/history/run-1/verify", "RunVerification"),
+    ("replay_verification", ("run-1",), "GET", "/api/replay/history/run-1/verify", "RunVerification"),
     ("delete_replay", ("run-1",), "DELETE", "/api/replay/history/run-1", "DeletedReplay"),
 ])
 def test_each_route_uses_the_terminal_method_and_path(stub, method, arguments, verb, path, schema):
@@ -359,3 +361,23 @@ def test_copy_active_settings_requests(stub):
     assert stub.requests[-1][3] == {"name": "Copy", "plan": "eod-50k", "copy_settings_from": "main"}
     client.start_replay(scenario="reversal", plan="eod-50k", copy_settings_from="evaluation")
     assert stub.requests[-1][3] == {"scenario": "reversal", "plan": "eod-50k", "copy_settings_from": "evaluation"}
+
+
+def test_replay_verification_receipt_is_authenticated_and_not_account_scoped(stub):
+    original = stub.respond
+    result = {"status": "passed", "message": "Run shared verified", "equity": "100000.00"}
+    def respond(method, target, headers, body):
+        original(method, target, headers, body)
+        return 200, result
+    stub.respond = respond
+    client = Client(stub.url, "secret", "practice").for_history("another-run")
+    assert client.replay_verification("shared run", receipt=True) == result
+    method, path, headers, _ = stub.requests[-1]
+    assert method == "GET"
+    assert path == "/api/replay/history/shared%20run/verify?format=receipt"
+    assert headers["Authorization"] == "Bearer secret"
+    stub.failures = [(409, "VERIFICATION_RUNNING")]
+    stub.respond = original
+    with pytest.raises(ApiError) as caught:
+        client.verify_replay("shared")
+    assert caught.value.reason_code == "VERIFICATION_RUNNING"

@@ -100,10 +100,6 @@ std::string run_label(const json& run) {
   }
   return text + "\n";
 }
-struct CalendarScope {
-  std::vector<md::ScheduledDay> saved = md::scheduled_days();
-  ~CalendarScope() { md::set_scheduled_days(std::move(saved)); }
-};
 struct TemporaryInput {
   std::filesystem::path directory;
   ~TemporaryInput() { std::error_code error; if (!directory.empty()) std::filesystem::remove_all(directory, error); }
@@ -239,7 +235,8 @@ RunIdentity run_identity(std::string_view input, std::string id) {
   }
   return run;
 }
-RunVerification verify_run(const std::filesystem::path& journal) {
+RunVerification verify_run(const std::filesystem::path& journal, std::stop_token stop,
+    const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
   RunVerification result;
   result.run = {{"id", journal.stem().string()}, {"file", journal.filename().string()},
                 {"inputs", json::array()}, {"plan", "unknown"}};
@@ -274,8 +271,7 @@ RunVerification verify_run(const std::filesystem::path& journal) {
         result.run["inputs"].push_back(shareable_input(operation.at("input")));
     const auto& start = inputs.front();
     const auto& input = start.at("input");
-    const CalendarScope calendar;
-    md::set_scheduled_days(start.value("calendar", std::vector<md::ScheduledDay>{}));
+    const md::ScheduledDaysScope calendar(start.value("calendar", std::vector<md::ScheduledDay>{}));
     std::unique_ptr<TemporaryInput> generated_input;
     const auto open_input = [&](const json& identity) {
       if (identity.at("version") != 1) throw std::runtime_error("Unsupported run driver version");
@@ -318,7 +314,10 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     };
     const auto restored = trading::TradingSession::recover(expected);
     result.time = restored.snapshot()->time;
+    if (stop.stop_requested()) throw std::runtime_error("Verification cancelled");
+    if (progress) progress(0, expected.records.size());
     auto reader = open_input(input);
+    if (stop.stop_requested()) throw std::runtime_error("Verification cancelled");
     const md::Subscription subscription{start.at("symbols").get<std::vector<std::string>>(), 0, 0};
     // Driver 2 batches each market instant whole, driver 3 also rolls the day over on the
     // closing marks before a new date's quotes, and driver 4 also records each command's
@@ -351,6 +350,8 @@ RunVerification verify_run(const std::filesystem::path& journal) {
     Desk desk("replay (" + reader->header().provider + ")", reader->header().capabilities, subscription, options);
     desk.start_trading();
     for (std::size_t index = 1; index < inputs.size() && comparison->error.empty() && !comparison->cut; ++index) {
+      if (stop.stop_requested()) throw std::runtime_error("Verification cancelled");
+      if (progress && index % 64 == 0) progress(comparison->sequence(), expected.records.size());
       const auto& operation = inputs[index];
       if (operation.at("kind") == "boundary") {
         auto batch = batches->next();

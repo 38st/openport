@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include <compare>
 #include <cstdint>
 #include <limits>
@@ -105,6 +107,18 @@ struct ScheduledDay {
 /// every calendar function sees them at once.
 void set_scheduled_days(std::vector<ScheduledDay> days);
 [[nodiscard]] std::vector<ScheduledDay> scheduled_days();
+/// Use a recorded calendar on this thread only; other engines keep the live schedule.
+class ScheduledDaysScope {
+ public:
+  explicit ScheduledDaysScope(std::vector<ScheduledDay> days);
+  ~ScheduledDaysScope();
+  ScheduledDaysScope(const ScheduledDaysScope&) = delete;
+  ScheduledDaysScope& operator=(const ScheduledDaysScope&) = delete;
+ private:
+  struct State;
+  std::unique_ptr<State> state_;
+};
+
 
 /// Per-root option sessions, independent of the underlying stock/index clock.
 /// GTH belongs to the following trading date. Before a weekend, New Year's Day,

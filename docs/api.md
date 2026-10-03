@@ -89,6 +89,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`, or continue an interrupted saved run with `{resume}`; control or stop. `/api/replay/X` mirrors `/api/X` |
 | `PUT /api/replay {"until":"HH:MM[:SS]"}` | Advance through a New York session time (its next occurrence in a scenario of several sessions), or a date and time such as `2026-09-17T10:30` (New York unless zoned), then pause; responds after analytics and trading settle, with `settled_through`. Meanwhile `stepping` is true and replay writes return `REPLAY_STEPPING`; a target past the recording's end returns 400 and plays nothing |
 | `GET /api/replay/history` | Saved runs with final `journal` head/count/bytes, `journal_found`, and `torn`/`bytes_cut` or `truncated`/`mismatch` integrity warnings |
+| `POST /api/replay/history/ID/verify`, `GET /api/replay/history/ID/verify` | Start background verification (202, replay scope) or read `idle/running/passed/failed`; GET `?format=receipt` downloads the final JSON result |
 | `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, equity history (`account/equity`), portfolio, trades, fills or settlements; delete its journal |
 
 Margin settings are returned in account rules. Invalid values or a cash/IRA account

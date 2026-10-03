@@ -86,6 +86,7 @@ struct Schedule {
   std::vector<ScheduledDay> days;
 };
 std::atomic<const Schedule*> g_schedule{nullptr};
+thread_local const Schedule* thread_schedule = nullptr;
 std::mutex g_schedule_mutex;
 std::vector<std::unique_ptr<const Schedule>> g_schedules;
 
@@ -196,7 +197,7 @@ class Memo {
   /// This thread's memo, for the schedule in force now.
   static Memo& current() noexcept {
     thread_local Memo memo;
-    const auto* schedule = g_schedule.load(std::memory_order_acquire);
+    const auto* schedule = thread_schedule ? thread_schedule : g_schedule.load(std::memory_order_acquire);
     if (!memo.ready_ || memo.schedule_ != schedule) {
       memo.ready_ = true;
       memo.schedule_ = schedule;
@@ -205,6 +206,7 @@ class Memo {
     }
     return memo;
   }
+  void clear() noexcept { ready_ = false; }
   Day day(Date date) noexcept {
     // Keyed by the fields, so a date out of range is still its own entry.
     const auto hash = static_cast<std::uint32_t>(date.year) * 372u + static_cast<std::uint32_t>(date.month) * 31u +
@@ -366,6 +368,22 @@ std::optional<Timestamp> parse_datetime(std::string_view text, Zone zone) noexce
 
 int regular_close_hour(Date date) noexcept { return Memo::current().day(date).close_hour; }
 
+struct ScheduledDaysScope::State {
+  Schedule schedule;
+  const Schedule* previous = thread_schedule;
+};
+ScheduledDaysScope::ScheduledDaysScope(std::vector<ScheduledDay> days) : state_(std::make_unique<State>()) {
+  std::stable_sort(days.begin(), days.end(), [](const auto& a, const auto& b) { return a.date < b.date; });
+  days.erase(std::unique(days.begin(), days.end(), [](const auto& a, const auto& b) { return a.date == b.date; }), days.end());
+  state_->schedule.days = std::move(days);
+  Memo::current().clear();
+  thread_schedule = &state_->schedule;
+}
+ScheduledDaysScope::~ScheduledDaysScope() {
+  Memo::current().clear();
+  thread_schedule = state_->previous;
+}
+
 void set_scheduled_days(std::vector<ScheduledDay> days) {
   std::stable_sort(days.begin(), days.end(), [](const ScheduledDay& a, const ScheduledDay& b) { return a.date < b.date; });
   days.erase(std::unique(days.begin(), days.end(), [](const auto& a, const auto& b) { return a.date == b.date; }), days.end());
@@ -378,7 +396,7 @@ void set_scheduled_days(std::vector<ScheduledDay> days) {
 }
 
 std::vector<ScheduledDay> scheduled_days() {
-  const auto* schedule = g_schedule.load(std::memory_order_acquire);
+  const auto* schedule = thread_schedule ? thread_schedule : g_schedule.load(std::memory_order_acquire);
   return schedule ? schedule->days : std::vector<ScheduledDay>{};
 }
 
