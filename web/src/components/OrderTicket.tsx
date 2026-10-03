@@ -5,7 +5,7 @@ import { api, ApiError } from "../api/client"
 import { useLive } from "../api/live"
 import { useSmileSurface } from "../api/smiles"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
-import type { Bracket, NewOrder, Order, Side, Trigger, TradingStatus } from "../api/trading-types"
+import type { Bracket, NewOrder, Order, Side, TimeInForce, Trigger, TradingStatus } from "../api/trading-types"
 import type { Expiry, OptionQuote, Surface } from "../api/types"
 import { count, days, fixed, isNum, price } from "../lib/format"
 import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
@@ -18,6 +18,7 @@ import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
 import { Segmented } from "./ui"
+import { goodTillTimestamp, TimeInForceField } from "./TimeInForceField"
 
 export interface TicketSelection {
   symbol: string
@@ -98,20 +99,24 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const portfolio = usePortfolio().data
   const [side, setSide] = useState<Side>(sideFromCell(selection.cell))
   const underlying = underlyings.find((u) => u.symbol === selection.underlying)
-  // The overnight and curb sessions take limit orders only, and a condition or
-  // bracket only on a GTC limit, which waits for the regular session.
+  // Extended protection runs as simulator-managed limits overnight and in curb.
   const extended = extendedSession(underlying)
   const [chosenType, setType] = useState<"limit" | "market">("limit")
-  const type = extended ? "limit" : chosenType
-  const [tif, setTif] = useState<"day" | "gtc" | "ioc">("day")
+  const [tif, setTif] = useState<TimeInForce>("day")
+  const [goodTill, setGoodTill] = useState("")
+  const good_till = goodTillTimestamp(goodTill)
   const [quantity,setQuantity] = useState(String(selection.quantity ?? 1))
   const [limitPrice, setLimitPrice] = useState(() => limitPriceText(selection.price))
   const [fee, setFee] = useState("")
   // Conditional entry and bracket exits.
   const spot = selection.spot != null && Number.isFinite(selection.spot) ? selection.spot : null
   const [chosenCondition, setCondition] = useState<"now" | "cross">("now")
-  const conditional = !extended || tif === "gtc"
+  const allSessions = tif === "exto" || tif === "gtc_exto"
+  const conditional = !extended || tif === "gtc" || tif === "gtd" || allSessions
   const condition = conditional ? chosenCondition : "now"
+  const marketAllowed = !extended || (allSessions && condition === "cross")
+  const type = marketAllowed ? chosenType : "limit"
+  const effectiveTif = type === "market" && (condition !== "cross" || (!allSessions && tif !== "gtd")) ? "ioc" : tif
   // No default level: one at spot would sit on the boundary, so the trader picks it.
   const [crossLevel, setCrossLevel] = useState("")
   const [chosenProtect, setProtect] = useState(false)
@@ -173,7 +178,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   } : undefined
   const bracketValid = !protect || ((stopOn || targetOn) && (!stopOn || stopValid) && (!targetOn || exitLevel(targetLevel)))
   const valid = /^\d+$/.test(quantity) && Number.isSafeInteger(q * 100) && q > 0 && (type === "market" || validMoney(limitPrice)) && (effectiveFee == null || validMoney(effectiveFee)) &&
-    (condition === "now" || trigger != null) && bracketValid
+    (condition === "now" || trigger != null) && bracketValid && (effectiveTif !== "gtd" || good_till != null)
   const untradable = quote?.tradable !== true || quote.symbol !== selection.symbol
   const notice = paperNotice(selection.underlying, underlying)
   const limitOnly = notice ? null : limitOnlyNotice(selection.underlying, underlying)
@@ -190,7 +195,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     : marketability(side, type, limitPrice, quote)
   const draft: NewOrder | null = valid ? {
     client_order_id: "preview:single", symbol: selection.symbol, side, quantity: q,
-    ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitPrice }),
+    ...(type === "market" ? { type, time_in_force: effectiveTif as "ioc" | "exto" | "gtc_exto" | "gtd" } : { type, time_in_force: effectiveTif, limit_price: limitPrice }),
+    ...(effectiveTif === "gtd" ? { good_till } : {}),
     ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
   } : null
   const preview = useOrderPreview(draft, trading)
@@ -211,7 +217,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
     try {
       request.current ??= {
         client_order_id: crypto.randomUUID(), symbol: selection.symbol, side, quantity: q,
-        ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitPrice }),
+        ...(type === "market" ? { type, time_in_force: effectiveTif as "ioc" | "exto" | "gtc_exto" | "gtd" } : { type, time_in_force: effectiveTif, limit_price: limitPrice }),
+        ...(effectiveTif === "gtd" ? { good_till } : {}),
         ...(trigger ? { trigger } : {}), ...(bracket ? { bracket } : {}),
         ...(tags ? { tags } : {}), ...(note ? { note } : {}),
       }
@@ -302,8 +309,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           <Segmented label="Side" value={side} onChange={setSide} options={[{ value: "buy", label: "Buy" }, { value: "sell", label: "Sell" }]} />
         </div>
         <div className="trade-label">Order type
-          <Segmented label="Order type" value={type} onChange={(next) => { setType(next); if (next === "market") setTif("ioc") }}
-            options={extended ? [{ value: "limit", label: "Limit" }] : [{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
+          <Segmented label="Order type" value={type} onChange={(next) => { setType(next); if (next === "market" && !allSessions && tif !== "gtd") setTif("ioc") }}
+            options={!marketAllowed ? [{ value: "limit", label: "Limit" }] : [{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
         </div>
         <div className="trade-label col-span-2">
           <label className="trade-label">Quantity<input className="trade-input" inputMode="numeric" type="number" min="1" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} required /></label>
@@ -313,10 +320,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
             {quickSizes.map((size) => <button key={size} type="button" className={`trade-button ${q === size ? "border-accent" : ""}`} aria-label={`Quantity ${size}`} onClick={() => setQuantity(String(size))}>{size}</button>)}
           </div>
         </div>
-        <div className="trade-label col-span-2">Time in force
-          <Segmented label="Time in force" value={type === "market" ? "ioc" : tif} onChange={(next) => { if (type !== "market") setTif(next) }}
-            options={type === "market" ? [{ value: "ioc", label: "IOC" }] : [{ value: "day", label: "Day" }, { value: "gtc", label: "GTC" }, { value: "ioc", label: "IOC" }]} />
-        </div>
+        <div className="col-span-2"><TimeInForceField value={effectiveTif} onChange={(next) => { setTif(next); if (next === "exto" || next === "gtc_exto") setStopLimitOn(true) }} market={type === "market"}
+          conditional={condition === "cross"} goodTill={goodTill} setGoodTill={setGoodTill} /></div>
         {type === "limit" && <div className="trade-label col-span-2">
           <label className="trade-label">Limit price ($)<input className="trade-input" inputMode="decimal" value={limitPrice} onChange={(e) => setLimitPrice(e.target.value)} onBlur={() => setLimitPrice(limitPriceText(limitPrice))} onKeyDown={(e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); setLimitPrice(stepLimitPrice(root, limitPrice, e.key === "ArrowUp" ? 1 : -1)) } }} pattern="[0-9]+([.][0-9]+)?" required /></label>
           <div className="flex flex-wrap items-center gap-2">
@@ -335,7 +340,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
               <input className="trade-input" inputMode="decimal" value={crossLevel} placeholder={spot != null ? spot.toFixed(2) : undefined}
                 onChange={(e) => setCrossLevel(e.target.value)} pattern="[0-9]+([.][0-9]+)?" required /></label>
             <span className="text-[11px] text-muted">{trigger
-              ? `Arms now and activates when ${describeTrigger(trigger, side, selection.underlying)}${spot != null ? ` (now ${spot.toFixed(2)})` : ""}; good until expiry.`
+              ? `Arms now and activates when ${describeTrigger(trigger, side, selection.underlying)}${spot != null ? ` (now ${spot.toFixed(2)})` : ""}; ${effectiveTif === "gtd" ? "good until the chosen timestamp" : effectiveTif === "exto" ? "good through this trading date" : "good until expiry"}.`
               : `Enter the level that activates the order${spot != null ? `; ${selection.underlying} is at ${spot.toFixed(2)}` : ""}.`}</span>
           </>}
         </div>}
@@ -380,7 +385,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         <dl className="grid grid-cols-2 gap-2 tabular sm:grid-cols-4">{(["delta", "gamma", "vega", "theta"] as const).map((key) => <div key={key}><dt className="capitalize text-muted">{key}</dt><dd>{fixed(estimate[key], key === "gamma" ? 4 : 2)}</dd></div>)}</dl>
       </details>
       {(feedStatus?.provider.simulated || (source === "replay" && replay?.demo)) && <p className="text-xs text-warn">Demo market · simulated prices and volume</p>}
-      <p className="text-[11px] text-muted">Estimates use the {type === "limit" ? "limit price" : "current executable quote"}. Fills and fees are determined by the server.{type === "market" ? " Market orders always use IOC." : ""}</p>
+      <p className="text-[11px] text-muted">Estimates use the {type === "limit" ? "limit price" : "current executable quote"}. Fills and fees are determined by the server.{type === "market" ? " Market orders execute once when eligible." : ""}</p>
       {(!submitted || pending) && <button className={`w-full rounded-md px-3 py-2.5 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-50 ${side === "buy" ? "bg-bullish" : "bg-bearish"}`}
         type="submit" aria-label="Submit order" disabled={!valid || blocked || pending}>
         {pending ? "Submitting…" : `${trigger ? "Arm · " : ""}${side === "buy" ? "Buy" : "Sell"} ${valid ? q : ""} ${name}${type === "limit" && validMoney(limitPrice) ? ` @ ${formatMoney(limitPrice)}` : type === "market" ? " at market" : ""}${bracket?.stop_loss || bracket?.take_profit ? " · bracket" : ""}`}

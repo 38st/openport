@@ -144,8 +144,8 @@ export function limitOnlyNotice(symbol: string, underlying: UnderlyingSnapshot |
   const session = extendedSession(underlying)
   if (!session) return null
   return session === "overnight"
-    ? `${symbol} is in its overnight session (8:15 pm to 9:25 am ET): limit orders only, with a condition or exits only on a GTC order, which waits for the regular session. A Day order lasts until 9:25 am.`
-    : `${symbol} is in its curb session (4:15 to 5:00 pm ET): limit orders only, with a condition or exits only on a GTC order, which waits for the regular session. A Day order lasts until 5:00 pm.`
+    ? `${symbol} is in its overnight session (8:15 pm to 9:25 am ET): limit orders only. EXTO and GTC + EXTO conditions and exits work here; GTC and GTD wait for regular hours. A Day order lasts until 9:25 am.`
+    : `${symbol} is in its curb session (4:15 to 5:00 pm ET): limit orders only. EXTO and GTC + EXTO conditions and exits work here; GTC and GTD wait for regular hours. A Day order lasts until 5:00 pm.`
 }
 
 export function paperNotice(symbol: string, underlying: UnderlyingSnapshot | undefined) {

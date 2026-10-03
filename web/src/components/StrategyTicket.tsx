@@ -5,7 +5,7 @@ import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useSmileSurface } from "../api/smiles"
 import { useAccount, usePortfolio, useRefreshTrading, useTradingSession } from "../api/trading"
-import type { NewOrder, Order, TradingStatus } from "../api/trading-types"
+import type { NewOrder, Order, TimeInForce, TradingStatus } from "../api/trading-types"
 import type { Expiry, Surface } from "../api/types"
 import { LineChart } from "../charts/LineChart"
 import { expectedMove } from "../lib/candles"
@@ -22,6 +22,7 @@ import { OrderResult } from "./OrderTicket"
 import { WriteAccess, writeBlocked } from "./TradingControls"
 import { useSpreadExits } from "./SpreadExits"
 import { Segmented } from "./ui"
+import { goodTillTimestamp, TimeInForceField } from "./TimeInForceField"
 
 const quickSizes = [1, 2, 5, 10]
 /** "$1.20 debit", "$0.80 credit", "even". */
@@ -86,13 +87,14 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const quote = netQuote(legs)
   const [units, setUnits] = useState(String(initialUnits ?? 1))
   const status = underlyings.find((u) => u.symbol === underlying)
-  // The overnight and curb sessions take a net limit only, and exits only on a GTC
-  // limit, which waits for the regular session.
+  // Overnight and curb take net limits. Extended TIFs keep their exits active there.
   const extended = extendedSession(status)
   const [chosenType, setType] = useState<"limit" | "market">("limit")
   const type = extended ? "limit" : chosenType
-  const [tif, setTif] = useState<"day" | "gtc" | "ioc">("day")
-  const exitable = !closing && !roll && (!extended || tif === "gtc")
+  const [goodTill, setGoodTill] = useState("")
+  const good_till = goodTillTimestamp(goodTill)
+  const [tif, setTif] = useState<TimeInForce>("day")
+  const exitable = !closing && !roll && (!extended || ["gtc", "exto", "gtc_exto", "gtd"].includes(tif))
   const [amount, setAmount] = useState(() => quote.mid != null ? Math.abs(roundNet(quote.mid, tick)).toFixed(2) : "")
   const [direction, setDirection] = useState<"debit" | "credit">(() => (quote.mid ?? 0) < 0 ? "credit" : "debit")
   const [pending, setPending] = useState(false)
@@ -127,7 +129,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
   const validAmount = /^\d+(\.\d+)?$/.test(amount) && Number.isFinite(typed) && Math.round(typed * 100) % tick === 0
   const net = type === "market" ? quote.ask : validAmount ? (direction === "debit" ? typed : -typed) : null
   const limitText = net == null ? "" : net.toFixed(2)
-  const exits = useSpreadExits(net, tick)
+  const exits = useSpreadExits(net, tick, false, tif === "exto" || tif === "gtc_exto")
   const label = strategyLabel(legs)
   const legExpiries = [...new Set(legs.map((l) => l.expiry))]
   const multi = legExpiries.length > 1
@@ -161,11 +163,12 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
   })
   const blocked = writeBlocked(trading, token) || (trading.kill_latched && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
-  const valid = legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
+  const valid = (type === "market" || tif !== "gtd" || good_till != null) && legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
 
   const draft: NewOrder | null = valid ? {
     client_order_id: "preview:strategy", legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
-    ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitText }),
+    ...(type === "market" ? { type, time_in_force: "ioc" as const } : { type, time_in_force: tif, limit_price: limitText }),
+    ...(type === "limit" && tif === "gtd" ? { good_till } : {}),
   } : null
   const preview = useOrderPreview(draft, trading)
   const whatIfScope = useWhatIfScope()
@@ -208,7 +211,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     try {
       request.current ??= {
         client_order_id: crypto.randomUUID(), legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
-        ...(type === "market" ? { type, time_in_force: "ioc" } : { type, time_in_force: tif, limit_price: limitText }),
+        ...(type === "market" ? { type, time_in_force: "ioc" as const } : { type, time_in_force: tif, limit_price: limitText }),
+        ...(type === "limit" && tif === "gtd" ? { good_till } : {}),
         ...(exitable && exits.bracket ? { bracket: exits.bracket } : {}),
         ...(orderTags.length ? { tags: orderTags } : {}), ...(note ? { note } : {}),
       }
@@ -286,10 +290,8 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
             <Segmented label="Order type" value={type} onChange={(next) => { setType(next); if (next === "market") setTif("ioc") }}
               options={extended ? [{ value: "limit", label: "Limit" }] : [{ value: "limit", label: "Limit" }, { value: "market", label: "Market" }]} />
           </div>
-          <div className="trade-label">Time in force
-            <Segmented label="Time in force" value={type === "market" ? "ioc" : tif} onChange={(next) => { if (type !== "market") setTif(next) }}
-              options={type === "market" ? [{ value: "ioc", label: "IOC" }] : [{ value: "day", label: "Day" }, { value: "gtc", label: "GTC" }, { value: "ioc", label: "IOC" }]} />
-          </div>
+          <TimeInForceField value={type === "market" ? "ioc" : tif} onChange={(next) => { setTif(next); if (next === "exto" || next === "gtc_exto") exits.setLimitOn(true) }} market={type === "market"}
+            goodTill={goodTill} setGoodTill={setGoodTill} />
           {type === "limit" && <div className="trade-label col-span-2">
             <span className="flex flex-wrap items-end gap-2">
               <label className="trade-label min-w-0 flex-1">Net limit ($)<input className="trade-input" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} pattern="[0-9]+([.][0-9]+)?" required /></label>

@@ -8,6 +8,7 @@ import { liveState, useLive } from "../api/live"
 import type { TradingStatus } from "../api/trading-types"
 import { account, order, portfolio, quote, selection, status, trading } from "../test/trading-fixtures"
 import { OrderTicket } from "./OrderTicket"
+import { FlattenDialog } from "./OrderActions"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../api/trading", async (original) => ({ ...await original<typeof import("../api/trading")>(), useRefreshTrading: () => vi.fn() }))
@@ -355,4 +356,43 @@ it("warns about a missing bid while keeping unknown volume distinct from zero", 
   </QueryClientProvider>))
   expect(host.textContent).toContain("No two-sided liquidity")
   expect(host.textContent).toContain("Volume unknown")
+})
+
+it("offers all-session protection and submits a zoned GTD timestamp", async () => {
+  await render()
+  await choose("Time in force", "EXTO")
+  expect(host.textContent).toContain("Works through this trading date")
+  await choose("Time in force", "GTC + EXTO")
+  expect(host.textContent).toContain("Works in every product session")
+  await choose("Time in force", "GTD")
+  expect(button("Submit order").disabled).toBe(true)
+  await setField("Good until (UTC)", "2026-10-22T14:15")
+  await click("Submit order")
+  expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ time_in_force: "gtd", good_till: "2026-10-22T14:15:00.000Z" })
+})
+
+it("allows an EXTO triggered market in the overnight session", async () => {
+  vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }] }, null, "open"))
+  await render()
+  await choose("Time in force", "GTC + EXTO")
+  await choose("Condition", "When SPX crosses")
+  await setField("SPX level", "7010")
+  await choose("Order type", "Market")
+  await click("Submit order")
+  expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).toMatchObject({ type: "market", time_in_force: "gtc_exto", trigger: { source: "underlying", level: "7010" } })
+})
+
+
+it("enables limit flatten overnight and sends the same pricing to its preview", async () => {
+  vi.mocked(useLive).mockReturnValue(liveState({ ...status, underlyings: [{ ...status.underlyings[0]!, session: { name: "global", open: true, note: "Overnight" } }] }, null, "open"))
+  vi.spyOn(api, "previewFlatten").mockRejectedValue(new Error("fixture preview"))
+  vi.spyOn(api, "closePositions").mockRejectedValue(new Error("fixture close"))
+  await act(async () => root.render(<QueryClientProvider client={client}><FlattenDialog positions={[portfolio.positions[0]!]} orders={[]} trading={trading} onClose={() => {}} /></QueryClientProvider>))
+  expect(button("Close 1 position").disabled).toBe(true)
+  await setField("Flatten order type", "limit")
+  await setField("Ticks through the touch", "3")
+  expect(button("Close 1 position").disabled).toBe(false)
+  expect(api.previewFlatten).toHaveBeenLastCalledWith(null, "open", { type: "limit", limit_ticks: 3 })
+  await click("Close 1 position")
+  expect(api.closePositions).toHaveBeenCalledWith(null, "open", { type: "limit", limit_ticks: 3 })
 })
