@@ -614,7 +614,11 @@ covers an underlying's market time, new orders reject with `MARKET_HALTED`, whos
 message gives the fall and when trading resumes, status reports it, and no resting
 order, trigger or bracket exit fills. The terminal shows the fall, the level and the
 resume time in a banner while the latest market time is inside a recorded halt;
-level 3 says trading is halted for the rest of the day. SPY is named when it stands
+level 3 says trading is halted for the rest of the day. Authored scenario halts
+identify the scenario and give the resume time in New York time, for example
+"Trading is halted market-wide by the scenario; it resumes at 10:30 ET". A halt
+ending at or after the regular close (including an early close) says "for the rest
+of the day"; the terminal uses the same calendar-aware decision. SPY is named when it stands
 in for the index. `server::circuit_breaker` holds the rule. Halts of a single stock or
 ETF are not modelled.
 

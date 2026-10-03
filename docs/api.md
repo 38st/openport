@@ -17,7 +17,8 @@ remain exact integer micro-dollars.
 Status and WebSocket `circuit_breaker` include optional `inactive_reason`
 (`MISSING_PREVIOUS_CLOSE` or null). Halt level 0 identifies an authored market-wide
 scenario halt; levels 1–3 are price-triggered breakers. The terminal shows the
-cause and resume time. See [stress scenarios](scenarios.md#events).
+cause and resume time in New York time, or "for the rest of the day" when the
+halt reaches the regular close. See [stress scenarios](scenarios.md#events).
 
 | Route | Returns |
 | --- | --- |

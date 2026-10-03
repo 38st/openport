@@ -111,7 +111,7 @@ TEST(Recording, EmptySessionAndFalseCapabilitiesAreClean) {
 
 TEST(Recording, LegacyHeadersRefuseMarketControlsWithoutWritingUnsupportedTags) {
   for (const bool imported : {false, true}) {
-    for (const md::Event event : {md::Event{md::SnapshotHeartbeat{"SPX", 100}}, md::Event{md::TradingHalt{100, 200}}}) {
+    for (const md::Event& event : {md::Event{md::SnapshotHeartbeat{"SPX", 100}}, md::Event{md::TradingHalt{100, 200}}}) {
       SCOPED_TRACE(imported ? "v3" : "v2");
       SCOPED_TRACE(event.index());
       test::RecordingFile file;

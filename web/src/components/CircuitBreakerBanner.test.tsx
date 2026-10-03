@@ -67,4 +67,18 @@ describe("the circuit breaker banner", () => {
     tick.circuit_breaker = breaker
     expect(render(undefined, tick)).toContain("Trading is halted market-wide")
   })
+
+  it("uses the server's rest-of-day decision for authored halts on early-close days", () => {
+    const state: CircuitBreaker = { ...breaker, level: 0, day: "2026-11-27", halts: [{ ...breaker.halts[0]!,
+      level: 0, start: "2026-11-27T15:00:00Z", end: "2026-11-27T18:00:00Z", reference: 0, price: 0 }] }
+    const tick: Tick = { type: "tick", feed: status.feed, engine: status.engine, circuit_breaker: state,
+      underlyings: status.underlyings.map((u) => ({ ...u, paper: { accepting: false, reason: "MARKET_HALTED",
+        message: "Trading is halted market-wide by the scenario for the rest of the day", session: "regular" } })) }
+    const html = render(state, tick)
+    expect(html).toContain("halted market-wide by the scenario")
+    expect(html).toContain("for the rest of the day.")
+    expect(html).not.toContain("resumes at")
+    expect(render({ ...state, halts: [{ ...state.halts[0]!, end: "2026-11-27T15:30:00Z" }] }))
+      .toContain("Trading resumes at 10:30 ET.")
+  })
 })
