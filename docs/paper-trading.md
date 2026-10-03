@@ -1583,6 +1583,7 @@ side, no buying-power check. All rule money is exact.
 | `daily_loss_limit` | Dollars below `daily_loss_basis` that equity may not touch in one trading day (zero disables); see Plan objectives and the daily loss limit |
 | `daily_loss_basis` | `Equity` (default, the day's opening equity), `Balance` (its opening closed balance), `Higher` (the higher of the two) or `Peak` (the day's fully marked equity high, starting at its opening equity, so the limit trails the day's gains) |
 | `daily_loss_action` | `Lock` (default): close every position and refuse opening orders until the next trading day. `Fail`: fail the attempt |
+| `trade_consistency_percent` | F29: best profitable closed whole option trade, net of fees, at most this whole percent of attempt profit under `profit_basis` (1–100; 0 disables); evaluation only |
 | `consistency_percent` | A pass needs the best day's profit at most this whole percent (1–100) of `consistency_basis`; zero disables |
 | `consistency_basis` | `Total` (default): the attempt's profit. `PositiveDays`: the profitable days' profits added up |
 | `min_trading_days` | A pass needs this many trading days with an execution of the trader's own orders (0–366) |
@@ -1960,6 +1961,19 @@ reducer counts each day's executions only while `min_trading_days` asks for them
 journals the plan rules, a decision's code (other than the target's or the floor's,
 which the status implies), the day's lock and its executions only when they are set,
 so a plan without these rules keeps the journal bytes it had.
+
+**Trade consistency (F29).** `TRADE_CONSISTENCY` waits for a profitable closed whole
+option trade, then requires `best_trade.pnl × 100 <= trade_consistency_percent ×
+attempt profit`, with exact integer micro-dollar products. A trade is closed only
+when every round trip in its group is flat; rolls and adjustments stay one trade.
+Shares are separate from whole option trades and do not enter this measure. Net P&L
+includes all fees, settlement, expiry, assignment and account liquidation closures.
+The best trade is reported as `best_trade: {id, pnl}` (null before one qualifies),
+with the earliest opening fill breaking ties. Objective `actual` is its percentage
+of attempt profit (null while profit is nonpositive), `required` is the limit, and
+the message names the trade and its net P&L. A breach only holds the pass back.
+Funded plans ignore this objective, like day consistency and minimum days. Pass
+odds retain the attempt's best trade and simulate no additional closed trades.
 
 **What liquidation costs.** A pass on marked equity liquidates at the bid or ask, which
 can leave less than the equity that passed. `TradingSnapshot::exit_equity` is what
@@ -2819,6 +2833,7 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_ORDER`, `DUPLICATE_CLIENT_ID`, `INVALID_TICK` | Malformed order, a key reused with other terms, invalid price increment |
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
 | `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
+| `TRADE_CONSISTENCY` | Pass waits for a profitable closed whole trade and its share of attempt profit to fit the limit |
 | `MAX_TRADE_RISK` | Entry risk exceeds its plan cap; `actual` and `limit` are dollars, `scope` is `trade`; actual is null for unbounded or unknown risk |
 | `MAX_CONTRACTS_HELD` | Projected held options plus working opening contracts exceed the plan cap; `actual` and `limit` are contract counts, `scope` is `account` |
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |

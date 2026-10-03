@@ -106,6 +106,17 @@ std::vector<Objective> objectives_with(const Evaluation& e, const AccountRules& 
                      (balance ? " on the closed balance" : "");
     out.push_back(std::move(o));
   }
+  if (rules.phase == Phase::Evaluation && rules.trade_consistency_percent > 0) {
+    Objective o{Reason::TRADE_CONSISTENCY, false, std::nullopt, static_cast<double>(rules.trade_consistency_percent),
+                "No profitable closed whole trade yet"};
+    if (profit > Money{}) o.actual = e.best_trade ? e.best_trade->pnl.dollars() / profit.dollars() * 100 : 0;
+    if (e.best_trade) {
+      o.met = consistent(e.best_trade->pnl, rules.trade_consistency_percent, profit);
+      o.message = "Best trade " + e.best_trade->id + ", net " + dollars(e.best_trade->pnl) +
+          "; at most " + std::to_string(rules.trade_consistency_percent) + "% of attempt profit " + dollars(profit);
+    }
+    out.push_back(std::move(o));
+  }
   if (!needs_days(rules)) return out;
   const auto stats = with_today(finished ? *finished : finished_day_stats(e, rules), e, rules, now);
   if (rules.min_trading_days > 0) {

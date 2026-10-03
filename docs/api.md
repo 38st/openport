@@ -340,3 +340,5 @@ all four off. Opening previews report `trade_risk`, `trade_risk_limit` and
 `MAX_TRADE_RISK` with the usual `actual`, `limit`, `scope` evidence: contract counts
 with scope `account`, or dollar amounts with scope `trade` (actual null for
 unbounded/unknown risk). See [trade rules](paper-trading.md#account-rules-and-evaluations).
+
+Custom account/reset and backtest rules accept `trade_consistency_percent` (integer 0–100). Account evaluation exposes nullable `best_trade: {id, pnl}` and `TRADE_CONSISTENCY` objective evidence (actual/required percent, message with trade ID and net P&L). Funded plans ignore the objective.

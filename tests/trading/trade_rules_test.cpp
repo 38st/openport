@@ -36,6 +36,55 @@ OrderRequest stopped(OrderRequest request, std::string_view level = "3.00", Trig
   return request;
 }
 
+TEST(TradeRules, TradeConsistencyUsesExactProfitAndHoldsWithoutAProfitableTrade) {
+  AccountRules rules; rules.trade_consistency_percent = 50;
+  Evaluation e; e.starting_balance = m("10000");
+  PlanInputs now{m("10200"), m("10200"), m("200"), true};
+  EXPECT_FALSE(evaluation_objectives(e, rules, now).back().met);
+  e.best_trade = BestTrade{"17", m("100")};
+  auto objective = evaluation_objectives(e, rules, now).back();
+  EXPECT_TRUE(objective.met);
+  EXPECT_EQ(objective.actual, 50);
+  EXPECT_NE(objective.message.find("17"), std::string::npos);
+  now.equity = m("10199.999999");
+  EXPECT_FALSE(evaluation_objectives(e, rules, now).back().met);
+  now.equity = m("9999");
+  EXPECT_FALSE(evaluation_objectives(e, rules, now).back().actual);
+  rules.profit_basis = ProfitBasis::Balance;
+  EXPECT_TRUE(evaluation_objectives(e, rules, now).back().met);
+  rules.phase = Phase::Funded;
+  EXPECT_TRUE(evaluation_objectives(e, rules, now).empty());
+  rules.trade_consistency_percent = 101;
+  EXPECT_THROW(validate_rules(rules), TradingError);
+}
+
+TEST(TradeRules, BestWholeTradeWaitsForEveryLegAndRecovers) {
+  ScriptedMarket f, g; g.contract.strike += 5;
+  AccountRules rules; rules.trade_consistency_percent = 50; rules.profit_target = m("10000");
+  JournalFile file;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+    f.seed(s); g.seed(s);
+    auto combo = f.market("combo");
+    combo.symbol.clear(); combo.legs = {{f.symbol(), Side::Buy, 1}, {g.symbol(), Side::Buy, 1}};
+    ASSERT_TRUE(s.submit(combo, f.time).decision.ok());
+    f.next(); g.next(); f.seed(s, "5.00", "5.20"); g.seed(s, "5.00", "5.20");
+    ASSERT_TRUE(s.submit(f.market("first-close", 1, Side::Sell), f.time).decision.ok());
+    EXPECT_FALSE(s.snapshot()->evaluation.best_trade);
+    ASSERT_TRUE(s.submit(g.market("last-close", 1, Side::Sell), g.time).decision.ok());
+    ASSERT_TRUE(s.snapshot()->evaluation.best_trade);
+    EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
+  }
+  const auto recovery = FileJournal::read(file.path);
+  auto s = TradingSession::recover(recovery, FileJournal::resume(file.path));
+  ASSERT_TRUE(s.snapshot()->evaluation.best_trade);
+  EXPECT_EQ(s.snapshot()->evaluation.best_trade->id, "1");
+  EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
+  EXPECT_EQ(s.config().rules, rules);
+  f.next(); f.seed(s);
+  EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
+}
+
 TEST(TradeRules, RequiredStopsProtectEntriesAndCannotBeCancelledWhileHeld) {
   ScriptedMarket f;
   AccountRules rules;
@@ -313,7 +362,7 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   }
   const auto recovery = FileJournal::read(file.path);
   for (const auto& record : recovery.records)
-    for (const auto* field : {"max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
+    for (const auto* field : {"trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
       EXPECT_EQ(record.payload.find(field), std::string::npos);
   auto s = TradingSession::recover(recovery);
   EXPECT_EQ(s.config().rules.max_contracts_held, 0);

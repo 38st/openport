@@ -2916,7 +2916,34 @@ PlanInputs plan_inputs(const State& s, Money equity) {
 /// plan's verdict on fully marked equity (evaluate_plan: the floor, the daily
 /// loss limit, the target and its objectives); monitor_rules then liquidates a
 /// decided attempt or a locked day and auto-closes expiring positions.
+// Derive enabled trade objectives from reducer history, including non-fill closures.
+// Whole trades use the same grouping as the trade journal, so rolls count once.
+void refresh_trade_objectives(State& s) {
+  const auto& rules = s.config.rules;
+  if (rules.phase != Phase::Evaluation || rules.trade_consistency_percent == 0) return;
+  auto& e = s.evaluation;
+  struct Whole { Money pnl; bool closed = true; std::uint64_t first = 0; };
+  std::map<std::string, Whole> trades;
+  for (const auto& life : lifecycles(s.fills, s.closures, s.contracts)) {
+    if (life.first_fill < e.first_fill) continue;
+    auto& trade = trades[trade_group(life, s.groups)];
+    trade.pnl = trade.pnl + life.gross - life.fees;
+    trade.closed = trade.closed && life.closed.has_value();
+    if (trade.first == 0 || life.first_fill < trade.first) trade.first = life.first_fill;
+  }
+  e.best_trade.reset();
+  std::uint64_t best_first = 0;
+  for (const auto& [id, trade] : trades) {
+    if (!trade.closed || trade.pnl <= Money{}) continue;
+    if (!e.best_trade || trade.pnl > e.best_trade->pnl ||
+        (trade.pnl == e.best_trade->pnl && trade.first < best_first)) {
+      e.best_trade = BestTrade{id, trade.pnl};
+      best_first = trade.first;
+    }
+  }
+}
 void observe_equity(State& s, Events& events) {
+  refresh_trade_objectives(s);
   const auto& rules = s.config.rules;
   auto& e = s.evaluation;
   // A journal created before any market data starts at time zero; the attempt
@@ -4516,6 +4543,7 @@ struct TradingSession::Impl {
       check_triggers(next, events);
     }
     detail::update_reviews(next);
+    refresh_trade_objectives(next);
     reindex(next);
     std::optional<Json> change;
     if (journal && recorder.based()) {

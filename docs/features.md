@@ -512,3 +512,5 @@ special opening quotation; live providers keep manual imports.
       Settlement-pending options are excluded. Journaled triggers and pending closes
       recover deterministically; custom editor, Rules, facts, Dashboard notices and
       option/strategy/share tickets expose both rules.
+
+- [x] F29: per-trade consistency limits the best closed whole option trade to a percentage of attempt profit, with exact net P&L and pass-objective evidence.

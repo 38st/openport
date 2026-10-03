@@ -61,9 +61,15 @@ struct SizeScalingProgress {
   std::vector<SizeScale> history;
 };
 
+struct BestTrade {
+  std::string id;
+  Money pnl;  ///< Positive net P&L of a fully closed whole option trade.
+};
+
 /// Rule progress for the current attempt. Fully marked equity (every position
 /// has a mark, fresh or not) drives equity rules; time and overnight rules need no marks.
 struct Evaluation {
+  std::optional<BestTrade> best_trade;  ///< Kept only with trade consistency enabled.
   std::uint64_t attempt = 1;
   Timestamp started = 0;
   Money starting_balance;

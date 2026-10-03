@@ -1460,3 +1460,5 @@ rollover, excluding settlement-pending options. Option closes use
 planner, and `max_order_contracts` splitting; stock fills use source `rule`.
 Account evaluation exposes `flat_time` and `flat_now`. Disabled plans keep their
 prior journal bytes; no replay driver or scenario revision changes.
+
+F29 journals `trade_consistency_percent` only when nonzero and evaluation `best_trade` only when a positive closed whole trade exists under that rule. Summaries derive from reducer fills, closures and groups, including system closures; recovery repeats the same calculation. Off plans keep their bytes and hashes; driver/scenario revisions are unchanged.

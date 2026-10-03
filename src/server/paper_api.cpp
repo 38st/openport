@@ -73,7 +73,7 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"daily_loss_limit", positive(r.daily_loss_limit)},
           {"daily_loss_basis", kDailyLossBases[static_cast<int>(r.daily_loss_basis)]},
           {"daily_loss_action", kBreachActions[static_cast<int>(r.daily_loss_action)]},
-          {"consistency_percent", r.consistency_percent},
+          {"trade_consistency_percent", r.trade_consistency_percent}, {"consistency_percent", r.consistency_percent},
           {"consistency_basis", kConsistencyBases[static_cast<int>(r.consistency_basis)]},
           {"min_trading_days", r.min_trading_days}, {"min_profitable_days", r.min_profitable_days},
           {"profitable_day_profit", positive(r.profitable_day_profit)}, {"day_end", clock_text(r.day_end_minutes)},
@@ -852,6 +852,7 @@ json account_json(const TradingView& view) {
               {"profitable_days", stats.profitable_days},
               {"best_day", stats.best_day ? json{{"day", md::format_date(stats.best_day_date)}, {"profit", stats.best_day->str()}}
                                           : json(nullptr)},
+              {"best_trade", e.best_trade ? json{{"id", e.best_trade->id}, {"pnl", e.best_trade->pnl.str()}} : json(nullptr)},
               {"consistency_target", money(consistency_target(e, r, in))},
               {"daily_loss", daily_loss},
               {"time_limit_days", r.time_limit_days > 0 ? json(r.time_limit_days) : json(nullptr)},
@@ -1636,7 +1637,7 @@ AccountRules parse_rules(const json& j) {
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
-          "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
+          "trade_consistency_percent", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
           "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling", "size_scaling"});
   AccountRules rules;
   // Accept read-back rules in a custom request, but always derive the identity.
@@ -1666,6 +1667,7 @@ AccountRules parse_rules(const json& j) {
   if (has("daily_loss_action")) rules.daily_loss_action = choice_field<BreachAction>(j, "daily_loss_action", kBreachActions);
   if (has("consistency_percent")) rules.consistency_percent = integer_field(j, "consistency_percent");
   if (has("consistency_basis")) rules.consistency_basis = choice_field<ConsistencyBasis>(j, "consistency_basis", kConsistencyBases);
+  if (has("trade_consistency_percent")) rules.trade_consistency_percent = integer_field(j, "trade_consistency_percent");
   if (has("min_trading_days")) rules.min_trading_days = integer_field(j, "min_trading_days");
   if (has("min_profitable_days")) rules.min_profitable_days = integer_field(j, "min_profitable_days");
   if (has("profitable_day_profit")) rules.profitable_day_profit = decimal_field(j, "profitable_day_profit");

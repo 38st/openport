@@ -35,10 +35,10 @@ enum class Reason {
   ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP,
   MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
   TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS,
-  FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT
+  FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT, TRADE_CONSISTENCY
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::SCALING_LIMIT;
+inline constexpr Reason kLastReason = Reason::TRADE_CONSISTENCY;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -644,6 +644,7 @@ struct AccountRules {
   DailyLossBasis daily_loss_basis = DailyLossBasis::Equity;
   BreachAction daily_loss_action = BreachAction::Lock;
   std::int64_t consistency_percent = 0;  ///< Best day at most this share of the basis, 1-100; zero disables.
+  std::int64_t trade_consistency_percent = 0;  ///< Best closed whole trade / attempt profit, 0-100; zero disables.
   ConsistencyBasis consistency_basis = ConsistencyBasis::Total;
   std::int64_t min_trading_days = 0;     ///< Days with an execution of the trader's own orders.
   std::int64_t min_profitable_days = 0;  ///< Days whose profit reaches `profitable_day_profit`.

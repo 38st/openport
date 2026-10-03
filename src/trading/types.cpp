@@ -31,6 +31,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY); CASE(ACCOUNT_TYPE); CASE(INVALID_ALERT); CASE(UNKNOWN_ALERT);
     CASE(MAX_CONTRACTS_HELD); CASE(STOP_REQUIRED); CASE(MAX_TRADE_RISK);
     CASE(TIME_LIMIT); CASE(INACTIVITY); CASE(INSTRUMENT_NOT_ALLOWED); CASE(OUTSIDE_PLAN_HOURS); CASE(FLAT_TIME); CASE(OVERNIGHT_HOLD);
+    CASE(TRADE_CONSISTENCY);
   }
 #undef CASE
   return "UNKNOWN";
@@ -266,6 +267,8 @@ void validate_rules(const AccountRules& r) {
     throw TradingError(Reason::INVALID_RULES,
         "The daily loss limit and profitable-day profit must be nonnegative, the consistency percentage 0-100 and minimum "
         "days 0-366");
+  if (r.trade_consistency_percent < 0 || r.trade_consistency_percent > 100)
+    throw TradingError(Reason::INVALID_RULES, "Trade consistency must be a whole percent from 0 to 100");
   if (r.day_end_minutes < 16 * 60 + 15 || r.day_end_minutes > 24 * 60)
     throw TradingError(Reason::INVALID_RULES, "The trading day ends between 16:15 and 24:00 New York time");
   if (r.max_contracts_held < 0 || r.max_contracts_held > 100000)
