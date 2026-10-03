@@ -3043,7 +3043,10 @@ void monitor_calendar(State& s, Events& events) {
   if (r.events.empty() && r.hold_restrictions.empty()) return;
   auto& e = s.evaluation;
   const auto from = e.event_checked > 0 ? e.event_checked : (e.started > 0 ? e.started : s.time);
-  for (const auto& w : event_windows(r, from, s.time)) {
+  const auto windows = event_windows(r, from, s.time);
+  // Record every crossed boundary before any late calendar close can remove
+  // evidence of a position held across it (including an overlapping news close).
+  for (const auto& w : windows) {
     if (w.kind != "news" && w.end <= s.time && from < w.end && holds_scope(s, w.symbol)) {
       const auto violation = w.kind + ":" + (w.symbol.empty() ? "account" : w.symbol);
       if (std::find(e.holding_violations.begin(), e.holding_violations.end(), violation) == e.holding_violations.end()) {
@@ -3051,6 +3054,8 @@ void monitor_calendar(State& s, Events& events) {
         event(events, "holding_boundary_crossed", Json{{"key", w.key}, {"scope", violation}, {"boundary", w.end}});
       }
     }
+  }
+  for (const auto& w : windows) {
     // A news window skipped in its entirety never acts retroactively.
     if (w.kind == "news" && s.time >= w.end) continue;
     if (std::find(e.event_actions.begin(), e.event_actions.end(), w.key) != e.event_actions.end()) continue;

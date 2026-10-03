@@ -144,6 +144,21 @@ TEST(EventRules, FailedCutoffLiquidityFailsAtRollover) {
   ASSERT_TRUE(s.roll_day(md::new_york_to_utc({2026, 9, 25}, 17, 0)).decision.ok());
   EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::HOLD_RESTRICTED);
 }
+TEST(EventRules, OverlappingLateClosesPreserveEveryCrossedHoldingBoundary) {
+  ScriptedMarket f; f.time = md::new_york_to_utc({2026, 9, 25}, 14, 0);
+  AccountRules r; r.hold_restrictions = {"earnings", "weekend"};
+  r.events = {{"earnings", "2026-09-28", "SPX"}};
+  TradingSession s(config(r), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+  // Both Friday cutoffs were missed. The earnings close sorts first, but must
+  // not erase evidence that this position also crossed the weekend boundary.
+  tick(s, f, md::new_york_to_utc({2026, 9, 28}, 10, 0));
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->evaluation.holding_violations,
+      (std::vector<std::string>{"earnings:SPX", "weekend:account"}));
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::HOLD_RESTRICTED);
+}
 TEST(EventRules, SettlementAwaitingPositionIsSkipped) {
   ScriptedMarket f; f.contract = *md::parse_osi("SPXW260922C05000000");
   AccountRules r; r.news_after_minutes = 10; r.news_action = "flatten";
