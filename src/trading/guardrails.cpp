@@ -6,7 +6,7 @@
 namespace openport::trading {
 void validate_guardrails(const Guardrails& g, bool stored) {
   if (!stored && g.soft_floor_percent == 100)
-    throw TradingError(Reason::INVALID_LIMITS, "Soft floor percent must be 0-99: 100 puts the soft floor at the peak, so it latches at once");
+    throw TradingError(Reason::INVALID_LIMITS, "Soft floor percent must be 0-99: 100 can put the soft floor at the peak, where it latches at once");
   if (g.soft_floor < Money{} || g.soft_floor_percent < 0 || g.soft_floor_percent > 100 ||
       g.max_opening_trades < 0 || g.cooldown_loss < Money{} || g.cooldown_minutes < 0 ||
       g.cooldown_minutes > 1440 || g.profit_lock < Money{})

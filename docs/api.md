@@ -145,7 +145,7 @@ return `EVALUATION_CLOSED`. `GET /api/account/equity` includes the exact decisio
 observation before any same-time liquidation samples.
 
 Personal guardrails accept `soft_floor_percent` from 0 to 99 on new writes; 100 returns
-`INVALID_LIMITS` because it latches at the peak immediately. Stored 100 settings remain
+`INVALID_LIMITS` because it can latch at the peak immediately. Stored 100 settings remain
 readable. `SOFT_FLOOR_UNUSED` is an informational risk warning for a percent floor on a
 plan without drawdown. Account resets return the account's usual `warnings`, including
 `SOFT_FLOOR` when a retained absolute floor meets or exceeds the new balance. Resets

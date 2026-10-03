@@ -14613,7 +14613,7 @@
           },
           "soft_floor_percent": {
             "type": "number",
-            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 puts the floor at the peak and latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED)."
+            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 can put the floor at the peak, where it latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED)."
           },
           "max_opening_trades": {
             "type": "number",
@@ -22219,7 +22219,7 @@
           },
           "soft_floor_percent": {
             "type": "integer",
-            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 puts the floor at the peak and latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED).",
+            "description": "Whole percent of drawdown above the plan floor. New requests accept 0–99; 100 can put the floor at the peak, where it latches at once (INVALID_LIMITS). Stored 100 remains readable. Has no effect without a plan drawdown floor (SOFT_FLOOR_UNUSED).",
             "minimum": 0,
             "maximum": 99
           },
