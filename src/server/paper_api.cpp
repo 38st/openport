@@ -2315,6 +2315,12 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
                               "house_margin_percent", "pm_vol_shock", "evaluation_fee", "reset_fee", "activation_fee", "max_resets"});
     command.kind = TradingCommand::Kind::ResetAccount;
     command.program_costs = true;
+    std::uint64_t cost_bit = 1;
+    for (const auto* field : {"evaluation_fee", "reset_fee", "activation_fee", "max_resets"}) {
+      if (body.contains(field) || (body.contains("rules") && body.at("rules").contains(field)))
+        command.program_cost_overrides |= cost_bit;
+      cost_bit <<= 1;
+    }
     command.reason = string_field(body, "reason");
     if (body.contains("plan")) {
       if (body.contains("initial_cash") || body.contains("rules"))

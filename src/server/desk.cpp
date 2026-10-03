@@ -1781,7 +1781,17 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
                                            !follows_plan(*evaluation, before->evaluation.starting_balance, session.config().rules)))
             result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + (c.program_costs ? " to start this step" : " evaluation to start this funded account"),
                                {}, {}, {}};
-          else result = session.reset_account(c.initial_cash, c.rules, c.reason, market_time_, !restarting && !c.required_pass.empty(), c.program_costs);
+          else {
+            auto rules = c.rules;
+            if (restarting) {
+              const auto& current = session.config().rules;
+              if (!(c.program_cost_overrides & 1)) rules.evaluation_fee = current.evaluation_fee;
+              if (!(c.program_cost_overrides & 2)) rules.reset_fee = current.reset_fee;
+              if (!(c.program_cost_overrides & 4)) rules.activation_fee = current.activation_fee;
+              if (!(c.program_cost_overrides & 8)) rules.max_resets = current.max_resets;
+            }
+            result = session.reset_account(c.initial_cash, rules, c.reason, market_time_, !restarting && !c.required_pass.empty(), c.program_costs);
+          }
           break;
         }
         case TradingCommand::Kind::Payout: result = session.request_payout(c.amount, market_time_); break;

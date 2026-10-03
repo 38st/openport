@@ -183,6 +183,17 @@ TEST_F(PaperEngine, ProgramCostOverridesAndCustomVerification) {
   EXPECT_EQ(purchased["costs"]["resets_used"], 0);
   EXPECT_EQ(purchased["costs"]["resets_left"], 1);
   EXPECT_EQ(purchased["evaluation"]["equity"], "25000.00");
+  auto restarted = write(*engine, "POST", "/api/account/reset?account=" + id, {{"plan", "two-step-25k"}, {"reason", "same"}});
+  ASSERT_EQ(restarted.status, 200) << restarted.body;
+  EXPECT_EQ(json::parse(restarted.body)["costs"]["total"], "15.000003");
+  EXPECT_EQ(json::parse(restarted.body)["rules"]["max_resets"], 1);
+  expect_error(write(*engine, "POST", "/api/account/reset?account=" + id, {{"plan", "two-step-25k"}, {"reason", "over"}}), 409, "RESET_LIMIT");
+  // Explicitly changing fee terms or raising the allowance keeps the used count.
+  restarted = write(*engine, "POST", "/api/account/reset?account=" + id,
+      {{"plan", "two-step-25k"}, {"reason", "new terms"}, {"reset_fee", "4.000001"}, {"max_resets", 2}});
+  ASSERT_EQ(restarted.status, 200) << restarted.body;
+  EXPECT_EQ(json::parse(restarted.body)["costs"]["resets_used"], 2);
+  EXPECT_EQ(json::parse(restarted.body)["costs"]["total"], "19.000004");
   auto response = write(*engine, "POST", "/api/account/reset", {{"plan", "eod-25k"}, {"reason", "purchase"},
       {"evaluation_fee", "1.000001"}, {"reset_fee", "2.000002"}, {"max_resets", 1}});
   ASSERT_EQ(response.status, 200) << response.body;
