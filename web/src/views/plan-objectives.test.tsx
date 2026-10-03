@@ -14,6 +14,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { ruleAlerts } from "../lib/rule-alerts"
 import { account, plans, portfolio, risk, status, trades } from "../test/trading-fixtures"
 import { DashboardView } from "./DashboardView"
+import { SizeScalingProgress } from "./PayoutsView"
 import { RulesView, ruleText } from "./RulesView"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
@@ -285,4 +286,42 @@ it("adds, edits and removes custom scaling steps", async () => {
   await click("Remove scaling step 2")
   await click("Remove scaling step 1")
   expect(form.scaling).toEqual([])
+})
+
+it("renders size reviews, history, plan facts and the existing rule notice", () => {
+  const size_scaling = { size: "62500.00", original: "50000.00", max_balance: "100000.00", period_started: "2026-09-24",
+    period_days: 3, days_required: 80, period_profit: "1200.50", profit_required: "6250.00", period_payouts: 1, payouts_required: 2,
+    next_size: "75000.00", history: [{ day: "2026-09-24", old: "50000.00", size: "62500.00" }] }
+  const scaled: Account = { ...planned, rules: { ...planned.rules, phase: "funded", size_scaling: {
+    profit_percent: 10, payouts: 2, days: 80, increase_percent: 25, max_balance: "100000.00" } },
+    evaluation: { ...planned.evaluation, day: "2026-09-24", size_scaling } }
+  const text = renderToStaticMarkup(<SizeScalingProgress status={size_scaling} />)
+  for (const value of ["Account size scaling", "$62,500.00", "$75,000.00", "3 / 80", "$1,200.50 / $6,250.00", "1 / 2", "2026-09-24", "Account size history"])
+    expect(text).toContain(value)
+  expect(planFacts({ initial_cash: "50000", rules: scaled.rules }).join(" ")).toContain("Add 25% of the original size")
+  expect(render(<RulesView />, scaled)).toContain("Account size scaling")
+  expect(ruleAlerts(scaled, risk).map((a) => a.title)).toContain("Account size increased")
+  expect(ruleAlerts({ ...scaled, evaluation: { ...scaled.evaluation, day: "2026-09-25" } }, risk).map((a) => a.title)).not.toContain("Account size increased")
+})
+
+it("enables and edits account size scaling only in the funded form", async () => {
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host)
+  let form = planForm({ initial_cash: "50000", rules: planned.rules })
+  const draw = () => root.render(<PlanEditor form={form} onChange={(next) => { form = next; draw() }} />)
+  await act(async () => draw())
+  expect(host.textContent).not.toContain("Account size scaling")
+  form = { ...form, phase: "funded" }
+  await act(async () => draw())
+  const checkbox = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+  await act(async () => checkbox.click())
+  expect(form.size_scaling_enabled).toBe("yes")
+  const input = [...host.querySelectorAll("label")].find((l) => l.textContent?.startsWith("Maximum account size"))!.querySelector("input")!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "200000")
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+  })
+  expect(form.size_max_balance).toBe("200000")
+  await act(async () => checkbox.click())
+  expect(form.size_scaling_enabled).toBe("no")
+  expect(host.textContent).not.toContain("Review profit percent")
 })

@@ -51,7 +51,7 @@ describe("checked API core types", () => {
       expect(source).toMatch(/export type CreateAccountRequest = [^\n]+& MarginModel/)
     }
   })
-  it.each(["AttemptSummary", "ScalingStep", "ScalingStatus", "PayoutRules", "PayoutStatus", "PayoutBestDay", "Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
+  it.each(["SizeScaling", "SizeScale", "SizeScalingStatus", "AttemptSummary", "ScalingStep", "ScalingStatus", "PayoutRules", "PayoutStatus", "PayoutBestDay", "Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
     "Guardrails", "GuardrailState", "AccountDamage", "JournalSize", "EquityHistory", "VerificationCost", "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
     "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "Limits", "TokenStatus", "RunJournal", "RunInput", "VerificationRun", "RunVerification", "ForwardTestWindow", "ForwardTest", "PlaybookReport"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
@@ -211,4 +211,14 @@ it("accepts custom funded scaling plans in the backtest wire type", () => {
   expect(wireType(spec.components.schemas.AccountRules!.properties!.scaling!)).toBe("ScalingStep[]")
   expect(wireType(spec.components.schemas.AccountRulesInput!.properties!.scaling!)).toBe("ScalingStep[]")
   expect(wireType(spec.components.schemas.Evaluation!.properties!.scaling!)).toBe("ScalingStatus | null")
+})
+
+it("includes nullable account size scaling in rules, backtest rules and funded standing", () => {
+  for (const name of ["AccountRules", "AccountRulesInput"])
+    expect(wireType(spec.components.schemas[name]!.properties!.size_scaling!)).toBe("SizeScaling | null")
+  expect(wireType(spec.components.schemas.Evaluation!.properties!.size_scaling!)).toBe("SizeScalingStatus | null")
+  const request: BacktestStart = { playbook: "sample", scenarios: 1, seed: "0", plan: { initial_cash: "50000",
+    rules: { phase: "funded", payouts: { qualifying_days: 1 }, size_scaling: { profit_percent: 10, payouts: 2,
+      days: 80, increase_percent: 25, max_balance: "200000" } } } }
+  expect(request.plan).toHaveProperty("rules.size_scaling.days", 80)
 })

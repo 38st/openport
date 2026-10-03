@@ -10,7 +10,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
 import { lockReason, offeredPlans, payoutCap, payoutRuleFacts } from "../lib/payouts"
-import { scalingFact, clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts, timeRuleEntries } from "../lib/plan-rules"
+import { sizeScalingFact, scalingFact, clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts, timeRuleEntries } from "../lib/plan-rules"
 import { compareMoney, formatMoney, subtractMoney } from "../lib/trading"
 
 function Rule({ title, children }: { title: string; children: ReactNode }) {
@@ -70,6 +70,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         Days follow the plan's trading day, and a day's profit is {balance ? "what you close that day (net realised P&L after fees)" : "its change in equity"}.
         {r.consistency_percent ? <> The consistency rule never fails the attempt: while the best day is too large a share, the pass waits, as if the target were higher{e.consistency_target ? <> (the best day so far needs {formatMoney(e.consistency_target)} of profit)</> : null}, or for more profitable days.</> : null}</> }] : []),
     ...timeRuleEntries(r),
+    ...(r.size_scaling ? [{ title: "Account size scaling", body: <>{sizeScalingFact(r)}. Withdrawals count toward review profit. Each review restarts, whether it qualifies or not. Growth credits capital, leaves profit and payout room unchanged, raises the floor by the credit, and scales loss limits from the original size, rounded down to cents.</> }] : []),
     ...(r.scaling?.length ? [{ title: "Scaling plan", body: <>
         {scalingFact(r)}. Each option leg counts toward the contracts held at once; shares do not.
         {e.scaling && <> In force: {e.scaling.limit} contracts; {e.scaling.held} held; closed-balance profit {formatMoney(e.scaling.profit)}.</>}

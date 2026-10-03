@@ -1,10 +1,10 @@
 import type { ReactNode } from "react"
 import type { AccountRules, DailyLossBasis, Money, Plan } from "../api/trading-types"
-import { dailyLossBasisText, dayEnd } from "../lib/plan-rules"
+import { dailyLossBasisText, dayEnd, sizeScalingRule, type SizeScalingForm } from "../lib/plan-rules"
 import { compareMoney, validMoney } from "../lib/trading"
 
 /** The custom plan form: text fields as typed, choices as their API words. */
-export interface PlanForm {
+export interface PlanForm extends SizeScalingForm {
   name: string
   scaling: { profit: string; contracts: string }[]
   phase: AccountRules["phase"]
@@ -53,6 +53,10 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
   const p = r.payouts
   return {
     phase: r.phase,
+    size_scaling_enabled: r.size_scaling ? "yes" : "no",
+    size_profit_percent: String(r.size_scaling?.profit_percent ?? 10), size_payouts: String(r.size_scaling?.payouts ?? 2),
+    size_days: String(r.size_scaling?.days ?? 80), size_increase_percent: String(r.size_scaling?.increase_percent ?? 25),
+    size_max_balance: r.size_scaling?.max_balance ?? plan.initial_cash,
     scaling: (r.scaling ?? []).map((step) => ({ profit: step.profit, contracts: String(step.contracts) })),
     qualifying_profit: p?.qualifying_profit ?? "0", qualifying_days: String(p?.qualifying_days ?? 1),
     withdrawal_percent: String(p?.withdrawal_percent ?? 50), split_percent: String(p?.split_percent ?? 80),
@@ -152,8 +156,10 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
       return { error: "Scaling contracts must be a whole number from 1 to 10000" }
     if (i > 0 && contracts < count(form.scaling[i - 1]!.contracts)) return { error: "Scaling contract limits must not decrease" }
   }
+  const sizeScaling = sizeScalingRule(form, form.phase, form.initial_cash)
+  if ("error" in sizeScaling) return sizeScaling
   const rules: AccountRules = {
-    ...base, plan: name, plan_id: null, phase: form.phase, payouts,
+    ...base, plan: name, plan_id: null, phase: form.phase, payouts, size_scaling: sizeScaling.value,
     scaling: form.scaling.map((step) => ({ profit: step.profit.trim(), contracts: count(step.contracts) })),
     profit_target: form.phase === "funded" ? null : amount(form.profit_target), profit_basis: form.profit_basis,
     max_drawdown: drawdown, drawdown_mode: form.drawdown_mode,
@@ -226,6 +232,19 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
         <Field label="Payout buffer" hint="Equity to keep above the starting balance; 0 disables">{text("payout_buffer")}</Field>
         <Field label="Buffer payouts" hint="First N payouts; 0 applies to every payout">{text("buffer_payouts")}</Field>
       </>}
+      {form.phase === "funded" && <div className="space-y-3 border-t border-border pt-3 sm:col-span-2">
+        <h3 className="text-sm font-medium">Account size scaling</h3>
+        <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={form.size_scaling_enabled === "yes"}
+          onChange={(event) => set("size_scaling_enabled")(event.target.checked ? "yes" : "no")} />Enable account size scaling</label>
+        {form.size_scaling_enabled === "yes" && <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Review profit percent" hint="Net realised profit as a percentage of the size at review start.">{text("size_profit_percent")}</Field>
+          <Field label="Review payouts" hint="Completed payouts required; zero for none.">{text("size_payouts")}</Field>
+          <Field label="Review trading days" hint="Finished plan days, not calendar days.">{text("size_days")}</Field>
+          <Field label="Account size increase percent" hint="Percentage of the original starting balance each time.">{text("size_increase_percent")}</Field>
+          <Field label="Maximum account size">{text("size_max_balance")}</Field>
+          <p className="text-[11px] text-muted">Each review starts a new period, whether it qualifies or not. Capital growth leaves profit unchanged and scales loss limits with account size.</p>
+        </div>}
+      </div>}
       <Field label="Maximum contracts held" hint="Held options plus working entries; shares excluded. Blank for none.">{text("max_contracts_held", "none")}</Field>
       <Field label="Stop-loss required">{choice("require_stop_loss", [["no", "Optional"], ["yes", "Required on every entry"]])}</Field>
       <Field label="Maximum trade risk" hint="Dollars before fees. Blank for none.">{text("max_trade_risk", "none")}</Field>

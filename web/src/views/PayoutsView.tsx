@@ -2,7 +2,7 @@ import { useId, useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { useAccount, usePlans, useRefreshTrading, useTradingSession } from "../api/trading"
-import type { Account, Payout, PayoutStatus, Plan, TradingStatus } from "../api/trading-types"
+import type { Account, SizeScalingStatus, Payout, PayoutStatus, Plan, TradingStatus } from "../api/trading-types"
 import { ResetDialog } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
@@ -60,6 +60,7 @@ function Funded({ trading, account, status }: { trading: TradingStatus; account:
       <Tile label="Paid to you" value={formatMoney(paid)}
         detail={e.payouts.length ? `${e.payouts.length} payout${e.payouts.length === 1 ? "" : "s"} · ${formatMoney(withdrawn)} withdrawn` : "No payouts yet"} />
     </div>
+    {e.size_scaling && <SizeScalingProgress status={e.size_scaling} />}
     {(status.consistency_percent != null || status.buffer_balance != null) && <Panel title="Payout standing">
       <dl className="grid gap-3 text-sm sm:grid-cols-2">
         {status.consistency_percent != null && <>
@@ -267,4 +268,21 @@ function History({ payouts, split }: { payouts: Payout[]; split?: number }) {
       </div>
     </Panel>
   )
+}
+
+export function SizeScalingProgress({ status: s }: { status: SizeScalingStatus }) {
+  return <Panel title="Account size scaling">
+    <dl className="grid gap-3 text-sm sm:grid-cols-3">
+      <div><dt className="text-muted">Current account size</dt><dd>{formatMoney(s.size)}</dd></div>
+      <div><dt className="text-muted">Original account size</dt><dd>{formatMoney(s.original)}</dd></div>
+      <div><dt className="text-muted">Next account size</dt><dd>{formatMoney(s.next_size)} · maximum {formatMoney(s.max_balance)}</dd></div>
+      <div><dt className="text-muted">Finished review days</dt><dd>{s.period_days} / {s.days_required}</dd></div>
+      <div><dt className="text-muted">Review net realised profit</dt><dd>{formatMoney(s.period_profit)} / {formatMoney(s.profit_required)}</dd></div>
+      <div><dt className="text-muted">Review payouts</dt><dd>{s.period_payouts} / {s.payouts_required}</dd></div>
+    </dl>
+    <p className="mt-3 text-xs text-muted">Review started {s.period_started}. Withdrawals do not reduce review profit. Each review starts a new period; capital growth is not withdrawable profit.</p>
+    {s.history.length > 0 && <ul className="mt-3 space-y-1 text-xs" aria-label="Account size history">
+      {s.history.map((h) => <li key={h.day}>{h.day}: {formatMoney(h.old)} → {formatMoney(h.size)}</li>)}
+    </ul>}
+  </Panel>
 }

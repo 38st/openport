@@ -1,5 +1,5 @@
-import type { Account, AccountRules, DailyLossBasis, Evaluation, Money, Objective } from "../api/trading-types"
-import { formatMoney, subtractMoney } from "./trading"
+import type { Account, AccountRules, DailyLossBasis, Evaluation, Money, Objective, SizeScaling } from "../api/trading-types"
+import { compareMoney, validMoney, formatMoney, subtractMoney } from "./trading"
 import { newYorkDate } from "./journal"
 
 /** "18:00" as "6:00 pm"; "24:00" as "midnight". */
@@ -167,4 +167,31 @@ export function timeRuleNotices(e: Evaluation, r: AccountRules, time?: string): 
 export function planMarketTime(...times: (string | null | undefined)[]): string | undefined {
   return times.filter((time): time is string => !!time && Number.isFinite(Date.parse(time)))
     .sort((a, b) => Date.parse(b) - Date.parse(a))[0]
+}
+
+export interface SizeScalingForm {
+  size_scaling_enabled: "yes" | "no"
+  size_profit_percent: string
+  size_payouts: string
+  size_days: string
+  size_increase_percent: string
+  size_max_balance: string
+}
+export function sizeScalingRule(form: SizeScalingForm, phase: AccountRules["phase"], initial: Money): { value: SizeScaling | null } | { error: string } {
+  if (phase !== "funded" || form.size_scaling_enabled === "no") return { value: null }
+  for (const [label, value, min, max] of [["Review profit percent", form.size_profit_percent, 1, 100],
+    ["Review payouts", form.size_payouts, 0, 100], ["Review trading days", form.size_days, 1, 366],
+    ["Account size increase percent", form.size_increase_percent, 1, 100]] as const) {
+    if (!/^\d+$/.test(value.trim()) || Number(value) < min || Number(value) > max)
+      return { error: `${label} must be a whole number from ${min} to ${max}` }
+  }
+  if (!validMoney(form.size_max_balance.trim()) || compareMoney(form.size_max_balance.trim(), initial.trim()) === -1)
+    return { error: "Maximum account size must be a dollar amount at least the starting balance" }
+  return { value: { profit_percent: Number(form.size_profit_percent), payouts: Number(form.size_payouts), days: Number(form.size_days),
+    increase_percent: Number(form.size_increase_percent), max_balance: form.size_max_balance.trim() } }
+}
+export function sizeScalingFact(rules: Pick<AccountRules, "size_scaling">): string | null {
+  const s = rules.size_scaling
+  if (!s) return null
+  return `Account size scaling: review every ${s.days} finished trading days; at least ${s.profit_percent}% net realised profit and ${s.payouts} payouts. Add ${s.increase_percent}% of the original size, up to ${formatMoney(s.max_balance)}`
 }

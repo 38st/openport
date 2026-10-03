@@ -195,3 +195,19 @@ it("uses the server flat flag for the same clock, including holidays", () => {
   expect(timeRuleNotices(holiday.evaluation, holiday.rules, holiday.time)).toEqual([])
   expect(planEntryNotice(holiday.rules, "SPX", "2026-11-28T21:00:00Z", false)).toBeNull()
 })
+
+it("round trips account size scaling, disables it and validates every field", () => {
+  const size_scaling = { profit_percent: 10, payouts: 2, days: 80, increase_percent: 25, max_balance: "200000.000001" }
+  const base = { ...rules, phase: "funded" as const, size_scaling }
+  const form = planForm({ initial_cash: "100000", rules: base })
+  const result = customPlan(form, base)
+  expect("error" in result ? result : result.rules.size_scaling).toEqual(size_scaling)
+  for (const patch of [{ size_profit_percent: "0" }, { size_profit_percent: "101" }, { size_payouts: "-1" },
+    { size_payouts: "101" }, { size_days: "0" }, { size_days: "367" }, { size_days: "1.5" }, { size_days: "" },
+    { size_increase_percent: "0" }, { size_increase_percent: "101" }, { size_max_balance: "99999.999999" },
+    { size_max_balance: "oops" }]) expect(customPlan({ ...form, ...patch }, base)).toHaveProperty("error")
+  const off = customPlan({ ...form, size_scaling_enabled: "no", size_days: "oops" }, base)
+  expect("error" in off ? off : off.rules.size_scaling).toBeNull()
+  const evaluation = customPlan({ ...form, phase: "evaluation" }, base)
+  expect("error" in evaluation ? evaluation : evaluation.rules.size_scaling).toBeNull()
+})

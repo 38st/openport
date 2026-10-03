@@ -5,6 +5,10 @@ export interface RuleAlert { id: string; title: string; body: string }
 export function ruleAlerts(account: Account, risk: Risk): RuleAlert[] {
   const result: RuleAlert[] = []
   const e = account.evaluation
+  const scaled = e.size_scaling?.history.at(-1)
+  if (scaled?.day === e.day)
+    result.push({ id: `account-scaled-${e.attempt}-${scaled.day}`, title: "Account size increased",
+      body: `${formatMoney(scaled.old)} to ${formatMoney(scaled.size)}. A new review period has started; the capital credit is not profit.` })
   const drawdown = Number(account.rules.max_drawdown)
   const room = e.drawdown_buffer == null ? null : Number(e.drawdown_buffer)
   if (e.valuation_complete && room != null && Number.isFinite(room) && drawdown > 0) {
