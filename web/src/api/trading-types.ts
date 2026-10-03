@@ -632,6 +632,7 @@ export type NewOrder = { tags?: string[]; note?: string; good_till?: string; wal
 export interface PendingOrder {
   symbol: string | null; side: Side | null; legs: OrderLeg[] | null
   type: "limit" | "market"; time_in_force: TimeInForce; quantity: number; limit_price: Money | null
+  good_till: string | null; walk: Walk | null; group: string | null
   trigger: Trigger | null; bracket: unknown; then: PendingOrder | null; oco: PendingOrder | null
 }
 /** What keeps an open order from filling now. */

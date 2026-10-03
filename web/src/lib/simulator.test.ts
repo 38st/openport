@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest"
+import type { PendingOrder } from "../api/trading-types"
 import { quote, shareTrades, trades } from "../test/trading-fixtures"
 import { signedPercent } from "./format"
 import { closingDay, contractLabel, dailyResults, formatDuration, journalLabel, journalStats, monthWeeks, newYorkDate, osiLabel, parseOsi, parseTags, shareSourceLabel, tradeBuckets, tradeTags, tradingDate } from "./journal"
-import { crossDirection, describeChain, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "./ticket"
+import { crossDirection, describeChain, describePending, describeTrigger, marketability, opposite, split, stopDirection, strategyName } from "./ticket"
 import { ratio, roundToTick, signedMoney, stepLimitPrice, subtractMoney } from "./trading"
 
 describe("journal analytics", () => {
@@ -185,11 +186,23 @@ describe("conditional orders", () => {
     expect(describeTrigger({ source: "combo", direction: "at_or_above", level: "0.90", reference: "mark", trail: { unit: "percent", value: "10" } }, "buy", "SPX"))
       .toBe("closing mark net ≥ $0.90, trailing 10%")
     const then = { symbol: "SPXW  261022C05000000", side: "sell" as const, legs: null, type: "limit" as const, time_in_force: "gtc" as const, quantity: 2,
-      limit_price: "4.30", trigger: null, bracket: null, then: null, oco: null }
+      limit_price: "4.30", good_till: null, walk: null, group: null, trigger: null, bracket: null, then: null, oco: null }
     expect(describeChain({ role: null, oco: "2", then, chained_order: null, chained_from: null, underlying: "SPX" }))
       .toBe("one cancels other with #2 · when filled, places sell 2 @ $4.30 GTC")
     expect(describeChain({ role: null, oco: null, then, chained_order: "3", chained_from: "1", underlying: "SPX" })).toBe("placed by #1 · placed #3 when filled")
     expect(describeChain({ role: "stop_loss", oco: "4", then: null, chained_order: null, chained_from: null, underlying: "SPX" })).toBe("")
+  })
+  it("describes pending GTD deadlines, including the order that cancels it", () => {
+    const pending: PendingOrder = {
+      symbol: "SPXW  261022C05000000", side: "sell", legs: null, type: "limit", quantity: 1,
+      time_in_force: "gtd", good_till: "2026-09-23T19:30:00Z", limit_price: "5.00",
+      walk: null, group: null, trigger: null, bracket: null, then: null, oco: null,
+    }
+    expect(describePending(pending, "SPX")).toBe("sell 1 @ $5.00 GTD until Wed, Sep 23, 2026, 15:30 ET")
+    const gtc: PendingOrder = { ...pending, time_in_force: "gtc", good_till: null }
+    expect(describePending(gtc, "SPX")).toBe("sell 1 @ $5.00 GTC")
+    expect(describePending({ ...gtc, oco: pending }, "SPX"))
+      .toBe("sell 1 @ $5.00 GTC, or sell 1 @ $5.00 GTD until Wed, Sep 23, 2026, 15:30 ET")
   })
   it("rounds suggested prices to the root's tier tick", () => {
     expect(roundToTick("SPXW", 6.31)).toBe("6.30")

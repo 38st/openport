@@ -11533,7 +11533,7 @@
           },
           "exits_only": {
             "type": "boolean",
-            "description": "Attach the bracket to a held contract (symbol and the side that closes it) or held closing legs instead of submitting an entry. The order's own terms are the take-profit's, or the stop's when there is no target: GTC for a limit (a stop-limit's with its trigger), market IOC for a stop."
+            "description": "Attach the bracket to a held contract (symbol and the side that closes it) or held closing legs instead of submitting an entry. The order's own terms are the take-profit's, or the stop's when there is no target: GTC, EXTO, GTC_EXTO or GTD for a limit (a stop-limit's with its trigger), IOC, EXTO, GTC_EXTO or GTD for a triggered market stop. EXTO/GTC_EXTO trade in every product session; GTD gives both exits its explicit deadline."
           },
           "then": {
             "$ref": "#/components/schemas/ChainedOrder",
@@ -11944,6 +11944,37 @@
               "gtd"
             ]
           },
+          "good_till": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Walk"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "quantity": {
             "type": "integer"
           },
@@ -11995,6 +12026,9 @@
           "legs",
           "type",
           "time_in_force",
+          "good_till",
+          "walk",
+          "group",
           "quantity",
           "limit_price",
           "trigger",
@@ -18235,7 +18269,7 @@
             "minLength": 1,
             "maxLength": 128,
             "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
-            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (market orders IOC, a positive quantity, two to four legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
+            "description": "The order's idempotency key: 1 to 128 bytes of text without control characters. A body that breaks this, or any other bound here (plain market orders IOC, a positive quantity, two to eight legs naming different contracts, ratios 1 to 10, a positive single-contract limit), is 400 INVALID_REQUEST and records nothing."
           },
           "symbol": {
             "type": "string"
@@ -18246,10 +18280,11 @@
           "legs": {
             "type": "array",
             "minItems": 2,
-            "maxItems": 4,
+            "maxItems": 8,
             "items": {
               "$ref": "#/components/schemas/RequestLeg"
-            }
+            },
+            "description": "Two to four legs, or up to eight for a roll: past four, every leg but four must close held contracts (INVALID_ORDER otherwise), as a condor rolls whole."
           },
           "quantity": {
             "type": "integer",
@@ -18263,9 +18298,12 @@
           },
           "time_in_force": {
             "enum": [
-              "ioc",
               "day",
-              "gtc"
+              "gtc",
+              "ioc",
+              "exto",
+              "gtc_exto",
+              "gtd"
             ]
           },
           "limit_price": {
@@ -18288,7 +18326,26 @@
           },
           "exits_only": {
             "type": "boolean",
-            "description": "Multi-leg orders only: attach the bracket to held closing legs instead of submitting an entry."
+            "description": "Attach the bracket to a held contract (symbol and the side that closes it) or held closing legs instead of submitting an entry. The order's own terms are the take-profit's, or the stop's when there is no target: GTC, EXTO, GTC_EXTO or GTD for a limit (a stop-limit's with its trigger), IOC, EXTO, GTC_EXTO or GTD for a triggered market stop. EXTO/GTC_EXTO trade in every product session; GTD gives both exits its explicit deadline."
+          },
+          "group": {
+            "type": "string",
+            "description": "Join the round trips this order opens to a whole trade, named by its ID or one of its open round trips' IDs (an adjustment). A multi-leg order that closes or adds to another order's round trip joins that trade without it (a roll). An order naming no trade holding an open round trip on its underlying, or attaching held exits, is refused with INVALID_GROUP."
+          },
+          "good_till": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Required only for gtd. ISO timestamp with Z or UTC offset, in the future and no more than 366 days after acceptance (market time). GTD trades regular hours; expires with GTD_END."
+          },
+          "walk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Walk"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -18303,17 +18360,8 @@
               "side"
             ],
             "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "legs"
-                  ]
-                },
-                {
-                  "required": [
-                    "exits_only"
-                  ]
-                }
+              "required": [
+                "legs"
               ]
             }
           },
@@ -18371,15 +18419,58 @@
               ]
             },
             "then": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "time_in_force": {
+                      "const": "ioc"
+                    }
+                  }
+                },
+                {
+                  "required": [
+                    "trigger"
+                  ],
+                  "properties": {
+                    "time_in_force": {
+                      "enum": [
+                        "exto",
+                        "gtc_exto",
+                        "gtd"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "if": {
               "properties": {
                 "time_in_force": {
-                  "const": "ioc"
+                  "const": "gtd"
                 }
+              },
+              "required": [
+                "time_in_force"
+              ]
+            },
+            "then": {
+              "required": [
+                "good_till"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "good_till"
+                ]
               }
             }
           }
         ],
-        "description": "An order as POST /api/orders takes it, its client_order_id optional."
+        "additionalProperties": false,
+        "description": "An order as POST /api/orders takes it, its client_order_id optional. Chains (then and oco) are not modelled and are refused with 400 INVALID_REQUEST."
       },
       "WhatIfRequest": {
         "type": "object",

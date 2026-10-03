@@ -77,6 +77,15 @@ it("keeps extended TIFs and sparse order metadata in the wire contract", () => {
   }
 })
 
+it("requires nullable deadlines, walks and groups on pending orders", () => {
+  const pending = /export interface PendingOrder \{([^}]+)\}/.exec(source)![1]!
+  const schema = spec.components.schemas.PendingOrder!
+  for (const field of ["good_till", "walk", "group"]) {
+    expect(normalize(new RegExp(`${field}: ([^;\\n]+)`).exec(pending)![1]!)).toBe(wireType(schema.properties![field]!))
+    expect(schema.required).toContain(field)
+  }
+})
+
 it("keeps alert request fields and optional terms in sync", () => {
   const body = /export interface AlertRequest \{([^}]+)\}/.exec(source)![1]!
   const fields = [...body.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]

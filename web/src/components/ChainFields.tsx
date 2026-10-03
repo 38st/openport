@@ -59,7 +59,7 @@ export function useChainedOrder({ symbol, side, quantity, underlying, spot }: {
         placeholder={spot != null ? spot.toFixed(2) : undefined} onChange={(e) => setLevel(e.target.value)} /></label>
       <span className="text-[11px] text-muted">{!priceValid ? "Enter the chained order's limit price."
         : !countValid ? "Enter a whole number of contracts." : !levelValid ? `Enter a positive ${underlying} level, or leave it empty.`
-        : kind === "then" ? `Once this order fills completely, places ${describePending({ ...order!, legs: null, limit_price: price, trigger, bracket: null, then: null, oco: null, symbol, side: chainedSide }, underlying)}, checked then like any new order. If this order ends any other way, nothing is placed.`
+        : kind === "then" ? `Once this order fills completely, places ${describePending({ ...order!, legs: null, limit_price: price, good_till: null, walk: null, group: null, trigger, bracket: null, then: null, oco: null, symbol, side: chainedSide }, underlying)}, checked then like any new order. If this order ends any other way, nothing is placed.`
         : `Works beside this order: ${chainedSide} ${count} @ ${formatMoney(price)}. The first fill of either cancels the other; both reserve buying power until then.`}</span>
     </>}
   </div>

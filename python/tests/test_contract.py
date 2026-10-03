@@ -20,6 +20,31 @@ def test_schema_references_and_required_types():
     walk(SPEC)
 
 
+def test_what_if_orders_match_submissions_without_chains():
+    schemas = SPEC["components"]["schemas"]
+    new = schemas["NewOrder"]
+    what = schemas["WhatIfOrder"]
+    assert what["properties"] == {key: value for key, value in new["properties"].items() if key not in ("then", "oco")}
+    assert what["required"] == [key for key in new["required"] if key != "client_order_id"]
+    assert what["oneOf"] == new["oneOf"]
+    assert what["allOf"] == new["allOf"]
+    contract = Contract("", None, SPEC)
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": "urn:openport#/components/schemas/WhatIfOrder"}, registry=contract.registry)
+    order = {"symbol": "SPXW  261022C05000000", "side": "sell", "type": "limit", "quantity": 1,
+             "time_in_force": "gtc", "limit_price": "5.00", "exits_only": True,
+             "bracket": {"take_profit": {"limit_price": "5.00"}}}
+    validator.validate(order)
+    for tif in ("exto", "gtc_exto", "gtd"):
+        extended = {**order, "time_in_force": tif}
+        if tif == "gtd":
+            extended["good_till"] = "2026-09-23T19:30:00Z"
+        validator.validate(extended)
+    for key in ("then", "oco", "typo"):
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate({**order, key: None})
+
+
 def test_entire_contract_against_threaded_synthetic_http_server(stub):
     contract = Contract(stub.url, "secret", SPEC)
     contract.run()
