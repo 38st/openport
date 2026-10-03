@@ -1762,10 +1762,12 @@ TEST(ReplayRun, ContractFixture) {
   capture("PUT", "/api/replay", {{"until", "10:00:01"}});
   capture("GET", "/api/replay/status");
   capture("GET", "/api/replay/account");
+  capture("GET", "/api/replay/settlements");
   capture("DELETE", "/api/replay");
   capture("GET", "/api/replay");
   capture("GET", "/api/replay/history/" + id);
   capture("GET", "/api/replay/history/" + id + "/trades");
+  capture("GET", "/api/replay/history/" + id + "/settlements");
 }
 }  // namespace
 

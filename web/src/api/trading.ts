@@ -10,6 +10,7 @@ export function tradingQueries(scope: number, version: string | undefined, enabl
   return {
     portfolio: queryOptions({ ...common, queryKey: ["trading", scope, "portfolio", version], queryFn: ({ signal }) => api.portfolio(signal) }),
     orders: queryOptions({ ...common, queryKey: ["trading", scope, "orders", version], queryFn: ({ signal }) => api.orders("open", signal) }),
+    settlements: queryOptions({ ...common, queryKey: ["trading", scope, "settlements", version], queryFn: ({ signal }) => api.settlements(signal) }),
     fills: queryOptions({ ...common, queryKey: ["trading", scope, "fills", version], queryFn: ({ signal }) => api.fills(signal) }),
     risk: queryOptions({ ...common, queryKey: ["trading", scope, "risk", version], queryFn: ({ signal }) => api.risk(signal) }),
     account: queryOptions({ ...common, queryKey: ["trading", scope, "account", version], queryFn: ({ signal }) => api.account(signal) }),
@@ -34,6 +35,7 @@ export const useAccount = () => useQuery(useOptions().account)
 export const usePortfolio = () => useQuery(useOptions().portfolio)
 export const useAllOrders = () => useQuery(useOptions().allOrders)
 export const useOpenOrders = () => useQuery(useOptions().orders)
+export const useSettlements = () => useQuery(useOptions().settlements)
 export const useFills = () => useQuery(useOptions().fills)
 export const useRisk = () => useQuery(useOptions().risk)
 export const useTrades = (attempt: "current" | "all" = "current") => useQuery(useOptions().trades(attempt))

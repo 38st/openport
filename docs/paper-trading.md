@@ -2195,7 +2195,9 @@ The same read is available at `/api/replay/settlements` and
 `/api/replay/history/ID/settlements`. Settlement round trips in `/api/trades`
 carry `settlement_value` and `settlement_source` (the source kind), null when
 unavailable or outside settlement closures. The trades CSV appends both as its
-last two columns, preserving earlier column positions.
+last two columns, preserving earlier column positions. The terminal Journal shows
+the reference and source on settlement rows and a settlements list across attempts;
+waiting positions name the expected print or manual import.
 
 Settlement removes the position and is exactly once per OSI. Cash settlement is free;
 physical delivery charges the itemized schedule’s `exercise` fee per contract when

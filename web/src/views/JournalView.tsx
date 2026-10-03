@@ -2,8 +2,8 @@ import { FeeAmount } from "../components/FeeAmount"
 import { Fragment, useMemo, useState } from "react"
 import { api, downloadCsv } from "../api/client"
 import { marketNow, useLive } from "../api/live"
-import { useAllOrders, useFills, useRefreshTrading, useTrades, useTradingSession } from "../api/trading"
-import type { DayNote, Fill, RunIdentity, ShareTrade, Trade, TradingStatus, WholeTrade } from "../api/trading-types"
+import { useAllOrders, useFills, useRefreshTrading, useSettlements, useTrades, useTradingSession } from "../api/trading"
+import type { DayNote, Fill, RunIdentity, SettlementRecord, ShareTrade, Trade, TradingStatus, WholeTrade } from "../api/trading-types"
 import { HBarChart } from "../charts/HBarChart"
 import { FillBook } from "../components/FillBook"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
@@ -38,6 +38,7 @@ function Journal({ trading }: { trading: TradingStatus }) {
   const [tag, setTag] = useState("")
   const [playbook, setPlaybook] = useState("")
   const trades = useTrades(scope)
+  const settlements = useSettlements()
   const all = useMemo(() => trades.data?.trades ?? [], [trades.data])
   const shares = useMemo(() => trades.data?.share_trades ?? [], [trades.data])
   const tags = useMemo(() => tradeTags([...all, ...shares]), [all, shares])
@@ -95,8 +96,47 @@ function Journal({ trading }: { trading: TradingStatus }) {
       <Reports trades={entries} />
       <History trades={list} wholes={wholes ?? []} trading={trading} />
       {shareList.length > 0 && <Shares trades={shareList} trading={trading} />}
+      <Panel title="Settlements · all attempts">
+        {settlements.error ? <TradingError error={settlements.error} />
+          : !settlements.data ? <Empty>Loading settlements…</Empty>
+          : <SettlementList records={settlements.data.settlements} />}
+      </Panel>
     </div>
   )
+}
+
+function settlementSource(kind: string | null | undefined): string {
+  if (!kind) return "Source unavailable";
+  return `${kind.replaceAll("_", " ")}${kind.endsWith("opening_print") ? " (AM approximation)" : ""}`
+}
+export function SettlementPrint({ trade }: { trade: Trade }) {
+  if (trade.closure !== "settlement") return null
+  return <div className="mt-1 text-[11px] text-muted">
+    Settlement reference {trade.settlement_value ?? "unavailable"} · {settlementSource(trade.settlement_source)}
+  </div>
+}
+export function SettlementList({ records }: { records: SettlementRecord[] }) {
+  if (!records.length) return <Empty>No settlements yet.</Empty>
+  return <div className="max-w-full overflow-x-auto">
+    <p className="mb-3 text-xs text-muted">Newest first. Opening prints approximate the official AM special opening quotation. Cash is option proceeds after settlement fees; realised P&amp;L is before fees.</p>
+    <table className="w-full whitespace-nowrap text-right text-xs tabular" aria-label="Settlements">
+      <thead className="text-muted"><tr>{["Contract", "Settled (ET)", "Reference", "Quantity", "Cash", "Realised P&L", "Fee", "Source"].map((label, i) =>
+        <th key={label} className={`px-2 py-2 font-normal ${i === 0 || i === 7 ? "text-left" : ""}`}>{label}</th>)}</tr></thead>
+      <tbody>{records.map((record, i) => <tr key={`${record.symbol}/${record.time}/${i}`} className="border-t border-border/40">
+        <td className="px-2 py-2 text-left">{record.symbol}<div className="mt-1 text-muted">{record.expiry} {record.settlement}</div></td>
+        <td className="px-2 py-2">{timestampET(record.time)}</td>
+        <td className="px-2 py-2">{record.value}</td><td className="px-2 py-2">{record.quantity}</td>
+        <td className="px-2 py-2" title={record.cash}>{signedMoney(record.cash)}</td>
+        <td className="px-2 py-2" title={record.realised}>{signedMoney(record.realised)}</td>
+        <td className="px-2 py-2" title={record.fee}>{formatMoney(record.fee)}</td>
+        <td className="px-2 py-2 text-left" title={record.source?.kind}>
+          {settlementSource(record.source?.kind)}
+          {record.source && <div className="mt-1 text-muted">{[record.source.provider, record.source.symbol,
+            record.source.quote_time ? timestampET(record.source.quote_time) : null].filter(Boolean).join(" · ")}</div>}
+        </td>
+      </tr>)}</tbody>
+    </table>
+  </div>
 }
 
 export function Calendar({ trades, notes, trading }: { trades: JournalTrade[]; notes: Record<string, DayNote>; trading: TradingStatus }) {
@@ -247,6 +287,7 @@ function TradeRow({ trade: t, expanded, onToggle }: { trade: Trade; expanded: bo
       <span className="font-medium">{contractLabel(t)}</span>
       {exitLabel(t) && <span className={`ml-1 text-[10px] ${t.closed_by === "system" ? "text-warn" : "text-muted"}`}>({exitLabel(t)})</span>}
       <Tags trade={t} />
+      <SettlementPrint trade={t} />
     </td>
     <td className={`px-2 py-2 ${t.direction === "long" ? "text-bullish" : "text-bearish"}`}>{t.direction}</td>
     <td className="px-2 py-2">{t.max_quantity}</td>
@@ -493,7 +534,7 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
           <td className={`px-2 py-1 ${f.side === "buy" ? "text-bullish" : "text-bearish"}`}>{f.side}</td>
           <td className="px-2 py-1">{f.quantity}</td><td className="px-2 py-1">{formatMoney(f.price)}</td><td className="px-2 py-1"><FillBook fill={f} /></td><td className="px-2 py-1">{<FeeAmount fee={f.fee} fees={f.fees} />}</td>
         </tr>)}
-        {trade.closure && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left" colSpan={7}>Closed by {trade.closure} at {formatMoney(trade.average_close)}</td></tr>}
+        {trade.closure && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left" colSpan={7}>Closed by {trade.closure} at {formatMoney(trade.average_close)}<SettlementPrint trade={trade} /></td></tr>}
         {trade.closed_by === "system" && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left text-warn" colSpan={7}>
           {trade.system_reason === "expiry" ? "Closed by the simulator before expiry, not by your order." : `Closed by the simulator's ${trade.system_reason === "soft_floor" ? "soft-floor" : trade.system_reason === "target" ? "profit-target" : trade.system_reason === "drawdown" ? "drawdown" : ""} liquidation, not by your order.`}</td></tr>}
         </tbody>
