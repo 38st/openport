@@ -169,6 +169,10 @@ a driver batched each snapshot alone and offered every current quote at the late
 market time. Each verifies with the driver it was made with, so its fills and hashes
 reproduce exactly.
 
+Underlying override removal needs no new replay driver. Older runs cannot contain
+overrides, so dropping redundant entries leaves their journal bytes unchanged;
+new runs with overrides verify and resume with driver 6.
+
 Replay, drill and scenario journals write each line at once but sync it to disk at
 most every 250 ms, and at pause, stop, finish and teardown, so a kept run is synced
 before it is listed or opened. A process crash loses nothing written; a power cut can

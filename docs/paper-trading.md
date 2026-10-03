@@ -2534,7 +2534,9 @@ applies now and each loosening queues, including removal when the fallback is
 looser. Practice changes are immediate. GET risk returns active and pending maps;
 the terminal limits editor adds, edits and removes rows, and risk buckets identify
 the effective override or common cap. Revisions and replay mirror behavior match
-other limits.
+other limits. Dropping redundant overrides needs no new replay driver: older runs
+cannot contain overrides, so their journal bytes are unchanged and driver-6 runs
+remain resumable.
 
 For a new main account, `--paper-fill-model as_displayed|conservative|midpoint`
 selects the same execution preset as reset. `--paper-slippage-ticks` (0–10),

@@ -12534,7 +12534,7 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/RiskCaps"
             },
-            "description": "Optional full replacement map; omission or {} removes all overrides. Unsubscribed symbols are allowed. Each cap is finite and nonnegative. Tightening applies immediately in evaluations; loosening, including removal to a looser common cap, waits for rollover. GET includes active and pending maps."
+            "description": "Optional full replacement map; omission or {} removes all overrides. Unsubscribed symbols are allowed. Each cap is finite and nonnegative. Tightening applies immediately in evaluations; loosening, including removal to a looser common cap, waits for rollover. GET includes active and pending maps. Replay stays on driver 6: older runs cannot contain overrides, so dropping redundant entries preserves their journal bytes and resumability."
           }
         },
         "required": [

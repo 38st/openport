@@ -680,7 +680,7 @@ the remaining prefix. No checkpoint means legacy prefix verification.
 Replay driver 5 adds AM opening-print settlement. Verification
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an
-AM position is held into an expiry opening print. Resuming requires the current driver (7, below);
+AM position is held into an expiry opening print. Resuming requires the current driver (6, below);
 older runs remain readable and verifiable. The scenario generator revision is 4; older recorded revisions regenerate as before.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
 So does a run a crash cut off, whichever record its journal ends at: each input and
@@ -717,10 +717,12 @@ limits and overlap read from the recovered journal and overdue time stops retrie
 on the first fresh market update. Replay copies omit these records. This does not
 change replay driver 6, existing replay/backtest journal bytes, or reducer schema;
 new live automatic commands use the existing journal encoding.
-New runs record driver 7. Removing an underlying override takes effect immediately
-when the common cap is tighter; a looser fallback remains queued. Drivers 1–6 keep
-their earlier redundant override entries and journal bytes during verification.
-Existing journals still recover both active and pending overrides.
+
+Removing an underlying override takes effect immediately when the common cap is
+tighter; a looser fallback remains queued. This needs no new driver: older runs
+cannot contain underlying overrides, so dropping redundant entries changes none
+of their journal bytes. New runs still record driver 6, and interrupted driver-6
+runs remain resumable. Existing journals recover both active and pending overrides.
 
 Verification currently compares exact hashes on the same build/platform. Math-library
 changes can alter analytic floating-point fields; see the platform qualification in

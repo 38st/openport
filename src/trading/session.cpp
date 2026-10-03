@@ -4577,19 +4577,18 @@ CommandResult TradingSession::on_quotes(const std::vector<QuoteObservation>& quo
     return CommandResult{};
   });
 }
-CommandResult TradingSession::set_limits(Limits limits, Timestamp time, bool remove_redundant_overrides) {
+CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
   validate_limits(limits);
   return impl_->transact(time, "limit_change", [&](State& s, Events& events) {
     auto effective = s.config.rules.evaluation() ? tightened_limits(s.config.limits, limits) : limits;
     // A removed override needs no queue when its tightened cap is the common cap.
-    // Older replay drivers retain the redundant entry and its journal bytes.
-    if (remove_redundant_overrides) {
-      std::erase_if(effective.underlying_overrides, [&](const auto& entry) {
-        return !limits.underlying_overrides.contains(entry.first) &&
-            entry.second.dollar_delta == effective.per_underlying.dollar_delta &&
-            entry.second.vega == effective.per_underlying.vega;
-      });
-    }
+    // No driver gate is needed: older runs cannot contain underlying overrides,
+    // so removing redundant entries changes none of their journal bytes.
+    std::erase_if(effective.underlying_overrides, [&](const auto& entry) {
+      return !limits.underlying_overrides.contains(entry.first) &&
+          entry.second.dollar_delta == effective.per_underlying.dollar_delta &&
+          entry.second.vega == effective.per_underlying.vega;
+    });
     s.pending_limits = Json(effective) != Json(limits) ? std::optional(limits) : std::nullopt;
     s.config.limits = effective;
     if (s.limits_revision == std::numeric_limits<std::uint64_t>::max()) throw TradingError(Reason::ARITHMETIC_OVERFLOW, "Limits revision exhausted");

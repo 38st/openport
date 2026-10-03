@@ -458,7 +458,7 @@ class TradingSession {
                           const std::vector<Valuation>& valuations, Timestamp time,
                           const std::vector<StockPrice>& stocks = {},
                           const std::vector<Indicator>& indicators = {});
-  CommandResult set_limits(Limits limits, Timestamp time, bool remove_redundant_overrides = true);
+  CommandResult set_limits(Limits limits, Timestamp time);
   CommandResult set_guardrails(Guardrails guardrails, Timestamp time);
   CommandResult trip_kill(std::string reason, Timestamp time);
   CommandResult reset_kill(std::string reason, Timestamp time);

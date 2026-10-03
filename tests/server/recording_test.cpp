@@ -727,7 +727,7 @@ TEST(ReplayHost, FinishedRunsListTheirFinalPlaybackStateAndPlanId) {
 // F69: a run a crash interrupted could only be opened read-only. Resuming re-executes
 // its recorded inputs against its journal and continues it, so the journal ends as if
 // the run had never stopped.
-TEST(ReplayHost, AnInterruptedRunResumesWhereItStoppedWithTheSameJournal) {
+TEST(ReplayHost, AnInterruptedDriverSixRunResumesWhereItStoppedWithTheSameJournal) {
   using nlohmann::json;
   test::RecordingFile file;
   drill_recording(file.path);
@@ -753,6 +753,9 @@ TEST(ReplayHost, AnInterruptedRunResumesWhereItStoppedWithTheSameJournal) {
                       {"side", "buy"}, {"type", "market"}, {"quantity", 2}, {"time_in_force", "ioc"}};
     ASSERT_EQ(call(host, "POST", "/api/replay/orders", bought.dump()).status, 201);
     ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"10:30"})").status, 200);
+    const auto inputs = server::run_inputs(trading::FileJournal::read((replays / (id + ".jsonl")).string()));
+    ASSERT_FALSE(inputs.empty());
+    EXPECT_EQ(json::parse(inputs.front()).at("driver"), 6);
     // What a crash here leaves: the journal so far and the metadata written at the start.
     std::filesystem::copy_file(replays / (id + ".jsonl"), crashed / "replays" / (id + ".jsonl"));
     { std::ofstream out(crashed / "replays" / (id + ".json")); out << json::parse(started.body)["replay"].dump() << '\n'; }

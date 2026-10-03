@@ -314,7 +314,7 @@ special opening quotation; live providers keep manual imports.
       journal-derived results and matching-version backtest comparison (F51)
 - [x] Seeded demo soak with JSON run identity, counters and exit status (F73)
 - [x] F57 part 1: named-account lifecycle, preset IDs, copied limits/guardrails and replay reset guidance
-- [x] F57: HTTP per-underlying limit overrides and terminal editing
+- [x] F57: HTTP per-underlying limit overrides and terminal editing, retaining driver-6 replay compatibility
 - [x] F57: fill-model startup flag and numeric execution overrides
 - [x] F57: replay tokens reset and configure their isolated accounts
 - [x] F57: sandbox tokens default to their own account
