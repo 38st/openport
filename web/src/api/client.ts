@@ -11,6 +11,8 @@ import { isSandboxToken, writeToken } from "../lib/write-token"
 
 /** What a replay plays: a recording in the recordings directory, or the demo market. */
 export type ReplaySource = { file: string } | { demo: true | string }
+export interface ReplayControl { speed?: number; paused?: boolean; skip?: boolean; until?: string; abort?: boolean; play_until?: string }
+export interface ReplayResult { replay: ReplayState | null; settled_through?: string; aborted?: boolean; message?: string }
 export interface ReplayStart { copy_settings_from?: string; plan?: string; start_at?: string; paused?: boolean; seed?: string; date?: string }
 
 export class ApiError extends Error {
@@ -236,12 +238,14 @@ export const api = {
     write<{ replay: ReplayState }>("/api/replay", "POST", mode, { ...source, speed, ...options }),
   /** Continues a saved run a crash interrupted, paused where it stopped. */
   resumeReplay: (id: string, speed: number, mode: WriteMode) => write<{ replay: ReplayState }>("/api/replay", "POST", mode, { resume: id, speed }),
+  restartReplay: (id: string, at: string | undefined, mode: WriteMode, options: { speed?: number; paused?: boolean } = {}) =>
+    write<ReplayResult>("/api/replay", "POST", mode, { restart: id, ...(at ? { at } : {}), ...options }),
   verifyReplay: (id: string, mode: WriteMode) => write<RunVerification>(`/api/replay/history/${encodeURIComponent(id)}/verify`, "POST", mode, {}),
   replayVerification: (id: string, signal?: AbortSignal) => get<RunVerification>(`/api/replay/history/${encodeURIComponent(id)}/verify`, signal),
   downloadVerificationReceipt: (id: string) => downloadFile(`/api/replay/history/${encodeURIComponent(id)}/verify?format=receipt`, `${id}-verification.json`),
   deleteReplay: (id: string, mode: WriteMode) => write<{ deleted: string }>(`/api/replay/history/${encodeURIComponent(id)}`, "DELETE", mode),
-  controlReplay: (change: { speed?: number; paused?: boolean; skip?: boolean; until?: string; abort?: boolean; play_until?: string }, mode: WriteMode) =>
-    write<{ replay: ReplayState }>("/api/replay", "PUT", mode, change),
+  controlReplay: (change: ReplayControl, mode: WriteMode) =>
+    write<ReplayResult>("/api/replay", "PUT", mode, change),
   stopReplay: (mode: WriteMode) => write<{ replay: null }>("/api/replay", "DELETE", mode),
   probability: (symbol: string, days: number[], prices: number[], signal?: AbortSignal) =>
     get<Probability>(`${underlying(symbol)}/probability?days=${days.join(",")}${prices.length ? `&prices=${prices.join(",")}` : ""}`, signal),

@@ -225,3 +225,15 @@ it("backtest comparison and saved-run mutations keep global routes in replay his
   await api.deleteBacktest("000002", "open")
   expect(fetcher).toHaveBeenLastCalledWith("/api/backtests/000002?purge=true", expect.objectContaining({ method: "DELETE" }))
 })
+
+it("keeps F32 requests on the replay route with their exact wire fields", async () => {
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({ replay }), { status: 200 }))
+  vi.stubGlobal("fetch", fetcher)
+  dataSource.set("history:old-run")
+  for (const body of [{ until: "+15s" }, { until: "next" }, { play_until: "10:30:15", speed: 60 }, { abort: true }, { skip: false }]) {
+    await api.controlReplay(body, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ method: "PUT", body: JSON.stringify(body) }))
+  }
+  await api.restartReplay("old-run", "10:30:15", "open")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/replay", expect.objectContaining({ method: "POST", body: JSON.stringify({ restart: "old-run", at: "10:30:15" }) }))
+})
