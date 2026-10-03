@@ -345,7 +345,7 @@ struct FileDescriptor {
 struct RecordingSink::Impl {
   Impl(const std::filesystem::path& path, const RecordingHeader& header, EventSink& sink,
        Options opts)
-      : downstream(sink), options(std::move(opts)), path_(path) {
+      : downstream(sink), options(std::move(opts)), market_controls(header.market_controls), path_(path) {
     if (options.frame_bytes == 0 || options.frame_bytes > 4 * 1024 * 1024 ||
         options.flush_interval <= std::chrono::milliseconds(0) ||
         options.flush_interval > std::chrono::seconds(1))
@@ -450,6 +450,7 @@ struct RecordingSink::Impl {
 
   EventSink& downstream;
   Options options;
+  const bool market_controls;
   FileDescriptor file;
   mutable std::mutex mutex;
   std::condition_variable ready;
@@ -500,6 +501,9 @@ void RecordingSink::publish(Event event) {
   if (p.failure.empty()) {
     const auto previous = p.pending.size();
     try {
+      if (!p.market_controls && (std::holds_alternative<SnapshotHeartbeat>(event) ||
+                                std::holds_alternative<TradingHalt>(event)))
+        invalid("SnapshotHeartbeat and TradingHalt require a v4 header with market_controls enabled");
       encode_event(p.pending, p.options.clock(), event);
       p.index(event);
       ++p.counters.events;

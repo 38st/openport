@@ -48,6 +48,8 @@ class Provider {
   [[nodiscard]] virtual std::string_view name() const noexcept = 0;
   /// May be read while running, including a snapshot adapter's revised poll budget.
   [[nodiscard]] virtual Capabilities capabilities() const noexcept = 0;
+  /// Whether recordings need v4 heartbeat and halt events. Fixed before start().
+  [[nodiscard]] virtual bool market_controls() const noexcept { return false; }
 
   /// Starts delivering events to `sink` on the adapter's own thread(s) and returns
   /// immediately. `sink` must outlive the provider.

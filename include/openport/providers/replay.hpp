@@ -52,6 +52,7 @@ class ReplayProvider final : public md::Provider {
   ~ReplayProvider() override;
   [[nodiscard]] std::string_view name() const noexcept override { return name_; }
   [[nodiscard]] md::Capabilities capabilities() const noexcept override;
+  [[nodiscard]] bool market_controls() const noexcept override { return reader_.header().market_controls; }
   void start(const md::Subscription& subscription, md::EventSink& sink) override;
   void stop() override;
 
