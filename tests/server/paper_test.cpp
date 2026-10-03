@@ -2051,6 +2051,23 @@ TEST(PaperRecovery, SettlementProvenanceIsDurableAndStopReleasesJournalWriter) {
   ASSERT_TRUE(wait_for([&] { return replacement.trading_view() != nullptr; }));
   EXPECT_EQ(server::handle_api({"GET", "/api/portfolio"}, replacement).body,
             server::handle_api({"GET", "/api/portfolio"}, original).body);
+  const auto settlements = read(replacement, "/api/settlements");
+  EXPECT_EQ(settlements, read(original, "/api/settlements"));
+  ASSERT_EQ(settlements["settlements"].size(), 1);
+  const auto record = settlements["settlements"][0];
+  EXPECT_EQ(record["symbol"], market.symbol());
+  EXPECT_EQ(record["value"], "5012.00");
+  EXPECT_EQ(record["cash"], "1200.00");
+  EXPECT_EQ(record["realised"], "780.00");
+  EXPECT_EQ(record["source"]["kind"], "provider_closing_print");
+  const auto trade = read(replacement, "/api/trades")["trades"][0];
+  EXPECT_EQ(trade["settlement_value"], record["value"]);
+  EXPECT_EQ(trade["settlement_source"], record["source"]["kind"]);
+  const auto csv = server::handle_api({"GET", "/api/trades.csv"}, replacement).body;
+  EXPECT_NE(csv.find("settlement_value,settlement_source\n"), std::string::npos);
+  EXPECT_NE(csv.find("5012.00,provider_closing_print\n"), std::string::npos);
+  expect_error(server::handle_api({"GET", "/api/settlements?account=missing"}, replacement), 404, "UNKNOWN_ACCOUNT");
+  expect_error(server::handle_api({"GET", "/api/settlements?status=all"}, replacement), 400, "INVALID_REQUEST");
   replacement.stop();
   std::filesystem::remove_all(path.parent_path());
 }

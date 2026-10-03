@@ -12,6 +12,19 @@
 
 namespace openport::trading {
 
+/// Provenance fields retain the integration's exact journal representation.
+using SettlementSource = std::map<std::string, std::string>;
+struct SettlementRecord {
+  md::OptionContract contract;
+  Money value;
+  Timestamp time = 0;
+  Quantity quantity = 0;  ///< Signed contracts settled.
+  Money cash;            ///< Option proceeds less settlement fees; excludes share delivery.
+  Money realised;        ///< Gross P&L released by this settlement, before fees.
+  Money fee;
+  std::optional<SettlementSource> source;
+};
+
 struct MarkedPosition {
   Position position;
   std::optional<Money> mark;  ///< Never substituted with zero when missing.
@@ -83,6 +96,7 @@ struct TradingSnapshot {
   /// The positions' margin requirement by underlying, with the parts that hold
   /// it. Derived from the positions, so snapshot records do not carry it.
   std::vector<MarginUnderlying> margin;
+  SharedVector<SettlementRecord> settlements;  ///< Oldest first, rebuilt from journal events.
   SharedVector<Closure> closures;     ///< Settlements and resets, in sequence.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
   SharedVector<StockFill> stock_fills;    ///< Every change in shares held, oldest first.
@@ -447,7 +461,8 @@ class TradingSession {
   CommandResult trip_kill(std::string reason, Timestamp time);
   CommandResult reset_kill(std::string reason, Timestamp time);
   /// Explicit authoritative reference, including AM imports. Only after expiry.
-  CommandResult settle(const std::string& symbol, Money settlement, Timestamp time);
+  CommandResult settle(const std::string& symbol, Money settlement, Timestamp time,
+                       std::optional<SettlementSource> source = {});
   /// Keeps an underlying's closing print for a date in the journal, so PM
   /// settlement uses it after a restart. A different price for the date replaces
   /// it, as an official close replaces a provisional print; positions already

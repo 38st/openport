@@ -24,26 +24,6 @@ namespace openport::server {
 namespace {
 using namespace trading;
 
-/// Provenance is an integration concern. Add it to the same durable transaction
-/// as settlement, leaving the core's recorded outcomes and recovery schema intact.
-class SettlementJournal final : public Journal {
- public:
-  SettlementJournal(std::shared_ptr<Journal> sink, const std::map<std::string, std::string>& source)
-      : sink_(std::move(sink)), source_(source) {}
-  void append(Timestamp time, std::string_view type, std::string_view payload) override {
-    if (type != "settlement") { sink_->append(time, type, payload); return; }
-    auto record = nlohmann::json::parse(payload);
-    record["settlement_source"] = source_;
-    sink_->append(time, type, record.dump());
-  }
-  std::uint64_t sequence() const override { return sink_->sequence(); }
-  std::string head() const override { return sink_->head(); }
-  void flush() override { sink_->flush(); }
- private:
-  std::shared_ptr<Journal> sink_;
-  const std::map<std::string, std::string>& source_;
-};
-
 void sync_directory(const std::filesystem::path& path) {
   const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY);
   if (fd < 0) throw TradingError(Reason::JOURNAL_IO, "Cannot open journal directory for durability");
@@ -493,7 +473,6 @@ void Desk::start_trading() {
       if (!file.empty() && options_.resume && file == options_.paper_journal)
         journal = resuming_journal(*options_.resume, FileJournal::resume(file.string(), journal_options(options_)));
       else if (!file.empty()) std::tie(journal, recovery) = open_journal(file, journal_options(options_));
-      if (journal) journal = std::make_shared<SettlementJournal>(journal, settlement_source_);
       account.journal = journal;
       if (recovery && !options_.run_input.empty())
         throw TradingError(Reason::JOURNAL_CORRUPT, "A reproducible run needs a new journal; select an unused --paper-journal path");
@@ -636,7 +615,7 @@ void Desk::create_account(const TradingCommand& c, TradingReply& reply) {
       out.flush();
       if (!out) throw TradingError(Reason::JOURNAL_IO, "Cannot write " + named.string());
     }
-    account.journal = std::make_shared<SettlementJournal>(journal, settlement_source_);
+    account.journal = journal;
     account.session = std::make_unique<TradingSession>(config, market_time_, account.journal, c.actor);
     account.session->set_actor("system");
     account.equity = std::make_unique<EquityStore>(file.string() + ".equity.csv");
@@ -1209,12 +1188,12 @@ void Desk::update_trading(const std::vector<md::Event>& batch,
         const bool before = print->time < md::new_york_to_utc(contract.expiry, md::regular_close_hour(contract.expiry), 0);
         const auto official = official_closes_.find({contract.underlying, contract.expiry});
         const bool is_official = official != official_closes_.end() && Money::from_double(official->second.price) == print->price;
-        settlement_source_ = {{"kind", is_official ? "provider_official_close"
+        const SettlementSource source{{"kind", is_official ? "provider_official_close"
                                        : before  ? "provider_last_print_before_close"
                                                  : "provider_closing_print"},
                               {"provider", provider_},
                               {"symbol", contract.underlying}, {"quote_time", md::format_timestamp(print->time)}};
-        session.settle(contract.osi_symbol(), print->price, market_time_);
+        session.settle(contract.osi_symbol(), print->price, market_time_, source);
         sample_equity(account);
       }
       // Otherwise the day rolls over once the marks are complete: after a settlement,
@@ -1422,8 +1401,8 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           if (pm && session.closing_print(it->second.underlying, it->second.expiry))
             result.decision = {Reason::INVALID_SETTLEMENT, "PM settlement uses the recorded closing print", {}, {}, {}};
           else {
-            settlement_source_ = {{"kind", pm ? "manual_pm_import" : "manual_am_import"}, {"symbol", c.symbol}};
-            result = session.settle(c.symbol, c.settlement, market_time_);
+            const SettlementSource source{{"kind", pm ? "manual_pm_import" : "manual_am_import"}, {"symbol", c.symbol}};
+            result = session.settle(c.symbol, c.settlement, market_time_, source);
           }
           break;
         }

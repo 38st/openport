@@ -30,6 +30,57 @@ class TemporaryJournal {
  private:
   std::filesystem::path directory_;
 };
+TEST(TradingJournal, SettlementRecordsRecoverExactReferencesCashAndOptionalProvenance) {
+  for (const auto side : {Side::Buy, Side::Sell}) {
+    for (const bool provenance : {false, true}) {
+      TemporaryJournal file;
+      auto sink = FileJournal::create(file.path);
+      test::ScriptedMarket f;
+      f.contract = *md::parse_osi("SPX260923C05000000");
+      TradingSession session({}, f.time, sink);
+      f.seed(session);
+      ASSERT_TRUE(session.submit(f.market("entry", 2, side), f.time).decision.ok());
+      const auto before = session.snapshot();
+      const auto position = before->positions.front().position;
+      std::optional<SettlementSource> source;
+      if (provenance) source = SettlementSource{{"kind", "manual_am_import"}, {"symbol", f.symbol()}};
+      const auto time = f.contract.expiry_time();
+      ASSERT_TRUE(session.settle(f.symbol(), Money::parse("5010.123456"), time, source).decision.ok());
+      const auto expected_cash = Money::parse("1012.3456") * position.quantity;
+      const auto check = [&](const TradingSnapshot& snapshot) {
+        ASSERT_EQ(snapshot.settlements.size(), 1);
+        const auto& record = snapshot.settlements.front();
+        EXPECT_EQ(record.contract.osi_symbol(), f.symbol());
+        EXPECT_EQ(record.contract.settlement, md::Settlement::AM);
+        EXPECT_EQ(record.value, Money::parse("5010.123456"));
+        EXPECT_EQ(record.time, time);
+        EXPECT_EQ(record.quantity, position.quantity);
+        EXPECT_EQ(record.cash, expected_cash);
+        EXPECT_EQ(record.realised, expected_cash - position.basis);
+        EXPECT_EQ(record.fee, Money{});
+        EXPECT_EQ(record.source, source);
+      };
+      check(*session.snapshot());
+      EXPECT_EQ(session.snapshot()->account.cash - before->account.cash, expected_cash);
+      // A later delta must not lose a record derived from a previous transaction.
+      session.trip_kill("after settlement", time + md::kNanosPerSecond);
+      const auto recovery = FileJournal::read(file.path);
+      auto recovered = TradingSession::recover(recovery, sink);
+      check(*recovered.snapshot());
+      EXPECT_EQ(recovered.snapshot_json(), session.snapshot_json());
+      EXPECT_EQ(recovered.settle(f.symbol(), Money::parse("5011"), time + md::kNanosPerSecond).decision.code, Reason::ALREADY_SETTLED);
+      check(*recovered.snapshot());
+      for (const auto& record : recovery.records) {
+        if (record.type == "settlement") {
+          EXPECT_EQ(nlohmann::json::parse(record.payload).contains("settlement_source"), provenance);
+        }
+      }
+      // A recovery checkpoint still derives all earlier settlements from events.
+      check(*TradingSession::recover(FileJournal::read(file.path)).snapshot());
+    }
+  }
+}
+
 TEST(TradingJournal, BatchedWritesAreImmediatelyReadableAndFlushOnlyWhenPending) {
   TemporaryJournal file;
   int syncs = 0;

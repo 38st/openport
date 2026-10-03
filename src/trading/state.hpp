@@ -542,6 +542,7 @@ struct State {
   GuardrailState guardrails;
   Timestamp pending_applied_at = 0;
   std::vector<AttemptSummary> attempts;
+  SharedVector<SettlementRecord> settlements;  ///< Derived from transactions, never serialized as state.
   SharedVector<Closure> closures;
   SharedMap<std::string, Annotation> annotations;
   SharedMap<std::string, DayNote> day_notes;

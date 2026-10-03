@@ -299,6 +299,29 @@ export interface TradeReview {
   r_multiple: Num
 }
 export interface DayNote { plan: string; review: string; time?: string | null }
+export interface SettlementSource {
+  kind: string
+  provider?: string
+  symbol?: string
+  quote_time?: string
+}
+export interface SettlementRecord {
+  symbol: string
+  underlying: string
+  expiry: string
+  settlement: "AM" | "PM"
+  value: Money
+  time: string
+  quantity: number
+  cash: Money
+  realised: Money
+  fee: Money
+  source: SettlementSource | null
+}
+export interface SettlementsResponse {
+  account_version: string
+  settlements: SettlementRecord[]
+}
 export interface Trade {
   id: string
   attempt: number
@@ -342,6 +365,8 @@ export interface Trade {
   return: Num
   mark: Money | null
   unrealised: Money | null
+  settlement_value?: Money | null
+  settlement_source?: string | null
   closure: "settlement" | "reset" | "exercise" | "assignment" | "abandon" | null
   /** What closed it: the closure, or its last reducing fill's order. Null while open; absent from older servers. */
   closed_by?: TradeExit | null

@@ -2174,13 +2174,27 @@ last trade, 16:00 or 16:15 for ETF options that trade until then (13:00 and 13:1
 early-close days). No underlying quote is automatically taken as settlement.
 The caller supplies the authoritative reference with `settle(OSI, value, time)`
 after expiry. The hosting engine obtains PM closing prints or explicitly imported
-AM settlement values, and records their provenance outside this core.
+AM settlement values, passing optional provenance to the core as the fourth argument.
 
 ```text
 intrinsic = max(0, omega * (settlement_reference - strike))
 cash payment = q * M * intrinsic
 realised settlement P&L = cash payment - signed remaining basis
 ```
+
+`GET /api/settlements` (read scope, optional `account`) lists all the account's
+settlements, newest first across attempts. Each record has `symbol` (OSI),
+`underlying`, `expiry`, `settlement` (`AM`/`PM`), the exact decimal-string `value`,
+`time`, signed `quantity`, signed `cash` after the settlement `fee`, and gross
+`realised` P&L released by this settlement before fees. Cash excludes any separate
+share delivery. `source` carries `kind` and, when recorded, `provider`, `symbol`
+and `quote_time`; it is null for older journals without provenance. Recovery
+rebuilds these records from the settlement events without changing persisted state.
+The same read is available at `/api/replay/settlements` and
+`/api/replay/history/ID/settlements`. Settlement round trips in `/api/trades`
+carry `settlement_value` and `settlement_source` (the source kind), null when
+unavailable or outside settlement closures. The trades CSV appends both as its
+last two columns, preserving earlier column positions.
 
 Settlement removes the position and is exactly once per OSI. Cash settlement is free;
 physical delivery charges the itemized schedule’s `exercise` fee per contract when
@@ -2658,6 +2672,7 @@ focus at the top of the ticket.
 | `PUT /api/risk/limits` | `expected_revision` string and complete `limits` object; tighter fields apply now, looser evaluation fields are pending until rollover; 200 returns the risk view, 409 `LIMITS_REVISION` if the revision changed (refetch it and retry) |
 | `PUT /api/risk/guardrails` | `expected_revision` string and complete `guardrails`; tighter fields apply now, looser fields wait for rollover on all accounts; returns the risk view, or 409 `LIMITS_REVISION` as for limits |
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs. The kill state here and in `GET /api/risk` is `{latched, reason, reset_blocked, history}`: why a reset could not clear the latch now (a decision, or null) and its last 50 trips, resets and releases (`{time, action, reason, previous, actor}`) |
+| `GET /api/settlements` | Settlement references, cash, gross realised P&L, fee and nullable provenance, newest first across attempts; read scope |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
 | `GET /api/account` | Rules (including `phase`, `lock_balance`, `lock_at_start`, `profit_basis`, the daily loss limit, consistency, minimum days, `day_end` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `balance`, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target; on the balance basis, measured on the balance), decision and `decision_code`, current day, finished `days[]` with `realised`, `qualifying`, `attribution`, equity low/high with times, `profit`, `profitable`, `executions` and `locked`, attempt closest-floor distance/time, `qualifying_days`, `cycle_started`, `payouts[]`, `objectives[]` (code, met, actual, required, message), `trading_days`, `profitable_days`, `best_day`, `consistency_target`, `daily_loss` (limit, basis, action, reference, level, room), `day_lock` and `day_locked_at`, `exit_equity` and `exit_cost`, and once a decided attempt is flat `liquidated_equity` and `liquidation_cost`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |

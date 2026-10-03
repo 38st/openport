@@ -159,6 +159,7 @@ def test_base_url_rejects_ambiguous_credentials(url):
     ("account", (), "GET", "/api/account", "Account"),
     ("portfolio", (), "GET", "/api/portfolio", "Portfolio"),
     ("fills", (), "GET", "/api/fills", "FillsResponse"),
+    ("settlements", (), "GET", "/api/settlements", "SettlementsResponse"),
     ("trades", (), "GET", "/api/trades", "TradesResponse"),
     ("alerts", (), "GET", "/api/alerts", "AlertsResponse"),
     ("create_alert", ("account", "equity", "at_or_below", "99000"), "POST", "/api/alerts", "AlertResponse"),
