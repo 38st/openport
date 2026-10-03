@@ -1110,6 +1110,7 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
 void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time, bool input_recorded) {
   market_time_ = std::max(market_time_, market_time);
   TradingReply reply;
+  if (!input_recorded) price_stock_command(pending.command, driver_time);
   const auto& c = pending.command;
   // Driver 4 records the command before its first transaction.
   if (!input_recorded && inputs_first() && recorded_input(c)) record_command(c, driver_time);
@@ -1332,7 +1333,16 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
           const auto gate = acceptance(c.symbol);
           if (held == 0) result.decision = {Reason::INVALID_ORDER, "The account holds no " + c.symbol + " shares", {}, {}, {}};
           else if (!gate.ok()) result.decision = gate;
-          else result = session.trade_stock(c.symbol, held < 0 ? shares : -shares, market_time_);
+          else result = session.trade_stock(c.symbol, held < 0 ? shares : -shares, market_time_, {}, true);
+          break;
+        }
+        case TradingCommand::Kind::TradeStock:
+        case TradingCommand::Kind::PreviewStock: {
+          const auto gate = acceptance(c.symbol);
+          if (c.kind == TradingCommand::Kind::PreviewStock)
+            reply.stock_preview = session.preview_trade_stock(c.symbol, c.quantity, market_time_, c.stock_price, gate);
+          else if (!gate.ok()) result.decision = gate;
+          else result = session.trade_stock(c.symbol, c.quantity, market_time_, c.stock_price);
           break;
         }
         case TradingCommand::Kind::Abandon: result = session.abandon(c.symbol, market_time_); break;
@@ -1507,8 +1517,21 @@ void Desk::record_command(const TradingCommand& c, md::Timestamp driver_time) {
   record_input(nlohmann::json{{"kind", "command"}, {"command", c}, {"time", market_time_}, {"driver_time", driver_time}}.dump(),
                c.actor, inputs_first());
 }
+void Desk::price_stock_command(TradingCommand& c, md::Timestamp driver_time) {
+  if ((c.kind != TradingCommand::Kind::TradeStock && c.kind != TradingCommand::Kind::PreviewStock) || c.stock_price) return;
+  const auto book = book_.underlyings().find(c.symbol);
+  if (book == book_.underlyings().end() || book->second.spot_ts <= 0 || book->second.spot_ts > market_time_) return;
+  const auto* account = find_account(c.account);
+  if (!account || !account->session) return;
+  auto time = book->second.spot_ts;
+  const auto complete = snapshots_.find(c.symbol);
+  if (complete != snapshots_.end() && paper_acceptance(c.symbol, complete->second, driver_time, capabilities_.delay,
+      account->session->config().limits.max_quote_age, breaker_.halts).ok()) time = market_time_;
+  if (const auto price = quote_price(book->second.spot)) c.stock_price = StockPrice{c.symbol, time, *price};
+}
 void Desk::command(TradingCommand command, TradingCompletion completion, md::Timestamp time, md::Timestamp driver_time) {
   market_time_ = std::max(market_time_, time);
+  price_stock_command(command, driver_time);
   std::deque<PendingCommand> commands{{0, std::move(command), std::move(completion)}};
   // Driver 4: the input comes before the command's quotes and its own transaction.
   const bool recorded = inputs_first() && recorded_input(commands.front().command);

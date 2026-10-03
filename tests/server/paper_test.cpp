@@ -3317,4 +3317,41 @@ TEST(PaperAccounts, CreationSelectsAndValidatesFeeSchedules) {
   }
   std::filesystem::remove_all(directory);
 }
+
+TEST(PaperStocks, SharesOpenThroughTheApiAtTheUnderlyingsPrice) {
+  PaperProvider provider;
+  server::Engine engine(provider, md::Subscription{{"SPY"}}, paper_options());
+  engine.start();
+  ASSERT_TRUE(wait_for([&] { return engine.trading_view() != nullptr; }));
+  const auto time = md::new_york_to_utc({2026, 9, 22}, 10, 0);
+  provider.sink->publish(md::UnderlyingQuote{"SPY", time, 519.9, 520.1, 520});
+  ASSERT_TRUE(wait_for([&] { const auto view = engine.trading_view(); return view && view->market_times.contains("SPY") && view->market_times.at("SPY") == time; }));
+  EXPECT_EQ(write(engine, "POST", "/api/stocks/trade", {{"symbol", "SPY"}, {"side", "buy"}}).status, 400);
+  EXPECT_EQ(write(engine, "POST", "/api/stocks/trade", {{"symbol", "SPY"}, {"side", "hold"}, {"shares", 1}}).status, 400);
+  EXPECT_EQ(write(engine, "POST", "/api/stocks/trade", {{"symbol", "SPY"}, {"side", "buy"}, {"shares", 0}}).status, 400);
+  EXPECT_EQ(write(engine, "POST", "/api/stocks/trade", {{"symbol", "spy"}, {"side", "buy"}, {"shares", 1}}).status, 400);
+  const auto before = read(engine, "/api/portfolio");
+  const auto preview = write(engine, "POST", "/api/stocks/trade/preview", {{"symbol", "SPY"}, {"side", "buy"}, {"shares", 100}});
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  test::capture_contract("stocks", "POST", "/api/stocks/trade/preview", preview);
+  EXPECT_EQ(json::parse(preview.body)["cost"], "52000.00");
+  EXPECT_EQ(json::parse(preview.body)["after"]["exposure"]["dollar_delta"], 52000);
+  EXPECT_EQ(read(engine, "/api/portfolio"), before);
+  const auto bought = write(engine, "POST", "/api/stocks/trade", {{"symbol", "SPY"}, {"side", "buy"}, {"shares", 100}});
+  ASSERT_EQ(bought.status, 200) << bought.body;
+  test::capture_contract("stocks", "POST", "/api/stocks/trade", bought);
+  auto portfolio = json::parse(bought.body);
+  ASSERT_EQ(portfolio["stocks"].size(), 1);
+  EXPECT_EQ(portfolio["stocks"][0]["shares"], 100);
+  EXPECT_EQ(portfolio["stocks"][0]["average_price"], "520.00");
+  // The close endpoint must never turn an oversized close into an opening trade.
+  EXPECT_EQ(write(engine, "POST", "/api/stocks/close", {{"symbol", "SPY"}, {"shares", 101}}).status, 422);
+  EXPECT_EQ(read(engine, "/api/portfolio")["stocks"][0]["shares"], 100);
+  const auto sold = write(engine, "POST", "/api/stocks/trade", {{"symbol", "SPY"}, {"side", "sell"}, {"shares", 150}});
+  ASSERT_EQ(sold.status, 200) << sold.body;
+  EXPECT_EQ(json::parse(sold.body)["stocks"][0]["shares"], -50);
+  EXPECT_EQ(read(engine, "/api/trades")["share_trades"].size(), 2);
+  engine.stop();
+}
+
 }  // namespace

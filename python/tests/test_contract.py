@@ -101,3 +101,23 @@ def test_archived_run_without_metadata_is_described(stub):
     listing["history"] = [{"id": "old", "file": "old", "demo": False, "result": "open", "pnl": None,
                            "finished": True, "read_only": True, "error": "synthetic damaged journal"}]
     Contract("", None, SPEC).validate("GET", "/api/replay", 200, listing)
+
+
+def test_real_share_trade_and_preview_responses(tmp_path):
+    import json
+    import os
+    import subprocess
+    from conftest import ROOT
+    binary = ROOT / "build/tests/openport_tests"
+    if not binary.exists():
+        pytest.skip("Build the C++ test executable for share response contracts")
+    result = subprocess.run([str(binary), "--gtest_filter=PaperStocks.SharesOpenThroughTheApiAtTheUnderlyingsPrice"],
+                            env={**os.environ, "OPENPORT_CONTRACT_OUTPUT": str(tmp_path)},
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stdout + result.stderr
+    files = list(tmp_path.glob("*.jsonl"))
+    assert files, "Rebuild C++ tests with the share fixture"
+    contract = Contract("", None, SPEC)
+    for file in files:
+        for line in file.read_text().splitlines():
+            contract.validate(**json.loads(line))

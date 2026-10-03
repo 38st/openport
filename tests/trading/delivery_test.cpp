@@ -418,10 +418,10 @@ TEST(TradingDelivery, SharesAreMarkedRiskedAndClosedAtTheUnderlyingsPrice) {
     for (const auto& cell : s.snapshot()->scenarios.cells) {
       if (cell.spot_percent == 1) { EXPECT_NEAR(cell.pnl, 300 * 525.0 * 0.01, 1e-6); }
     }
-    // Stock trades only reduce the delivered shares.
-    EXPECT_EQ(s.trade_stock("SPY", 100, f.time).decision.code, Reason::INVALID_ORDER);
-    EXPECT_EQ(s.trade_stock("SPY", -400, f.time).decision.code, Reason::INVALID_ORDER);
-    EXPECT_EQ(s.trade_stock("QQQ", -1, f.time).decision.code, Reason::INVALID_ORDER);
+    // The legacy close path stays reduce-only.
+    EXPECT_EQ(s.trade_stock("SPY", 100, f.time, {}, true).decision.code, Reason::INVALID_ORDER);
+    EXPECT_EQ(s.trade_stock("SPY", -400, f.time, {}, true).decision.code, Reason::INVALID_ORDER);
+    EXPECT_EQ(s.trade_stock("QQQ", -1, f.time, {}, true).decision.code, Reason::INVALID_ORDER);
     ASSERT_TRUE(s.trade_stock("SPY", -100, f.time).decision.ok());
     EXPECT_EQ(stock(s, "SPY")->position.shares, 200);
     EXPECT_EQ(stock(s, "SPY")->position.realised, m("500"));
@@ -836,6 +836,287 @@ TEST(TradingDelivery, PartialExerciseKeepsTheInstructionAndFullExerciseClearsIt)
   ASSERT_TRUE(s.reset_account(m("100000"), {}, "new attempt", f.time).decision.ok());
   ASSERT_TRUE(s.submit(f.market("reset long", call, 1), f.time).decision.ok());
   EXPECT_FALSE(position(s, call)->do_not_exercise);
+}
+
+TEST(TradingDelivery, SharesOpenForAHedgeOrACoveredCall) {
+  const auto call = *md::parse_osi("SPY261022C00520000");
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  // Nothing held in SPY, so no batch has priced it yet.
+  EXPECT_EQ(s.trade_stock("SPY", 100, f.time).decision.code, Reason::STALE_QUOTE);
+  EXPECT_THROW((void)s.trade_stock("SPY", 100, f.time, StockPrice{"QQQ", f.time, m("400")}), TradingError);
+  EXPECT_THROW((void)s.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time + 1, m("510")}), TradingError);
+  // The engine passes the feed's price with the trade.
+  const auto bought = s.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("510")});
+  ASSERT_TRUE(bought.decision.ok()) << bought.decision.message;
+  ASSERT_NE(stock(s, "SPY"), nullptr);
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 100);
+  EXPECT_EQ(s.snapshot()->account.cash, m("49000"));
+  EXPECT_EQ(s.snapshot()->stock_fills.back().source, StockSource::Trade);
+  EXPECT_DOUBLE_EQ(s.snapshot()->risk.underlyings.at("SPY").position.dollar_delta, 100 * 510.0);
+  // A call written against them, more shares, then a sale through zero into a short.
+  f.define(s, call);
+  f.quote(s, call, "3.00", "3.20");
+  ASSERT_TRUE(s.submit(f.market("covered", call, 1, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.trade_stock("SPY", 50, f.time).decision.ok());
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 150);
+  ASSERT_TRUE(s.trade_stock("SPY", -200, f.time).decision.ok());
+  EXPECT_EQ(stock(s, "SPY")->position.shares, -50);
+  EXPECT_EQ(share_lifecycles(s.snapshot()->stock_fills).size(), 2U) << "the long round trip, and the short it reversed into";
+  // An index has no shares.
+  EXPECT_EQ(s.trade_stock("SPX", 1, f.time, StockPrice{"SPX", f.time, m("6500")}).decision.code, Reason::INVALID_ORDER);
+  // The stock market's regular session only.
+  f.time = md::new_york_to_utc({2026, 9, 22}, 16, 5);
+  f.price(s);
+  EXPECT_EQ(s.trade_stock("SPY", 100, f.time).decision.code, Reason::SESSION_CLOSED);
+}
+
+TEST(TradingDelivery, OpeningSharesTakesTheAccountsChecks) {
+  Spy f;
+  // Buy-only and defined-risk plans take no short shares, but sell those held.
+  for (const bool buy_only : {true, false}) {
+    AccountRules rules;
+    (buy_only ? rules.buy_only : rules.defined_risk) = true;
+    TradingSession s(roomy(rules), f.time);
+    f.price(s);
+    EXPECT_EQ(s.trade_stock("SPY", -100, f.time).decision.code, buy_only ? Reason::BUY_ONLY : Reason::DEFINED_RISK);
+    ASSERT_TRUE(s.trade_stock("SPY", 100, f.time).decision.ok());
+    EXPECT_TRUE(s.trade_stock("SPY", -100, f.time).decision.ok());
+  }
+  {
+    // 100,000 buys 196 shares at 510, not 200.
+    AccountRules rules;
+    rules.buying_power = true;
+    TradingSession s(roomy(rules), f.time);
+    f.price(s);
+    const auto refused = s.trade_stock("SPY", 200, f.time).decision;
+    EXPECT_EQ(refused.code, Reason::BUYING_POWER);
+    EXPECT_EQ(refused.actual, 2000.0);
+    EXPECT_EQ(refused.scope, "SPY");
+    ASSERT_TRUE(s.trade_stock("SPY", 196, f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->buying_power.available, m("40"));
+  }
+  {
+    // The kill switch stops opening, not closing; an opening share trade counts for the guardrails.
+    auto c = roomy();
+    c.guardrails.max_opening_trades = 1;
+    TradingSession s(c, f.time);
+    f.price(s);
+    ASSERT_TRUE(s.trade_stock("SPY", 100, f.time).decision.ok());
+    EXPECT_EQ(s.trade_stock("SPY", 100, f.time).decision.code, Reason::TRADE_LIMIT);
+    EXPECT_TRUE(s.trade_stock("SPY", -50, f.time).decision.ok());
+    EXPECT_EQ(stock(s, "SPY")->position.shares, 50);
+  }
+  {
+    // Exposure limits count the shares' dollar delta.
+    auto c = roomy();
+    c.limits.per_underlying = {40000, 1e12};
+    TradingSession s(c, f.time);
+    f.price(s);
+    EXPECT_EQ(s.trade_stock("SPY", 100, f.time).decision.code, Reason::DELTA_LIMIT);
+    EXPECT_TRUE(s.trade_stock("SPY", 50, f.time).decision.ok());
+  }
+}
+
+TEST(TradingDelivery, OpenedSharesRecoverFromTheJournal) {
+  std::string pattern = (std::filesystem::temp_directory_path() / "openport-delivery-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(pattern.data()), nullptr);
+  const std::filesystem::path directory = pattern;
+  const auto path = (directory / "session.jsonl").string();
+  Spy f;
+  std::string expected, head;
+  {
+    auto journal = FileJournal::create(path);
+    TradingSession s(roomy(), f.time, journal);
+    ASSERT_TRUE(s.trade_stock("SPY", 300, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+    ASSERT_TRUE(s.trade_stock("SPY", -100, f.time).decision.ok());
+    expected = s.snapshot_json();
+    head = journal->head();
+  }
+  const auto recovered = TradingSession::recover(FileJournal::read(path, head));
+  EXPECT_EQ(recovered.snapshot_json(), expected);
+  EXPECT_EQ(stock(recovered, "SPY")->position.shares, 200);
+  std::filesystem::remove_all(directory);
+}
+
+
+TEST(TradingDelivery, OpeningSharesChecksFreshnessSessionsAndAccountState) {
+  Spy f;
+  for (const auto symbol : {"SPX", "XSP", "VIX", "RUT", "NDX"}) {
+    TradingSession s(roomy(), f.time);
+    EXPECT_EQ(s.trade_stock(symbol, 1, f.time).decision.code, Reason::INVALID_ORDER);
+  }
+  TradingSession s(roomy(), f.time);
+  for (const Quantity size : {Quantity{0}, Quantity{10'000'001}, Quantity{-10'000'001}, std::numeric_limits<Quantity>::min()}) {
+    EXPECT_THROW((void)s.trade_stock("SPY", size, f.time), TradingError);
+  }
+  EXPECT_EQ(s.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time - 10 * md::kNanosPerMinute, m("510")}).decision.code,
+            Reason::STALE_QUOTE);
+  s.trip_kill("manual", f.time);
+  EXPECT_EQ(s.trade_stock("SPY", 1, f.time).decision.code, Reason::KILL_SWITCH);
+  ASSERT_TRUE(s.reset_kill("ready", f.time).decision.ok());
+  ASSERT_TRUE(s.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+  s.trip_kill("manual", f.time);
+  EXPECT_EQ(s.trade_stock("SPY", -101, f.time).decision.code, Reason::KILL_SWITCH);
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 100);  // Refused reversal never partly closes.
+  EXPECT_TRUE(s.trade_stock("SPY", -100, f.time).decision.ok());
+  for (const auto time : {md::new_york_to_utc({2026, 9, 22}, 9, 29),
+                          md::new_york_to_utc({2026, 9, 22}, 16, 0),
+                          md::new_york_to_utc({2026, 11, 27}, 13, 0)}) {
+    TradingSession closed(roomy(), time);
+    EXPECT_EQ(closed.trade_stock("SPY", 1, time, StockPrice{"SPY", time, m("510")}).decision.code, Reason::SESSION_CLOSED);
+  }
+  const auto early = md::new_york_to_utc({2026, 11, 27}, 12, 59);
+  TradingSession open(roomy(), early);
+  EXPECT_TRUE(open.trade_stock("SPY", 1, early, StockPrice{"SPY", early, m("510")}).decision.ok());
+  auto config = roomy();
+  config.rules.profit_target = m("50");
+  TradingSession evaluation(config, f.time);
+  ASSERT_TRUE(evaluation.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+  f.spot = 511;
+  f.price(evaluation);
+  ASSERT_EQ(evaluation.snapshot()->evaluation.status, EvaluationStatus::Passed);
+  EXPECT_EQ(evaluation.trade_stock("SPY", 1, f.time).decision.code, Reason::EVALUATION_CLOSED);
+}
+
+TEST(TradingDelivery, OpeningSharesNeedsCompleteValuationsAndHonorsLossLimits) {
+  Spy f;
+  const auto call = *md::parse_osi("SPY261022C00520000");
+  TradingSession s(roomy(), f.time);
+  f.define(s, call);
+  f.quote(s, call, "3", "3.20");
+  ASSERT_TRUE(s.submit(f.market("open", call, 1), f.time).decision.ok());
+  f.time += 10 * md::kNanosPerMinute;
+  EXPECT_EQ(s.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time, m("510")}).decision.code, Reason::STALE_QUOTE);
+  auto c = roomy();
+  c.limits.max_daily_loss = m("100");
+  TradingSession loss(c, f.time);
+  ASSERT_TRUE(loss.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+  // The command's fresh mark itself creates a loss, before the monitor latches kill.
+  EXPECT_EQ(loss.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time, m("508")}).decision.code, Reason::DAILY_LOSS);
+  EXPECT_TRUE(loss.snapshot()->risk.kill_latched);
+  EXPECT_TRUE(loss.trade_stock("SPY", -100, f.time).decision.ok());
+}
+
+TEST(TradingDelivery, OpenedSharesCoverCallsAndCollarsAndShortSharesTakeRegT) {
+  Spy f;
+  const auto call = *md::parse_osi("SPY261022C00520000");
+  const auto put = *md::parse_osi("SPY261022P00500000");
+  AccountRules rules;
+  rules.buying_power = true;
+  TradingSession s(roomy(rules, "52000"), f.time);
+  f.define(s, call);
+  f.define(s, put);
+  f.quote(s, call, "3", "3.20");
+  f.quote(s, put, "2", "2.20");
+  ASSERT_TRUE(s.trade_stock("SPY", 100, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("covered", call, 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, Money{});
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("1299.35"));
+  ASSERT_TRUE(s.submit(f.market("collar", put, 1), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->buying_power.short_requirement, Money{});
+  EXPECT_EQ(s.snapshot()->buying_power.available, m("1078.70"));
+  TradingSession shorted(roomy(rules), f.time);
+  ASSERT_TRUE(shorted.trade_stock("SPY", -100, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+  EXPECT_EQ(shorted.snapshot()->buying_power.short_requirement, m("76500"));
+  EXPECT_EQ(shorted.snapshot()->buying_power.available, m("74500"));
+  rules.defined_risk = true;
+  TradingSession defined(roomy(rules), f.time);
+  f.define(defined, call);
+  f.quote(defined, call, "3", "3.20");
+  ASSERT_TRUE(defined.trade_stock("SPY", 100, f.time).decision.ok());
+  // The plan's option-coverage rule is deliberately stricter than margin coverage.
+  EXPECT_EQ(defined.submit(f.market("covered", call, 1, Side::Sell), f.time).decision.code, Reason::DEFINED_RISK);
+}
+
+TEST(TradingDelivery, OpenedSharesReceiveDividendsAndNetWithAssignment) {
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  ASSERT_TRUE(s.trade_stock("SPY", 150, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+  ASSERT_TRUE(s.annotate_shares(1, "covered call", {"hedge"}, f.time).decision.ok());
+  f.time = md::new_york_to_utc({2026, 9, 22}, 16, 0);
+  f.price(s);
+  f.time = md::new_york_to_utc({2026, 9, 23}, 9, 30);
+  ASSERT_TRUE(s.roll_day(f.time, {{"SPY", {2026, 9, 23}, m("1.25")}}).decision.ok());
+  ASSERT_EQ(s.snapshot()->dividends.size(), 1U);
+  EXPECT_EQ(s.snapshot()->dividends.back().amount, m("187.50"));
+  const auto call = *md::parse_osi("SPY260923C00500000");
+  f.define(s, call);
+  f.quote(s, call, "10", "10.20");
+  ASSERT_TRUE(s.submit(f.market("covered", call, 1, Side::Sell), f.time).decision.ok());
+  f.time = call.expiry_time();
+  f.price(s);
+  ASSERT_TRUE(s.settle(call.osi_symbol(), m("510"), f.time).decision.ok());
+  ASSERT_NE(stock(s, "SPY"), nullptr);
+  EXPECT_EQ(stock(s, "SPY")->position.shares, 50);
+  EXPECT_EQ(stock(s, "SPY")->position.basis, m("25500"));
+  EXPECT_EQ(s.snapshot()->annotations.at("s1").note, "covered call");
+  const auto trips = share_lifecycles(s.snapshot()->stock_fills, s.snapshot()->dividends);
+  ASSERT_EQ(trips.size(), 1U);
+  // At the next stock session flatten closes opened shares too.
+  f.time = md::new_york_to_utc({2026, 9, 24}, 10, 0);
+  f.price(s);
+  ASSERT_TRUE(s.close_positions({}, f.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->stocks.empty());
+}
+
+TEST(TradingDelivery, SharePreviewIsPureAndUsesTheSameChecksAndMargin) {
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  const auto before = s.snapshot_json();
+  const auto preview = s.preview_trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("510")});
+  EXPECT_EQ(s.snapshot_json(), before);
+  ASSERT_TRUE(preview.decision.ok());
+  EXPECT_EQ(preview.price, m("510"));
+  EXPECT_EQ(preview.after.buying_power, m("49000"));
+  ASSERT_TRUE(preview.after.exposure);
+  EXPECT_DOUBLE_EQ(preview.after.exposure->dollar_delta, 51000);
+  ASSERT_TRUE(s.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+  EXPECT_EQ(preview.after.buying_power, s.snapshot()->buying_power.available);
+  EXPECT_EQ(preview.after.equity, s.snapshot()->equity);
+}
+
+TEST(TradingDelivery, ShareReversalsKeepExactBasisAndDailyPnlAndSeparateRoundTrips) {
+  Spy f;
+  TradingSession s(roomy(), f.time);
+  ASSERT_TRUE(s.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("510")}).decision.ok());
+  ASSERT_TRUE(s.annotate_shares(1, "hedge", {"delta"}, f.time).decision.ok());
+  ++f.time;
+  ASSERT_TRUE(s.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("520")}).decision.ok());
+  EXPECT_EQ(stock(s, "SPY")->position.basis, m("103000"));
+  ++f.time;
+  ASSERT_TRUE(s.trade_stock("SPY", -250, f.time, StockPrice{"SPY", f.time, m("530")}).decision.ok());
+  EXPECT_EQ(stock(s, "SPY")->position.shares, -50);
+  EXPECT_EQ(stock(s, "SPY")->position.basis, m("-26500"));
+  EXPECT_EQ(s.snapshot()->account.realised, m("3000"));
+  EXPECT_EQ(s.snapshot()->equity, m("103000"));
+  EXPECT_EQ(s.snapshot()->evaluation.day_close_equity, m("103000"));
+  EXPECT_DOUBLE_EQ(day_pnl(s), 3000);
+  EXPECT_NEAR(s.snapshot()->attribution.delta, 3000, 1e-9);
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 3U);
+  const auto trips = share_lifecycles(s.snapshot()->stock_fills);
+  ASSERT_EQ(trips.size(), 2U);
+  EXPECT_EQ(s.snapshot()->annotations.at("s1").note, "hedge");
+  ++f.time;
+  ASSERT_TRUE(s.trade_stock("SPY", 50, f.time, StockPrice{"SPY", f.time, m("520")}).decision.ok());
+  EXPECT_TRUE(s.snapshot()->stocks.empty());
+  EXPECT_EQ(s.snapshot()->account.realised, m("3500"));
+  EXPECT_EQ(s.snapshot()->equity, m("103500"));
+}
+
+TEST(TradingDelivery, FreshOptionMarksWithoutFreshGreeksBlockOpeningShares) {
+  Spy f;
+  auto c = roomy();
+  c.limits.max_valuation_age = md::kNanosPerSecond;
+  TradingSession s(c, f.time);
+  const auto call = *md::parse_osi("SPY261022C00520000");
+  f.define(s, call);
+  f.quote(s, call, "3", "3.20");
+  ASSERT_TRUE(s.submit(f.market("open", call, 1), f.time).decision.ok());
+  f.time += 2 * md::kNanosPerSecond;
+  s.on_quotes({{call.osi_symbol(), ++f.observation, f.time, m("3"), m("3.20"), 10, 10}}, {}, f.time);
+  EXPECT_TRUE(s.snapshot()->valuation_complete);
+  EXPECT_EQ(s.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time, m("510")}).decision.code, Reason::MISSING_VALUATION);
 }
 
 }  // namespace

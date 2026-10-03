@@ -57,6 +57,9 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to buying power and to floor, projected breach risk, and warnings about terms that act at once |
 | `POST /api/orders/what-if` | Up to six candidate adjustments of up to four orders each, filled on a private copy of the account and compared on buying power, Greeks, grid loss and floor room |
 | `POST /api/orders/{id}/preview` | The same preview of a change to a resting order, as `PUT /api/orders/{id}` would make it, without making it |
+| `POST /api/stocks/trade` | `{symbol, side: "buy" or "sell", shares: 1–10000000}` opens, adds, reduces or reverses shares at a fresh underlying price during stock regular hours; returns Portfolio |
+| `POST /api/stocks/trade/preview` | Same body; returns `decision` (`ok` or reason code), `reason`, price, signed cash cost, and current/after buying power and dollar delta without recording a trade |
+| `POST /api/stocks/close` | `{symbol, shares?}` reduces only, all held shares if omitted; an oversized close is refused |
 | `POST /api/positions/close/preview` | A flatten's dry run: what it would cancel and close now, and the account after it, without doing it |
 | `GET/POST /api/playbooks`, `GET/PUT/DELETE /api/playbooks/{id}` | Versioned definitions, archive, account stages and adherence/expectancy reports; `?version=N` reads an old version |
 | `PUT /api/playbooks/{id}/mode`, `POST /api/playbooks/staged/{stage}/send`, `/dismiss` | Enable staging or replay-only auto; send or dismiss a current stage |
@@ -124,6 +127,16 @@ Sandbox demos also offer `POST /api/sandboxes` without a token. It returns
 `{account, token, idle_seconds, simulated: true}` once; it returns 404 when disabled
 and 429 at capacity or a creation rate limit. `GET /api/status` includes
 `sandboxes: {enabled: true, idle_seconds}` when offered.
+
+Share trades and previews have `/api/replay/stocks/trade` and
+`/api/replay/stocks/trade/preview` mirrors, and accept `?account=` live. Trade scope
+(or replay scope) is required. Index underlyings are refused. Opening takes the
+account's valuation, session, loss, exposure, buying-power and personal checks;
+reducing remains available under the kill switch. A reversal is a close plus an
+open, accepted or refused as a whole. Share writes have no idempotency key: inspect
+positions after an uncertain response before retrying. Preview costs are decimal
+money strings; a negative cost receives cash. A refused preview leaves holdings
+unchanged. See [shares](paper-trading.md) for margin and defined-risk plan coverage.
 
 ## Scripting and agents
 

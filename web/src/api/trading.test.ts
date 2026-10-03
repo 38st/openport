@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { api, ApiError, mapApiError } from "./client"
 import { liveState } from "./live"
 import { sameAccountPlaceholder, tradingQueries } from "./trading"
+import { activeAccount } from "../lib/active-account"
+import { dataSource } from "../lib/data-source"
 import { writeToken } from "../lib/write-token"
 import { fill, limits, order, portfolio, risk, status, trading } from "../test/trading-fixtures"
 
@@ -120,4 +122,22 @@ it("sends extended TIF deadlines and limit flatten pricing unchanged", async () 
     await send("SPX", "open", { type: "limit", limit_ticks: 2 })
     expect(JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)).toEqual({ underlying: "SPX", type: "limit", limit_ticks: 2 })
   }
+})
+
+
+it("routes share trades and previews to the named live account or replay", async () => {
+  const fetcher = vi.fn(async () => new Response("{}"))
+  vi.stubGlobal("fetch", fetcher)
+  try {
+    activeAccount.set("hedges")
+    await api.tradeStock("SPY", "sell", 125, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/stocks/trade?account=hedges", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ symbol: "SPY", side: "sell", shares: 125 }),
+    }))
+    dataSource.set("replay")
+    await api.previewStock("SPY", "buy", 100, "open")
+    expect(fetcher).toHaveBeenLastCalledWith("/api/replay/stocks/trade/preview", expect.objectContaining({
+      method: "POST", body: JSON.stringify({ symbol: "SPY", side: "buy", shares: 100 }),
+    }))
+  } finally { dataSource.set("live"); activeAccount.set("main") }
 })

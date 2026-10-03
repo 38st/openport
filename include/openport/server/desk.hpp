@@ -125,6 +125,7 @@ class Desk {
   /// Whether a reproducible run records `command` as an input: every one a trader sends but a preview.
   [[nodiscard]] bool recorded_input(const TradingCommand& command) const;
   void record_command(const TradingCommand& command, md::Timestamp driver_time);
+  void price_stock_command(TradingCommand& command, md::Timestamp driver_time);
   /// Re-executes a resumed run's recorded inputs up to its next boundary.
   void replay_recorded();
   /// Stops every account of a resumed run whose inputs no longer match its recording.

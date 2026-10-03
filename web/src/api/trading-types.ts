@@ -935,6 +935,16 @@ export interface WhatIfCandidate {
   after: WhatIfAccount | null
 }
 /** POST /api/positions/close/preview: a flatten's dry run on a private copy of the account. */
+export interface StockPreview {
+  account_version: string
+  simulated: true
+  decision: string
+  reason: Decision | null
+  price: Money | null
+  cost: Money | null
+  current: WhatIfAccount
+  after: WhatIfAccount
+}
 export interface FlattenPreview {
   account_version: string
   decision: string
