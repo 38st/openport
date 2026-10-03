@@ -49,6 +49,17 @@ std::string clock_text(std::int64_t minutes) {
   std::snprintf(text, sizeof text, "%02d:%02d", static_cast<int>(minutes / 60), static_cast<int>(minutes % 60));
   return text;
 }
+json fee_schedule_json(const FeeSchedule& f) {
+  json index = json::object();
+  for (const auto& [root, fee] : f.index) index[root] = fee.str();
+  return {{"open", f.open.str()}, {"close", f.close.str()}, {"leg_cap", f.leg_cap.str()}, {"clearing", f.clearing.str()},
+          {"regulatory", f.regulatory.str()}, {"index", index}, {"exercise", f.exercise.str()}};
+}
+json fill_fees_json(const std::optional<FillFees>& f) {
+  if (!f) return nullptr;
+  return {{"commission", f->commission.str()}, {"clearing", f->clearing.str()}, {"regulatory", f->regulatory.str()},
+          {"index", f->index.str()}};
+}
 json rules_json(const AccountRules& r) {
   const bool funded = r.phase == Phase::Funded;
   json result = {{"plan", nullable(r.plan)}, {"phase", funded ? "funded" : "evaluation"},
@@ -69,6 +80,7 @@ json rules_json(const AccountRules& r) {
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
   if (r.fill_latency_ms != 0) result["fill_latency_ms"] = r.fill_latency_ms;
   if (r.impact_ticks != 0) result["impact_ticks"] = r.impact_ticks;
+  if (r.fees) result["fees"] = fee_schedule_json(*r.fees);
   return result;
 }
 /// A check one contract failed reports that contract's underlying as its scope, as
@@ -200,6 +212,7 @@ json preview_json(const OrderPreview& p) {
       {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
       {"max_units", units(p.max_units)}, {"max_units_buying_power", units(p.max_units_buying_power)},
       {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)},
+      {"fee", money(p.fee)}, {"fees", fill_fees_json(p.fees)},
       {"execution", execution_json(p.execution)}, {"liquidity", leg_liquidity_json(p)}, {"warnings", warnings}, {"simulated", true}};
 }
 
@@ -431,7 +444,7 @@ json fill_json(const Fill& f, const TradingView& view) {
           {"attempt", fill_attempt(*view.snapshot, f.id)},
           {"symbol", f.symbol}, {"underlying", underlying(view, f.symbol)},
           {"side", f.side == Side::Buy ? "buy" : "sell"}, {"quantity", f.quantity},
-          {"price", f.price.str()}, {"fee", f.fee.str()}, {"context", context_json(f.context)},
+          {"price", f.price.str()}, {"fee", f.fee.str()}, {"fees", fill_fees_json(f.fees)}, {"context", context_json(f.context)},
           {"quote", fill_quote_json(f)},
           {"quote_time", md::format_timestamp(f.quote_time)}, {"time", md::format_timestamp(f.time)}};
 }
@@ -1278,13 +1291,27 @@ std::int64_t clock_field(const json& j, const char* key) {
     throw std::invalid_argument(std::string(key) + " must be HH:MM New York time");
   return hours * 60 + minutes;
 }
+/// Each omitted fee amount is zero. Null on the enclosing rules selects flat fees.
+FeeSchedule parse_fee_schedule(const json& j) {
+  fields(j, {}, {"open", "close", "leg_cap", "clearing", "regulatory", "index", "exercise"});
+  FeeSchedule f;
+  const auto amount = [&](const char* key, Money& value) { if (j.contains(key)) value = decimal_field(j, key); };
+  amount("open", f.open); amount("close", f.close); amount("leg_cap", f.leg_cap); amount("clearing", f.clearing);
+  amount("regulatory", f.regulatory); amount("exercise", f.exercise);
+  if (j.contains("index")) {
+    const auto& index = j.at("index");
+    if (!index.is_object()) throw std::invalid_argument("index must map option roots to decimal strings");
+    for (auto it = index.begin(); it != index.end(); ++it) f.index[it.key()] = decimal_field(index, it.key().c_str());
+  }
+  return f;
+}
 /// Custom rules: nullable money for an absent target/drawdown, like rules_json.
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
   fields(j, {"profit_target", "max_drawdown", "drawdown_mode", "buy_only", "buying_power", "expiry_cutoff_seconds"},
          {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
-          "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end"});
+          "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees"});
   AccountRules rules;
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
@@ -1319,6 +1346,7 @@ AccountRules parse_rules(const json& j) {
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");
   if (j.contains("fill_latency_ms")) rules.fill_latency_ms = integer_field(j, "fill_latency_ms");
   if (j.contains("impact_ticks")) rules.impact_ticks = integer_field(j, "impact_ticks");
+  if (j.contains("fees") && !j.at("fees").is_null()) rules.fees = parse_fee_schedule(j.at("fees"));
   if (j.contains("margin")) {
     const auto margin = string_field(j, "margin");
     if (margin != "strategy" && margin != "portfolio") throw std::invalid_argument("margin must be strategy or portfolio");
@@ -1347,6 +1375,16 @@ void fill_model(const json& body, AccountRules& rules) {
   rules.fill_latency_ms = model == "conservative" ? 1000 : 0;
   rules.impact_ticks = model == "conservative" ? 1 : 0;
   rules.slippage_ticks = model == "conservative" ? 1 : 0;
+}
+/// An illustrative broker schedule; custom rules can supply each amount instead.
+void fee_model(const json& body, AccountRules& rules) {
+  if (!body.contains("fee_model")) return;
+  const auto model = string_field(body, "fee_model");
+  if (model != "flat" && model != "itemized") throw std::invalid_argument("fee_model must be flat or itemized");
+  rules.fees.reset();
+  if (model == "itemized")
+    rules.fees = FeeSchedule{Money::parse("1.00"), {}, Money::parse("10.00"), Money::parse("0.10"), Money::parse("0.02"),
+                            {{"SPX", Money::parse("0.60")}, {"SPXW", Money::parse("0.60")}}, Money::parse("5.00")};
 }
 json strict_json(const std::string& body) {
   // JSON parsers normally keep the last duplicate key; that is ambiguous for orders.
@@ -1549,7 +1587,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   }
   if (path == "/api/accounts") {
     // A name, and either a preset plan or a starting balance and complete rules.
-    fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model"});
+    fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model"});
     command.kind = TradingCommand::Kind::CreateAccount;
     command.name = string_field(body, "name");
     if (!valid_account_name(command.name))
@@ -1573,6 +1611,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       check_plan_name(command.initial_cash, command.rules);
     }
     fill_model(body, command.rules);
+    fee_model(body, command.rules);
     return command;
   }
   if (path == "/api/orders" || path == "/api/orders/preview") {
@@ -1692,7 +1731,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     command.reason = string_field(body, "reason");
   } else if (path == "/api/account/reset") {
     // Either a preset ID, or a custom starting balance and complete rules.
-    fields(body, {"reason"}, {"plan", "initial_cash", "rules", "fill_model"});
+    fields(body, {"reason"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model"});
     command.kind = TradingCommand::Kind::ResetAccount;
     command.reason = string_field(body, "reason");
     if (body.contains("plan")) {
@@ -1712,6 +1751,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       check_plan_name(command.initial_cash, command.rules);
     }
     fill_model(body, command.rules);
+    fee_model(body, command.rules);
   } else if (path == "/api/account/payout") {
     fields(body, {"amount"});
     command.kind = TradingCommand::Kind::Payout;

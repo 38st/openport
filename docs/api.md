@@ -32,8 +32,24 @@ Expiry ids are the date plus settlement, for example `2026-10-16AM`.
 
 ## Paper trading
 
-With paper trading on, the same API is the account. The web terminal uses exactly
-these routes, so anything it does can be scripted:
+With paper trading on, the same API is the account.
+
+Create/reset accepts optional `fee_model: "flat" | "itemized"` or custom
+`rules.fees` with open/close commission, per-leg cap, clearing, regulatory,
+root-specific index fees and per-contract exercise fees. The preset overrides
+custom fees. Fills and order/change previews return itemized `fees` (null under
+flat fees); preview `fee` is the full remaining size’s total, null without a
+projection. See [fee semantics and bounds](paper-trading.md#fees).
+
+Example schedule for custom rules (omitted fields default to zero):
+
+```json
+{"fees":{"open":"1.00","close":"0.00","leg_cap":"10.00",
+         "clearing":"0.10","regulatory":"0.02",
+         "index":{"SPX":"0.60","SPXW":"0.60"},"exercise":"5.00"}}
+```
+
+The web terminal uses these routes, so anything it does can be scripted:
 
 | Route | Does |
 | --- | --- |

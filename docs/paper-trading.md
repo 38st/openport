@@ -247,7 +247,8 @@ whose message says why nothing more filled: a limit that did not reach the execu
 price (named, after slippage when it applies), no fresh two-sided quote, or used-up
 displayed (or, with latency, eligible) liquidity.
 `filled_quantity` remains separate from terminal state: cancelled orders may have
-fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65).
+fills. Each partial fill charges `quantity * fee_per_contract` (default $0.65), or
+the account’s optional [itemized fee schedule](#fees).
 
 Both positive prices and both positive integer sizes are required; crossed,
 one-sided, missing and zero-size books supply **no liquidity**, except to a combo
@@ -318,8 +319,9 @@ Normal price-band, loss, buying-power and exposure checks still apply at each fi
 Combos take one whole unit at a time with impact enabled. Each leg consumes its
 own side's blocks; a ratio spanning blocks records separate prices, using exact
 fixed-point money. All legs of that unit pass checks and fill together only if its
-entire net fits the limit. Fees remain per contract. Brackets, manual closes and
-account-owned liquidation/auto-close orders use the same impact model.
+entire net fits the limit. Fees use the account’s flat or itemized schedule.
+Brackets, manual closes and account-owned liquidation/auto-close orders use the
+same impact model.
 
 `fill_latency_ms` is an integer from 0 to 60,000. A positive value holds an accepted
 order until every leg has a fresh, valid quote timestamped at or after acceptance
@@ -344,6 +346,53 @@ Both models are simulations. Neither knows queue position, hidden liquidity, or
 whether the market would have traded at all. Impact invents a price schedule, not
 observed market depth; latency selects a later supplied quote, not a future trade.
 Neither removes the hindsight advantage of a delayed feed.
+
+### Fees
+
+The default remains the flat `fee_per_contract` ($0.65, or `--paper-fee`), opening
+or closing, with exercise, assignment and settlement free. Optional `rules.fees`
+replaces that fee with an itemized schedule:
+
+| Field | Charge |
+| --- | --- |
+| `open` | Commission per contract that opens or adds to a position |
+| `close` | Commission per contract that reduces a position; a reversal splits opening and closing quantities |
+| `leg_cap` | Maximum commission per leg per order, across partial fills and order changes; zero means uncapped |
+| `clearing` | Per contract, opening or closing |
+| `regulatory` | Per contract, opening or closing (ORF) |
+| `index` | Per contract by option root; `SPX` and `SPXW` are separate keys, and a missing root pays zero |
+| `exercise` | Per contract exercised, assigned early or delivered at expiry; cash settlement and worthless expiry are free |
+
+Amounts are exact decimal strings between $0 and $1,000 inclusive. The index map
+has at most 16 keys, each one to six uppercase letters or digits. Omitted amounts
+are zero and an omitted index map is empty. Absent or null `rules.fees` selects
+flat fees; `{}` selects a zero-cost itemized schedule. Malformed fields return
+400 `INVALID_REQUEST`; out-of-range amounts or invalid roots return 422
+`INVALID_RULES`, as other account rules do.
+
+Create or reset an account with `fee_model: "itemized"` for an illustrative
+schedule: $1.00 to open, $0 to close, $10 commission cap per leg per order,
+$0.10 clearing, $0.02 regulatory, $0.60 on SPX and SPXW, and $5 per exercised or
+assigned contract. `fee_model: "flat"` restores the server’s flat fee. Either
+preset overrides `rules.fees`; without a preset, custom rules keep their schedule.
+These are simulation settings, not a current broker quote. For example, before
+the cap, one SPXW contract costs $1.72 to open and $0.72 to close: $2.44 for a
+round trip, versus $1.30 at the default flat fee.
+
+Fills record `fees: {commission, clearing, regulatory, index}`, which sums exactly
+to `fee`. HTTP fills return null `fees` under flat fees. Exercise, assignment and
+physical settlement record a nonzero `fee` on the closure, charged to that option
+trade and account fees. Delivered shares themselves remain free to trade.
+Buying-power reservations, loss checks, previews, what-if and flatten dry runs
+use the schedule, including the commission already paid toward a working order’s
+cap. Fees reduce equity, target progress and loss room.
+
+New journal fields are optional: schedule and fill breakdowns are written only
+under itemized rules; closure fees only when nonzero. Flat-fee journal bytes stay
+unchanged, and old journals load without a schedule. Recovery preserves each
+order’s paid commission. The terminal offers flat or itemized fees in New account
+and Start a new attempt, describes the active schedule in Rules, and shows
+expandable breakdowns on fills and ticket previews.
 
 ### Sessions
 
@@ -1086,6 +1135,11 @@ as `symbol`, `side`, `quantity` and `price`, and `average_price` is its average 
 (a multi-leg order's net debit, negative for a credit). The full-size projection below
 uses those prices for a market order and the limit for a limit order.
 
+`fee` is the full remaining size’s fee at the current position and remaining cap;
+`fees` breaks it into commission, clearing, regulatory and index charges under an
+itemized schedule. Both are null without a projection; flat-fee previews have a
+total and null breakdown.
+
 `buying_power.required` is what the order reserves while it works. `before` is the
 available buying power now, `working` the available buying power while the order works
 before any of it fills, and `after` the available buying power once the order has
@@ -1252,6 +1306,7 @@ side, no buying-power check. All rule money is exact.
 | `slippage_ticks` | Integer from 0 to 10 adverse ticks per option fill, including each combo leg and closing orders; default 0 |
 | `fill_latency_ms` | Integer from 0 to 60,000 milliseconds on market time before a quote can execute an order; default 0 |
 | `impact_ticks` | Integer from 0 to 10 extra adverse ticks per additional displayed-size block; 0 keeps the displayed-size cap |
+| `fees` | Optional [itemized fee schedule](#fees) in place of the flat per-contract fee |
 | `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Plans use strategy margin and As displayed fills by default; custom rules can select portfolio margin |
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), every open order on the contract cancels with `EXPIRY_CUTOFF` (DAY, GTC, armed and bracket exits alike, held or not), positions are closed, and only closing orders are accepted |
 | `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
@@ -1859,8 +1914,9 @@ cash payment = q * M * intrinsic
 realised settlement P&L = cash payment - signed remaining basis
 ```
 
-Settlement removes the position, charges no fee and is exactly once per OSI. OTM
-options pay zero and release their entire basis into realised P&L. Negative
+Settlement removes the position and is exactly once per OSI. Cash settlement is free;
+physical delivery charges the itemized schedule’s `exercise` fee per contract when
+one is configured. OTM options pay zero and release their entire basis into realised P&L. Negative
 references, premature settlement, missing positions or unknown contracts reject.
 AM-settled series stop trading at the regular close the business day before expiry
 (`last_trade_time`) and wait for an explicit settlement value.
@@ -2222,8 +2278,9 @@ channels, editable filters and a test button; destinations and credentials stay 
 the server. See [external notifications](runtime.md#external-notifications) for setup,
 delivery guarantees and limits.
 
-The web ticket estimates fees using `fee_per_contract`; only older servers without
-it expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
+The web ticket uses the preview’s `fee` and itemized `fees`, falling back to
+`fee_per_contract` on flat-fee accounts; only older servers without that setting
+expose a manual fee estimate. Ticket and Positions notices use `paper.message`,
 and `paper.accepting: false` disables ticket submission. In the overnight and curb
 sessions (by `paper.session`) the tickets offer limit entries, with a condition or
 bracket on EXTO/GTC_EXTO to work there, or GTC/GTD to wait for regular hours.
@@ -2334,9 +2391,10 @@ in its query for an account other than the main one (see [accounts](#accounts)).
 demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
-defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, margin, buying_power, expiry_cutoff_seconds,
+defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, fees, margin, buying_power, expiry_cutoff_seconds,
 lock_at_start, profit_basis, daily_loss_limit, daily_loss_basis, daily_loss_action, consistency_percent,
 consistency_basis, min_trading_days, min_profitable_days, profitable_day_profit, day_end}`.
+`fees` is the optional [fee schedule](#fees).
 `defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `margin` and every field from `lock_at_start`
 on are optional when creating or resetting an account: `defined_risk` and `lock_at_start` default to false, the
 execution settings, counts and percentages to 0, `margin` to `"strategy"`, `profit_basis` to `"equity"`,
@@ -2359,7 +2417,8 @@ when absent and are omitted from account responses and journals at zero. Pending
 orders recover their acceptance/trigger clocks and consumed depth.
 `POST /api/account/reset` and `POST /api/accounts` accept optional
 `fill_model: "as_displayed" | "conservative"` beside the plan or custom rules. It
-overrides only latency, impact and slippage for that account's new attempt.
+overrides only latency, impact and slippage for that account's new attempt. Optional
+`fee_model: "flat" | "itemized"` chooses its [fees](#fees).
 
 Money is an exact decimal string, quantities are integers, IDs/versions are strings,
 and timestamps use the same UTC ISO format as `as_of`. Analytical values may be

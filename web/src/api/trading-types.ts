@@ -63,6 +63,8 @@ export interface AccountRules {
   slippage_ticks?: number
   fill_latency_ms?: number
   impact_ticks?: number
+  /** Absent under the flat fee and on older servers. */
+  fees?: FeeSchedule
   margin?: "strategy" | "portfolio"
   buying_power: boolean
   expiry_cutoff_seconds: number
@@ -453,7 +455,10 @@ export interface Plan {
 }
 export interface PlansResponse { plans: Plan[] }
 export type FillModel = "as_displayed" | "conservative"
-export type ResetRequest = { reason: string; fill_model?: FillModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
+export type FeeModel = "flat" | "itemized"
+export type AccountRulesInput = Pick<AccountRules, "profit_target" | "max_drawdown" | "drawdown_mode" | "buy_only" | "buying_power" | "expiry_cutoff_seconds">
+  & Partial<Omit<AccountRules, "fees">> & { fees?: Partial<FeeSchedule> | null }
+export type ResetRequest = { reason: string; fill_model?: FillModel; fee_model?: FeeModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export type Side = "buy" | "sell"
 /** Option triggers compare the order's executable side; underlying ones compare spot. */
 export interface Trigger { source: "option" | "underlying" | "combo"; direction: "at_or_below" | "at_or_above"; level: Money }
@@ -571,11 +576,25 @@ export interface FillQuote {
   quoted_at: string
   age_seconds: number
 }
+/** Commission is capped per leg per order across partial fills; zero is uncapped.
+ * Other charges apply per contract; index fees use the option root. */
+export interface FeeSchedule {
+  open: Money
+  close: Money
+  leg_cap: Money
+  clearing: Money
+  regulatory: Money
+  index: Record<string, Money>
+  exercise: Money
+}
+export interface FillFees { commission: Money; clearing: Money; regulatory: Money; index: Money }
 export interface Fill {
   actor?: string
   context?: FillContext | null
   /** Null for fills recorded before the book was kept; absent on older servers. */
   quote?: FillQuote | null
+  /** Null under flat fees; absent on older servers. Adds up to fee. */
+  fees?: FillFees | null
   id: string
   order_id: string
   /** The attempt it belongs to; absent from older servers. */
@@ -764,7 +783,7 @@ export interface OrderChange { quantity?: number; limit_price?: Money; trigger_l
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
 export interface AccountListItem { id: string; name: string; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
-export type CreateAccountRequest = { name: string; fill_model?: FillModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRules })
+export type CreateAccountRequest = { name: string; fill_model?: FillModel; fee_model?: FeeModel } & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; equity: Money } }
 /** Delivered shares a flatten could not close, as held after it, and why. */
 export interface KeptStock { symbol: string; shares: number; reason: Decision }
@@ -854,6 +873,9 @@ export interface OrderPreview {
   /** Units whose loss fits the floor share; null without a plan or soft floor. Absent on older servers. */
   max_units_floor?: number | null
   breach: Breach
+  /** Full remaining size's fees; null without a projection, absent on older servers. */
+  fee?: Money | null
+  fees?: FillFees | null
   /** Absent on older servers. */
   execution?: PreviewExecution
   /** Each leg's quote; absent on older servers. */

@@ -3132,4 +3132,65 @@ TEST_F(PaperEngine, LimitFlattenPreviewAndCloseAcceptBoundedPricing) {
   EXPECT_EQ((*close)["limit_ticks"], 1);
 }
 
+TEST_F(PaperEngine, ItemizedFeesComeFromTheAttemptAndShowOnPreviewsAndFills) {
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "fees"}, {"fee_model", "itemized"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  const auto fees = json::parse(reset.body)["rules"]["fees"];
+  EXPECT_EQ(fees, (json{{"open", "1.00"}, {"close", "0.00"}, {"leg_cap", "10.00"}, {"clearing", "0.10"}, {"regulatory", "0.02"},
+                        {"index", {{"SPX", "0.60"}, {"SPXW", "0.60"}}}, {"exercise", "5.00"}}));
+  EXPECT_EQ(read(*engine, "/api/account")["rules"]["fees"], fees);
+  seed("4.00", "4.20", 10);
+  auto buy = order(market, "fees", "4.20");
+  buy["quantity"] = 2;
+  const auto preview = json::parse(write(*engine, "POST", "/api/orders/preview", buy).body);
+  EXPECT_EQ(preview["fee"], "3.44");
+  EXPECT_EQ(preview["fees"], (json{{"commission", "2.00"}, {"clearing", "0.20"}, {"regulatory", "0.04"}, {"index", "1.20"}}));
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", buy).status, 201);
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/fills")["fills"].size() == 1; }));
+  const auto fill = read(*engine, "/api/fills")["fills"][0];
+  EXPECT_EQ(fill["fee"], "3.44");
+  EXPECT_EQ(fill["fees"], preview["fees"]);
+  // Custom rules take their own schedule; the flat model keeps the flat fee.
+  json rules{{"profit_target", nullptr}, {"max_drawdown", nullptr}, {"drawdown_mode", "intraday"},
+             {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0},
+             {"fees", {{"open", "0.50"}, {"index", {{"SPXW", "0.25"}}}}}};
+  auto custom = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "custom fees"}});
+  ASSERT_EQ(custom.status, 200) << custom.body;
+  EXPECT_EQ(json::parse(custom.body)["rules"]["fees"]["open"], "0.50");
+  EXPECT_EQ(json::parse(custom.body)["rules"]["fees"]["close"], "0.00");
+  EXPECT_EQ(json::parse(custom.body)["rules"]["fees"]["index"], (json{{"SPXW", "0.25"}}));
+  rules["fees"] = {{"open", "-1"}};
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "bad"}}),
+               422, "INVALID_RULES");
+  rules["fees"] = {{"opening", "1"}};
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "bad"}}),
+               400, "INVALID_REQUEST");
+  const auto flat = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "flat"}, {"fee_model", "flat"}});
+  ASSERT_EQ(flat.status, 200) << flat.body;
+  EXPECT_FALSE(json::parse(flat.body)["rules"].contains("fees"));
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "bad"}, {"fee_model", "broker"}}),
+               400, "INVALID_REQUEST");
+  const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Fee account"}, {"plan", "practice"}, {"fee_model", "itemized"}});
+  ASSERT_EQ(created.status, 201) << created.body;
+  const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
+  EXPECT_EQ(read(*engine, "/api/account?account=" + id)["rules"]["fees"], fees);
+  for (const auto& malformed : {json(1), json::array(), json{{"open", 1}}, json{{"open", nullptr}},
+                               json{{"index", json::array()}}, json{{"index", {{"SPXW", 0.6}}}}}) {
+    rules["fees"] = malformed;
+    expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Bad"}, {"initial_cash", "50000"}, {"rules", rules}}),
+                 400, "INVALID_REQUEST");
+  }
+  for (const auto& invalid : {json{{"open", "1000.000001"}}, json{{"index", {{"spx", "0.60"}}}},
+                             json{{"index", {{"SPXW", "-0.01"}}}}}) {
+    rules["fees"] = invalid;
+    expect_error(write(*engine, "POST", "/api/accounts", {{"name", "Bad"}, {"initial_cash", "50000"}, {"rules", rules}}),
+                 422, "INVALID_RULES");
+  }
+  rules["fees"] = nullptr;
+  const auto no_schedule = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "flat"}});
+  ASSERT_EQ(no_schedule.status, 200) << no_schedule.body;
+  EXPECT_FALSE(json::parse(no_schedule.body)["rules"].contains("fees"));
+}
+
+
 }  // namespace
