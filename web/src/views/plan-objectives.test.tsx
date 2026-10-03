@@ -8,6 +8,7 @@ import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import type { Account, Plan } from "../api/trading-types"
+import { PlanEditor, planForm, type PlanForm } from "../components/PlanEditor"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { ruleAlerts } from "../lib/rule-alerts"
@@ -249,4 +250,39 @@ it("shows enabled trade-entry rules in plan facts and the Rules page", () => {
   const texts = ruleText(value, "0.65", "5000.00")
   expect(texts.map((t) => t.title)).toEqual(expect.arrayContaining(["Contracts held at once", "Stop-loss required", "Maximum trade risk"]))
   expect(ruleText(account, "0.65", "5000.00").map((t) => t.title)).not.toContain("Maximum trade risk")
+  })
+
+it("shows the scaling limit in force and the next session's threshold", () => {
+  const scaled: Account = { ...planned, rules: { ...planned.rules, scaling: [{ profit: "0.00", contracts: 2 }, { profit: "1500.00", contracts: 3 }] },
+    evaluation: { ...planned.evaluation, scaling: { limit: 2, held: 1, profit: "1600.00", next: { profit: "1500.00", contracts: 3 } } } }
+  const dashboard = render(<DashboardView />, scaled)
+  for (const text of ["Scaling plan", "1 held / 2 contract limit", "Next: 3 contracts", "$1,500.00 profit or more; applies next session", "Closed-balance profit $1,600.00"])
+    expect(dashboard).toContain(text)
+  const rules = render(<RulesView />, scaled)
+  for (const text of ["Scaling plan", "SCALING_LIMIT", "shares do not", "reducing orders remain allowed"]) expect(rules).toContain(text)
+  expect(planFacts({ initial_cash: "50000", rules: scaled.rules }).join(" ")).toContain("2 contracts at $0.00 profit; 3 contracts at $1,500.00 profit")
+  expect(render(<DashboardView />, account)).not.toContain("Scaling plan")
+})
+
+it("adds, edits and removes custom scaling steps", async () => {
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host)
+  let form: PlanForm = planForm({ initial_cash: "50000", rules: planned.rules })
+  const draw = () => root.render(<PlanEditor form={form} onChange={(next) => { form = next; draw() }} />)
+  await act(async () => draw())
+  const click = async (label: string) => act(async () => {
+    const button = [...host.querySelectorAll("button")].find((b) => b.textContent === label || b.getAttribute("aria-label") === label)!
+    button.click()
+  })
+  await click("Add scaling step")
+  expect(form.scaling).toEqual([{ profit: "0", contracts: "2" }])
+  await click("Add scaling step")
+  const input = [...host.querySelectorAll("label")].find((l) => l.textContent?.startsWith("Step 2 profit"))!.querySelector("input")!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "1500")
+    input.dispatchEvent(new Event("input", { bubbles: true }))
+  })
+  expect(form.scaling[1]?.profit).toBe("1500")
+  await click("Remove scaling step 2")
+  await click("Remove scaling step 1")
+  expect(form.scaling).toEqual([])
 })

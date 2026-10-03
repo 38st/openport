@@ -15,6 +15,7 @@
 
 #include "openport/server/candles.hpp"
 #include "openport/server/plans.hpp"
+#include "openport/trading/contracts.hpp"
 #include "openport/trading/history.hpp"
 
 namespace openport::server {
@@ -89,6 +90,9 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"max_trade_risk_percent", r.max_trade_risk_percent},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
+  result["scaling"] = json::array();
+  for (const auto& step : r.scaling)
+    result["scaling"].push_back({{"profit", step.profit.str()}, {"contracts", step.contracts}});
   if (r.fill_latency_ms != 0) result["fill_latency_ms"] = r.fill_latency_ms;
   if (r.impact_ticks != 0) result["impact_ticks"] = r.impact_ticks;
   if (r.inside_fill_percent != 0) result["inside_fill_percent"] = r.inside_fill_percent;
@@ -768,6 +772,18 @@ json account_json(const TradingView& view) {
                   {"action", kBreachActions[static_cast<int>(r.daily_loss_action)]}, {"reference", level->reference.str()},
                   {"level", level->level.str()}, {"room", (s.equity - level->level).str()}};
   const auto timed = time_rule_progress(e, r, s.time);
+  json scaling = nullptr;
+  if (!r.scaling.empty()) {
+    json next = nullptr;
+    for (const auto& step : r.scaling)
+      if (step.contracts > e.scaling_limit) {
+        next = {{"profit", step.profit.str()}, {"contracts", step.contracts}};
+        break;
+      }
+    scaling = {{"limit", e.scaling_limit},
+               {"held", contracts_held(s.positions, [](const auto& p) { return p.position.quantity; })},
+               {"profit", (in.balance - e.starting_balance).str()}, {"next", next}};
+  }
   const bool liquidated = decided && in.flat;
   json payouts = json::array();
   for (const auto& p : e.payouts)
@@ -826,6 +842,7 @@ json account_json(const TradingView& view) {
               {"inactivity_deadline", timed.inactivity_deadline ? json(md::format_date(*timed.inactivity_deadline)) : json(nullptr)},
               {"flat_time", r.flat_time ? json(clock_text(*r.flat_time)) : json(nullptr)},
               {"flat_now", plan_flat_now(r, s.time)},
+              {"scaling", scaling},
               {"day_lock", e.day_lock == Reason::NONE ? json(nullptr) : json(to_string(e.day_lock))},
               {"day_locked_at", time_or_null(e.day_locked_at)},
               {"exit_equity", s.exit_equity.str()}, {"exit_cost", (s.equity - s.exit_equity).str()},
@@ -1599,7 +1616,7 @@ AccountRules parse_rules(const json& j) {
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
           "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
-          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight"});
+          "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling"});
   AccountRules rules;
   // Accept read-back rules in a custom request, but always derive the identity.
   if (j.contains("plan_id") && !j.at("plan_id").is_null() && !j.at("plan_id").is_string())
@@ -1637,6 +1654,13 @@ AccountRules parse_rules(const json& j) {
   if (has("max_trade_risk")) rules.max_trade_risk = decimal_field(j, "max_trade_risk");
   if (j.contains("max_trade_risk_percent")) rules.max_trade_risk_percent = integer_field(j, "max_trade_risk_percent");
   parse_time_rules(j, rules);
+  if (j.contains("scaling")) {
+    if (!j.at("scaling").is_array()) throw std::invalid_argument("scaling must be an array");
+    for (const auto& step : j.at("scaling")) {
+      fields(step, {"profit", "contracts"}, {});
+      rules.scaling.push_back({decimal_field(step, "profit"), integer_field(step, "contracts")});
+    }
+  }
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");

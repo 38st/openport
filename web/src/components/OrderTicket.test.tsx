@@ -113,6 +113,13 @@ describe.each(["single", "strategy"] as const)("%s ticket joining a whole trade"
     await setField("Join trade", "7")
     for (const body of await previewAndSubmit()) expect(body.group).toBe("7")
   })
+  it("surfaces scaling refusals with the server's reason and evidence", async () => {
+    vi.mocked(api.submitOrder).mockRejectedValue(new ApiError(422, "Scaling plan: 3 contracts exceed the limit", "SCALING_LIMIT", 3, 2))
+    await renderTicket([])
+    await previewAndSubmit()
+    expect(host.textContent).toContain("SCALING_LIMIT")
+    expect(host.textContent).toContain("Scaling plan: 3 contracts exceed the limit")
+  })
   it("omits the group by default", async () => {
     await renderTicket([trade])
     for (const body of await previewAndSubmit()) expect(body).not.toHaveProperty("group")

@@ -444,6 +444,47 @@ TEST(Backtest, CustomFundedRulesCarryPayoutConsistencyAndBufferThroughTheRunner)
   EXPECT_EQ(report.at("attempts").at(0).at("outcome"), "open");
 }
 
+TEST(Backtest, CustomScalingRulesKeepExactThresholdsAndValidateSteps) {
+  const auto definitions = catalogue();
+  const auto& scenarios = providers::builtin_scenarios();
+  json rules{{"profit_target", "100"}, {"scaling", {{{"profit", "0"}, {"contracts", 2}},
+      {{"profit", "50.000001"}, {"contracts", 3}}}}};
+  const auto parse = [&](const json& settings) {
+    return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"}, {"rules", settings}}},
+                                  {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
+  };
+  const auto parsed = parse(rules);
+  EXPECT_EQ(parsed.config.rules.scaling, (std::vector<trading::ScalingStep>{{Money{}, 2}, {Money::parse("50.000001"), 3}}));
+  for (const auto& bad : std::vector<json>{nullptr, 3, {{{"profit", 0}, {"contracts", 2}}},
+      {{{"profit", "0"}, {"contracts", 2.5}}}, {{{"profit", "1"}, {"contracts", 2}}},
+      {{{"profit", "0"}, {"contracts", 2}, {"unknown", 1}}}}) {
+    auto invalid = rules; invalid["scaling"] = bad;
+    EXPECT_THROW((void)parse(invalid), std::exception);
+  }
+}
+
+TEST(Backtest, ScalingRefusesAutomaticEntriesAndTheJournalVerifies) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14});
+  auto request = request_for({file});
+  request.config.rules.plan = "Scaling playbook";
+  request.config.rules.scaling = {{Money{}, 1}};
+  const std::atomic_bool cancel{false};
+  const auto root = storage.directory / "scaling";
+  const auto report = server::run_backtest(request, root, cancel);
+  ASSERT_EQ(report.at("status"), "completed") << report.dump();
+  ASSERT_FALSE(report.at("attempts").empty());
+  for (const auto& attempt : report.at("attempts")) {
+    // Playbooks stop at the preview gate, before submitting an order. The report
+    // keeps that gate's message; the journal still records the scaling rule and limit.
+    EXPECT_TRUE(attempt.at("fills").empty());
+    EXPECT_EQ(attempt.at("entry_reasons").at("batch:SPX").get<std::string>().find("Scaling plan:"), 0U);
+    const auto path = root / attempt.at("journal").get<std::string>();
+    const auto verified = server::verify_run(path);
+    EXPECT_TRUE(verified.matched) << verified.message;
+  }
+}
+
 TEST(Backtest, CustomPlansAcceptAndValidateAccountMargin) {
   auto definitions = catalogue();
   const auto& scenarios = providers::builtin_scenarios();

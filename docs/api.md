@@ -89,6 +89,22 @@ Custom funded rules accept `payouts.consistency_percents` (empty disables;
 1–100 integers indexed by payout number, last repeating), `buffer` (nonnegative
 decimal money, zero disables), and `buffer_payouts` (0–100, zero means every payout).
 
+Custom rules and backtest custom plans accept optional `scaling`, for example
+`[{"profit":"0.00","contracts":2},{"profit":"1500.00","contracts":3},{"profit":"2000.00","contracts":5}]`.
+Empty disables; at most 16 steps, first profit zero, profits strictly increasing,
+contracts non-decreasing integers from 1 to 10,000. Invalid steps return 400
+`INVALID_RULES`, wrong types 400 `INVALID_REQUEST`. Both phases support it.
+`evaluation.scaling` is null without the rule, else `{limit, held, profit, next}`;
+`next` is a `{profit, contracts}` step with a higher limit, or null. Profit is
+closed balance less starting balance. Rollover selects the next session's limit;
+profit during the day cannot raise it immediately, and losses or payouts can lower it.
+Each option leg counts; shares do not. Working opening orders reserve capacity.
+Excess increases return `SCALING_LIMIT` with actual/limit evidence, including in
+previews and what-if; fills recheck and cancel with that code. Reducing orders
+remain allowed. There is no grace period. The appended `funded-scaling-50k` preset
+requires a passed `intraday-50k` evaluation, like the other funded preset gates.
+See [Scaling plan](paper-trading.md#funded-accounts-and-payouts).
+
 The web terminal uses these routes, so anything it does can be scripted:
 
 | Route | Does |

@@ -450,6 +450,17 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       } else if (key == "phase") {
         choice(value, key, {"evaluation", "funded"});
         rules[key] = value == "funded" ? trading::Phase::Funded : trading::Phase::Evaluation;
+      } else if (key == "scaling") {
+        if (!value.is_array()) throw std::invalid_argument("scaling must be an array");
+        std::vector<trading::ScalingStep> steps;
+        for (const auto& step : value) {
+          keys(step, {"profit", "contracts"});
+          const auto& contracts = required(step, "contracts", "scaling contracts");
+          if (!contracts.is_number_integer() || (contracts.is_number_unsigned() && contracts.get<std::uint64_t>() > INT64_MAX))
+            throw std::invalid_argument("scaling contracts must be a signed 64-bit integer");
+          steps.push_back({decimal(required(step, "profit", "scaling profit"), "scaling profit"), contracts.get<std::int64_t>()});
+        }
+        rules[key] = steps;
       } else if (key == "payouts") rules[key] = payout_rules(value);
       else {
         if (key == "expiry_cutoff" && !value.is_number_integer()) throw std::invalid_argument("expiry_cutoff must be integer nanoseconds");

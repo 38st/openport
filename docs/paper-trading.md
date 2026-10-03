@@ -1189,7 +1189,7 @@ comparing a stale limit to the new mid.
 Checks rerun against current state before each proposed fill. Fill projection also
 includes spread and fees in daily loss for orders that can open or increase
 exposure. A failed fill check cancels the remaining order with `RISK_CHANGED`,
-preserving the underlying reason in its message and actual/limit/scope. A data gap is not a failure: when held positions' marks are stale
+preserving the underlying reason in its message and actual/limit/scope; scaling failures keep `SCALING_LIMIT` as the code. A data gap is not a failure: when held positions' marks are stale
 (`STALE_QUOTE`) or valuations are missing or stale (`MISSING_VALUATION`), as when a
 batch brings an order's quote before the rest of the portfolio's after a stall, the
 order keeps working and a later batch fills it once the data is complete.
@@ -1593,6 +1593,7 @@ side, no buying-power check. All rule money is exact.
 | `underlyings` | Up to 32 allowed underlying symbols; empty permits all |
 | `trading_start`, `trading_end` | Optional New York minutes internally, `HH:MM` or null on the API; both set or both off, start inclusive and end exclusive |
 | `day_end_minutes` | Minutes after New York midnight at which the plan's trading day ends, 975 (16:15) to 1440 (24:00); default 1020 (17:00). API `day_end` as `HH:MM` |
+| `scaling` | Optional steps `{profit, contracts}`: the finished day’s closed-balance profit selects the next session’s cap on option contracts held; each leg counts, shares do not. Empty disables (see Scaling plan below) |
 | `payouts` | Funded phase: qualifying days, withdrawal share, trader split, minimum and caps (see Funded accounts and payouts) |
 
 These trade-entry rules leave reducing orders, managed exits and system closes available.
@@ -1918,6 +1919,8 @@ evaluation's day, so the day's boundary decides which day an overnight trade, a
 day's loss and the end-of-day ratchet count toward. Equity samples carry the plan's
 day.
 
+**Scaling plan.** An optional sizing constraint in either phase, independent of pass objectives and per-order limits. The limit stays fixed through the trading day and changes at rollover from closed balance less starting balance, including losses and withdrawals. See the funded section below for thresholds, reservations and enforcement.
+
 **Daily loss limit.** On every observation of fully marked equity, the limit's level is
 its reference less `daily_loss_limit`. The reference is the day's opening equity, its
 opening closed balance (the balance now less today's net realised P&L, so a payout today
@@ -2068,6 +2071,49 @@ fails the account like an evaluation; it stays closed until a reset. `PayoutRule
 | `caps` | Largest payout by payout number; the last cap repeats; empty is uncapped |
 | `consistency_percents` | Optional list of up to 64 integer percentages, each 1–100. Best positive day at most this share of cycle net realised profit. Indexed by payout number; last repeats; empty (default) disables |
 
+**Scaling plan (F39).** `AccountRules::scaling` is an optional list of up to 16
+`ScalingStep {profit, contracts}` entries. The first profit is zero, subsequent
+profits strictly increase, and contracts are non-decreasing integers from 1 to
+10,000. Empty disables it. Either phase may use it; existing presets keep their
+original rules. Invalid steps are `INVALID_RULES`; wrong JSON types are
+`INVALID_REQUEST`. For example, custom rules may include:
+
+```json
+{"scaling":[{"profit":"0.00","contracts":2},
+            {"profit":"1500.00","contracts":3},
+            {"profit":"2000.00","contracts":5}]}
+```
+
+An attempt starts at the zero-profit step. `Evaluation::scaling_limit` is the
+journaled limit in force; zero means none. Only `roll_day` changes it, selecting
+the highest threshold reached by the finished day's **closed balance less the
+attempt's starting balance** (`PlanInputs::balance`, excluding unrealised P&L).
+The first step still applies below zero profit. The next session uses the new
+limit, up or down; payouts lower this balance too. Changes emit `scaling_limit`
+with `old`, `limit` and exact `profit` (journal money in micro-dollars). Empty rules
+and a zero limit are omitted from journal JSON, preserving older journals' bytes.
+
+The cap counts the sum of absolute option position quantities: each leg of a
+multi-leg position counts, and **shares do not count**. Opening orders reserve
+the contracts they could add, including armed conditional orders; closing capacity
+is shared once across working orders on the same side of a contract. A promised
+close cannot free capacity for a new opening. Atomic reducing orders are allowed,
+including above a lowered limit; existing positions are kept after a step-down.
+Single orders, combos, OTO children when submitted, and playbooks use the same
+acceptance and fill checks. Excess increases are refused with `SCALING_LIMIT`,
+`actual` contracts including reservations, `limit` and aggregate scope. A working
+order that fails its recheck is cancelled with that same code. Previews and what-if
+report it too. There is **no grace period**: excess orders are refused up front.
+Other account checks still apply.
+
+`evaluation.scaling` in the account view is null without the rule, otherwise
+`{limit, held, profit, next}`. `profit` is the current closed balance less start;
+`next` is the first step with a higher contract limit, or null at the highest limit.
+It remains visible when reached during the day, since that higher limit applies
+only after a day closes at or above its threshold. Equal-limit steps are skipped.
+The Dashboard shows this progress; plan facts and Rules explain it, and the custom
+plan editor adds, edits or removes steps.
+
 Qualifying days need not be consecutive. Each finished day counts once, toward the
 cycle in progress when it rolls over; a payout resets the count, so the trading day of
 the request (`Payout::day`) and later days count toward the next payout.
@@ -2123,7 +2169,10 @@ and edit qualifying days, shares, caps, consistency percentages and buffer rules
 The Payouts page shows cycle profit, best day/date/share, the current limit, remaining
 profit and active buffer balance; plan facts and Rules also state these settings.
 The server offers a funded preset for each intraday and end-of-day evaluation preset
-(`funded-intraday-25k` and so on). A reset into one requires that the current attempt passed the evaluation
+(`funded-intraday-25k` and so on). Appended after the existing presets,
+`funded-scaling-50k` uses Funded Intraday 50K's rules with the 2/3/5 option-contract
+steps above and is unlocked only by passing `intraday-50k`. These count option
+contracts, not futures lots. A reset into one requires that the current attempt passed the evaluation
 it names, otherwise `PLAN_LOCKED`: that preset's starting balance and every one of its
 rules, with the fill model's execution settings and fee schedule free to differ. Custom rules may set `phase`
 freely, but may not take a preset's name unless they are that preset (`INVALID_RULES`),
@@ -2723,7 +2772,7 @@ opening orders and cancels working openings outside the plan window.
 | `PROFIT_TARGET`, `DRAWDOWN_FLOOR` | Decision codes: the target passed the attempt, or the floor failed it |
 | `MIN_TRADING_DAYS`, `MIN_PROFITABLE_DAYS`, `CONSISTENCY` | Objective codes: what a pass still waits for |
 | `DAILY_LOSS`, `KILL_SWITCH` | Daily equity allowance breached, or an order would open/increase exposure (or exercise) while the kill latch is active |
-| `RISK_CHANGED` | Fill/limit-change recheck failed; original cause at the start of the message, its `actual`, `limit` and `scope` kept on the order |
+| `RISK_CHANGED` | Fill/limit-change recheck failed; original cause at the start of the message, its `actual`, `limit` and `scope` kept on the order. Scaling rechecks keep `SCALING_LIMIT` as their code |
 | `PLAYBOOK_TRAILING_STOP`, `PLAYBOOK_DTE_STOP`, `PLAYBOOK_DAYS_IN_TRADE_STOP` | Automatic playbook trailing, DTE or business-day deadline cancelled working protection; see [playbook rules](playbooks.md) |
 | `PLAYBOOK_TIME_STOP` | Automatic playbook deadline cancelled an entry or working exit; message `Playbook time stop`. Older replay drivers retain `USER_CANCEL` |
 | `IOC_REMAINDER`, `USER_CANCEL`, `DAY_END` | IOC remainder (a stop exit's re-arms instead), explicit cancellation, the end of a DAY order's session (a triggered one's activation session) or an EXTO trading date |
@@ -2754,7 +2803,8 @@ opening orders and cancels working openings outside the plan window.
 | `EVALUATION_CLOSED` | The attempt passed or failed; closing orders, Flatten and disposal remain allowed. Reset before opening, adding to or reversing positions |
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
-| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100, consistency limits outside 1-100 or more than 64 entries, or nonpositive caps, a negative payout buffer or buffer_payouts outside 0-100, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, inside fills outside 0-100%, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Trade-entry rule ranges are a contracts held cap of 0–100000, nonnegative risk money and risk percentage 0–100. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
+| `SCALING_LIMIT` | An increase would exceed the session’s scaling cap on held option contracts, counting working opening orders and every leg; refused at acceptance and cancelled with this code at fill. Shares do not count; reducing orders remain allowed |
+| `INVALID_RULES` | Invalid scaling steps (over 16, first profit not zero, non-increasing profits, decreasing limits or contracts outside 1–10,000), negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100, consistency limits outside 1-100 or more than 64 entries, or nonpositive caps, a negative payout buffer or buffer_payouts outside 0-100, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, inside fills outside 0-100%, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Trade-entry rule ranges are a contracts held cap of 0–100000, nonnegative risk money and risk percentage 0–100. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling cancelled when the other exit filled completely, remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
@@ -3091,7 +3141,7 @@ focus at the top of the ticket.
 | `POST /api/risk/kill` | `action` (`trip`/`reset`) and nonblank `reason`; returns version, kill state and cancelled order IDs. The kill state here and in `GET /api/risk` is `{latched, reason, reset_blocked, history}`: why the kill-switch reset could not clear the latch now (a decision, or null; account reset follows the separate guardrail persistence rule) and its last 50 trips, resets and releases (`{time, action, reason, previous, actor}`) |
 | `GET /api/settlements` | Settlement references, cash, gross realised P&L, fee and nullable provenance, newest first across attempts; read scope |
 | `POST /api/settlements` | Canonical `symbol` and decimal-string `value` for an expired AM position, or a PM one whose closing print never arrived (its `settle_by` is `manual`); returns version and `position_closed` |
-| `GET /api/account` | Rules (including `phase`, `lock_balance`, `lock_at_start`, `profit_basis`, the daily loss limit, consistency, minimum days, `day_end` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `balance`, `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target; on the balance basis, measured on the balance), decision and `decision_code`, current day, finished `days[]` with `realised`, `qualifying`, `attribution`, equity low/high with times, `profit`, `profitable`, `executions` and `locked`, attempt closest-floor distance/time, `qualifying_days`, `cycle_started`, `payouts[]`, `objectives[]` (code, met, actual, required, message), `trading_days`, `profitable_days`, `best_day`, `consistency_target`, `daily_loss` (limit, basis, action, reference, level, room), `day_lock` and `day_locked_at`, `exit_equity` and `exit_cost`, and once a decided attempt is flat `liquidated_equity` and `liquidation_cost`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages, `consistency_percent`, `cycle_profit`, `best_day`, `consistency_needed` and `buffer_balance`; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
+| `GET /api/account` | Rules (including `phase`, `lock_balance`, `lock_at_start`, `profit_basis`, the daily loss limit, consistency, minimum days, `day_end` and `payouts`), personal guardrails and progress, `breach`, evaluation (attempt, status, starting balance, equity, `balance`, `scaling` (null or limit/held/closed-balance profit/next step), `marked`, profit, peak, floor, `floor_locked`, drawdown buffer, target equity/remaining (`0.00` once passed, though liquidating at the bid can leave equity just below the target; on the balance basis, measured on the balance), decision and `decision_code`, current day, finished `days[]` with `realised`, `qualifying`, `attribution`, equity low/high with times, `profit`, `profitable`, `executions` and `locked`, attempt closest-floor distance/time, `qualifying_days`, `cycle_started`, `payouts[]`, `objectives[]` (code, met, actual, required, message), `trading_days`, `profitable_days`, `best_day`, `consistency_target`, `daily_loss` (limit, basis, action, reference, level, room), `day_lock` and `day_locked_at`, `exit_equity` and `exit_cost`, and once a decided attempt is flat `liquidated_equity` and `liquidation_cost`), buying power, `payout` (the next payout's standing from `payout_quote`: `eligible`, `blocked`, number, flat/active, qualifying and required days, profit, withdrawable, cap, maximum, minimum, trader share and percentages, `consistency_percent`, `cycle_profit`, `best_day`, `consistency_needed` and `buffer_balance`; null outside the funded phase) and earlier `attempts[]`; absent rules give null floor/target |
 | `GET /api/trades?status=open\|closed\|all&attempt=current\|all` | Round trips, newest first: direction, status, opened/closed/duration, quantities, average open/close, cost (entry premium), gross, fees, net, `return` (net / cost, closed only), mark/unrealised while open, `closure` (`settlement` at expiry, `exercise` for an early exercise, `assignment` for an early assignment, `abandon` for an abandoned long, `reset`, or null when fills closed it or it is open), fill IDs, attempt, and the trader's `note` (`""` for none) and `tags`, `entry_context`, `exit_context`, `review`, `strategy_id`, `strategy_review`, the whole trade it is in, `group`, and `buying_power`, `return_on_buying_power`, `strategy_buying_power` and `strategy_return_on_buying_power` (see [trade review](#trade-review)); `groups` lists the [whole trades](#whole-trades) with more than one entry. `day_notes` holds the account's daily plans and reviews. Defaults: all statuses of the current attempt. `stock_fills` lists every change in shares (`id`, `symbol`, signed `shares`, `price`, `time`, `source`, `option`) and `dividends` every dividend paid (`symbol`, `ex_date`, `per_share`, signed `shares`, `amount`, `time`), oldest first, which the terminal announces when new. `share_trades` lists the shares' round trips the same way (`kind: "shares"`, `id` `s` + the opening stock fill, shares instead of contracts, no fees), with `opened_by`/`closed_by` (`expiry_exercise`, `assignment`, `early_exercise`, `trade`, `rule` or `reset`) and the `option`/`closing_option` that delivered them |
 | `POST /api/trades/group`, `POST /api/trades/ungroup` | `trades`, round trips by trade ID: join their trades into one (a closed round trip can name a whole trade still holding an open one), or take each listed open round trip out of its trade (see [whole trades](#whole-trades)). Returns version and `groups`, the trade each named round trip is in now; `UNKNOWN_TRADE` (404), `INVALID_GROUP` (422) |
 | `GET /api/alerts` | Version and the account's `alerts`, oldest first: `id`, `label`, `scope`, `metric`, `symbol`, `legs`, `direction`, `level`, `repeat`, `created_at`, `actor`, `armed` (waiting for its condition), `fired` (times), `fired_at` and `value` (when and at what it last fired) |
@@ -3123,8 +3173,8 @@ defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, inside_fill_percent
 pm_vol_shock, buying_power, expiry_cutoff_seconds, lock_at_start, profit_basis, daily_loss_limit,
 daily_loss_basis, daily_loss_action, consistency_percent, consistency_basis, min_trading_days,
 min_profitable_days, profitable_day_profit, day_end, time_limit_days, inactivity_days, flat_time, no_overnight,
-underlyings, trading_start, trading_end}`.
-`fees` is the optional [fee schedule](#fees).
+underlyings, trading_start, trading_end, scaling}`.
+`fees` is the optional [fee schedule](#fees). `scaling` defaults to `[]` and uses decimal-string profit thresholds; see [Scaling plan](#funded-accounts-and-payouts).
 `defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `inside_fill_percent`, `margin`, `account_type`,
 `house_margin_percent`, `pm_vol_shock` and every field from `lock_at_start` on are optional when creating or
 resetting an account: `defined_risk` and `lock_at_start` default to false, the execution settings, house margin,

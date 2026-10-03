@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <set>
 #include <nlohmann/json.hpp>
 #include "openport/trading/history.hpp"
@@ -276,6 +277,15 @@ inline void to_json(Json& j, BreachAction v) { named_to_json(j, v, kBreachAction
 inline void from_json(const Json& j, BreachAction& v) { named_from_json(j, v, kBreachActions); }
 inline void to_json(Json& j, ConsistencyBasis v) { named_to_json(j, v, kConsistencyBases); }
 inline void from_json(const Json& j, ConsistencyBasis& v) { named_from_json(j, v, kConsistencyBases); }
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(ScalingStep, profit, contracts)
+inline void from_json(const Json& j, ScalingStep& step) {
+  j.at("profit").get_to(step.profit);
+  const auto& contracts = j.at("contracts");
+  if (!contracts.is_number_integer() ||
+      (contracts.is_number_unsigned() && contracts.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())))
+    throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded scaling contracts must be signed 64-bit integers");
+  contracts.get_to(step.contracts);
+}
 /// The rules recorded only when they differ from their defaults, with those
 /// defaults: a plan without them keeps its journal bytes.
 inline Json optional_rule_defaults() {
@@ -293,7 +303,8 @@ inline Json optional_rule_defaults() {
               {"max_trade_risk_percent", d.max_trade_risk_percent},
               {"time_limit_days", d.time_limit_days}, {"inactivity_days", d.inactivity_days},
               {"underlyings", d.underlyings}, {"trading_start", d.trading_start}, {"trading_end", d.trading_end},
-              {"flat_time", d.flat_time}, {"no_overnight", d.no_overnight}};
+              {"flat_time", d.flat_time}, {"no_overnight", d.no_overnight},
+               {"scaling", d.scaling}};
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FeeSchedule, open, close, leg_cap, clearing, regulatory, index, exercise)
 inline void to_json(Json& j, const AccountRules& r) {
@@ -315,7 +326,8 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"max_trade_risk_percent", r.max_trade_risk_percent},
                  {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days},
                  {"underlyings", r.underlyings}, {"trading_start", r.trading_start}, {"trading_end", r.trading_end},
-              {"flat_time", r.flat_time}, {"no_overnight", r.no_overnight}};
+              {"flat_time", r.flat_time}, {"no_overnight", r.no_overnight},
+                  {"scaling", r.scaling}};
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
@@ -364,6 +376,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   if (j.contains("no_overnight") && !j.at("no_overnight").is_boolean())
     throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded no_overnight must be a boolean");
   added_field(j, "no_overnight", r.no_overnight);
+  added_field(j, "scaling", r.scaling);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {
@@ -425,6 +438,7 @@ inline void to_json(Json& j, const Evaluation& e) {
   if (e.last_activity != 0) j["last_activity"] = e.last_activity;
   if (e.flat_time_day) j["flat_time_day"] = e.flat_time_day;
   if (e.flat_pending) j["flat_pending"] = true;
+  if (e.scaling_limit != 0) j["scaling_limit"] = e.scaling_limit;
 }
 inline void from_json(const Json& j, Evaluation& e) {
   j.at("attempt").get_to(e.attempt); j.at("started").get_to(e.started); j.at("starting_balance").get_to(e.starting_balance);
@@ -444,6 +458,7 @@ inline void from_json(const Json& j, Evaluation& e) {
   added_field(j, "day_executions", e.day_executions);
   added_field(j, "last_activity", e.last_activity);
   added_field(j, "flat_time_day", e.flat_time_day); added_field(j, "flat_pending", e.flat_pending);
+  added_field(j, "scaling_limit", e.scaling_limit);
 }
 inline void to_json(Json& j, const AttemptSummary& a) {
   j = Json{{"attempt", a.attempt}, {"plan", a.plan}, {"started", a.started}, {"ended", a.ended},

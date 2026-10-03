@@ -184,6 +184,18 @@ class PayoutStatus(TypedDict):
     buffer_balance: str | None
 
 
+class ScalingStep(TypedDict):
+    profit: str
+    contracts: int
+
+
+class ScalingStatus(TypedDict):
+    limit: int
+    held: int
+    profit: str
+    next: ScalingStep | None
+
+
 class AccountRules(TypedDict, total=False):
     time_limit_days: int
     inactivity_days: int
@@ -227,6 +239,7 @@ class AccountRules(TypedDict, total=False):
     buying_power: bool
     expiry_cutoff_seconds: int
     payouts: PayoutRules | None
+    scaling: list[ScalingStep]
     fees: FeeSchedule
 
 

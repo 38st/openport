@@ -753,6 +753,12 @@ revision 4 scenario calendar, overridden by explicit session entries), calendar
 and command times are recorded too. Older account journals still load but have no
 run inputs to verify. New replay runs require an unused journal path.
 
+Scaling plans are opt-in. Their `scaling` rule and `Evaluation::scaling_limit`
+state are omitted at disabled defaults; existing journals retain their bytes and
+re-verify without a driver or scenario revision change. Recovery keeps the active
+session limit, even when current profit would select another step. Only rollover
+changes it and emits a `scaling_limit` event.
+
 Inside-fill and walking-limit settings are opt-in. Walk steps use market time,
 including replay clock advances, and are retained as order changes. Recovery
 preserves their last scheduled step. Their added journal fields are omitted when

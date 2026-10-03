@@ -2545,7 +2545,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());
   const auto plans = read(engine, "/api/plans")["plans"];
-  ASSERT_EQ(plans.size(), 19);
+  ASSERT_EQ(plans.size(), 20);
   EXPECT_EQ(plans[0]["id"], "practice");
   EXPECT_EQ(plans[0]["rules"]["profit_target"], nullptr);
   EXPECT_EQ(plans[0]["rules"]["buying_power"], true);
@@ -2559,9 +2559,19 @@ TEST(PaperPlans, PresetsListExactRules) {
                   {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
                   {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0},
                   {"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
-                  {"trading_start", nullptr}, {"trading_end", nullptr}, {"flat_time", nullptr}, {"no_overnight", false}});
+                  {"trading_start", nullptr}, {"trading_end", nullptr}, {"flat_time", nullptr}, {"no_overnight", false},
+                  {"scaling", json::array()}});
     return rules;
   };
+  const auto scaling = plans[19];
+  EXPECT_EQ(scaling["id"], "funded-scaling-50k");
+  EXPECT_EQ(scaling["unlocked_by"], "intraday-50k");
+  EXPECT_EQ(scaling["initial_cash"], "50000.00");
+  auto scaling_rules = plans[8]["rules"];
+  scaling_rules.update({{"plan", "Funded Scaling 50K"}, {"plan_id", "funded-scaling-50k"}});
+  scaling_rules["scaling"] = {{{"profit", "0.00"}, {"contracts", 2}}, {{"profit", "1500.00"}, {"contracts", 3}},
+                              {{"profit", "2000.00"}, {"contracts", 5}}};
+  EXPECT_EQ(scaling["rules"], scaling_rules);
   const auto intraday = plans[3];
   EXPECT_EQ(intraday["id"], "intraday-100k");
   EXPECT_EQ(intraday["name"], "Intraday 100K");
@@ -2645,6 +2655,61 @@ TEST(PaperAttempts, OldSummariesExposeNullProvenance) {
     EXPECT_TRUE(attempt[key].is_null()) << key;
   }
   EXPECT_EQ(attempt["decision_code"], "DRAWDOWN_FLOOR");
+}
+
+TEST_F(PaperEngine, ScalingFundedPresetRequiresItsOwnPassedEvaluation) {
+  seed();
+  ASSERT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "intraday-50k"}, {"reason", "evaluation"}}).status, 200);
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-scaling-50k"}, {"reason", "too soon"}}), 422, "PLAN_LOCKED");
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open", "4.20")).status, 201);
+  quote("54.15", "54.35");
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["evaluation"]["status"] == "passed"; }));
+  const auto response = write(*engine, "POST", "/api/account/reset", {{"plan", "funded-scaling-50k"}, {"reason", "funded"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  const auto account = json::parse(response.body);
+  EXPECT_EQ(account["rules"]["phase"], "funded");
+  EXPECT_EQ(account["evaluation"]["scaling"]["limit"], 2);
+  EXPECT_EQ(account["evaluation"]["scaling"]["profit"], "0.00");
+  engine->stop();
+}
+
+TEST_F(PaperEngine, ScalingRulesAccountViewPreviewsOrdersAndValidation) {
+  seed();
+  EXPECT_EQ(read(*engine, "/api/account")["evaluation"]["scaling"], nullptr);
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-scaling-50k"}, {"reason", "skip"}}), 422, "PLAN_LOCKED");
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["plan"] = "Custom scaling";
+  rules["scaling"] = {{{"profit", "0.00"}, {"contracts", 2}}, {{"profit", "1500.00"}, {"contracts", 3}}};
+  auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", r}, {"reason", "scaling test"}}); };
+  auto response = reset(rules);
+  ASSERT_EQ(response.status, 200) << response.body;
+  auto account = json::parse(response.body);
+  EXPECT_EQ(account["rules"]["scaling"], rules["scaling"]);
+  EXPECT_EQ(account["evaluation"]["scaling"], (json{{"limit", 2}, {"held", 0}, {"profit", "0.00"},
+      {"next", {{"profit", "1500.00"}, {"contracts", 3}}}}));
+  auto large = order(market, "too-many", "4.20"); large["quantity"] = 3;
+  auto preview = write(*engine, "POST", "/api/orders/preview", large);
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  EXPECT_EQ(json::parse(preview.body)["reason"]["code"], "SCALING_LIMIT");
+  expect_error(write(*engine, "POST", "/api/orders", large), 422, "SCALING_LIMIT");
+  large["client_order_id"] = "fits"; large["quantity"] = 2;
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", large).status, 201);
+  EXPECT_EQ(read(*engine, "/api/account")["evaluation"]["scaling"]["held"], 2);
+  for (const auto& steps : std::vector<json>{
+      {{{"profit", "1"}, {"contracts", 2}}}, {{{"profit", "0"}, {"contracts", 0}}},
+      {{{"profit", "0"}, {"contracts", 10001}}},
+      {{{"profit", "0"}, {"contracts", 2}}, {{"profit", "0"}, {"contracts", 3}}},
+      {{{"profit", "0"}, {"contracts", 3}}, {{"profit", "1"}, {"contracts", 2}}}}) {
+    auto bad = rules; bad["scaling"] = steps;
+    expect_error(reset(bad), 400, "INVALID_RULES");
+  }
+  for (const auto& value : std::vector<json>{nullptr, 3, {{{"profit", 0}, {"contracts", 2}}},
+      {{{"profit", "0"}, {"contracts", 2.5}}}, {{{"profit", "0"}, {"contracts", "2"}}},
+      {{{"profit", "0"}, {"contracts", 2}, {"unknown", 1}}}}) {
+    auto bad = rules; bad["scaling"] = value;
+    expect_error(reset(bad), 400, "INVALID_REQUEST");
+  }
+  engine->stop();
 }
 
 TEST_F(PaperEngine, AccountViewWithoutRulesHasNoTargetOrFloor) {

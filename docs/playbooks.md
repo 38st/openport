@@ -389,7 +389,12 @@ at rollover with `OVERNIGHT_HOLD`, excluding options awaiting settlement.
 System option closes use `system:flat_time:N` / `system:overnight:N`; shares use
 `rule` fills. Remainders retry on executable quotes. Both fields are carried
 through backtest plans, playbook entries, journals and recovery.
-They apply through the same reducer checks as manual trading. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
+They apply through the same reducer checks as manual trading. Optional `scaling` takes up to 16 `{profit, contracts}` steps (decimal
+profit strings, integer limits): first profit zero, profits strictly increasing,
+contracts non-decreasing from 1 to 10,000. Empty disables. It caps option contracts
+held including working openings; each leg counts, shares do not. Rollover uses
+closed balance less start to select the next session's cap, up or down; automatic
+entries receive `SCALING_LIMIT` like manual orders. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
 required for evaluation plans; practice and funded preset IDs are refused. Custom
 funded plans may instead set `phase: "funded"`, no profit target, and `payouts` with
 at least one qualifying day. Payout fields use their account API names; money

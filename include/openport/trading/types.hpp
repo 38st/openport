@@ -35,10 +35,10 @@ enum class Reason {
   ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP,
   MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
   TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS,
-  FLAT_TIME, OVERNIGHT_HOLD
+  FLAT_TIME, OVERNIGHT_HOLD, SCALING_LIMIT
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::OVERNIGHT_HOLD;
+inline constexpr Reason kLastReason = Reason::SCALING_LIMIT;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -593,6 +593,13 @@ struct FeeSchedule {
   bool operator==(const FeeSchedule&) const = default;
 };
 
+/// A closed-balance profit threshold and the next session's option contract cap.
+struct ScalingStep {
+  Money profit;
+  std::int64_t contracts = 1;
+  bool operator==(const ScalingStep&) const = default;
+};
+
 /// Evaluation-account rules. The defaults describe an unrestricted paper
 /// account: no target, no drawdown floor, any side, no buying-power check.
 struct AccountRules {
@@ -647,6 +654,7 @@ struct AccountRules {
   std::optional<std::int64_t> trading_end;    ///< Start inclusive, end exclusive.
   std::optional<std::int64_t> flat_time;  ///< NY minute, before day_end; empty disables.
   bool no_overnight = false;  ///< Fail at rollover on positions not awaiting settlement.
+  std::vector<ScalingStep> scaling;  ///< Empty disables; each option leg counts, shares do not.
   [[nodiscard]] bool evaluation() const {
     return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{} ||
            time_limit_days > 0 || inactivity_days > 0 || no_overnight;
@@ -678,6 +686,8 @@ void validate_limits(const Limits& limits);
 /// consistency percentage is 0-100, minimum days 0-366 and the day's end 16:15 to
 /// 24:00; a floor locks at one level at most, and a static floor not at all.
 /// Fee amounts are $0 to $1,000, with at most 16 named index roots; inside fills are 0-100%.
+/// Scaling takes at most 16 steps: profit zero first then strictly increasing,
+/// contracts non-decreasing from 1 to 10000; empty disables it.
 void validate_rules(const AccountRules& rules);
 /// Validate the optional calendar and opening restrictions independently.
 void validate_time_rules(const AccountRules& rules);

@@ -16,6 +16,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(INVALID_TICK); CASE(INVALID_QUOTE); CASE(STALE_QUOTE); CASE(MISSING_VALUATION);
     CASE(MAX_ORDER_CONTRACTS); CASE(PRICE_BAND); CASE(DELTA_LIMIT); CASE(VEGA_LIMIT);
     CASE(DAILY_LOSS); CASE(KILL_SWITCH); CASE(RISK_CHANGED); CASE(IOC_REMAINDER);
+    CASE(SCALING_LIMIT);
     CASE(USER_CANCEL); CASE(PLAYBOOK_TIME_STOP); CASE(PLAYBOOK_TRAILING_STOP); CASE(PLAYBOOK_DTE_STOP); CASE(PLAYBOOK_DAYS_IN_TRADE_STOP); CASE(SESSION_CLOSED); CASE(FEED_STALLED); CASE(DAY_END); CASE(EXPIRED);
     CASE(AWAITING_SETTLEMENT); CASE(INVALID_SETTLEMENT); CASE(ALREADY_SETTLED);
     CASE(UNKNOWN_ORDER); CASE(ORDER_TERMINAL); CASE(INVALID_LIMITS); CASE(INVALID_TIME);
@@ -206,6 +207,14 @@ void validate_time_rules(const AccountRules& r) {
     throw TradingError(Reason::INVALID_RULES, "Set both trading_start and trading_end, between 00:00 and 24:00 New York, with start before end, or neither");
 }
 void validate_rules(const AccountRules& r) {
+  if (r.scaling.size() > 16 || (!r.scaling.empty() && r.scaling.front().profit != Money{}))
+    throw TradingError(Reason::INVALID_RULES, "Scaling takes at most 16 steps, starting at zero profit");
+  for (std::size_t i = 0; i < r.scaling.size(); ++i) {
+    const auto& step = r.scaling[i];
+    if (step.contracts < 1 || step.contracts > 10'000 ||
+        (i > 0 && (step.profit <= r.scaling[i - 1].profit || step.contracts < r.scaling[i - 1].contracts)))
+      throw TradingError(Reason::INVALID_RULES, "Scaling profits must strictly increase and contract limits must be non-decreasing, from 1 to 10000");
+  }
   const auto& p = r.payouts;
   if (p.buffer < Money{} || p.buffer_payouts < 0 || p.buffer_payouts > 100)
     throw TradingError(Reason::INVALID_RULES, "The payout buffer must be nonnegative and buffer_payouts from 0 to 100");

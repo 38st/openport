@@ -115,6 +115,22 @@ it("edits trade-entry rules and validates their ranges", () => {
   expect(customPlan({ ...form, max_trade_risk: "-1" }, base)).toHaveProperty("error")
   const off = customPlan({ ...form, max_contracts_held: "", require_stop_loss: "no", max_trade_risk: "", max_trade_risk_percent: "" }, base)
   expect("error" in off ? off : off.rules).toMatchObject({ max_contracts_held: 0, require_stop_loss: false, max_trade_risk: null, max_trade_risk_percent: 0 })
+  })
+
+it("round trips scaling and rejects unordered thresholds or decreasing limits", () => {
+  const scaling = [{ profit: "0.00", contracts: 2 }, { profit: "1500.000001", contracts: 3 }]
+  const base = { ...rules, scaling }
+  const form = planForm({ initial_cash: "50000", rules: base })
+  expect(form.scaling).toEqual([{ profit: "0.00", contracts: "2" }, { profit: "1500.000001", contracts: "3" }])
+  const result = customPlan(form, base)
+  expect("error" in result ? result : result.rules.scaling).toEqual(scaling)
+  for (const steps of [
+    [{ profit: "1", contracts: "2" }], [{ profit: "0", contracts: "0" }], [{ profit: "0", contracts: "10001" }],
+    [{ profit: "0", contracts: "2.5" }], [{ profit: "0", contracts: "2" }, { profit: "0", contracts: "3" }],
+    [{ profit: "0", contracts: "3" }, { profit: "1", contracts: "2" }], Array(17).fill({ profit: "0", contracts: "2" }),
+  ]) expect(customPlan({ ...form, scaling: steps }, base)).toHaveProperty("error")
+  const off = customPlan({ ...form, scaling: [] }, base)
+  expect("error" in off ? off : off.rules.scaling).toEqual([])
 })
 
 describe("time and instrument rules", () => {

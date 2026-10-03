@@ -314,6 +314,9 @@ models the funded phase that follows a pass (`funded-*` plans with a locking flo
 payouts). Custom funded plans support payout-cycle best-day consistency (F37),
 including escalating limits by payout number and the additional profit needed,
 and a payout buffer above the starting balance for all or the first N payouts (F38).
+Optional scaling plans (F39) start at reduced option size and change the contract
+limit from the next session’s closed-balance step, up or down. Every option leg
+counts, working openings reserve capacity, and the terminal shows and edits the plan.
 This is a simulator that funds no one, so the web terminal hides those plans
 and the Payouts page; set `showFundedAccounts` in `web/src/lib/features.ts` to offer
 them. [Paper trading](paper-trading.md) documents every rule, the HTTP contract and
@@ -332,6 +335,8 @@ settle AM positions on the expiry opening print, an approximation of the officia
 special opening quotation; live providers keep manual imports.
 
 ## Roadmap
+
+- [x] F39 funded scaling plan: closed-balance thresholds set the next session’s option-contract limit, with working openings, fill checks and terminal editing
 
 - [x] F38 payout buffer: retain starting balance plus a safety net for every payout or the first N
 - [x] F37 payout consistency: net realised best-day limits per payout cycle, escalating percentages and remaining profit

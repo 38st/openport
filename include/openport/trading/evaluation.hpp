@@ -83,7 +83,11 @@ struct Evaluation {
   Timestamp last_activity = 0;  ///< Own execution, only when inactivity is set; zero uses started.
   std::optional<md::Date> flat_time_day;  ///< Last date whose mandatory flatten started.
   bool flat_pending = false;  ///< Retry unfilled mandatory closes, including after rollover.
+  std::int64_t scaling_limit = 0;  ///< In force this session; zero without scaling.
 };
+
+/// The highest reached step, or the first step below zero profit; zero without scaling.
+[[nodiscard]] std::int64_t scaling_limit(const AccountRules& rules, Money profit);
 
 /// Shared plan arithmetic. Observations check the floor before the target; rollover
 /// ratchets an end-of-day floor from the last fully marked close. The peak follows

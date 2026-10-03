@@ -1,6 +1,15 @@
 import type { Playbook, PlaybookTrade } from "./playbook-types"
+import type { AccountRules, Money, PayoutRules } from "./trading-types"
+/** Custom backtests use decimal money, nanosecond cutoffs and minute day boundaries. */
+export type BacktestRules = Partial<Omit<AccountRules, "plan_id" | "plan" | "profit_target" | "max_drawdown" | "lock_balance" |
+  "daily_loss_limit" | "profitable_day_profit" | "payouts" | "fees" | "expiry_cutoff_seconds" | "day_end">> & {
+  plan?: string; profit_target?: Money; max_drawdown?: Money; lock_balance?: Money
+  daily_loss_limit?: Money; profitable_day_profit?: Money; payouts?: Partial<PayoutRules>
+  expiry_cutoff?: number; day_end_minutes?: number
+}
+export interface BacktestPlan { initial_cash: Money; fee_per_contract?: Money; rules: BacktestRules }
 export type BacktestDayInput = { file: string } | { scenario: string; date?: string; seed: string }
-export type BacktestStart = { playbook: string; plan: string; workers?: number } & (
+export type BacktestStart = { playbook: string; plan: string | BacktestPlan; workers?: number } & (
   { days: BacktestDayInput[] } | { scenarios: number; seed: string; scenario?: string })
 export interface BacktestResult {
   started: string; ended: string

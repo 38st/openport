@@ -7,6 +7,16 @@
 #include "openport/md/time.hpp"
 
 namespace openport::trading {
+std::int64_t scaling_limit(const AccountRules& rules, Money profit) {
+  if (rules.scaling.empty()) return 0;
+  auto limit = rules.scaling.front().contracts;
+  for (const auto& step : rules.scaling) {
+    if (step.profit > profit) break;
+    limit = step.contracts;
+  }
+  return limit;
+}
+
 namespace {
 __extension__ using Wide = __int128;
 std::string dollars(Money value) { return (value < Money{} ? "-$" + (-value).str() : "$" + value.str()); }

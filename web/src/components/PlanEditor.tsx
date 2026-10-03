@@ -1,11 +1,12 @@
 import type { ReactNode } from "react"
 import type { AccountRules, DailyLossBasis, Money, Plan } from "../api/trading-types"
 import { dailyLossBasisText, dayEnd } from "../lib/plan-rules"
-import { validMoney } from "../lib/trading"
+import { compareMoney, validMoney } from "../lib/trading"
 
 /** The custom plan form: text fields as typed, choices as their API words. */
 export interface PlanForm {
   name: string
+  scaling: { profit: string; contracts: string }[]
   phase: AccountRules["phase"]
   qualifying_profit: string
   qualifying_days: string
@@ -52,6 +53,7 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
   const p = r.payouts
   return {
     phase: r.phase,
+    scaling: (r.scaling ?? []).map((step) => ({ profit: step.profit, contracts: String(step.contracts) })),
     qualifying_profit: p?.qualifying_profit ?? "0", qualifying_days: String(p?.qualifying_days ?? 1),
     withdrawal_percent: String(p?.withdrawal_percent ?? 50), split_percent: String(p?.split_percent ?? 80),
     payout_minimum: p?.minimum ?? "0", payout_caps: p?.caps.join(", ") ?? "",
@@ -138,8 +140,21 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
       withdrawal_percent: count(form.withdrawal_percent), split_percent: count(form.split_percent), minimum: form.payout_minimum.trim(),
       caps, consistency_percents: percents.map(Number), buffer: form.payout_buffer.trim(), buffer_payouts: count(form.buffer_payouts) }
   }
+  if (form.scaling.length > 16) return { error: "Scaling takes at most 16 steps" }
+  for (const [i, step] of form.scaling.entries()) {
+    if (!validMoney(step.profit.trim()) || compareMoney(step.profit.trim(), "0") === -1)
+      return { error: "Scaling profit must be a nonnegative dollar amount" }
+    if (i === 0 && compareMoney(step.profit.trim(), "0") !== 0) return { error: "The first scaling profit must be zero" }
+    if (i > 0 && compareMoney(step.profit.trim(), form.scaling[i - 1]!.profit.trim()) !== 1)
+      return { error: "Scaling profits must strictly increase" }
+    const contracts = count(step.contracts)
+    if (!Number.isInteger(contracts) || contracts < 1 || contracts > 10000)
+      return { error: "Scaling contracts must be a whole number from 1 to 10000" }
+    if (i > 0 && contracts < count(form.scaling[i - 1]!.contracts)) return { error: "Scaling contract limits must not decrease" }
+  }
   const rules: AccountRules = {
     ...base, plan: name, plan_id: null, phase: form.phase, payouts,
+    scaling: form.scaling.map((step) => ({ profit: step.profit.trim(), contracts: count(step.contracts) })),
     profit_target: form.phase === "funded" ? null : amount(form.profit_target), profit_basis: form.profit_basis,
     max_drawdown: drawdown, drawdown_mode: form.drawdown_mode,
     lock_at_start: trailing && form.lock === "start", lock_balance: trailing && form.lock === "balance" ? amount(form.lock_balance) : null,
@@ -169,10 +184,10 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 /** Edits a custom plan's rules; the dialog submits it. */
 export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onChange: (form: PlanForm) => void; disabled?: boolean }) {
   const set = <K extends keyof PlanForm>(key: K) => (value: PlanForm[K]) => onChange({ ...form, [key]: value })
-  const text = (key: keyof PlanForm, placeholder = "") => <input className="trade-input w-full" value={form[key]} placeholder={placeholder}
+  const text = (key: Exclude<keyof PlanForm, "scaling">, placeholder = "") => <input className="trade-input w-full" value={form[key]} placeholder={placeholder}
     disabled={disabled} inputMode={["name", "day_end", "payout_caps", "payout_consistency_percents", "underlyings", "trading_start", "trading_end", "flat_time"].includes(key) ? "text" : "decimal"}
     onChange={(event) => set(key)(event.target.value as never)} />
-  const choice = <K extends keyof PlanForm>(key: K, options: [PlanForm[K], string][]) => <select className="trade-input w-full"
+  const choice = <K extends Exclude<keyof PlanForm, "scaling">>(key: K, options: [PlanForm[K], string][]) => <select className="trade-input w-full"
     value={form[key]} disabled={disabled} onChange={(event) => set(key)(event.target.value as PlanForm[K])}>
     {options.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
   </select>
@@ -221,6 +236,20 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
       <Field label="Trading ends (ET)" hint="Opening orders cancel at this time; exits keep working">{text("trading_end", "16:00")}</Field>
       <Field label="Flat time (ET)" hint="HH:MM before day end; blank for none. Closes options and shares and blocks openings until day end.">{text("flat_time", "15:45")}</Field>
       <Field label="No overnight holds" hint="Holding positions at day rollover fails the attempt. Positions awaiting settlement are excluded.">{choice("no_overnight", [["no", "Off"], ["yes", "Required"]])}</Field>
+      <div className="space-y-2 sm:col-span-2">
+        <p className="text-xs font-medium">Scaling plan</p>
+        <p className="text-[11px] text-muted">Option contracts held at once; each leg counts, shares do not. Closed-balance profit selects the next session’s limit, up or down. No steps disables scaling.</p>
+        {form.scaling.map((step, i) => <div key={i} className="flex items-end gap-2">
+          <Field label={`Step ${i + 1} profit`}><input className="trade-input w-full" inputMode="decimal" value={step.profit}
+            onChange={(event) => set("scaling")(form.scaling.map((s, n) => n === i ? { ...s, profit: event.target.value } : s))} /></Field>
+          <Field label={`Step ${i + 1} contracts`}><input className="trade-input w-full" inputMode="numeric" value={step.contracts}
+            onChange={(event) => set("scaling")(form.scaling.map((s, n) => n === i ? { ...s, contracts: event.target.value } : s))} /></Field>
+          <button type="button" className="trade-button" aria-label={`Remove scaling step ${i + 1}`}
+            onClick={() => set("scaling")(form.scaling.filter((_, n) => n !== i))}>Remove</button>
+        </div>)}
+        <button type="button" className="trade-button" disabled={disabled || form.scaling.length >= 16}
+          onClick={() => set("scaling")([...form.scaling, { profit: form.scaling.length ? "" : "0", contracts: form.scaling.at(-1)?.contracts ?? "2" }])}>Add scaling step</button>
+      </div>
       <Field label="Strategies">{choice("strategies", [["buy_only", "Buy only, single leg"], ["defined_risk", "Defined risk"], ["any", "Any"]])}</Field>
     </fieldset>
   )

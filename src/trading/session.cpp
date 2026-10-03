@@ -1,4 +1,5 @@
 #include "openport/trading/session.hpp"
+#include "openport/trading/contracts.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1142,6 +1143,7 @@ Evaluation fresh_evaluation(const State& s, std::uint64_t attempt) {
   e.attempt = attempt;
   e.started = s.time;
   e.starting_balance = s.ledger.account().cash;
+  e.scaling_limit = scaling_limit(s.config.rules, Money{});
   e.peak = e.starting_balance;
   e.floor = evaluation_floor(s.config.rules, e.peak, e.floor_locked, e.starting_balance);
   e.day_open_realised = net_realised(s);
@@ -1684,6 +1686,51 @@ Decision trade_rules_check(const State& s, const Order& o, Money equity) {
 /// accepted, and once triggered only the price it fills at is banded, so a market
 /// that gaps through the limit leaves it working instead of cancelled.
 enum class Stage { Accept, Activate, Fill };
+/// Reserve the opening part of every working user order, including armed orders.
+/// Closing capacity is shared once per side and symbol; closing orders cannot
+/// finance new openings by promising to free contracts. Combos count every leg.
+Decision scaling_check(const State& s, const Order& focus) {
+  const auto limit = s.evaluation.scaling_limit;
+  if (limit == 0 || closing_only(s, focus)) return {};
+  __extension__ using Wide = __int128;
+  const auto held_count = contracts_held(s.ledger.positions(), [](const auto& p) { return p.second.quantity; });
+  Wide changed = held_count;
+  const auto change = [&](const std::string& symbol, Side side, Quantity quantity) {
+    const Wide q = held(s, symbol);
+    const Wide after = q + (side == Side::Buy ? quantity : -quantity);
+    changed += (after < 0 ? -after : after) - (q < 0 ? -q : q);
+  };
+  if (multi_leg(focus.request)) {
+    for (const auto& leg : focus.request.legs) change(leg.symbol, leg.side, focus.remaining() * leg.ratio);
+  } else change(focus.request.symbol, focus.request.side, focus.remaining());
+  // An atomic reduction (including a roll) remains possible above a stepped-down cap.
+  if (changed <= held_count) return {};
+  std::map<std::string, std::pair<Wide, Wide>> capacity;
+  Wide total = held_count;
+  const auto reserve = [&](const Order& o) {
+    const auto leg = [&](const std::string& symbol, Side side, Quantity quantity) {
+      const Wide q = held(s, symbol);
+      auto& [long_left, short_left] = capacity.try_emplace(symbol, std::max<Wide>(q, 0), std::max<Wide>(-q, 0)).first->second;
+      auto& left = side == Side::Buy ? short_left : long_left;
+      const auto closing = std::min<Wide>(quantity, left);
+      left -= closing;
+      total += quantity - closing;
+    };
+    if (multi_leg(o.request)) {
+      for (const auto& l : o.request.legs) leg(l.symbol, l.side, o.remaining() * l.ratio);
+    } else leg(o.request.symbol, o.request.side, o.remaining());
+  };
+  for (const auto id : open_ids(s)) {
+    const auto& o = s.orders[id - 1];
+    if (o.id != focus.id && !o.system && !kept_within(o)) reserve(o);
+  }
+  reserve(focus);
+  if (total > limit)
+    return {Reason::SCALING_LIMIT, "Scaling plan: held option contracts plus working openings exceed this session's limit; "
+            "each leg counts and the limit changes only after the trading day closes",
+            static_cast<double>(total), static_cast<double>(limit), "aggregate"};
+  return {};
+}
 /// The level an untriggered stop-limit's limit is banded around, if it has one.
 std::optional<Money> stop_level(const Order& o) {
   const auto& t = o.request.trigger;
@@ -1836,6 +1883,7 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
     if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
+  if (const auto d = scaling_check(s, o); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && stage != Stage::Fill) {
     const auto power = buying_power(s, o.id);
@@ -1959,6 +2007,7 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
     if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
+  if (const auto d = scaling_check(s, o); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
   if (rules.buying_power && stage != Stage::Fill) {
     // Orders that free buying power are always allowed, including one whose fill
@@ -2062,8 +2111,10 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
   auto decision = reducing ? system_check(s, o) : order_check(s, o, Stage::Fill);
   if (data_gap(decision.code)) return;
   if (!decision.ok()) {
-    decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
-    decision.code = Reason::RISK_CHANGED;
+    if (decision.code != Reason::SCALING_LIMIT) {
+      decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
+      decision.code = Reason::RISK_CHANGED;
+    }
     cancel_order(s, id, decision, events);
     return;
   }
@@ -2104,8 +2155,10 @@ void match_one(State& s, OrderId id, Events& events, std::optional<OrderId> inco
     }
   }
   if (!decision.ok()) {
-    decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
-    decision.code = Reason::RISK_CHANGED;
+    if (decision.code != Reason::SCALING_LIMIT) {
+      decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
+      decision.code = Reason::RISK_CHANGED;
+    }
     cancel_order(s, id, decision, events);
     return;
   }
@@ -2195,8 +2248,10 @@ void match_combo(State& s, OrderId id, Events& events, std::optional<OrderId> in
     }
   }
   if (!decision.ok()) {
-    decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
-    decision.code = Reason::RISK_CHANGED;
+    if (decision.code != Reason::SCALING_LIMIT) {
+      decision.message = std::string(to_string(decision.code)) + ": " + decision.message;
+      decision.code = Reason::RISK_CHANGED;
+    }
     cancel_order(s, id, decision, events);
     return;
   }
@@ -2585,8 +2640,10 @@ void activate(State& s, OrderId id, Events& events) {
     auto d = o.role != OrderRole::Normal ? system_check(s, o) : order_check(s, o, Stage::Activate);
     if (data_gap(d.code) || d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY) return;
     if (!d.ok()) {
-      d.message = std::string(to_string(d.code)) + ": " + d.message;
-      d.code = Reason::RISK_CHANGED;
+      if (d.code != Reason::SCALING_LIMIT) {
+        d.message = std::string(to_string(d.code)) + ": " + d.message;
+        d.code = Reason::RISK_CHANGED;
+      }
       cancel_order(s, id, d, events);
       return;
     }
@@ -3669,7 +3726,8 @@ Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Qua
     // other refusal, or a loss that cannot be projected, leaves sizing unavailable.
     const auto code = sized(1).decision.code;
     if (code == Reason::BUYING_POWER || code == Reason::DELTA_LIMIT || code == Reason::VEGA_LIMIT ||
-        code == Reason::MAX_ORDER_CONTRACTS || code == Reason::MAX_CONTRACTS_HELD || code == Reason::MAX_TRADE_RISK) return none(code == Reason::BUYING_POWER ? "buying_power" : "limits");
+        code == Reason::MAX_ORDER_CONTRACTS || code == Reason::MAX_CONTRACTS_HELD || code == Reason::MAX_TRADE_RISK ||
+        code == Reason::SCALING_LIMIT) return none(code == Reason::BUYING_POWER ? "buying_power" : "limits");
     return out;
   }
   Quantity low = 1, high = upper;
@@ -5197,8 +5255,10 @@ CommandResult TradingSession::set_limits(Limits limits, Timestamp time) {
       if ((persistent(order) || order.reduce_only) &&
           (data_gap(d.code) || d.code == Reason::SESSION_CLOSED || d.code == Reason::LIMIT_ONLY)) continue;
       if (!d.ok()) {
-        d.message = std::string(to_string(d.code)) + ": " + d.message;
-        d.code = Reason::RISK_CHANGED;
+        if (d.code != Reason::SCALING_LIMIT) {
+          d.message = std::string(to_string(d.code)) + ": " + d.message;
+          d.code = Reason::RISK_CHANGED;
+        }
         cancel_order(s, id, d, events);
       }
     }
@@ -5435,6 +5495,14 @@ CommandResult TradingSession::roll_day(Timestamp time, const std::vector<Dividen
     auto& e = s.evaluation;
     const auto& rules = s.config.rules;
     evaluation_rollover(e, rules);
+    if (!rules.scaling.empty()) {
+      const auto profit = plan_inputs(snapshot).balance - e.starting_balance;
+      const auto next = scaling_limit(rules, profit);
+      if (next != e.scaling_limit) {
+        event(events, "scaling_limit", Json{{"old", e.scaling_limit}, {"limit", next}, {"profit", profit}});
+        e.scaling_limit = next;
+      }
+    }
     // A placeholder date from before the attempt started is not a trading day.
     // On a funded account, a day with enough net realised profit counts once,
     // toward the payout cycle in progress when it closes.

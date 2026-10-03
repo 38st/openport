@@ -60,6 +60,153 @@ const Objective* objective(const std::vector<Objective>& list, Reason code) {
   return nullptr;
 }
 
+AccountRules scaling_plan() {
+  auto r = plan();
+  r.phase = Phase::Funded;
+  r.payouts.qualifying_days = 1;
+  r.scaling = {{m("0"), 2}, {m("100"), 3}, {m("200"), 5}};
+  return r;
+}
+
+TEST(PlanRules, ScalingCountsHeldContractsWorkingOpeningsAndComboLegs) {
+  ScriptedMarket f, g;
+  g.contract = *md::parse_osi("SPXW261022C05010000");
+  TradingSession s(config(scaling_plan()), f.time);
+  f.seed(s); g.seed(s);
+  EXPECT_EQ(s.snapshot()->evaluation.scaling_limit, 2);
+  const auto refused = s.submit(f.market("too-big", 3), f.time);
+  EXPECT_EQ(refused.decision.code, Reason::SCALING_LIMIT);
+  EXPECT_EQ(refused.decision.actual, 3); EXPECT_EQ(refused.decision.limit, 2);
+  EXPECT_EQ(s.preview(f.market("preview", 3), f.time).decision.code, Reason::SCALING_LIMIT);
+  EXPECT_EQ(s.what_if({{f.market("what-if", 3)}}, f.time).candidates.front().decision.code, Reason::SCALING_LIMIT);
+  auto combo = f.limit("combo", 2, "0.20");
+  combo.symbol.clear(); combo.legs = {{f.symbol(), Side::Buy, 1}, {g.symbol(), Side::Sell, 1}};
+  auto result = s.submit(combo, f.time);
+  EXPECT_EQ(result.decision.code, Reason::SCALING_LIMIT); EXPECT_EQ(result.decision.actual, 4);
+  const auto working = s.submit(f.limit("working", 1, "4.00"), f.time);
+  ASSERT_TRUE(working.decision.ok());
+  EXPECT_EQ(s.submit(g.market("reserved", 2), f.time).decision.code, Reason::SCALING_LIMIT);
+  ASSERT_TRUE(s.cancel(*working.order_id, f.time).decision.ok());
+  auto armed = f.market("armed", 2);
+  armed.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrAbove, m("5")};
+  ASSERT_TRUE(s.submit(armed, f.time).decision.ok());
+  EXPECT_EQ(s.submit(g.market("armed-reserved"), f.time).decision.code, Reason::SCALING_LIMIT);
+}
+
+TEST(PlanRules, ScalingCountsPartiallyFilledOrdersAndOtherClosingReservations) {
+  ScriptedMarket f;
+  TradingSession s(config(scaling_plan()), f.time);
+  f.seed(s, "4.00", "4.20", 1);
+  const auto partial = s.submit(f.limit("partial", 2), f.time);
+  ASSERT_TRUE(partial.decision.ok());
+  EXPECT_EQ(s.snapshot()->positions.front().position.quantity, 1);
+  EXPECT_EQ(s.submit(f.market("extra"), f.time).decision.code, Reason::SCALING_LIMIT);
+  ASSERT_TRUE(s.cancel(*partial.order_id, f.time).decision.ok());
+  quote(s, f, "4.00", "4.20");
+  ASSERT_TRUE(s.submit(f.market("second"), f.time).decision.ok());
+  const auto close = s.submit(f.limit("close", 2, "4.50", Side::Sell), f.time);
+  ASSERT_TRUE(close.decision.ok());
+  // Pending closes do not free capacity for a new opening.
+  EXPECT_EQ(s.submit(f.market("after-close"), f.time).decision.code, Reason::SCALING_LIMIT);
+  ASSERT_TRUE(s.cancel(*close.order_id, f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("reduce", 2, Side::Sell), f.time).decision.ok());
+}
+
+TEST(PlanRules, ScalingRechecksOtoChildrenAndDoesNotCountShares) {
+  ScriptedMarket f;
+  TradingSession s(config(scaling_plan()), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.trade_stock("SPY", 100, f.time, StockPrice{"SPY", f.time, m("10")}).decision.ok());
+  auto parent = f.market("parent", 2);
+  parent.then = {f.market("", 1)};
+  ASSERT_TRUE(s.submit(parent, f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->recent_orders.size(), 2U);
+  EXPECT_EQ(s.snapshot()->recent_orders[0].status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].status, OrderStatus::Rejected);
+  EXPECT_EQ(s.snapshot()->recent_orders[1].reason.code, Reason::SCALING_LIMIT);
+  ASSERT_TRUE(s.submit(f.market("reduce", 2, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->stocks.front().position.shares, 100);
+}
+
+TEST(PlanRules, ScalingUsesClosedBalanceOnlyAtRolloverAndKeepsHoldingsOnAStepDown) {
+  ScriptedMarket f;
+  JournalFile file;
+  TradingSession s(config(scaling_plan()), f.time, FileJournal::create(file.path));
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
+  quote(s, f, "5.50", "5.70");
+  EXPECT_EQ(s.snapshot()->evaluation.scaling_limit, 2); // Unrealised gains never raise it.
+  ASSERT_TRUE(s.submit(f.market("profit", 2, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(plan_inputs(*s.snapshot()).balance, m("10257.40"));
+  EXPECT_EQ(s.submit(f.market("same-day", 3), f.time).decision.code, Reason::SCALING_LIMIT);
+  next_day(s, f, {2026, 9, 23}, "5.50", "5.70");
+  EXPECT_EQ(s.snapshot()->evaluation.scaling_limit, 5);
+  auto recovered = TradingSession::recover(FileJournal::read(file.path));
+  EXPECT_EQ(recovered.snapshot()->evaluation.scaling_limit, 5);
+  EXPECT_EQ(recovered.config().rules.scaling, scaling_plan().scaling);
+  ASSERT_TRUE(s.submit(f.market("next-day", 5), f.time).decision.ok());
+  quote(s, f, "3.50", "3.70");
+  ASSERT_TRUE(s.submit(f.market("loss", 2, Side::Sell), f.time).decision.ok());
+  EXPECT_LT(plan_inputs(*s.snapshot()).balance, m("10000"));
+  EXPECT_EQ(s.snapshot()->evaluation.scaling_limit, 5);
+  // A GTC opening fits now but cannot fill after the loss lowers the next day's cap.
+  auto pending = s.submit(f.limit("pending", 1, "3.50", Side::Buy, TimeInForce::Gtc), f.time);
+  ASSERT_TRUE(pending.decision.ok());
+  next_day(s, f, {2026, 9, 24}, "3.30", "3.50");
+  EXPECT_EQ(s.snapshot()->evaluation.scaling_limit, 2);
+  ASSERT_EQ(s.snapshot()->positions.size(), 1U);
+  EXPECT_EQ(s.snapshot()->positions.front().position.quantity, 3);
+  const auto& cancelled = s.snapshot()->recent_orders.at(*pending.order_id - 1);
+  EXPECT_EQ(cancelled.status, OrderStatus::Cancelled);
+  EXPECT_EQ(cancelled.reason.code, Reason::SCALING_LIMIT);
+  EXPECT_EQ(cancelled.reason.actual, 4); EXPECT_EQ(cancelled.reason.limit, 2);
+  EXPECT_EQ(s.submit(f.market("increase"), f.time).decision.code, Reason::SCALING_LIMIT);
+  ASSERT_TRUE(s.submit(f.market("reduce", 1, Side::Sell), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("flat", 2, Side::Sell), f.time).decision.ok());
+  const auto recovery = FileJournal::read(file.path);
+  bool raised = false, lowered = false;
+  for (const auto& record : recovery.records) {
+    const auto payloads = nlohmann::json::parse(record.payload);
+    for (const auto& event : payloads.at("events")) {
+      if (event.at("type") != "scaling_limit") continue;
+      const auto& payload = event.at("payload");
+      raised = raised || (payload.at("old") == 2 && payload.at("limit") == 5 && payload.at("profit") == m("257.40").micros());
+      lowered = lowered || (payload.at("old") == 5 && payload.at("limit") == 2);
+    }
+  }
+  EXPECT_TRUE(raised); EXPECT_TRUE(lowered);
+  auto restored = TradingSession::recover(recovery);
+  EXPECT_EQ(restored.snapshot()->evaluation.scaling_limit, 2);
+  EXPECT_TRUE(s.reset_account(m("10000"), scaling_plan(), "new attempt", f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.scaling_limit, 2);
+}
+
+TEST(PlanRules, ScalingValidationAndDisabledJournalCompatibility) {
+  auto r = scaling_plan();
+  for (const auto& steps : std::vector<std::vector<ScalingStep>>{
+      {{m("1"), 2}}, {{m("0"), 0}}, {{m("0"), 10001}}, {{m("0"), 2}, {m("0"), 3}},
+      {{m("0"), 2}, {m("-1"), 3}}, {{m("0"), 3}, {m("100"), 2}}, std::vector<ScalingStep>(17, {m("0"), 2})}) {
+    r.scaling = steps;
+    try { TradingSession s(config(r), ScriptedMarket{}.time); FAIL() << "Invalid scaling accepted"; }
+    catch (const TradingError& e) { EXPECT_EQ(e.code(), Reason::INVALID_RULES); }
+  }
+  r.scaling = {{m("0"), 2}, {m("100"), 2}};
+  r.phase = Phase::Evaluation;
+  EXPECT_NO_THROW(TradingSession(config(r), ScriptedMarket{}.time));
+  JournalFile file;
+  ScriptedMarket f;
+  {
+    TradingSession s(config(plan()), f.time, FileJournal::create(file.path));
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("old"), f.time).decision.ok());
+  }
+  const auto recovery = FileJournal::read(file.path);
+  for (const auto& record : recovery.records) EXPECT_EQ(record.payload.find("scaling"), std::string::npos);
+  const auto old = TradingSession::recover(recovery);
+  EXPECT_TRUE(old.config().rules.scaling.empty());
+  EXPECT_EQ(old.snapshot()->evaluation.scaling_limit, 0);
+}
+
 TEST(PlanRules, TheTradingDayEndsAtThePlansOwnTime) {
   // 17:30 New York time on a Tuesday counts toward Wednesday under the default
   // 17:00 end, but still toward Tuesday when the plan's day ends at 18:00.

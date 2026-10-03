@@ -38,6 +38,10 @@ export function dailyLossFact(rules: AccountRules): string | null {
   return `${formatMoney(rules.daily_loss_limit, 0)} daily loss limit from ${dailyLossBasisText[rules.daily_loss_basis ?? "equity"]}: ${
     rules.daily_loss_action === "fail" ? "fails the attempt" : "closes every position and locks the day"}`
 }
+export function scalingFact(rules: Pick<AccountRules, "scaling">): string | null {
+  if (!rules.scaling?.length) return null
+  return `Scaling: ${rules.scaling.map((s) => `${s.contracts} contracts at ${formatMoney(s.profit)} profit`).join("; ")} · next session, on closed balance`
+}
 /** The pass conditions beyond the target, in a few words each. */
 export function objectiveFacts(rules: AccountRules): string[] {
   const facts: string[] = []

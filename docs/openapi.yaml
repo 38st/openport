@@ -4244,7 +4244,7 @@
       ],
       "post": {
         "summary": "POST /api/stocks/trade",
-        "description": "Buy or sell 1–10,000,000 shares at a fresh underlying price during the stock regular session (09:30–16:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
+        "description": "Buy or sell 1\u201310,000,000 shares at a fresh underlying price during the stock regular session (09:30\u201316:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
         "x-scope": "trade",
         "responses": {
           "200": {
@@ -4284,7 +4284,7 @@
       ],
       "post": {
         "summary": "POST /api/stocks/trade/preview",
-        "description": "Buy or sell 1–10,000,000 shares at a fresh underlying price during the stock regular session (09:30–16:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Dry run only: accepted/rejected decision, signed cash cost, price, and account before/after; a rejected trade leaves holdings unchanged. Nothing is journaled. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
+        "description": "Buy or sell 1\u201310,000,000 shares at a fresh underlying price during the stock regular session (09:30\u201316:00 ET, early closes). Opens, adds, reduces or reverses. Index underlyings are refused; opening takes account, guardrail, valuation, exposure, daily loss and buying-power checks. Buy-only and defined-risk plans refuse short shares. No fee. Dry run only: accepted/rejected decision, signed cash cost, price, and account before/after; a rejected trade leaves holdings unchanged. Nothing is journaled. Requires trade:ACCOUNT (or trade:*) live, replay scope in replay.",
         "x-scope": "trade",
         "responses": {
           "200": {
@@ -4687,7 +4687,7 @@
     "/api/backtests/compare": {
       "get": {
         "summary": "Compare saved backtests",
-        "description": "Compare 2–8 distinct finished completed or partial reports. 400 invalid selection, 404 unknown run, 409 active run, 422 unavailable report. Daily P&L aligns over all supplied dates. Combined results sum independent daily passes, with no shared buying power, risk limits or plan floor. Absent dates contribute nothing; supplied unmarked or unfinished days make the combined day and subsequent cumulative values null. Legacy missing identities are flagged. Exact-money overflow returns 422 BACKTEST_COMPARISON_UNAVAILABLE.",
+        "description": "Compare 2\u20138 distinct finished completed or partial reports. 400 invalid selection, 404 unknown run, 409 active run, 422 unavailable report. Daily P&L aligns over all supplied dates. Combined results sum independent daily passes, with no shared buying power, risk limits or plan floor. Absent dates contribute nothing; supplied unmarked or unfinished days make the combined day and subsequent cumulative values null. Legacy missing identities are flagged. Exact-money overflow returns 422 BACKTEST_COMPARISON_UNAVAILABLE.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -4712,7 +4712,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Comma-separated 2–8 unique six-digit saved run IDs, in display order."
+            "description": "Comma-separated 2\u20138 unique six-digit saved run IDs, in display order."
           }
         ]
       }
@@ -5314,7 +5314,7 @@
         "type": "object",
         "properties": {
           "level": {
-            "description": "0 is an authored market-wide halt; 1–3 are price-triggered circuit breakers.",
+            "description": "0 is an authored market-wide halt; 1\u20133 are price-triggered circuit breakers.",
             "type": "number"
           },
           "start": {
@@ -8545,7 +8545,7 @@
           },
           "write": {
             "$ref": "#/components/schemas/WriteMode",
-            "description": "Write policy for this account; see WriteMode. This describes credential requirements, not the supplied token’s scopes."
+            "description": "Write policy for this account; see WriteMode. This describes credential requirements, not the supplied token\u2019s scopes."
           },
           "fee_per_contract": {
             "$ref": "#/components/schemas/Money"
@@ -9037,6 +9037,14 @@
             "type": "boolean",
             "default": false,
             "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
+          },
+          "scaling": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/components/schemas/ScalingStep"
+            },
+            "description": "Empty disables. First profit is zero; profits strictly increase; contracts do not decrease. Gross option contracts held, each leg counted, shares excluded. Closed balance less start selects the next session limit at rollover; losses can lower it. Excess openings are refused with SCALING_LIMIT, without a grace period."
           }
         },
         "required": [
@@ -9901,7 +9909,7 @@
                 "type": "null"
               }
             ],
-            "description": "With a consistency rule, the profit (of its basis) the best day requires: best day × 100 / percent, rounded up to the cent."
+            "description": "With a consistency rule, the profit (of its basis) the best day requires: best day \u00d7 100 / percent, rounded up to the cent."
           },
           "daily_loss": {
             "anyOf": [
@@ -10107,6 +10115,17 @@
           "flat_now": {
             "type": "boolean",
             "description": "True at or after flat_time on the current New York plan trading date, until day_end. False when disabled; openings are blocked while true."
+          },
+          "scaling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScalingStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Limit in force and contracts held; profit is closed balance less start. Next is the first step with a higher limit, even if reached today: it applies only after rollover. Null without scaling."
           }
         },
         "required": [
@@ -17950,6 +17969,14 @@
                         "type": "boolean",
                         "default": false,
                         "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
+                      },
+                      "scaling": {
+                        "type": "array",
+                        "maxItems": 16,
+                        "items": {
+                          "$ref": "#/components/schemas/ScalingStep"
+                        },
+                        "description": "Empty disables. First profit is zero; profits strictly increase; contracts do not decrease. Gross option contracts held, each leg counted, shares excluded. Closed balance less start selects the next session limit at rollover; losses can lower it. Excess openings are refused with SCALING_LIMIT, without a grace period."
                       }
                     },
                     "required": [],
@@ -20414,6 +20441,14 @@
             "type": "boolean",
             "default": false,
             "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
+          },
+          "scaling": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/components/schemas/ScalingStep"
+            },
+            "description": "Empty disables. First profit is zero; profits strictly increase; contracts do not decrease. Gross option contracts held, each leg counted, shares excluded. Closed balance less start selects the next session limit at rollover; losses can lower it. Excess openings are refused with SCALING_LIMIT, without a grace period."
           }
         },
         "required": [
@@ -22247,6 +22282,58 @@
           "cooldown_minutes",
           "profit_lock"
         ]
+      },
+      "ScalingStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "profit",
+          "contracts"
+        ],
+        "properties": {
+          "profit": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "contracts": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          }
+        }
+      },
+      "ScalingStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "limit",
+          "held",
+          "profit",
+          "next"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "held": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "profit": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScalingStep"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       }
     }
   }

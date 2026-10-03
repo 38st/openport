@@ -1,3 +1,4 @@
+import type { BacktestStart } from "./backtest-types"
 import specText from "../../../docs/openapi.yaml?raw"
 import backtestTypes from "./backtest-types.ts?raw"
 import marketTypes from "./types.ts?raw"
@@ -50,7 +51,7 @@ describe("checked API core types", () => {
       expect(source).toMatch(/export type CreateAccountRequest = [^\n]+& MarginModel/)
     }
   })
-  it.each(["AttemptSummary", "PayoutRules", "PayoutStatus", "PayoutBestDay", "Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
+  it.each(["AttemptSummary", "ScalingStep", "ScalingStatus", "PayoutRules", "PayoutStatus", "PayoutBestDay", "Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
     "Guardrails", "GuardrailState", "AccountDamage", "JournalSize", "EquityHistory", "VerificationCost", "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
     "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "Limits", "TokenStatus", "RunJournal", "RunInput", "VerificationRun", "RunVerification", "ForwardTestWindow", "ForwardTest", "PlaybookReport"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
@@ -200,4 +201,14 @@ it("keeps kill-switch reset decisions and actual latch history in the wire contr
     }
   }
   expect(schemas.KillState.properties.reset_blocked.description).toContain("not a prediction for POST /api/account/reset")
+})
+
+it("accepts custom funded scaling plans in the backtest wire type", () => {
+  const request: BacktestStart = { playbook: "sample", scenarios: 1, seed: "42", plan: {
+    initial_cash: "50000.00", rules: { phase: "funded", payouts: { qualifying_days: 1 },
+      scaling: [{ profit: "0.00", contracts: 2 }, { profit: "1500.00", contracts: 3 }] } } }
+  expect(typeof request.plan).toBe("object")
+  expect(wireType(spec.components.schemas.AccountRules!.properties!.scaling!)).toBe("ScalingStep[]")
+  expect(wireType(spec.components.schemas.AccountRulesInput!.properties!.scaling!)).toBe("ScalingStep[]")
+  expect(wireType(spec.components.schemas.Evaluation!.properties!.scaling!)).toBe("ScalingStatus | null")
 })

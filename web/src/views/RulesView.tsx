@@ -10,7 +10,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
 import { Empty, PageHeader, Panel } from "../components/ui"
 import { lockReason, offeredPlans, payoutCap, payoutRuleFacts } from "../lib/payouts"
-import { clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts, timeRuleEntries } from "../lib/plan-rules"
+import { scalingFact, clockText, dailyLossBasisText, dailyLossFact, dayEnd, floorMoves, objectiveFacts, timeRuleEntries } from "../lib/plan-rules"
 import { compareMoney, formatMoney, subtractMoney } from "../lib/trading"
 
 function Rule({ title, children }: { title: string; children: ReactNode }) {
@@ -70,6 +70,13 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         Days follow the plan's trading day, and a day's profit is {balance ? "what you close that day (net realised P&L after fees)" : "its change in equity"}.
         {r.consistency_percent ? <> The consistency rule never fails the attempt: while the best day is too large a share, the pass waits, as if the target were higher{e.consistency_target ? <> (the best day so far needs {formatMoney(e.consistency_target)} of profit)</> : null}, or for more profitable days.</> : null}</> }] : []),
     ...timeRuleEntries(r),
+    ...(r.scaling?.length ? [{ title: "Scaling plan", body: <>
+        {scalingFact(r)}. Each option leg counts toward the contracts held at once; shares do not.
+        {e.scaling && <> In force: {e.scaling.limit} contracts; {e.scaling.held} held; closed-balance profit {formatMoney(e.scaling.profit)}.</>}
+        {" "}At the trading day's rollover, closed balance less starting balance selects the next session's limit, up or down.
+        Working openings reserve capacity. Excess orders are refused with SCALING_LIMIT at acceptance and checked again at fill, with no grace period.
+        A lower limit keeps existing positions; reducing orders remain allowed.
+      </> }] : []),
     ...(p ? [{ title: "Payouts", body: <>
         A payout needs <strong className="text-foreground">{p.qualifying_days} qualifying days</strong> since the previous one: days that end with at least {formatMoney(p.qualifying_profit)} of net realised profit, after fees.
         Request it with no open positions or working orders. Each payout may take up to {p.withdrawal_percent}% of the profit above your {formatMoney(e.starting_balance)} starting balance,

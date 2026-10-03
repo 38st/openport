@@ -40,6 +40,8 @@ export interface PayoutRules {
   buffer_payouts?: number
 }
 export type AccountType = "margin" | "cash" | "ira"
+export interface ScalingStep { profit: Money; contracts: number }
+export interface ScalingStatus { limit: number; held: number; profit: Money; next: ScalingStep | null }
 export interface AccountRules {
   plan_id?: string | null
   plan: string | null
@@ -104,6 +106,8 @@ export interface AccountRules {
   buying_power: boolean
   expiry_cutoff_seconds: number
   payouts: PayoutRules | null
+  /** Gross option contracts held; next session uses closed-balance profit. Empty disables. */
+  scaling?: ScalingStep[]
 }
 export type ProfitBasis = "equity" | "balance"
 export type DailyLossBasis = "equity" | "balance" | "higher" | "peak"
@@ -272,6 +276,7 @@ export interface Evaluation {
   best_day?: { day: string; profit: Money } | null
   consistency_target?: Money | null
   daily_loss?: DailyLossStatus | null
+  scaling?: ScalingStatus | null
   day_lock?: string | null
   day_locked_at?: string | null
   /** Equity if every position closed now at the bid or ask, with slippage and fees. */

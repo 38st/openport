@@ -103,6 +103,13 @@ std::vector<PlanPreset> build() {
     plans.push_back(funded(plans[i], std::array<std::int64_t, 3>{100, 150, 200}[(i - 1) % 3]));
   for (const auto* style : {"static", "locking"})
     for (const auto size : {25, 50, 100}) plans.push_back(objective_evaluation(style, size));
+  auto scaling = funded(evaluation("intraday", 50), 150);
+  scaling.id = "funded-scaling-50k";
+  scaling.name = "Funded Scaling 50K";
+  scaling.rules.plan = scaling.name;
+  scaling.rules.scaling = {{Money{}, 2}, {Money::parse("1500"), 3}, {Money::parse("2000"), 5}};
+  scaling.summary += " Option contracts held: 2 initially, 3 after closing at $1,500 profit, 5 at $2,000; changes apply next session.";
+  plans.push_back(std::move(scaling));
   return plans;
 }
 }  // namespace

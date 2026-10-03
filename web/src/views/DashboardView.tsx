@@ -143,6 +143,12 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
       <AutoPlaybookIndicator />
       <StagedOrders />
 
+      {e.scaling && <Panel title="Scaling plan">
+        <p className="text-sm"><strong>{e.scaling.held} held / {e.scaling.limit} contract limit</strong></p>
+        <p className="mt-1 text-xs text-muted">Closed-balance profit {formatMoney(e.scaling.profit)}. {e.scaling.next
+          ? `Next: ${e.scaling.next.contracts} contracts after a day closes at ${formatMoney(e.scaling.next.profit)} profit or more; applies next session.`
+          : "Highest scaling step in force."} Losses or payouts can lower the next session’s limit. Each option leg counts; shares do not.</p>
+      </Panel>}
       <IntradayEquity account={data} />
       <Panel title="Breach risk"><BreachPanel breach={data.breach} />
         {e.closest_floor != null && <p className="mt-2 text-xs text-muted">Closest approach this attempt: {formatMoney(e.closest_floor)} above the floor · {timestampET(e.closest_floor_at)}</p>}
