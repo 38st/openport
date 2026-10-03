@@ -8,6 +8,7 @@ import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
 import { account, plans, status } from "../test/trading-fixtures"
 import { ResetDialog } from "./ResetDialog"
+import { NewAccountDialog } from "./AccountSwitcher"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 let host: HTMLDivElement
@@ -23,6 +24,25 @@ beforeEach(() => {
   client.setQueryData(tradingQueries(0, "17", true).account.queryKey, account)
   vi.mocked(useLive).mockReturnValue(liveState(status, null, "open"))
   vi.spyOn(api, "resetAccount").mockResolvedValue(account)
+})
+it.each(["reset", "create"])("submits itemized fees when starting an account attempt (%s)", async (kind) => {
+  vi.spyOn(api, "createAccount").mockResolvedValue({ account: { id: "fees", name: "Fees", account_version: "1", plan: "Practice", equity: "100000.00" } })
+  const plan = plans.find((entry) => entry.id === "intraday-100k")!
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    {kind === "reset" ? <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial={plan.id} onClose={() => {}} />
+      : <NewAccountDialog trading={{ ...status.trading!, write: "open" }} onClose={() => {}} onCreated={() => {}} />}
+  </QueryClientProvider>))
+  if (kind === "create") {
+    await act(async () => host.querySelector<HTMLInputElement>(`input[value="${plan.id}"]`)!.click())
+  }
+  const select = host.querySelector<HTMLSelectElement>('select[aria-label="Fees"]')!
+  expect(select.value).toBe("flat")
+  await act(async () => { select.value = "itemized"; select.dispatchEvent(new Event("change", { bubbles: true })) })
+  expect(host.textContent).toContain("$10 per leg per order")
+  expect(host.textContent).toContain("$5 per contract")
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(kind === "reset" ? api.resetAccount : api.createAccount).toHaveBeenCalledWith(
+    expect.objectContaining({ plan: plan.id, fee_model: "itemized" }), "open")
 })
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); client.clear()

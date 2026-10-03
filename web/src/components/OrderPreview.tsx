@@ -1,3 +1,4 @@
+import { FeeAmount } from "./FeeAmount"
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useState } from "react"
 import { api } from "../api/client"
@@ -81,6 +82,7 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
       : preview.error ? <p role="status" className="text-warn">Preview failed. Buying power and floor risk are unavailable. You can still submit for the server's checks.</p>
       : !p ? <p className="text-muted">{what === "change" ? "Change a term to preview the order on its new terms." : "Complete the order to preview its risk."}</p> : <>
         <dl className="grid grid-cols-2 gap-2 tabular">
+          {p.fee !== undefined && <><dt className="text-muted">Fees for remaining size</dt><dd className="text-right"><FeeAmount fee={p.fee} fees={p.fees} /></dd></>}
           <dt className="text-muted">Buying power after</dt><dd className="text-right">{formatMoney(p.buying_power.after)}</dd>
           <dt className="text-muted">{p.max_loss_basis === "scenario_grid" ? "Scenario-grid loss" : "Max loss at expiry"}</dt><dd className="text-right">{formatMoney(p.max_loss)}</dd>
           <dt className="text-muted">Room after this {what}</dt><dd className="text-right">{formatMoney(p.breach.room)}</dd>

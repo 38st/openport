@@ -1,3 +1,4 @@
+import { FeeAmount } from "./FeeAmount"
 import { useQuery } from "@tanstack/react-query"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { LiquidityWarning } from "./LiquidityWarning"
@@ -333,7 +334,8 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
             <span className="text-xs text-muted">{formatMoney(limitPriceTick(root, limitPrice))} tick · {root}</span>
           </div>
         </div>}
-        {serverFee == null ? <label className="trade-label col-span-2">Fee / contract ($, estimate)<input className="trade-input" inputMode="decimal" value={fee} placeholder="Not provided by server" onChange={(e) => setFee(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
+        {rules?.fees ? <div className="trade-label col-span-2">Fees<div className="text-foreground">Itemized · see preview below</div></div>
+          : serverFee == null ? <label className="trade-label col-span-2">Fee / contract ($, estimate)<input className="trade-input" inputMode="decimal" value={fee} placeholder="Not provided by server" onChange={(e) => setFee(e.target.value)} pattern="[0-9]+([.][0-9]+)?" /></label>
           : <div className="trade-label col-span-2">Fee / contract<div className="tabular text-foreground">{formatMoney(serverFee)}</div></div>}
         {conditional && <div className="trade-label col-span-2">Condition
           <Segmented label="Condition" value={condition} onChange={setCondition}
@@ -371,7 +373,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
         : fill.message}</p>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
         <dt className="text-muted">Estimated premium · {side === "buy" ? "debit" : "credit"}</dt><dd className="text-right tabular">{formatMoney(estimate.premium)}</dd>
-        <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{formatMoney(estimate.fees)}</dd>
+        <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular"><FeeAmount fee={preview.data?.fee ?? (rules?.fees ? null : estimate.fees)} fees={preview.data?.fees} /></dd>
         {odds && <>
           <dt className="text-muted">Breakeven at expiry</dt><dd className="text-right tabular">{odds.breakeven.toFixed(2)}</dd>
           <dt className="text-muted" title="Risk-neutral mass beyond the breakeven, including the smile’s skew">Probability of profit · risk-neutral</dt>

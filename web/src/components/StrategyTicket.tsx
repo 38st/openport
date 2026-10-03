@@ -1,3 +1,4 @@
+import { FeeAmount } from "./FeeAmount"
 import { useQuery } from "@tanstack/react-query"
 import { useMemo, useRef, useState } from "react"
 import { LiquidityWarning } from "./LiquidityWarning"
@@ -319,7 +320,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
         </p>
         <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border p-3 text-xs">
           <dt className="text-muted">Net premium</dt><dd className="text-right tabular">{net == null || !validUnits ? "—" : `${formatMoney((Math.abs(net) * 100 * q).toFixed(2))} ${net > 0 ? "paid" : "received"}`}</dd>
-          <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{validUnits ? formatMoney((fee * contracts).toFixed(2)) : "—"}</dd>
+          <dt className="text-muted">Estimated fees</dt><dd className="text-right tabular">{validUnits ? <FeeAmount fee={preview.data?.fee ?? (rules?.fees ? null : (fee * contracts).toFixed(2))} fees={preview.data?.fees} /> : "—"}</dd>
           {closing ? <><dt className="text-muted">Closes</dt><dd className="text-right tabular">{validUnits ? `${contracts} contracts, all legs together` : "—"}</dd></>
           : roll ? <><dt className="text-muted">Rolls</dt><dd className="text-right tabular">{validUnits && known.length > 1 ? `${q} unit${q === 1 ? "" : "s"}, ${shortDate(known[0]!.expiry)} to ${shortDate(known[known.length - 1]!.expiry)}` : "—"}</dd></> : <>
           <dt className="text-muted">Max profit</dt><dd className="text-right tabular text-bullish">{profile ? profile.maxProfit == null ? "Unlimited" : `${approx}${formatMoney(profile.maxProfit.toFixed(2))}` : "—"}</dd>

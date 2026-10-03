@@ -1,3 +1,4 @@
+import { FeeAmount } from "../components/FeeAmount"
 import { Fragment, useMemo, useState } from "react"
 import { api, downloadCsv } from "../api/client"
 import { marketNow, useLive } from "../api/live"
@@ -490,7 +491,7 @@ export function TradeDetail({ trade, fills, trading }: { trade: Trade; fills: Fi
         <tbody>{fills.map((f) => <tr key={f.id} className="border-t border-border/40">
           <td className="px-2 py-1 text-left">#{f.id}<div className="text-[10px] text-faint">{f.actor ?? "unknown"}</div></td><td className="px-2 py-1 text-muted">{timestampET(f.time)}</td>
           <td className={`px-2 py-1 ${f.side === "buy" ? "text-bullish" : "text-bearish"}`}>{f.side}</td>
-          <td className="px-2 py-1">{f.quantity}</td><td className="px-2 py-1">{formatMoney(f.price)}</td><td className="px-2 py-1"><FillBook fill={f} /></td><td className="px-2 py-1">{formatMoney(f.fee)}</td>
+          <td className="px-2 py-1">{f.quantity}</td><td className="px-2 py-1">{formatMoney(f.price)}</td><td className="px-2 py-1"><FillBook fill={f} /></td><td className="px-2 py-1">{<FeeAmount fee={f.fee} fees={f.fees} />}</td>
         </tr>)}
         {trade.closure && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left" colSpan={7}>Closed by {trade.closure} at {formatMoney(trade.average_close)}</td></tr>}
         {trade.closed_by === "system" && <tr className="border-t border-border/40"><td className="px-2 py-1 text-left text-warn" colSpan={7}>

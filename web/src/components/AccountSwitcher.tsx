@@ -3,7 +3,8 @@ import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { usePlans } from "../api/trading"
-import type { TradingStatus } from "../api/trading-types"
+import type { FeeModel, TradingStatus } from "../api/trading-types"
+import { FeeModelPicker } from "./FeeModelPicker"
 import { offeredPlans } from "../lib/payouts"
 import { isSandboxToken, useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -53,6 +54,7 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
   const token = useWriteToken()
   const [name, setName] = useState(`Account ${accounts.length + 1}`)
   const [choice, setChoice] = useState("")
+  const [feeModel, setFeeModel] = useState<FeeModel>("flat")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
@@ -65,7 +67,8 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
     setPending(true)
     setError(undefined)
     try {
-      const response = await api.createAccount({ name: trimmed, plan: selected.id }, trading.write)
+      const response = await api.createAccount({ name: trimmed, plan: selected.id,
+        ...(feeModel === "itemized" ? { fee_model: feeModel } : {}) }, trading.write)
       onCreated(response.account.id)
     } catch (failure) {
       setError(failure)
@@ -103,6 +106,7 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
             </label>
           ))}
         </fieldset>
+        <FeeModelPicker value={feeModel} onChange={setFeeModel} disabled={pending} flat={trading.fee_per_contract} />
         {plans.isLoading && <p className="text-sm text-muted">Loading plans…</p>}
         <TradingError error={error} />
         <button type="submit" className="trade-button" disabled={!selected || !trimmed || pending || writeBlocked(trading, token)}>
