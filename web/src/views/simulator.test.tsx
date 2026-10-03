@@ -85,7 +85,7 @@ describe("simulator pages", () => {
   })
   it("renders the dashboard tiles, progress checklist, rules and attempts", () => {
     const html = render(<DashboardView />)
-    for (const text of ["Dashboard", "Intraday 100K · attempt 2", "New attempt", "+$267.50", "+0.27% of starting balance", "$110,000.00",
+    for (const text of ["Dashboard", "Intraday 100K · Evaluation · attempt 2", "New attempt", "+$267.50", "+0.27% of starting balance", "$110,000.00",
       "$9,732.50 to go · 2.7%", "Peak $100,300.00", "$95,300.00", "$4,967.50 buffer", "How am I doing?", "Remaining to target",
       "Drawdown left", "Buy-only, single leg", "Auto-close 5 min before expiry", "Underlyings: SPX", "#1 · Practice", "SPX Oct 16 7000C"])
       expect(html).toContain(text)
@@ -247,17 +247,17 @@ describe("simulator pages", () => {
     expect(disabled).toContain("Buying power is not enforced")
     expect(disabled).toContain("Portfolio margin")
   })
-  it("hides funded plans, their unlock and payouts in the practice simulator", () => {
+  it("offers funded steps and their unlock in the simulator", () => {
     const passed: Account = { ...account, evaluation: { ...account.evaluation, status: "passed", decided_at: "2026-09-23T15:00:00Z",
       decided_equity: "110000.00", decision: "Equity $110000.00 reached the profit target $110000.00" } }
     const dialog = render(<ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} onClose={() => {}} />, passed)
     expect(dialog).toContain("Intraday 100K")
-    expect(dialog).not.toContain("Funded")
+    expect(dialog).toContain("Funded")
     const rules = render(<RulesView />, passed)
     expect(rules).toContain("Evaluation plans")
-    expect(rules).not.toContain("Funded accounts")
+    expect(rules).toContain("Funded accounts")
     const dashboard = render(<DashboardView />, passed)
     expect(dashboard).toContain("Evaluation passed")
-    expect(dashboard).not.toContain("Funded")
+    expect(dashboard).toContain("Start funded account")
   })
 })

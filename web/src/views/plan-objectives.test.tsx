@@ -372,3 +372,28 @@ it("explains the strict volume gate and exposes its editor field", () => {
   expect(editor).toContain("Maximum volume %")
   expect(editor).toContain('value="25"')
 })
+
+it("shows program costs and phase history and opens verification confirmation after a pass", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
+  const challenge: Account = { ...account, rules: { ...account.rules, plan: "Two-step Challenge 100K", plan_id: "two-step-100k" },
+    next_plans: ["two-step-verify-100k"], evaluation: { ...account.evaluation, status: "passed" },
+    costs: { evaluation: "400", reset: "200", activation: "0", total: "600", resets_used: 1, resets_left: 1,
+      payouts_received: "0", net: "-600", fee_charged: "200", fee_kind: "reset" },
+    attempts: [{ ...account.attempts[0]!, rules: { ...account.rules, phase: "verification" }, fee_charged: "200.00", fee_kind: "reset" }] }
+  const verification: Plan = { ...plans[1]!, id: "two-step-verify-100k", name: "Two-step Verification 100K", unlocked_by: "two-step-100k",
+    rules: { ...account.rules, phase: "verification", activation_fee: "0", profit_target: "5000.00" } }
+  const c = client(challenge); c.setQueryData(["plans"], { plans: [...plans, verification] })
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true } })
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false } })
+  vi.spyOn(api, "resetAccount").mockResolvedValue(challenge)
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host)
+  await act(async () => root.render(<QueryClientProvider client={c}><DashboardView /></QueryClientProvider>))
+  expect(host.textContent).toContain("Step 1 of 2: challenge")
+  expect(host.textContent).toContain("Step 2 of 2: verification")
+  expect(host.textContent).toContain("Program costs so far: $600.00")
+  expect(host.textContent).toContain("net after payouts −$600.00")
+  await act(async () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Start verification")!.click())
+  expect(host.querySelector<HTMLDialogElement>("dialog")!.open).toBe(true)
+  expect(host.querySelector<HTMLInputElement>('input[value="two-step-verify-100k"]')!.checked).toBe(true)
+  expect(api.resetAccount).not.toHaveBeenCalled()
+})

@@ -8,7 +8,7 @@ import { evaluationBadge } from "../components/Sidebar"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Check, Empty, PageHeader, Panel, Tile, toneOf, toneText } from "../components/ui"
 import { timestampET } from "../lib/freshness"
-import { cycleDays, lockReason, offeredPlans, payoutAmountError, payoutBestDayShare, payoutCap, payoutChecks, unlockedFundedPlan } from "../lib/payouts"
+import { cycleDays, lockReason, offeredPlans, payoutAmountError, payoutBestDayShare, payoutCap, payoutChecks, unlockedNextPlan } from "../lib/payouts"
 import { useRoute } from "../lib/route"
 import { formatMoney, percentOfMoney, signedMoney, sumMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -183,14 +183,14 @@ function RequestForm({ trading, status }: { trading: TradingStatus; status: Payo
 
 function NotFunded({ trading, account, plans, onStart }: { trading: TradingStatus; account: Account; plans: Plan[]; onStart: (id: string) => void }) {
   const [, navigate] = useRoute()
-  const unlocked = unlockedFundedPlan(plans, account)
+  const unlocked = unlockedNextPlan(plans, account)
   const funded = plans.filter((p) => p.rules.phase === "funded")
   const e = account.evaluation
   return <>
     {unlocked ? (
       <div role="status" className="rounded-lg border border-bullish/50 bg-bullish/5 p-4">
-        <div className="font-medium text-bullish">Funded account unlocked</div>
-        <p className="mt-1 text-sm">You passed {account.rules.plan}. Start <strong>{unlocked.name}</strong> to trade the same size with no profit target and withdraw from its profits.</p>
+        <div className="font-medium text-bullish">{unlocked.rules.phase === "verification" ? "Verification unlocked" : "Funded account unlocked"}</div>
+        <p className="mt-1 text-sm">You passed {account.rules.plan}. Start <strong>{unlocked.name}</strong> to continue your program. {unlocked.summary}</p>
         <button type="button" className="trade-button mt-3" disabled={!trading.enabled} onClick={() => onStart(unlocked.id)}>Start {unlocked.name}</button>
       </div>
     ) : (
@@ -198,7 +198,7 @@ function NotFunded({ trading, account, plans, onStart }: { trading: TradingStatu
         <div className="font-medium">Payouts are available on funded accounts</div>
         <p className="mt-1 text-muted">
           {e.status === "failed" ? `${account.rules.plan ?? "This attempt"} has ended. ` : account.rules.plan ? `You are on ${account.rules.plan}${e.enabled ? ` (${e.status})` : ""}. ` : ""}
-          Pass an evaluation to unlock the funded account of the same size.
+          Pass each required evaluation and verification step to unlock its funded account.
         </p>
         <button type="button" className="trade-button mt-3" onClick={() => navigate({ view: "rules" })}>See plans and rules</button>
       </div>
@@ -206,8 +206,8 @@ function NotFunded({ trading, account, plans, onStart }: { trading: TradingStatu
     <Panel title="How payouts work">
       <ol className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         {[
-          ["Pass an evaluation", "Reach the profit target without touching the trailing drawdown floor."],
-          ["Start the funded account", "Same balance, drawdown and strategy rules, without a target. The floor stops trailing at the starting balance."],
+          ["Pass the required steps", "Reach each target and its day objectives while respecting the loss rules."],
+          ["Start the funded account", "Trade without a profit target, under the funded plan’s floor and payout rules."],
           ["Collect qualifying days", "Days that end with enough net realised profit, after fees, count toward the next payout."],
           ["Request a payout", "With no open positions or orders, withdraw part of the profit. You keep most of each payout."],
         ].map(([title, body], i) => (

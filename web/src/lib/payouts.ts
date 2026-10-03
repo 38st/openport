@@ -1,5 +1,6 @@
 import type { Account, EvaluationDay, Money, PayoutStatus, PayoutRules, Plan } from "../api/trading-types"
 import { showFundedAccounts } from "./features"
+import { sameProgram } from "./program-costs"
 import { compareMoney, formatMoney, sumMoney } from "./trading"
 
 /** Plans the terminal offers: funded plans only when they are shown. */
@@ -20,13 +21,17 @@ export function payoutCap(caps: Money[], number: number): Money | null {
 export function lockReason(plan: Plan, plans: Plan[], account: Account | undefined): string | null {
   if (!plan.unlocked_by) return null
   const name = plans.find((p) => p.id === plan.unlocked_by)?.name ?? plan.unlocked_by
-  const passed = account?.evaluation.status === "passed" && account.rules.plan === name
+  if (account && sameProgram(plan, account)) return null
+  const passed = account?.evaluation.status === "passed" && (account.next_plans
+    ? account.next_plans.includes(plan.id)
+    : account.rules.plan === name)
   return passed ? null : `Pass ${name} to unlock`
 }
 
-/** The funded plan that the current, passed evaluation unlocks. */
-export function unlockedFundedPlan(plans: Plan[], account: Account | undefined): Plan | null {
-  return plans.find((p) => p.unlocked_by != null && lockReason(p, plans, account) == null) ?? null
+/** The next verification or funded step unlocked by the current pass. */
+export function unlockedNextPlan(plans: Plan[], account: Account | undefined): Plan | null {
+  return account?.evaluation.status === "passed"
+    ? plans.find((p) => p.unlocked_by != null && !sameProgram(p, account) && lockReason(p, plans, account) == null) ?? null : null
 }
 
 /** Finished days of the current payout cycle: each day counts toward the cycle in progress when it

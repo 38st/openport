@@ -170,7 +170,7 @@ export function BacktestView() {
     <Panel title="Run a playbook">
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="trade-label">Playbook version<select className="trade-input" value={chosen} onChange={(event) => setPlaybook(event.target.value)}>{versions.map((definition) => <option key={`${definition.id}@${definition.version}`} value={`${definition.id}@${definition.version}`}>{definition.name} · v{definition.version}{definition.archived ? " · archived" : ""}</option>)}</select></label>
-        <label className="trade-label">Evaluation plan<select className="trade-input" value={plan} onChange={(event) => setPlan(event.target.value)}>{plans.data?.plans.filter((item) => item.rules.phase !== "funded" && item.rules.profit_target != null && Number(item.rules.profit_target) > 0).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label className="trade-label">Evaluation plan<select className="trade-input" value={plan} onChange={(event) => setPlan(event.target.value)}>{plans.data?.plans.filter((item) => !item.unlocked_by && item.rules.phase !== "funded" && item.rules.profit_target != null && Number(item.rules.profit_target) > 0).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="trade-label">Days<select className="trade-input" value={kind} onChange={(event) => setKind(event.target.value)}><option value="scenarios">Generated scenarios</option><option value="recordings">Recordings, including imports</option><option value="manifest">Mixed day manifest</option></select></label>
       </div>
       {kind === "scenarios" && <div className="mt-3 grid gap-3 sm:grid-cols-3">

@@ -320,8 +320,8 @@ describe("paper trading fixtures", () => {
     expect(navigableViews(false, true)).toEqual(["chain", "brief"])
     const sidebar = render(<Sidebar view="positions" onView={() => {}} open={false} onClose={() => {}} />)
     expect(sidebar).toContain('title="Positions (3)"')
-    // The simulator funds no one: Payouts appears only for an account that is already funded.
-    expect(sidebar).not.toContain("Payouts")
+    // Funded steps and their simulated payouts are visible as part of program progression.
+    expect(sidebar).toContain("Payouts")
     const funded = render(<Sidebar view="positions" onView={() => {}} open={false} onClose={() => {}} />, (client) =>
       client.setQueryData(tradingQueries(0, "17", true).account.queryKey, { ...account, rules: { ...account.rules, phase: "funded" } }))
     expect(funded).toContain('title="Payouts (9)"')

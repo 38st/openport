@@ -91,7 +91,7 @@ describe("funded accounts and payouts", () => {
     expect(closed).toContain("Funded account closed")
     const pass = render(<DashboardView />, passed)
     expect(pass).toContain("Evaluation passed")
-    expect(pass).toContain("Start Funded Intraday 100K")
+    expect(pass).toContain("Start funded account")
   })
   it("states the funded rules and locks funded plans until their evaluation passes", () => {
     const texts = ruleText(fundedAccount, "0.65", "5000.00")

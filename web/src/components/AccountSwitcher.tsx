@@ -8,7 +8,7 @@ import { usePlans } from "../api/trading"
 import type { FeeModel, FillModel, TradingStatus } from "../api/trading-types"
 import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
-import { offeredPlans } from "../lib/payouts"
+import { lockReason, offeredPlans } from "../lib/payouts"
 import { isSandboxToken, useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
 import { Badge } from "./ui"
@@ -68,8 +68,8 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<unknown>()
   const busy = useRef(false)
-  const list = offeredPlans(plans.data?.plans ?? []).filter((plan) => plan.rules.phase !== "funded")
-  const selected = list.find((plan) => plan.id === choice) ?? null
+  const list = offeredPlans(plans.data?.plans ?? [])
+  const selected = list.find((plan) => plan.id === choice && !plan.unlocked_by) ?? null
   const trimmed = name.trim()
   async function submit() {
     if (!selected || !trimmed || [...trimmed].length > 64 || busy.current || writeBlocked(trading, token)) return
@@ -108,11 +108,11 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
           {list.map((plan) => (
             <label key={plan.id} className={`block cursor-pointer rounded-md border p-3 ${choice === plan.id ? "border-accent bg-accent/5" : "border-border hover:border-muted"}`}>
               <div className="flex items-start gap-2">
-                <input type="radio" name="plan" value={plan.id} checked={choice === plan.id} onChange={() => setChoice(plan.id)}
+                <input type="radio" name="plan" value={plan.id} disabled={!!plan.unlocked_by} checked={choice === plan.id} onChange={() => setChoice(plan.id)}
                   className="mt-1 accent-[var(--accent)]" />
                 <div className="min-w-0">
                   <div className="text-sm font-medium">{plan.name} <span className="text-xs text-muted">· {plan.id}</span></div>
-                  <div className="mt-0.5 text-xs text-muted">{plan.summary}</div>
+                  <div className="mt-0.5 text-xs text-muted">{lockReason(plan, list, undefined) ?? plan.summary}</div>
                   <div className="mt-1 text-[11px] text-faint">{planFacts(plan).join(" · ")}</div>
                 </div>
               </div>

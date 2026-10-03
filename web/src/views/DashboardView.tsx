@@ -9,6 +9,7 @@ import { BreachPanel } from "../components/BreachPanel"
 import { RiskWarnings } from "../components/RiskWarnings"
 import { AutoPlaybookIndicator, PassOddsCard, StagedOrders } from "../components/Playbooks"
 import { DecisionPositionsNotice } from "../components/DecisionPositionsNotice"
+import { phaseFact } from "../lib/plan-rules"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
@@ -17,7 +18,7 @@ import { money, signedPercent } from "../lib/format"
 import { timestampET } from "../lib/freshness"
 import { attributionParts } from "../lib/attribution"
 import { contractLabel, formatDuration } from "../lib/journal"
-import { offeredPlans, unlockedFundedPlan } from "../lib/payouts"
+import { offeredPlans, unlockedNextPlan } from "../lib/payouts"
 import { clockText, dailyLossBasisText, dailyLossShare, dayEnd, decisionLabel, objectiveLabels, objectiveValue, timeRuleNotices } from "../lib/plan-rules"
 import { useRoute } from "../lib/route"
 import { compareMoney, formatMoney, ratio, signedMoney, subtractMoney } from "../lib/trading"
@@ -92,32 +93,35 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
   const locked = e.status === "active" && e.day_lock ? e.day_lock : null
   const exitCost = e.exit_cost != null && compareMoney(e.exit_cost, "0") !== 0 ? e.exit_cost : null
   const payout = data.payout
-  const unlocked = unlockedFundedPlan(offeredPlans(plans.data?.plans ?? []), data)
+  const unlocked = unlockedNextPlan(offeredPlans(plans.data?.plans ?? []), data)
 
   return (
     <div className="min-w-0 space-y-4">
       <PageHeader
         title={<span className="flex flex-wrap items-center gap-2">Dashboard {evaluationBadge(data, r.plan)}</span>}
-        subtitle={<>{r.plan ?? "Paper account"} · attempt {e.attempt} · started {timestampET(e.started)}</>}>
+        subtitle={<>{r.plan ?? "Paper account"} · {phaseFact(r)} · attempt {e.attempt} · started {timestampET(e.started)}</>}>
         <button type="button" className="trade-button" onClick={() => setResetting("")} disabled={!trading.enabled}>
           {e.enabled ? "New attempt" : "Start an evaluation"}
         </button>
       </PageHeader>
+      {data.costs && <p className="text-sm text-muted">Program costs so far: {formatMoney(data.costs.total)} ·
+        evaluation {formatMoney(data.costs.evaluation)}, resets {formatMoney(data.costs.reset)}, activation {formatMoney(data.costs.activation)} ·
+        payouts received {formatMoney(data.costs.payouts_received)} · net after payouts {formatMoney(data.costs.net)}</p>}
       {data.journal_size && <p className="text-xs text-muted">Journal: {data.journal_size.bytes.toLocaleString()} bytes · {data.journal_size.records.toLocaleString()} records{data.journal_size.warning ? ` · ${data.journal_size.warning}` : ""}</p>}
 
       {e.status !== "active" && (
         <div role="status" className={`rounded-lg border p-4 ${e.status === "passed" ? "border-bullish/50 bg-bullish/5" : "border-bearish/50 bg-bearish/5"}`}>
           <div className={`font-medium ${e.status === "passed" ? "text-bullish" : "text-bearish"}`}>
-            {e.status === "passed" ? "Evaluation passed" : funded ? "Funded account closed" : "Evaluation failed"}
+            {e.status === "passed" ? (r.phase === "verification" ? "Verification passed" : "Evaluation passed") : funded ? "Funded account closed" : r.phase === "verification" ? "Verification failed" : "Evaluation failed"}
           </div>
           <p className="mt-1 text-sm">{e.decision}</p>
           <p className="mt-1 text-xs text-muted">Decided {timestampET(e.decided_at)}{decisionLabel(e.decision_code) ? ` by the ${decisionLabel(e.decision_code)}` : ""} at {formatMoney(e.decided_equity)} equity. Closing orders are allowed; opening orders require a new attempt.</p>
           {e.liquidated_equity != null && e.liquidation_cost != null && compareMoney(e.liquidation_cost, "0") !== 0 &&
             <p className="mt-1 text-xs text-muted">Decided at {formatMoney(e.decided_equity)} equity; closing every position at the bid or ask left {formatMoney(e.liquidated_equity)}, {
               (compareMoney(e.liquidation_cost, "0") ?? 0) > 0 ? `${formatMoney(e.liquidation_cost)} less` : `${formatMoney(subtractMoney("0", e.liquidation_cost))} more`}.</p>}
-          {unlocked && <p className="mt-2 text-sm">Your <strong>{unlocked.name}</strong> account is unlocked: the same size and drawdown, no profit target, and payouts from your profits.</p>}
+          {unlocked && <p className="mt-2 text-sm">Your <strong>{unlocked.name}</strong> step is unlocked. {unlocked.summary}</p>}
           <div className="mt-3 flex flex-wrap gap-2">
-            {unlocked && <button type="button" className="trade-button border-bullish/60" onClick={() => setResetting(unlocked.id)} disabled={!trading.enabled}>Start {unlocked.name}</button>}
+            {unlocked && <button type="button" className="trade-button border-bullish/60" onClick={() => setResetting(unlocked.id)} disabled={!trading.enabled}>Start {unlocked.rules.phase === "verification" ? "verification" : "funded account"}</button>}
             <button type="button" className="trade-button" onClick={() => setResetting("")} disabled={!trading.enabled}>Start a new attempt</button>
           </div>
         </div>
@@ -253,7 +257,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             <ul className="space-y-2 text-sm">
               {[...data.attempts].reverse().map((a) => (
                 <li key={a.attempt} className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2 last:border-0">
-                  <span>#{a.attempt} · {a.plan ?? "Paper account"} <span className="text-xs text-muted">{timestampET(a.started)}</span></span>
+                  <span>#{a.attempt} · {a.plan ?? "Paper account"} · {a.rules ? phaseFact(a.rules) : "Phase not recorded"} · fee {formatMoney(a.fee_charged ?? "0")} <span className="text-xs text-muted">{timestampET(a.started)}</span></span>
                   <span className="flex items-center gap-2 tabular">
                     <span className={toneText[toneOf(subtractMoney(a.final_equity, a.starting_balance))]}>{signedMoney(subtractMoney(a.final_equity, a.starting_balance))}</span>
                     <span className="text-xs text-muted">{a.status}{a.decision_code && a.status !== "active" ? ` · ${decisionLabel(a.decision_code)}` : ""}</span>

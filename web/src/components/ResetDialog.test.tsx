@@ -155,3 +155,47 @@ it.each([
   expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false)
   expect(host.textContent).toContain("opening-order count and active cooldown carry over")
 })
+
+it("quotes the same-plan reset fee and disables an exhausted reset", async () => {
+  const charged = { ...plans[1]!, rules: { ...account.rules, reset_fee: "50.00", max_resets: 2 } }
+  client.setQueryData(["plans"], { plans: [charged] })
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey, { ...account, rules: charged.rules, costs: {
+    evaluation: "100", reset: "100", activation: "0", total: "200", resets_used: 2, resets_left: 0,
+    payouts_received: "0", net: "-200", fee_charged: "50", fee_kind: "reset" } })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={3} initial={charged.id} onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(host.textContent).toContain("This start charges $50.00 (reset fee)")
+  expect(host.textContent).toContain("Reset limit reached")
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(api.resetAccount).not.toHaveBeenCalled()
+})
+
+it.each(["reset", "create"])("shows locked verification with its prerequisite (%s)", async (kind) => {
+  const verification = { ...plans[1]!, id: "verify", name: "Verification 100K", unlocked_by: plans[1]!.id,
+    rules: { ...account.rules, phase: "verification" as const } }
+  client.setQueryData(["plans"], { plans: [...plans, verification] })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    {kind === "reset" ? <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} onClose={() => {}} />
+      : <NewAccountDialog trading={{ ...status.trading!, write: "open" }} onClose={() => {}} onCreated={() => {}} />}
+  </QueryClientProvider>))
+  expect(host.textContent).toContain("Step 2 of 2: verification")
+  expect(host.querySelector<HTMLInputElement>('input[value="verify"]')!.disabled).toBe(true)
+  expect(host.textContent).toContain("Pass Intraday 100K to unlock")
+})
+
+it("confirms an unlocked verification through the ordinary reset route", async () => {
+  const verification = { ...plans[1]!, id: "verify", name: "Verification 100K", unlocked_by: plans[1]!.id,
+    rules: { ...account.rules, phase: "verification" as const, activation_fee: "25.00" } }
+  client.setQueryData(["plans"], { plans: [...plans, verification] })
+  client.setQueryData(tradingQueries(0, "17", true).account.queryKey,
+    { ...account, next_plans: ["verify"], evaluation: { ...account.evaluation, status: "passed" } })
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial="verify" onClose={() => {}} />
+  </QueryClientProvider>))
+  expect(host.textContent).toContain("This start charges $25.00 (activation fee)")
+  expect(api.resetAccount).not.toHaveBeenCalled()
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(api.resetAccount).toHaveBeenCalledWith(expect.objectContaining({ plan: "verify" }), "open")
+})

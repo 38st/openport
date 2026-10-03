@@ -13,6 +13,10 @@ export interface PlanForm extends SizeScalingForm {
   news_action: "block" | "flatten"
   hold_restrictions: HoldRestriction[]
   hold_cutoff: string
+  evaluation_fee: string
+  reset_fee: string
+  activation_fee: string
+  max_resets: string
   name: string
   scaling: { profit: string; contracts: string }[]
   phase: AccountRules["phase"]
@@ -77,6 +81,8 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     size_days: String(r.size_scaling?.days ?? 80), size_increase_percent: String(r.size_scaling?.increase_percent ?? 25),
     size_max_balance: r.size_scaling?.max_balance ?? plan.initial_cash,
     scaling: (r.scaling ?? []).map((step) => ({ profit: step.profit, contracts: String(step.contracts) })),
+    evaluation_fee: r.evaluation_fee ?? "0", reset_fee: r.reset_fee ?? "0",
+    activation_fee: r.activation_fee ?? "0", max_resets: String(r.max_resets ?? 0),
     qualifying_profit: p?.qualifying_profit ?? "0", qualifying_days: String(p?.qualifying_days ?? 1),
     withdrawal_percent: String(p?.withdrawal_percent ?? 50), split_percent: String(p?.split_percent ?? 80),
     payout_minimum: p?.minimum ?? "0", payout_caps: p?.caps.join(", ") ?? "",
@@ -124,8 +130,12 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     ["Max drawdown", form.max_drawdown], ["Lock balance", form.lock === "balance" ? form.lock_balance : ""],
     ["Maximum trade risk", form.max_trade_risk], ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.phase === "funded" ? "" : form.profitable_day_profit]] as const)
     if ((required || value.trim() !== "") && !validMoney(value.trim())) return { error: `${label} must be a dollar amount` }
+  for (const [label, value] of [["Evaluation fee", form.evaluation_fee], ["Reset fee", form.reset_fee], ["Activation fee", form.activation_fee]] as const)
+    if (!/^\d+(\.\d{1,6})?$/.test(value.trim()) || !validMoney(value.trim())) return { error: `${label} must be a nonnegative dollar amount` }
+  if (!Number.isInteger(count(form.max_resets)) || count(form.max_resets) < 0 || count(form.max_resets) > 1000000)
+    return { error: "Maximum resets must be a whole number from 0 to 1000000 (0 is unlimited)" }
   if (!(Number(form.initial_cash) > 0)) return { error: "The starting balance must be above zero" }
-  for (const [label, value, most] of [...(form.phase === "evaluation" ? [["Microscalp seconds", form.microscalp_seconds, 3600], ["Microscalp percent", form.microscalp_percent, 100], ["Minimum trades", form.min_trades, 10000], ["Trade consistency", form.trade_consistency_percent, 100], ["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
+  for (const [label, value, most] of [...(form.phase !== "funded" ? [["Microscalp seconds", form.microscalp_seconds, 3600], ["Microscalp percent", form.microscalp_percent, 100], ["Minimum trades", form.min_trades, 10000], ["Trade consistency", form.trade_consistency_percent, 100], ["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
     ["Minimum profitable days", form.min_profitable_days, 366], ["Evaluation time limit", form.time_limit_days, 366]] : []),
     ["Inactivity limit", form.inactivity_days, 366]] as [string, string, number][]) {
     const n = count(value)
@@ -203,6 +213,8 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     scaling: form.scaling.map((step) => ({ profit: step.profit.trim(), contracts: count(step.contracts) })),
     events: form.events, news_before_minutes: count(form.news_before_minutes), news_after_minutes: count(form.news_after_minutes),
     news_action: form.news_action, hold_restrictions: form.hold_restrictions, hold_cutoff: form.hold_cutoff,
+    evaluation_fee: form.evaluation_fee.trim(), reset_fee: form.reset_fee.trim(),
+    activation_fee: form.activation_fee.trim(), max_resets: count(form.max_resets),
     profit_target: form.phase === "funded" ? null : amount(form.profit_target), profit_basis: form.profit_basis,
     max_drawdown: drawdown, drawdown_mode: form.drawdown_mode,
     lock_at_start: trailing && form.lock === "start", lock_balance: trailing && form.lock === "balance" ? amount(form.lock_balance) : null,
@@ -269,10 +281,14 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
   return (
     <fieldset className="grid gap-3 rounded-md border border-border p-3 sm:grid-cols-2" disabled={disabled} aria-label="Custom plan rules">
       <Field label="Plan name" hint="Not a preset's name">{text("name")}</Field>
+      <Field label="Evaluation fee" hint="New purchase; bookkeeping only">{text("evaluation_fee")}</Field>
+      <Field label="Reset fee" hint="Restart of the same plan">{text("reset_fee")}</Field>
+      <Field label="Activation fee" hint="Entering a preset unlocked by a pass">{text("activation_fee")}</Field>
+      <Field label="Maximum resets" hint="0 is unlimited; changing costs keeps the count">{text("max_resets")}</Field>
       <Field label="Starting balance">{text("initial_cash")}</Field>
-      <Field label="Phase">{choice("phase", [["evaluation", "Evaluation"], ["funded", "Funded (simulated payouts)"]])}</Field>
-      {form.phase === "evaluation" && <Field label="Profit target" hint="Blank for none">{text("profit_target", "none")}</Field>}
-      {form.phase === "evaluation" && <Field label="Profit counts on">{choice("profit_basis", [["equity", "Marked equity"], ["balance", "Closed balance (positions closed)"]])}</Field>}
+      <Field label="Phase">{choice("phase", [["evaluation", "Evaluation"], ["verification", "Step 2 of 2: verification"], ["funded", "Funded (simulated payouts)"]])}</Field>
+      {form.phase !== "funded" && <Field label="Profit target" hint="Blank for none">{text("profit_target", "none")}</Field>}
+      {form.phase !== "funded" && <Field label="Profit counts on">{choice("profit_basis", [["equity", "Marked equity"], ["balance", "Closed balance (positions closed)"]])}</Field>}
       <Field label="Max drawdown" hint="Blank for no floor">{text("max_drawdown", "none")}</Field>
       <Field label="Floor">{choice("drawdown_mode", [["intraday", "Trails every new high"], ["end_of_day", "Trails each close"], ["static", "Static: never moves"]])}</Field>
       {trailing && <Field label="Floor locks">{choice("lock", [["none", "Never"], ["start", "At the starting balance"], ["balance", "At a balance"]])}</Field>}
@@ -282,7 +298,7 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
       <Field label="Reaching it">{choice("daily_loss_action", [["lock", "Closes positions and locks the day"], ["fail", "Fails the attempt"]])}</Field>
       <Field label="Minimum hold (seconds)" hint="User reductions only; protective exits and flatten still work">{text("min_hold_seconds", "0")}</Field>
       <Field label="Trading day ends (ET)" hint="HH:MM, 16:15 to 24:00">{text("day_end")}</Field>
-      {form.phase === "evaluation" && <>
+      {form.phase !== "funded" && <>
         <Field label="Consistency: best day at most %" hint="Blank for none">{text("consistency_percent", "none")}</Field>
         <Field label="Of">{choice("consistency_basis", [["total", "The total profit"], ["positive_days", "The profitable days' total"]])}</Field>
         <Field label="Microscalp threshold (seconds)" hint="Final close under this age; set with percent">{text("microscalp_seconds", "off")}</Field>

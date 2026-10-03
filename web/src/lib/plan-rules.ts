@@ -2,6 +2,12 @@ import type { Account, AccountRules, DailyLossBasis, Evaluation, Money, Objectiv
 import { compareMoney, validMoney, formatMoney, subtractMoney } from "./trading"
 import { newYorkDate } from "./journal"
 
+export function phaseFact(rules: AccountRules): string {
+  if (rules.phase === "verification") return "Step 2 of 2: verification"
+  if (rules.phase === "funded") return "Funded account (simulated)"
+  return rules.plan_id?.startsWith("two-step-") || rules.plan?.startsWith("Two-step Challenge") ? "Step 1 of 2: challenge" : "Evaluation"
+}
+
 /** "18:00" as "6:00 pm"; "24:00" as "midnight". */
 export function clockText(clock: string): string {
   const [hours = 0, minutes = 0] = clock.split(":").map(Number)

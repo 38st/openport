@@ -1,3 +1,4 @@
+import { phaseFact } from "../lib/plan-rules"
 import { feeScheduleText } from "../lib/fees"
 import { useState, type ReactNode } from "react"
 import { useLive } from "../api/live"
@@ -154,6 +155,10 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
       Unfilled day orders rest until the session ends. {r.fees ? feeScheduleText(r.fees) : <>Each contract costs {fee ? formatMoney(fee) : "the configured fee"}.</>}</> },
     { title: "Daily loss limit", body: dailyLoss ? <>Losing more than {formatMoney(dailyLoss)} from the day's starting equity trips the kill switch into reduce-only mode. Opening orders are cancelled; closing orders and exits still work.</> : "Set in Positions → Edit limits." },
     { title: "Exercise and assignment", body: "Equity and ETF options a cent or more in the money at expiry are exercised or assigned into 100 shares a contract, and long ones can be exercised early. A short option that trades below its exercise value at the close, such as a deep put, or a call whose time value is less than a dividend going ex the next day, can be assigned overnight, in part and at random, as real assignments are. Shares are marked at the underlying's price and can be sold or bought back in the regular session. Dividends are paid when the server knows them, from a dividend file or from Massive: on each ex-date, shares held into it receive the dividend and short shares pay it." },
+    { title: "Program step", body: phaseFact(r) },
+    { title: "Program costs", body: <>New purchase {formatMoney(r.evaluation_fee ?? "0")}; same-plan reset {formatMoney(r.reset_fee ?? "0")};
+      unlocked-step activation {formatMoney(r.activation_fee ?? "0")}. {r.max_resets ? `${r.max_resets} resets per plan` : "Unlimited resets"}.
+      Fees are bookkeeping only and never affect paper cash or rule outcomes.</> },
   ]
 }
 
@@ -184,6 +189,7 @@ function Rules({ trading }: { trading: TradingStatus }) {
         {/* Funded plans appear only when the terminal offers them (lib/features). */}
         <Panel title="Evaluation plans">
           <PlanTable label="Evaluation plans" plans={plans.data.plans.filter((p) => p.rules.phase !== "funded")} columns={[
+            ["Step", (p) => phaseFact(p.rules)],
             ["Profit target", (p) => p.rules.profit_target ? formatMoney(p.rules.profit_target, 0) : "—", true],
             ["Drawdown", (p) => p.rules.max_drawdown ? formatMoney(p.rules.max_drawdown, 0) : "—", true],
             ["Floor moves", (p) => floorMoves(p.rules)],
@@ -194,12 +200,12 @@ function Rules({ trading }: { trading: TradingStatus }) {
             ["Margin", (p) => p.rules.margin === "portfolio" ? "Portfolio" : "Strategy"],
             ["Slippage", (p) => `${p.rules.slippage_ticks ?? 0} ticks`],
             ["Expiry auto-close", (p) => p.rules.expiry_cutoff_seconds ? `${Math.round(p.rules.expiry_cutoff_seconds / 60)} min before` : "—"],
-          ]} lock={() => null} enabled={trading.enabled} onStart={setStart} />
+          ]} lock={(p) => lockReason(p, plans.data.plans, data)} enabled={trading.enabled} onStart={setStart} />
         </Panel>
         {offeredPlans(plans.data.plans).some((p) => p.rules.phase === "funded") && <Panel title="Funded accounts">
           <PlanTable label="Funded accounts" plans={offeredPlans(plans.data.plans).filter((p) => p.rules.phase === "funded")} columns={[
             ["Trailing drawdown", (p) => p.rules.max_drawdown
-              ? `${formatMoney(p.rules.max_drawdown, 0)} ${p.rules.drawdown_mode === "intraday" ? "intraday" : "at close"}` : "—"],
+              ? `${formatMoney(p.rules.max_drawdown, 0)} ${p.rules.drawdown_mode === "static" ? "static" : p.rules.drawdown_mode === "intraday" ? "intraday" : "at close"}` : "—"],
             ["Floor locks at", (p) => p.rules.lock_balance ? formatMoney(p.rules.lock_balance, 0) : "—", true],
             ["Strategies", (p) => p.rules.buy_only ? "Buy only" : p.rules.defined_risk ? "Defined risk" : "Any"],
             ["Margin", (p) => p.rules.margin === "portfolio" ? "Portfolio" : "Strategy"],

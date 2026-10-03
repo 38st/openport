@@ -190,7 +190,7 @@ export function ReplayView({ onNavigate }: { onNavigate?: (view: View) => void }
       <div className="flex flex-wrap items-end gap-3 text-xs">
         <label>Plan<select aria-label="Replay plan" className="trade-input" value={plan} onChange={(event) => setPlan(event.target.value)}>
           <option value="practice">Practice · practice</option>
-          {(plans.data?.plans ?? []).filter((p) => p.id !== "practice" && p.rules.phase !== "funded").map((p) => <option key={p.id} value={p.id}>{p.name} · {p.id}</option>)}
+          {(plans.data?.plans ?? []).filter((p) => p.id !== "practice" && !p.unlocked_by && p.rules.phase !== "funded").map((p) => <option key={p.id} value={p.id}>{p.name} · {p.id}</option>)}
         </select></label>
         <label>Start at (New York)<input aria-label="Start at" type="time" step="1" className="trade-input" value={startAt} onChange={(event) => setStartAt(event.target.value)} /></label>
         <label>Scenario seed<select aria-label="Seed mode" className="trade-input" value={seedMode} onChange={(event) => setSeedMode(event.target.value)}>

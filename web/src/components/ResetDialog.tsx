@@ -5,7 +5,8 @@ import type { FeeModel, FillModel, Plan, TradingStatus } from "../api/trading-ty
 import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
 import { lockReason, offeredPlans, payoutRuleFacts } from "../lib/payouts"
-import { sizeScalingFact, scalingFact, dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact, timeRuleFacts, tradeRuleFacts } from "../lib/plan-rules"
+import { resetQuote } from "../lib/program-costs"
+import { phaseFact, sizeScalingFact, scalingFact, dailyLossFact, dayEndFact, drawdownFact, objectiveFacts, targetFact, timeRuleFacts, tradeRuleFacts } from "../lib/plan-rules"
 import { compareMoney, formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
 import { Dialog } from "./Dialog"
@@ -19,7 +20,12 @@ export function planFacts(plan: Pick<Plan, "initial_cash" | "rules">): string[] 
   const p = r.payouts
   const dailyLoss = dailyLossFact(r), dayEnd = dayEndFact(r)
   return [
+    phaseFact(r),
     `${formatMoney(plan.initial_cash, 0)} starting balance`,
+    ...(([r.evaluation_fee, r.reset_fee, r.activation_fee].some((fee) => compareMoney(fee, "0") === 1) || r.max_resets) ? [
+      `Purchase ${formatMoney(r.evaluation_fee ?? "0")}, reset ${formatMoney(r.reset_fee ?? "0")}, activation ${formatMoney(r.activation_fee ?? "0")}`,
+      r.max_resets ? `${r.max_resets} resets per plan` : "Unlimited resets",
+    ] : []),
     targetFact(r),
     drawdownFact(r, plan.initial_cash),
     ...(dailyLoss ? [dailyLoss] : []),
@@ -68,7 +74,9 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
   const [form, setForm] = useState<PlanForm | null>(null)
   const base = bases.find((p) => p.id === baseId) ?? bases.find((p) => p.rules.profit_target) ?? bases[0] ?? null
   const custom = choice === CUSTOM && base && form ? customPlan(form, base.rules) : null
-  const ready = !!risk.data && (custom ? !("error" in custom) : selected != null)
+  const terms = custom && !("error" in custom) ? custom : selected
+  const quote = account && terms ? resetQuote(terms, account, selected?.id) : null
+  const ready = !!risk.data && !!account && (custom ? !("error" in custom) : selected != null) && !quote?.blocked
   const balance = custom && !("error" in custom) ? custom.initial_cash : selected?.initial_cash
   const softFloor = (risk.data?.pending_guardrails ?? risk.data?.guardrails)?.soft_floor
   const floorWarning = compareMoney(softFloor, "0") === 1 && balance != null &&
@@ -110,7 +118,8 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
     }
   }
   const groups = [
-    { title: "Evaluations", plans: list.filter((p) => p.rules.phase !== "funded") },
+    { title: "Evaluations", plans: list.filter((p) => p.rules.phase === "evaluation") },
+    { title: "Verification", plans: list.filter((p) => p.rules.phase === "verification") },
     { title: "Funded accounts", plans: list.filter((p) => p.rules.phase === "funded") },
   ].filter((g) => g.plans.length)
   return (
@@ -174,6 +183,11 @@ export function ResetDialog({ trading, attempt, initial, onClose }: { trading: T
               ? <p role="status" className="text-xs text-warn">{custom.error}</p>
               : custom && <p className="text-[11px] text-faint">{planFacts(custom).join(" · ")}</p>}
           </>}
+        </div>}
+        {quote && <div role="status" className="rounded-md border border-border p-3 text-sm">
+          <p>This start charges {formatMoney(quote.fee)} ({quote.kind} fee). Paper cash and rule outcomes are unaffected.</p>
+          <p>{quote.left == null ? "Unlimited resets" : `${quote.left} resets left after this start`}</p>
+          {quote.blocked && <p className="text-warn">Reset limit reached. Choose a different plan to start a new purchase.</p>}
         </div>}
         <FillModelPicker value={fillModel} onChange={setFillModel} disabled={pending} />
         <FeeModelPicker value={feeModel} onChange={setFeeModel} disabled={pending} flat={trading.fee_per_contract} />

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { Account, PayoutStatus } from "../api/trading-types"
 import { account, fundedAccount, plans } from "../test/trading-fixtures"
-import { cycleDays, lockReason, payoutAmountError, payoutCap, payoutChecks, unlockedFundedPlan } from "./payouts"
+import { cycleDays, lockReason, payoutAmountError, payoutCap, payoutChecks, unlockedNextPlan } from "./payouts"
 import { compareMoney, percentOfMoney, sumMoney } from "./trading"
 
 const passed: Account = { ...account, evaluation: { ...account.evaluation, status: "passed" } }
@@ -32,8 +32,8 @@ describe("payouts", () => {
     expect(lockReason(funded, plans, undefined)).toBe("Pass Intraday 100K to unlock")
     expect(lockReason(funded, plans, passed)).toBeNull()
     expect(lockReason(funded, plans, { ...passed, rules: { ...passed.rules, plan: "Intraday 25K" } })).not.toBeNull()
-    expect(unlockedFundedPlan(plans, passed)?.id).toBe("funded-intraday-100k")
-    expect(unlockedFundedPlan(plans, account)).toBeNull()
+    expect(unlockedNextPlan(plans, passed)?.id).toBe("funded-intraday-100k")
+    expect(unlockedNextPlan(plans, account)).toBeNull()
   })
   it("counts a payout cycle from the trading day of the request", () => {
     expect(cycleDays(fundedAccount).map((d) => d.day)).toEqual(["2026-09-22", "2026-09-23", "2026-09-24"])
