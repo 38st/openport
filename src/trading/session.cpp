@@ -2954,6 +2954,13 @@ void refresh_trade_objectives(State& s) {
   if (rules.phase != Phase::Evaluation || (rules.trade_consistency_percent == 0 && rules.min_trades == 0 && rules.microscalp_percent == 0)) return;
   auto& e = s.evaluation;
   struct Whole { Money pnl; bool closed = true; std::uint64_t first = 0; };
+  const State::TradeObjectives inputs{s.fills.size(), s.closures.size(), s.stock_fills.size(), s.dividends.size(),
+                                      e.attempt, e.first_fill, e.first_stock_fill, s.groups};
+  if (const auto& cached = s.trade_objectives; cached && cached->fills == inputs.fills &&
+      cached->closures == inputs.closures && cached->stock_fills == inputs.stock_fills &&
+      cached->dividends == inputs.dividends && cached->attempt == inputs.attempt &&
+      cached->first_fill == inputs.first_fill && cached->first_stock_fill == inputs.first_stock_fill &&
+      cached->groups.same(inputs.groups)) return;
   std::map<std::string, Whole> trades;
   e.short_profit = {};
   for (const auto& life : lifecycles(s.fills, s.closures, s.contracts)) {
@@ -2983,6 +2990,7 @@ void refresh_trade_objectives(State& s) {
       best_first = trade.first;
     }
   }
+  s.trade_objectives = inputs;
 }
 void observe_equity(State& s, Events& events) {
   refresh_trade_objectives(s);

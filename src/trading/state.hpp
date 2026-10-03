@@ -647,6 +647,14 @@ struct Reviewing {
   std::size_t unfinished = 0;
 };
 struct State {
+  /// Derived, never journaled. Histories append; the shared group map also
+  /// detects regrouping that changes values without changing its size.
+  struct TradeObjectives {
+    std::size_t fills, closures, stock_fills, dividends;
+    std::uint64_t attempt, first_fill, first_stock_fill;
+    SharedMap<std::string, std::string> groups;
+  };
+  std::optional<TradeObjectives> trade_objectives;
   std::string actor = "system"; ///< Transient command context, not persisted as account state.
   std::set<std::string> walked; ///< Transient symbols to match after this transaction's market is in place.
   SessionConfig config;
@@ -761,6 +769,7 @@ inline void to_json(Json& j, const State& s) {
   if (s.alerts.created > 0) j["alerts"] = s.alerts;
 }
 inline void from_json(const Json& j, State& s) {
+  s.trade_objectives.reset();
   j.at("config").get_to(s.config); j.at("time").get_to(s.time); j.at("version").get_to(s.version);
   j.at("limits_revision").get_to(s.limits_revision); j.at("ledger").get_to(s.ledger);
   j.at("start_equity").get_to(s.start_equity); j.at("day").get_to(s.day); j.at("contracts").get_to(s.contracts);

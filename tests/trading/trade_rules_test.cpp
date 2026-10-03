@@ -110,6 +110,46 @@ TEST(TradeRules, MinimumTradesCountsLossesAndFlattenOnce) {
   EXPECT_THROW(validate_rules(rules), TradingError);
 }
 
+TEST(TradeRules, CachedObjectivesMatchColdRecoveryAfterTradesAndMarketTicks) {
+  ScriptedMarket f;
+  AccountRules rules;
+  rules.trade_consistency_percent = 50;
+  rules.min_trades = 10;
+  rules.microscalp_seconds = 60;
+  rules.microscalp_percent = 50;
+  rules.profit_target = m("10000");
+  JournalFile file;
+  TradingSession cached(config(rules), f.time, FileJournal::create(file.path));
+  // Recovery deliberately drops all derived caches. Applying the same command
+  // to it is an uncached oracle, including every intermediate observation.
+  const auto check = [&](auto action) {
+    auto cold = TradingSession::recover(FileJournal::read(file.path));
+    action(cold);
+    action(cached);
+    EXPECT_EQ(cached.snapshot_json(), cold.snapshot_json());
+  };
+  check([&](auto& s) { f.seed(s); });
+  check([&](auto& s) { s.submit(f.market("open", 2), f.time); });
+  for (int tick = 0; tick < 3; ++tick) {
+    f.next();
+    check([&](auto& s) { f.seed(s, "5.00", "5.20"); });
+  }
+  check([&](auto& s) { s.submit(f.market("partial", 1, Side::Sell), f.time); });
+  check([&](auto& s) { s.close_positions({}, f.time); });
+  EXPECT_EQ(cached.snapshot()->evaluation.closed_trades, 1);
+  EXPECT_GT(cached.snapshot()->evaluation.short_profit, Money{});
+  check([&](auto& s) { s.trade_stock("SPY", 2, f.time, StockPrice{"SPY", f.time, m("500")}); });
+  f.next();
+  check([&](auto& s) { s.on_quotes({}, {}, f.time, {{"SPY", f.time, m("501")}}); });
+  check([&](auto& s) { s.trade_stock("SPY", -2, f.time); });
+  check([&](auto& s) { s.reset_account(m("10000"), rules, "next attempt", f.time); });
+  EXPECT_EQ(cached.snapshot()->evaluation.closed_trades, 0);
+  EXPECT_EQ(cached.snapshot()->evaluation.short_profit, Money{});
+  for (const auto& record : FileJournal::read(file.path).records) {
+    EXPECT_EQ(record.payload.find("trade_objectives"), std::string::npos);
+  }
+}
+
 TEST(TradeRules, MinimumHoldUsesFirstFillExactMarketAgeAndRecovers) {
   ScriptedMarket f;
   AccountRules rules; rules.min_hold_seconds = 60;
