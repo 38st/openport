@@ -20,9 +20,14 @@
 namespace {
 using namespace openport;
 
+void remove_recording(const std::filesystem::path& path) {
+  std::filesystem::remove(path);
+  std::filesystem::remove(path.string() + ".end");
+  std::filesystem::remove(path.string() + ".end.tmp");
+}
 std::filesystem::path temporary(const std::string& name) {
   const auto path = std::filesystem::temp_directory_path() / ("openport-demo-" + std::to_string(::getpid()) + "-" + name);
-  std::filesystem::remove(path);
+  remove_recording(path);
   return path;
 }
 bool on_tick(const std::string& root, double price) {
@@ -132,7 +137,7 @@ TEST(DemoMarket, SimulatesADayOfSpxSpyAndQqqChainsOnTheirOwnTicks) {
   // A morning slide and an afternoon rally.
   EXPECT_LT(low, 6000 * 0.995);
   EXPECT_GT(spx_close, low * 1.005);
-  std::filesystem::remove(path);
+  remove_recording(path);
 }
 
 TEST(DemoMarket, IsTheSameDayEveryTimeAndOnlyOnTradingDays) {
@@ -148,8 +153,8 @@ TEST(DemoMarket, IsTheSameDayEveryTimeAndOnlyOnTradingDays) {
   EXPECT_EQ(first.volume_checksum, second.volume_checksum);
   // It never overwrites a file.
   EXPECT_ANY_THROW(providers::write_demo_recording(a));
-  std::filesystem::remove(a);
-  std::filesystem::remove(b);
+  remove_recording(a);
+  remove_recording(b);
   EXPECT_THROW(providers::write_demo_recording(temporary("weekend"), {providers::DemoDay::Reversal, md::Date{2026, 9, 19}, 1}),
                std::invalid_argument);
   EXPECT_THROW(providers::write_demo_recording(temporary("holiday"), {providers::DemoDay::Trend, md::Date{2026, 11, 26}, 1}),
@@ -183,7 +188,7 @@ Path walk(providers::DemoDay day) {
       ++p.quotes;
     }
   }
-  std::filesystem::remove(path);
+  remove_recording(path);
   return p;
 }
 
@@ -280,7 +285,7 @@ TEST(DemoMarket, LegacyRecordingsAreUnchanged) {
     const auto path = temporary("legacy");
     providers::write_scenario_recording(path, *day, day->date, day->seed, 1);
     EXPECT_EQ(recording_hash(path), hash) << id;
-    std::filesystem::remove(path);
+    remove_recording(path);
   }
 }
 
@@ -292,7 +297,7 @@ TEST(DemoMarket, RevisionTwoRecordingIsUnchanged) {
   const auto path = temporary("revision-two");
   providers::write_scenario_recording(path, *day, day->date, day->seed, 2);
   EXPECT_EQ(recording_hash(path, true), 2843919881680902969ULL);
-  std::filesystem::remove(path);
+  remove_recording(path);
 }
 
 TEST(DemoMarket, RevisionThreeRecordingIsUnchanged) {
@@ -303,7 +308,7 @@ TEST(DemoMarket, RevisionThreeRecordingIsUnchanged) {
   const auto path = temporary("revision-three");
   providers::write_scenario_recording(path, *day, day->date, day->seed, 3);
   EXPECT_EQ(recording_hash(path, true), 10686521240818003107ULL);
-  std::filesystem::remove(path);
+  remove_recording(path);
 }
 
 TEST(DemoMarket, QuarterlyDividendsUseBusinessDatesCentsAndSessionOverrides) {
@@ -401,7 +406,7 @@ TEST(DemoMarket, AmericanEtfQuotesIncludeCashDividendsAndExerciseValue) {
     double dividend = 0;
     for (const auto& d : calendar) if (d.symbol == "SPY" && d.ex_date == date) dividend = d.per_share.dollars();
     EXPECT_NEAR(spots["SPY"], 6000 / 10.02 - dividend, 0.005);
-    std::filesystem::remove(path);
+    remove_recording(path);
   }
 }
 
@@ -467,7 +472,7 @@ TEST(DemoMarket, RevisionTwoKeepsEveryQuoteOfTheFirstAndAddsTheRest) {
       if (const auto* q = std::get_if<md::OptionQuote>(&event->event))
         out.quotes[out.symbols.at(q->id)].push_back({static_cast<double>(q->ts), q->bid, q->ask, q->bid_size, q->ask_size});
     }
-    std::filesystem::remove(path);
+    remove_recording(path);
     return out;
   };
   const auto first = read(1);
@@ -576,7 +581,7 @@ TEST(DemoMarket, NewIndicesQuoteOnTheirTicksWithRelatedLevelsAndVixForwards) {
     EXPECT_GT(forward, prior);
     prior = forward;
   }
-  std::filesystem::remove(path);
+  remove_recording(path);
 }
 
 TEST(DemoMarket, AmMonthliesAndSameDatePmSeriesHaveSeparateLastTradingDays) {
@@ -660,7 +665,7 @@ TEST(DemoMarket, AmQuotesEndAtTheirLastRegularCloseBeforeCurbAndOvernight) {
         EXPECT_TRUE(settlement_day.contains(pm)) << pm;
       }
     }
-    std::filesystem::remove(path);
+    remove_recording(path);
   }
 }
 
@@ -693,7 +698,7 @@ TEST(DemoMarket, SimulatedVolumeRisesAndFavoursNearMoneyAndFrontExpiry) {
   EXPECT_GT(near, back);
   EXPECT_GT(back, 0);
   EXPECT_EQ(latest.size(), definitions.size());
-  std::filesystem::remove(path);
+  remove_recording(path);
 }
 
 }  // namespace

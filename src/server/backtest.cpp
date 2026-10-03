@@ -106,6 +106,8 @@ struct TemporaryRecording {
     if (file.empty()) return;
     std::error_code ignored;
     std::filesystem::remove(file, ignored);
+    std::filesystem::remove(file.string() + ".end", ignored);
+    std::filesystem::remove(file.string() + ".end.tmp", ignored);
   }
 };
 struct Prepared {

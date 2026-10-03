@@ -240,6 +240,7 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
       const auto path = previous.get();
       closes = closes_of(path, before, subscription.underlyings);
       std::filesystem::remove(path);
+      std::filesystem::remove(path.string() + ".end");
     } catch (const std::exception&) {
       // Without them the first day has no breaker reference, as before a close is seen.
       closes.clear();
@@ -330,6 +331,7 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
       }
       replay->stop();
       std::filesystem::remove(path);
+      std::filesystem::remove(path.string() + ".end");
       if (status.failed) break;
       // A day played to its end before the time a restart resumed after leaves nothing.
       resuming = false;
