@@ -29,7 +29,7 @@ std::string_view to_string(Reason reason) noexcept {
     CASE(PROFIT_TARGET); CASE(DRAWDOWN_FLOOR); CASE(DAILY_LOSS_LIMIT); CASE(MIN_TRADING_DAYS);
     CASE(MIN_PROFITABLE_DAYS); CASE(CONSISTENCY); CASE(ACCOUNT_TYPE); CASE(INVALID_ALERT); CASE(UNKNOWN_ALERT);
     CASE(MAX_CONTRACTS_HELD); CASE(STOP_REQUIRED); CASE(MAX_TRADE_RISK);
-    CASE(TIME_LIMIT); CASE(INACTIVITY); CASE(INSTRUMENT_NOT_ALLOWED); CASE(OUTSIDE_PLAN_HOURS);
+    CASE(TIME_LIMIT); CASE(INACTIVITY); CASE(INSTRUMENT_NOT_ALLOWED); CASE(OUTSIDE_PLAN_HOURS); CASE(FLAT_TIME); CASE(OVERNIGHT_HOLD);
   }
 #undef CASE
   return "UNKNOWN";
@@ -191,6 +191,8 @@ void validate_limits(const Limits& l) {
   if (!valid) throw TradingError(Reason::INVALID_LIMITS, "Limits must be finite and nonnegative; order size must be positive");
 }
 void validate_time_rules(const AccountRules& r) {
+  if (r.flat_time && (*r.flat_time < 0 || *r.flat_time >= 1440 || *r.flat_time >= r.day_end_minutes))
+    throw TradingError(Reason::INVALID_RULES, "flat_time must be HH:MM New York time from 00:00 to 23:59, before day_end");
   if (r.time_limit_days < 0 || r.time_limit_days > 366 || r.inactivity_days < 0 || r.inactivity_days > 366 ||
       (r.phase == Phase::Funded && r.time_limit_days != 0))
     throw TradingError(Reason::INVALID_RULES, "time_limit_days and inactivity_days must be 0-366 calendar days; funded plans require time_limit_days = 0");

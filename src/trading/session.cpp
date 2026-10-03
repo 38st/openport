@@ -1318,17 +1318,56 @@ void walk_limits(State& s, Events& events) {
 }
 void decide(State& s, const PlanVerdict& verdict, Money equity, Events& events);
 Decision entry_check(const State& s, const Order& o) {
-  if (s.config.rules.underlyings.empty() && !s.config.rules.trading_start) return {};
+  if (s.config.rules.underlyings.empty() && !s.config.rules.trading_start && !s.config.rules.flat_time) return {};
   if (o.system || kept_within(o) || closing_only(s, o)) return {};
   for (const auto& symbol : order_symbols(o.request))
     if (const auto c = s.contracts.find(symbol); c != s.contracts.end())
       if (const auto d = plan_entry_check(s.config.rules, c->second.underlying, s.time); !d.ok()) return d;
   return {};
 }
+/// Settlement-pending options are no longer tradable; shares always count.
+bool overnight_positions(const State& s) {
+  if (!s.ledger.stocks().empty()) return true;
+  for (const auto& [symbol, position] : s.ledger.positions())
+    if (position.quantity != 0 && s.time < s.contracts.at(symbol).expiry_time()) return true;
+  return false;
+}
+/// The date latch is separate from the close work, which may need later quotes.
+void start_flat_time(State& s, Events& events) {
+  auto& e = s.evaluation;
+  const auto& rules = s.config.rules;
+  if (e.status != EvaluationStatus::Active || !plan_flat_now(rules, s.time)) return;
+  const auto day = plan_trading_date(rules, s.time);
+  if (e.flat_time_day != day) {
+    e.flat_time_day = day;
+    e.flat_pending = overnight_positions(s);
+    event(events, "flat_time", Json{{"day", day}, {"minute", *rules.flat_time}});
+  }
+  // Reductions keep working, but cannot become openings after mandatory closes.
+  // Run on later transactions too, for newly submitted reducing orders.
+  for (const auto id : open_ids(s)) {
+    const auto& o = s.orders[id - 1];
+    if (o.system || kept_within(o)) continue;
+    if (closing_only(s, o, false)) {
+      s.orders.mut(id - 1).reduce_only = true;
+      event(events, "order_reduce_only", s.orders[id - 1]);
+    } else {
+      cancel_order(s, id, plan_entry_check(rules, {}, s.time), events);
+    }
+  }
+}
+void flatten_positions(State& s, std::string_view label, Events& events);
 void advance(State& s, Timestamp time, Events& events) {
   if (time < 0 || time < s.time) throw TradingError(Reason::INVALID_TIME, "Market time must be nonnegative and monotone");
   const auto previous_time = s.time;
   s.time = time;
+  auto& e = s.evaluation;
+  const auto& rules = s.config.rules;
+  if (rules.no_overnight && previous_time > 0 && e.status == EvaluationStatus::Active &&
+      plan_trading_date(rules, time) > plan_trading_date(rules, previous_time) && overnight_positions(s))
+    decide(s, {EvaluationStatus::Failed, false, Reason::OVERNIGHT_HOLD, {},
+        "Positions held at the plan day rollover; this plan does not allow overnight holds"}, measure(s).equity, events);
+  start_flat_time(s, events);
   if (const auto verdict = evaluate_time_rules(s.evaluation, s.config.rules, time); verdict.decided())
     decide(s, verdict, measure(s).equity, events);
   refresh_guardrail_latch(s, events);
@@ -1898,7 +1937,8 @@ Decision system_check(const State& s, const Order& o, bool now) {
     for (const auto& leg : o.request.legs) {
       const auto& c = s.contracts.at(leg.symbol);
       if (s.time >= c.last_trade_time()) return failure(Reason::EXPIRED, "An exit leg reached its last trade");
-      if (now && !trades_now(o, c, s.time)) return failure(Reason::SESSION_CLOSED, "Combo exits wait for the regular session");
+      if (now && (o.system ? !regular(c, s.time) : !trades_now(o, c, s.time)))
+        return failure(Reason::SESSION_CLOSED, "Combo exits wait for the regular session");
       if (auto d = quote_check(s, leg.symbol); !d.ok() && !ask_only(s, o, leg)) return d;
       legs.emplace_back(leg.symbol, signed_contracts(leg, o.remaining()));
     }
@@ -2530,6 +2570,69 @@ void check_triggers(State& s, Events& events) {
   for (const auto id : open_ids(s)) if (id <= placed) visit(id);
   for (auto i = placed; i < s.orders.size(); ++i) visit(static_cast<OrderId>(i + 1));
 }
+/// One of a flatten's closes: a single contract, or a short and the long that covers
+/// it closing together (the short bought back, the long sold), `units` of each.
+struct PlannedClose {
+  std::vector<Leg> legs;
+  Quantity units = 0;
+};
+std::int64_t milli_strike(const md::OptionContract& c) { return std::llround(c.strike * 1000); }
+/// How a flatten closes `symbols`, the positions in scope (expired ones included,
+/// since a short that has expired still holds its cover until it settles). Per
+/// underlying and type, the latest-expiring shorts take the longs that cover them
+/// (expiring with them or later; the nearest expiry, then the nearest strike, first),
+/// which covers the most shorts, as naked_shorts counts them. Each such pair closes
+/// as one two-leg order; the shorts and longs left over close alone. A long whose
+/// short has expired waits for its settlement, in `held_back`.
+std::vector<PlannedClose> plan_closes(const State& s, const std::vector<std::string>& symbols,
+                                      std::map<std::string, Quantity>& held_back) {
+  const auto expired = [&](const std::string& symbol) { return s.time >= s.contracts.at(symbol).expiry_time(); };
+  std::map<std::pair<std::string, pricing::OptionType>, std::pair<std::vector<std::string>, std::vector<std::string>>> books;
+  for (const auto& symbol : symbols) {
+    const auto& c = s.contracts.at(symbol);
+    auto& [shorts, longs] = books[{c.underlying, c.type}];
+    (held(s, symbol) < 0 ? shorts : longs).push_back(symbol);
+  }
+  std::vector<PlannedClose> pairs, buys, sells;
+  for (auto& [key, book] : books) {
+    auto& [shorts, longs] = book;
+    std::map<std::string, Quantity> left;
+    for (const auto& symbol : longs) left[symbol] = held(s, symbol);
+    std::stable_sort(shorts.begin(), shorts.end(), [&](const std::string& a, const std::string& b) {
+      return s.contracts.at(a).expiry_time() > s.contracts.at(b).expiry_time();
+    });
+    for (const auto& short_symbol : shorts) {
+      const auto& sold = s.contracts.at(short_symbol);
+      auto need = -held(s, short_symbol);
+      std::vector<std::string> covers;
+      for (const auto& long_symbol : longs)
+        if (s.contracts.at(long_symbol).expiry_time() >= sold.expiry_time()) covers.push_back(long_symbol);
+      std::stable_sort(covers.begin(), covers.end(), [&](const std::string& a, const std::string& b) {
+        const auto& x = s.contracts.at(a);
+        const auto& y = s.contracts.at(b);
+        if (x.expiry_time() != y.expiry_time()) return x.expiry_time() < y.expiry_time();
+        return std::llabs(milli_strike(x) - milli_strike(sold)) < std::llabs(milli_strike(y) - milli_strike(sold));
+      });
+      for (const auto& long_symbol : covers) {
+        const auto n = std::min(need, left[long_symbol]);
+        if (n <= 0) continue;
+        need -= n;
+        left[long_symbol] -= n;
+        if (expired(short_symbol)) {
+          if (!expired(long_symbol)) held_back[long_symbol] += n;
+        } else {
+          pairs.push_back({{{short_symbol, Side::Buy, 1}, {long_symbol, Side::Sell, 1}}, n});
+        }
+      }
+      if (need > 0 && !expired(short_symbol)) buys.push_back({{{short_symbol, Side::Buy, 1}}, need});
+    }
+    for (const auto& long_symbol : longs)
+      if (left[long_symbol] > 0 && !expired(long_symbol)) sells.push_back({{{long_symbol, Side::Sell, 1}}, left[long_symbol]});
+  }
+  pairs.insert(pairs.end(), buys.begin(), buys.end());
+  pairs.insert(pairs.end(), sells.begin(), sells.end());
+  return pairs;
+}
 /// Submit a reducer-owned market IOC that closes one position against the
 /// current fresh book. Without executable liquidity nothing is recorded, so a
 /// rule keeps retrying on later transactions instead of accumulating orders.
@@ -2576,6 +2679,63 @@ void close_shares(State& s, const std::string& symbol, Quantity shares, StockSou
   trade_shares(s, symbol, -shares, *price, source);
   if (source == StockSource::Trade) count_trade(s);
   event(events, "stock_trade", Json{{"symbol", symbol}, {"shares", -shares}, {"price", *price}});
+}
+/// Mandatory-flat closes share the manual flatten planner. Only executable
+/// liquidity creates system IOCs; later transactions retry the remaining holdings.
+void flatten_positions(State& s, std::string_view label, Events& events) {
+  std::vector<std::string> symbols;
+  for (const auto& [symbol, position] : s.ledger.positions()) symbols.push_back(symbol);
+  std::map<std::string, Quantity> held_back;
+  const auto closes = plan_closes(s, symbols, held_back);
+  for (const auto& close : closes) {
+    // A delayed system IOC already owns these legs until it fills or ends.
+    bool pending = false;
+    for (const auto id : open_ids(s)) {
+      const auto& o = s.orders[id - 1];
+      if (o.system && std::any_of(close.legs.begin(), close.legs.end(), [&](const Leg& leg) { return touches(o.request, leg.symbol); }))
+        pending = true;
+    }
+    if (pending) continue;
+    for (Quantity placed = 0; placed < close.units;) {
+      Order order;
+      order.id = static_cast<OrderId>(s.orders.size() + 1);
+      auto& r = order.request;
+      r.client_order_id = "system:" + std::string(label) + ":" + std::to_string(order.id);
+      r.type = OrderType::Market; r.tif = TimeInForce::Ioc;
+      r.quantity = std::min(close.units - placed, s.config.limits.max_order_contracts);
+      // A decided attempt keeps later user closes' reservations, as the other
+      // decision liquidations do. Flat-time reductions are already reduce-only.
+      if (s.evaluation.status != EvaluationStatus::Active)
+        for (const auto& leg : close.legs) r.quantity = std::min(r.quantity, closing_capacity(s, leg.symbol, leg.side));
+      if (r.quantity == 0) break;
+      if (close.legs.size() == 1) { r.symbol = close.legs.front().symbol; r.side = close.legs.front().side; }
+      else r.legs = close.legs;
+      order.system = true; order.reduce_only = true; order.actor = "system";
+      order.accepted_at = s.time;
+      if (!system_check(s, order).ok()) break;
+      order.day_end = order_end(s, r, s.time);
+      bool liquid = true;
+      for (const auto& leg : close.legs) {
+        const auto& book = s.books.at(leg.symbol);
+        if (s.config.rules.impact_ticks == 0 && (leg.side == Side::Buy ? book.ask_left : book.bid_left) <= 0 && !given_away(s, order, leg))
+          liquid = false;
+      }
+      if (!liquid) break;
+      placed += r.quantity;
+      add_order(s, order);
+      event(events, "order_accepted", order);
+      // Only this mandatory close matches here; unrelated orders follow it.
+      match_order(s, order.id, events, order.id);
+      if (s.config.rules.fill_latency_ms == 0 && s.orders[order.id - 1].open())
+        cancel_order(s, order.id, failure(Reason::IOC_REMAINDER,
+            ioc_remainder_message(s, s.orders[order.id - 1], "IOC exhausted available displayed liquidity")), events);
+      if (s.config.rules.fill_latency_ms > 0) break;
+    }
+  }
+  std::vector<std::pair<std::string, Quantity>> stocks;
+  for (const auto& [symbol, stock] : s.ledger.stocks()) stocks.emplace_back(symbol, stock.shares);
+  for (const auto& [symbol, shares] : stocks) close_shares(s, symbol, shares, StockSource::Rule, events);
+  if (!overnight_positions(s)) s.evaluation.flat_pending = false;
 }
 /// The status's own code (a pass on the target, a failure on the floor) is the
 /// default a journal leaves out; any other rule's code is recorded with the decision.
@@ -2662,16 +2822,26 @@ std::string_view liquidation_label(const Evaluation& e, bool decided) {
   if (code == Reason::DAILY_LOSS_LIMIT) return "daily_loss";
   if (code == Reason::TIME_LIMIT) return "time_limit";
   if (code == Reason::INACTIVITY) return "inactivity";
+  if (code == Reason::OVERNIGHT_HOLD) return "overnight";
   if (decided) return e.status == EvaluationStatus::Passed ? "target" : "drawdown";
   return "day_lock";
 }
 void monitor_rules(State& s, Events& events) {
+  start_flat_time(s, events);
   observe_equity(s, events);
   const auto& rules = s.config.rules;
   const auto& e = s.evaluation;
   const bool soft = std::find(s.guardrails.latched.begin(), s.guardrails.latched.end(), Reason::SOFT_FLOOR) != s.guardrails.latched.end();
   const bool decided = rules.evaluation() && e.status != EvaluationStatus::Active;
   const bool locked = e.day_lock != Reason::NONE;
+  if (decided && e.decision_code == Reason::OVERNIGHT_HOLD) {
+    flatten_positions(s, "overnight", events);
+    return;
+  }
+  if (!decided && !locked && e.flat_pending) {
+    flatten_positions(s, "flat_time", events);
+    return;
+  }
   if (soft || decided || locked) {
     std::vector<std::pair<std::string, Quantity>> stocks;
     for (const auto& [symbol, stock] : s.ledger.stocks()) stocks.emplace_back(symbol, stock.shares);
@@ -4171,10 +4341,12 @@ struct TradingSession::Impl {
   ChangeRecorder recorder;
   /// Whether moving the clock alone to `time` could change anything. Flat with
   /// no open orders, and once the attempt has its start time, only an overdue
-  /// calendar rule can decide it. Rollover is its own command.
+  /// calendar rule can decide it. Flat-time plans also publish clock progress and
+  /// journal their daily trigger even with nothing held. Rollover is its own command.
   bool idle(Timestamp time) const {
     const auto& s = state;
     return !stopped && time >= s.time && s.ledger.positions().empty() && s.ledger.stocks().empty() &&
+           !s.config.rules.flat_time &&
            s.evaluation.started > 0 && s.evaluation.cycle_started > 0 &&
            !evaluate_time_rules(s.evaluation, s.config.rules, time).decided() &&
            s.guardrails.cooldown_until <= s.time &&
@@ -4188,6 +4360,10 @@ struct TradingSession::Impl {
     State next = state;
     Events events;
     advance(next, time, events);
+    // Quote batches install their new book before monitor_rules closes positions.
+    // Other commands must close against the current book before matching orders.
+    if (type != "market" && next.evaluation.flat_pending && next.evaluation.status == EvaluationStatus::Active)
+      flatten_positions(next, "flat_time", events);
     next.actor = actor;
     auto result = action(next, events);
     place_chained(next, events);
@@ -4664,69 +4840,6 @@ CommandResult TradingSession::cancel_all(std::optional<std::string> underlying, 
   });
 }
 namespace {
-/// One of a flatten's closes: a single contract, or a short and the long that covers
-/// it closing together (the short bought back, the long sold), `units` of each.
-struct PlannedClose {
-  std::vector<Leg> legs;
-  Quantity units = 0;
-};
-std::int64_t milli_strike(const md::OptionContract& c) { return std::llround(c.strike * 1000); }
-/// How a flatten closes `symbols`, the positions in scope (expired ones included,
-/// since a short that has expired still holds its cover until it settles). Per
-/// underlying and type, the latest-expiring shorts take the longs that cover them
-/// (expiring with them or later; the nearest expiry, then the nearest strike, first),
-/// which covers the most shorts, as naked_shorts counts them. Each such pair closes
-/// as one two-leg order; the shorts and longs left over close alone. A long whose
-/// short has expired waits for its settlement, in `held_back`.
-std::vector<PlannedClose> plan_closes(const State& s, const std::vector<std::string>& symbols,
-                                      std::map<std::string, Quantity>& held_back) {
-  const auto expired = [&](const std::string& symbol) { return s.time >= s.contracts.at(symbol).expiry_time(); };
-  std::map<std::pair<std::string, pricing::OptionType>, std::pair<std::vector<std::string>, std::vector<std::string>>> books;
-  for (const auto& symbol : symbols) {
-    const auto& c = s.contracts.at(symbol);
-    auto& [shorts, longs] = books[{c.underlying, c.type}];
-    (held(s, symbol) < 0 ? shorts : longs).push_back(symbol);
-  }
-  std::vector<PlannedClose> pairs, buys, sells;
-  for (auto& [key, book] : books) {
-    auto& [shorts, longs] = book;
-    std::map<std::string, Quantity> left;
-    for (const auto& symbol : longs) left[symbol] = held(s, symbol);
-    std::stable_sort(shorts.begin(), shorts.end(), [&](const std::string& a, const std::string& b) {
-      return s.contracts.at(a).expiry_time() > s.contracts.at(b).expiry_time();
-    });
-    for (const auto& short_symbol : shorts) {
-      const auto& sold = s.contracts.at(short_symbol);
-      auto need = -held(s, short_symbol);
-      std::vector<std::string> covers;
-      for (const auto& long_symbol : longs)
-        if (s.contracts.at(long_symbol).expiry_time() >= sold.expiry_time()) covers.push_back(long_symbol);
-      std::stable_sort(covers.begin(), covers.end(), [&](const std::string& a, const std::string& b) {
-        const auto& x = s.contracts.at(a);
-        const auto& y = s.contracts.at(b);
-        if (x.expiry_time() != y.expiry_time()) return x.expiry_time() < y.expiry_time();
-        return std::llabs(milli_strike(x) - milli_strike(sold)) < std::llabs(milli_strike(y) - milli_strike(sold));
-      });
-      for (const auto& long_symbol : covers) {
-        const auto n = std::min(need, left[long_symbol]);
-        if (n <= 0) continue;
-        need -= n;
-        left[long_symbol] -= n;
-        if (expired(short_symbol)) {
-          if (!expired(long_symbol)) held_back[long_symbol] += n;
-        } else {
-          pairs.push_back({{{short_symbol, Side::Buy, 1}, {long_symbol, Side::Sell, 1}}, n});
-        }
-      }
-      if (need > 0 && !expired(short_symbol)) buys.push_back({{{short_symbol, Side::Buy, 1}}, need});
-    }
-    for (const auto& long_symbol : longs)
-      if (left[long_symbol] > 0 && !expired(long_symbol)) sells.push_back({{{long_symbol, Side::Sell, 1}}, left[long_symbol]});
-  }
-  pairs.insert(pairs.end(), buys.begin(), buys.end());
-  pairs.insert(pairs.end(), sells.begin(), sells.end());
-  return pairs;
-}
 /// Accept or reject one of a flatten's reduce-only closes. The integration's gate,
 /// the account and the session can refuse it whatever the price; missing or stale
 /// quotes only make it wait. Accepted, it trades at once where it can and works

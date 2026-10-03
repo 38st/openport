@@ -43,7 +43,7 @@ struct Payout {
 };
 
 /// Rule progress for the current attempt. Fully marked equity (every position
-/// has a mark, fresh or not) drives equity rules; calendar deadlines need no marks.
+/// has a mark, fresh or not) drives equity rules; time and overnight rules need no marks.
 struct Evaluation {
   std::uint64_t attempt = 1;
   Timestamp started = 0;
@@ -81,6 +81,8 @@ struct Evaluation {
   Timestamp day_locked_at = 0;
   std::uint64_t day_executions = 0;  ///< Today's, as EvaluationDay::executions.
   Timestamp last_activity = 0;  ///< Own execution, only when inactivity is set; zero uses started.
+  std::optional<md::Date> flat_time_day;  ///< Last date whose mandatory flatten started.
+  bool flat_pending = false;  ///< Retry unfilled mandatory closes, including after rollover.
 };
 
 /// Shared plan arithmetic. Observations check the floor before the target; rollover
@@ -193,6 +195,8 @@ struct TimeRuleProgress {
   std::optional<md::Date> inactivity_deadline;
 };
 [[nodiscard]] TimeRuleProgress time_rule_progress(const Evaluation& evaluation, const AccountRules& rules, Timestamp time);
+/// Whether today's flat time has passed and the plan day has not ended.
+[[nodiscard]] bool plan_flat_now(const AccountRules& rules, Timestamp time);
 /// Opening restrictions, bypassed by the caller for reductions and system orders.
 [[nodiscard]] Decision plan_entry_check(const AccountRules& rules, std::string_view underlying, Timestamp time);
 /// Why opening orders are refused while the day is locked.

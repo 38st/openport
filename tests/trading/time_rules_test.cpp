@@ -53,11 +53,11 @@ TEST(TimeRules, LegacyPlanJournalBytes) {
   EXPECT_EQ(recovery.head, "4e40378560db4e891c76cb27a686dfd2baf9c5a98dbae7ab4590dbd30d57acb0");
   // Default-off fields are absent in every checkpoint, delta and event.
   for (const auto& record : recovery.records)
-    for (const auto* key : {"time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "last_activity"})
+    for (const auto* key : {"time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "last_activity", "flat_time", "no_overnight", "flat_time_day", "flat_pending"})
       EXPECT_EQ(record.payload.find(std::string("\"") + key + "\""), std::string::npos) << key;
   // Explicitly disabling each field takes exactly the legacy command path.
   rules.time_limit_days = 0; rules.inactivity_days = 0; rules.underlyings.clear();
-  rules.trading_start.reset(); rules.trading_end.reset();
+  rules.trading_start.reset(); rules.trading_end.reset(); rules.flat_time.reset(); rules.no_overnight = false;
   ScriptedMarket g;
   JournalFile again;
   {
@@ -342,5 +342,249 @@ TEST(TimeRules, ProjectedOddsRespectCalendarDeadlines) {
   EXPECT_EQ(project(0, 1, {2026, 9, 25}).fail, 1.0);
   EXPECT_EQ(project(0, 3, {2026, 9, 25}).pass, 1.0);
 }
+TEST(TimeRules, FlatTimeCancelsOpeningsAndClosesOptionsAndSharesBeforeMatching) {
+  ScriptedMarket f;
+  auto rules = plan(); rules.flat_time = 601;
+  auto c = config(rules); c.limits.max_quote_age = 30 * md::kNanosPerSecond;
+  TradingSession s(c, f.time); f.seed(s);
+  auto entry = f.market("held", 2);
+  entry.bracket = Bracket{{}, ExitSpec{{}, m("8")}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  ASSERT_TRUE(s.trade_stock("SPY", 3, f.time, StockPrice{"SPY", f.time, m("500")}).decision.ok());
+  const auto opening = s.submit(f.limit("opening", 1, "3.50", Side::Buy, TimeInForce::Gtc), f.time);
+  const auto reducing = s.submit(f.limit("reducing", 1, "4.80", Side::Sell, TimeInForce::Gtc), f.time);
+  ASSERT_TRUE(opening.decision.ok()); ASSERT_TRUE(reducing.decision.ok());
+  f.time += md::kNanosPerMinute; ++f.observation;
+  // Empty batches trigger the rule, with no fabricated execution on stale data.
+  s.on_quotes({}, {}, f.time);
+  auto snap = s.snapshot();
+  EXPECT_EQ(snap->recent_orders.at(*opening.order_id - 1).reason.code, Reason::FLAT_TIME);
+  EXPECT_TRUE(snap->recent_orders.at(*reducing.order_id - 1).open());
+  EXPECT_TRUE(snap->recent_orders.at(1).open());
+  EXPECT_TRUE(snap->evaluation.flat_pending);
+  const auto denied = s.submit(f.market("late"), f.time).decision;
+  EXPECT_EQ(denied.code, Reason::FLAT_TIME); EXPECT_EQ(denied.actual, 601);
+  EXPECT_EQ(denied.limit, 601); EXPECT_EQ(denied.scope, "account");
+  EXPECT_EQ(s.preview(f.market("preview"), f.time).decision.code, Reason::FLAT_TIME);
+  EXPECT_EQ(s.preview_trade_stock("SPY", 1, f.time).decision.code, Reason::FLAT_TIME);
+  EXPECT_EQ(s.trade_stock("SPY", 1, f.time).decision.code, Reason::FLAT_TIME);
+  // Reductions remain allowed when mandatory closes are waiting for fresh data.
+  EXPECT_EQ(s.submit(f.limit("reduce-more", 1, "4.90", Side::Sell, TimeInForce::Gtc), f.time).decision.code, Reason::STALE_QUOTE);
+  EXPECT_EQ(s.preview(f.market("reduce-preview", 1, Side::Sell), f.time).decision.code, Reason::STALE_QUOTE);
+  EXPECT_TRUE(s.trade_stock("SPY", -1, f.time, StockPrice{"SPY", f.time, m("500")}).decision.ok());
+  s.on_quotes({f.quote("3.00", "3.20")}, {f.valuation()}, f.time, {{"SPY", f.time, m("500")}});
+  snap = s.snapshot();
+  EXPECT_TRUE(snap->positions.empty()); EXPECT_TRUE(snap->stocks.empty());
+  EXPECT_FALSE(snap->evaluation.flat_pending);
+  EXPECT_EQ(snap->recent_orders.at(1).reason.code, Reason::POSITION_CLOSED);
+  EXPECT_EQ(snap->recent_orders.at(*reducing.order_id - 1).reason.code, Reason::POSITION_CLOSED);
+  EXPECT_EQ(snap->evaluation.status, EvaluationStatus::Active);
+  EXPECT_TRUE(snap->recent_orders.back().request.client_order_id.starts_with("system:flat_time:"));
+  EXPECT_EQ(snap->stock_fills.back().source, StockSource::Rule);
+}
+
+TEST(TimeRules, FlatTimeComboClosesSplitAtOrderLimitAndRetryLiquidity) {
+  ScriptedMarket f, g; g.contract = *md::parse_osi("SPXW261022C05010000");
+  auto rules = plan(); rules.flat_time = 601; rules.defined_risk = true;
+  auto c = config(rules); c.limits.max_order_contracts = 2;
+  TradingSession s(c, f.time); f.seed(s); g.seed(s);
+  auto entry = f.market("spread", 2); entry.symbol.clear();
+  entry.legs = {{f.symbol(), Side::Buy, 1}, {g.symbol(), Side::Sell, 1}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  entry.client_order_id = "spread-again"; ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  f.time = g.time = f.time + md::kNanosPerMinute; ++f.observation; ++g.observation;
+  s.on_quotes({f.quote("4", "4.20", 1), g.quote("4", "4.20", 1)}, {f.valuation(), g.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->positions.size(), 2U);
+  EXPECT_TRUE(s.snapshot()->evaluation.flat_pending);
+  f.next(); g.next();
+  s.on_quotes({f.quote(), g.quote()}, {f.valuation(), g.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  unsigned closes = 0;
+  for (const auto& o : s.snapshot()->recent_orders) {
+    if (!o.system) continue;
+    ++closes; EXPECT_EQ(o.request.legs.size(), 2U); EXPECT_LE(o.request.quantity, 2);
+    EXPECT_EQ(o.request.tif, TimeInForce::Ioc);
+    EXPECT_TRUE(o.request.client_order_id.starts_with("system:flat_time:"));
+  }
+  EXPECT_GE(closes, 3U);
+}
+
+TEST(TimeRules, FlatTimeComboWaitsForRegularSessionAndRetriesAfterDayEnd) {
+  ScriptedMarket f, g; g.contract = *md::parse_osi("SPXW261022C05010000");
+  auto rules = plan(); rules.flat_time = 16 * 60 + 30;
+  TradingSession s(config(rules), f.time); f.seed(s); g.seed(s);
+  auto entry = f.market("spread"); entry.symbol.clear();
+  entry.legs = {{f.symbol(), Side::Buy, 1}, {g.symbol(), Side::Sell, 1}};
+  ASSERT_TRUE(s.submit(entry, f.time).decision.ok());
+  f.time = g.time = md::new_york_to_utc({2026, 9, 22}, 16, 30); ++f.observation; ++g.observation;
+  s.on_quotes({f.quote(), g.quote()}, {f.valuation(), g.valuation()}, f.time);
+  EXPECT_EQ(s.snapshot()->positions.size(), 2U);
+  EXPECT_TRUE(s.snapshot()->evaluation.flat_pending);
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), 1U);
+  f.time = g.time = md::new_york_to_utc({2026, 9, 23}, 10, 0); ++f.observation; ++g.observation;
+  s.on_quotes({f.quote(), g.quote()}, {f.valuation(), g.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_FALSE(s.snapshot()->evaluation.flat_pending);
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Active);
+}
+
+TEST(TimeRules, FlatTimeIocsRespectLatencyAndResumeOnNewQuotes) {
+  ScriptedMarket f; auto rules = plan(); rules.flat_time = 601; rules.fill_latency_ms = 1000;
+  auto c = config(rules); c.limits.max_order_contracts = 2;
+  TradingSession s(c, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("held", 2), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  ASSERT_FALSE(s.snapshot()->positions.empty());
+  f.time = md::new_york_to_utc({2026, 9, 22}, 10, 1); ++f.observation;
+  s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  const auto first = s.snapshot();
+  ASSERT_TRUE(first->recent_orders.back().system);
+  EXPECT_TRUE(first->recent_orders.back().open());
+  EXPECT_FALSE(first->positions.empty());
+  s.on_quotes({}, {}, f.time);
+  EXPECT_EQ(s.snapshot()->recent_orders.size(), first->recent_orders.size());
+  EXPECT_TRUE(s.preview(f.limit("manual-preview", 1, "4.80", Side::Sell, TimeInForce::Gtc), f.time).decision.ok());
+  EXPECT_TRUE(s.submit(f.limit("manual-close", 1, "4.80", Side::Sell, TimeInForce::Gtc), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_FALSE(s.snapshot()->evaluation.flat_pending);
+}
+
+TEST(TimeRules, FlatTimeRunsOncePerDateRecoversAndCatchesGaps) {
+  ScriptedMarket f; auto rules = plan(); rules.flat_time = 601;
+  JournalFile file;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path)); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+    f.time += 5 * md::kNanosPerMinute;
+    s.on_quotes({}, {}, f.time); // first transaction is already past flat time
+    EXPECT_TRUE(s.snapshot()->evaluation.flat_pending);
+  }
+  auto s = TradingSession::recover(FileJournal::read(file.path), FileJournal::resume(file.path));
+  EXPECT_EQ(s.config().rules, rules);
+  EXPECT_EQ(s.snapshot()->evaluation.flat_time_day, (md::Date{2026, 9, 22}));
+  ++f.observation; s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_FALSE(s.snapshot()->evaluation.flat_pending);
+  s.on_quotes({}, {}, f.time + md::kNanosPerMinute);
+  f.time = md::new_york_to_utc({2026, 9, 22}, 17, 0);
+  s.on_quotes({}, {}, f.time);
+  EXPECT_FALSE(plan_flat_now(rules, f.time));
+  EXPECT_EQ(s.snapshot()->evaluation.flat_time_day, (md::Date{2026, 9, 22}));
+  f.time = md::new_york_to_utc({2026, 9, 23}, 10, 5);
+  s.on_quotes({}, {}, f.time); // even an idle flat account records the next date
+  EXPECT_EQ(s.snapshot()->evaluation.flat_time_day, (md::Date{2026, 9, 23}));
+  unsigned triggers = 0;
+  for (const auto& record : FileJournal::read(file.path).records) {
+    const auto j = nlohmann::json::parse(record.payload);
+    for (const auto& event : j.value("events", nlohmann::json::array())) {
+      if (event.at("type") == "flat_time") ++triggers;
+    }
+  }
+  EXPECT_EQ(triggers, 2U);
+  EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+}
+
+TEST(TimeRules, NoOvernightFailsWithoutMarksInBothPhasesAndDecisionsAreSticky) {
+  for (const auto phase : {Phase::Evaluation, Phase::Funded}) {
+    ScriptedMarket f; auto rules = plan(); rules.no_overnight = true; rules.phase = phase;
+    if (phase == Phase::Funded) rules.payouts.qualifying_days = 1;
+    JournalFile file;
+    TradingSession s(config(rules), f.time, FileJournal::create(file.path)); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+    // Advancing beyond quote freshness does not defer the position-only verdict.
+    f.time = md::new_york_to_utc({2026, 9, 22}, 17, 0);
+    s.on_quotes({}, {}, f.time);
+    EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
+    EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::OVERNIGHT_HOLD);
+    EXPECT_EQ(s.snapshot()->evaluation.decided_at, f.time);
+    const auto decided = f.time;
+    f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0); ++f.observation;
+    s.on_quotes({f.quote()}, {f.valuation()}, f.time);
+    EXPECT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_TRUE(s.snapshot()->recent_orders.back().request.client_order_id.starts_with("system:overnight:"));
+    EXPECT_EQ(s.snapshot()->evaluation.decided_at, decided);
+    EXPECT_EQ(TradingSession::recover(FileJournal::read(file.path)).snapshot_json(), s.snapshot_json());
+  }
+}
+
+TEST(TimeRules, NoOvernightChecksSharesOnExplicitRolloverButExcludesSettlement) {
+  ScriptedMarket f; auto rules = plan(); rules.no_overnight = true; rules.flat_time = 16 * 60 + 10;
+  TradingSession shares(config(rules), f.time);
+  ASSERT_TRUE(shares.trade_stock("SPY", 1, f.time, StockPrice{"SPY", f.time, m("500")}).decision.ok());
+  const auto next = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  (void)shares.roll_day(next);
+  EXPECT_EQ(shares.snapshot()->evaluation.decision_code, Reason::OVERNIGHT_HOLD);
+  f.contract = *md::parse_osi("SPXW260922C05000000");
+  TradingSession options(config(rules), f.time); f.seed(options);
+  ASSERT_TRUE(options.submit(f.market("expiring"), f.time).decision.ok());
+  options.on_quotes({}, {}, md::new_york_to_utc({2026, 9, 22}, 16, 10));
+  ASSERT_EQ(options.snapshot()->positions.size(), 1U);
+  EXPECT_TRUE(options.snapshot()->positions.front().awaiting_settlement);
+  EXPECT_FALSE(options.snapshot()->evaluation.flat_pending);
+  (void)options.roll_day(next);
+  EXPECT_EQ(options.snapshot()->evaluation.status, EvaluationStatus::Active);
+}
+
+TEST(TimeRules, OvernightPositionFailureDoesNotWaitForMissingMarks) {
+  ScriptedMarket f; auto rules = plan(); rules.no_overnight = true;
+  JournalFile source, imported;
+  {
+    TradingSession s(config(rules), f.time, FileJournal::create(source.path)); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+  }
+  {
+    auto s = TradingSession::recover(FileJournal::read(source.path), FileJournal::resume(source.path));
+    // The first transaction after recovery writes a complete checkpoint.
+    f.next(); s.on_quotes({}, {}, f.time);
+  }
+  const auto recovery = FileJournal::read(source.path);
+  auto payload = nlohmann::json::parse(recovery.records.back().payload);
+  ASSERT_TRUE(payload.contains("state"));
+  payload["state"]["marks"] = nlohmann::json::object();
+  {
+    const auto journal = FileJournal::create(imported.path);
+    for (std::size_t i = 0; i + 1 < recovery.records.size(); ++i) {
+      const auto& record = recovery.records[i];
+      journal->append(record.time, record.type, record.payload);
+    }
+    journal->append(f.time, "market", payload.dump());
+  }
+  auto s = TradingSession::recover(FileJournal::read(imported.path));
+  ASSERT_FALSE(s.snapshot()->valuation_complete);
+  const auto result = s.roll_day(md::new_york_to_utc({2026, 9, 23}, 10, 0));
+  EXPECT_EQ(result.decision.code, Reason::STALE_QUOTE); // day accounting still needs marks
+  EXPECT_EQ(s.snapshot()->evaluation.decision_code, Reason::OVERNIGHT_HOLD);
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
+}
+
+TEST(TimeRules, GapIntoLaterDatesFlatTimeClosesBeforeOpeningCanMatch) {
+  ScriptedMarket f; auto rules = plan(); rules.flat_time = 601;
+  TradingSession s(config(rules), f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("held"), f.time).decision.ok());
+  const auto opening = s.submit(f.limit("working", 1, "3.80", Side::Buy, TimeInForce::Gtc), f.time);
+  ASSERT_TRUE(opening.decision.ok());
+  f.time = md::new_york_to_utc({2026, 9, 23}, 10, 5); ++f.observation;
+  s.on_quotes({f.quote("3.60", "3.80")}, {f.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders.at(*opening.order_id - 1).reason.code, Reason::FLAT_TIME);
+  EXPECT_EQ(s.snapshot()->evaluation.flat_time_day, (md::Date{2026, 9, 23}));
+}
+
+TEST(TimeRules, FlatTimeValidationAndDayBoundary) {
+  for (const auto minute : {-1, 1020, 1440}) {
+    auto rules = plan(); rules.flat_time = minute;
+    EXPECT_THROW(validate_rules(rules), TradingError);
+  }
+  auto rules = plan(); rules.flat_time = 0; EXPECT_NO_THROW(validate_rules(rules));
+  rules.day_end_minutes = 1440; rules.flat_time = 1439; EXPECT_NO_THROW(validate_rules(rules));
+  rules.flat_time = 945;
+  for (const auto date : {md::Date{2026, 9, 22}, md::Date{2026, 11, 3}}) {
+    EXPECT_FALSE(plan_flat_now(rules, md::new_york_to_utc(date, 15, 44)));
+    EXPECT_TRUE(plan_flat_now(rules, md::new_york_to_utc(date, 15, 45)));
+  }
+  EXPECT_FALSE(plan_flat_now(rules, 0));
+}
+
 }  // namespace
 }  // namespace openport::trading

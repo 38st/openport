@@ -34,10 +34,11 @@ enum class Reason {
   PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
   ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP,
   MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
-  TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS
+  TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS,
+  FLAT_TIME, OVERNIGHT_HOLD
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::OUTSIDE_PLAN_HOURS;
+inline constexpr Reason kLastReason = Reason::OVERNIGHT_HOLD;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -641,9 +642,11 @@ struct AccountRules {
   std::vector<std::string> underlyings;  ///< Empty allows all; options use their underlying, not root.
   std::optional<std::int64_t> trading_start;  ///< New York minutes; both set or both off.
   std::optional<std::int64_t> trading_end;    ///< Start inclusive, end exclusive.
+  std::optional<std::int64_t> flat_time;  ///< NY minute, before day_end; empty disables.
+  bool no_overnight = false;  ///< Fail at rollover on positions not awaiting settlement.
   [[nodiscard]] bool evaluation() const {
     return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{} ||
-           time_limit_days > 0 || inactivity_days > 0;
+           time_limit_days > 0 || inactivity_days > 0 || no_overnight;
   }
   bool operator==(const AccountRules&) const = default;
 };

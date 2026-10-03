@@ -285,7 +285,8 @@ inline Json optional_rule_defaults() {
               {"require_stop_loss", d.require_stop_loss}, {"max_trade_risk", d.max_trade_risk},
               {"max_trade_risk_percent", d.max_trade_risk_percent},
               {"time_limit_days", d.time_limit_days}, {"inactivity_days", d.inactivity_days},
-              {"underlyings", d.underlyings}, {"trading_start", d.trading_start}, {"trading_end", d.trading_end}};
+              {"underlyings", d.underlyings}, {"trading_start", d.trading_start}, {"trading_end", d.trading_end},
+              {"flat_time", d.flat_time}, {"no_overnight", d.no_overnight}};
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FeeSchedule, open, close, leg_cap, clearing, regulatory, index, exercise)
 inline void to_json(Json& j, const AccountRules& r) {
@@ -306,7 +307,8 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", r.max_trade_risk},
                  {"max_trade_risk_percent", r.max_trade_risk_percent},
                  {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days},
-                 {"underlyings", r.underlyings}, {"trading_start", r.trading_start}, {"trading_end", r.trading_end}};
+                 {"underlyings", r.underlyings}, {"trading_start", r.trading_start}, {"trading_end", r.trading_end},
+              {"flat_time", r.flat_time}, {"no_overnight", r.no_overnight}};
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
@@ -347,10 +349,14 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "max_trade_risk_percent", r.max_trade_risk_percent);
   added_field(j, "time_limit_days", r.time_limit_days); added_field(j, "inactivity_days", r.inactivity_days);
   added_field(j, "underlyings", r.underlyings);
-  for (const auto* key : {"trading_start", "trading_end"})
+  for (const auto* key : {"trading_start", "trading_end", "flat_time"})
     if (const auto it = j.find(key); it != j.end() && !it->is_null() && !it->is_number_integer())
       throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded trading hours must be integer minutes");
   added_field(j, "trading_start", r.trading_start); added_field(j, "trading_end", r.trading_end);
+  added_field(j, "flat_time", r.flat_time);
+  if (j.contains("no_overnight") && !j.at("no_overnight").is_boolean())
+    throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded no_overnight must be a boolean");
+  added_field(j, "no_overnight", r.no_overnight);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {
@@ -410,6 +416,8 @@ inline void to_json(Json& j, const Evaluation& e) {
   if (e.day_lock != Reason::NONE) { j["day_lock"] = e.day_lock; j["day_locked_at"] = e.day_locked_at; }
   if (e.day_executions != 0) j["day_executions"] = e.day_executions;
   if (e.last_activity != 0) j["last_activity"] = e.last_activity;
+  if (e.flat_time_day) j["flat_time_day"] = e.flat_time_day;
+  if (e.flat_pending) j["flat_pending"] = true;
 }
 inline void from_json(const Json& j, Evaluation& e) {
   j.at("attempt").get_to(e.attempt); j.at("started").get_to(e.started); j.at("starting_balance").get_to(e.starting_balance);
@@ -428,6 +436,7 @@ inline void from_json(const Json& j, Evaluation& e) {
   added_field(j, "day_lock", e.day_lock); added_field(j, "day_locked_at", e.day_locked_at);
   added_field(j, "day_executions", e.day_executions);
   added_field(j, "last_activity", e.last_activity);
+  added_field(j, "flat_time_day", e.flat_time_day); added_field(j, "flat_pending", e.flat_pending);
 }
 inline void to_json(Json& j, const AttemptSummary& a) {
   j = Json{{"attempt", a.attempt}, {"plan", a.plan}, {"started", a.started}, {"ended", a.ended},

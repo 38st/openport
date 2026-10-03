@@ -465,8 +465,9 @@ class TradingSession {
   /// at most one quote and one valuation per OSI per batch. An empty batch
   /// advances expiry, DAY cancellation, freshness and daily-loss monitoring.
   /// On an idle account (flat, no open orders, attempt started) an empty batch
-  /// changes nothing but the clock, so it is not a transaction and nothing is
-  /// journaled; the snapshot keeps its time until the next transaction.
+  /// changes nothing but the clock unless a time rule acts or flat_time is set,
+  /// so otherwise it is not journaled; the snapshot keeps its time until the next
+  /// transaction. Flat-time plans publish clock progress and journal daily triggers.
   /// `stocks` prices the underlyings: the shares that exercise and assignment
   /// deliver are marked and traded at them. `indicators` are the prices and
   /// studies conditional triggers watch; older ones than those kept are ignored.
