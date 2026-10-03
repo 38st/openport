@@ -71,7 +71,7 @@ export function useReplayControls() {
     speed: (speed: number) => run(() => api.controlReplay({ speed }, mode)),
     pause: (paused: boolean) => run(() => api.controlReplay({ paused }, mode)),
     skip: () => run(() => api.controlReplay({ skip: true }, mode)),
-    step: (until: string) => run(() => api.controlReplay({ until }, mode)),
+    step: (until: string, then: () => void) => run(async () => { await api.controlReplay({ until }, mode); then() }),
     stop: () => run(() => api.stopReplay(mode)),
     start: (source: ReplaySource, speed: number, then: () => void, options?: ReplayStart) => run(async () => { await api.startReplay(source, speed, mode, options); then() }),
     resume: (id: string, speed: number, then: () => void) => run(async () => { await api.resumeReplay(id, speed, mode); then() }),
@@ -97,10 +97,10 @@ function Controls({ replay }: { replay: ReplayState }) {
         title="Play the next event now, skipping a closed market" onClick={() => void controls.skip()}>Skip gap</button>
       <button type="button" className="trade-button" disabled={controls.pending || controls.blocked} onClick={() => void controls.stop()}>Stop</button>
     </div>
-    <form className="flex flex-wrap items-end gap-2 text-xs" onSubmit={(event) => { event.preventDefault(); const target = until || newYorkInput(replay.time); if (target) void controls.step(target) }}>
+    <form className="flex flex-wrap items-end gap-2 text-xs" onSubmit={(event) => { event.preventDefault(); if (until && !idle) void controls.step(until, () => setUntil("")) }}>
       <label>Step to (New York)<input aria-label="Step to" type="datetime-local" className="trade-input" value={until || newYorkInput(replay.time)}
         onChange={(event) => setUntil(event.target.value)} /></label>
-      <button type="submit" className="trade-button" disabled={idle} title="Play as fast as possible through this date and time, then pause">Step</button>
+      <button type="submit" className="trade-button" disabled={idle || !until} title="Play as fast as possible through this date and time, then pause">Step</button>
     </form>
     <TradingError error={controls.error} />
   </div>
