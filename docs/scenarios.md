@@ -293,7 +293,7 @@ refused. Replay state, the listing's `demos` and history entries carry the run's
 a recording has none. Between sessions, paced playback waits at most one polling
 interval of receipt time, so a closed night or weekend passes in a moment at any
 speed, and `PUT {"until": ...}` accepts the same forms, a bare time being its next
-occurrence in the run's sessions.
+occurrence at or after the replay's time in the run's sessions.
 
 `start_at` also works with `file: NAME` for a recorded feed. It uses New York wall
 time on the recording's session date, determined from its first receipt. Evening

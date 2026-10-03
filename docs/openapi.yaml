@@ -15311,7 +15311,7 @@
           },
           "until": {
             "type": "string",
-            "description": "Play through this market time, then pause: New York HH:MM[:SS] on the session date (in a scenario of several sessions, its next occurrence in them), or a date and time such as 2026-09-17T10:30[:SS], New York unless it carries Z or a UTC offset."
+            "description": "Play through this market time, then pause: New York HH:MM[:SS] on the session date (in a scenario of several sessions, its next occurrence at or after the replay's time), or a date and time such as 2026-09-17T10:30[:SS], New York unless it carries Z or a UTC offset."
           }
         },
         "required": []
