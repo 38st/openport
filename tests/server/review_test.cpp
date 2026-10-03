@@ -165,7 +165,10 @@ TEST(TradeReviewApi, CsvDateUsesNewYorkCalendarDateIncludingDst) {
       "quote.observation", "quote.bid", "quote.ask", "quote.bid_size", "quote.ask_size", "quote.size_left", "quote.quoted_at",
       "quote.age_seconds", "fees.commission", "fees.clearing", "fees.regulatory", "fees.index"};
   EXPECT_EQ(server::paper_csv_columns(true), fill_columns);
-  EXPECT_EQ(server::paper_csv_columns(false).size(), 105U);
+  const auto trade_columns = server::paper_csv_columns(false);
+  ASSERT_EQ(trade_columns.size(), 107U);
+  EXPECT_EQ(trade_columns[105], "settlement_value");
+  EXPECT_EQ(trade_columns[106], "settlement_source");
 }
 TEST(TradeReviewApi, ExportsNameTheirRunAttemptAndClosingTradingDay) {
   test::ScriptedMarket f;

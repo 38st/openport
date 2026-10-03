@@ -4,11 +4,11 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { liveState, useLive } from "../api/live"
 import { tradingQueries } from "../api/trading"
-import type { Account } from "../api/trading-types"
+import type { Account, SettlementRecord } from "../api/trading-types"
 import { account, fill, plans, portfolio, risk, shareTrades, status, trades } from "../test/trading-fixtures"
 import { DashboardView, equitySeries } from "./DashboardView"
 import { PositionsView } from "./PositionsView"
-import { JournalView } from "./JournalView"
+import { JournalView, SettlementList, SettlementPrint } from "./JournalView"
 import { RulesView, ruleText } from "./RulesView"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { describeAttribution } from "../lib/attribution"
@@ -32,6 +32,34 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("simulator pages", () => {
+  it("shows exact settlement references and provenance in the Journal and handles older journals", () => {
+    const record: SettlementRecord = { symbol: "SPX   260918C06000000", underlying: "SPX", expiry: "2026-09-18", settlement: "AM",
+      value: "6011.123456", time: "2026-09-18T13:30:00Z", quantity: 1, cash: "1112.3456", realised: "692.3456", fee: "0.00",
+      source: { kind: "scenario_opening_print", provider: "replay (demo)", symbol: "SPX", quote_time: "2026-09-18T13:30:00Z" } }
+    const settled = { ...trades[0]!, status: "closed" as const, closed: record.time, quantity: 0, closure: "settlement" as const, settlement_value: record.value, settlement_source: record.source!.kind }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+    clients.push(client)
+    const queries = tradingQueries(0, "17", true)
+    client.setQueryData(queries.trades("current").queryKey, { account_version: "17", attempt: 2, trades: [settled] })
+    client.setQueryData(queries.settlements.queryKey, { account_version: "17", settlements: [record] })
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><JournalView /></QueryClientProvider>)
+    for (const text of ["Settlements · all attempts", "Settlement reference 6011.123456", "scenario opening print (AM approximation)", "replay (demo)", "+$1,112.35", "+$692.35"])
+      expect(html).toContain(text)
+    expect(renderToStaticMarkup(<SettlementList records={[{ ...record, source: null }]} />)).toContain("Source unavailable")
+    expect(renderToStaticMarkup(<SettlementPrint trade={{ ...settled, settlement_value: null, settlement_source: null }} />)).toContain("reference unavailable")
+    expect(renderToStaticMarkup(<SettlementList records={[]} />)).toContain("No settlements yet")
+  })
+  it("labels awaiting AM opening prints and permits a manual import before they arrive", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
+    clients.push(client)
+    const queries = tradingQueries(0, "17", true)
+    const position = { ...portfolio.positions[0]!, awaiting_settlement: true, settle_by: "opening_print" as const }
+    client.setQueryData(queries.portfolio.queryKey, { ...portfolio, positions: [position] })
+    const html = renderToStaticMarkup(<QueryClientProvider client={client}><PositionsView /></QueryClientProvider>)
+    expect(html).toContain("Waiting for opening print · AM approximation")
+    expect(html).toContain(`aria-label="Settle ${position.symbol}"`)
+  })
+
   it("offers disposal only for longs and labels abandoned trades", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
     clients.push(client)

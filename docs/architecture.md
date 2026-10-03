@@ -151,7 +151,9 @@ still recover. A replay needs a fresh journal. Verification reproduces the recor
 prefix, including an intentionally stopped run, without starting Engine or HTTP.
 It compares every transaction hash, final equity and the head hash.
 
-The start input records `"driver": 4`: batches of whole market instants, with each
+Driver 5 adds AM settlement on the expiry date’s first underlying print at or after
+09:30 ET, with its provenance. Drivers 1–4 keep manual AM settlement during
+verification. The start input records `"driver": 5`: batches of whole market instants, with each
 underlying's quotes offered at the market time its own snapshot arrived; a new
 trading date's first batch rolling each account over on the finished day's closing
 marks before that batch's quotes; and each command's input recorded before the

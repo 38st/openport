@@ -4,7 +4,7 @@ import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
 import type { NotificationChannel, NotificationStatus } from "./types"
 import type { CandleInterval, Candles, Chain, ExposureMatrix, Probability, ReplayListing, ReplayState, Status, Summary, Surface } from "./types"
-import type { Account, AccountsResponse, AlertDeleted, AlertRequest, AlertResponse, AlertsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, RiskProfile, RiskProfileQuery, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
+import type { Account, AccountsResponse, AlertDeleted, AlertRequest, AlertResponse, AlertsResponse, CancelAllResponse, ClosePositionsResponse, CreateAccountRequest, CreateAccountResponse, DayNote, EquityHistory, FillsResponse, FlattenPreview, FlattenPricing, GroupResponse, Guardrails, KillResponse, Limits, Money, NewOrder, OrderChange, OrderPreview, OrderResponse, OrdersResponse, PlansResponse, Portfolio, ResetRequest, Risk, RiskProfile, RiskProfileQuery, SettlementsResponse, SettlementResponse, Side, StockPreview, SubmitOrderResponse, TradeNote, TradeNoteResponse, TradesResponse, WhatIfResponse, WriteMode } from "./trading-types"
 import { activeAccount, MAIN_ACCOUNT } from "../lib/active-account"
 import { dataSource } from "../lib/data-source"
 import { isSandboxToken, writeToken } from "../lib/write-token"
@@ -152,6 +152,7 @@ export const api = {
   updateGuardrails: (expected_revision: string, guardrails: Guardrails, mode: WriteMode) => write<Risk>(scoped("/api/risk/guardrails"), "PUT", mode, { expected_revision, guardrails }),
   portfolio: (signal?: AbortSignal) => get<Portfolio>(scoped("/api/portfolio"), signal),
   orders: (status: "open" | "all" = "all", signal?: AbortSignal) => get<OrdersResponse>(scoped(`/api/orders?status=${status}`), signal),
+  settlements: (signal?: AbortSignal) => get<SettlementsResponse>(scoped("/api/settlements"), signal),
   fills: (signal?: AbortSignal) => get<FillsResponse>(scoped("/api/fills"), signal),
   risk: (signal?: AbortSignal) => get<Risk>(scoped("/api/risk"), signal),
   riskProfile: (query: RiskProfileQuery, signal?: AbortSignal) => get<RiskProfile>(scoped(riskProfilePath(query)), signal),

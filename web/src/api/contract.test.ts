@@ -25,6 +25,7 @@ describe("checked API core types", () => {
       expect(position).toMatch(new RegExp(`${field}\\?: boolean`))
       expect(wireType(spec.components.schemas.Position!.properties![field]!)).toBe("boolean")
     }
+    expect(normalize(/settle_by\?: ([^\n]+)/.exec(position)![1]!)).toBe(wireType(spec.components.schemas.Position!.properties!.settle_by!))
     const trade = /export interface Trade \{([\s\S]*?)\n\}/.exec(source)![1]!
     expect(normalize(/closure: ([^\n]+)/.exec(trade)![1]!)).toBe(wireType(spec.components.schemas.Trade!.properties!.closure!))
     for (const field of ["settlement_value", "settlement_source"]) {

@@ -54,8 +54,8 @@ describe("trading API", () => {
     const fetcher = vi.fn(async () => new Response("{}"))
     vi.stubGlobal("fetch", fetcher)
     const signal = new AbortController().signal
-    await Promise.all([api.portfolio(signal), api.orders("open", signal), api.orders(), api.fills(signal), api.risk(signal)])
-    expect(fetcher.mock.calls.map((call) => (call as unknown[])[0])).toEqual(["/api/portfolio", "/api/orders?status=open", "/api/orders?status=all", "/api/fills", "/api/risk"])
+    await Promise.all([api.portfolio(signal), api.orders("open", signal), api.orders(), api.fills(signal), api.risk(signal), api.settlements(signal)])
+    expect(fetcher.mock.calls.map((call) => (call as unknown[])[0])).toEqual(["/api/portfolio", "/api/orders?status=open", "/api/orders?status=all", "/api/fills", "/api/risk", "/api/settlements"])
     expect(fetcher).toHaveBeenCalledWith("/api/portfolio", { signal, headers: { Accept: "application/json" } })
   })
 })

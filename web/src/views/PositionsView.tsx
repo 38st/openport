@@ -108,6 +108,10 @@ function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInst
           <div className="font-medium">{contractLabel(position)} <span className="text-muted">{position.settlement}</span></div>
           <div className="mt-1 text-[11px] text-faint">{position.symbol}</div>
           {position.awaiting_settlement && <span className="mt-1 inline-block rounded-full border border-warn px-2 py-0.5 text-[10px] text-warn">Awaiting settlement</span>}
+          {position.awaiting_settlement && position.settle_by && <div className="mt-1 text-[11px] text-muted">
+            {position.settle_by === "opening_print" ? "Waiting for opening print · AM approximation"
+              : position.settle_by === "closing_print" ? "Waiting for closing print" : "Manual settlement value required"}
+          </div>}
           {position.do_not_exercise && <span className="mt-1 ml-1 inline-block rounded-full border border-border px-2 py-0.5 text-[10px] text-muted">Not to be exercised</span>}
           {position.no_bid && !position.awaiting_settlement && <div className="mt-1 text-[10px] text-warn">Nobody bids for it</div>}
           {protection(position, orders) && <div className="mt-1 text-[10px] text-accent">{protection(position, orders)}</div>}
@@ -133,7 +137,7 @@ function Positions({ positions, onClose, onExercise, onSettle, onAbandon, onInst
           {onAbandon && position.quantity > 0 && position.no_bid &&
             <button type="button" className="trade-button" aria-label={`Abandon ${position.symbol}`} onClick={() => onAbandon(position)}>Abandon</button>}
           {onClose && !position.awaiting_settlement && <button type="button" className="trade-button" aria-label={`Close ${position.symbol}`} onClick={() => onClose(position)}>Close</button>}
-          {onSettle && position.awaiting_settlement && position.settle_by === "manual" &&
+          {onSettle && position.awaiting_settlement && (position.settle_by === "manual" || position.settle_by === "opening_print") &&
             <button type="button" className="trade-button" aria-label={`Settle ${position.symbol}`} onClick={() => onSettle(position)}>Settle</button>}
         </div></td>
       </tr>
