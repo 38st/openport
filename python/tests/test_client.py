@@ -400,3 +400,10 @@ def test_sandbox_token_omits_account_by_default(stub):
     assert stub.requests[-1][2]["Authorization"] == "Bearer sandbox_secret"
     client.cancel_all()
     assert stub.requests[-1][1] == "/api/orders/cancel"
+
+
+def test_reload_tokens_uses_live_admin_route_even_from_replay(stub):
+    result = Client(stub.url, "admin-secret", "practice").for_replay().reload_tokens()
+    assert result == {"names": ["operator"], "count": 1, "loaded_at": TIME}
+    assert stub.requests[-1][0:2] == ("POST", "/api/tokens/reload")
+    assert stub.requests[-1][3] == {}

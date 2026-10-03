@@ -18,6 +18,9 @@
 #include <sstream>
 #include <set>
 #include <future>
+#include <fstream>
+#include <cstdio>
+#include <nlohmann/json.hpp>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -175,7 +178,7 @@ bool websocket_origin_allowed(std::optional<std::string_view> origin, std::strin
   return false;
 }
 
-std::vector<NamedToken> parse_token_file(std::string_view text) {
+std::vector<NamedToken> parse_token_file(std::string_view text, bool allow_empty) {
   std::vector<NamedToken> tokens;
   std::set<std::string> names, secrets;
   std::istringstream input{std::string(text)};
@@ -218,8 +221,61 @@ std::vector<NamedToken> parse_token_file(std::string_view text) {
     } while (true);
     tokens.push_back(std::move(token));
   }
-  if (tokens.empty()) throw std::invalid_argument("Token file contains no tokens");
+  if (tokens.empty() && !allow_empty) throw std::invalid_argument("Token file contains no tokens");
   return tokens;
+}
+
+TokenFile::TokenFile(std::filesystem::path path, std::string legacy_token)
+    : path_(std::move(path)), legacy_token_(std::move(legacy_token)) {
+  refresh(true);
+  if (!snapshot_) throw std::invalid_argument(error_);
+}
+void TokenFile::refresh(bool force) {
+  try {
+    std::error_code ec;
+    const auto time = std::filesystem::last_write_time(path_, ec);
+    if (ec) throw std::invalid_argument("Cannot stat token file");
+    const auto size = std::filesystem::file_size(path_, ec);
+    if (ec) throw std::invalid_argument("Cannot stat token file");
+    const auto stamp = std::make_pair(time, size);
+    if (!force && stamp_ == stamp) return;
+    stamp_ = stamp;
+    std::ifstream input(path_);
+    if (!input) throw std::invalid_argument("Cannot read token file");
+    const std::string text(std::istreambuf_iterator<char>(input), {});
+    if (input.bad()) throw std::invalid_argument("Cannot read token file");
+    auto tokens = parse_token_file(text, bool(snapshot_));
+    for (const auto& token : tokens)
+      if (token.secret == legacy_token_) throw std::invalid_argument("Named and legacy tokens must have different secrets");
+    const auto after_time = std::filesystem::last_write_time(path_, ec);
+    if (ec || after_time != time) throw std::invalid_argument("Token file changed while reading; retry reload");
+    const auto after_size = std::filesystem::file_size(path_, ec);
+    if (ec || after_size != size) throw std::invalid_argument("Token file changed while reading; retry reload");
+    snapshot_ = std::make_shared<const Snapshot>(Snapshot{std::move(tokens), md::format_timestamp(md::now())});
+    error_.clear();
+  } catch (const std::invalid_argument& error) {
+    if (error_ != error.what()) std::fprintf(stderr, "openportd: token reload: %s\n", error.what());
+    error_ = error.what();
+  }
+}
+std::shared_ptr<const TokenFile::Snapshot> TokenFile::snapshot() {
+  const std::lock_guard lock(mutex_);
+  refresh(false);
+  return snapshot_;
+}
+ApiResponse TokenFile::reload() {
+  const std::lock_guard lock(mutex_);
+  refresh(true);
+  if (!error_.empty()) return api_error(400, "TOKEN_FILE_INVALID", error_);
+  auto names = nlohmann::json::array();
+  for (const auto& token : snapshot_->tokens) names.push_back(token.name);
+  return {200, nlohmann::json{{"names", names}, {"count", names.size()}, {"loaded_at", snapshot_->loaded_at}}.dump()};
+}
+bool TokenFile::valid(const NamedToken& token) {
+  const auto current = snapshot();
+  return std::any_of(current->tokens.begin(), current->tokens.end(), [&](const auto& found) {
+    return found.name == token.name && found.secret == token.secret && found.scopes == token.scopes;
+  });
 }
 
 std::optional<std::string> websocket_authorization(std::string_view bearer, std::string_view protocols) {
@@ -255,12 +311,13 @@ bool open_writes(const WritePolicy& policy) {
 
 std::string write_mode(const WritePolicy& policy) {
   if (open_writes(policy)) return "open";
-  if (!policy.token.empty() || !policy.tokens.empty() || policy.require_token || policy.sandboxes) return "token";
+  if (!policy.token.empty() || !policy.tokens.empty() || policy.token_file || policy.require_token || policy.sandboxes) return "token";
   return "disabled";
 }
 
-std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy, std::string* actor, ApiAccess* access) {
+std::optional<ApiResponse> check_api_write(const ApiRequest& request, const WritePolicy& policy, std::string* actor, ApiAccess* access, std::function<bool()>* authorization_valid) {
   if (access) *access = {};
+  if (authorization_valid) *authorization_valid = {};
   if (!request.target.starts_with("/api/") && request.target != "/ws") return {};
   const bool read = request.method == "GET";
   if (!read && request.method != "POST" && request.method != "PUT" && request.method != "PATCH" && request.method != "DELETE") return {};
@@ -284,8 +341,13 @@ std::optional<ApiResponse> check_api_write(const ApiRequest& request, const Writ
       return hashed && CRYPTO_memcmp(expected.data(), actual.data(), expected.size()) == 0;
     };
     if (matches(policy.token)) { name = "legacy"; scopes = {"admin"}; }
-    for (const auto& token : policy.tokens) {
-      if (matches(token.secret)) { name = token.name; scopes = token.scopes; }
+    const auto loaded = policy.token_file ? policy.token_file->snapshot() : nullptr;
+    for (const auto& token : loaded ? loaded->tokens : policy.tokens) {
+      if (matches(token.secret)) {
+        name = token.name; scopes = token.scopes;
+        if (authorization_valid && policy.token_file)
+          *authorization_valid = [file = policy.token_file, token] { return file->valid(token); };
+      }
     }
     if (name.empty() && policy.sandboxes && request.authorization.starts_with(prefix)) {
       if (const auto account = policy.sandboxes->authenticate(std::string_view(request.authorization).substr(prefix.size()))) {
@@ -464,8 +526,8 @@ class Hub {
 
 class WsSession : public Session, public std::enable_shared_from_this<WsSession> {
  public:
-  WsSession(tcp::socket&& socket, Hub& hub, std::unique_ptr<WebSocketSlots::Lease> slot, ApiAccess access, std::shared_ptr<Sandboxes> sandboxes)
-      : ws_(std::move(socket)), hub_(hub), slot_(std::move(slot)), access_(std::move(access)), sandboxes_(std::move(sandboxes)) {
+  WsSession(tcp::socket&& socket, Hub& hub, std::unique_ptr<WebSocketSlots::Lease> slot, ApiAccess access, std::shared_ptr<Sandboxes> sandboxes, std::function<bool()> authorized)
+      : ws_(std::move(socket)), hub_(hub), slot_(std::move(slot)), access_(std::move(access)), sandboxes_(std::move(sandboxes)), authorized_(std::move(authorized)) {
     ws_.read_message_max(kWebSocketMessageMax);
   }
 
@@ -532,6 +594,7 @@ class WsSession : public Session, public std::enable_shared_from_this<WsSession>
   }
 
   void write_next() {
+    if (authorized_ && !authorized_()) { (void)stop(); return; }
     ws_.text(true);
     ws_.async_write(asio::buffer(*queue_.front()),
                     beast::bind_front_handler(&WsSession::on_write, shared_from_this()));
@@ -554,6 +617,7 @@ class WsSession : public Session, public std::enable_shared_from_this<WsSession>
   TickQueue queue_;
   ApiAccess access_;
   std::shared_ptr<Sandboxes> sandboxes_;
+  std::function<bool()> authorized_;
   bool stopped_ = false;
   bool open_ = false;
 };
@@ -654,7 +718,8 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
         auth.authorization = authorization.value_or("");
         auth.ambiguous_headers = !authorization || request.count(http::field::authorization) > 1 ||
                                  request.count(http::field::sec_websocket_protocol) > 1;
-        if (auto rejection = check_api_write(auth, shared_.write_policy, nullptr, &auth.access))
+        std::function<bool()> authorized;
+        if (auto rejection = check_api_write(auth, shared_.write_policy, nullptr, &auth.access, &authorized))
           return reject_upgrade(request, http::status::forbidden, rejection->body);
         auto slot = shared_.slots.acquire();
         // Sessions free up as other clients disconnect: ask this one to retry.
@@ -664,7 +729,7 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
                                 " open sessions); retry later", kWebSocketRetrySeconds);
         stream_.expires_never();
         auto session =
-            std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot), std::move(auth.access), shared_.write_policy.sandboxes);
+            std::make_shared<WsSession>(stream_.release_socket(), shared_.hub, std::move(slot), std::move(auth.access), shared_.write_policy.sandboxes, std::move(authorized));
         // During shutdown an upgrade must not escape the registry's close barrier.
         if (shared_.sessions.add(session)) session->accept(std::move(request));
       }
@@ -720,6 +785,15 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     }
     if (auto rejection = check_api_write(api, shared_.write_policy, &api.actor, &api.access))
       return send_api(std::move(*rejection), request.version(), request.keep_alive());
+    if (api.method == "POST" && api.target.substr(0, api.target.find('?')) == "/api/tokens/reload") {
+      if (api.target != "/api/tokens/reload")
+        return send_api(api_error(400, "INVALID_REQUEST", "Unknown query parameter"), request.version(), request.keep_alive());
+      const auto body = nlohmann::json::parse(api.body.empty() ? "{}" : api.body, nullptr, false);
+      if (!body.is_object() || !body.empty())
+        return send_api(api_error(400, "INVALID_REQUEST", "Expected an empty object"), request.version(), request.keep_alive());
+      return send_api(shared_.write_policy.token_file ? shared_.write_policy.token_file->reload()
+          : api_error(409, "TOKENS_UNCONFIGURED", "No token file configured"), request.version(), request.keep_alive());
+    }
     completion_gate_ = std::make_shared<CompletionGate>();
     awaiting_ = shared_from_this();
     {
@@ -728,7 +802,14 @@ class HttpSession : public Session, public std::enable_shared_from_this<HttpSess
     }
     // The gate severs late engine completions during stop. No executor or socket
     // may outlive the server's io_context, even when a command is still queued.
-    auto complete = [gate = completion_gate_, version = request.version(), keep_alive = request.keep_alive()](ApiResponse response) {
+    auto complete = [gate = completion_gate_, version = request.version(), keep_alive = request.keep_alive(),
+                     token_file = shared_.write_policy.token_file, status = api.target == "/api/status"](ApiResponse response) {
+      if (status && token_file && response.status == 200) {
+        const auto loaded = token_file->snapshot();
+        auto body = nlohmann::json::parse(response.body);
+        body["tokens"] = {{"loaded_at", loaded->loaded_at}, {"count", loaded->tokens.size()}};
+        response.body = body.dump();
+      }
       const std::lock_guard lock(gate->mutex);
       const auto self = gate->session.lock();
       if (!self) return;
@@ -876,7 +957,7 @@ struct WebServer::Impl {
 WebServer::WebServer(std::string address, unsigned short port, std::filesystem::path web_root,
                      AsyncApiHandler api, std::vector<std::string> allowed_origins, std::string write_token,
                      std::vector<std::string> allowed_hosts, std::vector<NamedToken> tokens, bool require_token,
-                     std::shared_ptr<Sandboxes> sandboxes, std::string client_ip_header)
+                     std::shared_ptr<Sandboxes> sandboxes, std::string client_ip_header, std::shared_ptr<TokenFile> token_file)
     : impl_(std::make_unique<Impl>()) {
   impl_->shared.web_root = std::move(web_root);
   impl_->shared.api = std::move(api);
@@ -887,7 +968,7 @@ WebServer::WebServer(std::string address, unsigned short port, std::filesystem::
     if (host_name(host).empty()) throw std::invalid_argument("invalid allowed host: " + host);
   }
   impl_->shared.allowed_hosts = std::move(allowed_hosts);
-  impl_->shared.write_policy = {address, std::move(write_token), allowed_origins, std::move(tokens), require_token, std::move(sandboxes), std::move(client_ip_header)};
+  impl_->shared.write_policy = {address, std::move(write_token), allowed_origins, std::move(tokens), require_token, std::move(sandboxes), std::move(client_ip_header), std::move(token_file)};
   impl_->shared.allowed_origins = std::move(allowed_origins);
   impl_->address = std::move(address);
   impl_->requested_port = port;

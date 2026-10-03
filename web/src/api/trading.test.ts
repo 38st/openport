@@ -156,3 +156,10 @@ it("routes verification outside the selected account and authenticates JSON rece
   await expect(api.downloadVerificationReceipt("saved run")).rejects.toMatchObject({ code: "VERIFICATION_UNAVAILABLE" })
   expect(fetcher).toHaveBeenLastCalledWith("/api/replay/history/saved%20run/verify?format=receipt", { headers: { Accept: "application/json", Authorization: "Bearer replay-token" } })
 })
+
+ it("reloads named tokens on the live admin route", async () => {
+   const fetcher = vi.fn(async () => new Response(JSON.stringify({ names: ["operator"], count: 1, loaded_at: "2026-09-22T14:00:00Z" }), { status: 200 }))
+   vi.stubGlobal("fetch", fetcher)
+   await api.reloadTokens("open")
+   expect(fetcher).toHaveBeenLastCalledWith("/api/tokens/reload", expect.objectContaining({ method: "POST", body: "{}" }))
+ })

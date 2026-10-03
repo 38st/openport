@@ -677,7 +677,7 @@ the run id/file, scenario or recording and date, scenario seed/revision, and pla
 When the sidecar has a final checkpoint, the report prints its head/count and checks
 that the journal agrees; a cleanly shortened journal fails instead of verifying only
 the remaining prefix. No checkpoint means legacy prefix verification.
-New runs record replay driver 5, which adds AM opening-print settlement. Verification
+Replay driver 5 adds AM opening-print settlement. Verification
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an
 AM position is held into an expiry opening print. Resuming requires the current driver (7, below);
@@ -1250,3 +1250,25 @@ can override it per attempt with `fee_model: "itemized"` or custom `rules.fees`;
 schedule and preserves commission caps across partial fills and restarts. New
 journal fields are optional; accounts without a schedule keep their existing
 journal bytes. See [fees](paper-trading.md#fees) for amounts and API examples.
+
+## Reloading named tokens
+
+`--token-file FILE` requires a valid, nonempty named-token file at startup. The
+running server checks mtime and size on each authenticated request and in its
+one-second loop. `SIGHUP` schedules a forced reload in that loop; admin
+`POST /api/tokens/reload` with `{}` forces one immediately and returns loaded
+`names`, `count` and `loaded_at`, never secrets. Python exposes `reload_tokens()`.
+An empty replacement revokes all named tokens; a malformed or unreadable file
+keeps the last successful immutable snapshot. Parse diagnostics name the line,
+never its contents. Explicit failures return 400 `TOKEN_FILE_INVALID`; without
+`--token-file`, the route returns 409 `TOKENS_UNCONFIGURED`. Prefer atomic file
+replacement; force a reload if you deliberately preserve both mtime and size.
+
+Workers share snapshots under a mutex, so a reload cannot publish a partial set.
+Removed or changed credentials fail on the next authenticated request; without
+`--require-token`, public reads remain public. WebSockets using changed or revoked
+file credentials close before their next queued tick, while an in-flight message
+or accepted command may finish. Legacy and sandbox tokens remain valid. No
+restart is needed and sandboxes remain alive. `GET /api/status` reports
+`tokens: {loaded_at, count}` for the last successful load. Reload never changes
+`--require-token` or the server's open/token/disabled write policy.

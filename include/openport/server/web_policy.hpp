@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,7 +24,28 @@ struct NamedToken {
   std::string secret;
 };
 /// Strict NAME SCOPES SECRET lines; diagnostics never include line contents.
-[[nodiscard]] std::vector<NamedToken> parse_token_file(std::string_view text);
+[[nodiscard]] std::vector<NamedToken> parse_token_file(std::string_view text, bool allow_empty = false);
+
+/// Immutable credential snapshots, replaced only after a whole file validates.
+class TokenFile {
+ public:
+  struct Snapshot {
+    std::vector<NamedToken> tokens;
+    std::string loaded_at;
+  };
+  explicit TokenFile(std::filesystem::path path, std::string legacy_token = {});
+  [[nodiscard]] std::shared_ptr<const Snapshot> snapshot();
+  [[nodiscard]] ApiResponse reload();
+  [[nodiscard]] bool valid(const NamedToken& token);
+ private:
+  void refresh(bool force);  // mutex_ held
+  std::filesystem::path path_;
+  std::string legacy_token_;
+  std::mutex mutex_;
+  std::shared_ptr<const Snapshot> snapshot_;
+  std::optional<std::pair<std::filesystem::file_time_type, std::uintmax_t>> stamp_;
+  std::string error_;
+};
 
 struct WritePolicy {
   std::string address = "127.0.0.1";
@@ -33,12 +55,14 @@ struct WritePolicy {
   bool require_token = false;
   std::shared_ptr<Sandboxes> sandboxes = {};
   std::string client_ip_header = {};
+  std::shared_ptr<TokenFile> token_file = {};
 };
 [[nodiscard]] std::string write_mode(const WritePolicy& policy);
 /// API reads and writes share authentication; optional actor is trusted transport context.
 [[nodiscard]] std::optional<ApiResponse> check_api_write(const ApiRequest& request,
                                                         const WritePolicy& policy, std::string* actor = nullptr,
-                                                        ApiAccess* access = nullptr);
+                                                        ApiAccess* access = nullptr,
+                                                        std::function<bool()>* authorization_valid = nullptr);
 
 /// Browser sockets cannot set Authorization; use openport plus a hex token subprotocol.
 [[nodiscard]] std::optional<std::string> websocket_authorization(std::string_view bearer, std::string_view protocols);

@@ -117,6 +117,10 @@ class Client:
     def status(self) -> Status:
         return self._request("GET", "/status")
 
+    def reload_tokens(self) -> JSON:
+        """Admin: reload named credentials; returns names and load metadata, never secrets."""
+        return self._request("POST", "/tokens/reload", {}, control=True, retry=False)
+
     def symbols(self) -> list[str]:
         return [item["symbol"] for item in self.status()["underlyings"]]
 

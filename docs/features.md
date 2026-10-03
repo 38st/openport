@@ -132,7 +132,10 @@ simulation's limits.
   Preset IDs appear beside plan names. Copy active limits and guardrails into new
   accounts or replays, with a replay notice when queued settings need a reset. Public
   demo visitors can create private sandbox accounts on simulated prices, removed
-  after 24 hours unused or a server restart.
+  after 24 hours unused or a server restart. Sandbox tokens default to their own
+  account. Named tokens can be revoked without restarting, and replay tokens can
+  configure isolated accounts. HTTP and the terminal edit per-underlying limits;
+  startup flags select main-account execution settings.
 - **Replay**: record every session and trade any recorded day again beside the live
   feed, on a practice or evaluation plan, at 1× to 300× or as fast as possible. Start
   at a chosen New York time, pause or skip, and keep each run's trades in its own journal.
@@ -315,7 +318,7 @@ special opening quotation; live providers keep manual imports.
 - [x] F57: fill-model startup flag and numeric execution overrides
 - [x] F57: replay tokens reset and configure their isolated accounts
 - [x] F57: sandbox tokens default to their own account
-- [ ] F57 remaining work: token reload
+- [x] F57: token reload without restart (automatic, SIGHUP and admin HTTP); account and token management complete
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
 - [x] A flatten that works until flat: spreads close as one order, large closes split,

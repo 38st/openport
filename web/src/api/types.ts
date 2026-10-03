@@ -97,7 +97,15 @@ export interface CircuitBreaker {
   error: string | null
 }
 
+export interface TokenStatus {
+  loaded_at: string
+  count: number
+}
+export interface TokenReloadResponse extends TokenStatus {
+  names: string[]
+}
 export interface Status {
+  tokens?: TokenStatus
   sandboxes?: { enabled: boolean; idle_seconds: number }
   /** Running openportd version; absent on older servers. */
   version?: string
