@@ -86,3 +86,10 @@ it("keeps alert request fields and optional terms in sync", () => {
     expect(schema.required?.includes(field!)).toBe(!optional)
   }
 })
+
+
+it("keeps the preview sizing basis and nullability in sync", () => {
+  const declared = /max_units_basis\?: ([^\n]+)/.exec(source)![1]!
+  expect(normalize(declared)).toBe(wireType(spec.components.schemas.OrderPreview!.properties!.max_units_basis!))
+  expect(spec.components.schemas.OrderPreview!.required).toContain("max_units_basis")
+})

@@ -73,6 +73,7 @@ TEST(TradingPreview, BuyingPowerFitIsReportedApartFromFloorFit) {
   // buying power fits 23 (24 would cost 10,095.60).
   const auto p = s.preview(f.market("size"), f.time);
   EXPECT_EQ(p.max_units, 1);
+  EXPECT_EQ(p.max_units_basis, "floor");
   EXPECT_EQ(p.max_units_buying_power, 23);
   EXPECT_EQ(p.max_units_floor, 1);
   // The whole room fits two, still within buying power.
@@ -86,6 +87,34 @@ TEST(TradingPreview, BuyingPowerFitIsReportedApartFromFloorFit) {
   EXPECT_EQ(free.max_units, 23);
   EXPECT_EQ(free.max_units_buying_power, 23);
   EXPECT_FALSE(free.max_units_floor);
+  EXPECT_EQ(free.max_units_basis, "buying_power");
+}
+TEST(TradingPreview, SizingNamesOrderAndExposureLimitsWithoutAFloor) {
+  ScriptedMarket f;
+  auto c = config(); c.rules.max_drawdown = {}; c.initial_cash = m("1000000");
+  c.limits.max_order_contracts = 100;
+  TradingSession count(c, f.time); f.seed(count);
+  const auto capped = count.preview(f.market("size"), f.time);
+  EXPECT_EQ(capped.max_units, 100);
+  EXPECT_EQ(capped.max_units_basis, "limits");
+  EXPECT_FALSE(capped.max_units_floor);
+  // Each call has 250,000 dollar delta; the cap allows two, not three.
+  c.limits.aggregate = {600000, 1e9};
+  TradingSession delta(c, f.time); f.seed(delta);
+  const auto exposure = delta.preview(f.market("size"), f.time);
+  EXPECT_EQ(exposure.max_units, 2);
+  EXPECT_EQ(exposure.max_units_basis, "limits");
+  // The same basis accompanies sizing a resting order on changed terms.
+  const auto order = delta.submit(f.limit("rest", 1, "3.90"), f.time);
+  ASSERT_TRUE(order.decision.ok());
+  OrderChange change; change.limit_price = m("3.80");
+  const auto edited = delta.preview_change(*order.order_id, change, f.time);
+  EXPECT_EQ(edited.max_units_basis, "limits");
+  // A personal soft floor is a real floor even without an evaluation plan.
+  Guardrails g; g.soft_floor = m("999000"); count.set_guardrails(g, f.time);
+  const auto soft = count.preview(f.market("size"), f.time);
+  EXPECT_EQ(soft.max_units, 1);
+  EXPECT_EQ(soft.max_units_basis, "floor");
 }
 TEST(TradingPreview, SizingIsNullWhenUnavailableAndZeroWhenNothingFits) {
   ScriptedMarket f; auto c = config(); c.initial_cash = m("300");
@@ -94,6 +123,7 @@ TEST(TradingPreview, SizingIsNullWhenUnavailableAndZeroWhenNothingFits) {
   const auto short_of_power = poor.preview(f.market("poor"), f.time);
   EXPECT_EQ(short_of_power.decision.code, Reason::BUYING_POWER);
   EXPECT_EQ(short_of_power.max_units, 0);
+  EXPECT_EQ(short_of_power.max_units_basis, "buying_power");
   EXPECT_EQ(short_of_power.max_units_buying_power, 0);
   EXPECT_EQ(short_of_power.max_units_floor, 0);
   TradingSession s(config(), f.time); f.seed(s);
@@ -101,6 +131,7 @@ TEST(TradingPreview, SizingIsNullWhenUnavailableAndZeroWhenNothingFits) {
   const auto off_tick = s.preview(f.limit("tick", 1, "4.01"), f.time);
   EXPECT_EQ(off_tick.decision.code, Reason::INVALID_TICK);
   EXPECT_FALSE(off_tick.max_units);
+  EXPECT_TRUE(off_tick.max_units_basis.empty());
   EXPECT_FALSE(off_tick.max_units_buying_power);
   EXPECT_FALSE(off_tick.max_units_floor);
   // So is a paused account's.

@@ -12,7 +12,7 @@ import { OrderPreviewPanel, useOrderPreview } from "./OrderPreview"
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 const preview: OrderPreview = { account_version: "17", decision: "ok", reason: null, buying_power: { required: "501", before: "10000", after: "9499" },
   exposure_change: { dollar_delta: 100, dollar_gamma_1pct: 1, vega: 10, theta: -5 }, max_loss: "501", max_loss_basis: "expiry_payoff", equity_at_max_loss: "9499", breaches_floor: true,
-  breaches_soft_floor: false, max_units: 3, simulated: true, breach: { room: "1000", soft_room: null, complete: true, model: "reflection estimate", underlyings: [] } }
+  breaches_soft_floor: false, max_units: 3, max_units_basis: "floor", simulated: true, breach: { room: "1000", soft_room: null, complete: true, model: "reflection estimate", underlyings: [] } }
 const order: NewOrder = { client_order_id: "preview:test", symbol: "SPXW  261022C05000000", side: "buy", type: "market", quantity: 1, time_in_force: "ioc" }
 let root: Root, host: HTMLDivElement, client: QueryClient
 beforeEach(() => {
@@ -86,20 +86,20 @@ describe("order preview", () => {
   it("shows the buying-power fit apart from the floor fit, and no floor fit without a floor", async () => {
     const split = { ...preview, max_units: 0, max_units_buying_power: 16, max_units_floor: 0 }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: split, error: null, loading: false }} onSize={() => {}} />))
-    expect(host.textContent).toContain("Fits buying power16 units")
+    expect(host.textContent).toContain("Fits buying power and limits16 units")
     expect(host.textContent).toContain("Fits 50% of floor room0 units")
-    expect(host.textContent).toContain("Size that fits both0 units")
+    expect(host.textContent).toContain("Size at 50% of floor room0 units")
     expect(host.querySelector("button")!.disabled).toBe(true)
-    const floorless = { ...preview, max_units: 23, max_units_buying_power: 23, max_units_floor: null,
+    const floorless = { ...preview, max_units: 23, max_units_basis: "buying_power" as const, max_units_buying_power: 23, max_units_floor: null,
       breach: { ...preview.breach, room: null, soft_room: null } }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: floorless, error: null, loading: false }} onSize={() => {}} />))
-    expect(host.textContent).toContain("Size within buying power and limits23 units")
+    expect(host.textContent).toContain("Size within buying power23 units")
     expect(host.textContent).toContain("Size to buying power")
     expect(host.textContent).not.toContain("floor room")
     const unavailable = { ...preview, decision: "INVALID_TICK", reason: { code: "INVALID_TICK", message: "off tick" },
-      max_units: null, max_units_buying_power: null, max_units_floor: null }
+      max_units: null, max_units_basis: null, max_units_buying_power: null, max_units_floor: null }
     await act(async () => root.render(<OrderPreviewPanel preview={{ data: unavailable, error: null, loading: false }} onSize={() => {}} />))
-    expect(host.textContent).toContain("Size that fits bothUnavailable")
+    expect(host.textContent).toContain("Suggested sizeUnavailable")
     expect(host.querySelector("button")!.disabled).toBe(true)
   })
   it("says what fills at once, what cancels and the full size block by block", async () => {
@@ -158,4 +158,20 @@ it("keeps the close preview's risk and fees while hiding every sizing control an
   expect(host.textContent).not.toMatch(/Size|Fits|Sizing|units/)
   expect(host.textContent).toContain("$1.30")
   expect(host.textContent).toContain("Buying power after")
+})
+
+
+it.each(["floor", "buying_power", "limits"] as const)("names the binding %s constraint, even when an account has a floor", async (basis) => {
+  await act(async () => root.render(<OrderPreviewPanel preview={{ data: { ...preview, max_units: 2, max_units_basis: basis }, error: null, loading: false }} onSize={() => {}} />))
+  expect(host.querySelector("button")!.textContent).toBe(`Size to ${basis === "buying_power" ? "buying power" : basis}`)
+})
+it("never labels old floorless previews as floor sizing and does not guess between power and limits", async () => {
+  const older = { ...preview, max_units_basis: undefined, breach: { ...preview.breach, room: null, soft_room: null } }
+  await act(async () => root.render(<OrderPreviewPanel preview={{ data: older, error: null, loading: false }} onSize={() => {}} />))
+  expect(host.textContent).not.toContain("floor room")
+  expect(host.querySelector("button")!.textContent).toBe("Use suggested size")
+  const limited = { ...older, max_units_basis: "limits" as const, max_units: 100 }
+  await act(async () => root.render(<OrderPreviewPanel preview={{ data: limited, error: null, loading: false }} onSize={() => {}} />))
+  expect(host.textContent).toContain("Size within limits100 units")
+  expect(host.textContent).not.toContain("floor room")
 })

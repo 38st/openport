@@ -68,9 +68,11 @@ def test_retry_waits_the_servers_retry_after(stub, monkeypatch):
 
 def test_preview_cancel_and_replay_routing(stub):
     client = Client(stub.url, "secret", "practice")
-    client.preview_order(quantity=1)
+    assert client.preview_order(quantity=1)["max_units_basis"] == "limits"
     assert stub.requests[-1][3]["client_order_id"]
-    assert client.preview_change("1", limit_price="4.20")["simulated"]
+    preview = client.preview_change("1", limit_price="4.20")
+    assert preview["simulated"]
+    assert preview["max_units_basis"] == "limits"
     assert stub.requests[-1][1].startswith("/api/orders/1/preview?")
     assert stub.requests[-1][3] == {"limit_price": "4.20"}
     client.cancel_order("1")

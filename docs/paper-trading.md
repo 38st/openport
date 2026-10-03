@@ -1230,7 +1230,7 @@ The response contains `decision` (`ok` or a reason code), `reason`, `buying_powe
 (`required`, `before`, `working`, `after`), `exposure_change` (dollar delta, dollar gamma per 1%,
 vega and theta), `max_loss`, `max_loss_basis`, `equity_at_max_loss`,
 `breaches_floor`, `breaches_soft_floor`, `max_units`, `max_units_buying_power`,
-`max_units_floor`, projected `breach`, `execution`, `warnings` and
+`max_units_floor`, `max_units_basis`, projected `breach`, `execution`, `warnings` and
 `liquidity`: for each leg, its `symbol`, `side` and `contracts`, whether paper orders
 can fill on its quote now (`executable`, with the `INVALID_QUOTE` or `STALE_QUOTE`
 `reason` when not, and a one-sided, crossed or sizeless quote named in its message),
@@ -1299,6 +1299,10 @@ same size with buying power and the limits alone, floor room aside, and
 `max_units_floor` the size whose loss fits the floor share among those the pre-trade
 checks accept, without the fit to available buying power (a plan's `buying_power`
 rule still refuses); it is null on an account with neither a plan nor a soft floor.
+`max_units_basis` names the constraint that binds the final size: `floor`,
+`buying_power` or `limits`, and is null when sizing is unavailable. Ties prefer
+the pre-trade limits, then buying power, then the floor share; the floor is named
+when it further reduces the feasible size. Previewing changes reports the same field.
 Zero means no size fits: one unit already needs more buying power than is available,
 or raises an exposure or order-size limit. Null means sizing is unavailable: an
 identical retry, an account stopped by a journal failure, held exits (their size

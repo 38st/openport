@@ -1016,6 +1016,8 @@ export interface OrderPreview {
   breaches_soft_floor: boolean | null
   /** Units that fit buying power, the limits and the floor share; null when sizing is unavailable. */
   max_units: number | null
+  /** Constraint binding max_units; null when unavailable, absent on older servers. */
+  max_units_basis?: "floor" | "buying_power" | "limits" | null
   /** Units that fit buying power and the limits, floor room aside. Absent on older servers. */
   max_units_buying_power?: number | null
   /** Units whose loss fits the floor share; null without a plan or soft floor. Absent on older servers. */

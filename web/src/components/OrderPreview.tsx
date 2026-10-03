@@ -70,13 +70,19 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
   const p = preview.data
   const [added, setAdded] = useState<string | null>(null)
   // Without a plan or soft floor, size follows buying power and the limits alone.
-  const floorless = p != null && p.max_units_floor === null && p.breach.room == null && p.breach.soft_room == null
+  const floorless = p != null && p.max_units_floor == null && p.breach.room == null && p.breach.soft_room == null
+  const basis = p?.max_units_basis ?? (p?.max_units_floor != null && p.max_units_buying_power != null &&
+    p.max_units_floor < p.max_units_buying_power ? "floor" : null)
+  const sizeLabel = basis === "floor" && !floorless ? "Size at 50% of floor room"
+    : basis === "buying_power" ? "Size within buying power" : basis === "limits" ? "Size within limits" : "Suggested size"
+  const sizeButton = basis === "floor" && !floorless ? "Size to floor"
+    : basis === "buying_power" ? "Size to buying power" : basis === "limits" ? "Size to limits" : "Use suggested size"
   return <section aria-label="Order preview" className="space-y-2 rounded-md border border-border p-3 text-xs">
-    <div className="flex items-center justify-between gap-2"><span className="font-medium">Simulated order preview</span>
+    <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">Simulated order preview</span>
       {onWhatIf && <button type="button" className="trade-button ml-auto" disabled={!p}
         onClick={() => setAdded(onWhatIf() ? "Added to What-if on Positions." : "What-if is full: six candidates of up to four orders.")}>Add to what-if</button>}
       {sizing && <button type="button" className="trade-button" disabled={disabled || preview.loading || !p || p.max_units == null || p.max_units < 1 || !!preview.error}
-        onClick={() => { if (p?.max_units) onSize(p.max_units) }}>{floorless ? "Size to buying power" : "Size to floor"}</button>}</div>
+        onClick={() => { if (p?.max_units) onSize(p.max_units) }}>{sizeButton}</button>}</div>
     {added && <p role="status" className="text-muted">{added}</p>}
     {preview.loading ? <p className="text-muted">Checking order…</p>
       : preview.error ? <p role="status" className="text-warn">Preview failed. Buying power and floor risk are unavailable. You can still submit for the server's checks.</p>
@@ -86,13 +92,15 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
           <dt className="text-muted">Buying power after</dt><dd className="text-right">{formatMoney(p.buying_power.after)}</dd>
           <dt className="text-muted">{p.max_loss_basis === "scenario_grid" ? "Scenario-grid loss" : "Max loss at expiry"}</dt><dd className="text-right">{formatMoney(p.max_loss)}</dd>
           <dt className="text-muted">Room after this {what}</dt><dd className="text-right">{formatMoney(p.breach.room)}</dd>
-          {sizing && (floorless ? <><dt className="text-muted">Size within buying power and limits</dt><dd className="text-right">{units(p.max_units)}</dd></>
-            : p.max_units_buying_power === undefined ? <><dt className="text-muted">Size at 50% of floor room</dt><dd className="text-right">{units(p.max_units)}</dd></>
-            : <>
-              <dt className="text-muted">Fits buying power</dt><dd className="text-right">{units(p.max_units_buying_power)}</dd>
+          {sizing && <>
+            <dt className="text-muted">{sizeLabel}</dt><dd className="text-right">{units(p.max_units)}</dd>
+            {p.max_units_buying_power !== undefined && <>
+              <dt className="text-muted">Fits buying power and limits</dt><dd className="text-right">{units(p.max_units_buying_power)}</dd>
+            </>}
+            {!floorless && p.max_units_floor !== undefined && <>
               <dt className="text-muted">Fits 50% of floor room</dt><dd className="text-right">{units(p.max_units_floor)}</dd>
-              <dt className="text-muted">Size that fits both</dt><dd className="text-right">{units(p.max_units)}</dd>
-            </>)}
+            </>}
+          </>}
         </dl>
         {p.decision !== "ok" && <p role="status" className="text-warn">{p.decision}: {p.reason?.message}</p>}
         {p.decision === "ok" && p.execution && <ExecutionSummary execution={p.execution} />}

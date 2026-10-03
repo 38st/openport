@@ -220,7 +220,7 @@ json preview_json(const OrderPreview& p) {
       {"equity_at_max_loss", money(p.equity_at_max_loss)},
       {"breaches_floor", p.breaches_floor ? json(*p.breaches_floor) : json(nullptr)},
       {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
-      {"max_units", units(p.max_units)}, {"max_units_buying_power", units(p.max_units_buying_power)},
+      {"max_units", units(p.max_units)}, {"max_units_basis", nullable(p.max_units_basis)}, {"max_units_buying_power", units(p.max_units_buying_power)},
       {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)},
       {"fee", money(p.fee)}, {"fees", fill_fees_json(p.fees)},
       {"next_walk", walk_step_json(p.next_walk)},
