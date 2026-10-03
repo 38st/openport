@@ -2221,7 +2221,8 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(fixed["unlocked_by"], nullptr);
   auto fixed_rules = off({{"plan", "Static 50K"}, {"phase", "evaluation"}, {"profit_target", "5000.00"},
       {"max_drawdown", "4000.00"}, {"drawdown_mode", "static"}, {"lock_balance", nullptr}, {"buy_only", false},
-      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300},
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"},
+      {"account_type", "margin"}, {"house_margin_percent", 0}, {"pm_vol_shock", 0}, {"expiry_cutoff_seconds", 300},
       {"payouts", nullptr}});
   fixed_rules.update({{"profit_basis", "balance"}, {"daily_loss_limit", "2000.00"}, {"daily_loss_basis", "balance"},
                       {"daily_loss_action", "fail"}, {"min_trading_days", 4}, {"day_end", "18:00"}});
@@ -2231,7 +2232,8 @@ TEST(PaperPlans, PresetsListExactRules) {
   EXPECT_EQ(locking["name"], "Locking 100K");
   auto locking_rules = off({{"plan", "Locking 100K"}, {"phase", "evaluation"}, {"profit_target", "6000.00"},
       {"max_drawdown", "4000.00"}, {"drawdown_mode", "end_of_day"}, {"lock_balance", nullptr}, {"buy_only", false},
-      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"}, {"expiry_cutoff_seconds", 300},
+      {"defined_risk", false}, {"buying_power", true}, {"slippage_ticks", 0}, {"margin", "strategy"},
+      {"account_type", "margin"}, {"house_margin_percent", 0}, {"pm_vol_shock", 0}, {"expiry_cutoff_seconds", 300},
       {"payouts", nullptr}});
   locking_rules.update({{"lock_at_start", true}, {"daily_loss_limit", "2000.00"}, {"consistency_percent", 50}});
   EXPECT_EQ(locking["rules"], locking_rules);
