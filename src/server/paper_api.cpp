@@ -81,6 +81,8 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"account_type", r.account_type == AccountType::Cash ? "cash" : r.account_type == AccountType::Ira ? "ira" : "margin"},
           {"house_margin_percent", r.house_margin_percent}, {"pm_vol_shock", r.pm_vol_shock},
           {"max_contracts_held", r.max_contracts_held},
+          {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", positive(r.max_trade_risk)},
+          {"max_trade_risk_percent", r.max_trade_risk_percent},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
   if (r.fill_latency_ms != 0) result["fill_latency_ms"] = r.fill_latency_ms;
@@ -219,6 +221,8 @@ json preview_json(const OrderPreview& p) {
       {"buying_power", {{"required", p.buying_power_required.str()}, {"before", p.buying_power_before.str()},
                         {"working", money(p.buying_power_working)}, {"after", money(p.buying_power_after)}}},
       {"exposure_change", change}, {"max_loss", money(p.max_loss)}, {"max_loss_basis", nullable(p.max_loss_basis)},
+      {"trade_risk", money(p.trade_risk)}, {"trade_risk_limit", money(p.trade_risk_limit)},
+      {"trade_risk_basis", nullable(p.trade_risk_basis)},
       {"equity_at_max_loss", money(p.equity_at_max_loss)},
       {"breaches_floor", p.breaches_floor ? json(*p.breaches_floor) : json(nullptr)},
       {"breaches_soft_floor", p.breaches_soft_floor ? json(*p.breaches_soft_floor) : json(nullptr)},
@@ -1550,7 +1554,7 @@ AccountRules parse_rules(const json& j) {
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
-          "max_contracts_held"});
+          "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"});
   AccountRules rules;
   // Accept read-back rules in a custom request, but always derive the identity.
   if (j.contains("plan_id") && !j.at("plan_id").is_null() && !j.at("plan_id").is_string())
@@ -1584,6 +1588,9 @@ AccountRules parse_rules(const json& j) {
   if (has("profitable_day_profit")) rules.profitable_day_profit = decimal_field(j, "profitable_day_profit");
   if (has("day_end")) rules.day_end_minutes = clock_field(j, "day_end");
   if (j.contains("max_contracts_held")) rules.max_contracts_held = integer_field(j, "max_contracts_held");
+  if (j.contains("require_stop_loss")) rules.require_stop_loss = boolean_field(j, "require_stop_loss");
+  if (has("max_trade_risk")) rules.max_trade_risk = decimal_field(j, "max_trade_risk");
+  if (j.contains("max_trade_risk_percent")) rules.max_trade_risk_percent = integer_field(j, "max_trade_risk_percent");
   rules.buy_only = boolean_field(j, "buy_only");
   if (j.contains("defined_risk")) rules.defined_risk = boolean_field(j, "defined_risk");
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");

@@ -1507,6 +1507,70 @@ Decision contracts_held_check(const State& s, const Order& candidate) {
             static_cast<double>(projected), static_cast<double>(cap), "account"};
   return {};
 }
+/// Trade risk uses the same bounded expiry payoff as preview, but no fees and
+/// no scenario-grid substitution for an unbounded or unknown loss.
+std::optional<Money> expiry_loss(const State& s, const OrderRequest& request, Money premium, Money fees);
+bool trade_rules_on(const AccountRules& rules) {
+  return rules.require_stop_loss || rules.max_trade_risk > Money{} || rules.max_trade_risk_percent > 0;
+}
+std::optional<Money> trade_risk_limit(const State& s, Money equity) {
+  const auto& r = s.config.rules;
+  std::optional<Money> limit;
+  if (r.max_trade_risk > Money{}) limit = r.max_trade_risk;
+  if (r.max_trade_risk_percent > 0 && r.max_drawdown > Money{}) {
+    const auto room = std::max(Money{}, equity - s.evaluation.floor).micros();
+    // Round down to a micro-dollar without an overflowing multiplication.
+    const auto share = Money::from_micros((room / 100) * r.max_trade_risk_percent +
+                                        ((room % 100) * r.max_trade_risk_percent) / 100);
+    limit = limit ? std::min(*limit, share) : share;
+  }
+  return limit;
+}
+const Trigger* protective_stop(const OrderRequest& r) {
+  if (!r.bracket || !r.bracket->stop_loss || !r.bracket->stop_loss->trigger) return nullptr;
+  const auto& t = *r.bracket->stop_loss->trigger;
+  if (t.source == TriggerSource::Underlying) return &t;
+  const auto direction = multi_leg(r) || r.side == Side::Sell ? TriggerDirection::AtOrAbove : TriggerDirection::AtOrBelow;
+  return t.direction == direction ? &t : nullptr;
+}
+struct TradeRisk {
+  std::optional<Money> loss;
+  std::string basis;
+};
+TradeRisk trade_risk(const State& s, const OrderRequest& r) {
+  auto legs = r.legs;
+  if (legs.empty()) legs.push_back({r.symbol, r.side, 1});
+  Money net;
+  if (r.limit_price) {
+    net = !multi_leg(r) && r.side == Side::Sell ? -*r.limit_price : *r.limit_price;
+  } else {
+    for (const auto& leg : legs) {
+      const auto& q = s.books.at(leg.symbol).quote;
+      net = net + (leg.side == Side::Buy ? *q.ask : -*q.bid) * leg.ratio;
+    }
+  }
+  const auto multiplier = static_cast<std::int64_t>(s.contracts.at(legs.front().symbol).multiplier);
+  if (const auto* stop = protective_stop(r); stop && stop->source != TriggerSource::Underlying) {
+    const auto close = multi_leg(r) || r.side == Side::Sell ? stop->level : -stop->level;
+    return {std::max(Money{}, ((net + close) * r.quantity) * multiplier), "stop_loss"};
+  }
+  const auto loss = expiry_loss(s, r, (net * r.quantity) * multiplier, Money{});
+  return {loss, loss ? "expiry_payoff" : "unbounded_or_unknown"};
+}
+Decision trade_rules_check(const State& s, const Order& o, Money equity) {
+  const auto& rules = s.config.rules;
+  if (!trade_rules_on(rules) || o.system || kept_within(o) || closing_only(s, o)) return {};
+  if (rules.require_stop_loss && !protective_stop(o.request))
+    return failure(Reason::STOP_REQUIRED, "This plan requires a protective stop-loss trigger in every entry bracket");
+  if (const auto limit = trade_risk_limit(s, equity)) {
+    const auto risk = trade_risk(s, o.request);
+    if (!risk.loss || *risk.loss > *limit)
+      return {Reason::MAX_TRADE_RISK, risk.loss ? "Order trade risk before fees exceeds the plan limit"
+                  : "Order trade risk is unbounded or cannot be bounded at expiry; add an option or combo stop",
+              risk.loss ? std::optional(risk.loss->dollars()) : std::nullopt, limit->dollars(), "trade"};
+  }
+  return {};
+}
 /// When an order is checked: as it is accepted or changed, as its trigger is
 /// reached, or as it fills. A stop-limit's limit is set against its stop rather
 /// than the market: it is banded around an option or combo trigger's level when
@@ -1661,6 +1725,8 @@ Decision combo_check(const State& s, const Order& o, Stage stage) {
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (const auto d = contracts_held_check(s, o); !d.ok()) return d;
+  if (stage == Stage::Accept)
+    if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
@@ -1781,6 +1847,8 @@ Decision order_check(const State& s, const Order& o, Stage stage = Stage::Accept
   const auto snapshot = measure(s);
   if (!snapshot.valuation_complete) return failure(Reason::STALE_QUOTE, "All held positions need fresh marks before trading");
   if (const auto d = contracts_held_check(s, o); !d.ok()) return d;
+  if (stage == Stage::Accept)
+    if (const auto d = trade_rules_check(s, o, snapshot.equity); !d.ok()) return d;
   if (!closing_only(s, o))
     if (const auto d = loss_check(s, snapshot); !d.ok()) return d;
   if (const auto d = exposure_check(s, o, snapshot); !d.ok()) return d;
@@ -3028,6 +3096,14 @@ PreviewProjection project_working(const State& before, State after_state, OrderI
       return projection;
     }
   }
+  const auto& candidate = after.orders.at(static_cast<std::size_t>(id - 1));
+  if (trade_rules_on(before.config.rules) && !candidate.system && !kept_within(candidate) &&
+      !request.exits_only && !closing_only(before, candidate)) {
+    const auto risk = trade_risk(before, candidate.request);
+    result.trade_risk = risk.loss;
+    result.trade_risk_basis = risk.basis;
+    result.trade_risk_limit = trade_risk_limit(before, snapshot.equity);
+  }
   // The full size at the far sides, block by block, as market_slices prices it.
   Money gross, net;
   for (const auto& leg : legs)
@@ -3346,7 +3422,7 @@ Sizing size_order(const std::function<const OrderPreview&(Quantity)>& sized, Qua
     // other refusal, or a loss that cannot be projected, leaves sizing unavailable.
     const auto code = sized(1).decision.code;
     if (code == Reason::BUYING_POWER || code == Reason::DELTA_LIMIT || code == Reason::VEGA_LIMIT ||
-        code == Reason::MAX_ORDER_CONTRACTS) return none(code == Reason::BUYING_POWER ? "buying_power" : "limits");
+        code == Reason::MAX_ORDER_CONTRACTS || code == Reason::MAX_CONTRACTS_HELD || code == Reason::MAX_TRADE_RISK) return none(code == Reason::BUYING_POWER ? "buying_power" : "limits");
     return out;
   }
   Quantity low = 1, high = upper;
@@ -3630,6 +3706,9 @@ CommandResult change_order(State& s, OrderId id, const OrderChange& change, cons
     return refuse(failure(Reason::INVALID_ORDER, "Managed exits cannot walk"));
   if (change.quantity && order.reduce_only)
     return refuse(failure(Reason::INVALID_ORDER, "A reduce-only close's size follows its position; change its price instead"));
+  if (s.config.rules.require_stop_loss && order.role == OrderRole::StopLoss && change.quantity &&
+      *change.quantity < r.quantity && exit_capacity(s, r) > 0)
+    return refuse(failure(Reason::STOP_REQUIRED, "Close the protected position before reducing its required stop-loss size"));
   // An exit may close part of what it protects, or all of it again, never more.
   if (change.quantity && exit && *change.quantity > order.filled_quantity + exit_capacity(s, r))
     return refuse({Reason::INVALID_ORDER, "A bracket exit closes at most the position it protects",
@@ -4528,6 +4607,10 @@ CommandResult TradingSession::cancel(OrderId id, Timestamp time, Reason reason) 
     if (id == 0 || id > s.orders.size()) return CommandResult{failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), {}, 0};
     if (!s.orders.at(static_cast<std::size_t>(id - 1)).open())
       return CommandResult{failure(Reason::ORDER_TERMINAL, "Order is already terminal"), id, 0};
+    const auto& order = s.orders.at(static_cast<std::size_t>(id - 1));
+    if (reason == Reason::USER_CANCEL && s.config.rules.require_stop_loss && order.role == OrderRole::StopLoss &&
+        exit_capacity(s, order.request) > 0)
+      return CommandResult{failure(Reason::STOP_REQUIRED, "Close the protected position before cancelling its required stop-loss"), id, 0};
     cancel_order(s, id, failure(reason, reason == Reason::PLAYBOOK_TIME_STOP ? "Playbook time stop" : reason == Reason::PLAYBOOK_TRAILING_STOP ? "Playbook trailing stop" :
         reason == Reason::PLAYBOOK_DTE_STOP ? "Playbook DTE stop" : reason == Reason::PLAYBOOK_DAYS_IN_TRADE_STOP ? "Playbook days in trade stop" : "Cancelled by caller"), events);
     return CommandResult{{}, id, 0};
@@ -4541,6 +4624,12 @@ CommandResult TradingSession::modify(OrderId id, OrderChange change, Timestamp t
 }
 CommandResult TradingSession::cancel_all(std::optional<std::string> underlying, Timestamp time) {
   return impl_->transact(time, "cancel_all", [&](State& s, Events& events) {
+    if (s.config.rules.require_stop_loss)
+      for (const auto id : open_ids(s)) {
+        const auto& o = s.orders[id - 1];
+        if (o.role == OrderRole::StopLoss && (!underlying || underlying_of(s, o) == *underlying) && exit_capacity(s, o.request) > 0)
+          return CommandResult{failure(Reason::STOP_REQUIRED, "Close protected positions before cancelling their required stops"), id, 0};
+      }
     for (const auto id : open_ids(s))
       if (const auto& o = s.orders[id - 1]; o.open() && (!underlying || underlying_of(s, o) == *underlying))
         cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
@@ -4660,6 +4749,12 @@ CommandResult TradingSession::cancel_orders(const std::vector<OrderId>& ids, Tim
       if (id == 0 || id > s.orders.size()) return CommandResult{failure(Reason::UNKNOWN_ORDER, "Unknown order ID"), id, 0};
     if (std::none_of(ids.begin(), ids.end(), [&](OrderId id) { return s.orders.at(static_cast<std::size_t>(id - 1)).open(); }))
       return CommandResult{failure(Reason::ORDER_TERMINAL, "Every listed order is already terminal"), ids.front(), 0};
+    if (s.config.rules.require_stop_loss)
+      for (const auto id : ids) {
+        const auto& o = s.orders[id - 1];
+        if (o.open() && o.role == OrderRole::StopLoss && exit_capacity(s, o.request) > 0)
+          return CommandResult{failure(Reason::STOP_REQUIRED, "Close protected positions before cancelling their required stops"), id, 0};
+      }
     for (const auto id : ids) cancel_order(s, id, failure(Reason::USER_CANCEL, "Cancelled by caller"), events);
     return CommandResult{};
   });
@@ -5545,10 +5640,18 @@ CommandResult TradingSession::trade_stock(const std::string& symbol, Quantity si
     if (const auto d = share_close_check(s, symbol); !d.ok()) return CommandResult{d, {}, 0};
     const auto price = stock_price(s, symbol);
     if (!reduces) {
+      if (s.config.rules.require_stop_loss)
+        return CommandResult{failure(Reason::STOP_REQUIRED, "This plan requires a stop-loss; share entries do not support brackets"), {}, 0};
       const auto before = measure(s);
       if (!before.valuation_complete)
         return CommandResult{failure(Reason::STALE_QUOTE, "All held positions need fresh marks before opening shares"), {}, 0};
       if (const auto d = loss_check(s, before); !d.ok()) return CommandResult{d, {}, 0};
+      if (const auto limit = trade_risk_limit(s, before.equity)) {
+        const auto loss = signed_shares > 0 ? std::optional(*price * signed_shares) : std::nullopt;
+        if (!loss || *loss > *limit)
+          return CommandResult{{Reason::MAX_TRADE_RISK, "Share entry risk before fees exceeds the plan limit",
+                                loss ? std::optional(loss->dollars()) : std::nullopt, limit->dollars(), "trade"}, {}, 0};
+      }
       State projected = s;
       trade_shares(projected, symbol, signed_shares, *price, StockSource::Trade);
       if (const auto d = check_exposure(measure(projected).risk, before.risk); !d.ok()) return CommandResult{d, {}, 0};

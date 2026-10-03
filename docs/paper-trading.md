@@ -1300,6 +1300,12 @@ and market-time seconds left. Rules and Risk show pending values beside active o
 
 ### Order preview and breach risk
 
+When a stop or trade-risk rule is enabled, opening previews also return
+`trade_risk`, `trade_risk_limit` (decimal strings or null), and `trade_risk_basis`
+(`stop_loss`, `expiry_payoff`, `unbounded_or_unknown`, or null when not applicable).
+They are separate from the fee-inclusive `max_loss` used for floor sizing.
+
+
 `POST /api/orders/preview` takes the same order body as submission, plus optional
 `floor_share` in (0, 1], default 0.5. The const reducer path shares submission checks
 and makes a private full-size projection. It writes no journal, changes no account or
@@ -1524,6 +1530,9 @@ side, no buying-power check. All rule money is exact.
 | `buy_only` | A sell must close contracts already held, counting working and armed sells on the same contract; otherwise `BUY_ONLY`. A manual (untriggered) close that only the account's own armed stop sells keep from fitting supersedes them: it cancels them with `POSITION_CLOSED`, newest first and only as many as it needs, and keeps them if it is refused anyway. Preview shows the same |
 | `defined_risk` | Each short option needs a long of the same type on the same underlying that expires with it or later, any strike (`naked_shorts` counts the rest). An order, single or multi-leg, that would leave more shorts uncovered than before rejects with `DEFINED_RISK`, so closing a short is always allowed. Open orders count as if every sell they offer filled and no buy did (a multi-leg order fills whole; a bracket's two exits sell its position once), so a working sell can never take the long a short needs. Bracket exits and exercise keep shorts covered too. Off in every preset; custom rules take it |
 | `max_contracts_held` | Option contracts held (sum of absolute position quantities), plus opening contracts of working orders and this order, may not exceed this cap (0 disables; 1–100000). Counts combo leg ratios and reserves closing capacity only once across working orders. Shares and managed exits do not count. Opening entries and quantity changes refuse with `MAX_CONTRACTS_HELD`, projected count and cap; reducing and system closes remain available |
+| `require_stop_loss` | Every opening order needs a bracket `stop_loss` trigger (default false); otherwise `STOP_REQUIRED`. An option stop triggers below for a long entry, above for a short; a combo stop triggers above on its closing signed net. Underlying triggers also qualify. A target or a limit alone is not a protective stop. User cancellation of that stop, including cancel-all, or reducing its protected size, refuses while its position is open; cancelling an unfilled entry leaves its filled part's stop intact. Closing, flattening, OCO fills, partial stop re-arming and automatic playbook exits keep their normal behavior |
+| `max_trade_risk` | Maximum loss per opening order, before fees, in dollars; zero disables. Uses the limit price, or a market order's current far side, and the total order quantity (including already-filled units when changing it). At an option stop the loss is (entry minus stop) × quantity × multiplier for a buy, reversed for a sell. A combo uses (signed entry net + signed closing stop net) × units × multiplier. Negative loss is zero. Without an option/combo stop, uses the existing bounded expiry payoff (long premium or spread width less credit); underlying-price stops also use this because their option fill price is unknown. Unbounded or unknown expiry loss always exceeds an active cap; never substitutes a scenario-grid estimate. `MAX_TRADE_RISK` carries actual dollars (null if unbounded/unknown) and the limit |
+| `max_trade_risk_percent` | Whole percent 0–100 of positive room to the plan floor (equity − floor) at entry or change, rounded down to a micro-dollar. Zero disables; without a plan floor this rule does nothing. If an absolute risk cap also applies, use the smaller cap |
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
 | `slippage_ticks` | Integer from 0 to 10 adverse ticks per option fill, including each combo leg and closing orders; default 0 |
 | `fill_latency_ms` | Integer from 0 to 60,000 milliseconds on market time before a quote can execute an order; default 0 |
@@ -1549,6 +1558,13 @@ side, no buying-power check. All rule money is exact.
 | `profitable_day_profit` | The profit a day needs to count as profitable; zero counts any day above zero |
 | `day_end_minutes` | Minutes after New York midnight at which the plan's trading day ends, 975 (16:15) to 1440 (24:00); default 1020 (17:00). API `day_end` as `HH:MM` |
 | `payouts` | Funded phase: qualifying days, withdrawal share, trader split, minimum and caps (see Funded accounts and payouts) |
+
+These trade-entry rules leave reducing orders, managed exits and system closes available.
+Risk caps are checked at acceptance and changes, not retroactively when a floor moves.
+Stops may slip or stop-limits remain unfilled: trade risk assumes execution at the
+trigger price, without fees or slippage, and is not a guaranteed loss bound. Share
+entries cannot attach brackets, so a stop-required plan refuses them; with only a
+risk cap, a long share entry risks its purchase price and a short is unbounded.
 
 Outcomes use **fully marked equity**: every position has a mark, fresh or not. A
 position without any mark defers the decision rather than counting as zero. Every
@@ -2553,6 +2569,8 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `INVALID_CONTRACT`, `UNKNOWN_CONTRACT` | Invalid/conflicting terms, or missing resolved definition |
 | `INVALID_ORDER`, `DUPLICATE_CLIENT_ID`, `INVALID_TICK` | Malformed order, a key reused with other terms, invalid price increment |
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
+| `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
+| `MAX_TRADE_RISK` | Entry risk exceeds its plan cap; `actual` and `limit` are dollars, `scope` is `trade`; actual is null for unbounded or unknown risk |
 | `MAX_CONTRACTS_HELD` | Projected held options plus working opening contracts exceed the plan cap; `actual` and `limit` are contract counts, `scope` is `account` |
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |
 | `DELTA_LIMIT`, `VEGA_LIMIT` | The order raises worst reachable exposure above an underlying/aggregate limit |
@@ -2592,7 +2610,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `EVALUATION_CLOSED` | The attempt passed or failed; closing orders, Flatten and disposal remain allowed. Reset before opening, adding to or reversing positions |
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
-| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100, consistency limits outside 1-100 or more than 64 entries, or nonpositive caps, a negative payout buffer or buffer_payouts outside 0-100, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, inside fills outside 0-100%, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
+| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100, consistency limits outside 1-100 or more than 64 entries, or nonpositive caps, a negative payout buffer or buffer_payouts outside 0-100, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, inside fills outside 0-100%, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Trade-entry rule ranges are a contracts held cap of 0–100000, nonnegative risk money and risk percentage 0–100. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling cancelled when the other exit filled completely, remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |

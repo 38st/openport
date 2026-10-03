@@ -8902,6 +8902,27 @@
             "minimum": 0,
             "maximum": 100000,
             "description": "Held option contracts plus working opening contracts; shares excluded. Zero disables."
+          },
+          "require_stop_loss": {
+            "type": "boolean",
+            "description": "Opening orders require a protective bracket stop trigger; user cancellation is refused while its position remains open. Default false."
+          },
+          "max_trade_risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Maximum per-order loss before fees; null or zero disables. At the option/combo stop price, otherwise bounded expiry payoff. Unbounded or unknown loss refuses."
+          },
+          "max_trade_risk_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Percent of equity minus the plan floor at entry/change, rounded down to micro-dollars. Zero disables; ignored without a floor. The tighter active risk limit applies."
           }
         },
         "required": [
@@ -15530,6 +15551,37 @@
               }
             ],
             "description": "Next scheduled step, or null when there is none (including at cap or terminal)."
+          },
+          "trade_risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-order trade risk before fees when a stop/risk rule is enabled; total quantity, including already-filled units on a change. Null when unbounded or unknown, or not applicable."
+          },
+          "trade_risk_limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The tighter active absolute/percent risk cap; null without an applicable cap."
+          },
+          "trade_risk_basis": {
+            "enum": [
+              "stop_loss",
+              "expiry_payoff",
+              "unbounded_or_unknown",
+              null
+            ],
+            "description": "Null when not applicable. Underlying-price stops use expiry payoff because their option fill price is unknown."
           }
         },
         "required": [
@@ -17338,6 +17390,20 @@
                         "minimum": 0,
                         "maximum": 100000,
                         "description": "Held option contracts plus working opening contracts; shares excluded. Zero disables."
+                      },
+                      "require_stop_loss": {
+                        "type": "boolean",
+                        "description": "Opening orders require a protective bracket stop trigger; user cancellation is refused while its position remains open. Default false."
+                      },
+                      "max_trade_risk": {
+                        "$ref": "#/components/schemas/Money",
+                        "description": "Maximum per-order loss before fees; null or zero disables. At the option/combo stop price, otherwise bounded expiry payoff. Unbounded or unknown loss refuses."
+                      },
+                      "max_trade_risk_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "Percent of equity minus the plan floor at entry/change, rounded down to micro-dollars. Zero disables; ignored without a floor. The tighter active risk limit applies."
                       }
                     },
                     "required": [],
@@ -19483,6 +19549,27 @@
             "minimum": 0,
             "maximum": 100000,
             "description": "Held option contracts plus working opening contracts; shares excluded. Zero disables."
+          },
+          "require_stop_loss": {
+            "type": "boolean",
+            "description": "Opening orders require a protective bracket stop trigger; user cancellation is refused while its position remains open. Default false."
+          },
+          "max_trade_risk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Maximum per-order loss before fees; null or zero disables. At the option/combo stop price, otherwise bounded expiry payoff. Unbounded or unknown loss refuses."
+          },
+          "max_trade_risk_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Percent of equity minus the plan floor at entry/change, rounded down to micro-dollars. Zero disables; ignored without a floor. The tighter active risk limit applies."
           }
         },
         "required": [

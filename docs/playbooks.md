@@ -374,7 +374,7 @@ nanoseconds. The plan objectives and daily loss rules take their journal names a
 `daily_loss_basis`, `daily_loss_action` and `consistency_basis` their API words,
 `lock_at_start` true or false, and `consistency_percent`, `min_trading_days`,
 `min_profitable_days` and `day_end_minutes` (minutes after New York midnight) whole
-numbers. `max_contracts_held` (0–100000) caps held options plus working opening contracts. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
+numbers. `max_contracts_held` (0–100000) caps held options plus working opening contracts. `require_stop_loss` is a boolean; `max_trade_risk` is decimal-string dollars and `max_trade_risk_percent` a whole percentage (0–100). Normal preview and entry checks enforce them for automatic entries too. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
 required for evaluation plans; practice and funded preset IDs are refused. Custom
 funded plans may instead set `phase: "funded"`, no profit target, and `payouts` with
 at least one qualifying day. Payout fields use their account API names; money

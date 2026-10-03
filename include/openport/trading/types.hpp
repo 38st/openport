@@ -33,10 +33,10 @@ enum class Reason {
   // and what a pass still waits for.
   PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
   ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP,
-  MAX_CONTRACTS_HELD
+  MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::MAX_CONTRACTS_HELD;
+inline constexpr Reason kLastReason = Reason::MAX_TRADE_RISK;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -631,6 +631,9 @@ struct AccountRules {
   std::int64_t day_end_minutes = kDayEndMinutes;
   std::optional<FeeSchedule> fees;  ///< Empty keeps SessionConfig::fee_per_contract.
   Quantity max_contracts_held = 0;  ///< Held options plus working opening contracts, 1-100000; zero disables.
+  bool require_stop_loss = false;  ///< Opening option orders need a protective bracket stop.
+  Money max_trade_risk;            ///< Per-order loss at its stop or bounded expiry payoff, excluding fees; zero disables.
+  std::int64_t max_trade_risk_percent = 0;  ///< Percent of equity less the plan floor, 0-100; zero disables.
   [[nodiscard]] bool evaluation() const {
     return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{};
   }

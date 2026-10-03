@@ -74,7 +74,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `GET /api/portfolio`, `/api/orders`, `/api/fills`, `/api/risk`, `/api/account`, `/api/trades` | The account's positions with their margin breakdown, orders and fills with actors (each fill with the bid, ask and sizes it took and the quote's age), risk, warnings and breach estimates, rules and progress, and its round trips |
 | `GET /api/risk/profile?underlying=&benchmark=SPY&days=0,1,expiry&iv=&range=10&steps=41&betas=` | The held book's P&L curve across moves of one underlying, or of SPY or SPX with each underlying beta-weighted to it, today and on later dates with a volatility offset; where each curve reaches the floors, with touch odds, and beta-weighted delta ([details](paper-trading.md#risk-profile-and-probabilities)) |
 | `GET /api/orders/{id}` | One order with status, cancellation reason, note and changes; also available under replay and replay history. Unknown ids are 404 `UNKNOWN_ORDER` |
-| `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, size to buying power and to floor with the binding `max_units_basis` (floor, buying_power, limits or null), projected breach risk, and warnings about terms that act at once |
+| `POST /api/orders/preview` | A pure order check, buying power, Greeks change, maximum loss, plan trade risk and its limit, size to buying power and to floor with the binding `max_units_basis` (floor, buying_power, limits or null), projected breach risk, and warnings about terms that act at once |
 | `POST /api/orders/what-if` | Up to six candidate adjustments of up to four orders each, filled on a private copy of the account and compared on buying power, Greeks, grid loss and floor room |
 | `POST /api/orders/{id}/preview` | The same preview of a change to a resting order, as `PUT /api/orders/{id}` would make it, without making it |
 | `POST /api/stocks/trade` | `{symbol, side: "buy" or "sell", shares: 1–10000000}` opens, adds, reduces or reverses shares at a fresh underlying price during stock regular hours; returns Portfolio |
@@ -267,3 +267,11 @@ exact run verification. Replay history adds `journal_size` and
 with a minimum of one second; warnings begin at 30 seconds. They are estimates,
 not bounds: recording generation, analytics and hardware can take longer.
 The terminal displays the warning before the trader presses Verify.
+
+Custom account/reset rules accept optional `max_contracts_held`, `require_stop_loss`,
+`max_trade_risk` (decimal string or null) and `max_trade_risk_percent`. Defaults turn
+all four off. Opening previews report `trade_risk`, `trade_risk_limit` and
+`trade_risk_basis`. Refusals use HTTP 422 `MAX_CONTRACTS_HELD`, `STOP_REQUIRED` or
+`MAX_TRADE_RISK` with the usual `actual`, `limit`, `scope` evidence: contract counts
+with scope `account`, or dollar amounts with scope `trade` (actual null for
+unbounded/unknown risk). See [trade rules](paper-trading.md#account-rules-and-evaluations).

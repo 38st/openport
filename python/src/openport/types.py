@@ -195,6 +195,9 @@ class AccountRules(TypedDict, total=False):
     buy_only: bool
     defined_risk: bool
     max_contracts_held: int
+    require_stop_loss: bool
+    max_trade_risk: str | None
+    max_trade_risk_percent: int
     slippage_ticks: int
     fill_latency_ms: int
     impact_ticks: int
@@ -330,6 +333,9 @@ class Probability(TypedDict):
 
 
 class OrderPreview(TypedDict):
+    trade_risk: str | None
+    trade_risk_limit: str | None
+    trade_risk_basis: str | None
     next_walk: WalkStep | None
     account_version: str
     decision: str

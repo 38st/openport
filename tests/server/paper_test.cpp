@@ -2481,7 +2481,8 @@ TEST(PaperPlans, PresetsListExactRules) {
     rules.update({{"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
-                  {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0}});
+                  {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
+                  {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0}});
     return rules;
   };
   const auto intraday = plans[3];
@@ -4204,10 +4205,54 @@ TEST_F(PaperEngine, HeldContractRulesAndRefusalEvidence) {
   EXPECT_EQ(error["actual"], 3);
   EXPECT_EQ(error["limit"], 2);
   EXPECT_EQ(error["scope"], "account");
-  for (const json value : {json(-1), json(100001)}) {
+  for (const json& value : {json(-1), json(100001)}) {
     rules["max_contracts_held"] = value;
     expect_error(reset(rules), 400, "INVALID_RULES");
   }
   rules["max_contracts_held"] = 1.5;
   expect_error(reset(rules), 400, "INVALID_REQUEST");
+}
+
+TEST_F(PaperEngine, StopAndRiskRulesRoundTripWithPreviewAndRefusalEvidence) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules["plan"] = "Protected trades";
+  rules["require_stop_loss"] = true;
+  rules["max_trade_risk"] = "100.00";
+  rules["max_trade_risk_percent"] = 25;
+  auto reset = [&](const json& r) {
+    return write(*engine, "POST", "/api/account/reset", {{"reason", "risk test"}, {"initial_cash", "100000"}, {"rules", r}});
+  };
+  ASSERT_EQ(reset(rules).status, 200);
+  const auto wire = read(*engine, "/api/account")["rules"];
+  EXPECT_EQ(wire["require_stop_loss"], true);
+  EXPECT_EQ(wire["max_trade_risk"], "100.00");
+  EXPECT_EQ(wire["max_trade_risk_percent"], 25);
+  expect_error(write(*engine, "POST", "/api/orders", order(market, "bare", "4.20")), 422, "STOP_REQUIRED");
+  auto entry = order(market, "risky", "4.20");
+  entry["bracket"] = {{"stop_loss", {{"trigger", {{"source", "option"}, {"direction", "at_or_below"}, {"level", "3.00"}}}}}};
+  const auto preview = write(*engine, "POST", "/api/orders/preview", entry);
+  ASSERT_EQ(preview.status, 200) << preview.body;
+  const auto p = json::parse(preview.body);
+  EXPECT_EQ(p["trade_risk"], "120.00");
+  EXPECT_EQ(p["trade_risk_limit"], "100.00");
+  EXPECT_EQ(p["trade_risk_basis"], "stop_loss");
+  EXPECT_EQ(p["reason"]["actual"], 120);
+  EXPECT_EQ(p["reason"]["limit"], 100);
+  const auto refused = write(*engine, "POST", "/api/orders", entry);
+  expect_error(refused, 422, "MAX_TRADE_RISK");
+  EXPECT_EQ(json::parse(refused.body)["error"]["scope"], "trade");
+  entry["client_order_id"] = "protected";
+  entry["bracket"]["stop_loss"]["trigger"]["level"] = "3.20";
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", entry).status, 201);
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"max_trade_risk", "-1"}, {"max_trade_risk_percent", -1}, {"max_trade_risk_percent", 101}}) {
+    auto invalid = rules; invalid[key] = value;
+    expect_error(reset(invalid), 400, "INVALID_RULES");
+  }
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"max_trade_risk", 100}, {"max_trade_risk_percent", 1.5}, {"require_stop_loss", "true"}}) {
+    auto invalid = rules; invalid[key] = value;
+    expect_error(reset(invalid), 400, "INVALID_REQUEST");
+  }
 }
