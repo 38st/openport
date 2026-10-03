@@ -595,3 +595,27 @@ it.each([3, -3])("keeps a close within the %s held contracts without opening-siz
   await click("Submit order")
   expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ quantity: 3, side: held > 0 ? "sell" : "buy" }), trading.write)
 })
+
+
+it.each(["passed", "failed"] as const)("allows a close after the attempt %s and blocks increasing or reversing it", async (status) => {
+  const decided = { ...account, rules: { ...account.rules, buy_only: false }, evaluation: { ...account.evaluation, status } }
+  const held = { ...portfolio, positions: [{ ...portfolio.positions[0]!, symbol: selection.symbol, quantity: 3 }] }
+  vi.mocked(api.account).mockResolvedValue(decided)
+  vi.mocked(api.portfolio).mockResolvedValue(held)
+  const queries = tradingQueries(0, "17", true)
+  client.setQueryData(queries.account.queryKey, decided)
+  client.setQueryData(queries.portfolio.queryKey, held)
+  await render()
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+  await choose("Side", "Buy")
+  expect(button("Submit order").disabled).toBe(true)
+  await choose("Side", "Sell")
+  await setField("Quantity", "3")
+  expect(host.textContent).toContain("Closing orders are allowed")
+  expect(button("Submit order").disabled).toBe(false)
+  await setField("Quantity", "4")
+  expect(button("Submit order").disabled).toBe(true)
+  await setField("Quantity", "3")
+  await click("Submit order")
+  expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ side: "sell", quantity: 3 }), trading.write)
+})

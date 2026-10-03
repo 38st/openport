@@ -41,7 +41,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
           : "equity"}, {formatMoney(r.profit_target)} above your {formatMoney(e.starting_balance)} starting balance.
         {objectives.length
           ? <> The pass also waits for: {objectives.map((o) => o.charAt(0).toLowerCase() + o.slice(1)).join("; ")}. Until then, reaching the target does not end the attempt: keep trading, and protect it.</>
-          : " There is no time limit and no minimum number of trading days."} Once you pass, positions are closed and the attempt is complete.</>
+          : " There is no time limit and no minimum number of trading days."} Once you pass, the attempt is complete and the system tries to close positions. You can close any leftovers; opening orders require a new attempt.</>
       : "This account has no profit target." },
     { title: fixed ? "Static drawdown" : "Trailing drawdown", body: r.max_drawdown
       ? <>Equity may never touch the floor, now <strong className="text-foreground">{formatMoney(e.floor)}</strong>{fixed
@@ -51,7 +51,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
           : <>: {formatMoney(r.max_drawdown)} below your highest equity ({formatMoney(e.peak)}).
             {r.drawdown_mode === "intraday" ? " The floor rises with every new equity high during the session." : " The floor rises only once a day, from each day's closing equity."} It never moves down.
             {lockAt && <> Once it reaches {r.lock_at_start ? <>your {formatMoney(lockAt)} starting balance</> : formatMoney(lockAt)} it locks there and stops trailing.</>}</>}{" "}
-        Breaches are checked on every update in every mode; touching the floor {funded ? "closes the funded account" : "fails the attempt"} and closes every position.</>
+        Breaches are checked on every update in every mode; touching the floor {funded ? "closes the funded account" : "fails the attempt"} and starts liquidation. Closing leftover positions is still allowed.</>
       : "This account has no drawdown floor." },
     ...(r.daily_loss_limit ? [{ title: "Plan daily loss limit", body: <>
         Each trading day, equity may not touch {formatMoney(r.daily_loss_limit)} below {dailyLossBasisText[r.daily_loss_basis ?? "equity"]}
@@ -61,7 +61,7 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
             ? <> ({formatMoney(subtractMoney("0", e.daily_loss.room))} below it)</> : null}</>}</> : null}.
         {r.daily_loss_basis === "peak" ? " The level rises with the day's equity high, so it trails the day's gains." : null}
         {r.daily_loss_action === "fail"
-          ? " Touching it fails the attempt and closes every position."
+          ? " Touching it fails the attempt and starts liquidation; closing orders remain allowed."
           : " Touching it closes every position, cancels your working orders and refuses opening orders until the next trading day; closing orders still work and the attempt continues."}
         {e.day_lock && <> <strong className="text-foreground">Today is locked.</strong></>}
         {" "}It is the plan's own rule, apart from your personal daily loss limit below.</> }] : []),

@@ -52,6 +52,17 @@ describe("strategy ticket", () => {
     expect(render(ticket(2), any, [], held)).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
     expect(render(ticket(1), any, [], [])).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
   })
+  it.each(["passed", "failed"] as const)("allows closing a %s attempt and blocks opening or oversized legs", (status) => {
+    const decided = { ...any, evaluation: { ...any.evaluation, status } }
+    const held = spread.map((leg) => ({ ...portfolio.positions[0]!, symbol: leg.symbol, quantity: leg.side === "buy" ? -1 : 1 }))
+    const ticket = (units: number) => <StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000}
+      trading={trading} onClose={() => {}} units={units} />
+    const close = render(ticket(1), decided, [], held)
+    expect(close).toContain("Closing orders are allowed")
+    expect(close).not.toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+    expect(render(ticket(2), decided, [], held)).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+    expect(render(ticket(1), decided, [], [])).toMatch(/aria-label="Submit strategy order"[^>]*disabled=""/)
+  })
   it("leaves buying power to the server for portfolio margin or slippage", () => {
     for (const optional of [{ margin: "portfolio" as const }, { slippage_ticks: 2 }]) {
       const custom = { ...any, rules: { ...any.rules, ...optional }, buying_power: { ...any.buying_power, available: "0" } }

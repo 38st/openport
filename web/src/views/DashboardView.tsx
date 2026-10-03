@@ -8,6 +8,7 @@ import { IntradayEquity } from "../components/IntradayEquity"
 import { BreachPanel } from "../components/BreachPanel"
 import { RiskWarnings } from "../components/RiskWarnings"
 import { AutoPlaybookIndicator, PassOddsCard, StagedOrders } from "../components/Playbooks"
+import { DecisionPositionsNotice } from "../components/DecisionPositionsNotice"
 import { ResetDialog, planFacts } from "../components/ResetDialog"
 import { evaluationBadge } from "../components/Sidebar"
 import { TradingError } from "../components/TradingControls"
@@ -110,7 +111,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
             {e.status === "passed" ? "Evaluation passed" : funded ? "Funded account closed" : "Evaluation failed"}
           </div>
           <p className="mt-1 text-sm">{e.decision}</p>
-          <p className="mt-1 text-xs text-muted">Decided {timestampET(e.decided_at)}{decisionLabel(e.decision_code) ? ` by the ${decisionLabel(e.decision_code)}` : ""}. Positions are closed and new orders are refused until you start a new attempt.</p>
+          <p className="mt-1 text-xs text-muted">Decided {timestampET(e.decided_at)}{decisionLabel(e.decision_code) ? ` by the ${decisionLabel(e.decision_code)}` : ""} at {formatMoney(e.decided_equity)} equity. Closing orders are allowed; opening orders require a new attempt.</p>
           {e.liquidated_equity != null && e.liquidation_cost != null && compareMoney(e.liquidation_cost, "0") !== 0 &&
             <p className="mt-1 text-xs text-muted">Decided at {formatMoney(e.decided_equity)} equity; closing every position at the bid or ask left {formatMoney(e.liquidated_equity)}, {
               (compareMoney(e.liquidation_cost, "0") ?? 0) > 0 ? `${formatMoney(e.liquidation_cost)} less` : `${formatMoney(subtractMoney("0", e.liquidation_cost))} more`}.</p>}
@@ -121,6 +122,7 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
           </div>
         </div>
       )}
+      <DecisionPositionsNotice account={data} portfolio={portfolio.data} />
       {locked && (
         <div role="status" className="rounded-lg border border-warn/50 bg-warn/5 p-4">
           <div className="font-medium text-warn">Trading locked until the next trading day</div>
@@ -249,6 +251,11 @@ function Dashboard({ trading }: { trading: TradingStatus }) {
                     <span className={toneText[toneOf(subtractMoney(a.final_equity, a.starting_balance))]}>{signedMoney(subtractMoney(a.final_equity, a.starting_balance))}</span>
                     <span className="text-xs text-muted">{a.status}{a.decision_code && a.status !== "active" ? ` · ${decisionLabel(a.decision_code)}` : ""}</span>
                   </span>
+                  <div className="w-full space-y-1 text-xs text-muted">
+                    {a.decided_at && <p>Decided {timestampET(a.decided_at)} at {formatMoney(a.decided_equity)} equity</p>}
+                    {a.rules ? <p>{planFacts({ initial_cash: a.starting_balance, rules: a.rules }).join(" · ")}</p>
+                      : <p>Rules were not recorded for this attempt.</p>}
+                  </div>
                 </li>
               ))}
             </ul>

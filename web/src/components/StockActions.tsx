@@ -92,7 +92,8 @@ export function TradeSharesDialog({ initial, trading, onClose }: { initial?: str
   const { underlyings, accountScope } = useLive()
   const token = useWriteToken()
   const stocks = usePortfolio().data?.stocks ?? []
-  const rules = useAccount().data?.rules
+  const account = useAccount().data
+  const rules = account?.rules
   const symbols = [...new Set([...underlyings.map((u) => u.symbol), ...stocks.map((s) => s.symbol)])].filter(deliversShares).sort()
   const [symbol, setSymbol] = useState(initial ?? symbols[0] ?? "")
   const [side, setSide] = useState<Side>("buy")
@@ -104,7 +105,9 @@ export function TradeSharesDialog({ initial, trading, onClose }: { initial?: str
   const effect = valid ? shareEffect(held, side, n) : null
   const reduces = effect === "reduces" || effect === "closes"
   const shortSale = side === "sell" && valid && held - n < 0
-  const refused = trading.kill_latched && !reduces ? "Kill switch latched · reduce-only: only trades that reduce shares toward zero are allowed."
+  const decided = account?.evaluation.enabled && account.evaluation.status !== "active"
+  const refused = decided && !reduces ? "The evaluation is decided. Only trades that reduce shares toward zero are allowed; opening requires a new attempt."
+    : trading.kill_latched && !reduces ? "Kill switch latched · reduce-only: only trades that reduce shares toward zero are allowed."
     : rules?.buy_only && shortSale ? `${rules.plan ?? "This plan"} is buy-only: share sales may only close shares you hold.`
     : rules?.defined_risk && shortSale ? "This plan allows defined risk only, and short shares can lose without limit."
     : null

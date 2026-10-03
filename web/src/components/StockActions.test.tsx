@@ -147,6 +147,24 @@ describe("trading shares", () => {
       body: JSON.stringify({ symbol: "SPY", side: "buy", shares: 100 }) }))
     expect(closed).toHaveBeenCalled()
   })
+  it.each(["passed", "failed"] as const)("allows only reducing shares after an attempt %s", async (evaluationStatus) => {
+    vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
+      { ...status.underlyings[0]!, symbol: "SPY", spot: 510 },
+    ] } as ReturnType<typeof useLive>)
+    vi.spyOn(api, "portfolio").mockResolvedValue({ ...portfolio, stocks: [{ symbol: "SPY", shares: 100, basis: "50000", average_price: "500", mark: "510",
+      mark_time: portfolio.time, fresh: true, market_value: "51000", unrealised: "1000", realised: "0", fees: "0",
+      attribution: { delta: 0, gamma: 0, vega: 0, theta: 0, other: 0, costs: 0, total: 0 } }] })
+    vi.spyOn(api, "account").mockResolvedValue({ ...account, evaluation: { ...account.evaluation, status: evaluationStatus } })
+    vi.spyOn(api, "previewStock").mockRejectedValue(new Error("fixture preview"))
+    await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>
+      <TradeSharesDialog trading={status.trading!} onClose={() => {}} /></QueryClientProvider>))
+    await waitForRender(() => expect(host.textContent).toContain("Only trades that reduce shares"))
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Buy 100 SPY")!.disabled).toBe(true)
+    await act(async () => (host.querySelector('[role="radio"][aria-checked="false"]') as HTMLButtonElement).click())
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Sell 100 SPY")!.disabled).toBe(false)
+    await type(host.querySelector("input")!, "101")
+    expect([...host.querySelectorAll("button")].find((b) => b.textContent === "Sell 101 SPY")!.disabled).toBe(true)
+  })
   it("blocks invalid share counts and shows server refusals", async () => {
     vi.mocked(useLive).mockReturnValue({ ...liveState(status, null, "open"), underlyings: [
       { ...status.underlyings[0]!, symbol: "SPY", spot: 510 },
