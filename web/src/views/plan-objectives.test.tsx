@@ -339,3 +339,16 @@ it("enables and edits account size scaling only in the funded form", async () =>
   expect(form.size_scaling_enabled).toBe("no")
   expect(host.textContent).not.toContain("Review profit percent")
 })
+
+it("shows trade objectives and protective hold exceptions on Rules and the editor", () => {
+  const value: Account = { ...planned, rules: { ...planned.rules, min_trades: 10, trade_consistency_percent: 40,
+    min_hold_seconds: 60, microscalp_seconds: 30, microscalp_percent: 25 } }
+  const html = render(<RulesView />, value)
+  for (const text of ["at least 10 closed whole trades", "best closed whole trade at most 40%", "Minimum hold time",
+    "60 seconds of market time", "OCO", "system exits still execute", "losses do not offset it"])
+    expect(html).toContain(text)
+  const editor = renderToStaticMarkup(<PlanEditor form={planForm({ initial_cash: "100000", rules: value.rules })} onChange={() => {}} />)
+  for (const label of ["Minimum closed trades", "Trade consistency: best trade at most %", "Minimum hold (seconds)",
+    "Microscalp threshold (seconds)", "Microscalp profit at most %"])
+    expect(editor).toContain(label)
+})
