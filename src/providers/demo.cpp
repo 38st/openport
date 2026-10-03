@@ -12,11 +12,13 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "openport/md/contract.hpp"
 #include "openport/md/recording.hpp"
 #include "openport/pricing/black.hpp"
+#include "openport/pricing/binomial.hpp"
 #include "openport/providers/snapshot.hpp"
 #include "openport/trading/types.hpp"
 
@@ -351,6 +353,50 @@ void write_demo_recording(const std::filesystem::path& path, const DemoOptions& 
   write_scenario_recording(path, script, options.date.value_or(script.date), options.seed != 0 ? options.seed : script.seed);
 }
 
+std::vector<trading::Dividend> demo_dividends(md::Date first, md::Date last) {
+  std::vector<trading::Dividend> out;
+  for (int year = first.year; year <= last.year; ++year) {
+    for (const int month : {3, 6, 9, 12}) {
+      const auto friday = md::date_from_days(md::days_since_epoch(friday_from({year, month, 1})) + 14);
+      for (const auto& symbol : {"SPY", "QQQ"}) {
+        const bool spy = std::string_view(symbol) == "SPY";
+        auto ex = spy ? friday : md::date_from_days(md::days_since_epoch(friday) + 3);
+        if (!business_day(ex)) ex = next_business_day(ex);
+        if (ex < first || ex > last) continue;
+        // Fixed opening levels and date-keyed variation: a seed or scenario never
+        // changes a payment. Round once to cents before prices or accounts see it.
+        const double base = spy ? kOpen / kSpyRatio * 0.003 : kQqqOpen * 0.0015;
+        const double amount = cents(base * (0.95 + 0.1 * draw(0x4449564944454E44ULL,
+            static_cast<std::uint64_t>(md::days_since_epoch(ex)), spy ? 0 : 1)));
+        out.push_back({symbol, ex, trading::Money::from_double(amount)});
+      }
+    }
+  }
+  return out;
+}
+
+std::vector<trading::Dividend> scenario_dividends(const Scenario& script, md::Date date, int revision) {
+  const auto windows = scenario_windows(script, date);
+  // ETF listings reach at most next month's third Friday. Include the known
+  // payments beyond the run too, for its option prices and American analytics.
+  auto out = revision >= 4 ? demo_dividends(date,
+      md::date_from_days(md::days_since_epoch(windows.back().date) + 62)) : std::vector<trading::Dividend>{};
+  std::erase_if(out, [&](const auto& d) {
+    return std::find(script.symbols.begin(), script.symbols.end(), d.symbol) == script.symbols.end();
+  });
+  for (std::size_t i = 0; i < script.sessions.size(); ++i) {
+    for (const auto& d : script.sessions[i].dividends) {
+      const auto ex = windows[i].date;
+      std::erase_if(out, [&](const auto& generated) { return generated.symbol == d.symbol && generated.ex_date == ex; });
+      out.push_back({d.symbol, ex, trading::Money::from_double(d.per_share)});
+    }
+  }
+  std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+    return std::tie(a.ex_date, a.symbol) < std::tie(b.ex_date, b.symbol);
+  });
+  return out;
+}
+
 std::vector<md::OptionContract> scenario_chain(const Scenario& script, md::Date date, int revision) {
   std::vector<md::OptionContract> out;
   for (auto& listing : listings(script, date, revision)) out.push_back(std::move(listing.contract));
@@ -391,6 +437,8 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
             : "scenario.sessions[" + std::to_string(i) + "].events.at: outside " + md::format_date(w.date) + "'s " + w.session + " session");
     }
   }
+
+  const auto dividends = revision >= 4 ? scenario_dividends(script, date, revision) : std::vector<trading::Dividend>{};
 
   md::RecordingHeader header;
   header.provider = std::string(kDemoProvider);
@@ -494,7 +542,13 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
           sink.publish(md::UnderlyingClose{symbol, w.first, md::previous_business_day(date), cents(previous.for_symbol(symbol))});
     }
     // ETF prices drop by a dividend from its ex-date on.
-    for (const auto& dividend : play.dividends) paid[dividend.symbol] += dividend.per_share;
+    if (revision >= 4) {
+      if (first || w.date != plays[number - 1].window.date)
+        for (const auto& dividend : dividends)
+          if (dividend.ex_date == w.date) paid[dividend.symbol] += dividend.per_share.dollars();
+    } else {
+      for (const auto& dividend : play.dividends) paid[dividend.symbol] += dividend.per_share;
+    }
 
     const double session = static_cast<double>(w.close - w.first);
     // Each session spreads a trading day's variance at its volatility; a curb session
@@ -603,13 +657,25 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
             : underlying == "NDX" ? price / kNdxOpen : underlying == "RUT" ? price / kRutOpen : 1;
         const double extra = underlying == "QQQ" || underlying == "NDX" ? 0.03 : underlying == "SPY" ? 0.005
             : underlying == "RUT" ? 0.04 : 0.0;
+        const bool american = revision >= 4 && !index;
+        std::vector<pricing::CashDividend> cash;
+        if (american) {
+          for (const auto& d : dividends) {
+            if (d.symbol != underlying) continue;
+            const double time = md::years_between(now, md::new_york_to_utc(d.ex_date, 0, 0));
+            if (time > 0) cash.push_back({time, d.per_share.dollars()});
+          }
+        }
         std::set<md::InstrumentId> seen;
         for (auto& listed : chain) {
           const auto& c = listed.contract;
           if (now >= listed.last_trade) continue;
           const double years = md::years_between(now, listed.expiry);
           const double dividend = underlying == "NDX" ? 0.007 : underlying == "RUT" ? 0.012 : kDividend;
-          const double forward = underlying == "VIX" ? kVixMean + (price - kVixMean) * std::exp(-4 * years)
+          double reserve = 0;
+          for (const auto& d : cash) if (d.time < years) reserve += d.amount * std::exp(-kRate * d.time);
+          const double forward = american ? std::max(0.01, price - reserve) * std::exp(kRate * years)
+              : underlying == "VIX" ? kVixMean + (price - kVixMean) * std::exp(-4 * years)
               : price * std::exp((kRate - dividend) * years);
           const double base_atm = atm_vol(years * 365, moved, play.spot_vol, noise) + play.iv_shift + extra;
           // Short maturities react most; the far end retains 25% of an event's shock.
@@ -618,8 +684,20 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
           const double vol = underlying == "VIX"
               ? std::clamp((0.8 + 0.4 * std::exp(-years * 12)) * (1 + 0.3 * std::log(c.strike / forward)), 0.3, 2.0)
               : smile(atm, forward, c.strike, years);
-          const double mid = pricing::black_price(c.type, forward, c.strike, years, vol,
+          double mid = pricing::black_price(c.type, forward, c.strike, years, vol,
                                                   std::exp(-kRate * years));
+          if (american) {
+            // Black plus a same-lattice LR premium cancels European tree error.
+            // Fifteen odd steps keep snapshot generation inexpensive; only ITM puts
+            // and calls ahead of cash payments can have material exercise value.
+            // Extreme custom payments can exhaust spot; retain the capped escrow
+            // price and intrinsic floor instead of passing an invalid tree input.
+            if (reserve < price && ((c.type == pricing::OptionType::Put && c.strike > price) ||
+                (c.type == pricing::OptionType::Call && reserve > 0)))
+              mid += pricing::binomial_early_exercise_premium({c.type, price, c.strike, years, kRate, 0, vol}, 15, cash);
+            const double intrinsic = c.type == pricing::OptionType::Call ? price - c.strike : c.strike - price;
+            mid = std::max(mid, intrinsic);
+          }
           const auto q = quote(listed.ticks, mid);
           if (q.bid != listed.last.bid || q.ask != listed.last.ask || listed.ask_size == 0) {
             listed.last = q;

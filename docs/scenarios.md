@@ -97,9 +97,36 @@ preceding business day at those opening levels (before any gap), so market-wide
 circuit breakers measure a fall from it. Generator revision 2 added both; the
 contracts revision 1 listed keep their identifiers, quotes and sizes, and a run
 recorded before revisions regenerates revision 1. Revision 3 adds the index families,
-product tick rules, sessions and VIX term structure. Runs recorded at revision 1
-or 2 regenerate their original events, including quote sizes and volume; new
+product tick rules, sessions and VIX term structure. Runs recorded at revision 1, 2
+or 3 regenerate their original events, including quote sizes and volume; new
 underlyings require revision 3. The JSON `generator` stays at version 1.
+
+Revision 4 prices SPY and QQQ options as American: Black on a cash-dividend-adjusted
+forward plus a 15-step Leisen–Reimer early-exercise premium for ITM puts and calls
+with a payment before expiry, floored at intrinsic value. Index options remain
+European. The small odd tree cancels its European discretisation error against the
+same lattice; it is an approximation, refreshed at every snapshot. ETF forwards use
+spot less the present value of known cash dividends, grown at 4%, with no flat dividend
+yield. Quotes still use the product's ticks. Revisions 1–3 keep their original prices.
+
+The simulated quarterly calendar has SPY go ex on the third Friday of March, June,
+September and December, and QQQ on the following Monday. A holiday moves either to
+the next business day using the exchange calendar. Payments are about 0.3% of SPY's
+6000/10.02 opening reference and 0.15% of QQQ's 480 reference (about $1.80 and $0.72),
+with a date-and-symbol-keyed variation of ±5%, rounded to whole cents. Neither the
+scenario nor its seed changes that date's amount. These are simulated payments,
+not actual declarations. Known payments through the listed expiries affect options,
+including payments after the last session. On an ex-date the ETF price drops by the
+payment; the preceding close remains cum-dividend, including when the run starts
+on the ex-date.
+
+An explicit session `dividends` entry replaces the generated payment for that symbol
+and date, in prices and the Replay account. The resulting scenario calendar replaces
+`--dividends` payments on matching symbols and dates; other server payments remain.
+The complete merged schedule is recorded in the run's start record for verification
+and resume. In the real-time demo feed the generated calendar supplies account
+payments and warnings when no `--dividends` source was given; an explicit source
+supplies the account calendar instead (it does not change generated prices).
 
 AM series trade through the business day before settlement, stopping at its
 regular option close (16:15 ET, 13:15 on early closes). Revision 3 retires their
@@ -110,7 +137,7 @@ settle at the open while same-date SPXW, NDXP and RUTW PM series still trade to
 both AM: their usual last trading day is Tuesday before Wednesday settlement,
 with the business-day adjustment applied before choosing the last trade.
 
-The five original scenarios keep their original prices, sizes and relative order
+At revision 1 the five original scenarios keep their original prices, sizes and relative order
 of existing events for the same date and seed. Their old segment moves have been
 converted to cumulative waypoints. Tests pin fingerprints of the old events.
 

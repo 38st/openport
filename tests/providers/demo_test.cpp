@@ -13,6 +13,7 @@
 
 #include "openport/md/recording.hpp"
 #include "openport/providers/demo.hpp"
+#include "openport/pricing/binomial.hpp"
 #include "openport/providers/scenario.hpp"
 #include "openport/trading/types.hpp"
 
@@ -303,6 +304,105 @@ TEST(DemoMarket, RevisionThreeRecordingIsUnchanged) {
   providers::write_scenario_recording(path, *day, day->date, day->seed, 3);
   EXPECT_EQ(recording_hash(path, true), 10686521240818003107ULL);
   std::filesystem::remove(path);
+}
+
+TEST(DemoMarket, QuarterlyDividendsUseBusinessDatesCentsAndSessionOverrides) {
+  const auto dividends = providers::demo_dividends({2026, 1, 1}, {2026, 12, 31});
+  ASSERT_EQ(dividends.size(), 8U);
+  const std::vector<md::Date> dates{{2026, 3, 20}, {2026, 3, 23}, {2026, 6, 22}, {2026, 6, 22},
+                                   {2026, 9, 18}, {2026, 9, 21}, {2026, 12, 18}, {2026, 12, 21}};
+  for (std::size_t i = 0; i < dividends.size(); ++i) {
+    const auto& d = dividends[i];
+    EXPECT_EQ(d.ex_date, dates[i]);  // Juneteenth moves SPY's Friday to Monday.
+    EXPECT_EQ(d.per_share.micros() % 10'000, 0);
+    EXPECT_GT(d.per_share.dollars(), d.symbol == "SPY" ? 1.70 : 0.68);
+    EXPECT_LT(d.per_share.dollars(), d.symbol == "SPY" ? 1.90 : 0.76);
+  }
+  auto scenario = providers::parse_scenario(R"({"id":"dividend","title":"Dividend","description":"Quarterly ex-date.",
+    "symbols":["SPY","QQQ"],"date":"2026-09-17","seed":1,"generator":1,"volatility":0,"iv_shift":0,"spot_vol":0,
+    "sessions":[{"session":"regular","drift":[[1,0]]},{"session":"regular","drift":[[1,0]],
+    "dividends":[{"symbol":"SPY","per_share":2.25}]}]})", "dividend.json");
+  const auto explicit_only = providers::scenario_dividends(scenario, scenario.date, 3);
+  ASSERT_EQ(explicit_only.size(), 1U);
+  const auto calendar = providers::scenario_dividends(scenario, scenario.date);
+  scenario.seed = 123456;
+  const auto repeated = providers::scenario_dividends(scenario, scenario.date);
+  ASSERT_EQ(calendar.size(), 2U);
+  ASSERT_EQ(repeated.size(), calendar.size());
+  EXPECT_EQ(calendar[0].per_share, trading::Money::parse("2.25"));
+  EXPECT_EQ(calendar[0].ex_date, (md::Date{2026, 9, 18}));
+  for (std::size_t i = 0; i < calendar.size(); ++i) EXPECT_EQ(calendar[i].per_share, repeated[i].per_share);
+}
+
+TEST(DemoMarket, AmericanEtfQuotesIncludeCashDividendsAndExerciseValue) {
+  const auto scenario = providers::parse_scenario(R"({"id":"pricing","title":"Pricing","description":"ETF prices.",
+    "symbols":["SPY","QQQ"],"date":"2026-09-17","seed":1,"generator":1,"volatility":0,"iv_shift":0,"spot_vol":0,
+    "session":"regular","drift":[[1,0]]})", "pricing.json");
+  for (const auto date : {md::Date{2026, 9, 17}, md::Date{2026, 9, 18}}) {
+    const auto path = temporary("american");
+    providers::write_scenario_recording(path, scenario, date, scenario.seed);
+    const auto opening = providers::scenario_open(scenario, date);
+    const auto calendar = providers::scenario_dividends(scenario, date);
+    std::map<md::InstrumentId, md::OptionContract> contracts;
+    std::map<std::string, double> spots, previous;
+    int checked = 0;
+    md::RecordingReader reader(path);
+    while (const auto event = reader.next()) {
+      if (event->received > opening) break;
+      if (const auto* d = std::get_if<md::ContractDefinition>(&event->event)) contracts[d->id] = d->contract;
+      if (const auto* u = std::get_if<md::UnderlyingQuote>(&event->event)) spots[u->symbol] = u->last;
+      if (const auto* c = std::get_if<md::UnderlyingClose>(&event->event)) previous[c->symbol] = c->price;
+      const auto* q = std::get_if<md::OptionQuote>(&event->event);
+      if (!q || q->ask == 0) continue;
+      const auto& c = contracts.at(q->id);
+      const bool spy = c.underlying == "SPY";
+      const double base = spy ? 6000 / 10.02 : 480;
+      double spot = base;
+      for (const auto& d : calendar) if (d.symbol == c.underlying && d.ex_date == date) spot -= d.per_share.dollars();
+      const double years = md::years_between(opening, c.expiry_time());
+      std::vector<pricing::CashDividend> cash;
+      double reserve = 0;
+      for (const auto& d : calendar) {
+        const double time = md::years_between(opening, md::new_york_to_utc(d.ex_date, 0, 0));
+        if (d.symbol == c.underlying && time > 0 && time < years) {
+          cash.push_back({time, d.per_share.dollars()});
+          reserve += d.per_share.dollars() * std::exp(-0.04 * time);
+        }
+      }
+      const double forward = (spot - reserve) * std::exp(0.04 * years);
+      const double atm = 0.132 + 0.018 * std::exp(-years * 365 / 1.5) +
+          0.012 * std::min(years * 365 / 30, 1.0) + (spy ? 0.005 : 0.03);
+      const double z = std::log(c.strike / forward) / (atm * std::sqrt(std::max(years, 1e-7)));
+      const double vol = atm * std::clamp(1 - 0.18 * z + 0.03 * z * z, 0.6, 3.0);
+      const double european = pricing::black_price(c.type, forward, c.strike, years, vol, std::exp(-0.04 * years));
+      const double mid = (q->bid + q->ask) / 2;
+      EXPECT_GE(mid + 0.006, std::max(0.0, c.type == pricing::OptionType::Call ? spot - c.strike : c.strike - spot));
+      EXPECT_TRUE(on_tick(c.root, q->bid) && on_tick(c.root, q->ask));
+      // Deep calls immediately before SPY's ex-date, and deep puts after it.
+      if (spy && ((date.day == 17 && c.type == pricing::OptionType::Call && c.strike == 575 && c.expiry == md::Date{2026, 9, 18}) ||
+                  (date.day == 18 && c.type == pricing::OptionType::Put && c.strike == 630 && c.expiry == md::Date{2026, 10, 16}))) {
+        const auto reference = pricing::binomial_early_exercise_premium({c.type, spot, c.strike, years, .04, 0, vol}, 301, cash);
+        EXPECT_GT(mid - european, 0.10);
+        EXPECT_NEAR(mid, european + reference, 0.08);
+        if (c.type == pricing::OptionType::Call) {
+          const auto no_cash = pricing::black_price(c.type, spot * std::exp(.04 * years), c.strike, years, vol, std::exp(-.04 * years));
+          EXPECT_LT(european, no_cash - 1.5);
+        }
+        ++checked;
+      }
+      if (!spy && c.type == pricing::OptionType::Call && c.strike == 480 && c.expiry == md::Date{2026, 9, 18}) {
+        EXPECT_TRUE(cash.empty());
+        EXPECT_NEAR(mid, european, 0.006);
+        ++checked;
+      }
+    }
+    EXPECT_GE(checked, 2);
+    EXPECT_NEAR(previous["SPY"], 6000 / 10.02, 0.005);
+    double dividend = 0;
+    for (const auto& d : calendar) if (d.symbol == "SPY" && d.ex_date == date) dividend = d.per_share.dollars();
+    EXPECT_NEAR(spots["SPY"], 6000 / 10.02 - dividend, 0.005);
+    std::filesystem::remove(path);
+  }
 }
 
 TEST(DemoMarket, AHeldSeriesStaysListedUntilItsLastTrade) {
