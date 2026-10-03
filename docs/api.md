@@ -47,8 +47,18 @@ refused in funded plans. Account `evaluation` reports `time_limit_days`, `deadli
 `TIME_LIMIT` and `INACTIVITY` fail overdue attempts; `INSTRUMENT_NOT_ALLOWED` and
 `OUTSIDE_PLAN_HOURS` refuse openings while permitting reductions. Hours refusals
 include `actual`/`limit` in New York minutes and the underlying `scope`.
-Invalid values for these five custom rule fields return HTTP 422 `INVALID_RULES`,
+Invalid values for these custom rule fields return HTTP 422 `INVALID_RULES`,
 with a message naming the field and its allowed values, on both create and reset.
+Custom plans also accept `flat_time` (`HH:MM` New York, `00:00`–`23:59`, strictly
+before `day_end`, or null) and `no_overnight` (boolean, default false). Invalid
+values return 422 `INVALID_RULES`. Account `evaluation.flat_time` reports the time
+or null and `flat_now` reports the opening block until day end. `FLAT_TIME` refuses
+openings with HTTP 422, `actual` = current NY minute, `limit` = flat minute,
+`scope` = `account`; opening previews also return HTTP 422 with that error.
+Reductions remain allowed. Mandatory closes use `system:flat_time:N`; held
+positions at rollover fail with `OVERNIGHT_HOLD` and close as `system:overnight:N`.
+Shares use `rule` stock fills; settlement-pending options are excluded.
+See [mandatory flat rules](paper-trading.md#mandatory-flat-time-and-no-overnight-holds-f6).
 See [time rules](paper-trading.md#evaluation-time-inactivity-and-opening-restrictions).
 
 With paper trading on, the same API is the account.

@@ -1556,6 +1556,7 @@ side, no buying-power check. All rule money is exact.
 | `min_trading_days` | A pass needs this many trading days with an execution of the trader's own orders (0–366) |
 | `min_profitable_days` | A pass needs this many days whose profit reaches `profitable_day_profit` and is above zero (0–366) |
 | `profitable_day_profit` | The profit a day needs to count as profitable; zero counts any day above zero |
+| `flat_time`, `no_overnight` | Optional mandatory close minute before day end; independently fail held positions at rollover |
 | `time_limit_days`, `inactivity_days` | Calendar-day limits, 0 (off) to 366; the time limit is evaluation-only |
 | `underlyings` | Up to 32 allowed underlying symbols; empty permits all |
 | `trading_start`, `trading_end` | Optional New York minutes internally, `HH:MM` or null on the API; both set or both off, start inclusive and end exclusive |
@@ -1594,12 +1595,15 @@ running plan decisions again. The terminal explains leftover positions on the
 Dashboard and Positions page and allows their closing tickets.
 `Evaluation::decision_code`
 names the rule that decided it: `PROFIT_TARGET`, `DRAWDOWN_FLOOR` or
-`DAILY_LOSS_LIMIT`, `TIME_LIMIT` or `INACTIVITY`. Calendar failures run before the
+`DAILY_LOSS_LIMIT`, `TIME_LIMIT`, `INACTIVITY` or `OVERNIGHT_HOLD`. Calendar and
+overnight-hold failures run before the
 command, without requiring marks.
 
 **System orders** perform liquidation and expiry auto-close: market IOC orders with
 `system = true` and client IDs `system:drawdown:N` (a failed attempt), `system:target:N`
 (a passed one), `system:time_limit:N` or `system:inactivity:N` (calendar failures),
+`system:overnight:N` (held positions at rollover), `system:flat_time:N` (mandatory
+flat time),
 `system:daily_loss:N` (the plan's daily loss limit, locking the day or
 failing the attempt), `system:expiry:N` (the expiry cutoff) or `system:soft_floor:N` (a
 personal soft floor while the attempt is still active; once the plan decides the
@@ -1816,6 +1820,56 @@ the time left and warns within seven calendar days of inactivity expiry. Custom
 plan editing, plan facts, Rules and option, strategy and share tickets show the
 restrictions; tickets block known openings. Old plans default to off and keep their
 existing journal bytes.
+
+### Mandatory flat time and no overnight holds (F6)
+
+Custom plans may set `flat_time` to `HH:MM` New York time (`00:00`–`23:59`),
+strictly before `day_end`, or null/omitted to disable it. Internally it is an
+optional integer minute after New York midnight. The first transaction at or
+past that time on a plan trading date, before its day ends, cancels working
+opening orders with `FLAT_TIME` **before matching**. Empty quote batches and
+clock advances count, including a day's first transaction already past the time.
+Reducing orders and managed exits remain working, capped to the positions they
+protect, and cancel when those positions close.
+
+The reducer closes options through the same combo-aware planner as Flatten,
+splitting closes at `max_order_contracts`. Option closes are system market IOCs
+with client IDs `system:flat_time:N`; shares close at their fresh underlying price
+with stock-fill source `rule`. Regular sessions, executable liquidity and fill
+latency still apply. Missing prices or exhausted size leave remaining holdings
+pending for subsequent quotes, including after day end. Options awaiting
+settlement stay untouched (and retain covers required by the flatten planner).
+The trigger date (`evaluation.flat_time_day`) and unfinished-close flag
+(`flat_pending`) are journaled: recovery resumes remainders without repeating the
+once-per-date trigger. These internal fields are omitted until used.
+
+Until that plan day ends, option and share openings and their previews are refused
+with `FLAT_TIME`: `actual` is the current New York minute, `limit` is the configured
+flat minute, and `scope` is `account`. Order submission and opening preview
+endpoints return HTTP 422 with the usual `error` envelope for `FLAT_TIME`.
+Reducing orders remain allowed. After `day_end`, the next plan date has not reached
+its flat time yet; its overnight session is not incorrectly locked.
+
+`no_overnight` is independently optional, boolean, default false. On `roll_day`
+or any transaction crossing a plan trading-date boundary, an active evaluation
+or funded attempt holding shares or any option not awaiting settlement fails
+with `OVERNIGHT_HOLD`, before executions and without requiring marks. An already
+decided attempt stays decided. The normal post-decision liquidation follows:
+`system:overnight:N` market IOC option closes and stock fills with source `rule`,
+retrying remainders on executable quotes. Without `flat_time`, the trader must
+flatten manually before rollover. This position check runs before calendar or
+equity verdicts on the same transaction. Settlement-pending options alone do not
+cause failure.
+
+Account `evaluation.flat_time` is the configured `HH:MM` or null;
+`evaluation.flat_now` is true from that time until `day_end` on the current plan
+trading date, otherwise false. Dashboard warns within 30 minutes beforehand and
+announces the opening block afterwards. PlanEditor, plan facts, Rules, and option,
+strategy and share tickets explain these restrictions; tickets leave reductions
+available. Invalid `flat_time` or non-boolean `no_overnight` returns HTTP 422
+`INVALID_RULES` on account create/reset. Off defaults are omitted from journals,
+so old plans retain identical bytes and older journals recover unchanged. Replay
+driver and scenario revisions are unchanged.
 
 ### Plan objectives and the daily loss limit
 
@@ -2614,6 +2668,8 @@ compilers/architectures, although recovery restores the recorded doubles.
 many calendar days without an own execution. `INSTRUMENT_NOT_ALLOWED` refuses
 opening options or shares outside the plan whitelist. `OUTSIDE_PLAN_HOURS` refuses
 opening orders and cancels working openings outside the plan window.
+`FLAT_TIME` refuses and cancels openings after mandatory flat time until day end.
+`OVERNIGHT_HOLD` fails an active attempt holding tradable positions at rollover.
 
 | Code(s) | Meaning |
 | --- | --- |
@@ -3032,7 +3088,7 @@ Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
 defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, inside_fill_percent, fees, margin, account_type, house_margin_percent,
 pm_vol_shock, buying_power, expiry_cutoff_seconds, lock_at_start, profit_basis, daily_loss_limit,
 daily_loss_basis, daily_loss_action, consistency_percent, consistency_basis, min_trading_days,
-min_profitable_days, profitable_day_profit, day_end, time_limit_days, inactivity_days,
+min_profitable_days, profitable_day_profit, day_end, time_limit_days, inactivity_days, flat_time, no_overnight,
 underlyings, trading_start, trading_end}`.
 `fees` is the optional [fee schedule](#fees).
 `defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `inside_fill_percent`, `margin`, `account_type`,

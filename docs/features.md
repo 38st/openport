@@ -499,3 +499,9 @@ special opening quotation; live providers keep manual imports.
 - [x] F15: a per-plan cap on contracts held at once, counting working entries and combo ratios
 
 - [x] F60: required stop-loss protection and maximum trade risk in dollars or floor-room percent
+
+- [x] F6: optional mandatory `flat_time` closes options and shares and blocks openings
+      until plan day end; independent `no_overnight` fails held positions at rollover.
+      Settlement-pending options are excluded. Journaled triggers and pending closes
+      recover deterministically; custom editor, Rules, facts, Dashboard notices and
+      option/strategy/share tickets expose both rules.

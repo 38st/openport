@@ -817,7 +817,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start or trading_end: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
+            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start, trading_end, flat_time or no_overnight: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1033,6 +1033,16 @@
           },
           "default": {
             "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "description": "FLAT_TIME: an opening preview at or after mandatory flat time, until day_end. Error actual=current NY minute, limit=flat_time minute, scope=account. Reductions remain available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -1200,6 +1210,16 @@
           },
           "default": {
             "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "description": "FLAT_TIME: an opening preview at or after mandatory flat time, until day_end. Error actual=current NY minute, limit=flat_time minute, scope=account. Reductions remain available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -1514,7 +1534,7 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
-            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start or trading_end: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
+            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start, trading_end, flat_time or no_overnight: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4279,6 +4299,16 @@
           },
           "default": {
             "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "description": "FLAT_TIME: an opening preview at or after mandatory flat time, until day_end. Error actual=current NY minute, limit=flat_time minute, scope=account. Reductions remain available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -8989,6 +9019,23 @@
               }
             ],
             "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
+          },
+          "flat_time": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional HH:MM New York mandatory close time, strictly before day_end (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end, with actual=current NY minute, limit=flat_time minute, scope=account."
+          },
+          "no_overnight": {
+            "type": "boolean",
+            "default": false,
+            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
           }
         },
         "required": [
@@ -9750,7 +9797,7 @@
                 "type": "null"
               }
             ],
-            "description": "What decided the attempt: PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, TIME_LIMIT or INACTIVITY; null while active."
+            "description": "What decided the attempt: PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, TIME_LIMIT or INACTIVITY; null while active. OVERNIGHT_HOLD fails on held positions at plan day rollover."
           },
           "balance": {
             "$ref": "#/components/schemas/Money",
@@ -10043,6 +10090,22 @@
               }
             ],
             "description": "Last allowed plan trading date before inactivity failure, YYYY-MM-DD; null when off or not started."
+          },
+          "flat_time": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Configured mandatory flat time as HH:MM New York, or null when disabled. See AccountRules.flat_time."
+          },
+          "flat_now": {
+            "type": "boolean",
+            "description": "True at or after flat_time on the current New York plan trading date, until day_end. False when disabled; openings are blocked while true."
           }
         },
         "required": [
@@ -12587,7 +12650,7 @@
           },
           "reduce_only": {
             "type": "boolean",
-            "description": "A close the account works for the trader, as a flatten's closes are: it only reduces, shrinks with its position like a bracket exit (cancelled with POSITION_CLOSED once it is flat), and works on later quotes until it fills, its session ends or it is cancelled. Such a market order is DAY rather than IOC."
+            "description": "Only reduces held positions: shrinks as they close and cancels with POSITION_CLOSED when flat. Includes Flatten closes, mandatory system closes and working reductions protected at flat_time. Manual market Flatten orders are DAY; system flat-time/overnight closes are IOC."
           },
           "origin": {
             "anyOf": [
@@ -17864,6 +17927,23 @@
                         "minimum": 975,
                         "maximum": 1440,
                         "description": "Plan day boundary in New York minutes, 16:15 through 24:00."
+                      },
+                      "flat_time": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Optional HH:MM New York mandatory close time, strictly before day_end_minutes (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end_minutes, with actual=current NY minute, limit=flat_time minute, scope=account."
+                      },
+                      "no_overnight": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
                       }
                     },
                     "required": [],
@@ -20311,6 +20391,23 @@
             "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$|^24:00$",
             "default": "17:00",
             "description": "New York time the plan's trading day ends, 16:15 to 24:00. It decides which day a moment counts toward: rollover, daily loss, the end-of-day floor and the day counts."
+          },
+          "flat_time": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional HH:MM New York mandatory close time, strictly before day_end (00:00 to 23:59). Null disables. Once per plan trading date, cancels openings and closes tradable options and shares; remaining closes retry on fresh quotes. FLAT_TIME blocks openings until day_end, with actual=current NY minute, limit=flat_time minute, scope=account."
+          },
+          "no_overnight": {
+            "type": "boolean",
+            "default": false,
+            "description": "Fail an active evaluation or funded attempt with OVERNIGHT_HOLD on a plan date change with held positions, excluding options awaiting settlement. No marks required. Liquidation uses system:overnight:N option orders and rule stock fills. Independent of flat_time."
           }
         },
         "required": [

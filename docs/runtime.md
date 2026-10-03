@@ -1415,3 +1415,14 @@ plans keep identical journal bytes. Configured plans record their rules, own-exe
 activity timestamps and non-default `TIME_LIMIT`/`INACTIVITY` decision codes.
 Hours cancellations record `OUTSIDE_PLAN_HOURS` with numeric clock evidence.
 Recovery and `--verify-run` use the recorded market clock and rules.
+
+F6 adds optional `flat_time` and `no_overnight` custom rules, omitted from journals
+at null/false defaults. The reducer records `flat_time_day` once per plan date and
+`flat_pending` while mandatory closes remain; recovery resumes remainders without
+retriggering the same date. Empty batches still advance opted-in flat plans.
+The position-only `OVERNIGHT_HOLD` check precedes executions and mark checks on
+rollover, excluding settlement-pending options. Option closes use
+`system:flat_time:N` / `system:overnight:N` market IOCs, the combo-aware flatten
+planner, and `max_order_contracts` splitting; stock fills use source `rule`.
+Account evaluation exposes `flat_time` and `flat_now`. Disabled plans keep their
+prior journal bytes; no replay driver or scenario revision changes.
