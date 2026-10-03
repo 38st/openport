@@ -182,6 +182,18 @@ md::Timestamp control_time(std::string value, const std::vector<providers::Scena
   throw std::invalid_argument(std::string(field) + " must be HH:MM[:SS], a dated time, +Ns/+Nm/+Nh or next");
 }
 
+md::Timestamp start_time(const std::string& value, const std::vector<providers::ScenarioWindow>& windows,
+                         md::Timestamp first, md::Date date, bool overnight) {
+  if (const auto dated = dated_time(value, "start_at")) return *dated;
+  if (windows.size() > 1) return session_time(value, windows, first - 1, "start_at");
+  if (overnight && value.substr(0, 5) >= "20:15") date = md::date_from_days(md::days_since_epoch(date) - 1);
+  if (value.size() == 5 || value.size() == 8) {
+    if (const auto parsed = md::parse_datetime(md::format_date(date) + "T" + value + (value.size() == 5 ? ":00" : ""), md::Zone::NewYork))
+      return *parsed;
+  }
+  throw std::invalid_argument("start_at must be New York HH:MM[:SS], or a dated time");
+}
+
 void replay_gate(json& message, const providers::ReplayProvider& provider) {
   const bool preparing = provider.fast_forwarding(), stepping = provider.stepping(), finished = provider.finished();
   if (!preparing && !stepping && !finished) return;
@@ -333,6 +345,8 @@ struct ReplayHost::Session {
   md::Timestamp target = 0;
   bool durable = false;
   mutable bool finalized = false;  // handoff_mutex_
+  std::atomic<bool> restarting{false};
+  json restarted_from = nullptr;
   /// A scenario run's sessions; empty for a recording.
   std::vector<providers::ScenarioWindow> windows;
   // The engine reads the provider, so it is declared after it and stops first.
@@ -353,7 +367,8 @@ struct ReplayHost::Session {
     out["plan"] = plan;
     out["durable"] = durable;
     out["fast_forwarding"] = provider->fast_forwarding();
-    out["stepping"] = provider->stepping();
+    out["stepping"] = provider->stepping() || restarting.load();
+    if (!restarted_from.is_null()) out["restarted_from"] = restarted_from;
     out["skip_pending"] = provider->skip_pending();
     const auto pause_at = provider->pause_at();
     out["pause_at"] = pause_at > 0 ? json(md::format_timestamp(pause_at)) : json(nullptr);
@@ -922,7 +937,7 @@ bool ReplayHost::handle(const ApiRequest& request, const ApiCompletion& complete
     return true;
   }
   // A command during a step would land at whatever market time the step had reached.
-  if (request.method != "GET" && session->provider->stepping()) {
+  if (request.method != "GET" && (session->provider->stepping() || session->restarting.load())) {
     complete(api_error(409, "REPLAY_STEPPING", "Wait for the until step to settle; commands after it use the paused market time"));
     return true;
   }
@@ -1075,10 +1090,29 @@ void ReplayHost::history(const ApiRequest& request, const ApiCompletion& complet
   } catch (const std::exception& error) { complete(api_error(422, "REPLAY_HISTORY_FAILED", error.what())); }
 }
 
-void ReplayHost::resume(const std::string& id, int speed, bool paused, const ApiCompletion& complete) {
-  const auto refuse = [&](const std::string& message) { complete(api_error(409, "REPLAY_NOT_RESUMABLE", message)); };
+void ReplayHost::resume(const std::string& id, int speed, bool paused, const ApiCompletion& complete,
+                        bool restart, const std::string& at) {
+  const auto refuse = [&](const std::string& message) { complete(api_error(409, restart ? "REPLAY_NOT_RESTARTABLE" : "REPLAY_NOT_RESUMABLE", message)); };
+  std::shared_ptr<Session> source;
+  bool source_paused = true;
+  md::Timestamp source_pause_at = 0;
+  struct Restore {
+    std::function<void()> action;
+    ~Restore() { action(); }
+  } restore{[&] {
+    if (!source) return;
+    source->restarting = false;
+    if (!source->provider->finished()) {
+      try {
+        if (source_pause_at > 0) source->provider->play_until(source_pause_at);
+        else source->provider->set_paused(source_paused);
+      } catch (const std::exception&) { source->provider->set_paused(true); }
+    }
+  }};
+  std::string created;
+  Restore cleanup{[&] { if (!created.empty()) history_->discard(created); }};
   try {
-    if (const auto running = current(); running && running->id == id) {
+    if (const auto running = current(); !restart && running && running->id == id) {
       if (!running->provider->finished()) complete(api_error(409, "REPLAY_RUNNING", "This run is already playing"));
       else refuse("The run has ended: it played to its end or was stopped");
       return;
@@ -1099,16 +1133,40 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
         return;
       }
     }
-    const auto metadata = history_->metadata(id);
+    if (restart) {
+      const auto active = current();
+      if (active && active->id == id && active->provider->finished()) {
+        const std::lock_guard handoff(handoff_mutex_);
+        history_->finish(*active);
+      }
+      if (active && active->id == id && !active->provider->finished()) {
+        if (active->provider->fast_forwarding()) return refuse("Wait for the source run to reach its start state");
+        source = active;
+        source_paused = source->provider->paused();
+        source_pause_at = source->provider->pause_at();
+        source->restarting = true;
+        source->provider->abort();
+        source->provider->wait_paused();
+        source->engine->synchronize().get();
+      }
+    }
+    const auto metadata = source ? source->state() : history_->metadata(id);
     if (!metadata.is_object()) return refuse("The run's metadata is missing or unreadable");
-    if (metadata.value("finished", false)) return refuse("The run has ended: it played to its end or was stopped");
+    if (!restart && metadata.value("finished", false)) return refuse("The run has ended: it played to its end or was stopped");
     auto recovery = trading::FileJournal::read(file.string());
     // A crash part way through a write leaves a torn last line; the repair keeps a copy.
     if (recovery.truncated_final_line) {
+      if (restart) return refuse("The source journal has a torn final line; repair it before restarting");
       (void)trading::FileJournal::repair(file.string());
       recovery = trading::FileJournal::read(file.string());
     }
     if (recovery.records.empty()) return refuse("The run's journal holds no transaction");
+    if (restart && metadata.contains("journal")) {
+      const auto& recorded = metadata.at("journal");
+      if (recorded.at("transactions") != recovery.records.size() || recorded.at("head") != recovery.head ||
+          recorded.at("bytes") != std::filesystem::file_size(file))
+        return refuse("The source journal disagrees with its saved final head/count/bytes");
+    }
     std::vector<json> inputs;
     for (const auto& input : run_inputs(recovery)) inputs.push_back(json::parse(input));
     if (inputs.empty() || inputs.front().at("kind") != "start") return refuse("The journal has no reproducible-run metadata");
@@ -1153,14 +1211,67 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     session->date = metadata.value("date", std::string());
     session->start_at = metadata.value("start_at", std::string());
     session->target = target;
+    if (metadata.contains("restarted_from")) session->restarted_from = metadata.at("restarted_from");
     if (day) session->windows = providers::scenario_windows(*day, date);
+    if (restart) {
+      const auto first_boundary = std::find_if(inputs.begin(), inputs.end(), [](const auto& operation) { return operation.at("kind") == "boundary"; });
+      if (first_boundary == inputs.end()) return refuse("The source run has no complete market batch");
+      const auto first_market = first_boundary->at("time").get<md::Timestamp>();
+      const auto first_receipt = input.at("started").get<md::Timestamp>();
+      const auto trading_date = md::trading_date(first_receipt);
+      const bool overnight = md::new_york_time(first_receipt).date < trading_date;
+      md::Timestamp run_start = first_market;
+      if (metadata.contains("restarted_from")) {
+        run_start = md::parse_datetime(metadata.at("restarted_from").at("at").get<std::string>(), md::Zone::Utc).value();
+      } else if (!session->start_at.empty()) {
+        const auto receipt_start = start_time(session->start_at, session->windows, first_receipt, trading_date, overnight);
+        for (const auto& operation : inputs) {
+          if (operation.at("kind") == "boundary" && operation.at("driver_time").get<md::Timestamp>() >= receipt_start) {
+            run_start = operation.at("time").get<md::Timestamp>();
+            break;
+          }
+        }
+      }
+      md::Timestamp run_end = first_market;
+      for (const auto& operation : inputs) if (operation.contains("time")) run_end = std::max(run_end, operation.at("time").get<md::Timestamp>());
+      if (metadata.contains("settled_through") && metadata.at("settled_through").is_string()) {
+        if (const auto settled = md::parse_datetime(metadata.at("settled_through").get<std::string>(), md::Zone::Utc)) run_end = std::max(run_end, *settled);
+      }
+      target = at.empty() ? run_start : start_time(at, session->windows, first_market, trading_date, overnight);
+      if (target < run_start || target > run_end)
+        throw std::invalid_argument("Restart at must be between the run's start " + md::format_timestamp(run_start) + " and its end " + md::format_timestamp(run_end));
+      // Commands are input-first; their record can have the preceding account's
+      // timestamp. Check their explicit market time before retaining their effects.
+      std::size_t count = 0;
+      for (const auto& record : recovery.records) {
+        if (record.time > target) break;
+        bool later_command = false;
+        if (record.type == "run_input") {
+          const auto payload = json::parse(record.payload);
+          for (const auto& event : payload.at("events")) {
+            if (event.at("type") == "run_input" && event.at("payload").at("kind") == "command" &&
+                event.at("payload").at("time").get<md::Timestamp>() > target) later_command = true;
+          }
+        }
+        if (later_command) break;
+        ++count;
+      }
+      recovery.records.resize(count);
+      recovery.head = recovery.records.back().hash;
+      static std::atomic<unsigned> restarts{0};
+      session->id = slug(session->scenario.empty() ? session->file : session->scenario) + "-restart-" + std::to_string(md::now()) + "-" + std::to_string(++restarts);
+      session->target = target;
+      session->start_at = md::format_timestamp(target);
+      session->restarted_from = {{"id", id}, {"at", md::format_timestamp(target)}};
+    }
     providers::ReplayProvider::Options playback;
     playback.file = day ? demos_->get(*day, date, seed) : recording;
     playback.speed = speed;
     if (!session->windows.empty()) playback.known_end = session->windows.back().last;
     // The recorded batches replay unpaced, and playback continues from the last one.
-    playback.start_at = target;
-    playback.paused = paused;
+    playback.start_at = restart ? 0 : target;
+    playback.start_through = restart ? target : 0;
+    playback.paused = restart ? true : paused;
     for (const auto& window : session->windows) if (session->windows.size() > 1) playback.max_gap = std::max(playback.max_gap, window.step);
     session->provider = std::make_unique<providers::ReplayProvider>(std::move(playback));
     session->demo = providers::simulated_provider(session->provider->header().provider);
@@ -1179,11 +1290,22 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     engine.dividends = start.at("dividends").get<std::vector<trading::Dividend>>();
     engine.resume = std::make_shared<const trading::JournalRecovery>(std::move(recovery));
     std::unique_lock handoff(handoff_mutex_);
-    history_->rebuild(id);
-    engine.paper_journal = file;
+    if (restart) {
+      if (target > session->provider->end_time()) throw std::invalid_argument("Restart at exceeds the recording's end");
+      created = session->id;
+      engine.paper_journal = history_->create(*session, engine.paper);
+      trading::FileJournal::Options journal_options;
+      journal_options.sync_policy = trading::FileJournal::SyncPolicy::Batched;
+      auto prefix = trading::FileJournal::create(engine.paper_journal.string(), journal_options);
+      for (const auto& record : engine.resume->records) prefix->append(record.time, record.type, record.payload);
+      prefix->flush();
+    } else {
+      history_->rebuild(id);
+      engine.paper_journal = file;
+    }
     engine.replay = true;
     engine.run_input = input.dump();
-    engine.run_id = id;
+    engine.run_id = session->id;
     engine.paper_accounts.clear();
     engine.paper_sink.reset();
     engine.record_file.clear();
@@ -1193,6 +1315,9 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     const auto& header = provider->header();
     session->engine = std::make_unique<Engine>(*provider, md::Subscription{header.subscription.underlyings, 0, 0.0}, engine);
     session->engine->start();
+    // The new journal already holds the verified prefix. Re-execute it completely
+    // before handing over; a mismatch discards only the new run, never its source.
+    if (restart) session->provider->wait_paused();
     if (!session->engine->status().trading.enabled) {
       // The journal is as it was: nothing appends until every recorded transaction matched.
       const auto reason = session->engine->status().trading.reason;
@@ -1210,9 +1335,15 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     }
     // Its metadata now reads as a run playing again, as a crash would leave it.
     history_->finish(*session);
+    if (restart) {
+      created.clear();
+      if (!paused) session->provider->set_paused(false);
+    }
     handoff.unlock();
     old.reset();
     complete(ok({{"replay", session->state()}}, 201));
+  } catch (const std::invalid_argument& error) {
+    complete(api_error(400, "INVALID_REQUEST", error.what()));
   } catch (const trading::TradingError& error) {
     if (error.code() == trading::Reason::JOURNAL_LOCKED) complete(api_error(409, "REPLAY_RUNNING", "Another openportd is still writing this run"));
     else refuse(error.what());
@@ -1237,7 +1368,20 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
     } else if (options_.engine.write_mode == "disabled") {
       complete(api_error(403, "WRITE_DISABLED", "Replay writes are disabled"));
     } else if (request.method == "POST") {
-      const auto body = parse_body(request, {"file", "demo", "scenario", "speed", "plan", "seed", "date", "start_at", "paused", "resume", "copy_settings_from"});
+      const auto body = parse_body(request, {"file", "demo", "scenario", "speed", "plan", "seed", "date", "start_at", "paused", "resume", "restart", "at", "copy_settings_from"});
+      if (body.contains("restart")) {
+        for (const auto& [key, value] : body.items())
+          if (key != "restart" && key != "at" && key != "speed" && key != "paused") throw std::invalid_argument("restart takes only at, speed and paused besides it");
+        if (!body.at("restart").is_string() || (body.contains("at") && !body.at("at").is_string())) throw std::invalid_argument("restart and at must be strings");
+        if (body.contains("paused") && !body.at("paused").is_boolean()) throw std::invalid_argument("paused must be true or false");
+        if (body.contains("at") && body.at("at").get<std::string>().empty()) throw std::invalid_argument("at must name a time or be omitted");
+        const auto metadata = history_->metadata(body.at("restart").get<std::string>());
+        const auto active = current();
+        const int speed = body.contains("speed") ? speed_field(body) : active && active->id == body.at("restart").get<std::string>() ? active->provider->speed() : metadata.is_object() ? metadata.value("speed", 1) : 1;
+        resume(body.at("restart").get<std::string>(), speed, body.value("paused", true), complete, true, body.value("at", std::string()));
+        return;
+      }
+      if (body.contains("at")) throw std::invalid_argument("at requires restart");
       if (body.contains("resume")) {
         for (const auto& [key, value] : body.items())
           if (key != "resume" && key != "speed" && key != "paused") throw std::invalid_argument("resume takes only speed and paused besides it");
@@ -1336,12 +1480,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       session->date = md::format_date(date);
       if (body.contains("start_at")) {
         // A bare time is on the session's date, or its first occurrence in a run of several sessions.
-        if (const auto dated = dated_time(session->start_at, "start_at")) session->target = *dated;
-        else if (session->windows.size() > 1) session->target = session_time(session->start_at, session->windows, first - 1, "start_at");
-        else {
-          try { session->target = providers::scenario_time(session->start_at, date, overnight); }
-          catch (const std::invalid_argument& error) { throw std::invalid_argument("start_at: " + std::string(error.what())); }
-        }
+        session->target = start_time(session->start_at, session->windows, first, date, overnight);
         if (session->target < first || session->target > last)
           throw std::invalid_argument(session->windows.size() > 1 ? "start_at must be within the run's sessions" : "start_at must be within the recording's session");
       }

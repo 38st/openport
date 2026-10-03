@@ -72,7 +72,8 @@ class ReplayHost {
   class History;
   void stop_session();  // control_mutex_ held
   void control(const ApiRequest& request, const ApiCompletion& complete);
-  void resume(const std::string& id, int speed, bool paused, const ApiCompletion& complete);
+  void resume(const std::string& id, int speed, bool paused, const ApiCompletion& complete,
+              bool restart = false, const std::string& at = {});
   void history(const ApiRequest& request, const ApiCompletion& complete);
   /// Queues a change for the control thread, which runs each under control_mutex_.
   void enqueue(const ApiRequest& request, const ApiCompletion& complete);

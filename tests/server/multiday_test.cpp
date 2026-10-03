@@ -272,4 +272,53 @@ TEST(MultiDayReplay, StartsAndStepsToADateAndTimeInTheRunsSessions) {
   EXPECT_EQ(history[0]["sessions"], sessions);
 }
 
+TEST(MultiDayReplay, ScenarioSecondsAndRestartKeepTheSeedPlanSettingsAndCommandPrefix) {
+  test::RecordingFile file;
+  const auto scenarios = file.directory / "scenarios";
+  std::filesystem::create_directory(scenarios);
+  { std::ofstream out(scenarios / "seconds.json"); out << R"({"id":"seconds","title":"Seconds","description":"Small replay control fixture.",
+      "symbols":["SPX"],"date":"2026-09-16","seed":19,"generator":1,"session":"regular",
+      "volatility":0.02,"iv_shift":0,"spot_vol":-2,"drift":[[1,0]]})"; }
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "paper.jsonl";
+  options.analytics.deamericanize = false;
+  options.paper.limits.max_order_contracts = 7;
+  server::ReplayHost host({file.directory, options, true, scenarios});
+  const auto ready = [&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); };
+  const auto at = [](int minute, int second) { return md::format_timestamp(md::new_york_to_utc({2026, 9, 16}, 9, minute, second)); };
+  std::string id;
+  for (const auto* start : {"09:30:01", "2026-09-16T09:30:01"}) {
+    const auto started = call(host, "POST", "/api/replay", {{"scenario", "seconds"}, {"start_at", start}, {"seed", "scenario"}, {"plan", "intraday-25k"}, {"paused", true}});
+    ASSERT_EQ(started.status, 201) << started.body;
+    id = json::parse(started.body).at("replay").at("id").get<std::string>();
+    ASSERT_TRUE(test::recording_eventually(ready));
+    EXPECT_EQ(json::parse(host.tick()).at("replay").at("time"), at(30, 15));
+  }
+  ASSERT_EQ(call(host, "PUT", "/api/replay", {{"until", "next"}}).status, 200);
+  EXPECT_EQ(json::parse(host.tick()).at("replay").at("settled_through"), at(30, 30));
+  const auto buy = call(host, "POST", "/api/replay/orders", {{"client_order_id", "scenario-prefix"}, {"symbol", "SPXW  260916C06000000"},
+      {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}});
+  ASSERT_EQ(buy.status, 201) << buy.body;
+  ASSERT_EQ(call(host, "PUT", "/api/replay", {{"paused", true}}).status, 200);
+  const auto source = file.directory / "replays" / (id + ".jsonl");
+  const auto prefix = trading::FileJournal::read(source.string());
+  ASSERT_EQ(call(host, "PUT", "/api/replay", {{"until", "+1m"}}).status, 200);
+  EXPECT_EQ(json::parse(host.tick()).at("replay").at("settled_through"), at(31, 30));
+  const auto restart = call(host, "POST", "/api/replay", {{"restart", id}, {"at", "09:30:30"}});
+  ASSERT_EQ(restart.status, 201) << restart.body;
+  const auto state = json::parse(restart.body).at("replay");
+  EXPECT_EQ(state.at("seed"), "19");
+  EXPECT_EQ(state.at("scenario"), "seconds");
+  EXPECT_EQ(state.at("plan"), "intraday-25k");
+  EXPECT_EQ(state.at("settled_through"), at(30, 30));
+  const auto journal = file.directory / "replays" / (state.at("id").get<std::string>() + ".jsonl");
+  const auto recovered = trading::FileJournal::read(journal.string());
+  EXPECT_EQ(recovered.head, prefix.head);
+  EXPECT_EQ(recovered.records.size(), prefix.records.size());
+  EXPECT_EQ(json::parse(call(host, "GET", "/api/replay/risk").body).at("limits").at("max_order_contracts"), 7);
+  ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
+  const auto verified = server::verify_run(journal);
+  EXPECT_TRUE(verified.matched) << verified.message;
+}
+
 }  // namespace

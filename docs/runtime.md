@@ -652,6 +652,18 @@ names expected and found counts and heads. Summaries are cached by journal size 
 modification time. Repairing a torn line does not restore missing records or replace
 the saved final checkpoint.
 
+### Restarting with the same commands
+
+`POST /api/replay {"restart":"RUN_ID","at":"2026-09-17T10:30:15"}` creates a new
+journal with the source's commands through that market time, inclusive, then pauses.
+It keeps the source's settings and inputs, and verifies the copied prefix while
+rebuilding the market state. `at` omitted uses the source's start; optional `speed`
+overrides the source speed and `paused:false` continues afterwards. The source may
+be active, stopped or finished; its journal is kept. State and history carry the
+optional `restarted_from:{id,at}`. See [restarting a drill](scenarios.md#restarting-a-drill-with-its-commands)
+for time bounds and refusal conditions. Ordinary starts and playback controls keep
+their existing journal bytes; restart creates a byte-identical prefix on driver 6.
+
 ### Verifying a run
 
 The terminal's **Finished runs → Verify** starts the same verifier in the background:
