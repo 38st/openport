@@ -1574,7 +1574,7 @@ side, no buying-power check. All rule money is exact.
 | `impact_ticks` | Integer from 0 to 10 extra adverse ticks per additional displayed-size block; 0 keeps the displayed-size cap |
 | `fees` | Optional [itemized fee schedule](#fees) in place of the flat per-contract fee |
 | `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Plans use strategy margin and As displayed fills by default; custom rules, or a margin override beside a plan, can select portfolio margin |
-| `account_type` | `margin` (default), `cash` or `ira`, what the account may hold (see account types below). A cash account or IRA uses strategy margin and enforces buying power; an order, bracket exit, exercise or share sale that would leave it holding a call no shares (or, in an IRA, no long call) cover, or short shares, rejects with `ACCOUNT_TYPE`, counting open orders as `defined_risk` does |
+| `account_type` | `margin` (default), `cash` or `ira`, what the account may hold (see account types below). A cash account or IRA uses strategy margin and enforces buying power; an order, bracket exit, exercise, abandon or share sale that would leave it holding a call no shares (or, in an IRA, no long call) cover, or short shares, rejects with `ACCOUNT_TYPE`, counting open orders as `defined_risk` does |
 | `house_margin_percent` | Integer from 0 to 400: a broker's house margin, raising each naked requirement (beyond its buy-back value) and each short sale's margin (beyond the shares' value) by that percentage under strategy margin, or each underlying's scan under portfolio margin; default 0 |
 | `pm_vol_shock` | Integer from 0 to 50: portfolio margin also takes each price shock with implied volatility this many points up and down; default 0 |
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), every open order on the contract cancels with `EXPIRY_CUTOFF` (DAY, GTC, armed and bracket exits alike, held or not), positions are closed, and only closing orders are accepted |
@@ -1753,7 +1753,7 @@ as in a margin account, and a long call that expires with a short call or later 
 it, but short puts are still cash-secured when nothing covers them and no straddle
 pairs. Neither uses portfolio margin, and both enforce buying power. The rule counts
 what the account cannot hold (`disallowed_shorts`) before and after each order,
-bracket exit, exercise (a long put's exercise sells shares) or share sale, with the open
+bracket exit, exercise (a long put's exercise sells shares), abandon or share sale, with the open
 orders' sells as if filled; one that adds to it rejects with `ACCOUNT_TYPE`, so closing
 is always allowed. Assignment and delivery still happen as they come.
 `house_margin_percent` adds a broker's house requirement on top of Reg T: under
@@ -3115,7 +3115,7 @@ opening orders and cancels working openings outside the plan window.
 | `REPLAY_FAST_FORWARD` | The replay is preparing its start state; wait before submitting orders or changing playback |
 | `REPLAY_STEPPING` | A lockstep step (`PUT /api/replay {"until"}`) is playing; orders wait for its response and then use the paused market time |
 | `REPLAY_READ_ONLY`, `REPLAY_RUNNING` | A finished run refuses writes; a running run cannot be opened as history or deleted |
-| `ACCOUNT_TYPE` | A cash account's or IRA's order, bracket exit, exercise or share sale would leave it holding a call no shares (or, in an IRA, no long call) cover, or short shares, now or once the open orders fill |
+| `ACCOUNT_TYPE` | A cash account's or IRA's order, bracket exit, exercise, abandon or share sale would leave it holding a call no shares (or, in an IRA, no long call) cover, or short shares, now or once the open orders fill |
 | `RUN_ENDED` | A saved replay run's order that was still working or armed when the run ended: its archive shows it cancelled, as it can no longer fill. The journal keeps it as it was |
 | `REPLAY_NOT_RESTARTABLE` | HTTP 409: a source run cannot be restarted with its commands because its inputs, calendar, driver or journal integrity do not permit deterministic re-execution |
 | `REPLAY_NOT_RESUMABLE` | HTTP 409: a saved replay run cannot resume: it has ended, or it was recorded by an older driver, or its recording, scenario or the exchange calendar has changed; the message says which |

@@ -786,6 +786,30 @@ TEST(TradingAccountType, AnIraNetsSpreadsButHoldsNoNakedCall) {
   EXPECT_NE(refused.message.find("open orders"), std::string::npos) << refused.message;
 }
 
+TEST(TradingAccountType, AnIraCannotAbandonTheLongCoveringItsShortCall) {
+  Chain f;
+  AccountRules rules;
+  rules.account_type = AccountType::Ira;
+  rules.buying_power = true;
+  TradingSession s(config("1000000", rules), f.time);
+  f.define(s, {C5100, C5110, C5120});
+  f.quote(s, {{C5100, "3.00", "3.20", 0.25}, {C5110, "2.00", "2.20", 0.22}, {C5120, "1.00", "1.20", 0.20}});
+  ASSERT_TRUE(s.submit(combo("call spread", {leg(C5100, Side::Sell), leg(C5110, Side::Buy)}, 1, {}), f.time).decision.ok());
+  const auto no_bid = [&](const std::string& symbol) {
+    f.time += md::kNanosPerSecond;
+    s.on_quotes({{symbol, ++f.observation, f.time, std::nullopt, m("0.05"), 0, 10}}, {}, f.time);
+  };
+  no_bid(C5110);
+  EXPECT_EQ(s.abandon(C5110, f.time).decision.code, Reason::ACCOUNT_TYPE);
+  EXPECT_EQ(s.snapshot()->positions.size(), 2U);
+  // Another long is spare while the spread's long still covers the short.
+  ASSERT_TRUE(s.submit(single("spare long", C5120, Side::Buy), f.time).decision.ok());
+  no_bid(C5120);
+  EXPECT_TRUE(s.abandon(C5120, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->positions.size(), 2U);
+  EXPECT_EQ(s.abandon(C5110, f.time).decision.code, Reason::ACCOUNT_TYPE);
+}
+
 TEST(TradingAccountType, IraBracketExitsReserveTheirLongOnlyOnce) {
   Chain f;
   AccountRules rules;

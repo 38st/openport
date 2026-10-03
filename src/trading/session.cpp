@@ -6195,6 +6195,7 @@ CommandResult TradingSession::abandon(const std::string& symbol, Timestamp time)
                                           "Abandoning this long would leave a short option uncovered; close the short first");
         !d.ok())
       return CommandResult{d, {}, 0};
+    if (const auto d = account_type_check(s, {{symbol, -contracts}}); !d.ok()) return CommandResult{d, {}, 0};
     // The contracts leave at zero, without a fee: the whole basis is the loss.
     const auto apply = [&](State& t) {
       fill_position(t, symbol, -contracts, Money{}, Money{});
