@@ -368,6 +368,27 @@ TEST(TradingFloor, RequiredBracketStopStartsCooldownWithTradeRiskLimit) {
   EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, f.time + 5 * md::kNanosPerMinute);
 }
 
+TEST(TradingFloor, StandaloneStopAfterPlanDecisionStillStartsCooldown) {
+  ScriptedMarket f; auto c = config();
+  c.guardrails.cooldown_minutes = 5; c.rules.profit_target = m("50");
+  TradingSession s(c, f.time); f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("entry", 2), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote("5", "5.20", 1)}, {f.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Passed);
+  ASSERT_EQ(s.snapshot()->positions.size(), 1U);
+  ASSERT_EQ(s.snapshot()->positions[0].position.quantity, 1);
+  // F33 permits a reducing order after the decision; it reserves the remaining
+  // close against the system's liquidation retry on the next quote.
+  auto stop = f.market("close-after-pass", 1, Side::Sell);
+  stop.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("4.90")};
+  ASSERT_TRUE(s.submit(stop, f.time).decision.ok());
+  update(s, f, "3.80", "4");
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, f.time + 5 * md::kNanosPerMinute);
+  ASSERT_TRUE(s.reset_account(c.initial_cash, c.rules, "next attempt", f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->risk.kill_reason, "COOLDOWN");
+}
+
 TEST(TradingFloor, UnderlyingTriggeredClosesUseTheHeldOptionsDirectionForCooldown) {
   for (const auto type : {pricing::OptionType::Call, pricing::OptionType::Put})
     for (const auto side : {Side::Buy, Side::Sell}) for (const bool stop : {false, true}) {
