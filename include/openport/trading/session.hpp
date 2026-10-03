@@ -99,6 +99,7 @@ struct TradingSnapshot {
   SharedVector<SettlementRecord> settlements;  ///< Oldest first, rebuilt from journal events.
   SharedVector<Closure> closures;     ///< Settlements and resets, in sequence.
   AttemptFee fee_charged;
+  std::optional<Money> payouts_received; ///< Derived from payout events across all attempts; never serialized.
   std::vector<AttemptSummary> attempts;  ///< Earlier attempts, oldest first.
   SharedVector<StockFill> stock_fills;    ///< Every change in shares held, oldest first.
   SharedVector<DividendPayment> dividends;  ///< Dividends paid on held shares, oldest first.

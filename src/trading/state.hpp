@@ -750,6 +750,7 @@ struct State {
   GuardrailState guardrails;
   Timestamp pending_applied_at = 0;
   AttemptFee fee_charged;
+  Money payouts_received; ///< Derived from payout events, including older attempts; never serialized.
   std::vector<AttemptSummary> attempts;
   SharedVector<SettlementRecord> settlements;  ///< Derived from transactions, never serialized as state.
   SharedVector<Closure> closures;

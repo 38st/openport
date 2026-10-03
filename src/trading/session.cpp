@@ -1167,6 +1167,7 @@ TradingSnapshot snapshot_of(const State& s) {
   out.closures = s.closures;
   out.attempts = s.attempts;
   out.fee_charged = s.fee_charged;
+  out.payouts_received = s.payouts_received;
   out.stock_fills = s.stock_fills;
   out.dividends = s.dividends;
   out.closing_prints = s.closing_prints;
@@ -4664,6 +4665,7 @@ ProgramCosts program_costs(const TradingSnapshot& snapshot, const AccountRules& 
   add(snapshot.fee_charged);
   for (const auto& a : snapshot.attempts) { add(a.fee_charged); out.payouts_received = out.payouts_received + a.payouts_received; }
   for (const auto& p : snapshot.evaluation.payouts) out.payouts_received = out.payouts_received + p.trader_share;
+  if (snapshot.payouts_received) out.payouts_received = *snapshot.payouts_received;
   for (auto it = snapshot.attempts.rbegin(); it != snapshot.attempts.rend(); ++it) {
     if (!it->rules || it->starting_balance != snapshot.evaluation.starting_balance || !same_program_rules(*it->rules, rules)) break;
     ++out.resets_used;
@@ -5917,6 +5919,7 @@ CommandResult TradingSession::request_payout(Money amount, Timestamp time) {
       e.floor = e.size_scaling ? std::max(e.floor - amount, floor) : floor;
     }
     e.payouts.push_back({quote.number, s.time, e.day, amount, amount.prorate(rules.payouts.split_percent, 100), equity});
+    s.payouts_received = s.payouts_received + e.payouts.back().trader_share;
     e.qualifying_days = 0;
     e.cycle_started = s.time;
     event(events, "payout", e.payouts.back());
@@ -6333,9 +6336,15 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
   try {
     Json last;
     SharedVector<SettlementRecord> settlements;
-    auto state = walk_states(verified.records, [&](const JournalRecord&, Json&& payload, const Json&) { last = std::move(payload); }, &settlements);
+    Money payouts_received;
+    auto state = walk_states(verified.records, [&](const JournalRecord&, Json&& payload, const Json&) {
+      for (const auto& event : payload.at("events"))
+        if (event.at("type") == "payout") payouts_received = payouts_received + event.at("payload").at("trader_share").get<Money>();
+      last = std::move(payload);
+    }, &settlements);
     impl->state = state.get<State>();
     impl->state.settlements = std::move(settlements);
+    impl->state.payouts_received = payouts_received;
     // Schema 3 records no snapshot; the reducer derives it from the state.
     impl->snapshot = std::make_shared<TradingSnapshot>(
         last.at("schema") == 3 ? snapshot_of(impl->state) : last.at("snapshot").get<TradingSnapshot>());
@@ -6344,6 +6353,7 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
       auto snapshot = std::make_shared<TradingSnapshot>(*impl->snapshot);
       snapshot->exit_equity = exit_equity_of(impl->state, *snapshot);
       snapshot->settlements = impl->state.settlements;
+      snapshot->payouts_received = impl->state.payouts_received;
       impl->snapshot = std::move(snapshot);
     }
     if (last.at("schema") == 1) {

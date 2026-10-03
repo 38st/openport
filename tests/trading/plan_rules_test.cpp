@@ -319,7 +319,9 @@ TEST(ProgramCosts, ActivationAndPayoutsSurviveResets) {
   ASSERT_TRUE(s.request_payout(m("50"), f.time).decision.ok());
   EXPECT_EQ(program_costs(*s.snapshot(), funded).payouts_received, m("40"));
   auto free = plan();
-  ASSERT_TRUE(s.reset_account(m("10000"), free, "after payout", f.time).decision.ok());
+  ASSERT_TRUE(s.reset_account(m("10000"), free, "after payout", f.time, false, false).decision.ok());
+  // Legacy resets did not archive payout totals; recover them from payout events without changing bytes.
+  EXPECT_FALSE(Json(s.snapshot()->attempts.back()).contains("payouts_received"));
   const auto restored = TradingSession::recover(FileJournal::read(file.path));
   EXPECT_EQ(restored.snapshot_json(), s.snapshot_json());
   const auto costs = program_costs(*restored.snapshot(), free);
