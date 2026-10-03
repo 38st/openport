@@ -114,7 +114,7 @@ TEST(TradingFunded, ConsistencyEscalatesByPayoutNumberAndRepeatsTheLastPercent) 
   const std::vector<md::Date> dates{{2026,9,23}, {2026,9,24}, {2026,9,25}, {2026,9,28}, {2026,9,29},
       {2026,9,30}, {2026,10,1}, {2026,10,2}, {2026,10,5}, {2026,10,6}, {2026,10,7}, {2026,10,8}, {2026,10,9}};
   std::size_t day = 0;
-  for (const auto [percent, count] : {std::pair{20, 5}, {25, 4}, {30, 4}}) {
+  for (const auto& [percent, count] : {std::pair{20, 5}, {25, 4}, {30, 4}}) {
     EXPECT_EQ(payout_quote(*s.snapshot(), rules).consistency_percent, percent);
     for (int i = 0; i < count; ++i) {
       profit_day(s, f, "60");
@@ -152,6 +152,28 @@ TEST(TradingFunded, ConsistencyIncludesLossesAndRoundsAdditionalProfitUpToCents)
   EXPECT_EQ(q.consistency_needed, m("383.34"));
   EXPECT_EQ(q.blocked.code, Reason::PAYOUT_NOT_ELIGIBLE);
   EXPECT_FALSE(q.blocked.actual);
+}
+
+TEST(TradingFunded, ConsistencyDoesNotRoundAwayAMicroDollarBreach) {
+  ScriptedMarket f;
+  auto rules = funded();
+  rules.payouts.consistency_percents = {50};
+  auto c = config(rules);
+  c.fee_per_contract = m("0.65005");
+  TradingSession s(c, f.time);
+  f.seed(s);
+  profit_day(s, f, "100.0001");
+  next_day(s, f, {2026, 9, 23});
+  profit_day(s, f, "99.9999");
+  auto q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.cycle_profit, m("200"));
+  EXPECT_EQ(q.consistency_needed, m("0.01"));
+  EXPECT_EQ(s.request_payout(m("10"), f.time).decision.code, Reason::PAYOUT_NOT_ELIGIBLE);
+  profit_day(s, f, "0.0002");
+  q = payout_quote(*s.snapshot(), rules);
+  EXPECT_EQ(q.cycle_profit, m("200.0002"));
+  EXPECT_EQ(q.consistency_needed, Money{});
+  EXPECT_TRUE(q.blocked.ok());
 }
 
 TEST(TradingFunded, ConsistencyValidatesEveryPercent) {

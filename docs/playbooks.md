@@ -375,7 +375,14 @@ nanoseconds. The plan objectives and daily loss rules take their journal names a
 `lock_at_start` true or false, and `consistency_percent`, `min_trading_days`,
 `min_profitable_days` and `day_end_minutes` (minutes after New York midnight) whole
 numbers. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
-required; practice and funded plans are refused. A custom plan example is:
+required for evaluation plans; practice and funded preset IDs are refused. Custom
+funded plans may instead set `phase: "funded"`, no profit target, and `payouts` with
+at least one qualifying day. Payout fields use their account API names; money
+(including `buffer` and `caps`) is decimal strings, `consistency_percents` is an
+array of 1–100 integers and `buffer_payouts` is 0–100. Other omitted payout fields
+use `PayoutRules` defaults. A funded backtest carries these rules in its journals
+and account views but does not request withdrawals automatically; a surviving
+funded attempt stays open. An evaluation example is:
 
 ```json
 {"initial_cash":"50000","rules":{"plan":"Example evaluation",

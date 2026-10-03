@@ -3950,9 +3950,11 @@ PayoutQuote payout_quote(const TradingSnapshot& s, const AccountRules& rules) {
   };
   // Like qualifying_days, a finished day belongs to the cycle in progress at
   // rollover. The payout request's trading day belongs to the next cycle too.
-  for (const auto& day : e.days)
-    if (e.payouts.empty() || day.day >= e.payouts.back().day) add_day(day.day, day.realised);
-  if (e.started > 0) add_day(e.day, s.account.realised - s.account.fees - e.day_open_realised);
+  if (q.funded) {
+    for (const auto& day : e.days)
+      if (e.payouts.empty() || day.day >= e.payouts.back().day) add_day(day.day, day.realised);
+    if (e.started > 0) add_day(e.day, s.account.realised - s.account.fees - e.day_open_realised);
+  }
   bool consistent = true;
   if (!p.consistency_percents.empty()) {
     q.consistency_percent = p.consistency_percents.at(std::min<std::size_t>(q.number, p.consistency_percents.size()) - 1);

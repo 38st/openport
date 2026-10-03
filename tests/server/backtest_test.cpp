@@ -388,6 +388,45 @@ server::ApiResponse call(server::BacktestHost& host, const server::ApiRequest& r
   if (capture) test::capture_contract("backtests", request.method, request.target, response);
   return response;
 }
+TEST(Backtest, CustomFundedRulesCarryPayoutConsistencyAndBufferThroughTheRunner) {
+  auto definitions = catalogue();
+  const auto& scenarios = providers::builtin_scenarios();
+  const json payouts{{"qualifying_profit", "50"}, {"qualifying_days", 1}, {"withdrawal_percent", 100},
+      {"split_percent", 80}, {"minimum", "10"}, {"caps", {"500", "1000"}},
+      {"consistency_percents", {20, 25, 30}}, {"buffer", "2100"}, {"buffer_payouts", 3}};
+  json rules{{"phase", "funded"}, {"payouts", payouts}, {"max_drawdown", "3000"}};
+  const auto parse = [&](const json& settings) {
+    return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "50000"}, {"rules", settings}}},
+                                  {"scenarios", 1}, {"seed", 0}}, definitions, scenarios, {});
+  };
+  auto parsed = parse(rules);
+  EXPECT_EQ(parsed.config.rules.phase, trading::Phase::Funded);
+  EXPECT_EQ(parsed.config.rules.payouts.consistency_percents, (std::vector<std::int64_t>{20, 25, 30}));
+  EXPECT_EQ(parsed.config.rules.payouts.buffer, Money::parse("2100"));
+  EXPECT_EQ(parsed.config.rules.payouts.buffer_payouts, 3);
+  for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
+      {"buffer", "-1"}, {"buffer", 1}, {"buffer_payouts", 101}, {"buffer_payouts", 1.5},
+      {"consistency_percents", {0}}, {"consistency_percents", {101}}, {"consistency_percents", {40.5}},
+      {"consistency_percents", {"40"}}, {"consistency_percents", 40}, {"unknown", 1}}) {
+    auto invalid = rules;
+    invalid["payouts"][key] = value;
+    EXPECT_THROW((void)parse(invalid), std::exception) << key << ": " << value;
+  }
+  auto invalid = rules;
+  invalid["phase"] = "evaluation";
+  EXPECT_THROW((void)parse(invalid), std::invalid_argument);
+  invalid = rules; invalid.erase("payouts");
+  EXPECT_THROW((void)parse(invalid), std::invalid_argument);
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14});
+  parsed.days = request_for({file}).days;
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(parsed, storage.directory / "funded", cancel);
+  EXPECT_EQ(report.at("status"), "completed") << report.dump();
+  ASSERT_FALSE(report.at("attempts").empty());
+  EXPECT_EQ(report.at("attempts").at(0).at("outcome"), "open");
+}
+
 TEST(Backtest, CustomPlansAcceptAndValidateAccountMargin) {
   auto definitions = catalogue();
   const auto& scenarios = providers::builtin_scenarios();

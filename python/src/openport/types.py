@@ -140,6 +140,50 @@ class Portfolio(TypedDict):
     positions: list[JSON]
 
 
+class PayoutOptions(TypedDict, total=False):
+    consistency_percents: list[int]
+    buffer: str
+    buffer_payouts: int
+
+
+class PayoutRules(PayoutOptions):
+    qualifying_profit: str
+    qualifying_days: int
+    withdrawal_percent: int
+    split_percent: int
+    minimum: str
+    caps: list[str]
+
+
+class PayoutBestDay(TypedDict):
+    day: str
+    profit: str
+
+
+class PayoutStatus(TypedDict):
+    eligible: bool
+    blocked: JSON | None
+    number: int
+    active: bool
+    flat: bool
+    qualifying_days: int
+    required_days: int
+    qualifying_profit: str
+    profit: str
+    withdrawable: str
+    cap: str | None
+    maximum: str
+    minimum: str
+    trader_share: str
+    withdrawal_percent: int
+    split_percent: int
+    consistency_percent: int | None
+    cycle_profit: str
+    best_day: PayoutBestDay | None
+    consistency_needed: str
+    buffer_balance: str | None
+
+
 class AccountRules(TypedDict, total=False):
     plan_id: str | None
     plan: str | None
@@ -157,7 +201,7 @@ class AccountRules(TypedDict, total=False):
     margin: str
     buying_power: bool
     expiry_cutoff_seconds: int
-    payouts: JSON | None
+    payouts: PayoutRules | None
     fees: FeeSchedule
 
 
@@ -183,6 +227,7 @@ class Account(AccountStorage):
     time: str
     rules: AccountRules
     evaluation: JSON
+    payout: PayoutStatus | None
 
 
 class ReplayListing(TypedDict):

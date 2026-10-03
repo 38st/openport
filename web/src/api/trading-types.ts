@@ -170,6 +170,10 @@ export interface Payout {
   /** Equity when requested, before the withdrawal. */
   balance: Money
 }
+export interface PayoutBestDay {
+  day: string
+  profit: Money
+}
 /** A funded account's standing for its next payout. */
 export interface PayoutStatus {
   eligible: boolean
@@ -187,7 +191,7 @@ export interface PayoutStatus {
   cap: Money | null
   consistency_percent: number | null
   cycle_profit: Money
-  best_day: { day: string; profit: Money } | null
+  best_day: PayoutBestDay | null
   consistency_needed: Money
   buffer_balance: Money | null
   /** Largest amount accepted now. */

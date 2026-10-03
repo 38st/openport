@@ -146,7 +146,7 @@ struct PayoutQuote {
   Money profit;                  ///< Equity less the starting balance.
   Money withdrawable;            ///< withdrawal_percent of positive profit, whole cents.
   std::optional<Money> cap;      ///< This payout number's cap.
-  Money maximum;                 ///< min(withdrawable, cap), leaving equity above a locked floor.
+  Money maximum;                 ///< min(withdrawable, cap, buffer room), leaving equity above a locked floor.
   Money minimum;
   Money trader_share;            ///< split_percent of the maximum.
   std::optional<std::int64_t> consistency_percent;  ///< This payout number's best-day limit.
