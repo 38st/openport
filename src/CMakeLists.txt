@@ -119,7 +119,7 @@ if(OPENPORT_BUILD_PROVIDERS)
   target_link_libraries(openport_providers PUBLIC openport::recording)
   target_link_libraries(openport_providers
     PUBLIC openport::core openport::net nlohmann_json::nlohmann_json
-    PRIVATE simdjson::simdjson openport::options)
+    PRIVATE openport::trading simdjson::simdjson openport::options)
 
   if(OPENPORT_WITH_DATABENTO)
     target_sources(openport_providers PRIVATE providers/databento.cpp providers/databento_history.cpp)

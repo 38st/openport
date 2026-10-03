@@ -135,11 +135,13 @@ simulation's limits.
   show their provider and an imported label. The importers follow the documented
   APIs and have saved-response tests; they have not yet been run live with a key.
 - **Demo market**: when markets are closed or the feed has stalled, the terminal offers
-  eighteen built-in simulated scenarios in SPX, SPY and QQQ options, with drill objectives,
+  nineteen built-in simulated scenarios, including SPX, SPY, QQQ, XSP, NDX, RUT and VIX options, with drill objectives,
   gaps, volatility changes, overnight sessions and runs that span several sessions and days. Each run chooses a fresh seed, or
   repeats one you supply. Add your own JSON files with `--scenario-dir`; generated
   prices stay labelled simulated. `--provider demo` rotates regular scenarios as
-  the server's own feed without network services. [Scenario format](scenarios.md).
+  the server's own feed without network services. Index chains have product ticks,
+  sessions and VIX forward term structure; earlier generator revisions stay reproducible.
+  [Scenario format](scenarios.md).
 - **Alerts**: price levels on an underlying (drawn on its chart) and every fill, shown in
   the terminal and as browser notifications with an optional chime while it is open;
   assignments, exercises at expiry and dividends are always announced. Floor room,
@@ -351,3 +353,6 @@ the simulation's limits.
       working-order ladders that no longer slow every command
 - [x] F25: realistic itemized fee schedules, with per-leg caps, index fees, exercise
       and assignment charges, fee previews and fill breakdowns
+- [x] F69 demo and replay coverage: XSP, NDX/NDXP, RUT/RUTW and VIX/VIXW,
+      product ticks and sessions, VIX driven by SPX volatility and mean-reverting forwards
+- [ ] F69 remaining: American ETF option generation and dividends reflected in option prices

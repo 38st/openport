@@ -4,7 +4,7 @@ Scenarios are generated practice sessions, not market data or reconstructions of
 historical days. Generated prices and volume are labelled simulated. The session date
 sets the calendar and expiries; it does not identify an event being reproduced.
 
-The eighteen built-ins, four of them [several sessions](#several-sessions) long, are compiled into the binary from `scenarios/*.json`.
+The nineteen built-ins, four of them [several sessions](#several-sessions) long, are compiled into the binary from `scenarios/*.json`.
 They need no files at runtime. CMake regenerates the embedded library when a source
 file is edited, added or removed; rebuild to change a built-in.
 `--scenario-dir DIR` adds JSON files, in
@@ -43,7 +43,7 @@ versions are rejected. Files are limited to 64 KiB.
 | --- | --- |
 | `id` | 1–40 lowercase letters, digits or hyphens; no leading or trailing hyphen |
 | `title`, `description`, `goal` | Nonempty single lines; title at most 100 bytes, description and goal at most 500 |
-| `symbols` | Nonempty unique subset of SPX, SPY and QQQ; overnight supports SPX only |
+| `symbols` | Nonempty unique subset of SPX, SPY, QQQ, XSP, NDX, RUT and VIX; a single overnight session supports SPX, XSP, RUT and VIX |
 | `session` | `regular` or `overnight` |
 | `date` | A trading date in `YYYY-MM-DD` format |
 | `seed` | Unsigned 64-bit integer; zero is a valid seed |
@@ -62,6 +62,31 @@ wander keeps each run near its path. Regular sessions run from 09:30 to 16:15 ET
 before `date` to 09:25 on `date`. Their cash index stays at the preceding business
 day's close; options follow the simulated latent level and analytics infers spot
 from parity. Prices begin around SPX 6000, SPY 6000/10.02 and QQQ 480.
+Revision 3 adds XSP at SPX/10, NDX near 21000 following QQQ's moves, RUT near
+2300 with a 1.15 beta and its own seeded wander, and VIX at the generated SPX
+30-day ATM implied volatility in points. Spikes and crushes move VIX with that
+volatility. VIX options use a forward mean-reverting toward 19.5, with a rising
+call wing; they do not apply a stock dividend yield to VIX spot.
+
+The `symbols` field selects which chains a scenario generates. The `index-spike`
+built-in lists all seven underlyings on 17 September 2026, the last trading day
+of that month's SPX, NDX and RUT AM series. Existing built-in JSON sources and
+hashes are unchanged.
+
+| Underlying | Series and expiries | Quote ticks |
+| --- | --- | --- |
+| SPX | SPXW PM dailies/weeklies; SPX AM third-Friday monthlies | $0.05 below $3, $0.10 from $3 |
+| XSP | XSP PM dailies, weeklies and monthlies | $0.01 below $3, $0.05 from $3 |
+| NDX | NDXP PM dailies/weeklies; NDX AM third-Friday monthlies | $0.05 below $3, $0.10 from $3 |
+| RUT | RUTW PM dailies/weeklies; RUT AM third-Friday monthlies | $0.05 below $3, $0.10 from $3 |
+| VIX | VIX AM monthlies; VIXW AM Wednesday weeklies | $0.01 |
+| SPY, QQQ | PM ETF series | $0.01 |
+
+VIX monthlies settle 30 days before the next month's third Friday (using the
+preceding business day if that Friday is a holiday); a settlement holiday moves
+the expiry to the preceding business day too. VIXW weeklies use Wednesdays,
+also moved back on holidays, and omit monthly dates. Two upcoming monthlies and
+two weeklies keep the chain bounded, alongside series carried from earlier dates.
 
 Each chain lists the date's own expiries (the date, the next two business days, the
 Friday after and next month's third Friday, AM-settled for SPX) and every series an
@@ -71,7 +96,10 @@ expires. The recording opens with each underlying's previous close, dated the
 preceding business day at those opening levels (before any gap), so market-wide
 circuit breakers measure a fall from it. Generator revision 2 added both; the
 contracts revision 1 listed keep their identifiers, quotes and sizes, and a run
-recorded before revisions regenerates revision 1.
+recorded before revisions regenerates revision 1. Revision 3 adds the index families,
+product tick rules, sessions and VIX term structure. Runs recorded at revision 1
+or 2 regenerate their original events, including quote sizes and volume; new
+underlyings require revision 3. The JSON `generator` stays at version 1.
 
 The five original scenarios keep their original prices, sizes and relative order
 of existing events for the same date and seed. Their old segment moves have been
@@ -130,10 +158,13 @@ time:
   an overnight session after Friday's regular one runs from Sunday at 20:15 into
   Monday, skipping weekends and holidays.
 
-A sequence the calendar cannot hold is refused with the session named. Curb and
-overnight sessions trade SPX options alone, so such a scenario lists SPX. SPY and QQQ
-may still be listed: they and their options quote only in regular sessions, and
-their chains report `options closed` in between.
+A sequence the calendar cannot hold is refused with the session named. In revision
+3, curb and overnight sessions trade SPX, XSP, RUT and VIX options, following the
+product calendar; such a scenario must list at least one of them. NDX, SPY and QQQ
+may still be listed in multi-session scenarios: they and their options quote only
+in regular sessions, and their chains report `options closed` in between. Cash
+index prints stop at the regular close; options follow latent levels outside it.
+Revisions 1 and 2 retain their original SPX-only extended-session output.
 
 Each session starts where the one before ended, plus its own gap, and its seeded
 wander starts afresh. Crush and spike IV changes last for the rest of the run. Each
@@ -166,7 +197,7 @@ an overnight session, 20:15–23:59 belongs to the evening before the trading da
 | Spike | `{"type":"spike","at":"14:30","move":-0.006,"iv":0.03}` | Spreads a move over five minutes and jumps IV immediately; move ±0.1, IV 0–0.3 |
 | Pin | `{"type":"pin","at":"14:30","strike":6000}` | Progressively pulls the SPX level to the strike at the regular close; strike 5400–6600; regular sessions only |
 
-SPY and QQQ follow the changed index path. Every expiry is repriced from the new
+SPY, QQQ, XSP, NDX and RUT follow the changed index path. Every expiry is repriced from the new
 forward and smile, including the spot response in `spot_vol`. An IV event receives
 weight `0.25 + 0.75 * exp(-days_to_expiry / 7)`: short maturities respond most, while
 the far end still responds. Scenarios clamp ATM IV to 2%–200%. Quotes keep

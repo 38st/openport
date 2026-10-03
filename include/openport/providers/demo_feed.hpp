@@ -15,6 +15,7 @@ class DemoProvider final : public md::Provider {
     int speed = 1;
     md::Timestamp started = 0;  ///< Zero selects the server's start time.
     std::shared_ptr<ReplayClock> clock;
+    int revision = kScenarioRevision;  ///< Keep 1 or 2 for an earlier feed's output and rotation.
   };
   explicit DemoProvider(Options options);
   ~DemoProvider() override;

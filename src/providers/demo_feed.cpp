@@ -96,18 +96,30 @@ std::vector<md::Event> closes_of(const std::filesystem::path& file, md::Date dat
 DemoProvider::DemoProvider(Options options) : options_(std::move(options)) {
   if (options_.speed == 0 || !ReplayProvider::valid_speed(options_.speed))
     throw std::invalid_argument("demo: speed must be 1, 2, 5, 10, 30, 60, 120 or 300");
+  if (options_.revision < 1 || options_.revision > kScenarioRevision)
+    throw std::invalid_argument("demo: unsupported scenario revision");
+  const auto supported = [&](const Scenario& day) {
+    return options_.revision >= 3 || std::all_of(day.symbols.begin(), day.symbols.end(), [](const auto& symbol) {
+      return symbol == "SPX" || symbol == "SPY" || symbol == "QQQ";
+    });
+  };
   const auto& builtins = builtin_scenarios();
   if (options_.days.empty()) {
-    for (const auto& day : builtins) if (!day.overnight && day.sessions.empty()) days_.push_back(day);
+    for (const auto& day : builtins) if (!day.overnight && day.sessions.empty() && supported(day)) days_.push_back(day);
   } else {
     for (const auto& id : options_.days) {
       const auto it = std::find_if(builtins.begin(), builtins.end(), [&](const auto& day) { return day.id == id; });
       if (it == builtins.end()) throw std::invalid_argument("demo: unknown day " + id);
       if (it->overnight) throw std::invalid_argument("demo: day " + id + " is not a regular session");
       if (!it->sessions.empty()) throw std::invalid_argument("demo: day " + id + " spans several sessions; play it in Replay");
+      if (!supported(*it)) throw std::invalid_argument("demo: day " + id + " needs revision 3");
       days_.push_back(*it);
     }
   }
+  if (options_.revision >= 3)
+    for (auto& day : days_)
+      for (const auto* symbol : {"XSP", "NDX", "RUT", "VIX"})
+        if (std::find(day.symbols.begin(), day.symbols.end(), symbol) == day.symbols.end()) day.symbols.emplace_back(symbol);
   for (const auto& day : days_)
     for (const auto& symbol : day.symbols)
       if (std::find(symbols_.begin(), symbols_.end(), symbol) == symbols_.end()) symbols_.push_back(symbol);
@@ -212,8 +224,8 @@ void DemoProvider::run(md::Subscription subscription, md::EventSink& sink) {
     const auto prepare = [&](md::Date date) {
       const auto day = on_date(days_[day_on(date)], date);
       const auto path = directory_ / (md::format_date(date) + ".oprec");
-      return std::async(std::launch::async, [day, path, date] {
-        write_scenario_recording(path, day, date, seed(day.id, date));
+      return std::async(std::launch::async, [day, path, date, revision = options_.revision] {
+        write_scenario_recording(path, day, date, seed(day.id, date), revision);
         return path;
       });
     };

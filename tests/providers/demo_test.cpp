@@ -333,7 +333,7 @@ TEST(DemoMarket, AHeldSeriesStaysListedUntilItsLastTrade) {
   const auto second = providers::scenario_chain(*day, {2026, 10, 1});
   ASSERT_GT(second.size(), first.size());
   for (std::size_t i = 0; i < first.size(); ++i) EXPECT_EQ(second[i].osi_symbol(), first[i].osi_symbol());
-  EXPECT_THROW((void)providers::scenario_chain(*day, {2026, 10, 1}, 3), std::invalid_argument);
+  EXPECT_THROW((void)providers::scenario_chain(*day, {2026, 10, 1}, 4), std::invalid_argument);
 }
 
 TEST(DemoMarket, RevisionTwoKeepsEveryQuoteOfTheFirstAndAddsTheRest) {
@@ -371,6 +371,101 @@ TEST(DemoMarket, RevisionTwoKeepsEveryQuoteOfTheFirstAndAddsTheRest) {
   EXPECT_FALSE(first.quotes.contains(monthly));
   ASSERT_TRUE(second.quotes.contains(monthly));
   EXPECT_GT(second.quotes.at(monthly).size(), 1000U);
+}
+
+const providers::Scenario& index_scenario() {
+  const auto& scenarios = providers::builtin_scenarios();
+  return *std::find_if(scenarios.begin(), scenarios.end(), [](const auto& s) { return s.id == "index-spike"; });
+}
+
+TEST(DemoMarket, RevisionThreeListsTheIndexFamiliesAndVixCalendar) {
+  const auto& scenario = index_scenario();
+  const auto chain = providers::scenario_chain(scenario, scenario.date);
+  std::set<std::string> roots;
+  for (const auto& c : chain) {
+    roots.insert(c.root);
+    EXPECT_EQ(c.settlement, md::conventions_for_root(c.root).settlement);
+    if (c.underlying == "VIX") {
+      EXPECT_EQ(md::weekday(c.expiry), 3);
+      EXPECT_GT(c.expiry, scenario.date);
+    }
+  }
+  EXPECT_EQ(roots, (std::set<std::string>{"SPX", "SPXW", "SPY", "QQQ", "XSP", "NDX", "NDXP", "RUT", "RUTW", "VIX", "VIXW"}));
+  EXPECT_LT(chain.size(), 5000U);  // Keep each snapshot bounded as the product set grows.
+  const auto has = [&](md::Date date, const std::string& root, md::Date expiry) {
+    const auto contracts = providers::scenario_chain(scenario, date);
+    return std::any_of(contracts.begin(), contracts.end(), [&](const auto& c) { return c.root == root && c.expiry == expiry; });
+  };
+  EXPECT_TRUE(has({2026, 9, 15}, "VIX", {2026, 9, 16}));
+  EXPECT_FALSE(has({2026, 9, 16}, "VIX", {2026, 9, 16}));
+  EXPECT_TRUE(has({2026, 9, 17}, "VIX", {2026, 10, 21}));
+  EXPECT_TRUE(has({2026, 9, 17}, "VIXW", {2026, 9, 23}));
+  // June's Wednesday is Juneteenth; March's reference Friday is Good Friday.
+  EXPECT_TRUE(has({2024, 6, 17}, "VIX", {2024, 6, 18}));
+  EXPECT_FALSE(has({2024, 6, 17}, "VIX", {2024, 6, 19}));
+  EXPECT_TRUE(has({2025, 3, 17}, "VIX", {2025, 3, 18}));
+  // Rollover through December also computes the next year's monthly.
+  EXPECT_TRUE(has({2026, 12, 31}, "VIX", {2027, 1, 20}));
+}
+
+TEST(DemoMarket, NewIndicesQuoteOnTheirTicksWithRelatedLevelsAndVixForwards) {
+  const auto& scenario = index_scenario();
+  const auto path = temporary("indices");
+  providers::write_scenario_recording(path, scenario, scenario.date, scenario.seed);
+  md::RecordingReader reader(path);
+  EXPECT_EQ(reader.header().subscription.underlyings, scenario.symbols);
+  std::map<md::InstrumentId, md::OptionContract> contracts;
+  std::map<std::string, md::UnderlyingClose> previous;
+  std::map<std::string, double> spot;
+  std::map<md::Timestamp, double> vix;
+  std::map<md::Date, std::map<pricing::OptionType, md::OptionQuote>> parity;
+  std::set<std::string> quoted, below, above;
+  const auto open = providers::scenario_open(scenario, scenario.date);
+  while (const auto event = reader.next()) {
+    if (const auto* d = std::get_if<md::ContractDefinition>(&event->event)) contracts[d->id] = d->contract;
+    if (const auto* close = std::get_if<md::UnderlyingClose>(&event->event)) previous[close->symbol] = *close;
+    if (const auto* u = std::get_if<md::UnderlyingQuote>(&event->event)) {
+      spot[u->symbol] = u->last;
+      if (u->symbol == "VIX") vix[u->ts] = u->last;
+      if (u->symbol == "SPX") { EXPECT_NEAR(spot["XSP"], u->last / 10, 0.006); }
+      if (u->symbol == "QQQ" && u->ts <= md::new_york_to_utc(scenario.date, 16, 0)) {
+        EXPECT_NEAR(spot["NDX"] / 21000, u->last / 480, 0.000011);
+      }
+    }
+    if (const auto* q = std::get_if<md::OptionQuote>(&event->event); q && q->ask > 0) {
+      const auto& c = contracts.at(q->id);
+      ASSERT_TRUE(on_tick(c.root, q->bid)) << c.osi_symbol() << " bid " << q->bid;
+      ASSERT_TRUE(on_tick(c.root, q->ask)) << c.osi_symbol() << " ask " << q->ask;
+      ASSERT_GT(q->ask, q->bid);
+      quoted.insert(c.root);
+      (q->ask < 3 ? below : above).insert(c.underlying);
+      if (q->ts == open && c.underlying == "VIX" && c.strike == 17) parity[c.expiry][c.type] = *q;
+    }
+  }
+  EXPECT_EQ(quoted.size(), 11U);
+  EXPECT_EQ(below.size(), 7U);
+  EXPECT_EQ(above.size(), 7U);
+  EXPECT_EQ(previous.size(), 7U);
+  EXPECT_DOUBLE_EQ(previous["XSP"].price, 600);
+  EXPECT_DOUBLE_EQ(previous["NDX"].price, 21000);
+  EXPECT_DOUBLE_EQ(previous["RUT"].price, 2300);
+  EXPECT_DOUBLE_EQ(previous["VIX"].price, 15.4);
+  EXPECT_GT(vix[md::new_york_to_utc(scenario.date, 12, 30)], vix[md::new_york_to_utc(scenario.date, 12, 29, 45)] + 0.7);
+  EXPECT_LT(vix[md::new_york_to_utc(scenario.date, 14, 45)], vix[md::new_york_to_utc(scenario.date, 14, 44, 45)] - 0.3);
+  ASSERT_GE(parity.size(), 3U);
+  double prior = 0;
+  for (const auto& [date, pair] : parity) {
+    ASSERT_EQ(pair.size(), 2U);
+    const auto& call = pair.at(pricing::OptionType::Call);
+    const auto& put = pair.at(pricing::OptionType::Put);
+    const double years = md::years_between(open, md::new_york_to_utc(date, 9, 30));
+    const double forward = 17 + ((call.bid + call.ask) - (put.bid + put.ask)) / 2 * std::exp(0.04 * years);
+    const double expected = 19.5 + (vix.at(open) - 19.5) * std::exp(-4 * years);
+    EXPECT_NEAR(forward, expected, 0.03);
+    EXPECT_GT(forward, prior);
+    prior = forward;
+  }
+  std::filesystem::remove(path);
 }
 
 TEST(DemoMarket, SimulatedVolumeRisesAndFavoursNearMoneyAndFrontExpiry) {

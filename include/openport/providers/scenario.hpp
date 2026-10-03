@@ -88,9 +88,10 @@ struct ScenarioWindow {
 /// the next two business days, the Friday after and next month's third Friday.
 /// Revision 2 also lists every series an earlier date listed until its last trade, at
 /// least as wide as then, and opens with each underlying's previous close. The contracts
-/// both list keep their identifiers, quotes and sizes. Runs record the revision; one
+/// both list keep their identifiers, quotes and sizes. Revision 3 adds XSP, NDX/NDXP,
+/// RUT/RUTW and VIX/VIXW, their ticks and sessions. Runs record the revision; one
 /// recorded without it regenerates revision 1.
-inline constexpr int kScenarioRevision = 2;
+inline constexpr int kScenarioRevision = 3;
 /// The option contracts a scenario lists on `date`, in the order it defines them.
 [[nodiscard]] std::vector<md::OptionContract> scenario_chain(const Scenario& scenario, md::Date date,
                                                              int revision = kScenarioRevision);

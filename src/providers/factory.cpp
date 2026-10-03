@@ -78,7 +78,8 @@ void validate_subscription(std::string_view provider, const md::Subscription& su
     if (subscription.max_expiries != 0 || subscription.strike_window != 0)
       throw std::invalid_argument("demo: --expiries and --window must be zero");
     for (const auto& symbol : subscription.underlyings)
-      if (symbol != "SPX" && symbol != "SPY" && symbol != "QQQ")
+      if (symbol != "SPX" && symbol != "SPY" && symbol != "QQQ" && symbol != "XSP" &&
+          symbol != "NDX" && symbol != "RUT" && symbol != "VIX")
         throw std::invalid_argument("demo: unsupported symbol " + symbol);
   }
   if (provider == "replay" &&
@@ -118,9 +119,11 @@ std::unique_ptr<md::Provider> make_provider(const md::ProviderConfig& config) {
     return std::make_unique<TastytradeProvider>(std::move(options));
   }
   if (config.name == "demo") {
-    validate_keys(config, {"days", "speed"});
+    validate_keys(config, {"days", "speed", "revision"});
     DemoProvider::Options options;
     options.speed = parse_integer(option_or(config, "speed", "1"), "demo speed", 1, 300);
+    options.revision = parse_integer(option_or(config, "revision", std::to_string(kScenarioRevision)),
+                                     "demo revision", 1, kScenarioRevision);
     if (const auto found = config.options.find("days"); found != config.options.end()) {
       std::size_t begin = 0;
       do {
