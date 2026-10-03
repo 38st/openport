@@ -825,6 +825,8 @@ json run_json(const std::optional<RunIdentity>& run) {
 json trades_json(const TradingView& view, std::string_view status, bool current_only) {
   const auto& s = *view.snapshot;
   const auto& e = s.evaluation;
+  std::map<std::pair<std::string, Timestamp>, const SettlementRecord*> settlements;
+  for (const auto& record : s.settlements) settlements[{record.contract.osi_symbol(), record.time}] = &record;
   const auto all = lifecycles(s.recent_fills, s.closures, view.contracts);
   json trades = json::array();
   for (auto it = all.rbegin(); it != all.rend(); ++it) {
@@ -861,6 +863,9 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         for (const auto* leg : strategy_legs) *strategy_net = *strategy_net + leg->gross - leg->fees;
       }
     }
+    const auto settled = t.closure == ClosureKind::Settlement && t.closed
+        ? settlements.find({t.symbol, *t.closed}) : settlements.end();
+    const auto* settlement = settled == settlements.end() ? nullptr : settled->second;
     const auto buying_power = entry_buying_power({&t});
     const auto strategy_power = strategy_legs.empty() ? std::optional<Money>{} : std::optional(entry_buying_power(strategy_legs));
     trades.push_back({{"entry_context", context_json(t.entry_context)}, {"exit_context", context_json(t.exit_context)},
@@ -886,6 +891,9 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
         {"return", open || cost == Money{} ? json(nullptr) : number(net.dollars() / cost.dollars())},
         {"mark", mark}, {"unrealised", unrealised},
         {"closure", !t.closure ? json(nullptr) : json(closure_name(*t.closure))},
+        {"settlement_value", settlement ? json(settlement->value.str()) : json(nullptr)},
+        {"settlement_source", settlement && settlement->source && settlement->source->contains("kind")
+            ? json(settlement->source->at("kind")) : json(nullptr)},
         {"closed_by", exit.first}, {"system_reason", exit.second},
         {"attribution", trip_attribution_json(s, std::to_string(t.first_fill))},
         {"group", trade_group(t, s.groups)},
@@ -2252,7 +2260,7 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
   const auto path = request.target.substr(0, question);
   if (path != "/api/portfolio" && path != "/api/orders" && path != "/api/fills" && path != "/api/risk" &&
       path != "/api/trades.csv" && path != "/api/fills.csv" && path != "/api/account" && path != "/api/account/equity" &&
-      path != "/api/trades" && path != "/api/plans" && path != "/api/accounts" && path != "/api/risk/profile" &&
+      path != "/api/trades" && path != "/api/settlements" && path != "/api/plans" && path != "/api/accounts" && path != "/api/risk/profile" &&
       path != "/api/alerts") return {};
   if (path == "/api/risk/profile") {
     const auto pairs = query_parameters(question == std::string::npos ? std::string_view{} : std::string_view(request.target).substr(question + 1));
@@ -2302,6 +2310,17 @@ std::optional<ApiResponse> paper_read(const ApiRequest& request, const MetricsSo
           {"fill", sample.stock_fill ? json("s" + std::to_string(sample.stock_fill)) : sample.fill ? json(std::to_string(sample.fill)) : json(nullptr)}});
     }
     return ApiResponse{200, json{{"samples", samples}, {"error", nullable(view->equity_error)}}.dump()};
+  }
+  if (path == "/api/settlements") {
+    json records = json::array();
+    for (auto it = s.settlements.rbegin(); it != s.settlements.rend(); ++it) {
+      const auto& c = it->contract;
+      records.push_back({{"symbol", c.osi_symbol()}, {"underlying", c.underlying}, {"expiry", md::format_date(c.expiry)},
+          {"settlement", c.settlement == md::Settlement::AM ? "AM" : "PM"}, {"value", it->value.str()},
+          {"time", md::format_timestamp(it->time)}, {"quantity", it->quantity}, {"cash", it->cash.str()},
+          {"realised", it->realised.str()}, {"fee", it->fee.str()}, {"source", it->source ? json(*it->source) : json(nullptr)}});
+    }
+    return ApiResponse{200, json{{"account_version", std::to_string(s.account_version)}, {"settlements", records}}.dump()};
   }
   if (path == "/api/portfolio") return ApiResponse{200, portfolio_json(*view).dump()};
   if (path == "/api/risk") return ApiResponse{200, risk_json(*view).dump()};

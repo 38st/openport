@@ -34,6 +34,11 @@ void add_order(State& s, const Order& order) {
 void event(Events& events, std::string_view type, Json payload) {
   events.push_back(Json{{"type", type}, {"payload", std::move(payload)}});
 }
+SettlementRecord settlement_record(const Position& position, Money value, Money intrinsic, Money fee,
+                                   Timestamp time, std::optional<SettlementSource> source) {
+  const auto proceeds = (intrinsic * 100) * position.quantity;
+  return {position.contract, value, time, position.quantity, proceeds - fee, proceeds - position.basis, fee, std::move(source)};
+}
 bool regular(const md::OptionContract& c, Timestamp time) { return md::trading_session(c.root, time).name == "regular"; }
 bool extended(const OrderRequest& r) { return r.tif == TimeInForce::Exto || r.tif == TimeInForce::GtcExto; }
 bool good_until(const OrderRequest& r) {
@@ -1062,6 +1067,7 @@ TradingSnapshot snapshot_of(const State& s) {
   out.soft_floor = m.soft_floor;
   out.buying_power = m.buying_power;
   out.margin = margin_detail(s);
+  out.settlements = s.settlements;
   out.closures = s.closures;
   out.attempts = s.attempts;
   out.stock_fills = s.stock_fills;
@@ -3638,12 +3644,16 @@ JournalRecovery reverify(const JournalRecovery& recovery) {
 /// sequence and time, and each new config passes validation. The visitor gets
 /// the payload without its state; returns the last state.
 template <class Visit>
-Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit) {
+Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit,
+                 SharedVector<SettlementRecord>* settlements = nullptr) {
   Json state;
   bool chained = false;  // A delta may follow only a schema 3 record.
   Json validated;
   for (const auto& r : records) {
     auto payload = Json::parse(r.payload);
+    std::map<std::string, Position> settling_positions;
+    if (settlements && r.type == "settlement" && !state.is_null())
+      settling_positions = state.at("ledger").at("positions").get<std::map<std::string, Position>>();
     const auto schema = payload.at("schema");
     const auto& ticks = payload.at("tick_policy");
     if ((schema != 1 && schema != 2 && schema != 3) || (ticks != "index-v1" && ticks != "v2"))
@@ -3678,6 +3688,21 @@ Json walk_states(const std::vector<JournalRecord>& records, Visit&& visit) {
       validate_rules(c.rules);
       validate_guardrails(c.guardrails);
       validated = config;
+    }
+    if (settlements && r.type == "settlement") {
+      for (const auto& e : payload.at("events")) {
+        if (e.at("type") != "settlement") continue;
+        const auto& data = e.at("payload");
+        const auto symbol = data.at("symbol").get<std::string>();
+        Money fee;
+        if (state.contains("closures") && !state.at("closures").empty())
+          fee = state.at("closures").back().value("fee", Money{});
+        std::optional<SettlementSource> source;
+        if (payload.contains("settlement_source") && !payload.at("settlement_source").is_null())
+          source = payload.at("settlement_source").get<SettlementSource>();
+        settlements->push_back(settlement_record(settling_positions.at(symbol), data.at("reference").get<Money>(),
+            data.at("intrinsic").get<Money>(), fee, r.time, std::move(source)));
+      }
     }
     visit(r, std::move(payload), std::as_const(state));
   }
@@ -3750,7 +3775,8 @@ struct TradingSession::Impl {
   }
 
   CommandResult transact(Timestamp time, std::string_view type,
-                         const std::function<CommandResult(State&, Events&)>& action) {
+                         const std::function<CommandResult(State&, Events&)>& action,
+                         const std::optional<SettlementSource>& source = {}) {
     if (stopped) throw TradingError(Reason::JOURNAL_IO, "Trading stopped after journal failure; recover first");
     State next = state;
     Events events;
@@ -3788,6 +3814,7 @@ struct TradingSession::Impl {
       // checkpoints, and no snapshot: recovery derives it from the state.
       // Tick policy v2 extends index-v1 with equity and ETF classes.
       Json payload{{"schema", 3}, {"tick_policy", "v2"}, {"actor", actor}, {"events", events}, {"decision", result.decision}};
+      if (source) payload["settlement_source"] = *source;
       recorder.add(payload, next, std::move(change));
       try { journal->append(time, type, payload.dump()); }
       catch (...) {
@@ -4615,7 +4642,8 @@ CommandResult TradingSession::reset_kill(std::string reason, Timestamp time) {
     return CommandResult{};
   });
 }
-CommandResult TradingSession::settle(const std::string& symbol, Money settlement, Timestamp time) {
+CommandResult TradingSession::settle(const std::string& symbol, Money settlement, Timestamp time,
+                                     std::optional<SettlementSource> source) {
   return impl_->transact(time, "settlement", [&](State& s, Events& events) {
     const auto it = s.contracts.find(symbol);
     if (it == s.contracts.end()) return CommandResult{failure(Reason::UNKNOWN_CONTRACT, "Unknown settlement contract"), {}, 0};
@@ -4639,6 +4667,7 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
     end_stretch(s, symbol, intrinsic, at_expiry ? &*at_expiry : nullptr);
     const bool delivers = physical(it->second) && intrinsic >= Money::from_micros(10'000);
     const Money fee = delivers ? exercise_fee(s, quantity) : Money{};
+    s.settlements.push_back(settlement_record(s.ledger.positions().at(symbol), settlement, intrinsic, fee, time, source));
     s.ledger.settle(symbol, intrinsic, fee);
     if (fee > Money{}) s.explained[symbol].costs -= fee.dollars();
     s.trips.erase(symbol);
@@ -4662,7 +4691,7 @@ CommandResult TradingSession::settle(const std::string& symbol, Money settlement
       event(events, "delivery", Json{{"symbol", symbol}, {"underlying", underlying}, {"shares", shares}, {"price", settlement}});
     }
     return CommandResult{};
-  });
+  }, source);
 }
 namespace {
 /// Overnight, short American equity and ETF options that the market valued below
@@ -5245,8 +5274,10 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
   auto impl = std::make_unique<Impl>();
   try {
     Json last;
-    auto state = walk_states(verified.records, [&](const JournalRecord&, Json&& payload, const Json&) { last = std::move(payload); });
+    SharedVector<SettlementRecord> settlements;
+    auto state = walk_states(verified.records, [&](const JournalRecord&, Json&& payload, const Json&) { last = std::move(payload); }, &settlements);
     impl->state = state.get<State>();
+    impl->state.settlements = std::move(settlements);
     // Schema 3 records no snapshot; the reducer derives it from the state.
     impl->snapshot = std::make_shared<TradingSnapshot>(
         last.at("schema") == 3 ? snapshot_of(impl->state) : last.at("snapshot").get<TradingSnapshot>());
@@ -5254,6 +5285,7 @@ TradingSession TradingSession::recover(const JournalRecovery& recovery, std::sha
     if (last.at("schema") != 3) {
       auto snapshot = std::make_shared<TradingSnapshot>(*impl->snapshot);
       snapshot->exit_equity = exit_equity_of(impl->state, *snapshot);
+      snapshot->settlements = impl->state.settlements;
       impl->snapshot = std::move(snapshot);
     }
     if (last.at("schema") == 1) {

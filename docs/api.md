@@ -71,6 +71,8 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |
 | `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}` | Place an order (one contract, or `legs` for a strategy), attach held-spread exits with `exits_only`, change it or cancel it |
 | `POST /api/orders/cancel`, `POST /api/positions/close` | Cancel every open order, or flatten, for one underlying or all |
+| `GET /api/settlements` | Account settlements, newest first across attempts: exact reference, signed quantity and cash, gross realised P&L, fee and nullable source; read scope |
+| `POST /api/settlements` | Import an expired position’s decimal-string reference `{symbol, value}`; admin scope |
 | `POST /api/positions/abandon` | Give up a long at zero without a fee: `{symbol}`, allowed with a fresh ask-only quote or after expiry |
 | `POST /api/positions/instruction` | Set or withdraw a long's expiry instruction: `{symbol, do_not_exercise}`; true forfeits shares and cash settlement. Both routes return the portfolio and require trade scope (replay scope on the replay mirror) |
 | `GET /api/trades.csv`, `/api/fills.csv` | Trades or fills, with context and excursions, filtered by account and New York `from`/`to` dates. Fills include `fees.commission`, `fees.clearing`, `fees.regulatory`, and `fees.index` columns (empty for flat fees) |
@@ -84,7 +86,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one, with optional `fill_model` and margin settings as for a reset; account routes take `?account=ID` for one other than the main account |
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`, or continue an interrupted saved run with `{resume}`; control or stop. `/api/replay/X` mirrors `/api/X` |
 | `PUT /api/replay {"until":"HH:MM[:SS]"}` | Advance through a New York session time (its next occurrence in a scenario of several sessions), or a date and time such as `2026-09-17T10:30` (New York unless zoned), then pause; responds after analytics and trading settle, with `settled_through`. Meanwhile `stepping` is true and replay writes return `REPLAY_STEPPING`; a target past the recording's end returns 400 and plays nothing |
-| `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, equity history (`account/equity`), portfolio, trades or fills; delete its journal |
+| `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, equity history (`account/equity`), portfolio, trades, fills or settlements; delete its journal |
 
 Margin settings are returned in account rules. Invalid values or a cash/IRA account
 without strategy margin and enforced buying power return HTTP 400 `INVALID_RULES`.

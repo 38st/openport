@@ -1650,6 +1650,26 @@
             }
           }
         }
+      },
+      "get": {
+        "summary": "GET /api/settlements",
+        "description": "All settlements for the account, newest first, across attempts. Older journals without provenance return source: null.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettlementsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
       }
     },
     "/api/positions/exercise": {
@@ -4211,6 +4231,41 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AlertsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/replay/history/{run_id}/settlements": {
+      "parameters": [
+        {
+          "name": "run_id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "$ref": "#/components/parameters/account"
+        }
+      ],
+      "get": {
+        "summary": "GET /api/settlements",
+        "description": "All settlements for the account, newest first, across attempts. Older journals without provenance return source: null.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettlementsResponse"
                 }
               }
             }
@@ -9861,6 +9916,28 @@
               }
             ],
             "description": "The strategy's net over its buying power, once every leg has closed. Absent from older servers."
+          },
+          "settlement_value": {
+            "description": "Underlying settlement reference, null except on settlement closures.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settlement_source": {
+            "description": "Settlement source kind, null without recorded provenance or outside settlement closures.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -18458,6 +18535,116 @@
           "deleted"
         ],
         "additionalProperties": false
+      },
+      "SettlementSource": {
+        "type": "object",
+        "description": "The exact provenance recorded with settlement. Opening-print kinds approximate the official AM special opening quotation.",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "quote_time": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "SettlementRecord": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string"
+          },
+          "underlying": {
+            "type": "string"
+          },
+          "expiry": {
+            "type": "string"
+          },
+          "time": {
+            "type": "string"
+          },
+          "settlement": {
+            "anyOf": [
+              {
+                "const": "AM",
+                "type": "string"
+              },
+              {
+                "const": "PM",
+                "type": "string"
+              }
+            ]
+          },
+          "quantity": {
+            "type": "number",
+            "description": "Signed contracts settled; negative for a short."
+          },
+          "value": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Exact underlying settlement reference."
+          },
+          "cash": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Signed option proceeds after settlement fees, excluding any delivered-share cash flow."
+          },
+          "realised": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Gross P&L released by this settlement, before fees; excludes P&L realised by earlier partial closes."
+          },
+          "fee": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SettlementSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "symbol",
+          "underlying",
+          "expiry",
+          "time",
+          "settlement",
+          "quantity",
+          "value",
+          "cash",
+          "realised",
+          "fee",
+          "source"
+        ]
+      },
+      "SettlementsResponse": {
+        "type": "object",
+        "properties": {
+          "account_version": {
+            "type": "string"
+          },
+          "settlements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SettlementRecord"
+            }
+          }
+        },
+        "required": [
+          "account_version",
+          "settlements"
+        ]
       }
     }
   }

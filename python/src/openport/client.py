@@ -9,7 +9,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 from .types import (JSON, Account, Chain, Fills, OrderResult, Orders, Portfolio,
-                    ReplayListing, ReplayResult, Status, Summary, Surface, Trades,
+                    ReplayListing, ReplayResult, Status, Summary, Surface, Trades, Settlements,
                     Exposure, Volatility, Candles, Risk, OrderPreview, SubmitResult,
                     Plans, Accounts, EquityHistory, CancelAllResult, FlattenResult,
                     WhatIfResult, FlattenPreview, StockPreview, RiskProfile, Probability)
@@ -162,6 +162,10 @@ class Client:
 
     def fills(self) -> Fills:
         return self._request("GET", "/fills", scoped=True)
+
+    def settlements(self) -> Settlements:
+        """Settlement references and provenance, newest first across attempts."""
+        return self._request("GET", "/settlements", scoped=True)
 
     def trades(self, status: str = "all", attempt: str = "current") -> Trades:
         return self._request("GET", "/trades", scoped=True, params={"status": status, "attempt": attempt})

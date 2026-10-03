@@ -161,7 +161,6 @@ class Desk {
   // Initialized/recovered by start_trading(), then owned by the caller.
   std::vector<PaperAccount> accounts_;  // the main account first
   std::set<std::string> sandbox_ids_;
-  std::map<std::string, std::string> settlement_source_;
   /// Each underlying's first print at or after a date's regular close, and its
   /// last one before it, for the last week of dates.
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> closing_prints_;

@@ -121,6 +121,11 @@ class OrderResult(TypedDict):
     order: Order
 
 
+class Settlements(TypedDict):
+    account_version: str
+    settlements: list[JSON]
+
+
 class Trades(TypedDict):
     account_version: str
     attempt: int

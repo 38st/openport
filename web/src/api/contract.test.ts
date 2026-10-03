@@ -27,6 +27,9 @@ describe("checked API core types", () => {
     }
     const trade = /export interface Trade \{([\s\S]*?)\n\}/.exec(source)![1]!
     expect(normalize(/closure: ([^\n]+)/.exec(trade)![1]!)).toBe(wireType(spec.components.schemas.Trade!.properties!.closure!))
+    for (const field of ["settlement_value", "settlement_source"]) {
+      expect(normalize(new RegExp(`${field}\\?: ([^\\n]+)`).exec(trade)![1]!)).toBe(wireType(spec.components.schemas.Trade!.properties![field]!))
+    }
     const exits = /export type TradeExit = ([^\n]+)/.exec(source)![1]!
     expect(normalize(`${exits} | null`)).toBe(wireType(spec.components.schemas.Trade!.properties!.closed_by!))
   })
@@ -45,7 +48,7 @@ describe("checked API core types", () => {
     }
   })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
-    "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
+    "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
     "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
