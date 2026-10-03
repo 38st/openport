@@ -1576,7 +1576,7 @@ side, no buying-power check. All rule money is exact.
 | `house_margin_percent` | Integer from 0 to 400: a broker's house margin, raising each naked requirement (beyond its buy-back value) and each short sale's margin (beyond the shares' value) by that percentage under strategy margin, or each underlying's scan under portfolio margin; default 0 |
 | `pm_vol_shock` | Integer from 0 to 50: portfolio margin also takes each price shock with implied volatility this many points up and down; default 0 |
 | `expiry_cutoff` | From the last trade − cutoff until the last trade (`OptionContract::last_trade_time`: 16:00 ET on expiry day for index series such as SPXW, 16:15 for ETF options that trade until then, and the regular close the business day before for AM-settled series), every open order on the contract cancels with `EXPIRY_CUTOFF` (DAY, GTC, armed and bracket exits alike, held or not), positions are closed, and only closing orders are accepted |
-| `phase` | `Evaluation` (default) or `Funded`; a funded account has no profit target and pays out under `payouts` |
+| `phase` | `Evaluation` (default), `Verification` (the second evaluation step), or `Funded`; verification has the same target/objective semantics as evaluation; funded has no target and pays out under `payouts` |
 | `lock_balance` | Caps the trailing floor: the floor is the lesser of peak − drawdown and the lock, and once peak − drawdown reaches the lock the floor stays there and stops trailing (zero disables). A lock at or below the starting floor (starting balance − drawdown) therefore fixes the floor at the lock from the start: a static floor, which below the starting floor gives more room than `max_drawdown` alone would |
 | `lock_at_start` | The same lock at the attempt's own starting balance, so the floor trails until it reaches the start and then stays there. Not with `lock_balance`, and neither with a static floor (`INVALID_RULES`) |
 | `profit_basis` | `Equity` (default): profit is fully marked equity less the starting balance. `Balance`: profit is the closed balance (cash plus the positions' cost, so realised P&L after fees, open P&L left out) less the starting balance, and a pass also needs every position closed. It also decides each day's profit for the consistency rule and profitable days: the day's equity change, or its net realised P&L |
@@ -2152,6 +2152,95 @@ They have no funded counterpart. Like every preset, their parameters are this
 project's own, modelled on common prop-firm terms; custom rules can combine the
 same rules any other way.
 
+#### Two-step programs (F27)
+
+The `two-step-25k`, `two-step-50k` and `two-step-100k` presets are challenge
+steps. A current pass unlocks `two-step-verify-25k` (or the matching size), whose
+pass unlocks `two-step-funded-25k`. `GET /api/plans` exposes `phase`, `unlocked_by`
+and `unlocks` (preset IDs); `GET /api/account` exposes `next_plans`, an empty list
+unless its current passed preset unlocks a next step. Resetting consumes that
+current pass; an older attempt's pass cannot unlock a different step later.
+Custom rules can use `phase: "verification"` and the same optional target, floor,
+daily-loss and objective rules as evaluation. They cannot borrow a preset's name
+with different trading rules, or use read-back rules to bypass its lock.
+
+| Step | Phase | Closed-balance target | Minimum trading days | Loss rules |
+| --- | --- | --- | --- | --- |
+| Step 1 of 2: challenge | `evaluation` | 10% | 4 | Static floor 8% below start; a 4% loss from daily opening balance fails |
+| Step 2 of 2: verification | `verification` | 5% | 3 | Same as challenge |
+| Funded | `funded` | None | None | Same static floor and daily loss; simulated payouts |
+
+All sizes allow any strategy, enforce strategy buying power, auto-close five minutes
+before expiry and end the trading day at 18:00 New York time. Funded payouts use the
+existing 8 qualifying days, $100/$150/$200 qualifying profit, 50% withdrawal,
+80% trader split and size-based minimum/caps. These are **this project's own
+illustrative parameters**, modelled on common two-step programs, not any firm's
+current offering or a claim to reproduce FTMO, The5ers, BluSky or Earn2Trade terms.
+Existing preset IDs and trading rules are unchanged.
+
+Creation (`POST /api/accounts`) and replay start accept only unlocked presets.
+Use the passing account's normal reset to enter a locked step. The terminal shows
+locked choices and what passes unlock them; Dashboard offers **Start verification**
+or **Start funded account**, opening the reset confirmation with that plan selected.
+The reset dialog, Rules and attempt history show the phase and its pacing.
+
+#### Program costs and reset limits (F64)
+
+`evaluation_fee`, `reset_fee` and `activation_fee` are nonnegative `Money` values
+(decimal strings in HTTP; integer micro-dollars in the reducer and journal).
+`max_resets` is a whole number from 0 to 1,000,000; **0 means unlimited**. All four
+fields default to zero for a fresh purchase. A same-plan reset retains each current
+setting unless explicitly supplied. Set them beside a preset in create/reset requests, or
+inside custom `rules`; outer settings override the corresponding rule fields.
+These bookkeeping costs never change cash, equity, floors, trading fees or outcomes.
+
+- A new account or a different-plan purchase pays the destination `evaluation_fee`.
+- Restarting the same plan, whether active, failed or passed, pays its `reset_fee`.
+  The first purchase uses zero resets; each restart adds one. The effective
+  `max_resets` (current, or explicitly overridden) applies to the existing count. Changing cost terms cannot clear it.
+- Entering a preset unlocked by the current pass pays the destination
+  `activation_fee` instead of its evaluation fee, and starts a new reset count.
+- A different plan starts a new purchase and a fresh reset allowance. Switching
+  away and back is another purchase, even if this account used that plan earlier.
+
+Same plan means the same starting balance and all `AccountRules`, including its
+name and phase, after ignoring execution settings (slippage, latency, impact,
+inside fills and the option fee schedule), broker margin settings (mode, account
+type, house percentage, volatility shock), and these four program cost settings.
+That is also the preset-identity comparison used for locks and plan-name checks.
+Counts are derived from consecutive archived attempts with matching recorded
+rules; an old summary without rules ends that known streak. A `RESET_LIMIT`
+refusal is journaled without cancelling orders, closing positions, archiving an
+attempt or charging a fee.
+
+| Two-step size | Challenge purchase | Reset in any step | Verification activation | Funded activation | Resets per step |
+| --- | --- | --- | --- | --- | --- |
+| 25K | $100 | $50 | $0 | $50 | 2 |
+| 50K | $200 | $100 | $0 | $100 | 2 |
+| 100K | $400 | $200 | $0 | $200 | 2 |
+
+Verification/funded presets have zero evaluation fees because ordinary entry uses
+the prerequisite pass. These costs are project illustrations, not quoted firm
+prices. All older presets retain zero fees and unlimited resets.
+
+The account's `costs` object has `evaluation`, `reset`, `activation`, `total`,
+`resets_used`, `resets_left` (null for unlimited), `payouts_received` (sum of
+`trader_share` across attempts), and `net` (payouts minus total costs). It also
+reports current `fee_charged` and `fee_kind`; each archived attempt exposes its
+starting `fee_charged` and `fee_kind`. Zero charges have a null kind. Dashboard
+shows costs and net; reset confirmation quotes the selected terms and remaining
+resets, and disables an exhausted restart. The custom editor edits all four terms.
+
+Session start and account reset journal the actual nonzero fee with its kind.
+The current charge, archived charges and archived payout totals are omitted at
+zero; cost rule fields are omitted at their defaults. Old records recover and
+re-encode unchanged, with absent charges treated as zero. Payout totals are also derived from journaled payout events, so payouts before
+older resets remain included without adding fields to old state or snapshot bytes. No replay driver bump is needed:
+old defaults produce the same start bytes, and recorded state/deltas remain readable.
+New HTTP reset inputs opt into these semantics with an internal `program_costs` flag;
+absent on old recorded inputs, it preserves old funded-reset locking and payout
+archive behavior during re-execution.
+
 Each reset archives the attempt in the account view's top-level `attempts[]`.
 Alongside its plan, start/end, starting balance, final equity, status and decision,
 it keeps the full `rules` at reset (the same JSON shape as the current account's
@@ -2369,9 +2458,8 @@ date ends and before rollover) and an unlocked peak and floor all move down by t
 amount, so the day's P&L and the drawdown room are unchanged and an end-of-day ratchet
 compares closes net of it; a locked floor stays where it is.
 
-The web terminal hides funded plans and the Payouts page (this simulator funds no one)
-unless the account is already funded; `showFundedAccounts` in `web/src/lib/features.ts`
-offers them again. The custom plan editor can explicitly select the funded phase
+The web terminal offers verification and funded steps with their prerequisite locks,
+and shows the Payouts page. All funding, fees and payouts are simulated. The custom plan editor can explicitly select the funded phase
 and edit qualifying days, shares, caps, consistency percentages and buffer rules.
 The Payouts page shows cycle profit, best day/date/share, the current limit, remaining
 profit and active buffer balance; plan facts and Rules also state these settings.
@@ -2381,7 +2469,8 @@ The server offers a funded preset for each intraday and end-of-day evaluation pr
 steps above and is unlocked only by passing `intraday-50k`. These count option
 contracts, not futures lots. A reset into one requires that the current attempt passed the evaluation
 it names, otherwise `PLAN_LOCKED`: that preset's starting balance and every one of its
-rules, with the fill model's execution settings and fee schedule free to differ. Custom rules may set `phase`
+rules, with execution, fee schedule, broker margin and program costs free to differ.
+Once entered, the same preset may restart under its reset terms without another prerequisite pass. Custom rules may set `phase`
 freely, but may not take a preset's name unless they are that preset (`INVALID_RULES`),
 so an attempt recorded under a preset's name was that preset; `--plan` can start a new
 journal on a funded preset directly. Preset parameters are this project's own,
@@ -3026,7 +3115,8 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_RULES` | Invalid account-size scaling (evaluation phase, profit/increase percentages outside 1–100, payouts outside 0–100, days outside 1–366 or maximum below starting balance), invalid scaling steps (over 16, first profit not zero, non-increasing profits, decreasing limits or contracts outside 1–10,000), negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100, consistency limits outside 1-100 or more than 64 entries, or nonpositive caps, a negative payout buffer or buffer_payouts outside 0-100, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, inside fills outside 0-100%, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Trade-entry rule ranges are a contracts held cap of 0–100000, nonnegative risk money and risk percentage 0–100. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling cancelled when the other exit filled completely, remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
-| `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
+| `PLAN_LOCKED` | A locked verification/funded preset was requested without the current prerequisite pass: that preset's own balance and trading rules; restarting the current plan is allowed under its reset terms |
+| `RESET_LIMIT` | HTTP 409: the same-plan reset would exceed `max_resets`; `actual` is the attempted reset count, `limit` is the allowed count. Choose a different plan for a new purchase |
 | `INVALID_NOTE`, `UNKNOWN_TRADE` | An order or trade note or tag past its limits, or a note on a fill that opens no trade |
 | `INVALID_ALERT`, `UNKNOWN_ALERT` | Alert terms that do not fit their scope, or a 101st alert; an alert ID the account does not have |
 | `INVALID_GROUP` | An order's `group` names no open round trip or whole trade holding one on its underlying; grouping names a fully closed trade, mixed underlyings or too few round trips; or ungrouping names a closed round trip |
@@ -3368,7 +3458,7 @@ focus at the top of the ticket.
 | `DELETE /api/alerts/{id}` | No body; returns version and `deleted`, or `UNKNOWN_ALERT` (404) |
 | `PUT /api/trades/{id}/note` | Optional `note` string and `tags` array replace the trade's (see [trade notes](#trade-notes-and-tags)); an empty note with no tags clears them. The `id` is a trade's, or a share trade's (`s` and its opening stock fill). Returns version, `trade`, `note` and `tags`; `UNKNOWN_TRADE` (404) if no trade opens with that fill, `INVALID_NOTE` (422) for text past the limits |
 | `GET /api/plans` | Presets: `practice` (buying power only), `intraday-25k/50k/100k` (buy-only, 10% target, 5% intraday trailing), `eod-25k/50k/100k` (any side, 12% target, 6% end-of-day trailing), their `funded-*` accounts (`unlocked_by` names the evaluation), `static-25k/50k/100k` and `locking-25k/50k/100k` (see [plan presets with objectives](#plan-presets-with-objectives)); evaluations and funded accounts auto-close five minutes before the last trade (15:55 ET for SPXW, 16:10 for SPY) |
-| `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Funded presets need a passed matching evaluation (`PLAN_LOCKED`) |
+| `POST /api/account/reset` | Nonblank `reason` plus either a preset `plan` ID, or `initial_cash` and complete `rules` (optional `phase`, `lock_balance`, and `payouts` required exactly when funded); returns the new account view. Locked steps need a current passed matching prerequisite (`PLAN_LOCKED`); same-plan restarts charge `reset_fee` and obey `max_resets` (`RESET_LIMIT`, 409) |
 | `POST /api/account/payout` | Decimal-string `amount` in whole cents; returns the account view with the recorded payout |
 | `GET /api/accounts` | `accounts`: each account's `id`, `name`, `trading` status and `equity`, the main one first |
 | `PATCH /api/accounts/{id}`, `DELETE /api/accounts/{id}` | Admin: rename/archive/unarchive or delete a named account; see [accounts](#accounts) |

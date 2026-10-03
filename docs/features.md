@@ -317,9 +317,8 @@ and a payout buffer above the starting balance for all or the first N payouts (F
 Optional scaling plans (F39) start at reduced option size and change the contract
 limit from the next session’s closed-balance step, up or down. Every option leg
 counts, working openings reserve capacity, and the terminal shows and edits the plan.
-This is a simulator that funds no one, so the web terminal hides those plans
-and the Payouts page; set `showFundedAccounts` in `web/src/lib/features.ts` to offer
-them. [Paper trading](paper-trading.md) documents every rule, the HTTP contract and
+The terminal offers these simulated steps with prerequisite locks and shows the
+Payouts page; no real funding or payments occur. [Paper trading](paper-trading.md) documents every rule, the HTTP contract and
 the simulation's limits.
 
 Opt-in inside fills fill limits at a deterministic share of the bid/ask spread
@@ -393,7 +392,7 @@ special opening quotation; live providers keep manual imports.
 - [x] Paper trading against live quotes: risk limits, scenarios, index and American
       equity and ETF options
 - [x] Evaluation simulator: profit targets, trailing drawdowns, resets and a trade
-      journal, with the funded phase and payouts in the engine
+      journal, with verification, funded phases and simulated payouts in the engine and terminal
 - [x] Plan objectives: daily loss limits by basis that lock the day or fail, best-day
       consistency, minimum trading and profitable days, static and lock-at-start floors,
       closed-balance targets, exit costs and a trading day set per plan
@@ -522,6 +521,9 @@ special opening quotation; live providers keep manual imports.
 - [x] F65: custom plans can ban opening hedges within an account and counter positions across live accounts. Options and shares use current dollar-delta direction; previews and tickets explain refusals. The reducer enforces `no_hedging`; the desk enforces `no_counter_positions` before journaling, excluding archived/replay/sandbox accounts. Enable the latter on each trading account.
 
 - [x] F66: per-contract position caps as a whole percentage of current-date traded option volume, with exact ratio-aware checks, strict unknown/stale refusals, previews and terminal custom-plan controls. The server gate keeps volume outside reducer journals; backtests require recordings carrying volume.
+
+- [x] F27: two-step challenge and verification presets, prerequisite unlocks, phase history and confirmed next-step starts in the terminal.
+- [x] F64: exact evaluation/reset/activation costs, per-plan reset limits, journaled attempt charges, payout net and terminal cost controls.
 
 ### Event restrictions (F17/F59)
 

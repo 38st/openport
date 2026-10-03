@@ -51,7 +51,7 @@ describe("checked API core types", () => {
       expect(source).toMatch(/export type CreateAccountRequest = [^\n]+& MarginModel/)
     }
   })
-  it.each(["SizeScaling", "SizeScale", "SizeScalingStatus", "AttemptSummary", "ScalingStep", "ScalingStatus", "PayoutRules", "PayoutStatus", "PayoutBestDay", "Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
+  it.each(["ProgramCosts", "SizeScaling", "SizeScale", "SizeScalingStatus", "AttemptSummary", "ScalingStep", "ScalingStatus", "PayoutRules", "PayoutStatus", "PayoutBestDay", "Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
     "Guardrails", "GuardrailState", "AccountDamage", "JournalSize", "EquityHistory", "VerificationCost", "SettlementSource", "SettlementRecord", "SettlementsResponse", "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
     "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep", "Limits", "TokenStatus", "RunJournal", "RunInput", "VerificationRun", "RunVerification", "ForwardTestWindow", "ForwardTest", "PlaybookReport"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
@@ -229,4 +229,14 @@ it("includes nullable account size scaling in rules, backtest rules and funded s
   expect(Object.keys(spec.components.schemas.Evaluation!.properties!)).toEqual(expect.arrayContaining([
     "flat_time", "flat_now", "scaling", "size_scaling",
   ]))
+})
+
+it("keeps verification and program cost settings aligned with both request contracts", () => {
+  const rules = spec.components.schemas.AccountRules!.properties!
+  expect(wireType(rules.phase!)).toBe(normalize('"evaluation" | "verification" | "funded"'))
+  for (const key of ["evaluation_fee", "reset_fee", "activation_fee"]) expect(wireType(rules[key]!)).toBe("Money")
+  expect(wireType(rules.max_resets!)).toBe("integer")
+  expect(source).toMatch(/export type ResetRequest = [^\n]+& ProgramCostSettings/)
+  expect(source).toMatch(/export type CreateAccountRequest = [^\n]+& ProgramCostSettings/)
+  expect(source).toContain('"RESET_LIMIT"')
 })

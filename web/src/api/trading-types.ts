@@ -80,7 +80,11 @@ export interface AccountRules {
   hold_cutoff?: string
   plan_id?: string | null
   plan: string | null
-  phase: "evaluation" | "funded"
+  phase: "evaluation" | "verification" | "funded"
+  evaluation_fee?: Money
+  reset_fee?: Money
+  activation_fee?: Money
+  max_resets?: number
   profit_target: Money | null
   max_drawdown: Money | null
   /** intraday and end_of_day floors trail; a static one stays at the starting balance less max_drawdown. */
@@ -342,6 +346,8 @@ export interface Evaluation {
   liquidation_cost?: Money | null
 }
 export interface AttemptSummary {
+  fee_charged?: Money
+  fee_kind?: string | null
   attempt: number
   plan_id?: string | null
   plan: string | null
@@ -411,6 +417,8 @@ export interface Account {
   /** Null outside the funded phase. */
   payout: PayoutStatus | null
   attempts: AttemptSummary[]
+  next_plans?: string[]
+  costs?: ProgramCosts
 }
 export interface FillContext {
   spot: Num
@@ -612,7 +620,29 @@ export interface TradesResponse {
 }
 /** A replay run: its id and what it replayed (a scenario and seed, or a recording). */
 export interface RunIdentity { id: string | null; scenario: string | null; seed: string | null; recording: string | null; date: string | null }
+export interface ProgramCosts {
+  evaluation: Money
+  reset: Money
+  activation: Money
+  total: Money
+  resets_used: number
+  resets_left: number | null
+  payouts_received: Money
+  net: Money
+  fee_charged: Money
+  fee_kind: string | null
+}
+export interface ProgramCostSettings {
+  evaluation_fee?: Money
+  reset_fee?: Money
+  activation_fee?: Money
+  max_resets?: number
+}
+/** Reset refusals use HTTP 409, with attempted reset count and configured limit. */
+export type ResetReason = "RESET_LIMIT" | "PLAN_LOCKED"
 export interface Plan {
+  phase?: AccountRules["phase"]
+  unlocks?: string[]
   id: string
   name: string
   summary: string
@@ -633,7 +663,7 @@ export interface MarginModel {
   house_margin_percent?: number
   pm_vol_shock?: number
 }
-export type ResetRequest = { reason: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
+export type ResetRequest = { reason: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ProgramCostSettings & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export type Side = "buy" | "sell"
 /**
  * Option triggers compare the order's executable side, or its mid or mark; underlying ones
@@ -1043,7 +1073,7 @@ export interface CancelAllResponse { account_version: string; cancelled_orders: 
 export type CancelRequest = { underlying?: string; orders?: never } | { orders: string[]; underlying?: never }
 export interface AccountListItem { damaged?: AccountDamage | null; journal_size?: JournalSize; id: string; name: string; archived?: boolean; sandbox_idle_seconds?: number; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
-export type CreateAccountRequest = { name: string; copy_settings_from?: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
+export type CreateAccountRequest = { name: string; copy_settings_from?: string; fill_model?: FillModel; fee_model?: FeeModel } & MarginModel & ProgramCostSettings & ({ plan: string } | { initial_cash: Money; rules: AccountRulesInput })
 export interface CreateAccountResponse { account: { id: string; name: string; account_version: string; plan: string | null; plan_id?: string | null; equity: Money } }
 /** Delivered shares a flatten could not close, as held after it, and why. */
 export interface KeptStock { symbol: string; shares: number; reason: Decision }

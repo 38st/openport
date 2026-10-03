@@ -1499,3 +1499,25 @@ At rollover, `OVERNIGHT_HOLD` precedes `HOLD_RESTRICTED` when both apply. Flat t
 acts before calendar closes in the same transaction; journaled pending system
 orders retain their labels and ownership of their legs after recovery. See
 [combined rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
+
+### Program steps and costs (F27/F64)
+
+Program progression and cost bookkeeping (F27/F64) use the existing journal schema
+and replay driver. `verification` is appended to the internal phase enum, preserving
+older evaluation/funded ordinals. New cost rule fields and actual attempt charges
+are omitted at zero; archived payout totals are omitted at zero. Recovery never
+charges a fee again. Account reset deltas add, replace or remove the current charge;
+the running totals and reset streak are derived from recovered attempts. Older
+summaries without rules end the known reset streak. Cumulative trader payouts are
+derived from payout events (as settlement history is derived), including before old
+resets; this derived value is never serialized as state or diagnostic snapshot. API create/reset accepts cost overrides; no startup
+flag or user home-directory migration is required. Replay starts still require an
+unlocked preset; next steps use a journaled account reset within the replay.
+
+New HTTP resets record the optional command flag `program_costs: true`. Its absent
+(default false) form re-encodes unchanged and preserves the older funded-restart
+lock, refusal message and omission of archived payout totals when re-executing old
+runs. This command-level compatibility choice avoids changing replay driver 6.
+The optional `program_cost_overrides` bit mask records which reset cost settings
+were explicit; an absent/zero mask is omitted, and a new same-plan reset retains
+current settings for omitted fields.

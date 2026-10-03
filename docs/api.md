@@ -370,3 +370,25 @@ Combined F6/F17/F59 rules round-trip together through create, reset and archived
 attempt rules. If multiple opening restrictions apply, `FLAT_TIME` is checked
 before calendar restrictions. `OVERNIGHT_HOLD` takes precedence over
 `HOLD_RESTRICTED` at rollover. See [combined rule semantics](paper-trading.md#news-blackouts-and-holding-restrictions-f17-f59).
+
+### Two-step programs and program costs (F27/F64)
+
+Multi-phase programs (F27) use `rules.phase: "verification"` for the second step.
+Plans return `phase`, `unlocked_by` and `unlocks`; account views return `next_plans`
+(preset IDs, empty without a current unlocking pass). The `two-step-{25,50,100}k`
+challenge presets unlock `two-step-verify-{size}k`, then `two-step-funded-{size}k`.
+Create-account and replay start refuse locked presets; enter them by resetting
+the account that passed. Read-back rules with a locked preset name obey the same lock.
+
+Program costs (F64) are exact decimal money: create/reset accepts `evaluation_fee`,
+`reset_fee`, `activation_fee`, and integer `max_resets` beside `plan` or in custom
+rules. Zero fees and `max_resets: 0` (unlimited) are defaults. These costs do not
+change paper cash. Same-plan resets retain omitted cost settings. A fresh purchase pays evaluation, the same plan pays reset,
+and entry unlocked by a pass pays activation. Same-plan identity ignores execution,
+broker margin and cost overrides. A same-plan reset over the requested limit returns
+409 `RESET_LIMIT`, with attempted count in `actual` and allowed count in `limit`.
+The account's `costs` reports amounts paid by kind, `total`, `resets_used`,
+`resets_left` (null for unlimited), `payouts_received`, `net`, current `fee_charged`
+and `fee_kind`. Attempts expose their starting charge and phase in `rules`.
+See [program costs](paper-trading.md#program-costs-and-reset-limits-f64) for precise
+identity, purchase, historical-journal and illustrative-pricing semantics.

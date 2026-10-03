@@ -1517,7 +1517,7 @@
       ],
       "post": {
         "summary": "POST /api/account/reset",
-        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin. Applies pending settings and clears manual/daily-loss kill latches. Preserves daily PROFIT_LOCK and TRADE_LIMIT latches, opening-order count and active cooldown; clears and re-checks SOFT_FLOOR against new equity. A carried absolute floor at or above the new balance is allowed and reported in the account warnings as SOFT_FLOOR.",
+        "description": "Requires admin. The /api/replay mirror accepts replay or admin scope, affecting only its isolated account; live requires admin. Applies pending settings and clears manual/daily-loss kill latches. Preserves daily PROFIT_LOCK and TRADE_LIMIT latches, opening-order count and active cooldown; clears and re-checks SOFT_FLOOR against new equity. A carried absolute floor at or above the new balance is allowed and reported in the account warnings as SOFT_FLOOR. Locked verification/funded presets require a matching current pass on their unlocked_by prerequisite. The current plan may restart, subject to max_resets. Program cost overrides stand beside plan or inside rules and never affect paper balances. Omitted cost settings are retained on same-plan resets; explicit overrides keep the reset count.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -1535,6 +1535,16 @@
           },
           "422": {
             "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start, trading_end, flat_time, no_overnight, events, news_before_minutes, news_after_minutes, news_action, hold_restrictions or hold_cutoff: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "RESET_LIMIT: same-plan resets exhausted; actual is the attempted count and limit is max_resets.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8734,6 +8744,10 @@
               {
                 "const": "funded",
                 "type": "string"
+              },
+              {
+                "const": "verification",
+                "type": "string"
               }
             ]
           },
@@ -9213,6 +9227,25 @@
             "maximum": 100,
             "default": 0,
             "description": "Server pre-trade gate: per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Refusal is not journaled. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
+          },
+          "evaluation_fee": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Nonnegative bookkeeping cost of a new purchase; omitted defaults to zero."
+          },
+          "reset_fee": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Nonnegative bookkeeping cost of restarting the same plan; omitted defaults to zero."
+          },
+          "activation_fee": {
+            "$ref": "#/components/schemas/Money",
+            "description": "Nonnegative bookkeeping cost on entering a preset unlocked by a pass; omitted defaults to zero."
+          },
+          "max_resets": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000,
+            "default": 0,
+            "description": "Resets allowed on the same plan; 0 is unlimited. Cost overrides do not clear the count. The requested limit applies."
           }
         },
         "required": [
@@ -9227,7 +9260,11 @@
           "expiry_cutoff_seconds",
           "payouts",
           "plan_id",
-          "size_scaling"
+          "size_scaling",
+          "evaluation_fee",
+          "reset_fee",
+          "activation_fee",
+          "max_resets"
         ],
         "allOf": [
           {
@@ -10575,6 +10612,20 @@
               }
             ],
             "description": "Floor at reset; null without a drawdown rule or in older summaries."
+          },
+          "fee_charged": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "fee_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "evaluation, reset or activation; null for a zero charge."
           }
         },
         "required": [
@@ -10586,7 +10637,9 @@
           "final_equity",
           "status",
           "decision",
-          "plan_id"
+          "plan_id",
+          "fee_charged",
+          "fee_kind"
         ]
       },
       "Account": {
@@ -10678,6 +10731,16 @@
           },
           "verification_cost": {
             "$ref": "#/components/schemas/VerificationCost"
+          },
+          "costs": {
+            "$ref": "#/components/schemas/ProgramCosts"
+          },
+          "next_plans": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Preset IDs unlocked by the current pass; empty otherwise."
           }
         },
         "required": [
@@ -10688,7 +10751,9 @@
           "buying_power",
           "payout",
           "attempts",
-          "warnings"
+          "warnings",
+          "costs",
+          "next_plans"
         ]
       },
       "FillContext": {
@@ -11842,6 +11907,29 @@
                 "type": "null"
               }
             ]
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "const": "evaluation",
+                "type": "string"
+              },
+              {
+                "const": "funded",
+                "type": "string"
+              },
+              {
+                "const": "verification",
+                "type": "string"
+              }
+            ]
+          },
+          "unlocks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Preset IDs that a pass unlocks."
           }
         },
         "required": [
@@ -11850,7 +11938,9 @@
           "summary",
           "initial_cash",
           "rules",
-          "unlocked_by"
+          "unlocked_by",
+          "phase",
+          "unlocks"
         ]
       },
       "PlansResponse": {
@@ -11920,6 +12010,28 @@
                   "itemized"
                 ],
                 "description": "Overrides rules.fees for the new attempt. Flat uses the server fee; itemized uses an illustrative schedule: $1 open, $0 close, $10 commission cap per leg per order, $0.10 clearing, $0.02 regulatory, $0.60 on SPX and SPXW, $5 exercise per contract."
+              },
+              "evaluation_fee": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,6})?$",
+                "description": "Nonnegative bookkeeping cost of a new purchase; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+              },
+              "reset_fee": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,6})?$",
+                "description": "Nonnegative bookkeeping cost of restarting the same plan; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+              },
+              "activation_fee": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,6})?$",
+                "description": "Nonnegative bookkeeping cost on entering a preset unlocked by a pass; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+              },
+              "max_resets": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000,
+                "default": 0,
+                "description": "Resets allowed on the same plan; 0 is unlimited. Omitted settings are retained on same-plan resets. Explicit overrides do not clear the used count."
               }
             },
             "required": [
@@ -14687,6 +14799,28 @@
                 "maxLength": 40,
                 "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
                 "description": "Live source account ID (main allowed). Copies active limits and guardrails only, including underlying overrides, into initial journaled settings. Pending values and runtime latches/counters are not copied. Unknown source: 404 UNKNOWN_ACCOUNT."
+              },
+              "evaluation_fee": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,6})?$",
+                "description": "Nonnegative bookkeeping cost of a new purchase; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+              },
+              "reset_fee": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,6})?$",
+                "description": "Nonnegative bookkeeping cost of restarting the same plan; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+              },
+              "activation_fee": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d{1,6})?$",
+                "description": "Nonnegative bookkeeping cost on entering a preset unlocked by a pass; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+              },
+              "max_resets": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000,
+                "default": 0,
+                "description": "Resets allowed on the same plan; 0 is unlimited. Omitted settings are retained on same-plan resets. Explicit overrides do not clear the used count."
               }
             },
             "required": [
@@ -20626,6 +20760,10 @@
               {
                 "const": "funded",
                 "type": "string"
+              },
+              {
+                "const": "verification",
+                "type": "string"
               }
             ]
           },
@@ -21111,6 +21249,28 @@
             "maximum": 100,
             "default": 0,
             "description": "Server pre-trade gate: per option leg, (absolute held contracts + opening contracts including ratio) * 100 <= percent * current trading-date volume. Zero disables. Unknown/invalid/stale volume refuses MAX_VOLUME_SHARE. Pure reductions and shares are exempt. Refusal is not journaled. Backtests require volume-bearing recordings; scenario backtests and recordings without volume reject with HTTP 400."
+          },
+          "evaluation_fee": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d{1,6})?$",
+            "description": "Nonnegative bookkeeping cost of a new purchase; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+          },
+          "reset_fee": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d{1,6})?$",
+            "description": "Nonnegative bookkeeping cost of restarting the same plan; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+          },
+          "activation_fee": {
+            "type": "string",
+            "pattern": "^\\d+(\\.\\d{1,6})?$",
+            "description": "Nonnegative bookkeeping cost on entering a preset unlocked by a pass; defaults to zero on a fresh purchase; same-plan resets retain the current setting when omitted."
+          },
+          "max_resets": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000,
+            "default": 0,
+            "description": "Resets allowed on the same plan; 0 is unlimited. Omitted settings are retained on same-plan resets. Explicit overrides do not clear the used count."
           }
         },
         "required": [
@@ -23357,6 +23517,78 @@
           }
         },
         "additionalProperties": false
+      },
+      "ResetReason": {
+        "type": "string",
+        "enum": [
+          "PLAN_LOCKED",
+          "RESET_LIMIT"
+        ],
+        "description": "Reset-specific business reasons; RESET_LIMIT is HTTP 409, actual is attempted reset count, limit is max_resets. Other generic error reasons may also occur."
+      },
+      "ProgramCosts": {
+        "type": "object",
+        "properties": {
+          "evaluation": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "reset": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "activation": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "total": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "payouts_received": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "net": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "fee_charged": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "resets_used": {
+            "type": "integer"
+          },
+          "resets_left": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null for unlimited resets."
+          },
+          "fee_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "evaluation, reset or activation; null for a zero charge."
+          }
+        },
+        "required": [
+          "evaluation",
+          "reset",
+          "activation",
+          "total",
+          "payouts_received",
+          "net",
+          "fee_charged",
+          "resets_used",
+          "resets_left",
+          "fee_kind"
+        ],
+        "description": "Exact costs across attempts, independent of paper balances. payouts_received sums trader_share; net is payouts_received minus total. fee_charged is the current attempt starting fee. Historical missing fees are zero; payout events also recover trader payouts before older resets."
       }
     }
   }

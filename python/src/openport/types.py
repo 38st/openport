@@ -300,6 +300,10 @@ class AccountRules(TypedDict, total=False):
     plan_id: str | None
     plan: str | None
     phase: str
+    evaluation_fee: str
+    reset_fee: str
+    activation_fee: str
+    max_resets: int
     profit_target: str | None
     max_drawdown: str | None
     drawdown_mode: str
@@ -429,11 +433,26 @@ class Evaluation(EvaluationProgress):
     payouts: list[JSON]
 
 
+class ProgramCosts(TypedDict):
+    evaluation: str
+    reset: str
+    activation: str
+    total: str
+    resets_used: int
+    resets_left: int | None
+    payouts_received: str
+    net: str
+    fee_charged: str
+    fee_kind: str | None
+
+
 class Account(AccountStorage):
     account_version: str
     time: str
     rules: AccountRules
     evaluation: Evaluation
+    costs: ProgramCosts
+    next_plans: list[str]
     payout: PayoutStatus | None
 
 
