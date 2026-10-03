@@ -3260,7 +3260,7 @@ TEST_F(PaperEngine, ItemizedFeesComeFromTheAttemptAndShowOnPreviewsAndFills) {
   EXPECT_EQ(json::parse(custom.body)["rules"]["fees"]["index"], (json{{"SPXW", "0.25"}}));
   rules["fees"] = {{"open", "-1"}};
   expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "bad"}}),
-               422, "INVALID_RULES");
+               400, "INVALID_RULES");
   rules["fees"] = {{"opening", "1"}};
   expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "50000"}, {"rules", rules}, {"reason", "bad"}}),
                400, "INVALID_REQUEST");
@@ -3312,7 +3312,7 @@ TEST(PaperAccounts, CreationSelectsAndValidatesFeeSchedules) {
     for (const auto& invalid : {json{{"open", "1000.000001"}}, json{{"index", {{"spx", "0.60"}}}},
                                json{{"index", {{"SPXW", "-0.01"}}}}}) {
       rules["fees"] = invalid;
-      expect_invalid(422, "INVALID_RULES");
+      expect_invalid(400, "INVALID_RULES");
     }
   }
   std::filesystem::remove_all(directory);
