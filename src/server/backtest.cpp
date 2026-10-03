@@ -44,6 +44,38 @@ Money decimal(const json& value, const std::string& field) {
   if (!value.is_string()) throw std::invalid_argument(field + " must be a decimal string");
   return Money::parse(value.get<std::string>());
 }
+/// Funded custom plans use decimal payout money, just like the account API.
+trading::PayoutRules payout_rules(const json& object) {
+  keys(object, {"qualifying_profit", "qualifying_days", "withdrawal_percent", "split_percent", "minimum", "caps",
+                "consistency_percents", "buffer", "buffer_payouts"});
+  trading::PayoutRules p;
+  const auto integer = [](const json& value, const std::string& name) {
+    if (!value.is_number_integer() || (value.is_number_unsigned() && value.get<std::uint64_t>() > std::uint64_t(INT64_MAX)))
+      throw std::invalid_argument("payouts " + name + " must be a signed 64-bit integer");
+    return value.get<std::int64_t>();
+  };
+  for (const auto& [key, value] : object.items()) {
+    if (key == "qualifying_profit") p.qualifying_profit = decimal(value, "payouts " + key);
+    else if (key == "minimum") p.minimum = decimal(value, "payouts " + key);
+    else if (key == "buffer") p.buffer = decimal(value, "payouts " + key);
+    else if (key == "caps" || key == "consistency_percents") {
+      if (!value.is_array() || value.size() > 64) throw std::invalid_argument("payouts " + key + " must be an array of at most 64 entries");
+      for (const auto& entry : value) {
+        if (key == "caps") p.caps.push_back(decimal(entry, "payouts caps"));
+        else p.consistency_percents.push_back(integer(entry, key));
+      }
+    } else if (key == "qualifying_days") p.qualifying_days = integer(value, key);
+    else if (key == "withdrawal_percent") p.withdrawal_percent = integer(value, key);
+    else if (key == "split_percent") p.split_percent = integer(value, key);
+    else if (key == "buffer_payouts") p.buffer_payouts = integer(value, key);
+  }
+  // Validate before journal decoding, so invalid rules retain INVALID_RULES.
+  trading::AccountRules rules;
+  rules.phase = trading::Phase::Funded;
+  rules.payouts = p;
+  trading::validate_rules(rules);
+  return p;
+}
 md::Date date_value(const json& value) {
   if (!value.is_string()) throw std::invalid_argument("date must be YYYY-MM-DD");
   const auto text = value.get<std::string>();
@@ -401,7 +433,10 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       } else if (key == "account_type") {
         if (value != "margin" && value != "cash" && value != "ira") throw std::invalid_argument("Unknown account_type");
         rules[key] = value;
-      } else if (key == "phase" || key == "payouts") throw std::invalid_argument("Funded rules are not evaluation rules");
+      } else if (key == "phase") {
+        choice(value, key, {"evaluation", "funded"});
+        rules[key] = value == "funded" ? trading::Phase::Funded : trading::Phase::Evaluation;
+      } else if (key == "payouts") rules[key] = payout_rules(value);
       else {
         if (key == "expiry_cutoff" && !value.is_number_integer()) throw std::invalid_argument("expiry_cutoff must be integer nanoseconds");
         // The rest keep their own type: text, true or false, or a whole number.
@@ -413,12 +448,15 @@ BacktestRequest parse_backtest(const json& body, const json& catalogue,
       }
     }
     result.config.rules = rules.get<trading::AccountRules>();
+    if ((result.config.rules.phase == trading::Phase::Funded) != plan.at("rules").contains("payouts"))
+      throw std::invalid_argument("payouts are required for custom funded plans and forbidden otherwise");
     if (plan.contains("fee_per_contract")) result.config.fee_per_contract = decimal(plan.at("fee_per_contract"), "plan fee_per_contract");
   }
   trading::validate_rules(result.config.rules);
+  const bool custom_funded = plan.is_object() && result.config.rules.phase == trading::Phase::Funded;
   if (result.config.initial_cash <= Money{} || result.config.fee_per_contract < Money{} ||
-      result.config.rules.phase != trading::Phase::Evaluation || result.config.rules.profit_target <= Money{})
-    throw std::invalid_argument("Backtests require positive cash, nonnegative fees and an evaluation plan with a profit target");
+      (!custom_funded && (result.config.rules.phase != trading::Phase::Evaluation || result.config.rules.profit_target <= Money{})))
+    throw std::invalid_argument("Backtests require positive cash, nonnegative fees and an evaluation target or custom funded rules");
   if (body.contains("days") == body.contains("scenarios")) throw std::invalid_argument("Supply days or scenarios, exclusively");
   json days;
   if (body.contains("scenarios")) {

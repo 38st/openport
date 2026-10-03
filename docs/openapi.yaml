@@ -9342,19 +9342,7 @@
           "best_day": {
             "anyOf": [
               {
-                "type": "object",
-                "properties": {
-                  "day": {
-                    "type": "string"
-                  },
-                  "profit": {
-                    "$ref": "#/components/schemas/Money"
-                  }
-                },
-                "required": [
-                  "day",
-                  "profit"
-                ]
+                "$ref": "#/components/schemas/PayoutBestDay"
               },
               {
                 "type": "null"
@@ -21135,6 +21123,21 @@
           "runs",
           "daily",
           "combined"
+        ]
+      },
+      "PayoutBestDay": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "string"
+          },
+          "profit": {
+            "$ref": "#/components/schemas/Money"
+          }
+        },
+        "required": [
+          "day",
+          "profit"
         ]
       }
     }

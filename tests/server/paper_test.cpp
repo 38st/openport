@@ -3028,6 +3028,38 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   engine->stop();
 }
 
+TEST_F(PaperEngine, PayoutQuoteReportsTheBestRealisedDayAndBuffer) {
+  seed();
+  const json payouts{{"qualifying_profit", "10"}, {"qualifying_days", 1}, {"withdrawal_percent", 100}, {"split_percent", 80},
+      {"minimum", "10"}, {"caps", json::array()}, {"consistency_percents", {40}}, {"buffer", "100"}, {"buffer_payouts", 1}};
+  const json rules{{"plan", "Payout standing"}, {"phase", "funded"}, {"profit_target", nullptr}, {"max_drawdown", nullptr},
+      {"drawdown_mode", "intraday"}, {"buy_only", false}, {"buying_power", true}, {"expiry_cutoff_seconds", 0}, {"payouts", payouts}};
+  const auto reset = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "10000"}, {"rules", rules}, {"reason", "standing"}});
+  ASSERT_EQ(reset.status, 200) << reset.body;
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "best-open", "4.20")).status, 201);
+  market.next();
+  quote("5.40", "5.60");
+  auto close = order(market, "best-close", "5.40"); close["side"] = "sell";
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", close).status, 201);
+  market.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  quote();
+  ASSERT_TRUE(wait_for([&] { return read(*engine, "/api/account")["payout"]["qualifying_days"] == 1; }));
+  const auto q = read(*engine, "/api/account")["payout"];
+  EXPECT_EQ(q["consistency_percent"], 40);
+  EXPECT_EQ(q["cycle_profit"], "118.70");
+  EXPECT_EQ(q["best_day"], (json{{"day", "2026-09-22"}, {"profit", "118.70"}}));
+  EXPECT_EQ(q["consistency_needed"], "178.05");
+  EXPECT_EQ(q["buffer_balance"], "10100.00");
+  EXPECT_EQ(q["maximum"], "18.70");
+  EXPECT_EQ(q["blocked"]["code"], "PAYOUT_NOT_ELIGIBLE");
+  EXPECT_EQ(q["blocked"]["actual"], 100);
+  EXPECT_EQ(q["blocked"]["limit"], 40);
+  const auto refused = write(*engine, "POST", "/api/account/payout", {{"amount", "10.00"}});
+  expect_error(refused, 422, "PAYOUT_NOT_ELIGIBLE");
+  EXPECT_EQ(json::parse(refused.body)["error"]["message"], q["blocked"]["message"]);
+  engine->stop();
+}
+
 TEST_F(PaperEngine, IdleQuoteBatchesAreNotRecordedButRolloverIs) {
   const auto processed = [&] {
     ASSERT_TRUE(wait_for([&] {
