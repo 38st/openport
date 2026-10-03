@@ -328,7 +328,7 @@ lexical order after atomic installation of the entire batch. Submissions also
 respect existing better orders when sharing the current budget. There is no queue
 position, trade-through or hidden-liquidity simulation in v1.
 
-### Walking limits (F46)
+### Walking limits
 
 A single-leg or multi-leg DAY/GTC limit may carry
 `"walk": {"step": "0.10", "seconds": 10, "limit": "4.20"}`. Each elapsed interval
@@ -2328,7 +2328,7 @@ the account at each transaction. All v1 orders/fills remain in memory and the
 snapshot's `recent_*` arrays; there is no retention cap, and a checkpoint grows with
 the account's history, one per thousand records.
 
-F46 fields are sparse: `inside_fill_percent` is written only when nonzero;
+Inside-fill and walk fields are sparse: `inside_fill_percent` is written only when nonzero;
 `walk` only when present; `walked_at` only after a walk steps or is changed.
 Walk changes record new and previous settings only when requested. Accounts with
 inside fills off and orders without walks keep their prior journal bytes. Recovery

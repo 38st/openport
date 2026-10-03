@@ -110,8 +110,7 @@ limits outside regular hours; stop-limit retains its price, while stop-market
 executes once at the touch against displayed size. Extended entries' bracket exits
 inherit all sessions. Plain market entries remain IOC and regular-only.
 
-F46 adds optional `walk: {step, seconds, limit}` to POST orders and PUT order
-changes: money values are decimal strings, seconds is an integer from 1 to 3600.
+POST orders and PUT order changes take an optional `walk: {step, seconds, limit}`: money values are decimal strings, seconds is an integer from 1 to 3600.
 Only untriggered DAY/GTC limits may walk; managed exits cannot. PUT omission keeps
 the walk and `null` removes it. Orders report the current `limit_price`, `walk`,
 and `next_walk: {time, limit_price}` (null when finished, at cap or past its deadline); previews also

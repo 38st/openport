@@ -645,7 +645,7 @@ run inputs to verify. New replay runs require an unused journal path.
 Inside-fill and walking-limit settings are opt-in. Walk steps use market time,
 including replay clock advances, and are retained as order changes. Recovery
 preserves their last scheduled step. Their added journal fields are omitted when
-unused, so pre-F46 runs still verify on the new build on the same platform.
+unused, so runs from before walking limits and inside fills still verify on the new build on the same platform.
 
 Verification currently compares exact hashes on the same build/platform. Math-library
 changes can alter analytic floating-point fields; see the platform qualification in
