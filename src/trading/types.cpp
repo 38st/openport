@@ -131,5 +131,17 @@ void validate_rules(const AccountRules& r) {
         "days 0-366");
   if (r.day_end_minutes < 16 * 60 + 15 || r.day_end_minutes > 24 * 60)
     throw TradingError(Reason::INVALID_RULES, "The trading day ends between 16:15 and 24:00 New York time");
+  if (r.fees) {
+    const auto& f = *r.fees;
+    const auto amount = [](Money value) { return value >= Money{} && value <= Money::from_micros(1'000'000'000); };
+    const bool roots = f.index.size() <= 16 && std::all_of(f.index.begin(), f.index.end(), [&](const auto& item) {
+      return !item.first.empty() && item.first.size() <= 6 && amount(item.second) &&
+             std::all_of(item.first.begin(), item.first.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'); });
+    });
+    if (!roots || !amount(f.open) || !amount(f.close) || !amount(f.leg_cap) || !amount(f.clearing) ||
+        !amount(f.regulatory) || !amount(f.exercise))
+      throw TradingError(Reason::INVALID_RULES,
+          "Fee schedule amounts must be $0 to $1,000, with at most 16 index roots of 1 to 6 uppercase letters or digits");
+  }
 }
 }  // namespace openport::trading

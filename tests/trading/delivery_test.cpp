@@ -447,13 +447,13 @@ TEST(TradingDelivery, ShareRoundTripsReverseAndCloseAtAResetsMark) {
 
 /// Ten each of a deep put and a call the market values below their exercise, a put
 /// with time value left and a long, rolled into the next day.
-std::unique_ptr<TradingSession> assigned_overnight() {
+std::unique_ptr<TradingSession> assigned_overnight(AccountRules rules = {}) {
   const auto deep = *md::parse_osi("SPY261022P00600000");  // 90 in the money at 510
   const auto near = *md::parse_osi("SPY261022P00515000");  // 5 in the money, with time value left
   const auto call = *md::parse_osi("SPY261022C00450000");  // 60 in the money
   const auto bought = *md::parse_osi("SPY261022P00590000");  // longs are never assigned
   Spy f;
-  auto s = std::make_unique<TradingSession>(roomy(), f.time);
+  auto s = std::make_unique<TradingSession>(roomy(rules), f.time);
   for (const auto& c : {deep, near, call, bought}) f.define(*s, c);
   f.quote(*s, deep, "89.80", "90.20");
   f.quote(*s, near, "7.00", "7.20");
@@ -522,6 +522,29 @@ TEST(TradingDelivery, ShortsTheMarketValuesBelowTheirExerciseArePartlyAssignedOv
   const auto again = assigned_overnight()->snapshot();
   ASSERT_EQ(again->closures.size(), snap->closures.size());
   for (std::size_t i = 0; i < snap->closures.size(); ++i) EXPECT_EQ(again->closures[i].quantity, snap->closures[i].quantity);
+}
+
+TEST(FeeSchedule, OvernightAssignmentsChargeEachContractAndItsOptionTrade) {
+  AccountRules rules;
+  rules.fees = FeeSchedule{};
+  rules.fees->exercise = m("5");
+  const auto session = assigned_overnight(rules);
+  const auto snapshot = session->snapshot();
+  ASSERT_FALSE(snapshot->closures.empty());
+  Money total;
+  for (const auto& closure : snapshot->closures) {
+    EXPECT_EQ(closure.kind, ClosureKind::Assignment);
+    EXPECT_EQ(closure.fee, m("5") * -closure.quantity);
+    total = total + closure.fee;
+  }
+  EXPECT_EQ(snapshot->account.fees, total);
+  Money trades;
+  for (const auto& trade : lifecycles(snapshot->recent_fills, snapshot->closures, session->contracts()))
+    trades = trades + trade.fees;
+  EXPECT_EQ(trades, total);
+  EXPECT_NEAR(snapshot->attribution.total(), day_pnl(*session), 1e-6);
+  const auto again = assigned_overnight(rules);
+  EXPECT_EQ(again->snapshot_json(), session->snapshot_json());
 }
 
 TEST(TradingDelivery, TheNightsAssignmentsAreDecidedOnTheClosingMarksAndPrice) {

@@ -38,8 +38,8 @@ class Ledger {
   /// Buy (positive) or sell shares at a price per share, with the same basis
   /// allocation as options.
   void trade_stock(const std::string& symbol, Quantity signed_shares, Money price, Money fee);
-  /// Settlement is accounting, never subject to order risk limits. No fee.
-  void settle(const std::string& symbol, Money intrinsic);
+  /// Settlement is accounting, never subject to order risk limits; delivery may charge a fee.
+  void settle(const std::string& symbol, Money intrinsic, Money fee = {});
   /// Cash leaves the account (a payout); realised P&L is unchanged.
   void withdraw(Money amount);
   /// A dividend on held shares: cash and realised P&L move by `amount`, which is

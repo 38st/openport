@@ -248,6 +248,8 @@ struct OrderPreview {
   /// refuses. Empty without a plan or soft floor.
   std::optional<Quantity> max_units_floor;
   BreachRisk breach;
+  std::optional<Money> fee;  ///< Full remaining size's fees; empty without a projection.
+  std::optional<FillFees> fees;  ///< Itemized schedule only.
   PreviewExecution execution;
   std::vector<LegLiquidity> liquidity;  ///< Each leg's quote, in leg order.
 };
