@@ -744,6 +744,86 @@ TEST(ReplayHost, AnInterruptedRunResumesWhereItStoppedWithTheSameJournal) {
   EXPECT_EQ(json::parse(ended.body)["error"]["code"], "REPLAY_NOT_RESUMABLE");
 }
 
+TEST(ReplayHost, InterruptedMultiSessionRunKeepsSessionsDividendsAndVerifiesAtTheEnd) {
+  using nlohmann::json;
+  test::RecordingFile file;
+  const auto scenarios = file.directory / "scenarios";
+  std::filesystem::create_directory(scenarios);
+  { std::ofstream out(scenarios / "quarter.json"); out << R"({"id":"quarter","title":"Quarter","description":"Across an ex-date.",
+    "symbols":["SPY"],"date":"2026-09-17","seed":1,"generator":1,"volatility":0,"iv_shift":0,"spot_vol":0,
+    "sessions":[{"session":"regular","drift":[[1,0]]},{"session":"regular","drift":[[1,0]]},
+    {"session":"regular","drift":[[1,0]],"dividends":[{"symbol":"SPY","per_share":2.25}]}]})"; }
+  server::Engine::Options base;
+  base.paper_journal = file.directory / "main.jsonl";
+  base.analytics.deamericanize = false;
+  base.dividends = {{"SPY", {2026, 9, 18}, trading::Money::parse("9.99")},
+                    {"SPY", {2026, 9, 21}, trading::Money::parse("9.99")}};
+  const auto crashed = file.directory / "crashed";
+  std::filesystem::create_directories(crashed / "replays");
+  std::string id, uninterrupted;
+  json sessions;
+  const auto ex = providers::demo_dividends({2026, 9, 18}, {2026, 9, 18}).front().per_share;
+  {
+    server::ReplayHost host({file.directory, base, true, scenarios});
+    const auto started = call(host, "POST", "/api/replay", R"({"scenario":"quarter","paused":true,"speed":0,"seed":"scenario"})");
+    ASSERT_EQ(started.status, 201) << started.body;
+    const auto state = json::parse(started.body)["replay"];
+    id = state["id"];
+    sessions = state["sessions"];
+    ASSERT_EQ(sessions.size(), 3U);
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+    const auto call_symbol = md::parse_osi("SPY260925C00580000")->osi_symbol();
+    for (const auto& symbol : {call_symbol, md::parse_osi("SPY261016P00630000")->osi_symbol()}) {
+      const auto bought = call(host, "POST", "/api/replay/orders", json{{"client_order_id", symbol}, {"symbol", symbol}, {"side", "buy"},
+          {"quantity", 1}, {"type", "market"}, {"time_in_force", "ioc"}}.dump());
+      ASSERT_EQ(bought.status, 201) << bought.body;
+    }
+    const auto exercised = call(host, "POST", "/api/replay/positions/exercise", json{{"symbol", call_symbol}, {"quantity", 1}}.dump());
+    ASSERT_EQ(exercised.status, 200) << exercised.body;
+    ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"2026-09-18T10:00"})").status, 200);
+    const auto payments = json::parse(call(host, "GET", "/api/replay/trades").body)["dividends"];
+    ASSERT_EQ(payments.size(), 1U);
+    EXPECT_EQ(payments[0]["per_share"], ex.str());
+    EXPECT_EQ(payments[0]["amount"], (ex * 100).str());
+    const auto journal = file.directory / "replays" / (id + ".jsonl");
+    std::filesystem::copy_file(journal, crashed / "replays" / (id + ".jsonl"));
+    { std::ofstream out(crashed / "replays" / (id + ".json")); out << state.dump() << '\n'; }
+    ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"2026-09-21T16:15"})").status, 200);
+    ASSERT_TRUE(test::recording_eventually([&] { return json::parse(host.tick())["replay"]["finished"].get<bool>(); }));
+    host.stop();
+    { std::ifstream in(journal); uninterrupted.assign(std::istreambuf_iterator<char>(in), {}); }
+  }
+  base.paper_journal = crashed / "main.jsonl";
+  // Recovery must use the start record, not a newly supplied server calendar.
+  base.dividends.clear();
+  server::ReplayHost host({file.directory, base, true, scenarios});
+  const auto resumed = call(host, "POST", "/api/replay", json{{"resume", id}, {"speed", 300}}.dump());
+  ASSERT_EQ(resumed.status, 201) << resumed.body;
+  EXPECT_EQ(json::parse(resumed.body)["replay"]["sessions"], sessions);
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  // Resume paced playback just before Friday ends: max_gap must compress the
+  // weekend, which would otherwise take almost thirteen minutes even at 300x.
+  ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"16:14:45"})").status, 200);
+  ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"paused":false})").status, 200);
+  ASSERT_TRUE(test::recording_eventually([&] {
+    return json::parse(host.tick())["replay"]["time"].get<std::string>() >= "2026-09-21T13:30:00.000Z";
+  }));
+  ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"paused":true})").status, 200);
+  const auto payments = json::parse(call(host, "GET", "/api/replay/trades").body)["dividends"];
+  ASSERT_EQ(payments.size(), 2U);
+  EXPECT_EQ(payments[1]["per_share"], "2.25");
+  EXPECT_EQ(payments[1]["amount"], "225.00");
+  ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"16:15"})").status, 200);
+  ASSERT_TRUE(test::recording_eventually([&] { return json::parse(host.tick())["replay"]["finished"].get<bool>(); }));
+  host.stop();
+  const auto journal = crashed / "replays" / (id + ".jsonl");
+  std::string continued;
+  { std::ifstream in(journal); continued.assign(std::istreambuf_iterator<char>(in), {}); }
+  EXPECT_EQ(continued, uninterrupted);
+  const auto verified = server::verify_run(journal);
+  EXPECT_TRUE(verified.matched) << verified.message;
+}
+
 // A run whose recorded inputs no longer match its recording stops trading as it
 // resumes, and its journal is left as it was.
 TEST(ReplayHost, AResumedRunThatDiffersFromItsRecordingStopsAndWritesNothing) {
