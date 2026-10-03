@@ -605,7 +605,8 @@ json portfolio_json(const TradingView& view) {
         // (with the last print before the close as the fallback) for half an hour after the
         // close, or by a value entered by hand once no automatic source remains.
         {"settle_by", !p.awaiting_settlement ? json(nullptr)
-            : c.settlement == md::Settlement::AM && view.opening_settlement ? json("opening_print")
+            : c.settlement == md::Settlement::AM && view.opening_settlement &&
+              s.time <= c.expiry_time() + kOpeningPrintWait ? json("opening_print")
             : c.settlement == md::Settlement::PM &&
               (s.closing_prints.contains(c.underlying + " " + md::format_date(c.expiry)) ||
                s.time < md::new_york_to_utc(c.expiry, md::regular_close_hour(c.expiry), 0) + kLastPrintWait)

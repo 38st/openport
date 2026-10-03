@@ -94,6 +94,32 @@ TEST(Desk, DemoAmSettlementUsesFirstExpiryOpeningPrintAndLiveKeepsManualImport) 
   }
 }
 
+TEST(Desk, DemoLateRestartDoesNotInventAnAmOpeningPrint) {
+  test::RecordingFile file;
+  test::ScriptedMarket market;
+  market.contract = *md::parse_osi("SPX260923C05000000");
+  server::Desk::Options options;
+  options.paper_journal = file.directory / "am.jsonl";
+  {
+    server::Desk desk("demo", {}, {{"SPX"}}, options);
+    desk.start_trading();
+    desk.replay_batch(market_batch(market), market.time);
+    server::TradingCommand entry;
+    entry.order = market.market("am-entry");
+    ASSERT_TRUE(command(desk, entry, market.time, market.time).decision.ok());
+    desk.stop();
+  }
+  server::Desk restarted("demo", {}, {{"SPX"}}, options);
+  restarted.start_trading();
+  const auto late = market.contract.expiry_time() + 90 * md::kNanosPerMinute;
+  restarted.replay_batch({md::UnderlyingQuote{"SPX", late, 0, 0, 5011}}, late);
+  const auto view = restarted.trading_view();
+  ASSERT_EQ(view->snapshot->positions.size(), 1U);
+  EXPECT_TRUE(view->snapshot->positions.front().awaiting_settlement);
+  EXPECT_TRUE(view->snapshot->settlements.empty());
+  restarted.stop();
+}
+
 TEST(ReproducibleRun, AmOpeningSettlementIsGatedByDriverAndNamesScenarioOrRecording) {
   test::RecordingFile file;
   const auto source = file.directory / "am-overnight.json";
