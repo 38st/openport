@@ -287,7 +287,7 @@ struct Order {
   std::optional<Quantity> limit_ticks = {};
   /// Last scheduled step or accepted manual change; zero before either.
   Timestamp walked_at = 0;
-  bool opening_counted = false; ///< A partial opening execution already counted this order.
+  bool opening_counted = false; ///< A partial opening execution counted this order, including before rollover.
   [[nodiscard]] Quantity remaining() const { return request.quantity - filled_quantity; }
   /// The terms a retry must repeat to be answered with this order.
   [[nodiscard]] const OrderRequest& submission() const { return submitted ? *submitted : request; }

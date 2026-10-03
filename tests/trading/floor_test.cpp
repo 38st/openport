@@ -122,7 +122,14 @@ TEST(TradingFloor, ResetPreservesDailyLatchesAndCooldownThroughJournalRecovery) 
       EXPECT_EQ(s.snapshot()->kill_history.size(), changes) << "the discipline latch was never cleared";
       EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
       EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, until);
-      EXPECT_EQ(s.submit(f.market("blocked"), f.time).decision.code, reason);
+      const auto refused = s.submit(f.market("blocked"), f.time).decision;
+      EXPECT_EQ(refused.code, reason);
+      EXPECT_EQ(s.snapshot()->kill_reset.code, reason);
+      if (reason == Reason::TRADE_LIMIT) {
+        EXPECT_EQ(refused.actual, 1);
+        EXPECT_FALSE(refused.limit);
+        EXPECT_NE(refused.message.find("remains latched after the account reset"), std::string::npos);
+      }
       expected = s.snapshot_json();
     }
     auto recovered = TradingSession::recover(FileJournal::read(file.path));
@@ -136,6 +143,40 @@ TEST(TradingFloor, ResetPreservesDailyLatchesAndCooldownThroughJournalRecovery) 
       EXPECT_FALSE(recovered.snapshot()->risk.kill_latched);
       EXPECT_EQ(recovered.snapshot()->guardrails.opening_trades, 0);
     }
+  }
+}
+
+TEST(TradingFloor, AccountResetHistoryOnlyClearsReasonsItActuallyRemoves) {
+  for (const bool manual : {false, true}) {
+    File file; ScriptedMarket f;
+    auto c = config(); c.guardrails.soft_floor = m("9990");
+    std::string expected;
+    {
+      TradingSession s(c, f.time, FileJournal::create(file.path)); f.seed(s);
+      ASSERT_TRUE(s.submit(f.market("entry"), f.time).decision.ok());
+      ASSERT_EQ(s.snapshot()->risk.kill_reason, "SOFT_FLOOR");
+      EXPECT_NE(s.snapshot()->kill_reset.message.find("account reset"), std::string::npos);
+      auto g = c.guardrails; g.max_opening_trades = 1; g.soft_floor = {};
+      ASSERT_TRUE(s.set_guardrails(g, f.time).decision.ok());
+      if (manual) { ASSERT_TRUE(s.trip_kill("manual pause", f.time).decision.ok()); }
+      const auto history_size = s.snapshot()->kill_history.size();
+      ASSERT_TRUE(s.reset_account(m("10000"), c.rules, "fresh ledger", f.time).decision.ok());
+      const auto snap = s.snapshot();
+      EXPECT_EQ(snap->guardrails.latched, std::vector<Reason>{Reason::TRADE_LIMIT});
+      EXPECT_EQ(snap->risk.kill_reason, "TRADE_LIMIT");
+      EXPECT_EQ(snap->kill_reset.code, Reason::TRADE_LIMIT);
+      ASSERT_EQ(snap->kill_history.size(), history_size + (manual ? 2U : 1U));
+      if (manual) {
+        EXPECT_EQ(snap->kill_history[history_size].action, "reset");
+        EXPECT_EQ(snap->kill_history[history_size].previous, "manual pause");
+      }
+      EXPECT_EQ(snap->kill_history.back().action, "trip");
+      EXPECT_EQ(snap->kill_history.back().previous, manual ? "" : "SOFT_FLOOR");
+      EXPECT_EQ(snap->kill_history.back().reason, "TRADE_LIMIT");
+      expected = s.snapshot_json();
+    }
+    auto recovered = TradingSession::recover(FileJournal::read(file.path));
+    EXPECT_EQ(recovered.snapshot_json(), expected);
   }
 }
 
@@ -181,6 +222,36 @@ TEST(TradingFloor, AtomicComboCountsOnceAcrossPartialExecutions) {
   EXPECT_EQ(s.snapshot()->recent_fills.size(), 4U);
 }
 
+TEST(TradingFloor, GtcOpeningCountsOnceAcrossRolloverAndKeepsPlanChecks) {
+  ScriptedMarket f; auto c = config(); c.guardrails.max_opening_trades = 1;
+  c.rules.max_contracts_held = 3;
+  TradingSession s(c, f.time); f.seed(s, "4", "4.20", 1);
+  auto request = f.limit("overnight", 3, "4.20", Side::Buy, TimeInForce::Gtc);
+  const auto placed = s.submit(request, f.time);
+  ASSERT_TRUE(placed.decision.ok());
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+  // The trade-limit exemption must still honour the plan's held-contract cap.
+  OrderChange change; change.quantity = 4;
+  EXPECT_EQ(s.modify(*placed.order_id, change, f.time).decision.code, Reason::MAX_CONTRACTS_HELD);
+  f.time = md::new_york_to_utc({2026, 9, 23}, 10, 0);
+  ASSERT_TRUE(s.roll_day(f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 0);
+  EXPECT_FALSE(s.snapshot()->risk.kill_latched);
+  f.next(); s.on_quotes({f.quote("4", "4.20", 1)}, {f.valuation()}, f.time);
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 0);
+  EXPECT_FALSE(s.snapshot()->risk.kill_latched);
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+  f.next(); s.on_quotes({f.quote("4", "4.20", 1)}, {f.valuation()}, f.time);
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 0);
+  ASSERT_TRUE(s.submit(f.market("close", 1, Side::Sell), f.time).decision.ok());
+  f.next(); s.on_quotes({f.quote("4", "4.20", 1)}, {f.valuation()}, f.time);
+  ASSERT_TRUE(s.submit(f.market("today's order"), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+  EXPECT_EQ(s.snapshot()->risk.kill_reason, "TRADE_LIMIT");
+}
+
 TEST(TradingFloor, AnotherLatchStillCancelsTheOrderFinishingAtTradeLimit) {
   ScriptedMarket f; auto c = config(); c.guardrails.max_opening_trades = 1;
   TradingSession s(c, f.time); f.seed(s, "4", "4.20", 1);
@@ -188,6 +259,20 @@ TEST(TradingFloor, AnotherLatchStillCancelsTheOrderFinishingAtTradeLimit) {
   ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
   ASSERT_TRUE(s.trip_kill("manual", f.time).decision.ok());
   EXPECT_TRUE(s.snapshot()->open_orders.empty());
+}
+
+TEST(TradingFloor, TradeLimitCompletionCannotReopenAPassedAttempt) {
+  ScriptedMarket f; auto c = config(); c.guardrails.max_opening_trades = 1;
+  c.rules.profit_target = m("50");
+  TradingSession s(c, f.time); f.seed(s, "4", "4.20", 1);
+  ASSERT_TRUE(s.submit(f.limit("parts", 3), f.time).decision.ok());
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);
+  update(s, f, "5", "5.20");
+  EXPECT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Passed);
+  EXPECT_EQ(s.snapshot()->guardrails.opening_trades, 1);
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_TRUE(s.snapshot()->open_orders.empty());
+  EXPECT_EQ(s.submit(f.market("new-attempt-needed"), f.time).decision.code, Reason::EVALUATION_CLOSED);
 }
 
 TEST(TradingFloor, StandaloneStopsTrailingAndOcoStopsStartCooldownOnFill) {
@@ -251,6 +336,38 @@ TEST(TradingFloor, OwnPriceTriggeredClosesStartCooldownOnlyInTheAdverseDirection
   }
 }
 
+TEST(TradingFloor, LinkedOcoStopStartsCooldownButItsProfitSideDoesNot) {
+  for (const bool stopped : {false, true}) {
+    ScriptedMarket f; auto c = config(); c.guardrails.cooldown_minutes = 5;
+    c.rules.buying_power = false;  // General OCO legs reserve independently on this plan.
+    TradingSession s(c, f.time); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("entry"), f.time).decision.ok());
+    auto stop = f.market("oco", 1, Side::Sell);
+    stop.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.90")};
+    auto target = f.limit("", 1, "5", Side::Sell, TimeInForce::Gtc);
+    stop.oco = {target};
+    ASSERT_TRUE(s.submit(stop, f.time).decision.ok());
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0);
+    update(s, f, stopped ? "3.80" : "5", stopped ? "4" : "5.20");
+    ASSERT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, stopped ? f.time + 5 * md::kNanosPerMinute : 0);
+    EXPECT_TRUE(s.snapshot()->open_orders.empty());
+  }
+}
+
+TEST(TradingFloor, RequiredBracketStopStartsCooldownWithTradeRiskLimit) {
+  ScriptedMarket f; auto c = config(); c.guardrails.cooldown_minutes = 5;
+  c.rules.require_stop_loss = true;
+  c.rules.max_trade_risk = m("100");
+  TradingSession s(c, f.time); f.seed(s);
+  auto request = f.market("entry");
+  request.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.90")}, {}}, {}};
+  ASSERT_TRUE(s.submit(request, f.time).decision.ok());
+  update(s, f, "3.80", "4");
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, f.time + 5 * md::kNanosPerMinute);
+}
+
 TEST(TradingFloor, UnderlyingTriggeredClosesUseTheHeldOptionsDirectionForCooldown) {
   for (const auto type : {pricing::OptionType::Call, pricing::OptionType::Put})
     for (const auto side : {Side::Buy, Side::Sell}) for (const bool stop : {false, true}) {
@@ -284,7 +401,8 @@ TEST(TradingFloor, UnderlyingTriggeredClosesUseTheHeldOptionsDirectionForCooldow
 }
 
 TEST(TradingFloor, ComboTriggeredClosesStartCooldownOnlyInTheAdverseDirection) {
-  for (const auto source : {TriggerSource::Combo, TriggerSource::Underlying}) for (const bool stop : {false, true}) {
+  for (const auto source : {TriggerSource::Combo, TriggerSource::Underlying})
+    for (const bool long_delta : {false, true}) for (const bool stop : {false, true}) {
     SCOPED_TRACE(source == TriggerSource::Combo ? "combo" : "underlying");
     SCOPED_TRACE(stop);
     ScriptedMarket a, b; b.contract.strike += 10;
@@ -293,20 +411,22 @@ TEST(TradingFloor, ComboTriggeredClosesStartCooldownOnlyInTheAdverseDirection) {
     s.define(a.contract, a.time); s.define(b.contract, b.time);
     s.on_quotes({a.quote("5", "5.20"), b.quote()}, {a.valuation(0.6), b.valuation(0.4)}, a.time);
     auto entry = a.market("entry"); entry.symbol.clear();
-    entry.legs = {{a.symbol(), Side::Buy, 1}, {b.symbol(), Side::Sell, 1}};
+    entry.legs = {{a.symbol(), long_delta ? Side::Buy : Side::Sell, 1}, {b.symbol(), long_delta ? Side::Sell : Side::Buy, 1}};
     ASSERT_TRUE(s.submit(entry, a.time).decision.ok());
     auto close = a.market("close"); close.symbol.clear();
-    close.legs = {{a.symbol(), Side::Sell, 1}, {b.symbol(), Side::Buy, 1}};
+    close.legs = {{a.symbol(), long_delta ? Side::Sell : Side::Buy, 1}, {b.symbol(), long_delta ? Side::Buy : Side::Sell, 1}};
     // Combos read their signed closing debit: a rise loses even when the debit is negative.
-    const bool below = source == TriggerSource::Combo ? !stop : stop;
+    const bool cheaper = stop == long_delta;
+    const bool below = source == TriggerSource::Combo ? !stop : cheaper;
+    const auto debit_level = long_delta ? (stop ? "-0.20" : "-1.80") : (stop ? "1.80" : "0.60");
     close.trigger = Trigger{source, below ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove,
-                            m(source == TriggerSource::Combo ? (stop ? "-0.20" : "-1.80") : (stop ? "4990" : "5010"))};
+                            m(source == TriggerSource::Combo ? debit_level : (cheaper ? "4990" : "5010"))};
     ASSERT_TRUE(s.submit(close, a.time).decision.ok());
     ASSERT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Armed);
     EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0);
     a.next(); b.next(); auto av = a.valuation(0.6), bv = b.valuation(0.4);
-    av.spot = bv.spot = stop ? 4990 : 5010;
-    s.on_quotes({a.quote(stop ? "4.40" : "6", stop ? "4.60" : "6.20"), b.quote()}, {av, bv}, a.time);
+    av.spot = bv.spot = cheaper ? 4990 : 5010;
+    s.on_quotes({a.quote(cheaper ? "4.40" : "6", cheaper ? "4.60" : "6.20"), b.quote()}, {av, bv}, a.time);
     ASSERT_TRUE(s.snapshot()->positions.empty());
     EXPECT_EQ(s.snapshot()->recent_orders.back().triggered_at, a.time);
     EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, stop ? a.time + 5 * md::kNanosPerMinute : 0);
@@ -649,6 +769,8 @@ TEST(TradingFloor, PendingAndGuardrailStateSurviveJournalRecoveryAndOlderRecords
   EXPECT_FALSE(old.snapshot()->evaluation.day_low_equity);
   EXPECT_FALSE(old.snapshot()->evaluation.closest_floor);
   EXPECT_EQ(old.snapshot()->guardrails.opening_trades, 0);
+  EXPECT_EQ(old.snapshot()->guardrails.trade_limit_order, 0U);
+  for (const auto& order : old.snapshot()->recent_orders) { EXPECT_FALSE(order.opening_counted); }
   EvaluationDay day = Json{{"day", md::Date{2026, 9, 22}}, {"open_equity", 1000}, {"close_equity", 1010}, {"peak", 1010}, {"floor", 900}}.get<EvaluationDay>();
   EXPECT_FALSE(day.low_equity);
   EXPECT_EQ(day.high_at, 0);

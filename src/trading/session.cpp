@@ -1178,16 +1178,19 @@ Decision guardrail_decision(const State& s, Reason reason) {
     case Reason::COOLDOWN:
       return failure(reason, "Cooldown after a stop-loss exit or loss until " + clock_text(s.guardrails.cooldown_until));
     case Reason::TRADE_LIMIT:
+      if (g.max_opening_trades == 0 || s.guardrails.opening_trades < g.max_opening_trades)
+        return {reason, "Today's opening-trade limit remains latched after the account reset; opening orders resume next trading day",
+                static_cast<double>(s.guardrails.opening_trades), {}, "aggregate"};
       return {reason, "The day's opening trades reached the limit of " + std::to_string(g.max_opening_trades) +
               "; opening orders resume next trading day",
               static_cast<double>(s.guardrails.opening_trades), static_cast<double>(g.max_opening_trades), "aggregate"};
     case Reason::PROFIT_LOCK:
-      return {reason, "Today's profit reached the lock of " + dollars(g.profit_lock) + "; opening orders resume next trading day",
+      return {reason, "Today's profit lock is latched (current setting " + dollars(g.profit_lock) + "); opening orders resume next trading day",
               {}, g.profit_lock.dollars(), "aggregate"};
     case Reason::SOFT_FLOOR: {
       const auto level = soft_floor_of(s);
       return {reason, "Equity reached the soft floor" + (level ? " of " + dollars(*level) : std::string()) +
-              "; opening orders resume next trading day if equity is above it", {},
+              "; rollover or an account reset re-checks it against equity", {},
               level ? std::optional(level->dollars()) : std::nullopt, "aggregate"};
     }
     default: return failure(reason, std::string(to_string(reason)));
@@ -1249,9 +1252,13 @@ Decision reset_check(const State& s, const Measures& m) {
   if (!s.kill) return {};
   if (const auto personal = guardrail_reason(s); personal != Reason::NONE) {
     if (personal == Reason::COOLDOWN)
-      return failure(personal, "A reset waits for the cooldown to end at " + clock_text(s.guardrails.cooldown_until));
+      return failure(personal, "The kill-switch reset waits for the cooldown to end at " + clock_text(s.guardrails.cooldown_until) +
+                     "; an account reset also preserves this cooldown");
+    if (personal == Reason::SOFT_FLOOR)
+      return failure(personal, "The kill-switch reset cannot clear SOFT_FLOOR; it clears at the next trading day's rollover or an account reset, "
+                     "which applies pending settings and re-checks the floor against new equity");
     return failure(personal, std::string(to_string(personal)) +
-                   " is a personal daily latch; it clears at the next trading day's rollover, not by reset");
+                   " is a personal daily latch; it clears at the next trading day's rollover; neither a kill-switch reset nor an account reset clears it");
   }
   if (const auto loss = loss_check(s, m); !loss.ok())
     return {Reason::DAILY_LOSS, "A reset trips again while the marked loss " + dollars(m.risk.daily_loss) + " exceeds the limit of " +
@@ -1297,7 +1304,9 @@ bool closing_stop(const State& s, const Order& order) {
   const auto& trigger = *order.request.trigger;
   if (trigger.trail) return true;
   const bool below = trigger.direction == TriggerDirection::AtOrBelow;
-  if (trigger.source == TriggerSource::Option || trigger.source == TriggerSource::Combo)
+  // A combo watches its signed closing debit: a rise hurts the held position.
+  if (trigger.source == TriggerSource::Combo) return !below;
+  if (trigger.source == TriggerSource::Option)
     return below == (order.request.side == Side::Sell);
   if (trigger.source != TriggerSource::Underlying) return false;
   if (!multi_leg(order.request)) {
