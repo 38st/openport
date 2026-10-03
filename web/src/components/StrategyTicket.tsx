@@ -176,7 +176,9 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     const held = positions?.find((p) => p.symbol === leg.symbol)?.quantity ?? 0
     return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
   })
-  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked || closed) && !reduces) || !!untradable || !!notice || (!!rules?.buy_only && !reduces)
+  const stopRequired = rules?.require_stop_loss && !reduces
+  const missingStop = stopRequired && !(exitable && exits.bracket?.stop_loss?.trigger)
+  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked || closed) && !reduces) || !!untradable || !!notice || (!!rules?.buy_only && !reduces) || !!missingStop
   const walk = useWalk(type === "limit" && ["day", "gtc"].includes(tif), limitText, true, (tick / 100).toFixed(2), quote.ask?.toFixed(2) ?? "")
   const valid = walk.valid && (type === "market" || tif !== "gtd" || good_till != null) && legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
 
@@ -186,6 +188,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     ...(type === "market" ? { type, time_in_force: "ioc" as const } : { type, time_in_force: tif, limit_price: limitText }),
     ...(type === "limit" && tif === "gtd" ? { good_till } : {}),
     ...(walk.walk ? { walk: walk.walk } : {}),
+    ...(exitable && exits.bracket ? { bracket: exits.bracket } : {}),
   } : null
   const preview = useOrderPreview(draft, trading)
   const whatIfScope = useWhatIfScope()
@@ -351,6 +354,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
           <dd className="text-right tabular">{move == null ? "—" : `±${move.toFixed(2)}`}</dd>
           </>}
         </dl>
+        {stopRequired && <p role="status" className={missingStop ? "text-sm text-warn" : "text-xs text-muted"}>Stop-loss required by this plan.{missingStop ? " Add a protective stop before submitting." : ""}</p>}
         <OrderPreviewPanel sizing={!closing && !roll && !reduces} preview={preview} onSize={(size) => setUnits(String(size))} disabled={pending || order != null}
           onWhatIf={() => draft != null && addWhatIfOrder(whatIfScope, draft, whatIfOrderText(draft))} />
         {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}

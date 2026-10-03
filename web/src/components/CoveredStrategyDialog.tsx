@@ -48,6 +48,7 @@ export function CoveredStrategyDialog({ kind, chain, trading, onClose }: {
     retry: false,
   })
   const planRefusal = rules?.buy_only || rules?.defined_risk
+  const stopRequired = rules?.require_stop_loss
   return <Dialog title={kind === "collar" ? "Collar" : "Covered call"} onClose={onClose}>
     <p className="text-sm">{chain.symbol} · {chain.expiry.expiry}. Buy {valid ? q * 100 : "…"} shares, then
       {kind === "collar" ? " buy puts and sell calls" : " sell calls"}. These are two separate orders, not atomic.
@@ -61,6 +62,7 @@ export function CoveredStrategyDialog({ kind, chain, trading, onClose }: {
     </fieldset>
     {planRefusal && <p role="status" className="text-warn text-sm">This plan refuses this strategy: buy-only plans prohibit short calls,
       and defined-risk plans require long calls to cover short calls. Shares cover calls for margin, but do not satisfy that plan rule.</p>}
+    {stopRequired && <p role="status" className="text-warn text-sm">Stop-loss required by this plan. These share and option entries cannot attach a protective stop in this ticket.</p>}
     {!bought && <section aria-label="Share purchase preview" className="text-xs space-y-1">
       <p>Share cost: {formatMoney(shares.data?.cost)}</p>
       <p>Buying power after shares: {formatMoney(shares.data?.after.buying_power)}</p>
@@ -75,10 +77,10 @@ export function CoveredStrategyDialog({ kind, chain, trading, onClose }: {
     <WriteAccess trading={trading} />
     <TradingError error={write.error} />
     {!bought && attempted && !write.pending && <p role="status" className="text-xs text-warn">Check Positions for the share purchase result before starting another strategy.</p>}
-    {!bought ? <button type="button" className="trade-button" disabled={!valid || !!planRefusal || attempted || write.pending || write.blocked || trading.kill_latched}
+    {!bought ? <button type="button" className="trade-button" disabled={!valid || !!planRefusal || !!stopRequired || attempted || write.pending || write.blocked || trading.kill_latched}
       onClick={() => { setAttempted(true); void write.run(() => api.tradeStock(chain.symbol, "buy", q * 100, trading.write), () => setBought(true)) }}>
       {write.pending ? "Buying shares…" : `1. Buy ${valid ? q * 100 : "…"} shares`}</button>
-      : <button type="button" className="trade-button" disabled={!draft || !!order || write.pending || write.blocked || trading.kill_latched}
+      : <button type="button" className="trade-button" disabled={!draft || !!stopRequired || !!order || write.pending || write.blocked || trading.kill_latched}
         onClick={() => { if (!draft) return; request.current ??= { ...draft, client_order_id: crypto.randomUUID() }
           void write.run(() => api.submitOrder(request.current!, trading.write), (result) => setOrder(result.order)) }}>
         {write.pending ? "Sending options…" : "2. Send options at market"}</button>}

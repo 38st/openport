@@ -91,6 +91,10 @@ export function OrderPreviewPanel({ preview, onSize, disabled = false, what = "o
           {p.fee !== undefined && <><dt className="text-muted">Fees for remaining size</dt><dd className="text-right"><FeeAmount fee={p.fee} fees={p.fees} /></dd></>}
           <dt className="text-muted">Buying power after</dt><dd className="text-right">{formatMoney(p.buying_power.after)}</dd>
           <dt className="text-muted">{p.max_loss_basis === "scenario_grid" ? "Scenario-grid loss" : "Max loss at expiry"}</dt><dd className="text-right">{formatMoney(p.max_loss)}</dd>
+          {p.trade_risk_basis && <>
+            <dt className="text-muted">Trade risk before fees</dt><dd className="text-right">{p.trade_risk == null ? "Unbounded or unknown" : formatMoney(p.trade_risk)}</dd>
+            <dt className="text-muted">Plan trade-risk limit</dt><dd className="text-right">{p.trade_risk_limit == null ? "No applicable cap" : formatMoney(p.trade_risk_limit)}</dd>
+          </>}
           <dt className="text-muted">Room after this {what}</dt><dd className="text-right">{formatMoney(p.breach.room)}</dd>
           {sizing && <>
             <dt className="text-muted">{sizeLabel}</dt><dd className="text-right">{units(p.max_units)}</dd>

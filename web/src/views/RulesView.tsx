@@ -79,6 +79,14 @@ export function ruleText(account: Account, fee?: string, dailyLoss?: string) {
         A withdrawal is not a loss: the day's starting equity {r.lock_balance ? "and a floor that has not locked yet move" : "moves"} down with it.
         {payoutCap(p.caps, e.payouts.length + 1) && <> Your next payout is number {e.payouts.length + 1}, capped at {formatMoney(payoutCap(p.caps, e.payouts.length + 1))}.</>}
       </> }] : []),
+    ...(r.max_contracts_held ? [{ title: "Contracts held at once", body: `At most ${r.max_contracts_held} option contracts held plus working opening contracts, counting every combo leg and its ratio. Shares and managed exits are excluded; closing orders remain available.` }] : []),
+    ...(r.require_stop_loss ? [{ title: "Stop-loss required", body: "Every opening order needs a protective bracket stop. Targets and limit prices alone do not qualify. Close the position before cancelling its required stop; flattening and automatic exits remain available. Share entries cannot attach stops." }] : []),
+    ...((r.max_trade_risk && Number(r.max_trade_risk) > 0) || r.max_trade_risk_percent ? [{ title: "Maximum trade risk", body: <>
+      {r.max_trade_risk && Number(r.max_trade_risk) > 0 ? <>At most {formatMoney(r.max_trade_risk)} per order. </> : null}
+      {r.max_trade_risk_percent ? <>At most {r.max_trade_risk_percent}% of equity above the plan floor at entry or change; ignored without a floor. </> : null}
+      When both apply, the tighter cap wins. Risk excludes fees and assumes a fill at the option or combo stop, using the entry limit or current market far side.
+      Without a priced stop, including an underlying-price trigger, risk uses the bounded expiry payoff. Unbounded or unknown loss refuses. Stops can slip or remain unfilled.
+    </> }] : []),
     { title: "Strategies", body: r.buy_only
       ? "Buy-only and single-leg: open positions by buying calls or puts. A sell may only close contracts you already hold, counting your other working sells. Multi-leg orders are not available."
       : r.defined_risk

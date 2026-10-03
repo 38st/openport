@@ -85,3 +85,13 @@ export function dailyLossShare(e: Pick<Evaluation, "daily_loss">): number | null
 }
 /** The order tickets' notice while a plan limit locks the day. */
 export const dayLockNotice = "The plan's daily loss limit locked trading until the next trading day · reduce-only: closing orders still work."
+
+/** Optional entry rules; older servers and plans leave them off. */
+export function tradeRuleFacts(r: AccountRules): string[] {
+  return [
+    ...(r.max_contracts_held ? [`At most ${r.max_contracts_held} option contracts held or opening`] : []),
+    ...(r.require_stop_loss ? ["Stop-loss required on every entry"] : []),
+    ...(r.max_trade_risk && Number(r.max_trade_risk) > 0 ? [`Trade risk at most ${formatMoney(r.max_trade_risk)} before fees`] : []),
+    ...(r.max_trade_risk_percent ? [`Trade risk at most ${r.max_trade_risk_percent}% of room to the plan floor`] : []),
+  ]
+}

@@ -215,8 +215,10 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
   const closed = account?.evaluation.enabled && account.evaluation.status !== "active"
   const dayLocked = account?.evaluation.status === "active" && !!account.evaluation.day_lock
   const opening = split(side, Number.isSafeInteger(q) ? q : 0, held).opening
+  const stopRequired = rules?.require_stop_loss && opening > 0
+  const missingStop = stopRequired && !bracket?.stop_loss?.trigger
   const buyOnlyBlock = rules?.buy_only && side === "sell" && opening > 0
-  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked || closed) && opening > 0) || untradable || !!notice || !!buyOnlyBlock
+  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked || closed) && opening > 0) || untradable || !!notice || !!buyOnlyBlock || !!missingStop
   const reason = quote?.untradable_reason ?? "Contract unavailable for paper trading"
   const root = selection.symbol.slice(0, 6).trim()
   const name = strategyName(side, selection.optionType, held, Number.isSafeInteger(q) && q > 0 ? q : 1)
@@ -446,6 +448,7 @@ function TicketBody({ selection, quote, trading, onClose, variant, smile, surfac
           <dd className="text-right tabular">{odds.pop == null ? "—" : `≈ ${(odds.pop * 100).toFixed(0)}%`}{distribution && <span className="block text-[11px] text-muted">{probabilitySource(distribution, [odds.breakeven])}</span>}</dd>
         </>}
       </dl>
+      {stopRequired && <p role="status" className={missingStop ? "text-sm text-warn" : "text-xs text-muted"}>Stop-loss required by this plan.{missingStop ? " Add a protective stop before submitting." : ""}</p>}
       <OrderPreviewPanel sizing={!selection.closing && !(closes && q <= Math.abs(held))} preview={preview} onSize={(size) => setQuantity(String(size))} disabled={submitted || pending}
         onWhatIf={() => draft != null && addWhatIfOrder(whatIfScope, draft, whatIfOrderText(draft))} />
       {!!(rules?.fill_latency_ms || rules?.impact_ticks) && <p className="text-xs text-muted">The preview uses current quotes. It cannot predict the later quote or the full cost of sweeping additional size blocks.</p>}

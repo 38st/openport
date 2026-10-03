@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { api } from "../api/client"
 import { liveState, useLive } from "../api/live"
 import { account, chain, order, portfolio, status } from "../test/trading-fixtures"
+import { waitForRender } from "../test/render"
 import { CoveredStrategyDialog } from "./CoveredStrategyDialog"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
@@ -28,6 +29,14 @@ beforeEach(() => {
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const button = (text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === text)!
+it.each(["covered-call", "collar"] as const)("blocks an unprotected %s before buying shares", async (kind) => {
+  vi.mocked(api.account).mockResolvedValue({ ...account, rules: { ...account.rules, buy_only: false, defined_risk: false, require_stop_loss: true } })
+  await act(async () => root.render(<QueryClientProvider client={new QueryClient()}><CoveredStrategyDialog kind={kind} chain={etf} trading={status.trading!} onClose={() => {}} /></QueryClientProvider>))
+  await waitForRender(() => expect(host.textContent).toContain("Stop-loss required by this plan"))
+  expect(button("1. Buy 100 shares").disabled).toBe(true)
+  await act(async () => button("1. Buy 100 shares").click())
+  expect(api.tradeStock).not.toHaveBeenCalled()
+})
 it.each(["covered-call", "collar"] as const)("buys shares once before sending %s options", async (kind) => {
   await act(async () => root.render(<QueryClientProvider client={new QueryClient()}><CoveredStrategyDialog kind={kind} chain={etf} trading={status.trading!} onClose={() => {}} /></QueryClientProvider>))
   expect(host.textContent).toContain("not atomic")

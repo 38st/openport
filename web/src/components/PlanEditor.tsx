@@ -32,6 +32,10 @@ export interface PlanForm {
   min_profitable_days: string
   profitable_day_profit: string
   day_end: string
+  max_contracts_held: string
+  require_stop_loss: "yes" | "no"
+  max_trade_risk: string
+  max_trade_risk_percent: string
   strategies: "buy_only" | "defined_risk" | "any"
 }
 
@@ -55,6 +59,9 @@ export function planForm(plan: Pick<Plan, "initial_cash" | "rules">): PlanForm {
     min_trading_days: r.min_trading_days ? String(r.min_trading_days) : "",
     min_profitable_days: r.min_profitable_days ? String(r.min_profitable_days) : "",
     profitable_day_profit: r.profitable_day_profit ?? "", day_end: dayEnd(r),
+    max_contracts_held: r.max_contracts_held ? String(r.max_contracts_held) : "",
+    require_stop_loss: r.require_stop_loss ? "yes" : "no", max_trade_risk: r.max_trade_risk ?? "",
+    max_trade_risk_percent: r.max_trade_risk_percent ? String(r.max_trade_risk_percent) : "",
     strategies: r.buy_only ? "buy_only" : r.defined_risk ? "defined_risk" : "any",
   }
 }
@@ -72,11 +79,16 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
   if (!name) return { error: "Name the plan" }
   for (const [label, value, required] of [["Starting balance", form.initial_cash, true], ["Profit target", form.phase === "funded" ? "" : form.profit_target],
     ["Max drawdown", form.max_drawdown], ["Lock balance", form.lock === "balance" ? form.lock_balance : ""],
-    ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.phase === "funded" ? "" : form.profitable_day_profit]] as const)
+    ["Maximum trade risk", form.max_trade_risk], ["Daily loss limit", form.daily_loss_limit], ["Profitable-day profit", form.phase === "funded" ? "" : form.profitable_day_profit]] as const)
     if ((required || value.trim() !== "") && !validMoney(value.trim())) return { error: `${label} must be a dollar amount` }
   if (!(Number(form.initial_cash) > 0)) return { error: "The starting balance must be above zero" }
   if (form.phase === "evaluation") for (const [label, value, most] of [["Consistency", form.consistency_percent, 100], ["Minimum trading days", form.min_trading_days, 366],
     ["Minimum profitable days", form.min_profitable_days, 366]] as const) {
+    const n = count(value)
+    if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
+  }
+  for (const [label, value, most] of [["Maximum contracts held", form.max_contracts_held, 100000],
+    ["Maximum trade risk %", form.max_trade_risk_percent, 100]] as const) {
     const n = count(value)
     if (!Number.isInteger(n) || n < 0 || n > most) return { error: `${label} must be a whole number from 0 to ${most}` }
   }
@@ -116,6 +128,8 @@ export function customPlan(form: PlanForm, base: AccountRules): { initial_cash: 
     min_trading_days: form.phase === "funded" ? 0 : count(form.min_trading_days),
     min_profitable_days: form.phase === "funded" ? 0 : count(form.min_profitable_days),
     profitable_day_profit: form.phase === "funded" ? null : amount(form.profitable_day_profit), day_end: form.day_end,
+    max_contracts_held: count(form.max_contracts_held), require_stop_loss: form.require_stop_loss === "yes",
+    max_trade_risk: amount(form.max_trade_risk), max_trade_risk_percent: count(form.max_trade_risk_percent),
     buy_only: form.strategies === "buy_only", defined_risk: form.strategies === "defined_risk",
   }
   return { initial_cash: form.initial_cash.trim(), rules }
@@ -173,6 +187,10 @@ export function PlanEditor({ form, onChange, disabled }: { form: PlanForm; onCha
         <Field label="Payout buffer" hint="Equity to keep above the starting balance; 0 disables">{text("payout_buffer")}</Field>
         <Field label="Buffer payouts" hint="First N payouts; 0 applies to every payout">{text("buffer_payouts")}</Field>
       </>}
+      <Field label="Maximum contracts held" hint="Held options plus working entries; shares excluded. Blank for none.">{text("max_contracts_held", "none")}</Field>
+      <Field label="Stop-loss required">{choice("require_stop_loss", [["no", "Optional"], ["yes", "Required on every entry"]])}</Field>
+      <Field label="Maximum trade risk" hint="Dollars before fees. Blank for none.">{text("max_trade_risk", "none")}</Field>
+      <Field label="Maximum trade risk %" hint="Of room to the plan floor; ignored without a floor. The tighter cap applies.">{text("max_trade_risk_percent", "none")}</Field>
       <Field label="Strategies">{choice("strategies", [["buy_only", "Buy only, single leg"], ["defined_risk", "Defined risk"], ["any", "Any"]])}</Field>
     </fieldset>
   )

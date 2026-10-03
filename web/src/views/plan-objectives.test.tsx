@@ -215,3 +215,12 @@ describe("plan objectives in the terminal", () => {
     expect(api.resetAccount).not.toHaveBeenCalled()
   })
 })
+
+it("shows enabled trade-entry rules in plan facts and the Rules page", () => {
+  const value = { ...planned, rules: { ...planned.rules, max_contracts_held: 5, require_stop_loss: true, max_trade_risk: "250.00", max_trade_risk_percent: 10 } }
+  const facts = planFacts({ initial_cash: "10000", rules: value.rules })
+  expect(facts).toEqual(expect.arrayContaining(["At most 5 option contracts held or opening", "Stop-loss required on every entry", "Trade risk at most $250.00 before fees", "Trade risk at most 10% of room to the plan floor"]))
+  const texts = ruleText(value, "0.65", "5000.00")
+  expect(texts.map((t) => t.title)).toEqual(expect.arrayContaining(["Contracts held at once", "Stop-loss required", "Maximum trade risk"]))
+  expect(ruleText(account, "0.65", "5000.00").map((t) => t.title)).not.toContain("Maximum trade risk")
+})

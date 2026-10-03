@@ -175,3 +175,11 @@ it("never labels old floorless previews as floor sizing and does not guess betwe
   expect(host.textContent).toContain("Size within limits100 units")
   expect(host.textContent).not.toContain("floor room")
 })
+
+it("shows trade risk and the plan cap alongside existing preview numbers", async () => {
+  const data = { ...preview, trade_risk: "120.00", trade_risk_limit: "100.00", trade_risk_basis: "stop_loss" as const }
+  await act(async () => root.render(<OrderPreviewPanel preview={{ data, error: null, loading: false }} onSize={() => {}} />))
+  for (const text of ["Trade risk before fees", "$120.00", "Plan trade-risk limit", "$100.00"]) expect(host.textContent).toContain(text)
+  await act(async () => root.render(<OrderPreviewPanel preview={{ data: { ...data, trade_risk: null, trade_risk_basis: "unbounded_or_unknown" }, error: null, loading: false }} onSize={() => {}} />))
+  expect(host.textContent).toContain("Unbounded or unknown")
+})
