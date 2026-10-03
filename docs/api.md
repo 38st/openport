@@ -171,7 +171,7 @@ pandas frames, WebSocket ticks and an MCP server using the official 2.x SDK.
 
 The MCP server gives agents the same paper API. Every tool reports market time,
 the provider and its delay, and whether prices are simulated. Writes require
-`OPENPORT_WRITE_TOKEN` and an account name. Orders carry an `agent:NAME` tag;
+`OPENPORT_WRITE_TOKEN` and an account name (optional for sandbox tokens). Orders carry an `agent:NAME` tag;
 authenticated token names are recorded as actors on journal transactions, orders
 and fills. Older journal entries show `unknown`.
 
