@@ -210,6 +210,32 @@ it("blocks replay starts and every running control until a required token is hel
   expect(api.controlReplay).toHaveBeenCalledWith({ paused: true }, "token")
 })
 
+it("requires an entered step time and clears it only after a successful step", async () => {
+  const running = { ...listing, replay: { ...replay, time: "2026-09-16T19:00:31Z" } }
+  client.setQueryData(["replay-listing"], running)
+  vi.mocked(api.replay).mockResolvedValue(running)
+  vi.spyOn(api, "controlReplay").mockRejectedValueOnce(new Error("Step failed")).mockResolvedValue({ replay })
+  await render()
+  const input = host.querySelector('[aria-label="Step to"]') as HTMLInputElement
+  const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "Step")!
+  expect(input.value).toBe("2026-09-16T15:00")
+  expect(button.disabled).toBe(true)
+  await click("Step")
+  await act(async () => { input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })) })
+  expect(api.controlReplay).not.toHaveBeenCalled()
+  await change("Step to", "2026-09-16T15:01")
+  expect(button.disabled).toBe(false)
+  await click("Step")
+  expect(api.controlReplay).toHaveBeenCalledWith({ until: "2026-09-16T15:01" }, "open")
+  expect(input.value).toBe("2026-09-16T15:01")
+  expect(button.disabled).toBe(false)
+  await click("Step")
+  expect(input.value).toBe("2026-09-16T15:00")
+  expect(button.disabled).toBe(true)
+  await click("Step")
+  expect(api.controlReplay).toHaveBeenCalledTimes(2)
+})
+
 it("labels a run's sessions by date and steps to a New York date and time", async () => {
   const sessions = [
     { session: "regular" as const, date: "2026-09-16", open: "2026-09-16T13:30:00Z", end: "2026-09-16T20:15:00Z" },
