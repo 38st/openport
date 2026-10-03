@@ -4512,7 +4512,7 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   rules.update({{"plan", "Combined rules"}, {"plan_id", nullptr}, {"flat_time", "15:45"}, {"no_overnight", true}, {"time_limit_days", 30}, {"inactivity_days", 14},
                 {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
                 {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"},
-                {"max_trade_risk_percent", 25}});
+                {"max_trade_risk_percent", 25}, {"scaling", {{{"profit", "0.00"}, {"contracts", 2}}}}});
   auto response = write(*engine, "POST", "/api/accounts", {{"name", "Combined rules"}, {"initial_cash", "100000"}, {"rules", rules}});
   ASSERT_EQ(response.status, 201) << response.body;
   test::capture_contract("time-rules", "POST", "/api/accounts", response);
@@ -4525,13 +4525,30 @@ TEST_F(PaperEngine, TimeAndTradeRulesSurviveCreateResetAndPresetMatching) {
   EXPECT_EQ(json::parse(response.body)["attempts"].back()["rules"], rules);
   const auto practice = read(*engine, "/api/account")["rules"];
   for (const auto* field : {"flat_time", "no_overnight", "time_limit_days", "inactivity_days", "underlyings", "trading_start",
-                           "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"}) {
+                           "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent", "scaling"}) {
     auto borrowed = practice;
     borrowed[field] = rules[field];
     if (std::string_view(field) == "trading_start") borrowed["trading_end"] = rules["trading_end"];
     expect_error(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", borrowed},
         {"reason", "cannot borrow a preset name"}}), 400, "INVALID_RULES");
   }
+  rules.update({{"plan", "Funded combined rules"}, {"phase", "funded"}, {"profit_target", nullptr},
+                {"time_limit_days", 0}, {"payouts", {{"qualifying_profit", "0.00"}, {"qualifying_days", 1},
+                    {"withdrawal_percent", 50}, {"split_percent", 80}, {"minimum", "0.00"}, {"caps", json::array()},
+                    {"consistency_percents", json::array()}, {"buffer", "0.00"}, {"buffer_payouts", 0}}},
+                {"size_scaling", {{"profit_percent", 10}, {"payouts", 2}, {"days", 80},
+                    {"increase_percent", 25}, {"max_balance", "200000.00"}}}});
+  response = write(*engine, "POST", "/api/accounts", {{"name", "Funded combined"}, {"initial_cash", "100000"}, {"rules", rules}});
+  // Creating funded accounts directly stays gated; custom funded rules enter through reset.
+  expect_error(response, 400, "INVALID_REQUEST");
+  response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", rules}, {"reason", "funded combined"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  test::capture_contract("time-rules", "POST", "/api/account/reset", response);
+  EXPECT_EQ(json::parse(response.body)["rules"], rules);
+  response = write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "archive funded rules"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  test::capture_contract("time-rules", "POST", "/api/account/reset", response);
+  EXPECT_EQ(json::parse(response.body)["attempts"].back()["rules"], rules);
   engine->stop();
   std::filesystem::remove_all(directory);
 }

@@ -80,7 +80,8 @@ describe("plan objectives in the terminal", () => {
   })
   it("shows evaluation and inactivity deadlines and configured entry restrictions", () => {
     const timed: Account = { ...planned, rules: { ...planned.rules, time_limit_days: 30, inactivity_days: 14,
-      underlyings: ["SPX", "XSP"], trading_start: "09:30", trading_end: "16:00" }, evaluation: { ...planned.evaluation,
+      underlyings: ["SPX", "XSP"], trading_start: "09:30", trading_end: "16:00",
+      scaling: [{ profit: "0.00", contracts: 2 }] }, evaluation: { ...planned.evaluation,
       days_left: 5, deadline: "2026-10-22", inactive_days: 10, inactivity_deadline: "2026-10-21" } }
     const html = render(<DashboardView />, timed)
     expect(html).toContain("5 calendar days left; deadline 2026-10-22")
@@ -89,6 +90,7 @@ describe("plan objectives in the terminal", () => {
     expect(texts).toContain("30 calendar days")
     expect(texts).toContain("Allowed underlyings: SPX, XSP")
     expect(texts).toContain("09:30–16:00 ET")
+    expect(texts).toContain("SCALING_LIMIT")
     expect(texts).not.toContain("There is no time limit")
     expect(planFacts({ initial_cash: "100000", rules: timed.rules })).toContain("Evaluation ends after 30 calendar days")
   })
@@ -293,13 +295,21 @@ it("renders size reviews, history, plan facts and the existing rule notice", () 
     period_days: 3, days_required: 80, period_profit: "1200.50", profit_required: "6250.00", period_payouts: 1, payouts_required: 2,
     next_size: "75000.00", history: [{ day: "2026-09-24", old: "50000.00", size: "62500.00" }] }
   const scaled: Account = { ...planned, rules: { ...planned.rules, phase: "funded", size_scaling: {
-    profit_percent: 10, payouts: 2, days: 80, increase_percent: 25, max_balance: "100000.00" } },
+    profit_percent: 10, payouts: 2, days: 80, increase_percent: 25, max_balance: "100000.00" },
+    time_limit_days: 0, inactivity_days: 14, underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00",
+    scaling: [{ profit: "0.00", contracts: 2 }] },
     evaluation: { ...planned.evaluation, day: "2026-09-24", size_scaling } }
   const text = renderToStaticMarkup(<SizeScalingProgress status={size_scaling} />)
   for (const value of ["Account size scaling", "$62,500.00", "$75,000.00", "3 / 80", "$1,200.50 / $6,250.00", "1 / 2", "2026-09-24", "Account size history"])
     expect(text).toContain(value)
   expect(planFacts({ initial_cash: "50000", rules: scaled.rules }).join(" ")).toContain("Add 25% of the original size")
   expect(render(<RulesView />, scaled)).toContain("Account size scaling")
+  const facts = planFacts({ initial_cash: "50000", rules: scaled.rules }).join(" ")
+  const allRules = render(<RulesView />, scaled)
+  for (const text of ["Scaling plan", "Inactivity limit", "Allowed underlyings", "Opening hours"])
+    expect(allRules).toContain(text)
+  for (const text of ["Scaling", "Inactivity limit", "Allowed underlyings", "Opening hours"])
+    expect(facts).toContain(text)
   expect(ruleAlerts(scaled, risk).map((a) => a.title)).toContain("Account size increased")
   expect(ruleAlerts({ ...scaled, evaluation: { ...scaled.evaluation, day: "2026-09-25" } }, risk).map((a) => a.title)).not.toContain("Account size increased")
 })

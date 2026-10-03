@@ -26,7 +26,11 @@ def example(schema):
         return example(schema["anyOf"][0])
     kind = schema.get("type")
     if kind == "object":
-        return {key: example(value) for key, value in schema.get("properties", {}).items() if key in schema.get("required", [])}
+        result = {key: example(value) for key, value in schema.get("properties", {}).items() if key in schema.get("required", [])}
+        if schema is SPEC["components"]["schemas"]["AccountRules"]:
+            # The default fixture is evaluation-phase; capital growth is funded-only.
+            result["size_scaling"] = None
+        return result
     if kind == "array":
         return []
     if kind == "number" or kind == "integer":

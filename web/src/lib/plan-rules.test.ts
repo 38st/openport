@@ -211,3 +211,15 @@ it("round trips account size scaling, disables it and validates every field", ()
   const evaluation = customPlan({ ...form, phase: "evaluation" }, base)
   expect("error" in evaluation ? evaluation : evaluation.rules.size_scaling).toBeNull()
 })
+
+it("keeps combined rules while switching phase-specific time and size scaling", () => {
+  const base = { ...rules, time_limit_days: 30, inactivity_days: 14, underlyings: ["SPX"],
+    trading_start: "09:30", trading_end: "16:00", scaling: [{ profit: "0.00", contracts: 2 }],
+    size_scaling: { profit_percent: 10, payouts: 2, days: 80, increase_percent: 25, max_balance: "200000.00" } }
+  const form = planForm({ initial_cash: "100000", rules: base })
+  const shared = { inactivity_days: 14, underlyings: ["SPX"], trading_start: "09:30", trading_end: "16:00", scaling: base.scaling }
+  const evaluation = customPlan({ ...form, phase: "evaluation" }, base)
+  expect("error" in evaluation ? evaluation : evaluation.rules).toMatchObject({ ...shared, time_limit_days: 30, size_scaling: null })
+  const funded = customPlan({ ...form, phase: "funded" }, base)
+  expect("error" in funded ? funded : funded.rules).toMatchObject({ ...shared, time_limit_days: 0, size_scaling: base.size_scaling })
+})

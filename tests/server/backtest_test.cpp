@@ -361,7 +361,8 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
   auto timed = good;
   timed["plan"] = {{"initial_cash", "10000"}, {"rules", {{"profit_target", "100"}, {"time_limit_days", 30},
       {"inactivity_days", 14}, {"flat_time", "15:45"}, {"no_overnight", true}, {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "16:00"},
-      {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 25}}}};
+      {"max_contracts_held", 5}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 25},
+      {"scaling", {{{"profit", "0.00"}, {"contracts", 2}}}}, {"size_scaling", nullptr}}}};
   const auto time_rules = server::parse_backtest(timed, definitions, scenarios, {}).config.rules;
   EXPECT_EQ(time_rules.flat_time, 945); EXPECT_TRUE(time_rules.no_overnight);
   EXPECT_EQ(time_rules.time_limit_days, 30); EXPECT_EQ(time_rules.inactivity_days, 14);
@@ -369,6 +370,8 @@ TEST(Backtest, RejectsInvalidInputsAndPinsArchivedHistoricalVersions) {
   EXPECT_EQ(time_rules.trading_start, 570); EXPECT_EQ(time_rules.trading_end, 960);
   EXPECT_EQ(time_rules.max_contracts_held, 5); EXPECT_TRUE(time_rules.require_stop_loss);
   EXPECT_EQ(time_rules.max_trade_risk, Money::parse("123.456789")); EXPECT_EQ(time_rules.max_trade_risk_percent, 25);
+  EXPECT_EQ(time_rules.scaling, (std::vector<trading::ScalingStep>{{Money{}, 2}}));
+  EXPECT_FALSE(time_rules.size_scaling);
   for (const auto& patch : std::vector<json>{{{"flat_time", "24:00"}}, {{"flat_time", "17:00"}}, {{"no_overnight", 1}}, {{"time_limit_days", 367}}, {{"inactivity_days", 1.5}},
       {{"underlyings", "SPX"}}, {{"trading_end", nullptr}}, {{"trading_start", "09:60"}}}) {
     auto bad = timed; bad["plan"]["rules"].update(patch);
@@ -448,6 +451,8 @@ TEST(Backtest, CustomFundedSizeScalingAcceptsExactMoneyAndValidatesTypesAndRange
   const auto definitions = catalogue();
   const auto& scenarios = providers::builtin_scenarios();
   json rules{{"phase", "funded"}, {"payouts", {{"qualifying_days", 1}}},
+      {"time_limit_days", 0}, {"inactivity_days", 14}, {"underlyings", {"SPX"}},
+      {"trading_start", "09:30"}, {"trading_end", "16:00"}, {"scaling", {{{"profit", "0.00"}, {"contracts", 2}}}},
       {"size_scaling", {{"profit_percent", 1}, {"payouts", 0}, {"days", 2},
           {"increase_percent", 25}, {"max_balance", "20000.000001"}}}};
   const auto parse = [&](const json& settings) {
@@ -457,6 +462,12 @@ TEST(Backtest, CustomFundedSizeScalingAcceptsExactMoneyAndValidatesTypesAndRange
   const auto parsed = parse(rules);
   ASSERT_TRUE(parsed.config.rules.size_scaling);
   EXPECT_EQ(parsed.config.rules.size_scaling->max_balance, Money::parse("20000.000001"));
+  EXPECT_EQ(parsed.config.rules.inactivity_days, 14);
+  EXPECT_EQ(parsed.config.rules.underlyings, std::vector<std::string>{"SPX"});
+  EXPECT_EQ(parsed.config.rules.trading_start, 570); EXPECT_EQ(parsed.config.rules.trading_end, 960);
+  EXPECT_EQ(parsed.config.rules.scaling, (std::vector<trading::ScalingStep>{{Money{}, 2}}));
+  auto timed = rules; timed["time_limit_days"] = 30;
+  EXPECT_THROW((void)parse(timed), trading::TradingError);
   for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
       {"days", 0}, {"days", 367}, {"payouts", -1}, {"profit_percent", 101}, {"increase_percent", 0},
       {"max_balance", "9999"}, {"days", 1.5}, {"payouts", "0"}, {"max_balance", 20000}, {"unknown", 1}}) {
