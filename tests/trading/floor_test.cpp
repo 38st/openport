@@ -191,7 +191,7 @@ TEST(TradingFloor, AnotherLatchStillCancelsTheOrderFinishingAtTradeLimit) {
 }
 
 TEST(TradingFloor, StandaloneStopsTrailingAndOcoStopsStartCooldownOnFill) {
-  for (const auto kind : {"option", "underlying", "limit", "trailing", "oco", "target"}) {
+  for (const auto kind : {"option", "underlying", "limit", "trailing", "trailing-up", "oco", "target"}) {
     SCOPED_TRACE(kind);
     ScriptedMarket f; auto c = config(); c.guardrails.cooldown_minutes = 5;
     // Stops start it even if the optional loss threshold is not reached.
@@ -204,6 +204,10 @@ TEST(TradingFloor, StandaloneStopsTrailingAndOcoStopsStartCooldownOnFill) {
     if (type == "underlying") close.trigger = Trigger{TriggerSource::Underlying, TriggerDirection::AtOrBelow, m("4990")};
     if (type == "limit") { close.type = OrderType::Limit; close.tif = TimeInForce::Gtc; close.limit_price = m("3.80"); }
     if (type == "trailing") close.trigger->trail = Trail{TrailUnit::Amount, m("0.10")};
+    if (type == "trailing-up") {
+      close.trigger = Trigger{TriggerSource::Option, TriggerDirection::AtOrAbove, m("5")};
+      close.trigger->trail = Trail{TrailUnit::Amount, m("0.10")};
+    }
     if (type == "oco" || type == "target") {
       close.type = OrderType::Limit; close.tif = TimeInForce::Gtc; close.limit_price = m("5"); close.trigger.reset(); close.exits_only = true;
       close.bracket = Bracket{ExitSpec{Trigger{TriggerSource::Option, TriggerDirection::AtOrBelow, m("3.90")}, {}},
@@ -217,9 +221,96 @@ TEST(TradingFloor, StandaloneStopsTrailingAndOcoStopsStartCooldownOnFill) {
       EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0) << "triggering without a fill starts no cooldown";
     }
     f.next(); auto v = f.valuation(); if (type == "underlying") v.spot = 4980;
-    s.on_quotes({f.quote(type == "target" ? "5" : "3.80", type == "target" ? "5.20" : "4")}, {v}, f.time);
+    const bool higher = type == "target" || type == "trailing-up";
+    s.on_quotes({f.quote(higher ? "5" : "3.80", higher ? "5.20" : "4")}, {v}, f.time);
     EXPECT_TRUE(s.snapshot()->positions.empty());
     EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, type == "target" ? 0 : f.time + 5 * md::kNanosPerMinute);
+  }
+}
+
+TEST(TradingFloor, OwnPriceTriggeredClosesStartCooldownOnlyInTheAdverseDirection) {
+  for (const auto side : {Side::Buy, Side::Sell}) for (const bool stop : {false, true}) {
+    SCOPED_TRACE(side == Side::Buy ? "long" : "short");
+    SCOPED_TRACE(stop);
+    ScriptedMarket f; auto c = config(); c.rules.buying_power = false;
+    c.guardrails.cooldown_minutes = 5; c.guardrails.cooldown_loss = m("10000");
+    TradingSession s(c, f.time); f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("entry", 1, side), f.time).decision.ok());
+    const bool below = stop == (side == Side::Buy);
+    auto close = f.market("close", 1, side == Side::Buy ? Side::Sell : Side::Buy);
+    close.trigger = Trigger{TriggerSource::Option, below ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove,
+                            m(below ? "3.80" : "5")};
+    ASSERT_TRUE(s.submit(close, f.time).decision.ok());
+    ASSERT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Armed);
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0);
+    update(s, f, below ? "3.60" : "5", below ? "3.80" : "5.20");
+    ASSERT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_EQ(s.snapshot()->recent_orders.back().triggered_at, f.time);
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, stop ? f.time + 5 * md::kNanosPerMinute : 0);
+    EXPECT_EQ(s.submit(f.market("again"), f.time).decision.code, stop ? Reason::COOLDOWN : Reason::NONE);
+  }
+}
+
+TEST(TradingFloor, UnderlyingTriggeredClosesUseTheHeldOptionsDirectionForCooldown) {
+  for (const auto type : {pricing::OptionType::Call, pricing::OptionType::Put})
+    for (const auto side : {Side::Buy, Side::Sell}) for (const bool stop : {false, true}) {
+      SCOPED_TRACE(type == pricing::OptionType::Call ? "call" : "put");
+      SCOPED_TRACE(side == Side::Buy ? "long" : "short");
+      SCOPED_TRACE(stop);
+      ScriptedMarket f; f.contract.type = type;
+      auto c = config(); c.rules.buying_power = false;
+      c.guardrails.cooldown_minutes = 5; c.guardrails.cooldown_loss = m("10000");
+      TradingSession s(c, f.time); s.define(f.contract, f.time);
+      auto v = f.valuation(type == pricing::OptionType::Call ? 0.5 : -0.5);
+      s.on_quotes({f.quote()}, {v}, f.time);
+      ASSERT_TRUE(s.submit(f.market("entry", 1, side), f.time).decision.ok());
+      // Long calls and short puts lose on a fall; long puts and short calls on a rise.
+      const bool loses_on_fall = (side == Side::Buy) == (type == pricing::OptionType::Call);
+      const bool below = stop == loses_on_fall;
+      auto close = f.market("close", 1, side == Side::Buy ? Side::Sell : Side::Buy);
+      close.trigger = Trigger{TriggerSource::Underlying, below ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove,
+                              m(below ? "4990" : "5010")};
+      ASSERT_TRUE(s.submit(close, f.time).decision.ok());
+      ASSERT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Armed);
+      EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0);
+      f.next(); v.time = f.time; v.spot = below ? 4990 : 5010;
+      const bool cheaper = stop == (side == Side::Buy);
+      s.on_quotes({f.quote(cheaper ? "3.60" : "5", cheaper ? "3.80" : "5.20")}, {v}, f.time);
+      ASSERT_TRUE(s.snapshot()->positions.empty());
+      EXPECT_EQ(s.snapshot()->recent_orders.back().triggered_at, f.time);
+      EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, stop ? f.time + 5 * md::kNanosPerMinute : 0);
+      EXPECT_EQ(s.submit(f.market("again"), f.time).decision.code, stop ? Reason::COOLDOWN : Reason::NONE);
+    }
+}
+
+TEST(TradingFloor, ComboTriggeredClosesStartCooldownOnlyInTheAdverseDirection) {
+  for (const auto source : {TriggerSource::Combo, TriggerSource::Underlying}) for (const bool stop : {false, true}) {
+    SCOPED_TRACE(source == TriggerSource::Combo ? "combo" : "underlying");
+    SCOPED_TRACE(stop);
+    ScriptedMarket a, b; b.contract.strike += 10;
+    auto c = config(); c.guardrails.cooldown_minutes = 5; c.guardrails.cooldown_loss = m("10000");
+    TradingSession s(c, a.time);
+    s.define(a.contract, a.time); s.define(b.contract, b.time);
+    s.on_quotes({a.quote("5", "5.20"), b.quote()}, {a.valuation(0.6), b.valuation(0.4)}, a.time);
+    auto entry = a.market("entry"); entry.symbol.clear();
+    entry.legs = {{a.symbol(), Side::Buy, 1}, {b.symbol(), Side::Sell, 1}};
+    ASSERT_TRUE(s.submit(entry, a.time).decision.ok());
+    auto close = a.market("close"); close.symbol.clear();
+    close.legs = {{a.symbol(), Side::Sell, 1}, {b.symbol(), Side::Buy, 1}};
+    // Combos read their signed closing debit: a rise loses even when the debit is negative.
+    const bool below = source == TriggerSource::Combo ? !stop : stop;
+    close.trigger = Trigger{source, below ? TriggerDirection::AtOrBelow : TriggerDirection::AtOrAbove,
+                            m(source == TriggerSource::Combo ? (stop ? "-0.20" : "-1.80") : (stop ? "4990" : "5010"))};
+    ASSERT_TRUE(s.submit(close, a.time).decision.ok());
+    ASSERT_EQ(s.snapshot()->recent_orders.back().status, OrderStatus::Armed);
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, 0);
+    a.next(); b.next(); auto av = a.valuation(0.6), bv = b.valuation(0.4);
+    av.spot = bv.spot = stop ? 4990 : 5010;
+    s.on_quotes({a.quote(stop ? "4.40" : "6", stop ? "4.60" : "6.20"), b.quote()}, {av, bv}, a.time);
+    ASSERT_TRUE(s.snapshot()->positions.empty());
+    EXPECT_EQ(s.snapshot()->recent_orders.back().triggered_at, a.time);
+    EXPECT_EQ(s.snapshot()->guardrails.cooldown_until, stop ? a.time + 5 * md::kNanosPerMinute : 0);
+    EXPECT_EQ(s.submit(a.market("again"), a.time).decision.code, stop ? Reason::COOLDOWN : Reason::NONE);
   }
 }
 

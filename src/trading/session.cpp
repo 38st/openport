@@ -1290,6 +1290,29 @@ void begin_cooldown(State& s, Events& events) {
   event(events, "guardrail_latched", Json{{"reason", Reason::COOLDOWN}, {"until", s.guardrails.cooldown_until}});
   latch_guardrail(s, Reason::COOLDOWN, events);
 }
+/// A triggered close is a stop only when the watched move hurts the held position.
+bool closing_stop(const State& s, const Order& order) {
+  if (order.role == OrderRole::StopLoss) return true;
+  if (order.role == OrderRole::TakeProfit || order.triggered_at <= 0 || !order.request.trigger) return false;
+  const auto& trigger = *order.request.trigger;
+  if (trigger.trail) return true;
+  const bool below = trigger.direction == TriggerDirection::AtOrBelow;
+  if (trigger.source == TriggerSource::Option || trigger.source == TriggerSource::Combo)
+    return below == (order.request.side == Side::Sell);
+  if (trigger.source != TriggerSource::Underlying) return false;
+  if (!multi_leg(order.request)) {
+    const bool call = s.contracts.at(order.request.symbol).type == pricing::OptionType::Call;
+    return below == ((order.request.side == Side::Sell) == call);
+  }
+  // The held combo has the opposite delta to its closing legs.
+  double closing_delta = 0;
+  for (const auto& leg : order.request.legs) {
+    const auto* v = valuation_of(s, leg.symbol);
+    if (!v || v->time > s.time || s.time - v->time > s.config.limits.max_valuation_age) return false;
+    closing_delta += v->delta * static_cast<double>(leg.ratio) * (leg.side == Side::Buy ? 1 : -1);
+  }
+  return below ? closing_delta < 0 : closing_delta > 0;
+}
 void guardrail_fill(State& s, OrderId id, bool opening, Money realised_before, Events& events) {
   auto& order = s.orders.mut(static_cast<std::size_t>(id - 1));
   const auto& g = s.config.guardrails;
@@ -1301,10 +1324,7 @@ void guardrail_fill(State& s, OrderId id, bool opening, Money realised_before, E
       s.guardrails.trade_limit_order = id;
   }
   if (s.guardrails.trade_limit_order == id && !order.open()) s.guardrails.trade_limit_order = 0;
-  const bool stopped = !opening && !order.system && (order.role == OrderRole::StopLoss ||
-      (order.role != OrderRole::TakeProfit && order.triggered_at > 0 && order.request.trigger &&
-       (order.request.trigger->source == TriggerSource::Option || order.request.trigger->source == TriggerSource::Underlying ||
-        order.request.trigger->source == TriggerSource::Combo)));
+  const bool stopped = !opening && !order.system && closing_stop(s, order);
   if (g.max_opening_trades > 0 && s.guardrails.opening_trades >= g.max_opening_trades)
     latch_guardrail(s, Reason::TRADE_LIMIT, events);
   if (stopped ||
