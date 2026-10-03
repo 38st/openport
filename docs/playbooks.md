@@ -413,3 +413,24 @@ journal. The response's `directory` resolves its relative journal paths. Saved
 reports remain readable after restart; unfinished runs are marked `interrupted`
 and do not resume automatically. The terminal shows saved reports and progress
 without switching the active trading account.
+
+## Practising strategies with shares
+
+The terminal's chain and Positions pages offer **Trade shares** for stocks and ETFs.
+Its preview shows cash cost, buying power and dollar delta from the account's margin
+model. Shares trade only during the stock regular session, including early closes.
+
+The chain's **Strategy → Templates** menu offers **Covered call** and **Collar**.
+Choose listed strikes and contracts, buy 100 shares per contract, then review and
+send the call (or the collar's long put and short call). These are two separate
+orders, not atomic: the shares remain if the option order fails or fills partly.
+Closing the dialog also keeps any purchased shares. Existing shares are not deducted
+from the purchase; use the ordinary option ticket to write against shares already
+held. The option step uses market IOC; inspect its fill result and any remaining
+shares. Buy-only and defined-risk plans refuse these shortcuts: the latter keeps
+its rule requiring long calls behind short calls even though shares cover them for
+margin. A collar's long put costs its premium, without extra strategy margin.
+
+Playbook definitions and automatic stages remain option orders; share purchases
+are manual terminal/API trades. Python `trade_stock` and `preview_stock` and the
+matching MCP tools support live named accounts and replay.

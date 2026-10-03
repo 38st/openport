@@ -7,6 +7,7 @@ import { matchingPayload } from "../lib/payload"
 import { netQuote, templateTag, type StrategyTemplate, type TemplateSetup, type TemplateTarget } from "../lib/strategy"
 import { loadStrategyPresets, saveStrategyPresets } from "../lib/strategy-presets"
 import { Dialog } from "./Dialog"
+import { deliversShares } from "../lib/trading"
 import { netText } from "./StrategyTicket"
 
 const kinds: { value: StrategyTemplate["kind"]; label: string }[] = [
@@ -32,8 +33,9 @@ function initial(kind: StrategyTemplate["kind"], farExpiry: string): StrategyTem
 }
 
 /** Parameters select listed contracts; the existing ticket remains the order review and submission step. */
-export function StrategyTemplates({ near, expiries, onApply, onClose }: {
+export function StrategyTemplates({ near, expiries, onApply, onClose, onStockStrategy }: {
   near: Chain; expiries: readonly Expiry[]; onApply: (setup: TemplateSetup) => void; onClose: () => void
+  onStockStrategy?: (kind: "covered-call" | "collar") => void
 }) {
   const live = useLive()
   const version = live.version(near.symbol)
@@ -69,6 +71,13 @@ export function StrategyTemplates({ near, expiries, onApply, onClose }: {
   }
   return <Dialog title="Strategy templates" onClose={onClose}>
     <div className="space-y-4">
+      {onStockStrategy && deliversShares(near.symbol) && <section aria-label="Strategies with shares" className="space-y-2">
+        <p className="text-xs text-muted">Buy 100 shares per contract, then send the options as a separate order. These two steps are not atomic.</p>
+        <div className="flex gap-2">
+          <button type="button" className="trade-button" onClick={() => onStockStrategy("covered-call")}>Covered call</button>
+          <button type="button" className="trade-button" onClick={() => onStockStrategy("collar")}>Collar</button>
+        </div>
+      </section>}
       {live.source === "replay" && live.replay?.demo && <p className="text-xs text-warn">Demo market · simulated prices</p>}
       <p className="text-xs text-muted">{near.symbol} · Near expiry {near.expiry.expiry} {near.expiry.settlement}. Strikes snap to the loaded chain. Review the resulting widths and prices before sending.</p>
       {presets.length > 0 && <label className="trade-label">Saved preset
