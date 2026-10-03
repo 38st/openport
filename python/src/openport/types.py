@@ -197,6 +197,17 @@ class AccountRules(TypedDict, total=False):
     max_drawdown: str | None
     drawdown_mode: str
     lock_balance: str | None
+    lock_at_start: bool
+    profit_basis: str
+    daily_loss_limit: str | None
+    daily_loss_basis: str
+    daily_loss_action: str
+    consistency_percent: int
+    consistency_basis: str
+    min_trading_days: int
+    min_profitable_days: int
+    profitable_day_profit: str | None
+    day_end: str
     buy_only: bool
     defined_risk: bool
     max_contracts_held: int
@@ -208,6 +219,9 @@ class AccountRules(TypedDict, total=False):
     impact_ticks: int
     inside_fill_percent: int
     margin: str
+    account_type: str
+    house_margin_percent: int
+    pm_vol_shock: int
     buying_power: bool
     expiry_cutoff_seconds: int
     payouts: PayoutRules | None
@@ -231,11 +245,69 @@ class AccountStorage(TypedDict, total=False):
     journal_size: JournalSize
 
 
+class EvaluationProgress(TypedDict, total=False):
+    day_low_equity: str | None
+    day_high_equity: str | None
+    day_low_at: str | None
+    day_high_at: str | None
+    closest_floor: str | None
+    closest_floor_at: str | None
+    decision_code: str | None
+    balance: str
+    profit_basis: str
+    objectives: list[JSON]
+    trading_days: int | None
+    profitable_days: int
+    best_day: JSON | None
+    consistency_target: str | None
+    daily_loss: JSON | None
+    day_lock: str | None
+    day_locked_at: str | None
+    exit_equity: str
+    exit_cost: str
+    liquidated_equity: str | None
+    liquidation_cost: str | None
+    time_limit_days: int | None
+    deadline: str | None
+    days_left: int | None
+    last_activity: str | None
+    inactive_days: int | None
+    inactivity_deadline: str | None
+
+
+class Evaluation(EvaluationProgress):
+    enabled: bool
+    attempt: int
+    status: str
+    started: str
+    starting_balance: str
+    equity: str
+    marked: bool
+    valuation_complete: bool
+    profit: str
+    peak: str
+    floor: str | None
+    drawdown_buffer: str | None
+    target_equity: str | None
+    target_remaining: str | None
+    decided_at: str | None
+    decided_equity: str | None
+    decision: str | None
+    day: str
+    day_open_equity: str
+    day_close_equity: str
+    days: list[JSON]
+    floor_locked: bool
+    qualifying_days: int
+    cycle_started: str
+    payouts: list[JSON]
+
+
 class Account(AccountStorage):
     account_version: str
     time: str
     rules: AccountRules
-    evaluation: JSON
+    evaluation: Evaluation
     payout: PayoutStatus | None
 
 

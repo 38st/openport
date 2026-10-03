@@ -815,6 +815,16 @@
           },
           "default": {
             "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start or trading_end: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -1502,6 +1512,16 @@
           },
           "default": {
             "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "description": "Invalid time_limit_days, inactivity_days, underlyings, trading_start or trading_end: INVALID_RULES with a field-specific message. Other trading refusals also use this status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "requestBody": {
@@ -8950,7 +8970,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+                "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
               },
               {
                 "type": "null"
@@ -8983,6 +9003,71 @@
           "expiry_cutoff_seconds",
           "payouts",
           "plan_id"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "trading_start"
+              ],
+              "properties": {
+                "trading_start": {
+                  "type": "string"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "trading_end"
+              ],
+              "properties": {
+                "trading_end": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "trading_end"
+              ],
+              "properties": {
+                "trading_end": {
+                  "type": "string"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "trading_start"
+              ],
+              "properties": {
+                "trading_start": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "phase"
+              ],
+              "properties": {
+                "phase": {
+                  "const": "funded"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "time_limit_days": {
+                  "const": 0
+                }
+              }
+            }
+          }
         ]
       },
       "BuyingPower": {
@@ -9665,7 +9750,7 @@
                 "type": "null"
               }
             ],
-            "description": "What decided the attempt: PROFIT_TARGET, DRAWDOWN_FLOOR or DAILY_LOSS_LIMIT; null while active."
+            "description": "What decided the attempt: PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, TIME_LIMIT or INACTIVITY; null while active."
           },
           "balance": {
             "$ref": "#/components/schemas/Money",
@@ -9889,7 +9974,9 @@
           "time_limit_days": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 366
               },
               {
                 "type": "null"
@@ -9900,7 +9987,8 @@
           "deadline": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "format": "date"
               },
               {
                 "type": "null"
@@ -9911,7 +9999,8 @@
           "days_left": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 0
               },
               {
                 "type": "null"
@@ -9922,7 +10011,8 @@
           "last_activity": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "format": "date-time"
               },
               {
                 "type": "null"
@@ -9933,7 +10023,8 @@
           "inactive_days": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 0
               },
               {
                 "type": "null"
@@ -9944,7 +10035,8 @@
           "inactivity_deadline": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "format": "date"
               },
               {
                 "type": "null"
@@ -17465,10 +17557,21 @@
                         "$ref": "#/components/schemas/Money"
                       },
                       "drawdown_mode": {
-                        "enum": [
-                          "intraday",
-                          "end_of_day"
-                        ]
+                        "anyOf": [
+                          {
+                            "const": "intraday",
+                            "type": "string"
+                          },
+                          {
+                            "const": "end_of_day",
+                            "type": "string"
+                          },
+                          {
+                            "const": "static",
+                            "type": "string"
+                          }
+                        ],
+                        "description": "intraday: the floor trails every equity high; end_of_day: it trails each day's close at rollover; static: it stays at the starting balance less max_drawdown."
                       },
                       "buy_only": {
                         "type": "boolean"
@@ -17543,7 +17646,7 @@
                         "anyOf": [
                           {
                             "type": "string",
-                            "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+                            "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
                           },
                           {
                             "type": "null"
@@ -17562,11 +17665,248 @@
                           }
                         ],
                         "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
+                      },
+                      "phase": {
+                        "anyOf": [
+                          {
+                            "const": "evaluation",
+                            "type": "string"
+                          },
+                          {
+                            "const": "funded",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "payouts": {
+                        "anyOf": [
+                          {
+                            "$ref": "#/components/schemas/PayoutRules"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "lock_at_start": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "The trailing floor locks at the attempt's starting balance (not with lock_balance or a static floor)."
+                      },
+                      "profit_basis": {
+                        "anyOf": [
+                          {
+                            "const": "equity",
+                            "type": "string"
+                          },
+                          {
+                            "const": "balance",
+                            "type": "string"
+                          }
+                        ],
+                        "description": "What counts as profit for the target, consistency and profitable days: marked equity, or the closed balance (cash plus the positions' cost). A balance target also needs every position closed. Default equity."
+                      },
+                      "daily_loss_basis": {
+                        "anyOf": [
+                          {
+                            "const": "equity",
+                            "type": "string"
+                          },
+                          {
+                            "const": "balance",
+                            "type": "string"
+                          },
+                          {
+                            "const": "higher",
+                            "type": "string"
+                          },
+                          {
+                            "const": "peak",
+                            "type": "string"
+                          }
+                        ],
+                        "description": "What the daily loss limit is measured from: the day's opening equity (default), its opening closed balance, the higher of the two, or the day's equity high."
+                      },
+                      "daily_loss_action": {
+                        "anyOf": [
+                          {
+                            "const": "lock",
+                            "type": "string"
+                          },
+                          {
+                            "const": "fail",
+                            "type": "string"
+                          }
+                        ],
+                        "description": "lock (default): close every position and refuse opening orders until the next trading day; fail: fail the attempt."
+                      },
+                      "consistency_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "default": 0,
+                        "description": "A pass needs the best day's profit at most this percent of consistency_basis; 0 disables."
+                      },
+                      "consistency_basis": {
+                        "anyOf": [
+                          {
+                            "const": "total",
+                            "type": "string"
+                          },
+                          {
+                            "const": "positive_days",
+                            "type": "string"
+                          }
+                        ],
+                        "description": "What the best day is compared with: the attempt's total profit (default) or the sum of its profitable days."
+                      },
+                      "min_trading_days": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 366,
+                        "default": 0,
+                        "description": "A pass needs this many days with an execution of the trader's own orders."
+                      },
+                      "min_profitable_days": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 366,
+                        "default": 0,
+                        "description": "A pass needs this many days whose profit reaches profitable_day_profit."
+                      },
+                      "account_type": {
+                        "anyOf": [
+                          {
+                            "const": "margin",
+                            "type": "string"
+                          },
+                          {
+                            "const": "cash",
+                            "type": "string"
+                          },
+                          {
+                            "const": "ira",
+                            "type": "string"
+                          }
+                        ],
+                        "description": "margin (default): anything its margin allows. cash: calls sold only against 100 shares each, short puts secured with their strike, no spreads netted, no short sales. ira: as cash, but spreads net and a long call covers a short one. Cash and IRA accounts use strategy margin and enforce buying power."
+                      },
+                      "house_margin_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 400,
+                        "default": 0,
+                        "description": "A broker's house margin, in percent on top of Reg T's naked requirement and a short sale's margin (strategy), or of each underlying's scan (portfolio)."
+                      },
+                      "pm_vol_shock": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 50,
+                        "default": 0,
+                        "description": "Portfolio margin also scans implied volatility this many points up and down."
+                      },
+                      "fill_latency_ms": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 60000,
+                        "default": 0,
+                        "description": "Wait for a valid quote at or after acceptance (trigger time for stops) plus this market-time delay."
+                      },
+                      "impact_ticks": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10,
+                        "default": 0,
+                        "description": "Simulated adverse ticks per extra displayed-size block; zero retains displayed-size caps."
+                      },
+                      "inside_fill_percent": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "default": 0,
+                        "description": "Off at zero (omitted in responses and journals). A limit strictly inside a spread fills at its limit when this percent of the way from own side to far side. Net combos allocate improvement by leg spread. Displayed size only; latency applies, slippage and impact do not worsen an inside fill. Markets and stops are unchanged."
+                      },
+                      "daily_loss_limit": {
+                        "$ref": "#/components/schemas/Money"
+                      },
+                      "profitable_day_profit": {
+                        "$ref": "#/components/schemas/Money"
+                      },
+                      "day_end_minutes": {
+                        "type": "integer",
+                        "minimum": 975,
+                        "maximum": 1440,
+                        "description": "Plan day boundary in New York minutes, 16:15 through 24:00."
                       }
                     },
                     "required": [],
                     "additionalProperties": false,
-                    "description": "Unspecified rules use AccountRules defaults; expiry_cutoff is nanoseconds. Custom funded rules accept phase: funded and payouts (decimal money, consistency_percents and buffer_payouts integers). Funded backtests do not withdraw automatically; funded preset IDs remain refused."
+                    "description": "Unspecified rules use AccountRules defaults; expiry_cutoff is nanoseconds. Custom funded rules accept phase: funded and payouts (decimal money, consistency_percents and buffer_payouts integers). Funded backtests do not withdraw automatically; funded preset IDs remain refused.",
+                    "allOf": [
+                      {
+                        "if": {
+                          "required": [
+                            "trading_start"
+                          ],
+                          "properties": {
+                            "trading_start": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "trading_end"
+                          ],
+                          "properties": {
+                            "trading_end": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "required": [
+                            "trading_end"
+                          ],
+                          "properties": {
+                            "trading_end": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "trading_start"
+                          ],
+                          "properties": {
+                            "trading_start": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "if": {
+                          "required": [
+                            "phase"
+                          ],
+                          "properties": {
+                            "phase": {
+                              "const": "funded"
+                            }
+                          }
+                        },
+                        "then": {
+                          "properties": {
+                            "time_limit_days": {
+                              "const": 0
+                            }
+                          }
+                        }
+                      }
+                    ]
                   },
                   "fee_per_contract": {
                     "$ref": "#/components/schemas/Money"
@@ -19603,8 +19943,13 @@
               {
                 "const": "end_of_day",
                 "type": "string"
+              },
+              {
+                "const": "static",
+                "type": "string"
               }
-            ]
+            ],
+            "description": "intraday: the floor trails every equity high; end_of_day: it trails each day's close at rollover; static: it stays at the starting balance less max_drawdown."
           },
           "lock_balance": {
             "anyOf": [
@@ -19755,7 +20100,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "pattern": "^(?:(?:[01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+                "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
               },
               {
                 "type": "null"
@@ -19774,6 +20119,151 @@
               }
             ],
             "description": "HH:MM New York; both hours set, start before end, or both null. Start inclusive, end exclusive; reducing orders exempt."
+          },
+          "account_type": {
+            "anyOf": [
+              {
+                "const": "margin",
+                "type": "string"
+              },
+              {
+                "const": "cash",
+                "type": "string"
+              },
+              {
+                "const": "ira",
+                "type": "string"
+              }
+            ],
+            "description": "margin (default): anything its margin allows. cash: calls sold only against 100 shares each, short puts secured with their strike, no spreads netted, no short sales. ira: as cash, but spreads net and a long call covers a short one. Cash and IRA accounts use strategy margin and enforce buying power."
+          },
+          "house_margin_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 400,
+            "default": 0,
+            "description": "A broker's house margin, in percent on top of Reg T's naked requirement and a short sale's margin (strategy), or of each underlying's scan (portfolio)."
+          },
+          "pm_vol_shock": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 50,
+            "default": 0,
+            "description": "Portfolio margin also scans implied volatility this many points up and down."
+          },
+          "lock_at_start": {
+            "type": "boolean",
+            "default": false,
+            "description": "The trailing floor locks at the attempt's starting balance (not with lock_balance or a static floor)."
+          },
+          "profit_basis": {
+            "anyOf": [
+              {
+                "const": "equity",
+                "type": "string"
+              },
+              {
+                "const": "balance",
+                "type": "string"
+              }
+            ],
+            "description": "What counts as profit for the target, consistency and profitable days: marked equity, or the closed balance (cash plus the positions' cost). A balance target also needs every position closed. Default equity."
+          },
+          "daily_loss_limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Plan daily loss limit in dollars below daily_loss_basis; null or absent disables. Touching it locks the day or fails the attempt (daily_loss_action)."
+          },
+          "daily_loss_basis": {
+            "anyOf": [
+              {
+                "const": "equity",
+                "type": "string"
+              },
+              {
+                "const": "balance",
+                "type": "string"
+              },
+              {
+                "const": "higher",
+                "type": "string"
+              },
+              {
+                "const": "peak",
+                "type": "string"
+              }
+            ],
+            "description": "What the daily loss limit is measured from: the day's opening equity (default), its opening closed balance, the higher of the two, or the day's equity high."
+          },
+          "daily_loss_action": {
+            "anyOf": [
+              {
+                "const": "lock",
+                "type": "string"
+              },
+              {
+                "const": "fail",
+                "type": "string"
+              }
+            ],
+            "description": "lock (default): close every position and refuse opening orders until the next trading day; fail: fail the attempt."
+          },
+          "consistency_percent": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "default": 0,
+            "description": "A pass needs the best day's profit at most this percent of consistency_basis; 0 disables."
+          },
+          "consistency_basis": {
+            "anyOf": [
+              {
+                "const": "total",
+                "type": "string"
+              },
+              {
+                "const": "positive_days",
+                "type": "string"
+              }
+            ],
+            "description": "What the best day is compared with: the attempt's total profit (default) or the sum of its profitable days."
+          },
+          "min_trading_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 366,
+            "default": 0,
+            "description": "A pass needs this many days with an execution of the trader's own orders."
+          },
+          "min_profitable_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 366,
+            "default": 0,
+            "description": "A pass needs this many days whose profit reaches profitable_day_profit."
+          },
+          "profitable_day_profit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The profit a day needs to count as profitable; null counts any day above zero."
+          },
+          "day_end": {
+            "type": "string",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$|^24:00$",
+            "default": "17:00",
+            "description": "New York time the plan's trading day ends, 16:15 to 24:00. It decides which day a moment counts toward: rollover, daily loss, the end-of-day floor and the day counts."
           }
         },
         "required": [
@@ -19784,7 +20274,72 @@
           "buying_power",
           "expiry_cutoff_seconds"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "trading_start"
+              ],
+              "properties": {
+                "trading_start": {
+                  "type": "string"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "trading_end"
+              ],
+              "properties": {
+                "trading_end": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "trading_end"
+              ],
+              "properties": {
+                "trading_end": {
+                  "type": "string"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "trading_start"
+              ],
+              "properties": {
+                "trading_start": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "phase"
+              ],
+              "properties": {
+                "phase": {
+                  "const": "funded"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "time_limit_days": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        ]
       },
       "Lifetime": {
         "type": "object",
