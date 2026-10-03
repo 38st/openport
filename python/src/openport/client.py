@@ -370,6 +370,10 @@ class Client:
     def step_replay(self, until: str) -> ReplayResult:
         return self.control_replay(until=until)
 
+    def abort_replay(self) -> ReplayResult:
+        """Pause at the next settled batch, interrupting a running step."""
+        return self.control_replay(abort=True)
+
     def stop_replay(self) -> ReplayResult:
         return self._request("DELETE", "/replay", control=True)
 

@@ -308,6 +308,10 @@ and account before enabling trading. Replay ticks expose `fast_forwarding` and
 `paused: true` pauses after preparing that state; without a time it prepares the
 opening receipt group. Trading while paused is allowed. EOF makes the run read-only.
 
+Relative steps (`until:"+15s"`, `"+1m"`, `"+1h"`) and `until:"next"` make repeatable
+small advances. Abort, pause and stop interrupt a long step after its current batch
+settles. A paused skip is queued visibly as `skip_pending`; `skip:false` cancels it.
+
 ## Saved runs
 
 When paper trading and writes are enabled, every run gets a `FileJournal` in
