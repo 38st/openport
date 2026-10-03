@@ -2553,7 +2553,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   // These presets leave the later evaluation rules off.
   const auto off = [](json rules) {
     rules["plan_id"] = server::find_plan_named(rules.at("plan").get<std::string>())->id;
-    rules.update({{"trade_consistency_percent", 0}, {"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
+    rules.update({{"min_trades", 0}, {"trade_consistency_percent", 0}, {"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
                   {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
@@ -4701,11 +4701,13 @@ TEST(PaperStocks, FlatTimeRejectsOpeningPreviewsWith422) {
 TEST_F(PaperEngine, TradeConsistencyCustomRulesRoundTrip) {
   seed();
   auto rules = read(*engine, "/api/account")["rules"];
-  rules["plan"] = "Trade consistency"; rules["trade_consistency_percent"] = 40;
+  rules["plan"] = "Trade consistency"; rules["trade_consistency_percent"] = 40; rules["min_trades"] = 2;
   const auto reset = [&](const json& r) { return write(*engine, "POST", "/api/account/reset",
       {{"reason", "F29"}, {"initial_cash", "100000"}, {"rules", r}}); };
   ASSERT_EQ(reset(rules).status, 200);
   const auto account = read(*engine, "/api/account");
+  EXPECT_EQ(account["rules"]["min_trades"], 2);
+  EXPECT_EQ(account["evaluation"]["closed_trades"], 0);
   EXPECT_EQ(account["rules"]["trade_consistency_percent"], 40);
   EXPECT_EQ(account["evaluation"]["best_trade"], nullptr);
   EXPECT_EQ(account["evaluation"]["objectives"].back()["code"], "TRADE_CONSISTENCY");

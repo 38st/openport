@@ -769,14 +769,15 @@ TEST(Backtest, CustomStopAndRiskRules) {
     return server::parse_backtest({{"playbook", "batch"}, {"plan", {{"initial_cash", "10000"}, {"rules", rules}}},
                                   {"days", {{{"file", file.string()}}}}}, catalogue(), {}, {}, false);
   };
-  const json rules{{"profit_target", "100"}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 10}, {"trade_consistency_percent", 40}};
+  const json rules{{"profit_target", "100"}, {"require_stop_loss", true}, {"max_trade_risk", "123.456789"}, {"max_trade_risk_percent", 10}, {"trade_consistency_percent", 40}, {"min_trades", 12}};
   const auto result = parse(rules);
   EXPECT_TRUE(result.config.rules.require_stop_loss);
   EXPECT_EQ(result.config.rules.max_trade_risk, Money::parse("123.456789"));
   EXPECT_EQ(result.config.rules.max_trade_risk_percent, 10);
   EXPECT_EQ(result.config.rules.trade_consistency_percent, 40);
+  EXPECT_EQ(result.config.rules.min_trades, 12);
   for (const auto& [key, value] : std::vector<std::pair<std::string, json>>{
-      {"trade_consistency_percent", 101}, {"trade_consistency_percent", 1.5},
+      {"min_trades", 10001}, {"min_trades", 1.5}, {"trade_consistency_percent", 101}, {"trade_consistency_percent", 1.5},
       {"max_trade_risk", "-1"}, {"max_trade_risk", 100}, {"max_trade_risk_percent", 101},
       {"max_trade_risk_percent", 1.5}, {"require_stop_loss", 1}}) {
     auto invalid = rules; invalid[key] = value;

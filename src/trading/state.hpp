@@ -304,7 +304,7 @@ inline Json optional_rule_defaults() {
   return Json{{"fill_latency_ms", d.fill_latency_ms}, {"impact_ticks", d.impact_ticks}, {"lock_at_start", d.lock_at_start},
               {"profit_basis", d.profit_basis}, {"daily_loss_limit", d.daily_loss_limit},
               {"daily_loss_basis", d.daily_loss_basis}, {"daily_loss_action", d.daily_loss_action},
-              {"trade_consistency_percent", d.trade_consistency_percent}, {"consistency_percent", d.consistency_percent}, {"consistency_basis", d.consistency_basis},
+              {"min_trades", d.min_trades}, {"trade_consistency_percent", d.trade_consistency_percent}, {"consistency_percent", d.consistency_percent}, {"consistency_basis", d.consistency_basis},
               {"min_trading_days", d.min_trading_days}, {"min_profitable_days", d.min_profitable_days},
               {"profitable_day_profit", d.profitable_day_profit}, {"day_end_minutes", d.day_end_minutes},
               {"account_type", d.account_type}, {"house_margin_percent", d.house_margin_percent},
@@ -327,7 +327,7 @@ inline void to_json(Json& j, const AccountRules& r) {
   const Json all{{"fill_latency_ms", r.fill_latency_ms}, {"impact_ticks", r.impact_ticks}, {"lock_at_start", r.lock_at_start},
                  {"profit_basis", r.profit_basis}, {"daily_loss_limit", r.daily_loss_limit},
                  {"daily_loss_basis", r.daily_loss_basis}, {"daily_loss_action", r.daily_loss_action},
-                 {"trade_consistency_percent", r.trade_consistency_percent}, {"consistency_percent", r.consistency_percent}, {"consistency_basis", r.consistency_basis},
+                 {"min_trades", r.min_trades}, {"trade_consistency_percent", r.trade_consistency_percent}, {"consistency_percent", r.consistency_percent}, {"consistency_basis", r.consistency_basis},
                  {"min_trading_days", r.min_trading_days}, {"min_profitable_days", r.min_profitable_days},
                  {"profitable_day_profit", r.profitable_day_profit}, {"day_end_minutes", r.day_end_minutes},
                  {"account_type", r.account_type}, {"house_margin_percent", r.house_margin_percent},
@@ -360,7 +360,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   r.fill_latency_ms = j.value("fill_latency_ms", std::int64_t{0});
   r.impact_ticks = j.value("impact_ticks", std::int64_t{0});
   added_field(j, "inside_fill_percent", r.inside_fill_percent);
-  for (const auto* key : {"trade_consistency_percent", "consistency_percent", "min_trading_days", "min_profitable_days", "day_end_minutes",
+  for (const auto* key : {"min_trades", "trade_consistency_percent", "consistency_percent", "min_trading_days", "min_profitable_days", "day_end_minutes",
                           "house_margin_percent", "pm_vol_shock", "max_contracts_held", "max_trade_risk_percent",
                           "time_limit_days", "inactivity_days"})
     if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
@@ -368,6 +368,7 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "lock_at_start", r.lock_at_start); added_field(j, "profit_basis", r.profit_basis);
   added_field(j, "daily_loss_limit", r.daily_loss_limit); added_field(j, "daily_loss_basis", r.daily_loss_basis);
   added_field(j, "daily_loss_action", r.daily_loss_action);
+  added_field(j, "min_trades", r.min_trades);
   added_field(j, "trade_consistency_percent", r.trade_consistency_percent);
   added_field(j, "consistency_percent", r.consistency_percent); added_field(j, "consistency_basis", r.consistency_basis);
   added_field(j, "min_trading_days", r.min_trading_days); added_field(j, "min_profitable_days", r.min_profitable_days);
@@ -451,6 +452,7 @@ inline void to_json(Json& j, const Evaluation& e) {
   // The plan rules' own state appears only once they act, so other journals keep their bytes.
   if (!implied_code(e.status, e.decision_code)) j["decision_code"] = e.decision_code;
   if (e.day_lock != Reason::NONE) { j["day_lock"] = e.day_lock; j["day_locked_at"] = e.day_locked_at; }
+  if (e.closed_trades != 0) j["closed_trades"] = e.closed_trades;
   if (e.best_trade) j["best_trade"] = *e.best_trade;
   if (e.day_executions != 0) j["day_executions"] = e.day_executions;
   if (e.last_activity != 0) j["last_activity"] = e.last_activity;
@@ -474,6 +476,7 @@ inline void from_json(const Json& j, Evaluation& e) {
   added_field(j, "decision_code", e.decision_code);
   e.decision_code = decision_code_of(e.status, e.decision_code);
   added_field(j, "day_lock", e.day_lock); added_field(j, "day_locked_at", e.day_locked_at);
+  added_field(j, "closed_trades", e.closed_trades);
   added_field(j, "best_trade", e.best_trade);
   added_field(j, "day_executions", e.day_executions);
   added_field(j, "last_activity", e.last_activity);

@@ -514,3 +514,5 @@ special opening quotation; live providers keep manual imports.
       option/strategy/share tickets expose both rules.
 
 - [x] F29: per-trade consistency limits the best closed whole option trade to a percentage of attempt profit, with exact net P&L and pass-objective evidence.
+
+- [x] F30: minimum closed whole option trades to pass, including system and settlement closures.

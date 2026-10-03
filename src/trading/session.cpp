@@ -2920,7 +2920,7 @@ PlanInputs plan_inputs(const State& s, Money equity) {
 // Whole trades use the same grouping as the trade journal, so rolls count once.
 void refresh_trade_objectives(State& s) {
   const auto& rules = s.config.rules;
-  if (rules.phase != Phase::Evaluation || rules.trade_consistency_percent == 0) return;
+  if (rules.phase != Phase::Evaluation || (rules.trade_consistency_percent == 0 && rules.min_trades == 0)) return;
   auto& e = s.evaluation;
   struct Whole { Money pnl; bool closed = true; std::uint64_t first = 0; };
   std::map<std::string, Whole> trades;
@@ -2932,9 +2932,12 @@ void refresh_trade_objectives(State& s) {
     if (trade.first == 0 || life.first_fill < trade.first) trade.first = life.first_fill;
   }
   e.best_trade.reset();
+  e.closed_trades = 0;
   std::uint64_t best_first = 0;
   for (const auto& [id, trade] : trades) {
-    if (!trade.closed || trade.pnl <= Money{}) continue;
+    if (!trade.closed) continue;
+    if (rules.min_trades > 0) ++e.closed_trades;
+    if (rules.trade_consistency_percent == 0 || trade.pnl <= Money{}) continue;
     if (!e.best_trade || trade.pnl > e.best_trade->pnl ||
         (trade.pnl == e.best_trade->pnl && trade.first < best_first)) {
       e.best_trade = BestTrade{id, trade.pnl};

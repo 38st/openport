@@ -40,7 +40,7 @@ TEST(TradeRules, TradeConsistencyUsesExactProfitAndHoldsWithoutAProfitableTrade)
   AccountRules rules; rules.trade_consistency_percent = 50;
   Evaluation e; e.starting_balance = m("10000");
   PlanInputs now{m("10200"), m("10200"), m("200"), true};
-  EXPECT_FALSE(evaluation_objectives(e, rules, now).back().met);
+  EXPECT_TRUE(evaluation_objectives(e, rules, now).back().met);
   e.best_trade = BestTrade{"17", m("100")};
   auto objective = evaluation_objectives(e, rules, now).back();
   EXPECT_TRUE(objective.met);
@@ -60,7 +60,7 @@ TEST(TradeRules, TradeConsistencyUsesExactProfitAndHoldsWithoutAProfitableTrade)
 
 TEST(TradeRules, BestWholeTradeWaitsForEveryLegAndRecovers) {
   ScriptedMarket f, g; g.contract.strike += 5;
-  AccountRules rules; rules.trade_consistency_percent = 50; rules.profit_target = m("10000");
+  AccountRules rules; rules.trade_consistency_percent = 50; rules.min_trades = 2; rules.profit_target = m("10000");
   JournalFile file;
   {
     TradingSession s(config(rules), f.time, FileJournal::create(file.path));
@@ -71,6 +71,7 @@ TEST(TradeRules, BestWholeTradeWaitsForEveryLegAndRecovers) {
     f.next(); g.next(); f.seed(s, "5.00", "5.20"); g.seed(s, "5.00", "5.20");
     ASSERT_TRUE(s.submit(f.market("first-close", 1, Side::Sell), f.time).decision.ok());
     EXPECT_FALSE(s.snapshot()->evaluation.best_trade);
+    EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 0);
     ASSERT_TRUE(s.submit(g.market("last-close", 1, Side::Sell), g.time).decision.ok());
     ASSERT_TRUE(s.snapshot()->evaluation.best_trade);
     EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
@@ -81,8 +82,32 @@ TEST(TradeRules, BestWholeTradeWaitsForEveryLegAndRecovers) {
   EXPECT_EQ(s.snapshot()->evaluation.best_trade->id, "1");
   EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
   EXPECT_EQ(s.config().rules, rules);
+  EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 1);
   f.next(); f.seed(s);
   EXPECT_EQ(s.snapshot()->evaluation.best_trade->pnl, m("157.40"));
+}
+
+TEST(TradeRules, MinimumTradesCountsLossesAndFlattenOnceAndResets) {
+  ScriptedMarket f;
+  AccountRules rules; rules.min_trades = 2;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
+  ASSERT_TRUE(s.submit(f.market("partial", 1, Side::Sell), f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 0);
+  ASSERT_TRUE(s.close_positions({}, f.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->evaluation.closed_trades, 1);
+  EXPECT_FALSE(s.snapshot()->evaluation.best_trade);
+  auto objectives = evaluation_objectives(s.snapshot()->evaluation, rules, {});
+  EXPECT_FALSE(objectives.back().met);
+  ASSERT_TRUE(s.submit(f.market("again"), f.time).decision.ok());
+  ASSERT_TRUE(s.close_positions({}, f.time).decision.ok());
+  objectives = evaluation_objectives(s.snapshot()->evaluation, rules, {});
+  EXPECT_TRUE(objectives.back().met);
+  EXPECT_EQ(objectives.back().actual, 2);
+  EXPECT_EQ(objectives.back().required, 2);
+  rules.min_trades = 10001;
+  EXPECT_THROW(validate_rules(rules), TradingError);
 }
 
 TEST(TradeRules, RequiredStopsProtectEntriesAndCannotBeCancelledWhileHeld) {
@@ -362,7 +387,7 @@ TEST(TradeRules, DisabledRulesAreAbsentFromJournalBytes) {
   }
   const auto recovery = FileJournal::read(file.path);
   for (const auto& record : recovery.records)
-    for (const auto* field : {"trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
+    for (const auto* field : {"min_trades", "closed_trades", "trade_consistency_percent", "best_trade", "max_contracts_held", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent"})
       EXPECT_EQ(record.payload.find(field), std::string::npos);
   auto s = TradingSession::recover(recovery);
   EXPECT_EQ(s.config().rules.max_contracts_held, 0);

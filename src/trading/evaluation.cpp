@@ -106,8 +106,13 @@ std::vector<Objective> objectives_with(const Evaluation& e, const AccountRules& 
                      (balance ? " on the closed balance" : "");
     out.push_back(std::move(o));
   }
+  if (rules.phase == Phase::Evaluation && rules.min_trades > 0) {
+    out.push_back({Reason::MIN_TRADES, e.closed_trades >= static_cast<std::uint64_t>(rules.min_trades),
+                   static_cast<double>(e.closed_trades), static_cast<double>(rules.min_trades),
+                   std::to_string(e.closed_trades) + " of " + std::to_string(rules.min_trades) + " closed whole trades"});
+  }
   if (rules.phase == Phase::Evaluation && rules.trade_consistency_percent > 0) {
-    Objective o{Reason::TRADE_CONSISTENCY, false, std::nullopt, static_cast<double>(rules.trade_consistency_percent),
+    Objective o{Reason::TRADE_CONSISTENCY, true, std::nullopt, static_cast<double>(rules.trade_consistency_percent),
                 "No profitable closed whole trade yet"};
     if (profit > Money{}) o.actual = e.best_trade ? e.best_trade->pnl.dollars() / profit.dollars() * 100 : 0;
     if (e.best_trade) {

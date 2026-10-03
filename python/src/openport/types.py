@@ -253,6 +253,7 @@ class AccountRules(TypedDict, total=False):
     day_end: str
     buy_only: bool
     defined_risk: bool
+    min_trades: int
     trade_consistency_percent: int
     max_contracts_held: int
     require_stop_loss: bool

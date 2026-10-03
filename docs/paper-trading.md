@@ -1583,6 +1583,7 @@ side, no buying-power check. All rule money is exact.
 | `daily_loss_limit` | Dollars below `daily_loss_basis` that equity may not touch in one trading day (zero disables); see Plan objectives and the daily loss limit |
 | `daily_loss_basis` | `Equity` (default, the day's opening equity), `Balance` (its opening closed balance), `Higher` (the higher of the two) or `Peak` (the day's fully marked equity high, starting at its opening equity, so the limit trails the day's gains) |
 | `daily_loss_action` | `Lock` (default): close every position and refuse opening orders until the next trading day. `Fail`: fail the attempt |
+| `min_trades` | F30: minimum closed whole option trades to pass (0–10000; 0 disables); evaluation only |
 | `trade_consistency_percent` | F29: best profitable closed whole option trade, net of fees, at most this whole percent of attempt profit under `profit_basis` (1–100; 0 disables); evaluation only |
 | `consistency_percent` | A pass needs the best day's profit at most this whole percent (1–100) of `consistency_basis`; zero disables |
 | `consistency_basis` | `Total` (default): the attempt's profit. `PositiveDays`: the profitable days' profits added up |
@@ -1962,8 +1963,8 @@ journals the plan rules, a decision's code (other than the target's or the floor
 which the status implies), the day's lock and its executions only when they are set,
 so a plan without these rules keeps the journal bytes it had.
 
-**Trade consistency (F29).** `TRADE_CONSISTENCY` waits for a profitable closed whole
-option trade, then requires `best_trade.pnl × 100 <= trade_consistency_percent ×
+**Trade consistency (F29).** `TRADE_CONSISTENCY` is satisfied with no profitable closed whole
+option trade; otherwise it requires `best_trade.pnl × 100 <= trade_consistency_percent ×
 attempt profit`, with exact integer micro-dollar products. A trade is closed only
 when every round trip in its group is flat; rolls and adjustments stay one trade.
 Shares are separate from whole option trades and do not enter this measure. Net P&L
@@ -1974,6 +1975,15 @@ of attempt profit (null while profit is nonpositive), `required` is the limit, a
 the message names the trade and its net P&L. A breach only holds the pass back.
 Funded plans ignore this objective, like day consistency and minimum days. Pass
 odds retain the attempt's best trade and simulate no additional closed trades.
+
+**Minimum trades (F30).** `MIN_TRADES` reports actual and required counts of fully
+closed whole option trades. Every group counts once, only after all its round trips
+are flat, including losing and breakeven trades. Settlement, expiry, assignment,
+protective exits, flatten and the account's own liquidation all count; shares are
+outside option trade groups. Counts reset with the attempt and recover from its
+journal. Funded plans ignore this evaluation objective. Pass odds keep the count so
+far and add no simulated trades; a still-unmet minimum therefore prevents a simulated
+pass. The API reports `closed_trades` (null while this rule is off).
 
 **What liquidation costs.** A pass on marked equity liquidates at the bid or ask, which
 can leave less than the equity that passed. `TradingSnapshot::exit_equity` is what
@@ -2833,7 +2843,8 @@ opening orders and cancels working openings outside the plan window.
 | `INVALID_ORDER`, `DUPLICATE_CLIENT_ID`, `INVALID_TICK` | Malformed order, a key reused with other terms, invalid price increment |
 | `INVALID_QUOTE`, `STALE_QUOTE`, `MISSING_VALUATION` | No executable book, stale/incomplete marks, missing/stale/invalid Greeks |
 | `STOP_REQUIRED` | Entry has no protective bracket stop, or cancellation would remove a required stop from an open position |
-| `TRADE_CONSISTENCY` | Pass waits for a profitable closed whole trade and its share of attempt profit to fit the limit |
+| `TRADE_CONSISTENCY` | Best profitable closed whole trade must fit the attempt-profit percentage limit |
+| `MIN_TRADES` | Pass waits for the required count of closed whole option trades |
 | `MAX_TRADE_RISK` | Entry risk exceeds its plan cap; `actual` and `limit` are dollars, `scope` is `trade`; actual is null for unbounded or unknown risk |
 | `MAX_CONTRACTS_HELD` | Projected held options plus working opening contracts exceed the plan cap; `actual` and `limit` are contract counts, `scope` is `account` |
 | `MAX_ORDER_CONTRACTS`, `PRICE_BAND` | Quantity or protected-price bound exceeded |

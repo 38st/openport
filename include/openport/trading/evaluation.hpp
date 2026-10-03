@@ -69,6 +69,7 @@ struct BestTrade {
 /// Rule progress for the current attempt. Fully marked equity (every position
 /// has a mark, fresh or not) drives equity rules; time and overnight rules need no marks.
 struct Evaluation {
+  std::uint64_t closed_trades = 0;  ///< Only counted with min_trades enabled.
   std::optional<BestTrade> best_trade;  ///< Kept only with trade consistency enabled.
   std::uint64_t attempt = 1;
   Timestamp started = 0;

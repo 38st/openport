@@ -1462,3 +1462,5 @@ Account evaluation exposes `flat_time` and `flat_now`. Disabled plans keep their
 prior journal bytes; no replay driver or scenario revision changes.
 
 F29 journals `trade_consistency_percent` only when nonzero and evaluation `best_trade` only when a positive closed whole trade exists under that rule. Summaries derive from reducer fills, closures and groups, including system closures; recovery repeats the same calculation. Off plans keep their bytes and hashes; driver/scenario revisions are unchanged.
+
+F30 adds `min_trades` only when nonzero and evaluation `closed_trades` only when nonzero under that rule. Counts derive from current-attempt reducer history; plans without it add no state or journal fields.
