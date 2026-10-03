@@ -79,7 +79,7 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `GET/POST /api/alerts`, `DELETE /api/alerts/{id}` | The account's alerts on a contract, spread legs, an underlying or account measures, kept and checked by the server and forwarded to notification channels |
 | `POST /api/trades/group`, `/api/trades/ungroup` | Join open round trips' trades into one whole trade, or take a round trip out of its trade |
 | `PUT /api/risk/limits`, `PUT /api/risk/guardrails`, `POST /api/risk/kill` | Tighten rules now or queue looser values for rollover; set personal guardrails; trip or reset the kill switch |
-| `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt; optional `fill_model` selects `as_displayed` or `conservative`, and optional `margin`, `account_type` (`margin`, `cash`, `ira`), `house_margin_percent` and `pm_vol_shock` set the account's margin |
+| `GET /api/plans`, `POST /api/account/reset` | The plans, and a new attempt; optional `fill_model` selects `as_displayed`, `conservative` or `midpoint`, and optional `margin`, `account_type` (`margin`, `cash`, `ira`), `house_margin_percent` and `pm_vol_shock` set the account's margin |
 | `POST /api/sandboxes` | Create a private demo practice account and return its token once; unauthenticated when enabled, 404 when off, 429 at capacity or a creation rate limit |
 | `GET /api/accounts`, `POST /api/accounts` | List the accounts or create one, with optional `fill_model` and margin settings as for a reset; account routes take `?account=ID` for one other than the main account |
 | `GET`, `POST`, `PUT`, `DELETE /api/replay` | List recordings, scenarios and run history; start `{file}` or `{scenario}` (`demo` also accepted), with `plan`, `speed`, `start_at`, `paused` and scenario `seed`/`date`, or continue an interrupted saved run with `{resume}`; control or stop. `/api/replay/X` mirrors `/api/X` |
@@ -109,6 +109,17 @@ Only GTD takes that field. Extended stops are simulator-held triggers that send
 limits outside regular hours; stop-limit retains its price, while stop-market
 executes once at the touch against displayed size. Extended entries' bracket exits
 inherit all sessions. Plain market entries remain IOC and regular-only.
+
+F46 adds optional `walk: {step, seconds, limit}` to POST orders and PUT order
+changes: money values are decimal strings, seconds is an integer from 1 to 3600.
+Only untriggered DAY/GTC limits may walk; managed exits cannot. PUT omission keeps
+the walk and `null` removes it. Orders report the current `limit_price`, `walk`,
+and `next_walk: {time, limit_price}` (null when finished, at cap or past its deadline); previews also
+return `next_walk`. Steps are market-time order changes with actor `walk`.
+Combo nets, including negative credits, walk upward; single-leg sells downward.
+Custom account rules accept integer `inside_fill_percent` (0–100, default 0,
+omitted in responses at zero); `fill_model: "midpoint"` sets 50 with other execution
+friction off. See [fill models and walks](paper-trading.md#walking-limits-f46).
 
 `POST /api/positions/close` and `/api/positions/close/preview` take optional
 `type: "limit"` and `limit_ticks: 0` (0–10). Limits reprice from each leg's touch,

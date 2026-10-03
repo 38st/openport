@@ -46,7 +46,23 @@ class Surface(TypedDict):
     expiries: list[JSON]
 
 
-class Order(TypedDict):
+class Walk(TypedDict):
+    step: str
+    seconds: int
+    limit: str
+
+
+class WalkStep(TypedDict):
+    time: str
+    limit_price: str
+
+
+class OrderWalk(TypedDict, total=False):
+    walk: Walk | None
+    next_walk: WalkStep | None
+
+
+class Order(OrderWalk):
     id: str
     client_order_id: str
     actor: str
@@ -131,6 +147,7 @@ class AccountRules(TypedDict, total=False):
     slippage_ticks: int
     fill_latency_ms: int
     impact_ticks: int
+    inside_fill_percent: int
     margin: str
     buying_power: bool
     expiry_cutoff_seconds: int
@@ -225,6 +242,7 @@ class Probability(TypedDict):
 
 
 class OrderPreview(TypedDict):
+    next_walk: WalkStep | None
     account_version: str
     decision: str
     reason: JSON | None

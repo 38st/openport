@@ -273,10 +273,10 @@ as described below.
 The [liquidity rules](runtime.md#chain-volume-and-liquidity) are browser cues, not
 new reducer checks or journal fields.
 
-Buy execution uses ask; sell execution uses bid. With `slippage_ticks` (0 by default,
+By default, buy execution uses ask; sell execution uses bid. With `slippage_ticks` (0 by default,
 an integer from 0 to 10), buys add that many ticks to the ask and sells subtract them
 from the bid, floored at zero. The tick is `tick_size(root, displayed_price)`, using
-the displayed far side's tier even if slippage crosses $3. A limit executes only if
+the displayed far side's tier even if slippage crosses $3. Without inside fills, a limit executes only if
 the displayed far side is no worse than its limit, including equality: buys fill at
 `min(limit, ask + slippage)` and sells at `max(limit, max(0, bid - slippage))`.
 Bracket exits, liquidation and expiry auto-close use the same slippage. Exercise,
@@ -315,7 +315,7 @@ a quote that stayed unchanged for minutes, or one that latency held back, theref
 shows how old its quote was. The book is written only with fills that have it, so
 fills recorded by earlier builds recover without one.
 
-Resting buy limits cross when ask <= limit; resting sell limits cross when bid >=
+By default, resting buy limits cross when ask <= limit; resting sell limits cross when bid >=
 limit, on a new valid observation timestamped at/after acceptance. A newly
 submitted order may execute against the latest cached quote if it is still fresh.
 An observation offered again in a later batch refills nothing, but an order that a
@@ -328,9 +328,48 @@ lexical order after atomic installation of the entire batch. Submissions also
 respect existing better orders when sharing the current budget. There is no queue
 position, trade-through or hidden-liquidity simulation in v1.
 
+### Walking limits (F46)
+
+A single-leg or multi-leg DAY/GTC limit may carry
+`"walk": {"step": "0.10", "seconds": 10, "limit": "4.20"}`. Each elapsed interval
+of market time moves its current limit toward the cap: up for a buy, down for a
+sell. Combo prices are signed net debits, so both debit and credit combos move
+**up** (a credit of -0.50 walks through -0.40 to -0.30, accepting less credit).
+At the cap it rests. Cancel or completion stops it. Ordinary closing limits can
+walk; stops, triggered orders, managed bracket exits, held exits, flatten orders,
+market orders and other times in force cannot. A walking entry's bracket remains
+at its separately submitted exit prices.
+
+The positive step must be on the product's lower-tier tick; the cap must be on its
+own price tier's tick (combos use their smallest lower-tier leg tick). Each
+single-leg step rounds toward the cap to land on the tick at its new price.
+`seconds` is an integer from 1 to 3600; the cap must be at least as aggressive as
+the current limit and no more than 1000 steps away. The cap passes the same price
+band as an initial limit. Invalid terms reject with `INVALID_ORDER`, off-tick
+prices with `INVALID_TICK`, and an out-of-band cap with `PRICE_BAND`.
+
+Intervals count from acceptance or the last scheduled step. Every accepted manual
+change restarts the interval from its market time. PUT may replace `walk` with a
+new object or remove it with `null`; omission keeps it. Rejected changes leave
+both terms and schedule intact. Buying power and full-fill loss projections reserve
+at the cap, and execution rechecks the usual current risk and fees.
+
+Clock advances and quote batches drive steps inside the deterministic reducer.
+A jump catches up every elapsed step, each with its scheduled time, previous and
+new limit, actor `walk` in `changes`, and an `order_walked` event. It matches only
+on the current fresh book after the batch installs quotes; it does not invent
+intermediate quotes or retroactive fills. Elapsed market time includes gaps and
+closed sessions; normal session and expiry gates still control fills and cancellation.
+Cancellation at the order's deadline takes precedence over catching up missed steps.
+Orders return the current `limit_price`, `walk` and `next_walk` (`time`,
+`limit_price`). `next_walk` is null at the cap, after completion or when the next
+interval would reach the order's deadline. New and change previews show
+`next_walk` when the order would still work. Both terminal tickets offer Walk;
+Orders shows its current price and next step, and Edit can change or remove it.
+
 ### Optional fill models
 
-**As displayed** is the default: no latency, no impact and no slippage. Existing
+**As displayed** is the default: no latency, no impact, no slippage and no inside fills. Existing
 plans, account responses and journal records keep their previous bytes when the new
 settings are zero. The Rules page offers **Conservative** when starting a plan for
 an account's new attempt: 1,000 ms latency, 1 slippage tick and 1 impact tick. This
@@ -338,6 +377,30 @@ adds friction for practice on a delayed feed; it does not reconstruct a live mar
 The choice does not change the plan's evaluation or margin rules. Custom account
 rules can set each value separately. Changing a preset starts a new attempt, with
 the usual reset of positions and cash; it does not change a running attempt.
+
+**Inside at midpoint** (`fill_model: "midpoint"`) enables `inside_fill_percent: 50`
+with latency, impact and slippage at zero. Custom rules accept any integer from
+0 to 100; zero disables inside fills and is omitted from journals and responses.
+An untriggered limit strictly inside a valid spread fills at its limit when at
+least that percentage of the way from its own side to the far side. On a
+4.00/4.40 book, 50 fills a buy at 4.20 or higher and a sell at 4.20 or lower;
+4.10 buys and 4.30 sells still wait. At 100 only the usual far-side fills remain.
+Marketable limits use the ordinary far-side model (and may get a better price),
+and markets and stops are unaffected. Matching runs on submission and each
+eligible observation, sharing price/time priority and the far side's displayed
+size left with other orders. Reconfirmed observations never restore spent size.
+
+Inside fills retain latency, fees and all ordinary execution checks. They execute
+at the limit without added slippage, and **never** use synthetic impact depth:
+each leg is bounded by its remaining displayed size even with impact enabled.
+For a combo, measure from the near net (buys at bids, sells at asks) to the natural
+net (buys at asks, sells at bids). Allocate improvement over natural proportionally
+to each leg's spread, weighted by ratio. Leg prices stay inside their quotes;
+micro-dollar rounding favors the trader. Ratio-one legs absorb rounding excess,
+so the net is exactly the limit when possible, otherwise a few micro-dollars
+better per unit. `Fill::quote` keeps the bid and ask that demonstrate the inside
+price; no separate fill flag is necessary. This is a deterministic training model,
+not an inference that someone actually traded inside that quote.
 
 `impact_ticks` is an integer from 0 to 10. Zero keeps the displayed-size cap above.
 A positive value supplies **simulated depth** in blocks as large as the displayed
@@ -382,7 +445,7 @@ Cancels and the kill switch still act immediately on pending orders; reduce-only
 closes remain eligible. Account-owned closes also wait, without creating duplicate
 pending closes. Normal session, halt and risk checks still apply.
 
-Both models are simulations. Neither knows queue position, hidden liquidity, or
+These models are simulations. None knows queue position, hidden liquidity, or
 whether the market would have traded at all. Impact invents a price schedule, not
 observed market depth; latency selects a later supplied quote, not a future trade.
 Neither removes the hindsight advantage of a delayed feed.
@@ -665,7 +728,7 @@ gross premium (`max(absolute, relative * sum of ratio * mid)`). Buy-only plans r
 opening multi-leg orders (`BUY_ONLY`); inside the pre-expiry cutoff only closing
 orders are accepted (`EXPIRY_CUTOFF`), and daily loss, exposure and buying power apply to the whole order.
 
-A multi-leg order fills **all legs together**, in ratio, when the net at the slipped
+Without the inside-fill model, a multi-leg order fills **all legs together**, in ratio, when the net at the slipped
 far sides (asks plus slippage for bought legs, bids less slippage for sold legs) is
 at or below its limit. Every leg takes its full slippage; an order whose net would
 exceed the limit waits, rather than allocating a partial slip among its legs.
@@ -1375,6 +1438,7 @@ side, no buying-power check. All rule money is exact.
 | `buying_power` | New orders and their fills must not take buying power below zero; otherwise `BUYING_POWER` |
 | `slippage_ticks` | Integer from 0 to 10 adverse ticks per option fill, including each combo leg and closing orders; default 0 |
 | `fill_latency_ms` | Integer from 0 to 60,000 milliseconds on market time before a quote can execute an order; default 0 |
+| `inside_fill_percent` | Integer from 0 to 100; zero disables inside fills, 50 fills limits at or beyond midpoint inside the spread; default 0 |
 | `impact_ticks` | Integer from 0 to 10 extra adverse ticks per additional displayed-size block; 0 keeps the displayed-size cap |
 | `fees` | Optional [itemized fee schedule](#fees) in place of the flat per-contract fee |
 | `margin` | `strategy` (default) or `portfolio`, selecting the position requirement below. Plans use strategy margin and As displayed fills by default; custom rules, or a margin override beside a plan, can select portfolio margin |
@@ -2264,6 +2328,13 @@ the account at each transaction. All v1 orders/fills remain in memory and the
 snapshot's `recent_*` arrays; there is no retention cap, and a checkpoint grows with
 the account's history, one per thousand records.
 
+F46 fields are sparse: `inside_fill_percent` is written only when nonzero;
+`walk` only when present; `walked_at` only after a walk steps or is changed.
+Walk changes record new and previous settings only when requested. Accounts with
+inside fills off and orders without walks keep their prior journal bytes. Recovery
+defaults absent fields; old journals continue to load and replay hashes remain
+verifiable on the same platform.
+
 ### Compacting older journals
 
 Records written before schema 3 keep their whole states until rewritten. Stop
@@ -2328,7 +2399,7 @@ compilers/architectures, although recovery restores the recorded doubles.
 | `EVALUATION_CLOSED` | The attempt passed or failed; reset to trade again |
 | `BUYING_POWER`, `BUY_ONLY`, `EXPIRY_CUTOFF` | Account-rule rejections (see Account rules); `EXPIRY_CUTOFF` also cancels every open order on a contract at the account's pre-expiry cutoff |
 | `ACCOUNT_RESET` | Working order cancelled by a reset |
-| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
+| `INVALID_RULES` | Negative rule money, a negative cutoff or one of a day or more, a plan name over 64 bytes or one that names a preset whose balance and rules these are not, payout percentages outside 0-100 or nonpositive caps, slippage or impact outside 0-10 ticks, fill latency outside 0-60,000 ms, inside fills outside 0-100%, a funded phase with a profit target or no qualifying days, a consistency percentage outside 0-100, minimum days outside 0-366, a day end outside 16:15-24:00, or a floor with two locks, or a static one with any. Rule values of the wrong type, such as a fractional tick count, are 400 `INVALID_REQUEST` |
 | `OCO_FILLED`, `POSITION_CLOSED` | Bracket sibling cancelled when the other exit filled completely, remaining entry cancelled by an exit fill, or an exit whose held legs closed |
 | `PAYOUT_UNAVAILABLE`, `PAYOUT_NOT_ELIGIBLE`, `INVALID_PAYOUT` | Not a funded, active account; a payout requirement unmet; or an amount that is not whole cents or outside the minimum and maximum |
 | `PLAN_LOCKED` | A funded preset was requested without first passing the evaluation that unlocks it: that preset's own balance and rules |
@@ -2571,12 +2642,12 @@ focus at the top of the ticket.
 | `POST /api/stocks/close` | `symbol` of shares held (`SPY`) and optional positive `shares`, all of them when left out; closes at the underlying's price in the regular session and returns the portfolio |
 | `GET /api/portfolio` | `time`: the market time the publication is as of, the feed's latest even while the account is idle (as in `GET /api/risk` and `GET /api/account`). Account cash, equity, daily baseline/P&L, realised/unrealised, fees, completeness/quality flags, marked positions and Greeks, opened or delivered `stocks` (symbol, shares, average price, basis, mark and its time, market value, unrealised and realised P&L, fees, freshness and today's attribution), and today's `attribution` (`delta`, `gamma`, `vega`, `theta`, `other`, `costs`, `total` in dollars) for the account and each position (null until the position's next fill or rollover), and `liquidity_used`: the current quotes whose displayed size the account's orders have taken some of, with each side's size and what is left (`bid_left`, `ask_left`) until a new quote |
 | `GET /api/orders?status=all` | All orders, newest first; `status=open` restricts to working, partially filled and armed orders |
-| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`/`exto`/`gtc_exto`/`gtd`), `good_till` timestamp required only for GTD, optional `tags` and `note`, optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
+| `POST /api/orders` | `client_order_id`, canonical `symbol`, `side` (`buy`/`sell`), `type` (`limit`/`market`), integer `quantity`, decimal-string `limit_price` for limits, `time_in_force` (`day`/`gtc`/`ioc`/`exto`/`gtc_exto`/`gtd`), `good_till` timestamp required only for GTD, optional `tags`, `note` and `walk` (see [walking limits](#walking-limits-f46)), optional `trigger` `{source: option\|combo\|underlying, direction: at_or_below\|at_or_above, level}` and `bracket` `{stop_loss?, take_profit?}` whose exits each take one of `trigger` or `limit_price`. A multi-leg order replaces `symbol` and `side` with `legs` (two to four `{symbol, side, ratio?}`, ratio default 1, or up to eight for a roll), allows an entry bracket or a reducing trigger (combo or underlying), counts units in `quantity` and sets a signed net `limit_price` (negative for a credit); `exits_only: true` attaches a bracket to held closing legs as described above; optional `group` joins what the order opens to a [whole trade](#whole-trades); 201 returns version, order and its fills. Orders report `legs` (null for single-leg), with null `symbol` and `side` for multi-leg orders. Retrying with a `client_order_id` already used and the same terms is safe: it returns the first answer (200 with the order as it now stands, also after `PUT /api/orders/{id}` changed it, or the original rejection) and records nothing, while other terms under that ID, the changed ones included, are refused with 409 `DUPLICATE_CLIENT_ID` and record nothing. Client IDs are scoped to an attempt: after an account reset, earlier attempts' IDs name new orders |
 | `POST /api/orders/preview` | The order body plus optional `floor_share` (default 0.5); 200 returns the dry-run decision, buying power, exposure change, labelled maximum loss, floor warnings, `max_units` with its buying-power and floor parts (null when unavailable), projected `breach`, and `execution`: what submitting now would fill at once and the full size's fill schedule, each leg's quote `liquidity`, and `warnings` about stops, targets and triggers already reached, a stop given only a limit price, or slippage that pushes a market order outside the band |
 | `POST /api/orders/what-if` | `candidates`: one to six, each an optional `name` and one to four `orders` as submission takes them (client ID optional); 200 returns the account `current` and each candidate's `decision`, `reason`, per-order `orders` checks and the account `after` its orders fill in full (null when one cannot be projected): equity, buying power, exposure, grid max loss, floor flags, scenarios and breach ([what-if](#what-if)) |
 | `GET /api/account/equity?from=&to=` | Persisted equity samples with optional inclusive UTC ISO bounds, plus any storage error |
 | `DELETE /api/orders/{id}` | No body; 200 returns version and resulting order |
-| `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`; 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
+| `PUT /api/orders/{id}` | Any of integer `quantity`, decimal-string `limit_price` and `trigger_level`, DAY/GTC `time_in_force`, and optional `walk` (null removes it); 200 returns version, the changed order and its fills (see [changing orders](#changing-cancelling-and-flattening)) |
 | `POST /api/orders/cancel` | Optional `underlying`; cancels every open order, or that underlying's, and returns version and `cancelled_orders` |
 | `POST /api/positions/close` | Optional `underlying`; cancels the open orders in scope but the bracket exits and closes its positions at market with reduce-only orders that keep working until filled, returning version, `cancelled_orders`, the closing `orders` (each with its status and reason), their `fills`, the shares it closed (`stock_fills`) and those it could not (`kept_stocks`: symbol, shares and reason), and each position still open (`residuals`: symbol, underlying, signed `quantity`, the contracts still `working` and the `reason` the rest are not, or null). 422 with the reason, and nothing changed, when nothing in scope can close ([flattening](#changing-cancelling-and-flattening)) |
 | `POST /api/positions/close/preview` | Optional `underlying`; the flatten's dry run on a private copy: `decision` and `reason`, `cancelled_orders`, the closing `orders` without IDs and their `fills`, `stock_fills`, `kept_stocks`, `remaining` and `remaining_shares` in scope, and the account `current` and `after`; `simulated: true`, nothing recorded ([flattening](#changing-cancelling-and-flattening)) |
@@ -2607,12 +2678,12 @@ in its query for an account other than the main one (see [accounts](#accounts)).
 demo market; see [replaying in the terminal](runtime.md#replaying-in-the-terminal).
 
 Rules JSON is `{plan, profit_target, max_drawdown, drawdown_mode, buy_only,
-defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, fees, margin, account_type, house_margin_percent,
+defined_risk, slippage_ticks, fill_latency_ms, impact_ticks, inside_fill_percent, fees, margin, account_type, house_margin_percent,
 pm_vol_shock, buying_power, expiry_cutoff_seconds, lock_at_start, profit_basis, daily_loss_limit,
 daily_loss_basis, daily_loss_action, consistency_percent, consistency_basis, min_trading_days,
 min_profitable_days, profitable_day_profit, day_end}`.
 `fees` is the optional [fee schedule](#fees).
-`defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `margin`, `account_type`,
+`defined_risk`, `slippage_ticks`, `fill_latency_ms`, `impact_ticks`, `inside_fill_percent`, `margin`, `account_type`,
 `house_margin_percent`, `pm_vol_shock` and every field from `lock_at_start` on are optional when creating or
 resetting an account: `defined_risk` and `lock_at_start` default to false, the execution settings, house margin,
 vol shock, counts and percentages to 0, `margin` to `"strategy"`, `account_type` to `"margin"`, `profit_basis` to
@@ -2630,12 +2701,12 @@ the requirement by underlying with what holds it (see buying power under Account
 `take_profit_order`, `ended_at`, `modified_at`, `changes` and `waiting` (see below); status and ticks add `trading.plan` and `trading.evaluation`
 (`active`/`passed`/`failed`, null without a target or drawdown rule). `--plan ID`
 chooses the rules for a new journal (default `practice`); `--paper-cash` then overrides
-its starting balance. Recovery keeps the recorded rules. New latency and impact fields default to zero
+its starting balance. Recovery keeps the recorded rules. New latency, impact and inside-fill fields default to zero
 when absent and are omitted from account responses and journals at zero. Pending
 orders recover their acceptance/trigger clocks and consumed depth.
 `POST /api/account/reset` and `POST /api/accounts` accept optional
-`fill_model: "as_displayed" | "conservative"` beside the plan or custom rules. It
-overrides only latency, impact and slippage for that account's new attempt. Optional
+`fill_model: "as_displayed" | "conservative" | "midpoint"` beside the plan or custom rules. It
+overrides only latency, impact, slippage and inside fills for that account's new attempt. Optional
 `fee_model: "flat" | "itemized"` chooses its [fees](#fees). They also accept `margin`,
 `account_type`, `house_margin_percent` and `pm_vol_shock` beside the plan or custom
 rules, overriding the account's margin the same way (the attempt still counts as the

@@ -183,13 +183,14 @@ RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single st
 against displayed quotes: market and marketable orders take the far side up to the
 displayed size by default, with optional per-plan slippage of 0–10 ticks. Single-leg limits cap
 the fill price; multi-leg orders wait if the slipped net exceeds their limit.
-Rules offers **As displayed** (the existing defaults) or **Conservative** for a new
+Rules offers **As displayed** (the existing defaults), **Inside at midpoint** (F46,
+below), or **Conservative** for a new
 account attempt: 1 second of market-time latency, 1 slippage tick and 1 extra tick
 for each additional displayed-size block. Custom rules set latency up to 60 seconds
 and impact up to 10 ticks per block. With impact, limits wait when the full price
-or net exceeds them. This is simulated depth. Neither model knows queue position,
+or net exceeds them. This is simulated depth. These models do not simulate queue position,
 hidden liquidity, or whether the market would have traded at all; a delayed feed
-still gives hindsight. Resting limits fill when a later quote crosses them, and every fill
+still gives hindsight. By default, resting limits fill when a later quote crosses them, and every fill
 pays the flat per-contract fee or an itemized schedule with open/close rates,
 per-leg commission caps, clearing, regulatory, index and per-contract exercise/assignment
 fees. Positions are marked at the mid, and risk limits on dollar
@@ -269,6 +270,12 @@ payouts). This is a simulator that funds no one, so the web terminal hides those
 and the Payouts page; set `showFundedAccounts` in `web/src/lib/features.ts` to offer
 them. [Paper trading](paper-trading.md) documents every rule, the HTTP contract and
 the simulation's limits.
+
+F46 adds opt-in inside fills at a deterministic share of the bid/ask spread
+(midpoint preset: 50%), limited by each far side's displayed size left, with the
+usual fees and risk checks. DAY/GTC single-leg and net combo limits can walk by a
+chosen step and interval toward a cap on market time. Both tickets, previews,
+order history and edits expose the walk; replay and journal recovery preserve it.
 
 ## Roadmap
 
@@ -383,3 +390,5 @@ the simulation's limits.
       spot and option prices, Replay accounts and the demo feed
 - [x] F35, F53, F54: risk profile of the held book on later dates and IV offsets with room to the floor,
       beta weighting to SPY or SPX, and probability cones with odds of reaching a price by a date
+- [x] F46: fills inside the bid/ask spread and walking limits, with midpoint fills,
+      market-time steps, editable caps, previews and durable order history

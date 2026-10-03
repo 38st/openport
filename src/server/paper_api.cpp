@@ -83,6 +83,7 @@ json rules_json(const AccountRules& r) {
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
   if (r.fill_latency_ms != 0) result["fill_latency_ms"] = r.fill_latency_ms;
   if (r.impact_ticks != 0) result["impact_ticks"] = r.impact_ticks;
+  if (r.inside_fill_percent != 0) result["inside_fill_percent"] = r.inside_fill_percent;
   if (r.fees) result["fees"] = fee_schedule_json(*r.fees);
   return result;
 }
@@ -199,6 +200,12 @@ json leg_liquidity_json(const OrderPreview& p) {
                     {"displayed", leg.displayed}, {"size_left", leg.left}});
   return legs;
 }
+json walk_step_json(const std::optional<WalkStep>& step) {
+  return step ? json{{"time", md::format_timestamp(step->time)}, {"limit_price", step->price.str()}} : json(nullptr);
+}
+json walk_json(const std::optional<Walk>& walk) {
+  return walk ? json{{"step", walk->step.str()}, {"seconds", walk->seconds}, {"limit", walk->limit.str()}} : json(nullptr);
+}
 json preview_json(const OrderPreview& p) {
   json warnings = json::array();
   for (const auto& warning : p.warnings) warnings.push_back({{"code", warning.code}, {"message", warning.message}});
@@ -216,6 +223,7 @@ json preview_json(const OrderPreview& p) {
       {"max_units", units(p.max_units)}, {"max_units_buying_power", units(p.max_units_buying_power)},
       {"max_units_floor", units(p.max_units_floor)}, {"breach", breach_json(p.breach)},
       {"fee", money(p.fee)}, {"fees", fill_fees_json(p.fees)},
+      {"next_walk", walk_step_json(p.next_walk)},
       {"execution", execution_json(p.execution)}, {"liquidity", leg_liquidity_json(p)}, {"warnings", warnings}, {"simulated", true}};
 }
 
@@ -312,6 +320,10 @@ json order_changes_json(const Order& o) {
       change["time_in_force"] = tif_or_null(c.time_in_force);
       change["previous"]["time_in_force"] = tif_or_null(c.previous_time_in_force);
     }
+    if (c.walk) {
+      change["walk"] = walk_json(*c.walk);
+      change["previous"]["walk"] = walk_json(c.previous_walk);
+    }
     changes.push_back(std::move(change));
   }
   return changes;
@@ -348,6 +360,7 @@ json order_json(const Order& o, const TradingView& view) {
           {"time_in_force", tif_name(o.request.tif)},
           {"good_till", o.request.good_till ? time_or_null(*o.request.good_till) : json(nullptr)},
           {"limit_ticks", o.limit_ticks ? json(*o.limit_ticks) : json(nullptr)},
+          {"walk", walk_json(o.request.walk)}, {"next_walk", walk_step_json(next_walk(o))},
           {"tags", o.request.tags}, {"note", o.request.note}, {"exits_only", o.request.exits_only},
           {"group", nullable(o.request.group)},
           {"quantity", o.request.quantity}, {"filled_quantity", o.filled_quantity},
@@ -1417,7 +1430,7 @@ AccountRules parse_rules(const json& j) {
          {"plan", "phase", "lock_balance", "payouts", "defined_risk", "slippage_ticks", "margin", "fill_latency_ms", "impact_ticks",
           "lock_at_start", "profit_basis", "daily_loss_limit", "daily_loss_basis", "daily_loss_action", "consistency_percent",
           "consistency_basis", "min_trading_days", "min_profitable_days", "profitable_day_profit", "day_end", "fees",
-          "account_type", "house_margin_percent", "pm_vol_shock"});
+          "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent"});
   AccountRules rules;
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
@@ -1452,6 +1465,7 @@ AccountRules parse_rules(const json& j) {
   if (j.contains("slippage_ticks")) rules.slippage_ticks = integer_field(j, "slippage_ticks");
   if (j.contains("fill_latency_ms")) rules.fill_latency_ms = integer_field(j, "fill_latency_ms");
   if (j.contains("impact_ticks")) rules.impact_ticks = integer_field(j, "impact_ticks");
+  if (j.contains("inside_fill_percent")) rules.inside_fill_percent = integer_field(j, "inside_fill_percent");
   if (j.contains("fees") && !j.at("fees").is_null()) rules.fees = parse_fee_schedule(j.at("fees"));
   margin_fields(j, rules);
   rules.buying_power = boolean_field(j, "buying_power");
@@ -1478,11 +1492,12 @@ void margin_model(const json& body, AccountRules& rules) {
 void fill_model(const json& body, AccountRules& rules) {
   if (!body.contains("fill_model")) return;
   const auto model = string_field(body, "fill_model");
-  if (model != "as_displayed" && model != "conservative")
-    throw std::invalid_argument("fill_model must be as_displayed or conservative");
+  if (model != "as_displayed" && model != "conservative" && model != "midpoint")
+    throw std::invalid_argument("fill_model must be as_displayed, conservative or midpoint");
   rules.fill_latency_ms = model == "conservative" ? 1000 : 0;
   rules.impact_ticks = model == "conservative" ? 1 : 0;
   rules.slippage_ticks = model == "conservative" ? 1 : 0;
+  rules.inside_fill_percent = model == "midpoint" ? 50 : 0;
 }
 /// An illustrative broker schedule; custom rules can supply each amount instead.
 void fee_model(const json& body, AccountRules& rules) {
@@ -1524,6 +1539,11 @@ bool valid_client_order_id(std::string_view id) {
 bool valid_account(std::string_view id) {
   return !id.empty() && id.size() <= 40 && id.front() != '-' && id.back() != '-' && id.find("--") == std::string_view::npos &&
          std::all_of(id.begin(), id.end(), [](char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; });
+}
+std::optional<Walk> parse_walk(const json& j) {
+  if (j.is_null()) return std::nullopt;
+  fields(j, {"step", "seconds", "limit"});
+  return Walk{decimal_field(j, "step"), integer_field(j, "seconds"), decimal_field(j, "limit")};
 }
 TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   TradingCommand command;
@@ -1579,8 +1599,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   const bool change_preview = request.method == "POST" && path != "/api/orders/preview" &&
       path.starts_with("/api/orders/") && path.ends_with("/preview");
   if ((request.method == "PUT" && path.starts_with("/api/orders/")) || change_preview) {
-    if (change_preview) fields(body, {}, {"quantity", "limit_price", "trigger_level", "time_in_force", "floor_share"});
-    else fields(body, {}, {"quantity", "limit_price", "trigger_level", "time_in_force"});
+    if (change_preview) fields(body, {}, {"quantity", "limit_price", "trigger_level", "time_in_force", "walk", "floor_share"});
+    else fields(body, {}, {"quantity", "limit_price", "trigger_level", "time_in_force", "walk"});
     command.kind = change_preview ? TradingCommand::Kind::PreviewChange : TradingCommand::Kind::Modify;
     auto id = path.substr(std::string_view("/api/orders/").size());
     if (change_preview) id = id.substr(0, id.size() - std::string_view("/preview").size());
@@ -1592,12 +1612,13 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     if (body.contains("quantity")) command.change.quantity = integer_field(body, "quantity");
     if (body.contains("limit_price")) command.change.limit_price = decimal_field(body, "limit_price");
     if (body.contains("trigger_level")) command.change.trigger_level = decimal_field(body, "trigger_level");
+    if (body.contains("walk")) command.change.walk.emplace(parse_walk(body.at("walk")));
     if (body.contains("time_in_force")) {
       const auto tif = string_field(body, "time_in_force");
       if (tif != "day" && tif != "gtc") throw std::invalid_argument("time_in_force changes to day or gtc");
       command.change.tif = tif == "day" ? TimeInForce::Day : TimeInForce::Gtc;
     }
-    if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price, trigger_level or time_in_force");
+    if (command.change.empty()) throw std::invalid_argument("Give quantity, limit_price, trigger_level, time_in_force or walk");
     return command;
   }
   if (request.method == "PUT" && path.starts_with("/api/days/") && path.ends_with("/note")) {
@@ -1787,8 +1808,8 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
     }
     // A single contract (symbol and side), or legs for a multi-leg order.
     const bool legs = body.is_object() && body.contains("legs");
-    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till"});
-    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group", "good_till"});
+    if (legs) fields(body, {"client_order_id", "legs", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "exits_only", "group", "good_till", "walk"});
+    else fields(body, {"client_order_id", "symbol", "side", "type", "quantity", "time_in_force"}, {"limit_price", "trigger", "bracket", "tags", "note", "group", "good_till", "walk"});
     // A body no market could make a valid order is malformed: 400, and nothing is
     // recorded, so its client_order_id stays free. The reducer's own checks (422,
     // recorded) are those that depend on the account and the market.
@@ -1847,6 +1868,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       order.side = side == "buy" ? Side::Buy : Side::Sell;
     }
     if (body.contains("exits_only")) order.exits_only = boolean_field(body, "exits_only");
+    if (body.contains("walk")) order.walk = parse_walk(body.at("walk"));
     if (body.contains("group")) {
       // A trade ID: the opening fill of one of the account's round trips.
       order.group = string_field(body, "group");
