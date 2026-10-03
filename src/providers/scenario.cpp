@@ -61,6 +61,23 @@ md::Timestamp scenario_close(const Scenario& scenario, md::Date date) {
   return scenario.overnight ? scenario_time("09:25", date, true) : md::new_york_to_utc(date, md::regular_close_hour(date), 0);
 }
 
+md::Timestamp scenario_event_time(std::string_view time, const ScenarioWindow& window, int minutes) {
+  auto at = scenario_time(time, window.date, window.session == "overnight");
+  at += static_cast<md::Timestamp>(minutes) * md::kNanosPerMinute;
+  if (window.session == "regular") {
+    const auto offset = (at - window.first) / md::kNanosPerMinute;
+    require(offset >= 0 && offset <= 390 && (minutes > 0 || offset < 390),
+            "at", std::string(time) + ": must be inside 09:30–16:00 ET");
+    const auto duration = (window.close - window.first) / md::kNanosPerMinute;
+    const auto scaled = window.first + (offset * duration / 390) * md::kNanosPerMinute;
+    return minutes > 0 ? std::max(scaled, scenario_event_time(time, window) + md::kNanosPerMinute) : scaled;
+  }
+  const auto opens = window.session == "curb" ? window.first - window.step : window.first;
+  require(at >= opens && (minutes > 0 ? at <= window.close : at < window.close),
+          "at", std::string(time) + ": must be inside the session before its close");
+  return at;
+}
+
 namespace {
 /// A session's snapshots on its trading date: overnight from 20:15 the evening
 /// before to 09:25 each minute; regular from 09:30 to the 16:15 last trade (13:15 on
@@ -101,33 +118,36 @@ std::vector<std::pair<double, double>> drift_of(const json& value, const std::st
   require(previous == 1, field, "last fraction must be 1");
   return drift;
 }
-std::vector<ScenarioEvent> events_of(const json& value, const std::string& field, const ScenarioWindow& window) {
-  require(value.is_array() && value.size() <= 32, field, "expected at most 32 events");
-  // A curb session opens at 16:15, a step before its first snapshot.
-  const auto opens = window.session == "curb" ? window.first - window.step : window.first;
+std::vector<ScenarioEvent> events_of(const json& value, const std::string& parent, const ScenarioWindow& window,
+                                     const std::vector<std::string>& symbols) {
+  require(value.is_array() && value.size() <= 32, parent, "expected at most 32 events");
   std::vector<ScenarioEvent> events;
   std::set<std::string> unique;
-  for (const auto& e : value) {
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    const auto& e = value[index];
+    auto field = parent + "[" + std::to_string(index) + "]";
     require(e.is_object() && e.contains("type"), field + ".type", "required field is missing");
     ScenarioEvent event;
     event.type = text(e.at("type"), field + ".type");
+    field += " (" + event.type + ")";
     if (event.type == "gap") keys(e, {"type", "move"}, field);
     else if (event.type == "crush") keys(e, {"type", "at", "iv"}, field);
     else if (event.type == "spike") keys(e, {"type", "at", "move", "iv"}, field);
     else if (event.type == "pin") keys(e, {"type", "at", "strike"}, field);
-    else require(false, field + ".type", "expected gap, crush, spike or pin");
+    else if (event.type == "book") keys(e, {"type", "at", "minutes", "state", "symbols", "expiry"}, field);
+    else if (event.type == "stall") keys(e, {"type", "at", "minutes", "symbols"}, field);
+    else if (event.type == "halt") keys(e, {"type", "at", "minutes"}, field);
+    else require(false, field + ".type", "expected gap, crush, spike, pin, book, stall or halt");
     if (event.type != "gap") {
       require(e.contains("at"), field + ".at", "required field is missing");
       event.at = text(e.at("at"), field + ".at");
-      md::Timestamp at = 0;
-      try { at = scenario_time(event.at, window.date, window.session == "overnight"); }
-      catch (const std::invalid_argument& error) { throw std::invalid_argument(field + ".at: " + std::string(error.what())); }
-      require(at >= opens && at < window.close, field + ".at", "must be inside the session before its close");
+      try { (void)scenario_event_time(event.at, window); }
+      catch (const std::invalid_argument& error) { throw std::invalid_argument(field + ".at " + event.at + ": " + error.what()); }
     }
     require(unique.insert(event.type + event.at).second, field, "duplicate event type and time");
     if (event.type == "gap" || event.type == "spike") {
       require(e.contains("move"), field + ".move", "required field is missing");
-      event.move = number(e.at("move"), field + ".move", -0.1, 0.1);
+      event.move = number(e.at("move"), field + ".move", -0.3, 0.3);
     }
     if (event.type == "crush" || event.type == "spike") {
       require(e.contains("iv"), field + ".iv", "required field is missing");
@@ -137,6 +157,35 @@ std::vector<ScenarioEvent> events_of(const json& value, const std::string& field
       require(window.session == "regular", field + ".pin", "pin requires a regular session");
       require(e.contains("strike"), field + ".strike", "required field is missing");
       event.strike = number(e.at("strike"), field + ".strike", 5400, 6600);
+    }
+    if (event.type == "book" || event.type == "stall" || event.type == "halt") {
+      require(e.contains("minutes") && e.at("minutes").is_number_integer(), field + ".minutes", "expected integer minutes");
+      event.minutes = static_cast<int>(number(e.at("minutes"), field + ".minutes", 1, 790));
+      try { (void)scenario_event_time(event.at, window, event.minutes); }
+      catch (const std::invalid_argument& error) { throw std::invalid_argument(field + ".minutes: " + error.what()); }
+      if (e.contains("symbols")) {
+        require(e.at("symbols").is_array() && !e.at("symbols").empty(), field + ".symbols", "expected nonempty subset of scenario symbols");
+        std::set<std::string> selected;
+        for (const auto& item : e.at("symbols")) {
+          const auto symbol = text(item, field + ".symbols");
+          require(std::find(symbols.begin(), symbols.end(), symbol) != symbols.end() && selected.insert(symbol).second,
+                  field + ".symbols", "expected unique scenario symbols");
+          event.symbols.push_back(symbol);
+        }
+      }
+      if (event.type == "halt") require(window.session == "regular", field, "halt requires a regular session");
+      if (event.type == "book") {
+        require(e.contains("state"), field + ".state", "required field is missing");
+        event.state = text(e.at("state"), field + ".state");
+        require(event.state == "crossed" || event.state == "locked" || event.state == "one_sided" ||
+                event.state == "zero_size" || event.state == "wide", field + ".state", "unknown book state");
+        if (e.contains("expiry")) {
+          const auto expiry = text(e.at("expiry"), field + ".expiry");
+          const auto parsed = md::parse_datetime(expiry + "T12:00:00", md::Zone::NewYork);
+          require(expiry.size() == 10 && parsed.has_value(), field + ".expiry", "expected YYYY-MM-DD");
+          event.expiry = md::new_york_time(*parsed).date;
+        }
+      }
     }
     events.push_back(event);
   }
@@ -192,12 +241,12 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
   try {
     require(source.size() <= 64 * 1024, "$", "file exceeds 64 KiB");
     const auto j = json::parse(source);
-    keys(j, {"id", "title", "description", "goal", "symbols", "session", "date", "seed", "generator", "drift", "volatility", "iv_shift", "spot_vol", "events", "sessions"}, "$");
+    keys(j, {"id", "title", "description", "goal", "symbols", "session", "date", "seed", "generator", "drift", "volatility", "iv_shift", "spot_vol", "events", "sessions", "previous_close", "strike_window"}, "$");
     const bool several = j.contains("sessions");
     for (const auto* field : {"id", "title", "description", "symbols", "date", "seed", "generator"})
       require(j.contains(field), field, "required field is missing");
     if (several) {
-      for (const auto* field : {"session", "drift", "events"})
+      for (const auto* field : {"session", "drift", "events", "previous_close"})
         require(!j.contains(field), field, "give it in each of the sessions instead");
     } else {
       for (const auto* field : {"session", "drift", "volatility", "iv_shift", "spot_vol"})
@@ -206,6 +255,8 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
     Scenario s;
     s.source = source;
     s.source_file = std::filesystem::absolute(file);
+    if (j.contains("previous_close")) s.previous_close = number(j.at("previous_close"), "previous_close", -0.3, 0.3);
+    if (j.contains("strike_window")) s.strike_window = number(j.at("strike_window"), "strike_window", 0.03, 0.5);
     s.id = text(j.at("id"), "id", 40);
     require(s.id.front() != '-' && s.id.back() != '-' && std::all_of(s.id.begin(), s.id.end(), [](char c) {
       return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
@@ -219,7 +270,7 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
       for (std::size_t i = 0; i < sessions.size(); ++i) {
         const auto field = "sessions[" + std::to_string(i) + "]";
         const auto& value = sessions[i];
-        keys(value, {"session", "drift", "volatility", "iv_shift", "spot_vol", "events", "dividends"}, field);
+        keys(value, {"session", "drift", "volatility", "iv_shift", "spot_vol", "events", "dividends", "previous_close"}, field);
         ScenarioSession session;
         require(value.contains("session"), field + ".session", "required field is missing");
         session.session = text(value.at("session"), field + ".session");
@@ -276,7 +327,11 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
         const auto field = "sessions[" + std::to_string(i) + "]";
         const auto& value = j.at("sessions")[i];
         auto& session = s.sessions[i];
-        if (value.contains("events")) session.events = events_of(value.at("events"), field + ".events", windows[i]);
+        if (value.contains("events")) session.events = events_of(value.at("events"), field + ".events", windows[i], s.symbols);
+        if (value.contains("previous_close")) {
+          require(i == 0 || windows[i].date != windows[i - 1].date, field + ".previous_close", "only the first session of a trading date may set its reference");
+          session.previous_close = number(value.at("previous_close"), field + ".previous_close", -0.3, 0.3);
+        }
         if (value.contains("dividends")) {
           const auto& dividends = value.at("dividends");
           require(dividends.is_array() && dividends.size() <= 2, field + ".dividends", "expected at most 2 dividends");
@@ -311,13 +366,14 @@ Scenario parse_scenario(std::string_view source, const std::filesystem::path& fi
       s.iv_shift = first.iv_shift;
       s.spot_vol = first.spot_vol;
       s.events = first.events;
+      s.previous_close = first.previous_close;
       return s;
     }
     s.drift = drift_of(j.at("drift"), "drift");
     s.volatility = number(j.at("volatility"), "volatility", 0, 1);
     s.iv_shift = number(j.at("iv_shift"), "iv_shift", -0.1, 1);
     s.spot_vol = number(j.at("spot_vol"), "spot_vol", -10, 0);
-    if (j.contains("events")) s.events = events_of(j.at("events"), "events", scenario_windows(s, s.date).front());
+    if (j.contains("events")) s.events = events_of(j.at("events"), "events", scenario_windows(s, s.date).front(), s.symbols);
     return s;
   } catch (const std::exception& error) {
     throw std::invalid_argument(file.string() + ": " + error.what());

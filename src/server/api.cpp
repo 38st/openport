@@ -316,6 +316,7 @@ json circuit_breaker_json(const CircuitBreakerStatus& breaker) {
   return {{"symbol", breaker.symbol}, {"day", breaker.market_time > 0 ? json(md::format_date(breaker.day)) : json(nullptr)},
           {"previous_close", close ? json{{"date", md::format_date(close->date)}, {"price", close->price}} : json(nullptr)},
           {"level", breaker.level}, {"halts", halts}, {"active", breaker.active},
+          {"inactive_reason", close ? json(nullptr) : json("MISSING_PREVIOUS_CLOSE")},
           {"market_time", breaker.market_time > 0 ? json(md::format_timestamp(breaker.market_time)) : json(nullptr)},
           {"error", breaker.error.empty() ? json(nullptr) : json(breaker.error)}};
 }

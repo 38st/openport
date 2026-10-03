@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,11 +14,15 @@
 namespace openport::providers {
 
 struct ScenarioEvent {
-  std::string type;  ///< gap, crush, spike or pin
+  std::string type;  ///< gap, crush, spike, pin, book, stall or halt
   std::string at;    ///< HH:MM ET; gap has no time
   double move = 0;   ///< log return, gap or spike
   double iv = 0;     ///< absolute IV change, crush or spike
   double strike = 0; ///< SPX strike, pin
+  int minutes = 0;  ///< window duration for book, stall and halt
+  std::string state = {}; ///< crossed, locked, one_sided, zero_size or wide
+  std::vector<std::string> symbols = {}; ///< empty means all scenario symbols
+  std::optional<md::Date> expiry = std::nullopt; ///< book filter
 };
 
 /// Shares of an ETF going ex-dividend on a session's trading date.
@@ -33,6 +38,7 @@ struct ScenarioSession {
   double volatility = 0, iv_shift = 0, spot_vol = 0;
   std::vector<ScenarioEvent> events;
   std::vector<ScenarioDividend> dividends;
+  std::optional<double> previous_close = std::nullopt; ///< log return relative to the ungapped opening level
 };
 
 struct Scenario {
@@ -52,6 +58,9 @@ struct Scenario {
   std::string source;  ///< Exact parsed bytes, for run provenance.
   std::filesystem::path source_file;
   bool builtin = false;
+  std::optional<double> previous_close = std::nullopt; ///< first date, before any opening gap
+  bool events_scaled = false; ///< live demo has already fitted its regular event times
+  double strike_window = 0; ///< optional minimum strike window as a fraction of open
 };
 
 /// When one session of a scenario runs.
@@ -85,6 +94,8 @@ struct ScenarioWindow {
 [[nodiscard]] md::Timestamp scenario_end(const Scenario& scenario, md::Date date);
 /// Overnight HH:MM >= 20:15 belongs to the evening before the trading date.
 [[nodiscard]] md::Timestamp scenario_time(std::string_view time, md::Date date, bool overnight);
+/// Event times use a full regular session; early closes scale offsets down to minutes.
+[[nodiscard]] md::Timestamp scenario_event_time(std::string_view time, const ScenarioWindow& window, int minutes = 0);
 /// The generator's output revision. Revision 1 lists five expiries a chain: the date,
 /// the next two business days, the Friday after and next month's third Friday.
 /// Revision 2 also lists every series an earlier date listed until its last trade, at
@@ -93,8 +104,9 @@ struct ScenarioWindow {
 /// RUT/RUTW and VIX/VIXW, their ticks and sessions, and stops AM quotes at their last
 /// regular close. Revision 4 prices American ETF options with discrete quarterly
 /// dividends, also reflected in spot prices. Runs record the revision; one
-/// recorded without it regenerates revision 1.
-inline constexpr int kScenarioRevision = 4;
+/// recorded without it regenerates revision 1. Revision 5 scales regular event
+/// times and window endpoints into early-close sessions.
+inline constexpr int kScenarioRevision = 5;
 /// Deterministic simulated quarterly ETF dividends, inclusive of both dates.
 [[nodiscard]] std::vector<trading::Dividend> demo_dividends(md::Date first, md::Date last);
 /// Known payments through the run's listed ETF expiries. Session entries replace

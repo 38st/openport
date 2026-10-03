@@ -21,7 +21,7 @@ json valid() {
 void write(const std::filesystem::path& file, const json& data) { std::ofstream(file) << data; }
 
 TEST(Scenarios, BuiltinsAreValidAndUsersOverrideAfterThem) {
-  EXPECT_EQ(providers::builtin_scenarios().size(), 19U);
+  EXPECT_EQ(providers::builtin_scenarios().size(), 20U);
   for (const auto& s : providers::builtin_scenarios()) {
     EXPECT_FALSE(s.goal.empty());
     EXPECT_EQ(s.generator, 1);
@@ -36,9 +36,9 @@ TEST(Scenarios, BuiltinsAreValidAndUsersOverrideAfterThem) {
   write(user / "bad.json", bad);
   std::vector<std::string> errors;
   const auto loaded = providers::load_scenarios(user, [&](const auto& error) { errors.push_back(error); });
-  ASSERT_EQ(loaded.size(), 20U);
+  ASSERT_EQ(loaded.size(), 21U);
   EXPECT_EQ(loaded.front().id, "trend");
-  EXPECT_EQ(loaded[18].id, "custom");
+  EXPECT_EQ(loaded[19].id, "custom");
   EXPECT_EQ(loaded.back().id, "reversal");
   EXPECT_EQ(loaded.back().title, "Replacement");
   EXPECT_NE(providers::builtin_scenarios().front().title, "Replacement");
@@ -152,8 +152,8 @@ TEST(Scenarios, SeveralSessionsRejectImpossibleSequencesAndFields) {
       {"sessions[0].volatility", [](json& d) { d.erase("volatility"); }},
       {"sessions[0].typo", [](json& d) { d["sessions"][0]["typo"] = 1; }},
       {"sessions", [](json& d) { d["sessions"] = json::array(); }},
-      {"sessions[1].events.at", [](json& d) { d["sessions"][1]["events"] = {{{"type", "crush"}, {"at", "17:00"}, {"iv", -0.01}}}; }},
-      {"sessions[2].events.pin", [](json& d) { d["sessions"][2]["events"] = {{{"type", "pin"}, {"at", "01:00"}, {"strike", 6000}}}; }},
+      {"sessions[1].events[0] (crush).at 17:00", [](json& d) { d["sessions"][1]["events"] = {{{"type", "crush"}, {"at", "17:00"}, {"iv", -0.01}}}; }},
+      {"sessions[2].events[0] (pin).pin", [](json& d) { d["sessions"][2]["events"] = {{{"type", "pin"}, {"at", "01:00"}, {"strike", 6000}}}; }},
       {"sessions[0].dividends", [](json& d) { d["sessions"][0]["dividends"] = d["sessions"][3]["dividends"]; }},
       {"sessions[3].dividends.symbol", [](json& d) { d["sessions"][3]["dividends"][0]["symbol"] = "QQQ"; }},
       {"sessions[3].dividends.symbol", [](json& d) { d["sessions"][2]["dividends"] = d["sessions"][3]["dividends"]; }},
@@ -401,3 +401,115 @@ TEST(Scenarios, GapCrushSpikeAndPinRepriceTheChainAndSeedsRepeat) {
   EXPECT_THROW(providers::write_scenario_recording(file.path, scenario, scenario.date, 17), std::invalid_argument);
 }
 }  // namespace
+
+TEST(Scenarios, StressFieldsValidateBoundsTargetsWindowsAndErrors) {
+  auto data = valid();
+  data["previous_close"] = 0.08;
+  data["strike_window"] = 0.3;
+  data["events"] = json::array({{{"type", "book"}, {"at", "11:00"}, {"minutes", 5},
+      {"state", "crossed"}, {"symbols", {"SPX"}}, {"expiry", "2026-09-18"}}});
+  const auto parsed = providers::parse_scenario(data.dump(), "stress.json");
+  EXPECT_EQ(parsed.previous_close, 0.08);
+  EXPECT_EQ(parsed.strike_window, 0.3);
+  EXPECT_EQ(parsed.events.front().minutes, 5);
+  for (const auto& [field, value] : std::vector<std::pair<std::string, json>>{
+      {"minutes", 0}, {"minutes", 1.5}, {"minutes", 791}, {"minutes", 301}, {"state", "nan"},
+      {"symbols", {"QQQ"}}, {"symbols", {"SPX", "SPX"}}, {"symbols", json::array()},
+      {"expiry", "2026-02-30"}, {"at", "16:00"}, {"at", "09:29"}}) {
+    auto bad = data;
+    bad["events"][0][field] = value;
+    EXPECT_THROW((void)providers::parse_scenario(bad.dump(), "stress.json"), std::invalid_argument) << field;
+  }
+  for (const auto& field : {"strike_window", "previous_close"}) {
+    auto bad = data; bad[field] = 0.6;
+    EXPECT_THROW((void)providers::parse_scenario(bad.dump(), "stress.json"), std::invalid_argument);
+  }
+  auto bad = data; bad["events"][0]["at"] = "16:30";
+  try { (void)providers::parse_scenario(bad.dump(), "stress.json"); FAIL(); }
+  catch (const std::invalid_argument& error) {
+    const std::string message = error.what();
+    EXPECT_NE(message.find("events[0] (book)"), std::string::npos);
+    EXPECT_NE(message.find("16:30"), std::string::npos);
+  }
+  data["date"] = "2026-11-27";
+  EXPECT_NO_THROW((void)providers::parse_scenario(data.dump(), "early.json"));
+}
+
+TEST(Scenarios, EveryBookStateIsScopedAndRestoresItsQuote) {
+  auto data = valid(); data["symbols"] = {"SPX", "XSP"};
+  data["events"] = json::array();
+  const std::vector<std::string> states{"crossed", "locked", "one_sided", "zero_size", "wide"};
+  for (std::size_t i = 0; i < states.size(); ++i)
+    data["events"].push_back({{"type", "book"}, {"at", "10:0" + std::to_string(i * 2)}, {"minutes", 1},
+        {"state", states[i]}, {"symbols", {"SPX"}}, {"expiry", "2026-09-18"}});
+  const auto scenario = providers::parse_scenario(data.dump(), "books.json");
+  test::RecordingFile file;
+  providers::write_scenario_recording(file.path, scenario, scenario.date, scenario.seed);
+  md::RecordingReader reader(file.path);
+  std::map<md::InstrumentId, md::OptionContract> contracts;
+  std::set<std::string> observed;
+  bool restored = false, unselected = false, other_expiry = false;
+  while (const auto record = reader.next()) {
+    if (const auto* d = std::get_if<md::ContractDefinition>(&record->event)) contracts[d->id] = d->contract;
+    const auto* q = std::get_if<md::OptionQuote>(&record->event);
+    if (!q) continue;
+    const auto& c = contracts.at(q->id);
+    const auto minute = md::new_york_time(q->ts).seconds / 60;
+    if (minute < 600 || minute > 609 || std::abs(c.strike - (c.underlying == "SPX" ? 6000 : 600)) > 1) continue;
+    if (c.underlying == "XSP") { EXPECT_LE(q->bid, q->ask); unselected = true; continue; }
+    if (c.expiry != md::Date{2026, 9, 18}) { EXPECT_LE(q->bid, q->ask); other_expiry = true; continue; }
+    if ((minute - 600) % 2 == 1) { EXPECT_LT(q->bid, q->ask); EXPECT_GT(q->ask_size, 0); restored = true; continue; }
+    const auto& state = states[static_cast<std::size_t>((minute - 600) / 2)];
+    observed.insert(state);
+    if (state == "crossed") { EXPECT_GT(q->bid, q->ask); }
+    if (state == "locked") { EXPECT_EQ(q->bid, q->ask); }
+    if (state == "one_sided") { EXPECT_EQ(q->bid, 0); EXPECT_EQ(q->bid_size, 0); }
+    if (state == "zero_size") { EXPECT_EQ(q->bid_size, 0); EXPECT_EQ(q->ask_size, 0); }
+    if (state == "wide") { EXPECT_GE(q->ask - q->bid, 1); }
+  }
+  EXPECT_EQ(observed.size(), states.size());
+  EXPECT_TRUE(restored && unselected && other_expiry);
+}
+
+TEST(Scenarios, EarlyCloseScalesWaterfallAndWindowEndpointsOnce) {
+  const auto& builtins = providers::builtin_scenarios();
+  const auto found = std::find_if(builtins.begin(), builtins.end(), [](const auto& s) { return s.id == "afternoon-waterfall"; });
+  ASSERT_NE(found, builtins.end());
+  const md::Date date{2026, 11, 27};
+  const auto window = providers::scenario_windows(*found, date).front();
+  for (const auto& event : found->events) {
+    if (event.type == "gap") continue;
+    const auto minutes = md::new_york_time(providers::scenario_time(event.at, date, false)).seconds / 60 - 570;
+    EXPECT_EQ(providers::scenario_event_time(event.at, window), window.first + (minutes * 210 / 390) * md::kNanosPerMinute);
+  }
+  EXPECT_EQ(providers::scenario_event_time("14:30", window, 15), md::new_york_to_utc(date, 12, 19));
+  test::RecordingFile file;
+  EXPECT_NO_THROW(providers::write_scenario_recording(file.path, *found, date, 17));
+  const auto old = file.directory / "old.oprec";
+  EXPECT_THROW(providers::write_scenario_recording(old, *found, date, 17, 4), std::invalid_argument);
+  auto morning = valid();
+  morning["events"] = {{{"type", "crush"}, {"at", "10:30"}, {"iv", -0.04}}};
+  const auto before = providers::parse_scenario(morning.dump(), "morning.json");
+  EXPECT_NO_THROW(providers::write_scenario_recording(old, before, date, 17, 4));
+}
+
+TEST(Scenarios, StressRecordingsAreByteIdentical) {
+  auto data = valid();
+  data["events"] = {{{"type", "stall"}, {"at", "09:30"}, {"minutes", 390}}};
+  const auto scenario = providers::parse_scenario(data.dump(), "stall.json");
+  test::RecordingFile file;
+  const auto second = file.directory / "again.oprec";
+  providers::write_scenario_recording(file.path, scenario, scenario.date, 0);
+  providers::write_scenario_recording(second, scenario, scenario.date, 0);
+  const auto bytes = [](const auto& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>{in}, {});
+  };
+  EXPECT_EQ(bytes(file.path), bytes(second));
+  md::RecordingReader reader(file.path);
+  EXPECT_TRUE(reader.header().market_controls);
+  std::size_t heartbeats = 0;
+  while (const auto event = reader.next())
+    if (std::holds_alternative<md::SnapshotHeartbeat>(event->event)) ++heartbeats;
+  EXPECT_EQ(heartbeats, 390U * 4);
+}

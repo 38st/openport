@@ -55,6 +55,9 @@ watched symbol, the previous close, the day's level and its halts (see
 written only once the main journal has opened; replays and `--no-paper` keep them in
 memory. A read or write failure appears in `circuit_breaker.error` and the daemon log,
 and everything else carries on.
+`inactive_reason: "MISSING_PREVIOUS_CLOSE"` explains a missing breaker reference;
+null means the reference is available. Authored scenario halts are independent,
+reported as level 0 and shown with their resume time in the terminal.
 
 ## Homebrew and Docker Compose
 
@@ -408,8 +411,12 @@ loops; malformed data produces `Error`. Neither the daemon nor its web terminal
 exits automatically at replay EOF. The probe retains its readiness/timeout rules
 and stops waiting at EOF if it has not become ready.
 
-**Format v3.** Imported recordings use version 3; live writers still use version 2.
-Readers accept versions 1, 2 and 3. Version 3 appends one `u8` boolean, `imported`,
+**Format v4.** Live writers and scenarios with stalls or halts use version 4.
+Readers accept versions 1–4; older builds refuse v4. Version 4 retains the v3 header
+and adds tag 10 (`SnapshotHeartbeat`: underlying string, timestamp i64), and tag 11
+(`TradingHalt`: start and exclusive end i64 timestamps). A heartbeat is a batch
+boundary advancing market time without confirming quotes. Halt intervals are
+market-wide. Ordinary generated scenarios still write version 2; imports use v3. Version 3 appends one `u8` boolean, `imported`,
 to the header. Older headers default it to false. Event tags are unchanged. Version 2
 adds tag 9 for option volume. The header and tags 0–8 are unchanged, so v1 files
 play as before, with volume unknown.
@@ -421,7 +428,7 @@ NaN payloads, infinities, subnormals and signed zero. There is no native struct
 padding, locale-dependent text, or lossy numeric conversion.
 
 The uncompressed prefix is eight magic bytes `OPREC\r\n\0`, a `u32` version
-(2 for live recordings, 3 for imports), and a `u32` header-payload length. The payload, in order, is:
+(2 for ordinary scenarios, 3 for imports, 4 for live/stress recordings), and a `u32` header-payload length. The payload, in order, is:
 
 | Field | Encoding |
 | --- | --- |
@@ -431,7 +438,7 @@ The uncompressed prefix is eight magic bytes `OPREC\r\n\0`, a `u32` version
 | Quotes, trades, open interest, vendor Greeks, history | Five `u8` booleans |
 | Subscription | `u32` symbol count, then strings, `i32` max expiries, binary64 strike window |
 | Start wall time | `i64` Unix nanoseconds |
-| Imported (v3 only) | `u8` boolean; imported start time is the first scheduled session's market time |
+| Imported (v3 and later) | `u8` boolean; imported start time is the first scheduled session's market time |
 
 The rest is concatenated independent zstd frames (level 1, content checksum).
 Their decompressed contents are a stream of `u32` record-payload lengths followed
@@ -451,6 +458,8 @@ prices/sizes/Greeks are binary64, and strings use the encoding above.
 | 7 | Underlying official close | symbol; ts; trading year, month, day (three `i32`); price |
 | 8 | Snapshot complete | underlying; ts |
 | 9 | Option volume (v2 and later) | id, ts, cumulative contracts |
+| 10 | Snapshot heartbeat (v4) | underlying; ts; batch boundary without quote confirmation |
+| 11 | Trading halt (v4) | ts; end (exclusive); both `i64` nanosecond timestamps |
 
 A zero record length is the clean-end marker, written only after all publishers
 stop and all accepted events drain. It must finish the final frame; bytes after
@@ -546,7 +555,7 @@ true` then permits trading at that prepared state. Evening overnight times are
 on the calendar date before the session date; morning times are on the session
 date. Recorded feeds retain their original delay and market timestamps.
 
-The demo market has nineteen built-in scenarios, compiled from `scenarios/*.json`,
+The demo market has twenty built-in scenarios, compiled from `scenarios/*.json`,
 plus `--scenario-dir` additions and overrides. No built-in files need installing
 or locating at runtime. They include the
 five original days, gaps, crushes, pins and reversals, and four runs of several
@@ -557,8 +566,13 @@ assignment and dividends between them, and its state lists its `sessions`. All a
 historical reconstructions. Status keeps `provider.simulated`; the terminal shows
 the scenario and seed with the simulated label. Generated recordings are cached by
 scenario, date and seed, with four completed entries retained. Generation uses
-fixed version 1, at output revision 4 (see [scenarios](scenarios.md)); unsupported
-versions are rejected.
+fixed version 1, at output revision 5 (see [scenarios](scenarios.md)); unsupported
+versions are rejected. Optional [stress fields](scenarios.md#events) author abnormal
+books, quote stalls, market-wide halt windows, previous-close references and wider
+strike ranges. `stress-rehearsal` is a built-in drill. At revision 5, regular event times and window
+endpoints scale from the full session into early closes, rounded down to minutes
+(minimum one-minute windows); `afternoon-waterfall` works on 2026-11-27. Invalid
+event-time diagnostics name the event index, type and authored time.
 
 Each run's account journal is retained in `replays/` beside `--paper-journal`, on
 the chosen plan or practice. EOF and stopped runs are read-only in the terminal's
@@ -713,7 +727,7 @@ Replay driver 5 adds AM opening-print settlement. Verification
 of drivers 1–4 keeps their manual AM behavior and original journal bytes. Driver 5
 changes the start input for every new run and adds settlement transactions when an
 AM position is held into an expiry opening print. Resuming requires the current driver (6, below);
-older runs remain readable and verifiable. The scenario generator revision is 4; older recorded revisions regenerate as before.
+older runs remain readable and verifiable. The scenario generator revision is 5; older recorded revisions regenerate as before.
 A stopped run verifies through its recorded prefix; it need not have reached EOF.
 So does a run a crash cut off, whichever record its journal ends at: each input and
 each transaction is its own append, and new runs record a command's input before the
@@ -774,7 +788,8 @@ never journaled.
 `openportd --provider demo` rotates the thirteen built-in regular scenarios in their
 Replay listing order, one a trading date: a date plays the scenario its count of
 trading dates from 2 January 2026 selects, so it plays the same one whenever the
-server starts. `--option days=trend,chop` selects and orders built-in ids;
+server starts. Stress drills are opt-in: `--option days=stress-rehearsal` exercises
+books, stalls and halts without changing the default rotation. `--option days=trend,chop` selects and orders built-in ids;
 unknown ids, overnight sessions and empty entries are startup errors. Custom files
 in `--scenario-dir` remain available on Replay. `--option speed=N` accepts 1, 2, 5,
 10, 30, 60, 120 or 300; default 1. Maximum-throughput playback is not supported.
@@ -795,14 +810,15 @@ and recovery.
 
 The default first date is the last trading date before startup's New York date.
 Each next session uses the next trading date, skipping weekends and calendar holidays.
-Timed scenario events scale proportionally into early-close sessions, rounded down
+Timed scenario events in both replays and the demo feed scale proportionally into early-close sessions, rounded down
 to a minute. Seeds are FNV-1a of `id|YYYY-MM-DD`, independent of speed and wall time.
 The same scenario and date reproduce prices on the same build and platform.
 Sessions have 15-second snapshots and jump directly from the last snapshot to the
 next open. Normal expiry, settlement, auto-close and the 17:00 ET trading-date
 rollover apply. A series stays listed until its last trade, so positions carry from
 day to day. Scenario opening levels can gap from the preceding close; the feed keeps
-the close each day actually printed rather than the one a scenario starts from. The
+the close each day actually printed, unless the scenario explicitly authors
+`previous_close`, which takes precedence. The
 first day after a start also gets the closes of the trading date before it, generated
 as the feed would have played that date, so the market-wide circuit breakers have a
 previous close to measure a fall from from the first snapshot on.

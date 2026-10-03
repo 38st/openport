@@ -14,6 +14,11 @@ remain exact integer micro-dollars.
 
 ## Status and market data
 
+Status and WebSocket `circuit_breaker` include optional `inactive_reason`
+(`MISSING_PREVIOUS_CLOSE` or null). Halt level 0 identifies an authored market-wide
+scenario halt; levels 1–3 are price-triggered breakers. The terminal shows the
+cause and resume time. See [stress scenarios](scenarios.md#events).
+
 | Route | Returns |
 | --- | --- |
 | `GET /api/status` | Running `version`, provider, market and per-underlying sessions, feed health (including the demo day title), engine counters, notification delivery status (no secrets), and optional sandbox availability |

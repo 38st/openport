@@ -105,7 +105,8 @@ TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
   EXPECT_FALSE(demo->capabilities().realtime);
   EXPECT_EQ(demo->symbols(), (std::vector<std::string>{"SPX", "SPY", "QQQ", "XSP", "NDX", "RUT", "VIX"}));
   std::vector<std::string> expected, actual;
-  for (const auto& day : providers::builtin_scenarios()) if (!day.overnight && day.sessions.empty()) expected.push_back(day.id);
+  for (const auto& day : providers::builtin_scenarios())
+    if (!day.overnight && day.sessions.empty() && day.id != "stress-rehearsal") expected.push_back(day.id);
   for (const auto& day : demo->days()) actual.push_back(day.id);
   EXPECT_EQ(actual, expected);
   EXPECT_EQ(actual.size(), 13U);
@@ -115,7 +116,7 @@ TEST(DemoFeed, FactoryOptionsSymbolsAndDefaultRotation) {
   for (const auto& option : std::vector<std::pair<std::string, std::string>>{
       {"speed", "max"}, {"speed", "0"}, {"speed", "3"}, {"speed", "1.0"}, {"speed", "301"},
       {"days", ""}, {"days", "trend,"}, {"days", ",trend"}, {"days", "missing"},
-      {"revision", "0"}, {"revision", "5"}, {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
+      {"revision", "0"}, {"revision", "6"}, {"days", "trend,overnight"}, {"days", "overnight-gap"}, {"loop", "on"}}) {
     EXPECT_THROW((void)providers::make_provider({"demo", "", {option}}), std::invalid_argument);
   }
   provider = providers::make_provider({"demo", "", {{"days", "chop,trend,chop"}}});
@@ -169,20 +170,29 @@ TEST(DemoFeed, DatesUseNewYorkWeekendsHolidaysAndRepeatableSeeds) {
   EXPECT_NE(seed, providers::DemoProvider::seed("chop", {2026, 9, 18}));
   for (const auto& scenario : providers::builtin_scenarios()) {
     if (scenario.overnight || !scenario.sessions.empty()) continue;
-    const auto shortened = providers::DemoProvider::on_date(scenario, {2026, 11, 27});
-    for (const auto& event : shortened.events) {
+    const auto window = providers::scenario_windows(scenario, {2026, 11, 27}).front();
+    for (const auto& event : scenario.events) {
       if (event.type != "gap") {
-        EXPECT_LT(providers::scenario_time(event.at, {2026, 11, 27}, false), md::new_york_to_utc({2026, 11, 27}, 13, 0));
+        EXPECT_LT(providers::scenario_event_time(event.at, window), md::new_york_to_utc({2026, 11, 27}, 13, 0));
       }
     }
   }
   const auto& builtins = providers::builtin_scenarios();
   const auto pin = std::find_if(builtins.begin(), builtins.end(), [](const auto& day) { return day.id == "close-pin"; });
   ASSERT_NE(pin, builtins.end());
-  const auto shortened = providers::DemoProvider::on_date(*pin, {2026, 11, 27});
-  EXPECT_EQ(shortened.events.front().at, "12:11");
+  const auto window = providers::scenario_windows(*pin, {2026, 11, 27}).front();
+  EXPECT_EQ(providers::scenario_event_time(pin->events.front().at, window), md::new_york_to_utc({2026, 11, 27}, 12, 11));
   test::RecordingFile file;
-  EXPECT_NO_THROW(providers::write_scenario_recording(file.path, shortened, {2026, 11, 27}, seed));
+  EXPECT_NO_THROW(providers::write_scenario_recording(file.path, *pin, {2026, 11, 27}, seed));
+  const auto fitted = providers::DemoProvider::on_date(*pin, {2026, 11, 27});
+  EXPECT_EQ(fitted.events.front().at, "12:11");
+  const auto live = file.directory / "live.oprec";
+  providers::write_scenario_recording(live, fitted, {2026, 11, 27}, seed);
+  const auto bytes = [](const auto& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>{input}, {});
+  };
+  EXPECT_EQ(bytes(file.path), bytes(live));
 }
 
 TEST(DemoFeed, RecoveredTimeResumesItsDateOrSelectsTheFollowingOne) {
