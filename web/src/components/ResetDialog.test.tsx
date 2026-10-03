@@ -44,6 +44,19 @@ it.each(["reset", "create"])("submits itemized fees when starting an account att
   expect(kind === "reset" ? api.resetAccount : api.createAccount).toHaveBeenCalledWith(
     expect.objectContaining({ plan: plan.id, fee_model: "itemized" }), "open")
 })
+it.each(["reset", "create"])("submits midpoint fills (%s)", async (kind) => {
+  vi.spyOn(api, "createAccount").mockResolvedValue({ account: { id: "mid", name: "Mid", account_version: "1", plan: "Practice", equity: "100000.00" } })
+  const plan = plans.find((entry) => entry.id === "intraday-100k")!
+  await act(async () => root.render(<QueryClientProvider client={client}>
+    {kind === "reset" ? <ResetDialog trading={{ ...status.trading!, write: "open" }} attempt={2} initial={plan.id} onClose={() => {}} />
+      : <NewAccountDialog trading={{ ...status.trading!, write: "open" }} onClose={() => {}} onCreated={() => {}} />}
+  </QueryClientProvider>))
+  if (kind === "create") { await act(async () => host.querySelector<HTMLInputElement>(`input[value="${plan.id}"]`)!.click()) }
+  const select = host.querySelector<HTMLSelectElement>('select')!
+  await act(async () => { select.value = "midpoint"; select.dispatchEvent(new Event("change", { bubbles: true })) })
+  await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
+  expect(kind === "reset" ? api.resetAccount : api.createAccount).toHaveBeenCalledWith(expect.objectContaining({ fill_model: "midpoint" }), "open")
+})
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove(); client.clear()
   vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllGlobals()

@@ -1,3 +1,4 @@
+import { useWalk } from "./WalkFields"
 import { FeeAmount } from "./FeeAmount"
 import { useQuery } from "@tanstack/react-query"
 import { useMemo, useRef, useState } from "react"
@@ -166,12 +167,14 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
   })
   const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked) && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
-  const valid = (type === "market" || tif !== "gtd" || good_till != null) && legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
+  const walk = useWalk(type === "limit" && ["day", "gtc"].includes(tif), limitText, true, (tick / 100).toFixed(2), quote.ask?.toFixed(2) ?? "")
+  const valid = walk.valid && (type === "market" || tif !== "gtd" || good_till != null) && legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
 
   const draft: NewOrder | null = valid ? {
     client_order_id: "preview:strategy", legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
     ...(type === "market" ? { type, time_in_force: "ioc" as const } : { type, time_in_force: tif, limit_price: limitText }),
     ...(type === "limit" && tif === "gtd" ? { good_till } : {}),
+    ...(walk.walk ? { walk: walk.walk } : {}),
   } : null
   const preview = useOrderPreview(draft, trading)
   const whatIfScope = useWhatIfScope()
@@ -216,6 +219,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
         client_order_id: crypto.randomUUID(), legs: legs.map(({ symbol, side, ratio }) => ({ symbol, side, ratio })), quantity: q,
         ...(type === "market" ? { type, time_in_force: "ioc" as const } : { type, time_in_force: tif, limit_price: limitText }),
         ...(type === "limit" && tif === "gtd" ? { good_till } : {}),
+        ...(walk.walk ? { walk: walk.walk } : {}),
         ...(exitable && exits.bracket ? { bracket: exits.bracket } : {}),
         ...(orderTags.length ? { tags: orderTags } : {}), ...(note ? { note } : {}),
       }
@@ -307,6 +311,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
               <span className={`text-xs ${amount && !validAmount ? "text-warn" : "text-muted"}`}>{amount && !validAmount ? `Use a multiple of $${(tick / 100).toFixed(2)}` : `$${(tick / 100).toFixed(2)} tick`} · {direction === "debit" ? "pay at most" : "receive at least"}</span>
             </span>
           </div>}
+          {walk.fields}
           {exitable && <div className="col-span-2">{exits.fields}</div>}
         </fieldset>
         <LiquidityWarning modeled={!!(rules?.fill_latency_ms || rules?.impact_ticks)} impact={!!rules?.impact_ticks} market={type === "market"}
@@ -314,6 +319,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
         <p role="status" className={`rounded-md border px-3 py-2 text-xs ${marketable ? "border-accent/40 text-foreground" : "border-border text-muted"}`}>
           {type === "limit" && tif === "gtc" && extended ? "GTC waits for the regular session, even if the current quote crosses its limit."
             : quote.ask == null ? "Every leg needs a two-sided quote before the strategy can fill."
+            : rules?.inside_fill_percent && type === "limit" ? `Inside fills enabled at ${rules.inside_fill_percent}% across the net spread. See preview for execution now.`
             : rules?.fill_latency_ms || rules?.impact_ticks ? "Simulated fills use the account’s latency and each leg’s size impact. Displayed net prices are estimates; all legs still fill together within the net limit."
             : marketable ? `Marketable: fills now at ${netText(quote.ask)} per unit, all legs together, up to each leg's displayed size.`
             : `Rests: the legs trade now at ${netText(quote.ask)}; fills when that reaches ${netText(net)}.`}

@@ -10,7 +10,7 @@ import { OrderDetailDialog } from "../components/OrderDetail"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented, type Tone } from "../components/ui"
 import { newYorkDate, orderLabel, osiLabel } from "../lib/journal"
-import { editable, reasonEvidence } from "../lib/orders"
+import { editable, isOpen, reasonEvidence } from "../lib/orders"
 import { describeTrigger } from "../lib/ticket"
 import { formatMoney } from "../lib/trading"
 import { useWriteToken } from "../lib/write-token"
@@ -150,7 +150,10 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
           <td className={order.side === "buy" ? "text-bullish" : order.side === "sell" ? "text-bearish" : "text-accent"}>{order.side ? order.side.toUpperCase() : "NET"}</td>
           <td>{order.type} · {order.time_in_force.toUpperCase()}</td>
           <td>{order.filled_quantity} / {order.quantity}</td>
-          <td>{order.limit_price ? order.legs ? netLabel(order.limit_price) : formatMoney(order.limit_price) : "MKT"}</td>
+          <td>{order.limit_price ? order.legs ? netLabel(order.limit_price) : formatMoney(order.limit_price) : "MKT"}
+            {order.walk && <div className="text-[11px] text-muted" title={order.next_walk?.time}>Walk · {order.next_walk
+              ? `${formatMoney(order.next_walk.limit_price)} at ${timeFormat.format(Date.parse(order.next_walk.time))} ET` : isOpen(order) ? "resting" : "ended"}</div>}
+          </td>
           <td>{order.legs && order.average_fill_price ? netLabel(order.average_fill_price) : formatMoney(order.average_fill_price)}</td>
           <td><div className="flex flex-col items-end gap-1">
             <Badge tone={statusTone[order.status]}>{statusLabel[order.status]}</Badge>
@@ -188,4 +191,3 @@ function FillsTable({ fills }: { fills: Fill[] }) {
     ])}
   </Table>
 }
-

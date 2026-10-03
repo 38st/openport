@@ -64,6 +64,7 @@ export interface AccountRules {
   slippage_ticks?: number
   fill_latency_ms?: number
   impact_ticks?: number
+  inside_fill_percent?: number
   /** Absent under the flat fee and on older servers. */
   fees?: FeeSchedule
   margin?: "strategy" | "portfolio"
@@ -461,7 +462,7 @@ export interface Plan {
   unlocked_by: string | null
 }
 export interface PlansResponse { plans: Plan[] }
-export type FillModel = "as_displayed" | "conservative"
+export type FillModel = "as_displayed" | "conservative" | "midpoint"
 export type FeeModel = "flat" | "itemized"
 export type AccountRulesInput = Pick<AccountRules, "profit_target" | "max_drawdown" | "drawdown_mode" | "buy_only" | "buying_power" | "expiry_cutoff_seconds">
   & Partial<Omit<AccountRules, "fees">> & { fees?: Partial<FeeSchedule> | null }
@@ -532,7 +533,9 @@ export type TimeInForce = "day" | "gtc" | "ioc" | "exto" | "gtc_exto" | "gtd"
 type Pricing = { type: "limit"; limit_price: Money; time_in_force: TimeInForce }
   | { type: "market"; time_in_force: "ioc" | "exto" | "gtc_exto" | "gtd"; limit_price?: never }
 export type FlattenPricing = { type?: "market" | "limit"; limit_ticks?: number }
-export type NewOrder = { tags?: string[]; note?: string; good_till?: string } & ({
+export interface Walk { step: Money; seconds: number; limit: Money }
+export interface WalkStep { time: string; limit_price: Money }
+export type NewOrder = { tags?: string[]; note?: string; good_till?: string; walk?: Walk | null } & ({
   client_order_id: string
   symbol: string
   side: Side
@@ -570,7 +573,8 @@ export interface OrderChangeRecord {
   trigger_level: Money | null
   /** A change of time in force; absent from older servers. */
   time_in_force?: "day" | "gtc" | "ioc" | null
-  previous: { quantity: number; limit_price: Money | null; trigger_level: Money | null; time_in_force?: "day" | "gtc" | "ioc" | null }
+  walk?: Walk | null
+  previous: { quantity: number; limit_price: Money | null; trigger_level: Money | null; time_in_force?: "day" | "gtc" | "ioc" | null; walk?: Walk | null }
   applied: boolean
   reason: Decision | null
 }
@@ -593,6 +597,8 @@ export interface Order {
   time_in_force: TimeInForce
   good_till?: string | null
   limit_ticks?: number | null
+  walk?: Walk | null
+  next_walk?: WalkStep | null
   quantity: number
   filled_quantity: number
   remaining_quantity: number
@@ -840,7 +846,7 @@ export interface OrderResponse { account_version: string; order: Order }
 export interface SubmitOrderResponse extends OrderResponse { fills: Fill[] }
 /** New terms for a resting order; omitted fields keep their value. */
 /** `time_in_force` switches a resting limit order between DAY and GTC; absent from older servers' accepted fields. */
-export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money; time_in_force?: "day" | "gtc" }
+export interface OrderChange { quantity?: number; limit_price?: Money; trigger_level?: Money; time_in_force?: "day" | "gtc"; walk?: Walk | null }
 export interface CancelAllResponse { account_version: string; cancelled_orders: string[] }
 export interface AccountListItem { id: string; name: string; trading: TradingStatus; equity: Money | null }
 export interface AccountsResponse { accounts: AccountListItem[] }
@@ -971,6 +977,7 @@ export interface PreviewExecution {
   average_price: Money | null
 }
 export interface OrderPreview {
+  next_walk?: WalkStep | null
   account_version: string
   decision: string
   reason: Decision | null

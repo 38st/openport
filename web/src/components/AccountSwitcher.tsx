@@ -3,7 +3,8 @@ import { useRef, useState } from "react"
 import { api } from "../api/client"
 import { useLive } from "../api/live"
 import { usePlans } from "../api/trading"
-import type { FeeModel, TradingStatus } from "../api/trading-types"
+import type { FeeModel, FillModel, TradingStatus } from "../api/trading-types"
+import { FillModelPicker } from "./FillModelPicker"
 import { FeeModelPicker } from "./FeeModelPicker"
 import { offeredPlans } from "../lib/payouts"
 import { isSandboxToken, useWriteToken } from "../lib/write-token"
@@ -55,6 +56,7 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
   const token = useWriteToken()
   const [name, setName] = useState(`Account ${accounts.length + 1}`)
   const [choice, setChoice] = useState("")
+  const [fillModel, setFillModel] = useState<FillModel>("as_displayed")
   const [feeModel, setFeeModel] = useState<FeeModel>("flat")
   const [margin, setMargin] = useState<MarginChoice>()
   const [pending, setPending] = useState(false)
@@ -70,6 +72,7 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
     setError(undefined)
     try {
       const response = await api.createAccount({ name: trimmed, plan: selected.id,
+        ...(fillModel !== "as_displayed" ? { fill_model: fillModel } : {}),
         ...(feeModel === "itemized" ? { fee_model: feeModel } : {}),
         ...marginRequest(margin ?? planMargin(selected.rules), planMargin(selected.rules)) }, trading.write)
       onCreated(response.account.id)
@@ -109,6 +112,7 @@ export function NewAccountDialog({ trading, onClose, onCreated }: { trading: Tra
             </label>
           ))}
         </fieldset>
+        <FillModelPicker value={fillModel} onChange={setFillModel} disabled={pending} />
         <FeeModelPicker value={feeModel} onChange={setFeeModel} disabled={pending} flat={trading.fee_per_contract} />
         <MarginSettings value={margin ?? planMargin(selected?.rules)} onChange={setMargin} disabled={pending} />
         {plans.isLoading && <p className="text-sm text-muted">Loading plans…</p>}

@@ -8,7 +8,10 @@ import { liveState, useLive } from "../api/live"
 import type { TradingStatus } from "../api/trading-types"
 import { account, order, portfolio, quote, selection, status, trading } from "../test/trading-fixtures"
 import { OrderTicket } from "./OrderTicket"
-import { FlattenDialog } from "./OrderActions"
+import { EditOrderDialog, FlattenDialog } from "./OrderActions"
+import { StrategyTicket } from "./StrategyTicket"
+import { expiry } from "../test/trading-fixtures"
+import type { StrategyLeg } from "../lib/strategy"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 vi.mock("../api/trading", async (original) => ({ ...await original<typeof import("../api/trading")>(), useRefreshTrading: () => vi.fn() }))
@@ -73,6 +76,52 @@ async function choose(group: string, option: string) { await act(async () => rad
 const checked = (group: string, option: string) => radio(group, option).getAttribute("aria-checked") === "true"
 
 describe("order ticket interaction", () => {
+  it("submits a walk", async () => {
+    await render()
+    await setField("Limit price", "15.00")
+    await act(async () => host.querySelector<HTMLInputElement>('[aria-label="Walk limit"]')!.click())
+    await setField("Walk step", "0.10")
+    await setField("Every (seconds)", "5")
+    await setField("Walk cap", "16.00")
+    await click("Submit order")
+    expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ walk: { step: "0.10", seconds: 5, limit: "16.00" } }), "open")
+  })
+  it("sends a signed credit cap from the strategy walk fields", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} })
+    const legs: StrategyLeg[] = [
+      { symbol: "SPXW  261016P06900000", underlying: "SPX", side: "sell", ratio: 1, type: "put", strike: 6900, expiry: expiry.id,
+        quote: { ...quote, symbol: "SPXW  261016P06900000", bid: 5, ask: 5.2, mid: 5.1 } },
+      { symbol: "SPXW  261016P06890000", underlying: "SPX", side: "buy", ratio: 1, type: "put", strike: 6890, expiry: expiry.id,
+        quote: { ...quote, symbol: "SPXW  261016P06890000", bid: 4, ask: 4.2, mid: 4.1 } },
+    ]
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <StrategyTicket legs={legs} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />
+    </QueryClientProvider>))
+    await act(async () => host.querySelector<HTMLInputElement>('[aria-label="Walk limit"]')!.click())
+    await setField("Walk step", "0.05")
+    await setField("Every (seconds)", "7")
+    await setField("Walk cap", "-0.80")
+    await click("Submit strategy order")
+    expect(api.submitOrder).toHaveBeenCalledWith(expect.objectContaining({ limit_price: "-1.00", walk: { step: "0.05", seconds: 7, limit: "-0.80" } }), "open")
+  })
+  it("removes a working order's walk with an explicit null", async () => {
+    vi.spyOn(api, "modifyOrder").mockResolvedValue({ account_version: "18", order, fills: [] })
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <EditOrderDialog order={{ ...order, walk: { limit: "5.00", seconds: 10, step: "0.10" } }} trading={trading} onClose={() => {}} onDone={() => {}} />
+    </QueryClientProvider>))
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true)
+    await act(async () => host.querySelector<HTMLInputElement>('[aria-label="Walk limit"]')!.click())
+    await click("Save changes")
+    expect(api.modifyOrder).toHaveBeenCalledWith(order.id, { walk: null }, "open")
+  })
+  it("does not send a hidden walk on IOC orders", async () => {
+    await render()
+    await act(async () => host.querySelector<HTMLInputElement>('[aria-label="Walk limit"]')!.click())
+    await choose("Time in force", "IOC")
+    expect(host.querySelector('[aria-label="Walk limit"]')).toBeNull()
+    await click("Submit order")
+    expect(vi.mocked(api.submitOrder).mock.calls[0]![0]).not.toHaveProperty("walk")
+  })
   it.each([400, 403, 404, 409, 422])("starts a fresh ID after HTTP %s and keeps editable form values", async (status) => {
     vi.mocked(api.submitOrder).mockRejectedValueOnce(new ApiError(status, "Delta cap exceeded", "DELTA_LIMIT", 200, 100, "aggregate"))
     await render()

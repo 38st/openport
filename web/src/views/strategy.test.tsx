@@ -34,6 +34,12 @@ beforeEach(() => vi.mocked(useLive).mockReturnValue(liveState(status, null, "ope
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clearAllMocks() })
 
 describe("strategy ticket", () => {
+  it("offers walking limits and describes inside fills", () => {
+    const custom = { ...any, rules: { ...any.rules, inside_fill_percent: 50 } }
+    const html = render(<StrategyTicket legs={spread} onLegs={() => {}} expiries={[expiry]} underlying="SPX" spot={7000} trading={trading} onClose={() => {}} />, custom)
+    expect(html).toContain('aria-label="Walk limit"')
+    expect(html).toContain("Inside fills enabled at 50%")
+  })
   it("allows reducing every leg while latched and blocks new or oversized spreads", () => {
     const latched = { ...trading, kill_latched: true }
     const held = spread.map((leg) => ({ ...portfolio.positions[0]!, symbol: leg.symbol, quantity: leg.side === "buy" ? -1 : 1 }))

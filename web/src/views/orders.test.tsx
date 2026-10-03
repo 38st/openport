@@ -67,6 +67,16 @@ describe("shares from exercise and assignment", () => {
 })
 
 describe("working orders", () => {
+  it("shows current walking prices, next steps and editable terms", () => {
+    const walking = { ...order, walk: { step: "0.10", seconds: 10, limit: "5.00" },
+      next_walk: { time: "2026-09-22T14:00:10.000Z", limit_price: "4.70" } }
+    const table = render(<OrdersView />, [walking])
+    expect(table).toContain("Walk · $4.70 at 10:00:10 AM ET")
+    const edit = render(<EditOrderDialog order={walking} trading={trading} onClose={() => {}} onDone={() => {}} />)
+    expect(edit).toContain("Walk cap ($)")
+    expect(edit).toContain('value="5.00"')
+    expect(edit).toContain("No changes</button>")
+  })
   it("offer an edit for resting orders and one button to cancel them all", () => {
     const html = render(<OrdersView />, [order, stop, { ...order, id: "12", status: "filled", filled_quantity: 5, remaining_quantity: 0 }])
     expect(html).toContain('aria-label="Edit order order-1 for SPX Oct 16 7000C"')

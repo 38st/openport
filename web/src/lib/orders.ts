@@ -135,6 +135,7 @@ export function changeText(change: OrderChangeRecord, multi = false): string {
   if (change.trigger_level != null)
     parts.push(`trigger ${termPrice(change.previous.trigger_level, multi)} → ${termPrice(change.trigger_level, multi)}`)
   if (change.time_in_force) parts.push(`${(change.previous.time_in_force ?? "?").toUpperCase()} → ${change.time_in_force.toUpperCase()}`)
+  if (change.walk !== undefined) parts.push(change.walk ? `walk ${formatMoney(change.walk.step)} every ${change.walk.seconds}s to ${termPrice(change.walk.limit, multi)}` : "walk removed")
   return parts.length ? parts.join(", ") : "no new terms"
 }
 function ending(order: Order): string {

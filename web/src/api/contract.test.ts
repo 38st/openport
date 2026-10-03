@@ -15,6 +15,7 @@ function wireType(schema: Schema): string {
   if (schema.items) return `${wireType(schema.items)}[]`
   if (schema.type === "object" && typeof schema.additionalProperties === "object") return `Record<string, ${wireType(schema.additionalProperties)}>`
   if (schema.const !== undefined) return JSON.stringify(schema.const)
+  if (schema.type === "integer") return "number"
   return schema.type!
 }
 
@@ -46,7 +47,7 @@ describe("checked API core types", () => {
   })
   it.each(["Candle", "OptionQuote", "ChainRow", "Fill", "OrdersResponse", "EquitySample", "NotificationChannel", "NotificationStatus", "Alert", "AlertsResponse", "AlertResponse", "AlertDeleted",
     "StockPreview", "MarginLeg", "MarginPart", "MarginScan", "MarginUnderlying", "FillFees", "FeeSchedule", "PriceRange", "PriceOdds", "ProbabilityHorizon", "Probability",
-    "ProfileLevel", "ProfileHorizon"])("%s matches OpenAPI fields, types and nullability", (name) => {
+    "ProfileLevel", "ProfileHorizon", "Walk", "WalkStep"])("%s matches OpenAPI fields, types and nullability", (name) => {
     const body = new RegExp(`export interface ${name} \\{([^}]+)\\}`).exec(source)?.[1]
     expect(body).toBeDefined()
     const fields = [...body!.matchAll(/(\w+)(\?)?\s*:\s*([^;\n}]+)/g)]

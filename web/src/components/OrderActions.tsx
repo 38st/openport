@@ -13,6 +13,7 @@ import { Dialog } from "./Dialog"
 import { OrderPreviewPanel, useChangePreview } from "./OrderPreview"
 import { TradingError, WriteAccess, writeBlocked } from "./TradingControls"
 import { Badge } from "./ui"
+import { useWalk } from "./WalkFields"
 
 /** Runs one write at a time, keeping its error and pending state for this dialog. */
 export function useWrite(trading: TradingStatus) {
@@ -66,7 +67,12 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
   const write = useWrite(trading)
   const [draft, setDraft] = useState(() => orderDraft(order))
   const fields = editableFields(order)
-  const result = orderChange(order, draft)
+  const walk = useWalk(order.type === "limit" && !order.trigger && !order.role && !order.reduce_only && order.origin !== "system" &&
+    ["day", "gtc"].includes(order.time_in_force), draft.limit_price, order.side !== "sell", "0.10", draft.limit_price, order.walk)
+  const base = orderChange(order, draft)
+  const walkChanged = walk.walk?.step !== order.walk?.step || walk.walk?.seconds !== order.walk?.seconds || walk.walk?.limit !== order.walk?.limit
+  const result = !walk.valid ? { error: "Check the walk settings" }
+    : walkChanged && !("error" in base) ? { change: { ...("change" in base ? base.change : {}), walk: walk.walk ?? null } } : base
   const preview = useChangePreview(order.id, "change" in result ? result.change : null, trading)
   const side = order.side ?? "buy"
   const priceLabel = order.legs ? "Net limit per unit (negative for a credit)" : "Limit price"
@@ -114,6 +120,7 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
             </select>
           </label>
         )}
+        {walk.fields}
         {order.reduce_only && <p className="text-xs text-muted">This close’s size follows its position. Changing its price stops automatic repricing.</p>}
         {order.role && <p className="text-xs text-muted">A bracket exit closes at most the position it protects: make it smaller to take part off, and the other exit keeps protecting the rest.</p>}
         {"error" in result && <p className="text-xs text-warn" role="status">{result.error}</p>}

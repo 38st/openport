@@ -3,6 +3,7 @@ import { orderLabel } from "../lib/journal"
 import { orderTimeline, reasonEvidence } from "../lib/orders"
 import { Dialog } from "./Dialog"
 import { Badge } from "./ui"
+import { formatMoney } from "../lib/trading"
 
 const timeFormat = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit",
@@ -25,6 +26,8 @@ export function OrderDetailDialog({ order, onClose }: { order: Order; onClose: (
           {" · "}client ID <span className="font-mono">{order.client_order_id}</span> · {order.actor ?? "unknown"}
         </div>
       </div>
+      {order.walk && <p className="text-sm">Walking at {formatMoney(order.limit_price)} · {formatMoney(order.walk.step)} every {order.walk.seconds}s to {formatMoney(order.walk.limit)}.
+        {order.next_walk && <> Next {formatMoney(order.next_walk.limit_price)} at {when(order.next_walk.time)}.</>}</p>}
       {order.waiting && <div role="status" className="rounded border border-border bg-raised/40 px-3 py-2 text-sm">
         <div className="text-xs uppercase tracking-wide text-muted">Waiting for</div>
         <div>{order.waiting.message}</div>
