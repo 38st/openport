@@ -688,13 +688,13 @@ void write_scenario_recording(const std::filesystem::path& path, const Scenario&
                                                   std::exp(-kRate * years));
           if (american) {
             // Black plus a same-lattice LR premium cancels European tree error.
-            // Fifteen odd steps keep snapshot generation inexpensive; only ITM puts
+            // Thirteen odd steps keep snapshot generation inexpensive; only ITM puts
             // and calls ahead of cash payments can have material exercise value.
             // Extreme custom payments can exhaust spot; retain the capped escrow
             // price and intrinsic floor instead of passing an invalid tree input.
             if (reserve < price && ((c.type == pricing::OptionType::Put && c.strike > price) ||
                 (c.type == pricing::OptionType::Call && reserve > 0)))
-              mid += pricing::binomial_early_exercise_premium({c.type, price, c.strike, years, kRate, 0, vol}, 15, cash);
+              mid += pricing::binomial_early_exercise_premium({c.type, price, c.strike, years, kRate, 0, vol}, 13, cash);
             const double intrinsic = c.type == pricing::OptionType::Call ? price - c.strike : c.strike - price;
             mid = std::max(mid, intrinsic);
           }
