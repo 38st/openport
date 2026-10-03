@@ -1414,8 +1414,9 @@ placed. Positions (Risk) and Dashboard show them above the breach estimates.
 [Playbooks](playbooks.md) combine versioned setups, server template selection,
 preview sizing, GTC entries, brackets and per-account entry limits. Definitions
 live beside the main journal, outside reducer state. Staged orders write nothing
-until sent through the normal order path. Only replay and scenario accounts allow
-auto entries and time stops; live-feed practice accounts do not. Orders retain the
+until sent through the normal order path. Live paper accounts (practice or evaluation), replays and scenarios allow
+auto entries and time stops. Live Auto persists versioned forward-test windows
+and resumes after restart, subject to normal feed, session and risk checks. Orders retain the
 exact playbook version in a tag. The Playbooks page reports adherence and expectancy;
 the Journal filters across versions.
 

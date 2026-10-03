@@ -161,14 +161,29 @@ suppresses that setup and underlying for the rest of the New York day. Staging
 refuses contracts already held or covered by working orders, so separate setups do
 not silently share a position.
 
-**Auto mode is refused on live-feed accounts, including practice accounts.** Only
-replay and scenario accounts can send entries and time-stop closures automatically.
-A rejected automatic entry is suppressed for that day to avoid repeated rejected
-orders; its refusal stays the setup's reason for the rest of that day. Successful
-entries remain subject to entry limits, overlap and cooldown.
-Live time stops are written management rules; the trader must close the position.
+**Auto is available on all live paper accounts**, main or named, practice or
+an evaluation plan, as well as replay/scenario accounts. Enabling it uses the same
+`{"mode":"auto"}` API request (admin scope); the terminal first names the account
+and confirms that orders will be sent automatically on paper. A live account must
+have a known market time before Auto can be enabled. Session, quote/feed freshness,
+risk, guardrails, kill switch and plan checks still apply through the normal preview
+and submission paths. Auto sends entries, cancels stale entries at their deadline,
+and fires time stops on live updates just as in replay. A stale or stopped feed
+cannot trigger an entry or close on stale prices. A close waits until its feed and
+quotes are usable; working protection is not cancelled on a stale-feed close attempt.
+A rejected automatic submission is suppressed for that New York day. On live
+accounts its journaled rejection also preserves suppression after restart.
+Preview failures are retried on later updates without recording rejected orders.
+Successful entries remain subject to entry limits, overlap and cooldown.
 
-ReplayHost copies the live definitions, with modes off, into an isolated run.
+Modes persist across restart. The first fresh update resumes Auto, sees journaled
+orders for overlap and entry limits, and catches up an overdue time stop. A filled
+entry is not sent again just because the server restarted. Switching to Off or
+Stage stops automatic management; existing orders and positions remain for the
+trader to manage. Archiving switches every live account's binding for that ID off.
+
+ReplayHost copies the live definitions, with modes off and no forward-test windows,
+into an isolated run.
 Select auto after pausing or before stepping the replay. Changes in that run do not
 edit the live catalogue. Its sidecar is `<run>.playbooks.json`; the initial
 catalogue and subsequent definition commands also enter run provenance. Offline
@@ -181,6 +196,47 @@ retains the staged preview size, loss estimate, deadline and whether submission
 was automatic. A sent stage records the sender as its actor, as any order does;
 automatic entries and time stops record `system`. They do not use `Order::system`,
 which is reserved for reducer liquidation and would change checks.
+
+## Forward tests on live paper
+
+Enabling Auto opens a window for the account, playbook ID and current version,
+with the start market time and enabling actor. Repeating Auto is idempotent.
+Off, Stage or archive closes the window at the current market time. Auto follows
+the latest definition: saving a new version closes the previous window and opens
+one for the new version on every live account running it; the editing actor is
+recorded. Existing positions retain their entry version's management deadline.
+Windows are stored in the optional `forward_tests` array in `playbooks.json` using
+the same atomic write as modes and definitions. Older catalogues without it load
+unchanged. The order-ID boundaries distinguish toggles at the same market instant.
+
+`GET /api/playbooks?account=ID` includes `forward_tests`, keyed by playbook ID.
+Each contains `windows`, `running`, `days_running`, `entries`, `time_stops`,
+`rejected_entries`, `report` and reports grouped by version in `versions`.
+Write responses include windows; fetch again for statistics. Windows include
+`account`, `playbook`, `version`, `started`, nullable `ended`, `actor`, inclusive
+`first_order` and exclusive nullable `end_order` (decimal strings). The results
+reuse the adherence report's trade rows and statistics: trades, win rate,
+expectancy, profit factor, average R, return on buying power and adherence.
+They cover the journal's attempts, rather than just the current attempt. Only
+opening orders marked automatic with actor `system`, matching the version and
+window's order bounds, qualify; manually sent stages and other tagged trades do not.
+Trades must first fill while a qualifying window is open; their later outcome
+continues to update after the window ends. Entries count accepted orders, including
+unfilled/cancelled entries. Rejected entries count journaled automatic submissions;
+preview failures are not entries. Time stops count filled automatic close orders
+for those entries, including delayed closes after a window ends. All values derive
+from the catalogue and journal, with no wall-clock counters.
+
+`days_running` sums elapsed market-time durations in 24-hour days, including
+weekends and downtime, through the account's latest journal market time for an
+open window. It is not a count of observed sessions. A running window means Auto
+is enabled, not that the feed is healthy or that a trade is currently eligible.
+The Playbooks page shows these windows and results beside the latest completed
+saved backtest matching the same ID and version. `GET /api/backtests` supplies
+optional `playbook: {id, version}` and `summary` on saved runs with reports; older
+saved reports remain readable. Comparison is descriptive: the backtest may use
+different days and a different plan. Brief and Dashboard indicate when the current
+account has automatic playbooks. Replays and backtests never inherit forward tests.
 
 ## Adherence and results
 
@@ -253,12 +309,12 @@ modes need the `admin` scope; sending and dismissing a stage need the account's
 
 | Route | Contract |
 | --- | --- |
-| `GET /api/playbooks` | Definitions including versions and archive flags, this account's modes, transient stages, reasons and adherence/expectancy reports |
+| `GET /api/playbooks` | Definitions including versions and archive flags, this account's modes, transient stages, reasons, adherence/expectancy reports and forward-test windows/results |
 | `GET /api/playbooks/{id}?version=N` | One immutable definition; latest when version is omitted, including archived definitions |
 | `POST /api/playbooks` | Create from the definition JSON |
 | `PUT /api/playbooks/{id}` | Complete replacement definition with its current `version`; creates the next version |
 | `DELETE /api/playbooks/{id}?version=N` | Archive after a version check; keep historical versions |
-| `PUT /api/playbooks/{id}/mode` | `{"mode":"off"}`, `stage` or replay-only `auto` |
+| `PUT /api/playbooks/{id}/mode` | `{"mode":"off"}`, `stage` or `auto` (live paper and replay; live requires market time) |
 | `POST /api/playbooks/staged/{stage}/send` | Empty object; recheck and submit the stage's latest order |
 | `POST /api/playbooks/staged/{stage}/dismiss` | Empty object; dismiss for this day |
 | `GET /api/account/pass-odds` | Seeded, labelled estimate as above; 422 `PASS_ODDS_UNAVAILABLE` for insufficient history, incomplete marks or no evaluation rule, 400 `INVALID_REQUEST` for invalid inputs, 404 `UNKNOWN_ACCOUNT` for an unknown account |
@@ -421,7 +477,7 @@ updates. Both are recorded in the report; neither path fetches additional histor
 | Route | Contract |
 | --- | --- |
 | `POST /api/backtests` | Start `{playbook:"ID@VERSION",plan:"eod-50k",days:[…]}` or `{playbook,plan,scenarios:N,seed:"S"}`; optional `scenario` and `workers`; returns 202 |
-| `GET /api/backtests` | Saved run summaries and the active ID |
+| `GET /api/backtests` | Saved run summaries and the active ID; optional `playbook: {id,version}` and `summary` for reports |
 | `GET /api/backtests/{id}` | Progress and the completed or partial report |
 | `DELETE /api/backtests/{id}` | Request cancellation; `DELETE /api/backtests` cancels the active run |
 

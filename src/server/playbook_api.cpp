@@ -140,6 +140,7 @@ std::optional<ApiResponse> playbook_read(const ApiRequest& request, const Metric
     }
     auto result = catalogue;
     result["reports"] = playbook_report(catalogue, *view);
+    result["forward_tests"] = playbook_forward_report(catalogue, *view);
     return ApiResponse{200, result.dump()};
   } catch (const std::exception& error) { return api_error(400, "INVALID_PLAYBOOK", error.what()); }
 }

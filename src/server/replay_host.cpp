@@ -1300,6 +1300,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
           std::ifstream input(definitions);
           auto catalogue = json::parse(input);
           catalogue["modes"] = json::object();
+          catalogue.erase("forward_tests");
           engine.initial_playbooks = catalogue.dump();
         }
       }

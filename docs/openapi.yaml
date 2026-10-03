@@ -3251,7 +3251,7 @@
       ],
       "get": {
         "summary": "GET /api/playbooks",
-        "description": "Read the current publication. Definitions, this account's modes, staged orders, reasons and per-playbook reports.",
+        "description": "Read the current publication. Definitions, this account's modes, staged orders, reasons and per-playbook reports. Includes account-scoped forward-test windows and journal-derived automatic-trade results across attempts. Modes and windows persist across restart.",
         "x-scope": "read",
         "responses": {
           "200": {
@@ -3431,7 +3431,7 @@
       ],
       "put": {
         "summary": "PUT /api/playbooks/{id}/mode",
-        "description": "Requires admin. Auto is refused except on replay and scenario accounts.",
+        "description": "Requires admin. off, stage or auto on any live paper or replay account. Live auto requires a known market time, sends paper orders automatically, persists across restarts and follows new versions. The terminal confirms before enabling; the API needs only mode.",
         "x-scope": "admin",
         "responses": {
           "200": {
@@ -15945,7 +15945,7 @@
           },
           "auto_allowed": {
             "type": "boolean",
-            "description": "Auto mode is offered only on replay and scenario accounts."
+            "description": "Whether this server supports auto on the selected account. True for live paper, replay and scenario accounts."
           },
           "simulated": {
             "const": true,
@@ -15955,6 +15955,13 @@
             "type": "object",
             "additionalProperties": {
               "$ref": "#/components/schemas/PlaybookReport"
+            }
+          },
+          "forward_tests": {
+            "type": "object",
+            "description": "Optional on older servers. Per playbook windows and results for this account; empty for replay runs.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ForwardTest"
             }
           }
         },
@@ -16912,6 +16919,25 @@
                 "type": "null"
               }
             ]
+          },
+          "playbook": {
+            "type": "object",
+            "description": "Saved report identity on listing; absent from older servers and runs without a report.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "version"
+            ]
+          },
+          "summary": {
+            "$ref": "#/components/schemas/BacktestReport/properties/summary"
           }
         },
         "required": [
@@ -19278,6 +19304,106 @@
         "required": [
           "status",
           "message"
+        ]
+      },
+      "ForwardTestWindow": {
+        "type": "object",
+        "description": "An account/version interval in market time. Null ended means running. Order bounds are inclusive first_order and exclusive end_order, disambiguating mode changes at the same market instant. Actor enabled the window or saved the replacement version.",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "playbook": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "started": {
+            "type": "string"
+          },
+          "ended": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor": {
+            "type": "string"
+          },
+          "first_order": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "end_order": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exclusive order ID bound, a decimal string."
+          }
+        },
+        "required": [
+          "account",
+          "playbook",
+          "version",
+          "started",
+          "ended",
+          "actor",
+          "first_order",
+          "end_order"
+        ]
+      },
+      "ForwardTest": {
+        "type": "object",
+        "description": "Account-scoped forward test. Windows are returned on mutations; GET adds statistics across journal attempts. Elapsed market days are 24-hour durations including downtime, not observed trading sessions. Rejections count journaled submissions, not preview failures. Entries count accepted automatic opening orders, including unfilled or cancelled ones. Time stops count filled automatic close orders for these entries, even after the window ends.",
+        "properties": {
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ForwardTestWindow"
+            }
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "days_running": {
+            "type": "number",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "time_stops": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rejected_entries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "report": {
+            "$ref": "#/components/schemas/PlaybookReport"
+          },
+          "versions": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PlaybookReport"
+            }
+          }
+        },
+        "required": [
+          "windows"
         ]
       }
     }

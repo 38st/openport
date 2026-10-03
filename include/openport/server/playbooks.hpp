@@ -26,7 +26,9 @@ trading::Bracket playbook_bracket(const nlohmann::json& management, trading::Mon
 /// The smallest tick among an order's legs, on which a combo's net prices must sit.
 trading::Money playbook_tick(const trading::OrderRequest& order);
 md::Timestamp playbook_deadline(const nlohmann::json& definition, md::Timestamp opened);
-nlohmann::json playbook_report(const nlohmann::json& catalogue, const TradingView& view);
+nlohmann::json playbook_report(const nlohmann::json& catalogue, const TradingView& view, bool current_attempt = true);
+
+nlohmann::json playbook_forward_report(const nlohmann::json& publication, const TradingView& view);
 
 /// Definitions and transient staging are Desk-owned, outside the reducer. The
 /// callbacks always use its normal preview and submission paths.
@@ -42,7 +44,8 @@ class Playbooks {
   [[nodiscard]] Json publication(std::string_view account, bool replay) const;
   /// Changes whenever a publication may have changed.
   [[nodiscard]] std::uint64_t revision() const { return revision_; }
-  Json change(const Json& command, std::string_view account, bool replay);
+  Json change(const Json& command, std::string_view account, bool replay, md::Timestamp now = 0,
+      std::string_view actor = "unknown", const std::map<std::string, trading::OrderId>& next_orders = {});
   void evaluate(const std::string& account, bool replay, md::Timestamp now,
       const std::map<std::string, std::shared_ptr<const analytics::UnderlyingMetrics>>& metrics,
       const TradingView& view, const std::function<PlaybookInputs(const std::string&, const Json&)>& inputs,

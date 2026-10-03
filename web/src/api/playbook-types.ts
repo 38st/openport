@@ -33,10 +33,24 @@ export interface StagedOrder {
   management?: Playbook["management"]; max_loss: string | null; max_loss_basis: string; close_by: string; simulated: true
   legs: { symbol: string; side: string; ratio: number; strike: number; type: string; expiry: string }[]
 }
+export interface PlaybookReport {
+  all: PlaybookStats; followed: PlaybookStats; deviated: PlaybookStats; trades: PlaybookTrade[]
+}
+export interface ForwardTestWindow {
+  account: string; playbook: string; version: number; started: string; ended: string | null; actor: string
+  first_order: string; end_order: string | null
+}
+export interface ForwardTest {
+  windows: ForwardTestWindow[]
+  /** Statistics are included on GET; older servers omit forward_tests entirely. */
+  running?: boolean; days_running?: number; entries?: number; time_stops?: number; rejected_entries?: number
+  report?: PlaybookReport; versions?: Record<string, PlaybookReport>
+}
 export interface PlaybooksResponse {
   definitions: Record<string, { versions: Playbook[]; deleted: boolean }>
   modes: Record<string, "off" | "stage" | "auto">; auto_allowed: boolean; staged: StagedOrder[]; reasons: Record<string, string>
-  reports?: Record<string, { all: PlaybookStats; followed: PlaybookStats; deviated: PlaybookStats; trades: PlaybookTrade[] }>
+  reports?: Record<string, PlaybookReport>
+  forward_tests?: Record<string, ForwardTest>
 }
 export interface PassOdds {
   pass: number; fail: number; neither: number; median_days_to_pass: number | null; historical_days: number; seed: string

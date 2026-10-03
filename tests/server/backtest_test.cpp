@@ -375,6 +375,25 @@ TEST(BacktestApi, ContractFixture) {
   server::BacktestHost disabled({storage.directory / "disabled", {}, {}, {}, {}, false});
   EXPECT_EQ(call(disabled, {"POST", "/api/backtests", "{}"}).status, 403);
 }
+TEST(BacktestApi, ListingSummarizesSavedReportIdentityWithoutCopyingTrades) {
+  test::RecordingFile storage;
+  const auto root = storage.directory / "000001";
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(request_for({recorded_day(storage.directory, {2026, 9, 14})}), root, cancel);
+  ASSERT_EQ(report.at("status"), "completed");
+  server::write_backtest_report(root / "report.json", report);
+  const json state{{"id", "000001"}, {"status", "completed"}, {"phase", "finished"}, {"completed", 2}, {"total", 2},
+      {"label", server::kBacktestLabel}, {"report", nullptr}};
+  server::write_backtest_report(root / "state.json", state);
+  server::BacktestHost host({storage.directory, {}, {}, {}, {}, true});
+  const auto listing = call(host, {"GET", "/api/backtests"});
+  ASSERT_EQ(listing.status, 200) << listing.body;
+  const auto run = json::parse(listing.body).at("runs")[0];
+  EXPECT_EQ(run.at("playbook"), (json{{"id", "batch"}, {"version", 1}}));
+  EXPECT_EQ(run.at("summary"), report.at("summary"));
+  EXPECT_TRUE(run.at("report").is_null());
+  EXPECT_EQ(json::parse(call(host, {"GET", "/api/backtests/000001"}).body).at("report"), report);
+}
 TEST(BacktestApi, ReplayScopeRequiredForStartAndCancelAndReadForProgress) {
   server::WritePolicy policy;
   policy.require_token = true;
