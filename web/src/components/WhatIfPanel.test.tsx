@@ -39,6 +39,11 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); client.clear(); vi.restoreAllMocks() })
 const render = () => act(async () => root.render(<QueryClientProvider client={client}><WhatIfPanel positions={[position]} trading={trading} /></QueryClientProvider>))
 const button = (text: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.includes(text))!
+const name = (value: string) => act(async () => {
+  const input = host.querySelector<HTMLInputElement>('input[aria-label="Candidate name"]')!
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value)
+  input.dispatchEvent(new Event("input", { bubbles: true }))
+})
 
 describe("what-if", () => {
   it("builds candidates from positions and tickets, and compares them against the book", async () => {
@@ -78,5 +83,50 @@ describe("what-if", () => {
     expect(added).toBe(false)
     await act(async () => button("Remove").click())
     expect(host.querySelectorAll("ol > li")).toHaveLength(0)
+  })
+  it("removes the candidate and its target when its last order is removed", async () => {
+    await render()
+    await act(async () => button("Add closing every position").click())
+    await act(async () => { host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click() })
+    await act(async () => { addWhatIfOrder(scope, more, "ignored") })
+    const request = vi.spyOn(api, "whatIf").mockResolvedValue(response)
+    await act(async () => button("×").click())
+    expect(host.querySelectorAll("ol > li li")).toHaveLength(1)
+    expect(button("Compare").disabled).toBe(false)
+    await act(async () => button("×").click())
+    expect(host.querySelectorAll("ol > li")).toHaveLength(0)
+    expect(host.textContent).toContain("Build each candidate from a ticket's preview")
+    expect(button("Compare").disabled).toBe(true)
+    await act(async () => button("Compare").click())
+    expect(request).not.toHaveBeenCalled()
+    expect(JSON.parse(window.localStorage.getItem(`openport.what-if.${scope}`)!)).toEqual({ candidates: [], target: null })
+    await act(async () => { addWhatIfOrder(scope, more, "Next") })
+    expect(host.querySelector<HTMLInputElement>('input[aria-label="Candidate name"]')!.value).toBe("Next")
+    expect(button("Compare").disabled).toBe(false)
+  })
+  it.each([
+    ["accented", "é", 32, 40],
+    ["emoji", "😀", 16, 40],
+    ["ASCII", "a", 64, 65],
+  ])("checks trimmed %s names against the 64 UTF-8 byte limit", async (_, character, fits, exceeds) => {
+    await render()
+    await act(async () => button("Add closing every position").click())
+    const request = vi.spyOn(api, "whatIf").mockResolvedValue(response)
+    await name(`  ${character.repeat(exceeds)}  `)
+    expect(button("Compare").disabled).toBe(true)
+    expect(host.textContent).toContain("Use a name of 64 UTF-8 bytes or fewer.")
+    expect(host.querySelector('input[aria-label="Candidate name"]')!.getAttribute("aria-invalid")).toBe("true")
+    await act(async () => button("Compare").click())
+    expect(request).not.toHaveBeenCalled()
+    await name("   ")
+    expect(button("Compare").disabled).toBe(true)
+    expect(host.textContent).toContain("Enter a candidate name.")
+    await name(`  ${character.repeat(fits)}  `)
+    expect(button("Compare").disabled).toBe(false)
+    expect(host.textContent).not.toContain("Use a name of 64 UTF-8 bytes or fewer.")
+    expect(host.querySelector('input[aria-label="Candidate name"]')!.getAttribute("aria-invalid")).toBe("false")
+    await act(async () => button("Compare").click())
+    expect(request).toHaveBeenCalledOnce()
+    expect(request.mock.calls[0]![0][0]!.name).toBe(character.repeat(fits))
   })
 })

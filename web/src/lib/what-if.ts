@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react"
 import { useLive } from "../api/live"
 import type { NewOrder, Position } from "../api/trading-types"
 
-/** A candidate adjustment being put together: its orders go to POST /api/orders/what-if. */
+/** A candidate adjustment: POST /api/orders/what-if takes 1–4 orders and a trimmed name of 1–64 UTF-8 bytes. */
 export interface WhatIfDraft { id: string; name: string; orders: NewOrder[] }
 export interface WhatIfState { candidates: WhatIfDraft[]; /** The candidate new orders join, or null for a new one. */ target: string | null }
 
@@ -13,6 +13,12 @@ const listeners = new Set<() => void>()
 const storageKey = (scope: string) => `openport.what-if.${scope || "main"}`
 export const maxCandidates = 6
 export const maxOrders = 4
+
+export function whatIfNameError(name: string): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) return "Enter a candidate name."
+  return new TextEncoder().encode(trimmed).length > 64 ? "Use a name of 64 UTF-8 bytes or fewer." : null
+}
 
 function load(scope: string): WhatIfState {
   const saved = states.get(scope)

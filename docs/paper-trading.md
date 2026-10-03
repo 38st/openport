@@ -1360,7 +1360,7 @@ and show an explicit failure without guessing when the endpoint is unavailable.
 
 `POST /api/orders/what-if` compares candidate adjustments against the held book before
 any is sent. It takes `candidates`, one to six, each with an optional `name` (at most 64
-bytes) and `orders`: one to four orders as `POST /api/orders` takes them, a client ID
+UTF-8 bytes) and `orders`: one to four orders as `POST /api/orders` takes them, a client ID
 optional. A candidate's orders are checked in turn as submission checks them, each after
 the ones before it have filled, and filled in full at the preview's projected prices:
 slipped far sides through the impact blocks for market orders, the limit for limit
@@ -1384,7 +1384,9 @@ finite and the values are simulated estimates, not execution promises.
 Positions (What-if) lists candidates built from a ticket's preview (Add to what-if, into a
 new candidate or one picked to take them) or from closing picked positions, compares
 them in a table with each one's change in Greeks, and shows P&L by spot move at unchanged
-volatility. The list is kept in the browser, per account.
+volatility. Removing a candidate's last order removes the candidate. Compare waits for
+every trimmed name to be nonempty and at most 64 UTF-8 bytes, with a hint beside invalid
+names. The list is kept in the browser, per account.
 
 ### Risk warnings
 
