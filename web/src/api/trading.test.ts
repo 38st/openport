@@ -9,7 +9,7 @@ import { writeToken } from "../lib/write-token"
 import { fill, limits, order, portfolio, risk, status, trading } from "../test/trading-fixtures"
 
 const cleanups: (() => void)[] = []
-afterEach(() => { cleanups.splice(0).reverse().forEach((fn) => fn()); writeToken.set(""); vi.unstubAllGlobals(); vi.restoreAllMocks() })
+afterEach(() => { cleanups.splice(0).reverse().forEach((fn) => fn()); writeToken.set(""); dataSource.set("live"); activeAccount.set("main"); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe("trading API", () => {
   it("maps structured and legacy errors without losing zero or null", () => {
@@ -157,9 +157,13 @@ it("routes verification outside the selected account and authenticates JSON rece
   expect(fetcher).toHaveBeenLastCalledWith("/api/replay/history/saved%20run/verify?format=receipt", { headers: { Accept: "application/json", Authorization: "Bearer replay-token" } })
 })
 
- it("reloads named tokens on the live admin route", async () => {
+ it.each(["live", "replay", "history:other-run"] as const)("reloads named tokens on the live admin route from %s", async (source) => {
    const fetcher = vi.fn(async () => new Response(JSON.stringify({ names: ["operator"], count: 1, loaded_at: "2026-09-22T14:00:00Z" }), { status: 200 }))
    vi.stubGlobal("fetch", fetcher)
-   await api.reloadTokens("open")
-   expect(fetcher).toHaveBeenLastCalledWith("/api/tokens/reload", expect.objectContaining({ method: "POST", body: "{}" }))
+   dataSource.set(source)
+   activeAccount.set("evaluation")
+   writeToken.set("admin-token")
+   await api.reloadTokens("token")
+   expect(fetcher).toHaveBeenLastCalledWith("/api/tokens/reload", expect.objectContaining({ method: "POST", body: "{}",
+     headers: expect.objectContaining({ Authorization: "Bearer admin-token" }) }))
  })

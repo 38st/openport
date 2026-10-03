@@ -61,6 +61,7 @@ async function request<T>(path: string, init: RequestInit): Promise<T> {
 
 /** On the replay every route is the replay's: /api/X becomes /api/replay/X. Replay controls stay put. */
 function routed(path: string): string {
+  if (path === "/api/tokens/reload") return path
   if (path === "/api/backtests" || path.startsWith("/api/backtests/")) return path
   if (path === "/api/replay" || path.startsWith("/api/replay/")) return path
   const source = dataSource.get()
