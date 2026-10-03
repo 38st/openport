@@ -834,6 +834,41 @@ TEST(DeskEquity, ARolloverLiquidationIsStoredUnderTheRatchetedFloor) {
   EXPECT_EQ(liquidation->tomorrow_floor, liquidation->floor);
 }
 
+TEST(DeskPlans, RecordedLegacyFundedResetKeepsItsLock) {
+  const auto* funded = server::find_plan("funded-intraday-25k"); ASSERT_NE(funded, nullptr);
+  trading::SessionConfig paper; paper.initial_cash = funded->initial_cash; paper.rules = funded->rules;
+  EquityDesk f(paper);
+  f.quotes(f.market.time, 4.00, 4.20);
+  server::TradingCommand reset;
+  reset.kind = server::TradingCommand::Kind::ResetAccount; reset.initial_cash = funded->initial_cash;
+  reset.rules = funded->rules; reset.required_pass = "Intraday 25K"; reset.reason = "restart";
+  auto legacy = command(*f.desk, reset, f.market.time, f.market.time);
+  EXPECT_EQ(legacy.decision.code, trading::Reason::PLAN_LOCKED);
+  EXPECT_EQ(legacy.decision.message, "Pass the Intraday 25K evaluation to start this funded account");
+  EXPECT_TRUE(f.snapshot()->attempts.empty());
+  reset.program_costs = true;
+  ASSERT_TRUE(command(*f.desk, reset, f.market.time, f.market.time).decision.ok());
+  EXPECT_EQ(f.snapshot()->attempts.size(), 1U);
+}
+
+TEST(DeskPlans, ProgramCostCommandDefaultsRetainOldBytes) {
+  server::TradingCommand command;
+  command.kind = server::TradingCommand::Kind::ResetAccount;
+  const nlohmann::json old = command;
+  EXPECT_FALSE(old.contains("program_costs"));
+  EXPECT_EQ(nlohmann::json(old.get<server::TradingCommand>()).dump(), old.dump());
+  command.program_costs = true;
+  const nlohmann::json current = command;
+  EXPECT_TRUE(current.at("program_costs"));
+  EXPECT_EQ(nlohmann::json(current.get<server::TradingCommand>()).dump(), current.dump());
+  const auto* plan = server::find_plan("two-step-25k"); ASSERT_NE(plan, nullptr);
+  auto rules = plan->rules;
+  rules.evaluation_fee = Money::parse("1.000001"); rules.reset_fee = {}; rules.activation_fee = Money::parse("15"); rules.max_resets = 7;
+  EXPECT_TRUE(server::follows_plan(*plan, plan->initial_cash, rules));
+  rules.profit_target = Money::parse("1");
+  EXPECT_FALSE(server::follows_plan(*plan, plan->initial_cash, rules));
+}
+
 TEST(DeskPlans, EveryPresetIsValidAndTheObjectivePresetsNameTheirFloors) {
   for (const auto& plan : server::plan_presets()) {
     EXPECT_NO_THROW(trading::validate_rules(plan.rules)) << plan.id;

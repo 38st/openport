@@ -242,6 +242,8 @@ TEST(ReplayHost, ListsStartsTradesControlsAndStopsARecordedSession) {
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file": "../synthetic.oprec"})").status, 404);
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file": "synthetic.oprec", "speed": 3})").status, 400);
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file": "synthetic.oprec", "plan": "funded-eod-50k"})").status, 400);
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file": "synthetic.oprec", "plan": "two-step-verify-25k"})").status, 400);
+  EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file": "synthetic.oprec", "plan": "two-step-funded-25k"})").status, 400);
   EXPECT_EQ(call(host, "POST", "/api/replay", R"({"file": "synthetic.oprec", "extra": 1})").status, 400);
   const auto started = call(host, "POST", "/api/replay", R"({"file": "synthetic.oprec", "speed": 0})");
   ASSERT_EQ(started.status, 201) << started.body;

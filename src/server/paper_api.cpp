@@ -66,7 +66,7 @@ json fill_fees_json(const std::optional<FillFees>& f) {
 }
 json rules_json(const AccountRules& r, Money initial_cash) {
   const bool funded = r.phase == Phase::Funded;
-  json result = {{"plan", nullable(r.plan)}, {"plan_id", nullable(preset_id(initial_cash, r))}, {"phase", funded ? "funded" : "evaluation"},
+  json result = {{"plan", nullable(r.plan)}, {"plan_id", nullable(preset_id(initial_cash, r))}, {"phase", funded ? "funded" : r.phase == Phase::Verification ? "verification" : "evaluation"},
           {"profit_target", positive(r.profit_target)}, {"max_drawdown", positive(r.max_drawdown)},
           {"drawdown_mode", kDrawdownModes[static_cast<int>(r.drawdown_mode)]},
           {"lock_balance", positive(r.lock_balance)}, {"lock_at_start", r.lock_at_start},
@@ -91,6 +91,8 @@ json rules_json(const AccountRules& r, Money initial_cash) {
           {"max_volume_percent", r.max_volume_percent}, {"no_hedging", r.no_hedging}, {"no_counter_positions", r.no_counter_positions},
           {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", positive(r.max_trade_risk)},
           {"max_trade_risk_percent", r.max_trade_risk_percent},
+          {"evaluation_fee", r.evaluation_fee.str()}, {"reset_fee", r.reset_fee.str()},
+          {"activation_fee", r.activation_fee.str()}, {"max_resets", r.max_resets},
           {"expiry_cutoff_seconds", r.expiry_cutoff / md::kNanosPerSecond},
           {"payouts", funded ? payout_rules_json(r.payouts) : json(nullptr)}};
   result["size_scaling"] = nullptr;
@@ -836,11 +838,19 @@ json account_json(const TradingView& view) {
   for (const auto& p : e.payouts)
     payouts.push_back({{"number", p.number}, {"time", md::format_timestamp(p.time)}, {"day", md::format_date(p.day)}, {"amount", p.amount.str()},
                        {"trader_share", p.trader_share.str()}, {"balance", p.balance.str()}});
+  json next_plans = json::array();
+  if (e.status == EvaluationStatus::Passed) {
+    const auto id = preset_id(e.starting_balance, r);
+    for (const auto& p : plan_presets())
+      if (!id.empty() && p.unlocked_by == id) next_plans.push_back(p.id);
+  }
+  const auto costs = program_costs(s, r);
   json attempts = json::array();
   for (const auto& a : s.attempts)
     attempts.push_back({{"attempt", a.attempt}, {"plan", nullable(a.plan)}, {"plan_id", nullptr}, {"started", md::format_timestamp(a.started)},
                         {"ended", md::format_timestamp(a.ended)}, {"starting_balance", a.starting_balance.str()},
                         {"final_equity", a.final_equity.str()}, {"status", status_name(a.status)},
+                        {"fee_charged", a.fee_charged.amount.str()}, {"fee_kind", nullable(a.fee_charged.kind)},
                         {"decision", nullable(a.decision)}, {"rules", a.rules ? rules_json(*a.rules, a.starting_balance) : json(nullptr)},
                         {"decided_at", time_or_null(a.decided_at)}, {"decided_equity", money(a.decided_equity)},
                         {"peak", money(a.peak)}, {"floor", money(a.floor)},
@@ -904,6 +914,12 @@ json account_json(const TradingView& view) {
               {"liquidation_cost", liquidated ? json((e.decided_equity - s.equity).str()) : json(nullptr)}}},
           {"buying_power", buying_power_json(s.buying_power)},
           {"payout", payout_json(view)},
+          {"next_plans", next_plans},
+          {"costs", {{"evaluation", costs.evaluation.str()}, {"reset", costs.reset.str()}, {"activation", costs.activation.str()},
+                     {"total", costs.total().str()}, {"resets_used", costs.resets_used},
+                     {"resets_left", r.max_resets == 0 ? json(nullptr) : json(std::max<std::int64_t>(0, r.max_resets - costs.resets_used))},
+                     {"payouts_received", costs.payouts_received.str()}, {"net", (costs.payouts_received - costs.total()).str()},
+                     {"fee_charged", s.fee_charged.amount.str()}, {"fee_kind", nullable(s.fee_charged.kind)}}},
           {"attempts", attempts}};
 }
 /// How a change in shares came about.
@@ -1157,12 +1173,19 @@ json trades_json(const TradingView& view, std::string_view status, bool current_
           {"groups", groups}, {"share_trades", share_trades}, {"stock_fills", stock_fills}, {"dividends", dividends}, {"day_notes", day_notes_json(s)},
           {"run", run_json(view.run)}};
 }
+json unlocks_json(const PlanPreset& plan) {
+  json out = json::array();
+  for (const auto& candidate : plan_presets())
+    if (candidate.unlocked_by == plan.id) out.push_back(candidate.id);
+  return out;
+}
 json plans_json() {
   json plans = json::array();
   for (const auto& p : plan_presets())
     plans.push_back({{"id", p.id}, {"name", p.name}, {"summary", p.summary},
                      {"initial_cash", p.initial_cash.str()}, {"rules", rules_json(p.rules, p.initial_cash)},
-                     {"unlocked_by", nullable(p.unlocked_by)}});
+                     {"phase", p.rules.phase == Phase::Funded ? "funded" : p.rules.phase == Phase::Verification ? "verification" : "evaluation"},
+                     {"unlocked_by", nullable(p.unlocked_by)}, {"unlocks", unlocks_json(p)}});
   return {{"plans", plans}};
 }
 json exposure_limits(const ExposureLimits& limits) {
@@ -1234,7 +1257,7 @@ int reason_status(Reason reason) {
   if (reason == Reason::INVALID_RULES) return 400;
   if (reason == Reason::UNKNOWN_ORDER || reason == Reason::UNKNOWN_CONTRACT || reason == Reason::UNKNOWN_TRADE ||
       reason == Reason::UNKNOWN_ALERT) return 404;
-  if (reason == Reason::ORDER_TERMINAL || reason == Reason::DUPLICATE_CLIENT_ID) return 409;
+  if (reason == Reason::ORDER_TERMINAL || reason == Reason::DUPLICATE_CLIENT_ID || reason == Reason::RESET_LIMIT) return 409;
   if (reason == Reason::JOURNAL_IO || reason == Reason::JOURNAL_CORRUPT ||
       reason == Reason::JOURNAL_LOCKED) return 503;
   return 422;
@@ -1671,6 +1694,13 @@ void parse_time_rules(const json& j, AccountRules& rules) try {
 } catch (const std::exception& error) {
   throw PlanRestrictionError(error.what());
 }
+/// Cost overrides are bookkeeping terms, independent of preset identity.
+void program_cost_fields(const json& j, AccountRules& rules) {
+  if (j.contains("evaluation_fee")) rules.evaluation_fee = decimal_field(j, "evaluation_fee");
+  if (j.contains("reset_fee")) rules.reset_fee = decimal_field(j, "reset_fee");
+  if (j.contains("activation_fee")) rules.activation_fee = decimal_field(j, "activation_fee");
+  if (j.contains("max_resets")) rules.max_resets = integer_field(j, "max_resets");
+}
 /// Custom rules: nullable money for an absent target/drawdown, like rules_json.
 /// The phase defaults to evaluation; a funded phase requires payout rules.
 AccountRules parse_rules(const json& j) {
@@ -1681,7 +1711,9 @@ AccountRules parse_rules(const json& j) {
           "account_type", "house_margin_percent", "pm_vol_shock", "inside_fill_percent",
           "min_hold_seconds", "microscalp_seconds", "microscalp_percent", "min_trades", "trade_consistency_percent", "max_volume_percent", "max_contracts_held", "no_hedging", "no_counter_positions", "require_stop_loss", "max_trade_risk", "max_trade_risk_percent",
           "time_limit_days", "inactivity_days", "underlyings", "trading_start", "trading_end", "flat_time", "no_overnight", "scaling", "size_scaling",
-          "events", "news_before_minutes", "news_after_minutes", "news_action", "hold_restrictions", "hold_cutoff"});
+          "events", "news_before_minutes", "news_after_minutes", "news_action", "hold_restrictions", "hold_cutoff",
+          "evaluation_fee", "reset_fee", "activation_fee", "max_resets"});
+
   if (j.contains("microscalp_seconds") != j.contains("microscalp_percent"))
     throw TradingError(Reason::INVALID_RULES, "Set microscalp_seconds and microscalp_percent together");
   AccountRules rules;
@@ -1690,8 +1722,8 @@ AccountRules parse_rules(const json& j) {
     throw std::invalid_argument("plan_id must be a string or null");
   if (j.contains("phase")) {
     const auto phase = string_field(j, "phase");
-    if (phase != "evaluation" && phase != "funded") throw std::invalid_argument("phase must be evaluation or funded");
-    rules.phase = phase == "funded" ? Phase::Funded : Phase::Evaluation;
+    if (phase != "evaluation" && phase != "funded" && phase != "verification") throw std::invalid_argument("phase must be evaluation, verification or funded");
+    rules.phase = phase == "funded" ? Phase::Funded : phase == "verification" ? Phase::Verification : Phase::Evaluation;
   }
   const bool payouts = j.contains("payouts") && !j.at("payouts").is_null();
   if (payouts != (rules.phase == Phase::Funded))
@@ -1750,6 +1782,7 @@ AccountRules parse_rules(const json& j) {
   if (j.contains("inside_fill_percent")) rules.inside_fill_percent = integer_field(j, "inside_fill_percent");
   if (j.contains("fees") && !j.at("fees").is_null()) rules.fees = parse_fee_schedule(j.at("fees"));
   margin_fields(j, rules);
+  program_cost_fields(j, rules);
   rules.buying_power = boolean_field(j, "buying_power");
   // Out of range is a rule error (INVALID_RULES from validate_rules), not a malformed
   // request; saturate first so the conversion to nanoseconds cannot overflow.
@@ -2211,7 +2244,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   if (path == "/api/accounts") {
     // A name, and either a preset plan or a starting balance and complete rules.
     fields(body, {"name"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model", "margin", "account_type",
-                            "house_margin_percent", "pm_vol_shock", "copy_settings_from"});
+                            "house_margin_percent", "pm_vol_shock", "copy_settings_from", "evaluation_fee", "reset_fee", "activation_fee", "max_resets"});
     command.kind = TradingCommand::Kind::CreateAccount;
     command.name = string_field(body, "name");
     if (body.contains("copy_settings_from")) {
@@ -2225,7 +2258,7 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       const auto* plan = find_plan(string_field(body, "plan"));
       if (!plan) throw std::invalid_argument("Unknown plan; see GET /api/plans");
       if (!plan->unlocked_by.empty())
-        throw std::invalid_argument("A funded plan starts from an account that passed its evaluation; reset that account instead");
+        throw std::invalid_argument("A locked plan starts from an account that passed its prerequisite; reset that account instead");
       command.initial_cash = plan->initial_cash;
       command.rules = plan->rules;
     } else {
@@ -2237,7 +2270,10 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       if (command.rules.phase == Phase::Funded)
         throw std::invalid_argument("A funded account starts from an account that passed its evaluation");
       check_plan_name(command.initial_cash, command.rules);
+      if (const auto* preset = find_plan_named(command.rules.plan); preset && !preset->unlocked_by.empty())
+        throw std::invalid_argument("A locked plan requires a pass; reset the passing account instead");
     }
+    program_cost_fields(body, command.rules);
     fill_model(body, command.rules);
     fee_model(body, command.rules);
     margin_model(body, command.rules);
@@ -2276,8 +2312,9 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
   } else if (path == "/api/account/reset") {
     // Either a preset ID, or a custom starting balance and complete rules.
     fields(body, {"reason"}, {"plan", "initial_cash", "rules", "fill_model", "fee_model", "margin", "account_type",
-                              "house_margin_percent", "pm_vol_shock"});
+                              "house_margin_percent", "pm_vol_shock", "evaluation_fee", "reset_fee", "activation_fee", "max_resets"});
     command.kind = TradingCommand::Kind::ResetAccount;
+    command.program_costs = true;
     command.reason = string_field(body, "reason");
     if (body.contains("plan")) {
       if (body.contains("initial_cash") || body.contains("rules"))
@@ -2294,7 +2331,10 @@ TradingCommand parse_command(const ApiRequest& request, std::string_view path) {
       if (command.initial_cash <= Money{}) throw std::invalid_argument("initial_cash must be positive");
       command.rules = parse_rules(body.at("rules"));
       check_plan_name(command.initial_cash, command.rules);
+      if (const auto* preset = find_plan_named(command.rules.plan); preset && !preset->unlocked_by.empty())
+        command.required_pass = find_plan(preset->unlocked_by)->name;
     }
+    program_cost_fields(body, command.rules);
     fill_model(body, command.rules);
     fee_model(body, command.rules);
     margin_model(body, command.rules);

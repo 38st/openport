@@ -111,6 +111,96 @@ class PaperEngine : public testing::Test {
   std::unique_ptr<server::Engine> engine;
 };
 
+TEST_F(PaperEngine, TwoStepProgressionAndProgramCosts) {
+  seed();
+  const auto capture = [&](const server::ApiResponse& response) {
+    test::capture_contract("paper", "POST", "/api/account/reset", response);
+    return response;
+  };
+  const auto reset = [&](const std::string& id) {
+    return capture(write(*engine, "POST", "/api/account/reset", {{"plan", id}, {"reason", "step"}}));
+  };
+  expect_error(reset("two-step-verify-25k"), 422, "PLAN_LOCKED");
+  expect_error(reset("two-step-funded-25k"), 422, "PLAN_LOCKED");
+  EXPECT_EQ(write(*engine, "POST", "/api/accounts", {{"name", "Skip"}, {"plan", "two-step-verify-25k"}}).status, 400);
+  ASSERT_EQ(reset("two-step-25k").status, 200);
+  EXPECT_EQ(read(*engine, "/api/account")["costs"]["evaluation"], "100.00");
+  ASSERT_EQ(reset("two-step-25k").status, 200);
+  ASSERT_EQ(reset("two-step-25k").status, 200);
+  auto limited = reset("two-step-25k");
+  expect_error(limited, 409, "RESET_LIMIT");
+  EXPECT_EQ(json::parse(limited.body)["error"]["actual"], 3);
+  EXPECT_EQ(json::parse(limited.body)["error"]["limit"], 2);
+  EXPECT_EQ(read(*engine, "/api/account")["costs"]["total"], "200.00");
+  // A real four-day challenge pass, then a three-day verification pass.
+  const auto trade_day = [&](int day, const std::string& bid, const std::string& ask) {
+    market.time = md::new_york_to_utc({2026, 9, day}, 10, 0);
+    quote();
+    ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "open-" + std::to_string(day), "4.20")).status, 201);
+    market.next(); quote(bid, ask);
+    auto close = order(market, "close-" + std::to_string(day), bid); close["side"] = "sell";
+    ASSERT_EQ(write(*engine, "POST", "/api/orders", close).status, 201);
+  };
+  for (int day : {22, 23, 24}) { trade_day(day, "4.00", "4.20"); }
+  trade_day(25, "30.00", "30.20");
+  auto passed = read(*engine, "/api/account");
+  ASSERT_EQ(passed["evaluation"]["status"], "passed");
+  EXPECT_EQ(passed["next_plans"], json::array({"two-step-verify-25k"}));
+  auto response = reset("two-step-verify-25k"); ASSERT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body)["rules"]["phase"], "verification");
+  EXPECT_EQ(json::parse(response.body)["costs"]["resets_used"], 0);
+  EXPECT_EQ(json::parse(response.body)["costs"]["total"], "200.00");
+  // A read-back preset name cannot skip the next prerequisite either.
+  auto locked_rules = read(*engine, "/api/plans")["plans"].back()["rules"];
+  expect_error(capture(write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", locked_rules}, {"reason", "skip"}})), 422, "PLAN_LOCKED");
+  for (int day : {28, 29}) { trade_day(day, "4.00", "4.20"); }
+  trade_day(30, "18.00", "18.20");
+  passed = read(*engine, "/api/account");
+  ASSERT_EQ(passed["evaluation"]["status"], "passed");
+  EXPECT_EQ(passed["next_plans"], json::array({"two-step-funded-25k"}));
+  response = reset("two-step-funded-25k"); ASSERT_EQ(response.status, 200) << response.body;
+  const auto account = json::parse(response.body);
+  EXPECT_EQ(account["costs"]["activation"], "50.00"); EXPECT_EQ(account["costs"]["net"], "-250.00");
+  EXPECT_EQ(account["evaluation"]["equity"], "25000.00");
+  EXPECT_EQ(account["attempts"].back()["rules"]["phase"], "verification");
+  EXPECT_TRUE(account["next_plans"].empty());
+}
+
+TEST_F(PaperEngine, ProgramCostOverridesAndCustomVerification) {
+  engine->stop();
+  const auto directory = paper_path().parent_path();
+  auto options = paper_options(); options.paper_accounts = directory / "accounts";
+  engine = std::make_unique<server::Engine>(provider, md::Subscription{{"SPX"}}, options);
+  engine->start();
+  ASSERT_TRUE(wait_for([&] { return engine->trading_view() != nullptr; }));
+  const auto created = write(*engine, "POST", "/api/accounts", {{"name", "Costs"}, {"plan", "two-step-25k"},
+      {"evaluation_fee", "12.000001"}, {"reset_fee", "3.000002"}, {"max_resets", 1}});
+  ASSERT_EQ(created.status, 201) << created.body;
+  test::capture_contract("paper", "POST", "/api/accounts", created);
+  const auto id = json::parse(created.body)["account"]["id"].get<std::string>();
+  const auto purchased = read(*engine, "/api/account?account=" + id);
+  EXPECT_EQ(purchased["costs"]["evaluation"], "12.000001");
+  EXPECT_EQ(purchased["costs"]["resets_used"], 0);
+  EXPECT_EQ(purchased["costs"]["resets_left"], 1);
+  EXPECT_EQ(purchased["evaluation"]["equity"], "25000.00");
+  auto response = write(*engine, "POST", "/api/account/reset", {{"plan", "eod-25k"}, {"reason", "purchase"},
+      {"evaluation_fee", "1.000001"}, {"reset_fee", "2.000002"}, {"max_resets", 1}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  auto account = json::parse(response.body);
+  EXPECT_EQ(account["rules"]["plan_id"], "eod-25k");
+  EXPECT_EQ(account["costs"]["total"], "1.000001");
+  auto rules = account["rules"]; rules["phase"] = "verification"; rules["plan"] = "Custom verification";
+  response = write(*engine, "POST", "/api/account/reset", {{"initial_cash", "25000"}, {"rules", rules}, {"reason", "custom"}});
+  ASSERT_EQ(response.status, 200) << response.body;
+  EXPECT_EQ(json::parse(response.body)["rules"]["phase"], "verification");
+  for (const auto* key : {"evaluation_fee", "reset_fee", "activation_fee"}) {
+    expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "bad"}, {key, "-1"}}), 400, "INVALID_RULES");
+  }
+  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "practice"}, {"reason", "bad"}, {"max_resets", 1.5}}), 400, "INVALID_REQUEST");
+  engine->stop();
+  std::filesystem::remove_all(directory);
+}
+
 TEST_F(PaperEngine, InsideFillRulesAndWalkingOrdersRoundTrip) {
   engine->stop();
   const auto directory = paper_path().parent_path();
@@ -2546,7 +2636,7 @@ TEST(PaperPlans, PresetsListExactRules) {
   PaperProvider provider;
   server::Engine engine(provider, {{"SPX"}}, paper_options());
   const auto plans = read(engine, "/api/plans")["plans"];
-  ASSERT_EQ(plans.size(), 20);
+  ASSERT_EQ(plans.size(), 29);
   EXPECT_EQ(plans[0]["id"], "practice");
   EXPECT_EQ(plans[0]["rules"]["profit_target"], nullptr);
   EXPECT_EQ(plans[0]["rules"]["buying_power"], true);
@@ -2554,7 +2644,8 @@ TEST(PaperPlans, PresetsListExactRules) {
   // These presets leave the later evaluation rules off.
   const auto off = [](json rules) {
     rules["plan_id"] = server::find_plan_named(rules.at("plan").get<std::string>())->id;
-    rules.update({{"min_hold_seconds", 0}, {"microscalp_seconds", 0}, {"microscalp_percent", 0}, {"min_trades", 0}, {"trade_consistency_percent", 0}, {"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
+    rules.update({{"evaluation_fee", "0.00"}, {"reset_fee", "0.00"}, {"activation_fee", "0.00"}, {"max_resets", 0},
+                  {"min_hold_seconds", 0}, {"microscalp_seconds", 0}, {"microscalp_percent", 0}, {"min_trades", 0}, {"trade_consistency_percent", 0}, {"lock_at_start", false}, {"profit_basis", "equity"}, {"daily_loss_limit", nullptr},
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
                   {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
@@ -3268,8 +3359,8 @@ TEST_F(PaperEngine, FundedPlansUnlockAfterAPassAndPayoutsFollowTheirRules) {
   const auto refused = write(*engine, "POST", "/api/account/payout", {{"amount", "250.00"}});
   expect_error(refused, 422, "PAYOUT_NOT_ELIGIBLE");
   EXPECT_EQ(json::parse(refused.body)["error"]["limit"], 8);
-  // A funded account is not a pass: another funded reset needs a new pass.
-  expect_error(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "again"}}), 422, "PLAN_LOCKED");
+  // Once entered, the same step can restart under its reset terms.
+  EXPECT_EQ(write(*engine, "POST", "/api/account/reset", {{"plan", "funded-intraday-25k"}, {"reason", "again"}}).status, 200);
 
   json custom = rules;
   custom["phase"] = "funded";

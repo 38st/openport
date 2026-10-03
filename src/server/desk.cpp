@@ -1775,11 +1775,13 @@ void Desk::apply_command(PendingCommand& pending, md::Timestamp market_time, md:
         case TradingCommand::Kind::ResetAccount: {
           // Only a pass of the preset itself unlocks: its balance and rules, not its name.
           const auto* evaluation = c.required_pass.empty() ? nullptr : find_plan_named(c.required_pass);
-          if (!c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed || !evaluation ||
+          const bool restarting = c.program_costs && c.initial_cash == session.config().initial_cash &&
+              trading::same_program_rules(c.rules, session.config().rules);
+          if (!restarting && !c.required_pass.empty() && (before->evaluation.status != EvaluationStatus::Passed || !evaluation ||
                                            !follows_plan(*evaluation, before->evaluation.starting_balance, session.config().rules)))
-            result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + " evaluation to start this funded account",
+            result.decision = {Reason::PLAN_LOCKED, "Pass the " + c.required_pass + (c.program_costs ? " to start this step" : " evaluation to start this funded account"),
                                {}, {}, {}};
-          else result = session.reset_account(c.initial_cash, c.rules, c.reason, market_time_);
+          else result = session.reset_account(c.initial_cash, c.rules, c.reason, market_time_, !restarting && !c.required_pass.empty(), c.program_costs);
           break;
         }
         case TradingCommand::Kind::Payout: result = session.request_payout(c.amount, market_time_); break;

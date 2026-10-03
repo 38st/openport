@@ -15,7 +15,7 @@ struct PlanPreset {
   std::string summary;  ///< One line describing the rules.
   trading::Money initial_cash;
   trading::AccountRules rules;
-  std::string unlocked_by;  ///< Funded plans: the evaluation preset whose pass unlocks a reset into it.
+  std::string unlocked_by;  ///< The prerequisite preset whose pass unlocks entry into this step.
 };
 
 /// Practice (buying power only), then Intraday and End-of-day evaluations at
@@ -33,6 +33,9 @@ struct PlanPreset {
 ///   locking:  any strategy, 6% target, 4% drawdown trailing each close that locks
 ///             at the starting balance, a 2% daily loss locks the day, best day at
 ///             most 50% of the profit
+///   two-step: 10% challenge over 4 trading days, then 5% verification over 3;
+///             static 8% floor, 4% daily loss, followed by a funded step.
+///             Illustrative purchase/reset/activation fees and 2 resets per step.
 /// Evaluations auto-close positions five minutes before their last trade.
 [[nodiscard]] const std::vector<PlanPreset>& plan_presets();
 [[nodiscard]] const PlanPreset* find_plan(std::string_view id);
@@ -40,7 +43,7 @@ struct PlanPreset {
 [[nodiscard]] const PlanPreset* find_plan_named(std::string_view name);
 /// Whether an attempt that started with this balance and these rules is the preset's
 /// own. Only the fill model's execution settings (slippage, latency, impact, inside fills) and the
-/// account's margin (mode, account type, house margin, vol shock) may differ.
+/// account's margin (mode, account type, house margin, vol shock) and program costs may differ.
 [[nodiscard]] bool follows_plan(const PlanPreset& plan, trading::Money initial_cash, const trading::AccountRules& rules);
 /// Derive from recovered configuration, including old journals. Empty for custom rules.
 [[nodiscard]] std::string preset_id(trading::Money initial_cash, const trading::AccountRules& rules);

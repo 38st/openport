@@ -38,6 +38,7 @@ inline void to_json(nlohmann::json& j, const TradingCommand& c) {
   if (c.cancel_reason != trading::Reason::USER_CANCEL) j["cancel_reason"] = c.cancel_reason;
   if (c.stock_price) j["stock_price"] = {{"symbol", c.stock_price->symbol}, {"time", c.stock_price->time}, {"price", c.stock_price->price}};
   if (c.do_not_exercise) j["do_not_exercise"] = true;
+  if (c.program_costs) j["program_costs"] = true;
   if (!c.trades.empty()) j["trades"] = c.trades;
   if (c.close_pricing.limit) { j["close_limit"] = true; j["limit_ticks"] = c.close_pricing.limit_ticks; }
   if (!c.order_ids.empty()) j["order_ids"] = c.order_ids;
@@ -56,6 +57,7 @@ inline void from_json(const nlohmann::json& j, TradingCommand& c) {
   j.at("initial_cash").get_to(c.initial_cash);
   j.at("rules").get_to(c.rules);
   j.at("required_pass").get_to(c.required_pass);
+  trading::added_field(j, "program_costs", c.program_costs);
   j.at("amount").get_to(c.amount);
   j.at("change").get_to(c.change);
   j.at("underlying").get_to(c.underlying);

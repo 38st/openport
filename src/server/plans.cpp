@@ -110,6 +110,34 @@ std::vector<PlanPreset> build() {
   scaling.rules.scaling = {{Money{}, 2}, {Money::parse("1500"), 3}, {Money::parse("2000"), 5}};
   scaling.summary += " Option contracts held: 2 initially, 3 after closing at $1,500 profit, 5 at $2,000; changes apply next session.";
   plans.push_back(std::move(scaling));
+  for (const auto size : {25, 50, 100}) {
+    auto challenge = objective_evaluation("static", size);
+    challenge.id = "two-step-" + std::to_string(size) + "k";
+    challenge.name = challenge.rules.plan = "Two-step Challenge " + std::to_string(size) + "K";
+    challenge.summary = "Step 1 of 2: challenge. Any strategy; 10% closed-balance target, static 8% floor, 4% daily loss; 4 trading days.";
+    challenge.rules.evaluation_fee = Money::from_micros(size * 4'000'000);
+    challenge.rules.reset_fee = Money::from_micros(size * 2'000'000);
+    challenge.rules.max_resets = 2;
+    auto verification = challenge;
+    verification.id = "two-step-verify-" + std::to_string(size) + "k";
+    verification.name = verification.rules.plan = "Two-step Verification " + std::to_string(size) + "K";
+    verification.rules.phase = trading::Phase::Verification;
+    verification.rules.profit_target = challenge.initial_cash.prorate(5, 100);
+    verification.rules.min_trading_days = 3;
+    verification.rules.evaluation_fee = {};
+    verification.unlocked_by = challenge.id;
+    verification.summary = "Step 2 of 2: verification. Any strategy; 5% closed-balance target, static 8% floor, 4% daily loss; 3 trading days.";
+    auto live = funded(verification, size == 25 ? 100 : size == 50 ? 150 : 200);
+    live.id = "two-step-funded-" + std::to_string(size) + "k";
+    live.name = live.rules.plan = "Two-step Funded " + std::to_string(size) + "K";
+    live.rules.lock_balance = {}; // Static floors do not lock or trail.
+    live.rules.min_trading_days = 0;
+    live.rules.activation_fee = Money::from_micros(size * 2'000'000);
+    live.summary = "Unlocked by passing " + verification.name + ". Static 8% floor and 4% daily loss; simulated payouts, 80% to you.";
+    plans.push_back(std::move(challenge));
+    plans.push_back(std::move(verification));
+    plans.push_back(std::move(live));
+  }
   return plans;
 }
 }  // namespace
@@ -129,18 +157,7 @@ const PlanPreset* find_plan_named(std::string_view name) {
   return it == plans.end() ? nullptr : &*it;
 }
 bool follows_plan(const PlanPreset& plan, Money initial_cash, const AccountRules& rules) {
-  auto execution = rules;
-  execution.slippage_ticks = plan.rules.slippage_ticks;
-  execution.fill_latency_ms = plan.rules.fill_latency_ms;
-  execution.impact_ticks = plan.rules.impact_ticks;
-  execution.inside_fill_percent = plan.rules.inside_fill_percent;
-  execution.fees = plan.rules.fees;
-  // The account's margin is the trader's broker's, not the plan's.
-  execution.margin = plan.rules.margin;
-  execution.account_type = plan.rules.account_type;
-  execution.house_margin_percent = plan.rules.house_margin_percent;
-  execution.pm_vol_shock = plan.rules.pm_vol_shock;
-  return initial_cash == plan.initial_cash && execution == plan.rules;
+  return initial_cash == plan.initial_cash && trading::same_program_rules(rules, plan.rules);
 }
 
 std::string preset_id(Money initial_cash, const AccountRules& rules) {

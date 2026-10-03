@@ -220,6 +220,7 @@ struct TradingCommand {
   /// ResetAccount: a plan name whose evaluation the current attempt must have
   /// passed (funded presets); empty for no requirement.
   std::string required_pass;
+  bool program_costs = false; ///< New reset semantics; absent on old recorded commands for exact re-execution.
   trading::Money amount;         ///< Payout: the withdrawal.
   trading::OrderChange change;   ///< Modify: the order's new terms.
   std::string underlying;        ///< CancelAll, ClosePositions and PreviewClose: one underlying, or empty for all.

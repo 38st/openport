@@ -1456,7 +1456,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       const int speed = body.contains("speed") ? speed_field(body) : 1;
       if (body.contains("plan") && !body.at("plan").is_string()) throw std::invalid_argument("plan must be a plan id");
       const auto* plan = find_plan(body.contains("plan") && body.at("plan").is_string() ? body.at("plan").get<std::string>() : "practice");
-      if (!plan || !plan->unlocked_by.empty()) throw std::invalid_argument("plan must be an evaluation or practice plan; see GET /api/plans");
+      if (!plan || !plan->unlocked_by.empty()) throw std::invalid_argument("plan must be an unlocked evaluation or practice plan; see GET /api/plans");
       if (body.contains("paused") && !body.at("paused").is_boolean()) throw std::invalid_argument("paused must be true or false");
       const bool paused = body.value("paused", false);
       if (!demo && (body.contains("seed") || body.contains("date"))) throw std::invalid_argument("seed and date apply only to scenarios");
