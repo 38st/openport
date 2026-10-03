@@ -40,27 +40,45 @@ EquitySample parse(std::string text) {
 }
 std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& session, const trading::TradingSnapshot& before) {
   const auto after = session.snapshot();
-  if (!after->valuation_complete || after->journal_failed || after->evaluation.attempt != before.evaluation.attempt) return {};
+  if (after->journal_failed || after->evaluation.attempt != before.evaluation.attempt) return {};
+  const auto& rules = session.config().rules;
+  const auto sample = [&](md::Timestamp time, const trading::Evaluation& e, Money value) {
+    EquitySample result;
+    result.time = time; result.attempt = e.attempt; result.equity = value; result.peak = e.peak;
+    if (rules.max_drawdown > Money{}) {
+      result.floor = e.floor;
+      if (rules.drawdown_mode == trading::DrawdownMode::EndOfDay) result.tomorrow_floor = trading::evaluation_tomorrow_floor(e, rules, value);
+    }
+    if (rules.profit_target > Money{}) result.target = e.starting_balance + rules.profit_target;
+    return result;
+  };
+  std::vector<EquitySample> decision;
+  if (before.evaluation.status == trading::EvaluationStatus::Active && after->evaluation.status != trading::EvaluationStatus::Active) {
+    const auto& e = after->evaluation;
+    decision.push_back(sample(e.decided_at, e, e.decided_equity));
+    decision.back().decision = true;
+  }
   const auto first = before.recent_fills.size();
-  if (first >= after->recent_fills.size() && before.stock_fills.size() >= after->stock_fills.size()) return {};
+  if (!after->valuation_complete || (first >= after->recent_fills.size() && before.stock_fills.size() >= after->stock_fills.size()))
+    return decision;
   std::vector<Money> changes;
   Money total;
   for (auto i = first; i < after->recent_fills.size(); ++i) {
     const auto& fill = after->recent_fills[i];
     const auto quote = session.quote(fill.symbol);
-    if (!quote || !trading::markable_quote(*quote)) return {};
+    if (!quote || !trading::markable_quote(*quote)) return decision;
     const auto mark = quote->bid ? *quote->bid + (*quote->ask - *quote->bid).prorate(1, 2) : quote->ask->prorate(1, 2);
     const auto change = ((mark - fill.price) * 100) * (fill.side == trading::Side::Buy ? fill.quantity : -fill.quantity) - fill.fee;
     changes.push_back(change);
     total = total + change;
   }
   auto equity = after->equity - total;
-  const auto& rules = session.config().rules;
   // The rule state the fills met, observed as the reducer does. An end-of-day peak and
   // floor move only at rollover, which comes before the fills of its own transaction;
   // an intraday peak follows the marks from the state before.
   const auto& ratcheted = rules.drawdown_mode == trading::DrawdownMode::EndOfDay ? after->evaluation : before.evaluation;
   trading::Evaluation state;
+  state.attempt = after->evaluation.attempt;
   state.starting_balance = after->evaluation.starting_balance;
   state.peak = ratcheted.peak;
   state.floor = ratcheted.floor;
@@ -73,16 +91,6 @@ std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& ses
     if (outcome != trading::EvaluationStatus::Passed || after->evaluation.status == trading::EvaluationStatus::Passed)
       state.status = outcome;
   };
-  const auto sample = [&](md::Timestamp time, const trading::Evaluation& e, Money value) {
-    EquitySample result;
-    result.time = time; result.attempt = after->evaluation.attempt; result.equity = value; result.peak = e.peak;
-    if (rules.max_drawdown > Money{}) {
-      result.floor = e.floor;
-      if (rules.drawdown_mode == trading::DrawdownMode::EndOfDay) result.tomorrow_floor = trading::evaluation_tomorrow_floor(e, rules, value);
-    }
-    if (rules.profit_target > Money{}) result.target = e.starting_balance + rules.profit_target;
-    return result;
-  };
   observe();
   std::vector<EquitySample> result;
   // A quote can mark a new high, or decide the attempt, and execute in the same
@@ -94,6 +102,7 @@ std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& ses
     const auto& order = after->recent_orders.at(static_cast<std::size_t>(fill.order_id - 1));
     if (trading::multi_leg(order.request)) end = std::min(after->recent_fills.size(), i + order.request.legs.size());
     for (auto j = i; j < end; ++j) equity = equity + changes[j - first];
+    if (order.system && !decision.empty()) state = after->evaluation;
     observe();
     for (; i < end; ++i) {
       auto leg = sample(after->recent_fills[i].time, state, equity);
@@ -108,6 +117,23 @@ std::vector<EquitySample> fill_equity_samples(const trading::TradingSession& ses
     auto change = sample(fill.time, after->evaluation, after->equity);
     change.stock_fill = fill.id;
     result.push_back(change);
+  }
+  if (!decision.empty()) {
+    const auto& point = decision.front();
+    const auto same = std::find_if(result.begin(), result.end(), [&](const EquitySample& s) {
+      return s.time == point.time && s.equity == point.equity;
+    });
+    if (same != result.end() && same->fill == 0 && same->stock_fill == 0) *same = point;
+    else {
+      // A decision can follow an entry fill, precede liquidation, or involve shares
+      // only. Use the reducer's exact observation, even when interpolation cannot.
+      const auto liquidation = std::find_if(result.begin(), result.end(), [&](const EquitySample& s) {
+        if (s.fill != 0) return after->recent_orders.at(after->recent_fills.at(s.fill - 1).order_id - 1).system;
+        if (s.stock_fill != 0) return after->stock_fills.at(s.stock_fill - 1).source == trading::StockSource::Rule;
+        return false;
+      });
+      result.insert(same != result.end() ? same : liquidation, point);
+    }
   }
   return result;
 }
@@ -178,11 +204,11 @@ void EquityStore::append(const EquitySample& sample) noexcept {
       const auto& last = samples_.back();
       if (sample.time < last.time) return;
       // One mark per minute, but keep a floor change and the first mark at or past the
-      // target or the floor, the equity that decides an attempt.
+      // target or the floor. A decision is retained even when none of those change.
       const auto side = [](const EquitySample& s) {
         return std::pair{s.target && s.equity >= *s.target, s.floor && s.equity <= *s.floor};
       };
-      if (sample.attempt == last.attempt && sample.fill == 0 && sample.stock_fill == 0 && last.time / md::kNanosPerMinute == sample.time / md::kNanosPerMinute &&
+      if (!sample.decision && sample.attempt == last.attempt && sample.fill == 0 && sample.stock_fill == 0 && last.time / md::kNanosPerMinute == sample.time / md::kNanosPerMinute &&
           last.floor == sample.floor && last.target == sample.target && side(last) == side(sample)) return;
       if (sample.fill != 0 && std::any_of(samples_.rbegin(), samples_.rend(), [&](const EquitySample& s) { return s.fill == sample.fill; })) return;
       if (sample.stock_fill != 0 && std::any_of(samples_.rbegin(), samples_.rend(), [&](const EquitySample& s) { return s.stock_fill == sample.stock_fill; })) return;

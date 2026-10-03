@@ -9549,7 +9549,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Smallest equity minus floor through the decision observation; frozen afterwards. Null without recorded observations."
           },
           "closest_floor_at": {
             "anyOf": [
@@ -9902,7 +9903,63 @@
                 "type": "null"
               }
             ],
-            "description": "Null: compact historical attempts retain no full rules with which to identify a preset."
+            "description": "Historical plan ID is null; rules, when recorded, contain their own preset identification."
+          },
+          "rules": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountRules"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Full rules at the end of the attempt; null for summaries recorded by older builds."
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Decision time, or null for an active reset or older summary."
+          },
+          "decided_equity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Equity observed at the decision, before liquidation; null when absent."
+          },
+          "peak": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Peak at reset; null in older summaries."
+          },
+          "floor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Floor at reset; null without a drawdown rule or in older summaries."
           }
         },
         "required": [

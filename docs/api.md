@@ -115,6 +115,13 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `POST /api/replay/history/ID/verify`, `GET /api/replay/history/ID/verify` | Start background verification (202, replay scope) or read `idle/running/passed/failed`; GET `?format=receipt` downloads the final JSON result |
 | `GET /api/replay/history/ID/X`, `DELETE /api/replay/history/ID` | Read a finished run's account, equity history (`account/equity`), portfolio, trades, fills or settlements; delete its journal |
 
+Account attempt history (`GET /api/account`, top-level `attempts[]`) includes the
+full `rules` at reset, `decided_at`, `decided_equity`, `peak` and `floor`; older
+journal summaries return null for these unrecorded values. Passed and failed
+attempts accept closing orders, Flatten and disposal, while opening orders still
+return `EVALUATION_CLOSED`. `GET /api/account/equity` includes the exact decision
+observation before any same-time liquidation samples.
+
 Margin settings are returned in account rules. Invalid values or a cash/IRA account
 without strategy margin and enforced buying power return HTTP 400 `INVALID_RULES`.
 Account-type trading restrictions reject with `ACCOUNT_TYPE`.

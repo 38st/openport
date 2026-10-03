@@ -5,6 +5,7 @@
 
 #include "openport/md/time.hpp"
 #include "support/scripted_market.hpp"
+#include "trading/state.hpp"
 
 namespace openport::trading {
 namespace {
@@ -439,6 +440,183 @@ TEST(PlanRules, RulesThatAreOffKeepTheJournalUnchanged) {
   EXPECT_EQ(recorded.at("daily_loss_basis"), "higher");
   EXPECT_EQ(recorded.at("day_end_minutes"), 18 * 60);
   EXPECT_EQ(TradingSession::recover(recovery).config().rules, rules);
+}
+
+TEST(PlanRules, ADecidedAttemptAllowsUserClosesAndReservesTheirWorkingContracts) {
+  ScriptedMarket f;
+  TradingSession s(config(plan("0", "100")), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 3), f.time).decision.ok());
+  f.next();
+  s.on_quotes({{f.symbol(), f.observation, f.time, {}, m("0.05"), 0, 10}}, {f.valuation()}, f.time);
+  const auto decided = s.snapshot()->evaluation;
+  ASSERT_EQ(decided.status, EvaluationStatus::Failed);
+  ASSERT_EQ(s.snapshot()->positions.at(0).position.quantity, 3);
+  EXPECT_EQ(decided.closest_floor, decided.decided_equity - decided.floor);
+  EXPECT_EQ(decided.closest_floor_at, decided.decided_at);
+  EXPECT_EQ(s.submit(f.market("opening"), f.time).decision.code, Reason::EVALUATION_CLOSED);
+
+  // A thin fresh bid lets the system sell one. The trader works the remaining
+  // two at a higher limit after this update has exhausted its closing liquidity.
+  f.next();
+  s.on_quotes({f.quote("1.00", "1.20", 1)}, {f.valuation()}, f.time);
+  ASSERT_EQ(s.snapshot()->positions.at(0).position.quantity, 2);
+  const auto close = s.submit(f.limit("close", 2, "1.10", Side::Sell), f.time);
+  ASSERT_TRUE(close.decision.ok()) << close.decision.message;
+  EXPECT_EQ(s.submit(f.limit("duplicate-close", 1, "1.10", Side::Sell), f.time).decision.code, Reason::EVALUATION_CLOSED);
+  quote(s, f, "1.00", "1.20");
+  EXPECT_EQ(s.snapshot()->positions.at(0).position.quantity, 2);  // reserved for the trader
+  for (int i = 0; i < 2; ++i) {
+    f.next();
+    s.on_quotes({f.quote("1.10", "1.30", 1)}, {f.valuation()}, f.time);
+  }
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders.at(*close.order_id - 1).status, OrderStatus::Filled);
+  EXPECT_EQ(s.snapshot()->recent_orders.at(*close.order_id - 1).filled_quantity, 2);
+  const auto& after = s.snapshot()->evaluation;
+  EXPECT_EQ(after.status, decided.status);
+  EXPECT_EQ(after.decided_at, decided.decided_at);
+  EXPECT_EQ(after.decided_equity, decided.decided_equity);
+  EXPECT_EQ(after.decision_code, decided.decision_code);
+  EXPECT_EQ(after.closest_floor, decided.closest_floor);
+  EXPECT_EQ(after.closest_floor_at, decided.closest_floor_at);
+}
+
+TEST(PlanRules, FlattenAndDisposalWorkAfterPassOrFailureWithoutABid) {
+  for (const bool pass : {false, true}) {
+    for (const bool flatten : {false, true}) {
+      ScriptedMarket f;
+      TradingSession s(config(plan("100", "100")), f.time);
+      f.seed(s);
+      ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+      f.next();
+      s.on_quotes({{f.symbol(), f.observation, f.time, {}, m(pass ? "11" : "0.05"), 0, 10}}, {f.valuation()}, f.time);
+      const auto decided = s.snapshot()->evaluation;
+      ASSERT_EQ(decided.status, pass ? EvaluationStatus::Passed : EvaluationStatus::Failed);
+      ASSERT_EQ(s.snapshot()->positions.size(), 1U);
+      const auto closed = flatten ? s.close_positions({}, f.time) : s.abandon(f.symbol(), f.time);
+      ASSERT_TRUE(closed.decision.ok()) << closed.decision.message;
+      EXPECT_TRUE(s.snapshot()->positions.empty());
+      const auto& after = s.snapshot()->evaluation;
+      EXPECT_EQ(after.status, decided.status);
+      EXPECT_EQ(after.decided_at, decided.decided_at);
+      EXPECT_EQ(after.decided_equity, decided.decided_equity);
+      EXPECT_EQ(after.decision_code, decided.decision_code);
+      EXPECT_EQ(after.closest_floor, decided.closest_floor);
+      EXPECT_EQ(after.closest_floor_at, decided.closest_floor_at);
+      EXPECT_EQ(s.submit(f.market("opening"), f.time).decision.code, Reason::EVALUATION_CLOSED);
+    }
+  }
+}
+
+TEST(PlanRules, APendingSystemCloseLeavesWorkingUserClosesTheirContracts) {
+  ScriptedMarket f;
+  auto rules = plan("0", "100");
+  rules.fill_latency_ms = 1000;
+  TradingSession s(config(rules), f.time);
+  f.seed(s);
+  ASSERT_TRUE(s.submit(f.market("open", 2), f.time).decision.ok());
+  quote(s, f, "4.00", "4.20");
+  ASSERT_EQ(s.snapshot()->positions.at(0).position.quantity, 2);
+  quote(s, f, "2.00", "2.20");
+  ASSERT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
+  ASSERT_EQ(s.snapshot()->open_orders.size(), 1U);  // the delayed system IOC
+  const auto close = s.submit(f.limit("user-close", 1, "2.10", Side::Sell), f.time);
+  ASSERT_TRUE(close.decision.ok()) << close.decision.message;
+  quote(s, f, "2.00", "2.20");
+  ASSERT_EQ(s.snapshot()->positions.at(0).position.quantity, 1);
+  quote(s, f, "2.10", "2.30");
+  EXPECT_TRUE(s.snapshot()->positions.empty());
+  EXPECT_EQ(s.snapshot()->recent_orders.at(*close.order_id - 1).filled_quantity, 1);
+  EXPECT_EQ(s.snapshot()->recent_fills.size(), 3U);
+}
+
+TEST(PlanRules, ClosestFloorIncludesTheDecisionButNotLiquidationOrLaterMarks) {
+  for (const auto mode : {DrawdownMode::Intraday, DrawdownMode::EndOfDay}) {
+    ScriptedMarket f;
+    auto rules = plan("0", "100");
+    rules.drawdown_mode = mode;
+    TradingSession s(config(rules), f.time);
+    f.seed(s);
+    ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+    quote(s, f, "3.00", "3.20");
+    const auto decided = s.snapshot()->evaluation;
+    ASSERT_EQ(decided.status, EvaluationStatus::Failed);
+    EXPECT_EQ(decided.closest_floor, decided.decided_equity - decided.floor);
+    EXPECT_EQ(decided.closest_floor_at, decided.decided_at);
+    EXPECT_LT(s.snapshot()->equity, decided.decided_equity);
+    next_day(s, f, {2026, 9, 23});
+    EXPECT_EQ(s.snapshot()->evaluation.closest_floor, decided.closest_floor);
+    EXPECT_EQ(s.snapshot()->evaluation.closest_floor_at, decided.closest_floor_at);
+  }
+}
+
+TEST(PlanRules, AttemptRulesAndDecisionRoundTripAndOldSummariesStayAbsent) {
+  for (const auto status : {EvaluationStatus::Active, EvaluationStatus::Passed, EvaluationStatus::Failed}) {
+    ScriptedMarket f;
+    auto rules = plan("100", "1000");
+    rules.daily_loss_limit = m("100");
+    rules.daily_loss_action = BreachAction::Fail;
+    rules.slippage_ticks = 1;
+    rules.inside_fill_percent = 25;
+    JournalFile file;
+    Evaluation ended;
+    std::string expected;
+    {
+      TradingSession s(config(rules), f.time, FileJournal::create(file.path));
+      f.seed(s);
+      ASSERT_TRUE(s.submit(f.market("open"), f.time).decision.ok());
+      if (status != EvaluationStatus::Active)
+        quote(s, f, status == EvaluationStatus::Passed ? "5.50" : "2.00", status == EvaluationStatus::Passed ? "5.70" : "2.20");
+      ended = s.snapshot()->evaluation;
+      ASSERT_EQ(ended.status, status);
+      f.next();  // Archiving later must not substitute the reset time for the decision.
+      ASSERT_TRUE(s.reset_account(m("25000"), plan(), "next attempt", f.time).decision.ok());
+      expected = s.snapshot_json();
+    }
+    auto restored = TradingSession::recover(FileJournal::read(file.path));
+    EXPECT_EQ(restored.snapshot_json(), expected);
+    const auto& a = restored.snapshot()->attempts.at(0);
+    EXPECT_EQ(a.rules, rules);
+    EXPECT_EQ(a.decided_at, ended.decided_at);
+    EXPECT_GT(a.ended, a.decided_at);
+    EXPECT_EQ(a.decided_equity, status == EvaluationStatus::Active ? std::nullopt : std::optional(ended.decided_equity));
+    EXPECT_EQ(a.peak, ended.peak);
+    EXPECT_EQ(a.floor, ended.floor);
+    EXPECT_EQ(a.decision_code, ended.decision_code);
+
+    // Missing provenance in older summaries stays absent on re-encoding.
+    auto old = nlohmann::json(a);
+    for (const auto* field : {"rules", "decided_at", "decided_equity", "peak", "floor"}) old.erase(field);
+    const auto summary = old.get<AttemptSummary>();
+    EXPECT_EQ(nlohmann::json(summary).dump(), old.dump());
+    EXPECT_FALSE(summary.rules);
+    EXPECT_EQ(summary.decided_at, 0);
+    EXPECT_FALSE(summary.decided_equity);
+    EXPECT_FALSE(summary.peak);
+    EXPECT_FALSE(summary.floor);
+
+    // Load an old-format summary from an actual schema-2 journal checkpoint.
+    CapturingJournal expanded;
+    const auto records = FileJournal::read(file.path);
+    TradingSession::expand(records, expanded);
+    JournalFile older;
+    {
+      auto journal = FileJournal::create(older.path);
+      for (std::size_t i = 0; i < expanded.payloads.size(); ++i) {
+        auto payload = nlohmann::json::parse(expanded.payloads[i]);
+        if (i + 1 == expanded.payloads.size()) {
+          payload["state"]["attempts"][0] = old;
+          payload["snapshot"]["attempts"][0] = old;
+        }
+        journal->append(records.records[i].time, records.records[i].type, payload.dump());
+      }
+    }
+    auto recovered = TradingSession::recover(FileJournal::read(older.path));
+    EXPECT_EQ(nlohmann::json(recovered.snapshot()->attempts.at(0)).dump(), old.dump());
+    ASSERT_TRUE(recovered.reset_account(m("50000"), plan(), "continue old history", f.time).decision.ok());
+    EXPECT_EQ(nlohmann::json(recovered.snapshot()->attempts.at(0)).dump(), old.dump());
+  }
 }
 
 TEST(PlanRules, PassOddsHonourTheMinimumDays) {

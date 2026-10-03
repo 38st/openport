@@ -964,7 +964,7 @@ TEST(TradingOrders, AbandonmentRecoversFromTheJournal) {
 }
 
 
-TEST(TradingOrders, DisposalRefusesShortsMissingAndStaleQuotesAndClosedEvaluations) {
+TEST(TradingOrders, DisposalRefusesShortsMissingAndStaleQuotesAndExecutableBids) {
   ScriptedMarket f;
   auto config = roomy();
   config.rules.max_drawdown = m("100");
@@ -982,8 +982,8 @@ TEST(TradingOrders, DisposalRefusesShortsMissingAndStaleQuotesAndClosedEvaluatio
   s.on_quotes({f.quote("1.00", "1.20", 1)}, {f.valuation()}, f.time);
   ASSERT_EQ(s.snapshot()->evaluation.status, EvaluationStatus::Failed);
   ASSERT_FALSE(s.snapshot()->positions.empty()) << "the thin quote cannot liquidate every contract";
-  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::EVALUATION_CLOSED);
-  EXPECT_EQ(s.instruct_exercise(f.symbol(), true, f.time).decision.code, Reason::EVALUATION_CLOSED);
+  EXPECT_EQ(s.abandon(f.symbol(), f.time).decision.code, Reason::INVALID_ORDER);
+  EXPECT_TRUE(s.instruct_exercise(f.symbol(), true, f.time).decision.ok());
 }
 
 TEST(TradingOrders, AbandoningALongNeedsBuyingPowerForTheShortItUncovers) {

@@ -526,7 +526,8 @@ class TradingSession {
   /// Give up a long that cannot be sold: nobody bids for it (its fresh quote shows
   /// only an ask) or it has expired and waits for its settlement. It leaves the
   /// account at zero, without a fee, as an Abandon closure; its exits and the
-  /// orders selling it are cancelled. Allowed under the kill switch; it may not
+  /// orders selling it are cancelled. Allowed under the kill switch and after a
+  /// decision; it may not
   /// leave a defined-risk plan's short uncovered, and with the `buying_power` rule
   /// a short it covered must still fit.
   CommandResult abandon(const std::string& symbol, Timestamp time);
