@@ -1305,6 +1305,10 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
   const auto changed = server::verify_run(journal);
   EXPECT_FALSE(changed.matched);
   EXPECT_NE(changed.message.find("Scenario input changed"), std::string::npos) << changed.message;
+  { std::ofstream out(source); out << "{"; }
+  const auto invalid_source = server::verify_run(journal);
+  EXPECT_FALSE(invalid_source.matched);
+  EXPECT_EQ(invalid_source.message.find(file.directory.string()), std::string::npos);
 }
 
 TEST(ReproducibleRun, ScenarioRunsFromBeforeRevisionsRegenerateTheFirstRevision) {
@@ -1523,6 +1527,7 @@ TEST(ReplayRun, BackgroundVerificationIsExclusivePersistsAndInvalidatesWithoutMo
     id = json::parse(started.body).at("replay").at("id").get<std::string>();
     route = "/api/replay/history/" + id + "/verify";
     EXPECT_EQ(replay_call(host, "POST", route).status, 409);
+    ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick()).at("replay").at("fast_forwarding").get<bool>(); }));
     ASSERT_EQ(replay_call(host, "PUT", "/api/replay", {{"paused", false}}).status, 200);
     ASSERT_TRUE(test::recording_eventually([&] { return json::parse(host.tick()).at("replay").at("finished").get<bool>(); }));
     EXPECT_EQ(json::parse(replay_call(host, "GET", route).body).at("status"), "idle");
@@ -1562,12 +1567,14 @@ TEST(ReplayRun, BackgroundVerificationIsExclusivePersistsAndInvalidatesWithoutMo
   server::ReplayHost restarted({file.directory, engine, false});
   EXPECT_EQ(json::parse(replay_call(restarted, "GET", route).body), receipt);
   const auto path = file.directory / "replays" / (id + ".jsonl");
+  const auto original = read_file(path);
   const auto modified = std::filesystem::last_write_time(path);
   std::filesystem::last_write_time(path, modified + 1s);
   EXPECT_EQ(json::parse(replay_call(restarted, "GET", route).body).at("status"), "idle");
   EXPECT_EQ(replay_call(restarted, "GET", route + "?format=receipt").status, 409);
   std::filesystem::last_write_time(path, modified);
   { std::ofstream out(path, std::ios::app); out << '{'; }
+  std::filesystem::last_write_time(path, modified);  // Size alone also invalidates the result.
   EXPECT_EQ(json::parse(replay_call(restarted, "GET", route).body).at("status"), "idle");
   ASSERT_EQ(replay_call(restarted, "POST", route).status, 202);
   ASSERT_TRUE(test::recording_eventually([&] { return json::parse(replay_call(restarted, "GET", route).body).at("status") != "running"; }));
@@ -1578,6 +1585,16 @@ TEST(ReplayRun, BackgroundVerificationIsExclusivePersistsAndInvalidatesWithoutMo
   server::ReplayHost readonly({file.directory, engine, false});
   EXPECT_EQ(replay_call(readonly, "POST", route).status, 403);
   EXPECT_EQ(json::parse(replay_call(readonly, "GET", route).body), failed);
+  auto edited = original;
+  const auto hash = edited.find("\"hash\":\"");
+  ASSERT_NE(hash, std::string::npos);
+  edited[hash + 8] = edited[hash + 8] == 'a' ? 'b' : 'a';
+  { std::ofstream out(path); out << edited; }
+  ASSERT_EQ(replay_call(restarted, "POST", route).status, 202);
+  ASSERT_TRUE(test::recording_eventually([&] { return json::parse(replay_call(restarted, "GET", route).body).at("status") != "running"; }));
+  const auto corrupt = json::parse(replay_call(restarted, "GET", route).body);
+  EXPECT_EQ(corrupt.at("status"), "failed");
+  EXPECT_NE(corrupt.at("message").get<std::string>().find("Broken journal"), std::string::npos);
 }
 
 TEST(ReplayRun, StopCancelsAndJoinsBackgroundVerification) {

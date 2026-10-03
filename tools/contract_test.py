@@ -224,6 +224,20 @@ class Contract:
                 self.call("GET", "/api/replay/history/" + quote(run_id), success=True)
                 self.get_family("/api/replay/history/" + quote(run_id), run_id, symbol)
                 self.call("GET", "/api/replay/history/" + quote(run_id) + "/orders/" + placed["order"]["id"], success=True)
+                self.call("GET", "/api/replay/history", success=True)
+                verify = "/api/replay/history/" + quote(run_id) + "/verify"
+                self.call("POST", verify, {}, success=True)
+                deadline = time.monotonic() + 120
+                while True:
+                    result = self.call("GET", verify, success=True)
+                    if result["status"] != "running":
+                        break
+                    if time.monotonic() > deadline:
+                        raise ContractMismatch(verify + ": verification timed out")
+                    time.sleep(0.1)
+                if result["status"] != "passed":
+                    raise ContractMismatch(verify + ": " + result["message"])
+                self.call("GET", verify + "?format=receipt", success=True)
             else:
                 raise ContractMismatch("/api/replay: history is empty; enable durable journals to check archived routes")
         finally:

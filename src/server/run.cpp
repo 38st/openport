@@ -241,6 +241,7 @@ RunVerification verify_run(const std::filesystem::path& journal, std::stop_token
   result.run = {{"id", journal.stem().string()}, {"file", journal.filename().string()},
                 {"inputs", json::array()}, {"plan", "unknown"}};
   std::string label = run_label(result.run);
+  std::vector<std::filesystem::path> private_paths{journal};
   try {
     result.run = describe_run(journal);
     label = run_label(result.run);
@@ -275,6 +276,7 @@ RunVerification verify_run(const std::filesystem::path& journal, std::stop_token
     std::unique_ptr<TemporaryInput> generated_input;
     const auto open_input = [&](const json& identity) {
       if (identity.at("version") != 1) throw std::runtime_error("Unsupported run driver version");
+      if (identity.contains("file")) private_paths.emplace_back(identity.at("file").get<std::string>());
       auto generated = std::make_unique<TemporaryInput>();
       std::filesystem::path file;
       if (identity.at("kind") == "recording") {
@@ -305,6 +307,7 @@ RunVerification verify_run(const std::filesystem::path& journal, std::stop_token
         const auto revision = identity.value("revision", 1);
         if (revision < 1 || revision > providers::kScenarioRevision) throw std::runtime_error("Unsupported scenario revision");
         file = generated->file();
+        private_paths.push_back(file);
         providers::write_scenario_recording(file, scenario, identity.at("date").get<md::Date>(), identity.at("seed").get<std::uint64_t>(),
                                             revision);
       } else throw std::runtime_error("Unknown run input kind");
@@ -393,6 +396,12 @@ RunVerification verify_run(const std::filesystem::path& journal, std::stop_token
         (result.cut ? "; the journal ends part way through its last operation, as a crash leaves it" : "");
   } catch (const std::filesystem::filesystem_error& error) { result.message = error.code().message(); }
   catch (const std::exception& error) { result.message = error.what(); }
+  for (const auto& file : private_paths) {
+    if (file.empty() || !file.is_absolute()) continue;
+    const auto path = file.string();
+    for (auto at = result.message.find(path); at != std::string::npos; at = result.message.find(path, at + file.filename().string().size()))
+      result.message.replace(at, path.size(), file.filename().string());
+  }
   result.message = label + result.message;
   return result;
 }
