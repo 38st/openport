@@ -105,6 +105,7 @@ struct TradingView {
   std::vector<EquitySample> equity_samples;
   std::string equity_error;
   std::string playbooks_json;  ///< Immutable catalogue and transient stages for this account.
+  bool opening_settlement = false;  ///< This source settles AM options on the opening print.
   std::optional<RunIdentity> run;  ///< The replay run, for replay accounts.
 };
 

@@ -11769,10 +11769,14 @@
             "description": "A long option instructed not to be exercised at expiry: it then expires worthless with no cash proceeds or shares delivered."
           },
           "settle_by": {
-            "description": "How an expired position settles: closing_print while a PM position's closing print is recorded or still awaited (until half an hour after the close); manual for an AM position, or a PM one with neither after that; null while not awaiting settlement.",
+            "description": "How an expired position settles: opening_print for demo and driver-5 replay AM positions, closing_print for PM positions with a recorded or still awaited close, manual otherwise; null before expiry.",
             "anyOf": [
               {
                 "const": "closing_print",
+                "type": "string"
+              },
+              {
+                "const": "opening_print",
                 "type": "string"
               },
               {

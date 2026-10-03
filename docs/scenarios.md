@@ -137,6 +137,14 @@ settle at the open while same-date SPXW, NDXP and RUTW PM series still trade to
 both AM: their usual last trading day is Tuesday before Wednesday settlement,
 with the business-day adjustment applied before choosing the last trade.
 
+In driver-5 replays, an AM position held from the preceding day settles on the
+underlying's first print at or after 09:30 ET on the expiry date, even though the
+option is absent from that day's chain. `scenario_opening_print` records its
+provider, symbol and quote time. This approximates the official special opening
+quotation; it is not an official settlement. Recorded replays use the same rule
+with `recorded_opening_print`. Drivers 1–4 retain manual AM settlement when verified.
+The generator revision and its market events are unchanged.
+
 At revision 1 the five original scenarios keep their original prices, sizes and relative order
 of existing events for the same date and seed. Their old segment moves have been
 converted to cumulative waypoints. Tests pin fingerprints of the old events.

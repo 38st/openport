@@ -48,6 +48,9 @@ class Desk {
     /// it moves no clock, and a journal a crash cut off between them still verifies.
     /// False reproduces older runs, which recorded it after them.
     bool inputs_first = true;
+    /// Driver 5 settles AM positions on their expiry date's first print at or after
+    /// 09:30 ET in demo and replay. False preserves drivers 1–4's manual AM import.
+    bool opening_settlement = true;
     std::filesystem::path paper_journal;  ///< The main account. Empty only for explicit in-process simulations.
     /// More named accounts, one journal each (<id>.jsonl, named in <id>.name). Empty for none.
     std::filesystem::path paper_accounts;
@@ -136,6 +139,7 @@ class Desk {
   }
   /// `input_recorded`: Desk::command recorded it already, before the quotes it takes.
   void apply_command(PendingCommand& pending, md::Timestamp market_time, md::Timestamp driver_time, bool input_recorded);
+  [[nodiscard]] std::string opening_source() const;
   void sample_equity(PaperAccount& account);
   void evaluate_playbooks(md::Timestamp driver_time);
   void playbook_command(const TradingCommand& command, TradingReply& reply, md::Timestamp driver_time);
@@ -148,6 +152,7 @@ class Desk {
   void fail_trading(PaperAccount& account, std::string reason);
 
   Options options_;
+  bool scenario_source_ = false;
   std::optional<RunIdentity> run_;  ///< What options_.run_input replays, for exports.
   std::string provider_;
   md::Subscription subscription_;
@@ -163,6 +168,7 @@ class Desk {
   std::set<std::string> sandbox_ids_;
   /// Each underlying's first print at or after a date's regular close, and its
   /// last one before it, for the last week of dates.
+  std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> opening_prints_;
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> closing_prints_;
   std::map<std::pair<std::string, md::Date>, md::UnderlyingQuote> before_close_;
   /// Official closes by symbol and date (md::UnderlyingClose), for a week of dates.

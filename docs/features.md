@@ -277,6 +277,11 @@ usual fees and risk checks. DAY/GTC single-leg and net combo limits can walk by 
 chosen step and interval toward a cap on market time. Both tickets, previews,
 order history and edits expose the walk; replay and journal recovery preserve it.
 
+Settlement references and provenance are visible in account reads and trade
+exports and survive journal recovery. Demo and new scenario/recorded replays
+settle AM positions on the expiry opening print, an approximation of the official
+special opening quotation; live providers keep manual imports.
+
 ## Roadmap
 
 - [x] Opening share positions for hedges, covered calls and collars, with share previews and terminal shortcuts
@@ -334,6 +339,7 @@ order history and edits expose the walk; replay and journal recovery preserve it
 - [x] Market-wide circuit breakers, with a banner and kept across restarts, and Cboe's
       holiday schedule read daily
 - [x] Dividends from Massive's API
+- [x] Visible settlement references and sources, with AM opening-print settlement in demo and replay
 - [x] PM settlement on the provider's official close, revisions included
 - [x] Cboe's delayed feed from its quote pages when its data files fall behind
 - [x] Dividends from a file you supply
