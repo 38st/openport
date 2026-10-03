@@ -437,3 +437,21 @@ def test_equity_paging_keeps_account_and_range(stub):
     }
     client.equity()
     assert parse_qs(urlsplit(stub.requests[-1][1]).query) == {"account": ["practice"]}
+
+
+def test_backtest_compare_keep_delete_use_global_routes(stub):
+    original = stub.respond
+    def respond(method, target, headers, body):
+        if target.startswith("/api/backtests/compare?"):
+            stub.requests.append((method, target, dict(headers), body))
+            return 200, {"runs": []}
+        return original(method, target, headers, body)
+    stub.respond = respond
+    for client in (Client(stub.url), Client(stub.url).for_replay(), Client(stub.url, history="saved")):
+        client.compare_backtests(["000001", "000002"])
+        assert stub.requests[-1][0:2] == ("GET", "/api/backtests/compare?ids=000001%2C000002")
+        client.keep_backtest("000001")
+        assert stub.requests[-1][0:2] == ("PUT", "/api/backtests/000001")
+        assert stub.requests[-1][3] == {"keep": True}
+        client.delete_backtest("000001")
+        assert stub.requests[-1][0:2] == ("DELETE", "/api/backtests/000001?purge=true")

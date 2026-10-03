@@ -3971,7 +3971,56 @@
       },
       "delete": {
         "summary": "DELETE /api/backtests/{id}",
-        "description": "Simulated trading on recorded or generated days. Not a prediction. Not investment advice.",
+        "description": "Without purge, request cancellation of the matching active run (legacy behavior). With purge=true, permanently remove a finished, cancelled, failed or interrupted run and all its files, including pinned runs. 409 while active: cancel first and wait. 404 unknown run. Symlinks are refused with 409 BACKTEST_UNSAFE_PATH.",
+        "x-scope": "replay",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BacktestState"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BacktestDeleted"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "purge",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "const": true
+            },
+            "description": "Omit to cancel; true to delete a saved run."
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$"
+          }
+        }
+      ],
+      "put": {
+        "summary": "Set saved run retention",
+        "description": "Persist keep=true to exempt this run from automatic retention, including while active. keep=false releases the pin. 404 unknown run; 409 unsafe storage path.",
         "x-scope": "replay",
         "responses": {
           "200": {
@@ -3987,19 +4036,27 @@
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
-      },
-      "parameters": [
-        {
-          "name": "id",
-          "in": "path",
+        },
+        "requestBody": {
           "required": true,
-          "schema": {
-            "type": "string",
-            "pattern": "^[0-9]{6}$"
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "keep": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "keep"
+                ],
+                "additionalProperties": false
+              }
+            }
           }
         }
-      ]
+      }
     },
     "/api/notifications/test": {
       "post": {
@@ -4575,6 +4632,39 @@
             "$ref": "#/components/responses/Error"
           }
         }
+      }
+    },
+    "/api/backtests/compare": {
+      "get": {
+        "summary": "Compare saved backtests",
+        "description": "Compare 2–8 distinct finished completed or partial reports. 400 invalid selection, 404 unknown run, 409 active run, 422 unavailable report. Daily P&L aligns over all supplied dates. Combined results sum independent daily passes, with no shared buying power, risk limits or plan floor. Absent dates contribute nothing; supplied unmarked or unfinished days make the combined day and subsequent cumulative values null. Legacy missing identities are flagged. Exact-money overflow returns 422 BACKTEST_COMPARISON_UNAVAILABLE.",
+        "x-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BacktestComparison"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated 2–8 unique six-digit saved run IDs, in display order."
+          }
+        ]
       }
     }
   },
@@ -17027,6 +17117,12 @@
               "days": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "day_rows": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BacktestEvaluationDay"
+                }
               }
             },
             "required": [
@@ -17160,7 +17256,10 @@
         "type": "object",
         "properties": {
           "schema": {
-            "const": 1
+            "enum": [
+              1,
+              2
+            ]
           },
           "simulated": {
             "const": true
@@ -17244,6 +17343,12 @@
           },
           "summary": {
             "$ref": "#/components/schemas/BacktestSummary"
+          },
+          "input_set": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BacktestInputIdentity"
+            }
           }
         },
         "required": [
@@ -17331,6 +17436,15 @@
           },
           "summary": {
             "$ref": "#/components/schemas/BacktestReport/properties/summary"
+          },
+          "keep": {
+            "type": "boolean",
+            "description": "Exempt from automatic retention; defaults to false for older runs."
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Logical file bytes in the run directory, without following symlinks."
           }
         },
         "required": [
@@ -19924,6 +20038,397 @@
           "warning"
         ],
         "description": "Coarse estimate from 10 MiB/s of journal or 2,000 transactions/s, whichever is slower, minimum one second. Hardware and input generation may take longer. Warning at 30 seconds."
+      },
+      "BacktestEvaluationDay": {
+        "type": "object",
+        "properties": {
+          "start_balance": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+          },
+          "end_balance": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+          },
+          "start_equity": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+          },
+          "end_equity": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+          },
+          "target": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+          },
+          "target_progress": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+          },
+          "peak": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+          },
+          "pnl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "floor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "floor_distance": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date": {
+            "type": "string"
+          },
+          "ended": {
+            "type": "string"
+          },
+          "day_lock": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "decision_code": {
+            "type": "string"
+          },
+          "day_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "trades_opened": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "trades_closed": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "valuation_complete": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "enum": [
+              "open",
+              "passed",
+              "failed"
+            ]
+          },
+          "rule_trips": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "time": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "evaluation_failed, day_locked, kill_trip or order_rejected."
+                },
+                "detail": {
+                  "type": "object"
+                }
+              },
+              "required": [
+                "time",
+                "type",
+                "detail"
+              ]
+            }
+          }
+        },
+        "required": [
+          "start_balance",
+          "end_balance",
+          "start_equity",
+          "end_equity",
+          "target",
+          "target_progress",
+          "peak",
+          "pnl",
+          "floor",
+          "floor_distance",
+          "date",
+          "ended",
+          "day_lock",
+          "decision",
+          "decision_code",
+          "day_index",
+          "trades_opened",
+          "trades_closed",
+          "valuation_complete",
+          "outcome",
+          "rule_trips"
+        ]
+      },
+      "BacktestInputIdentity": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "input": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "date",
+          "input"
+        ]
+      },
+      "BacktestDeleted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$"
+          },
+          "deleted": {
+            "const": true
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ]
+      },
+      "BacktestCombinedDay": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "pnl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cumulative": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contributors": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "date",
+          "pnl",
+          "cumulative",
+          "contributors"
+        ]
+      },
+      "BacktestComparison": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "const": "Simulated trading on recorded or generated days. Not a prediction. Not investment advice."
+          },
+          "different_inputs": {
+            "type": "boolean"
+          },
+          "different_plans": {
+            "type": "boolean"
+          },
+          "incomplete_inputs": {
+            "type": "boolean"
+          },
+          "apples_to_oranges": {
+            "type": "boolean"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-9]{6}$"
+                },
+                "status": {
+                  "enum": [
+                    "running",
+                    "cancelling",
+                    "cancelled",
+                    "completed",
+                    "failed",
+                    "interrupted"
+                  ]
+                },
+                "playbook": {
+                  "type": "object",
+                  "description": "Saved report identity on listing; absent from older servers and runs without a report.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version"
+                  ]
+                },
+                "plan": {
+                  "type": "object",
+                  "description": "Full reproducible SessionConfig in journal encoding: monetary configuration fields are integer micro-dollars; enums retain their journal encoding. Result money uses decimal strings."
+                },
+                "input_set": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BacktestInputIdentity"
+                  }
+                },
+                "summary": {
+                  "$ref": "#/components/schemas/BacktestSummary"
+                }
+              },
+              "required": [
+                "id",
+                "status",
+                "playbook",
+                "plan",
+                "input_set",
+                "summary"
+              ]
+            }
+          },
+          "daily": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": {
+                  "type": "string"
+                },
+                "pnl": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "date",
+                "pnl"
+              ]
+            }
+          },
+          "combined": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "daily_pnl": {
+                "$ref": "#/components/schemas/BacktestDistribution"
+              },
+              "curve": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BacktestCombinedDay"
+                }
+              },
+              "max_drawdown": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+\\.[0-9]{2,6}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "worst_days": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BacktestCombinedDay"
+                }
+              },
+              "day_win_rate": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": [
+              "label",
+              "daily_pnl",
+              "curve",
+              "max_drawdown",
+              "worst_days",
+              "day_win_rate"
+            ]
+          }
+        },
+        "required": [
+          "label",
+          "different_inputs",
+          "different_plans",
+          "incomplete_inputs",
+          "apples_to_oranges",
+          "runs",
+          "daily",
+          "combined"
+        ]
       }
     }
   }

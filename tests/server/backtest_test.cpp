@@ -126,6 +126,34 @@ TEST(Backtest, AttemptsCarryBalancesDecidePassAndFailureAndLeaveOpenTail) {
       }
     }
   }
+  EXPECT_EQ(report.at("schema"), 2);
+  for (const auto& attempt : report.at("attempts")) {
+    auto journal = trading::FileJournal::read((root / attempt.at("journal").get<std::string>()).string());
+    ASSERT_EQ(attempt.at("day_rows").size(), attempt.at("days").get<std::size_t>());
+    Money previous_balance = request.config.initial_cash, previous_equity = request.config.initial_cash;
+    for (const auto& row : attempt.at("day_rows")) {
+      auto prefix = journal;
+      const auto end = *md::parse_datetime(row.at("ended").get<std::string>(), md::Zone::Utc);
+      while (!prefix.records.empty() && prefix.records.back().time > end) prefix.records.pop_back();
+      prefix.head = prefix.records.back().hash;
+      const auto session = trading::TradingSession::recover(prefix);
+      const auto snapshot = session.snapshot();
+      const auto inputs = trading::plan_inputs(*snapshot);
+      EXPECT_EQ(row.at("start_balance"), previous_balance.str());
+      EXPECT_EQ(row.at("start_equity"), previous_equity.str());
+      EXPECT_EQ(row.at("end_balance"), inputs.balance.str());
+      EXPECT_EQ(row.at("end_equity"), snapshot->equity.str());
+      EXPECT_EQ(row.at("pnl"), (snapshot->equity - previous_equity).str());
+      EXPECT_EQ(row.at("floor"), snapshot->evaluation.floor.str());
+      EXPECT_EQ(row.at("floor_distance"), (snapshot->equity - snapshot->evaluation.floor).str());
+      EXPECT_EQ(row.at("peak"), snapshot->evaluation.peak.str());
+      EXPECT_EQ(row.at("target_progress"), trading::attempt_profit(snapshot->evaluation, request.config.rules, inputs).str());
+      EXPECT_EQ(row.at("day_lock"), trading::to_string(snapshot->evaluation.day_lock));
+      EXPECT_EQ(row.at("decision_code"), trading::to_string(snapshot->evaluation.decision_code));
+      EXPECT_EQ(row.at("trades_opened"), 1);
+      previous_balance = inputs.balance; previous_equity = snapshot->equity;
+    }
+  }
   EXPECT_TRUE(found_start);
   EXPECT_EQ(report.at("days")[0].at("trades").size(), 1U);
   EXPECT_EQ(report.at("summary").at("worst_days")[0], 2);
@@ -393,6 +421,9 @@ TEST(BacktestApi, ContractFixture) {
     ASSERT_EQ(started.status, 202) << started.body;
     id = json::parse(started.body).at("id");
     EXPECT_EQ(call(host, {"POST", "/api/backtests", body.dump()}).status, 409);
+    EXPECT_EQ(call(host, {"DELETE", "/api/backtests/" + id + "?purge=true"}).status, 409);
+    EXPECT_EQ(call(host, {"GET", "/api/backtests/compare?ids=" + id + ",000099"}).status, 409);
+    EXPECT_EQ(call(host, {"PUT", "/api/backtests/" + id, "{\"keep\":true}"}).status, 200);
     EXPECT_EQ(call(host, {"DELETE", "/api/backtests/" + id}).status, 200);
     // Malformed routes and unsupported methods are not OpenAPI operations.
     EXPECT_EQ(call(host, {"GET", "/api/backtests/../../escape"}, false).status, 404);
@@ -402,6 +433,11 @@ TEST(BacktestApi, ContractFixture) {
   ASSERT_EQ(saved.status, 200) << saved.body;
   EXPECT_EQ(json::parse(saved.body).at("status"), "cancelled");
   EXPECT_EQ(call(reopened, {"DELETE", "/api/backtests/" + id}).status, 409);
+  EXPECT_EQ(json::parse(saved.body).at("keep"), true);
+  EXPECT_GT(json::parse(saved.body).at("bytes").get<std::uintmax_t>(), 0U);
+  EXPECT_EQ(call(reopened, {"DELETE", "/api/backtests/" + id + "?purge=true"}).status, 200);
+  EXPECT_FALSE(std::filesystem::exists(options.directory / id));
+  EXPECT_EQ(call(reopened, {"GET", "/api/backtests/" + id}).status, 404);
   EXPECT_EQ(call(reopened, {"PUT", "/api/backtests"}, false).status, 405);
   server::BacktestHost disabled({storage.directory / "disabled", {}, {}, {}, {}, false});
   EXPECT_EQ(call(disabled, {"POST", "/api/backtests", "{}"}).status, 403);
@@ -430,7 +466,7 @@ TEST(BacktestApi, ReplayScopeRequiredForStartAndCancelAndReadForProgress) {
   policy.require_token = true;
   policy.tokens = {{"reader", {"read"}, "reader-secret"}, {"trader", {"read", "trade:*"}, "trader-secret"}, {"runner", {"read", "replay"}, "runner-secret"}};
   for (const auto& route : {"/api/backtests", "/api/backtests/000001"}) {
-    for (const auto& method : {"POST", "DELETE"}) {
+    for (const auto& method : {"POST", "PUT", "DELETE"}) {
       server::ApiRequest request{method, route, std::string(method) == "POST" ? "{}" : ""};
       request.content_type = "application/json";
       for (const auto& secret : {"reader-secret", "trader-secret"}) {
@@ -444,5 +480,137 @@ TEST(BacktestApi, ReplayScopeRequiredForStartAndCancelAndReadForProgress) {
     server::ApiRequest read{"GET", route}; read.authorization = "Bearer reader-secret";
     EXPECT_FALSE(server::check_api_write(read, policy));
   }
+}
+
+TEST(Backtest, DailyRowsIncludePlanLocks) {
+  test::RecordingFile storage;
+  auto request = request_for({recorded_day(storage.directory, {2026, 9, 14}), recorded_day(storage.directory, {2026, 9, 15})});
+  request.config.rules.daily_loss_limit = Money::parse("10");
+  const std::atomic_bool cancel{false};
+  const auto report = server::run_backtest(request, storage.directory / "locked", cancel);
+  ASSERT_EQ(report.at("status"), "completed") << report.dump();
+  const auto& rows = report.at("attempts")[0].at("day_rows");
+  ASSERT_EQ(rows.size(), 2U);
+  for (const auto& row : rows) {
+    EXPECT_EQ(row.at("day_lock"), "DAILY_LOSS_LIMIT");
+    EXPECT_EQ(row.at("outcome"), "open");
+    EXPECT_EQ(row.at("trades_opened"), 1);
+    EXPECT_EQ(row.at("trades_closed"), 1);
+    bool locked = false;
+    for (const auto& trip : row.at("rule_trips")) if (trip.at("type") == "day_locked") locked = true;
+    EXPECT_TRUE(locked);
+  }
+}
+json comparison_report(const json& days) {
+  return {{"schema", 1}, {"playbook", {{"id", "batch"}, {"version", 1}}}, {"config", {{"initial_cash", 50000000000LL}}},
+      {"summary", json::object()}, {"days", days}};
+}
+json comparison_day(const std::string& date, const json& pnl) {
+  return {{"date", date}, {"pnl", pnl}, {"input", {{"kind", "scenario"}, {"id", "fixture"}, {"seed", "1"}}}};
+}
+TEST(Backtest, ComparisonAlignsDatesAndSumsMicroDollarsWithoutInventingMarks) {
+  auto first = comparison_report({comparison_day("2026-09-14", "0.000001"), comparison_day("2026-09-15", "-1.000003")});
+  auto second = comparison_report({comparison_day("2026-09-14", "0.000002"), comparison_day("2026-09-16", "2.000001")});
+  json runs = {{{"id", "000001"}, {"status", "completed"}, {"report", first}}, {{"id", "000002"}, {"status", "cancelled"}, {"report", second}}};
+  auto result = server::compare_backtests(runs);
+  EXPECT_EQ(result.at("different_inputs"), true);
+  EXPECT_EQ(result.at("different_plans"), false);
+  EXPECT_EQ(result.at("daily")[1].at("pnl").at("000002"), nullptr);
+  EXPECT_EQ(result.at("combined").at("curve")[0].at("pnl"), "0.000003");
+  EXPECT_EQ(result.at("combined").at("curve")[2].at("cumulative"), "1.000001");
+  EXPECT_EQ(result.at("combined").at("max_drawdown"), "1.000003");
+  EXPECT_EQ(result.at("combined").at("worst_days")[0].at("date"), "2026-09-15");
+  EXPECT_DOUBLE_EQ(result.at("combined").at("day_win_rate"), 2.0 / 3.0);
+  EXPECT_EQ(result.at("combined").at("daily_pnl").at("mean"), "0.333334");
+  runs[1]["report"] = first;
+  EXPECT_EQ(server::compare_backtests(runs).at("apples_to_oranges"), false);
+  runs[1]["report"]["config"]["initial_cash"] = 1000000;
+  runs[1]["report"]["days"][0]["pnl"] = nullptr;
+  result = server::compare_backtests(runs);
+  EXPECT_EQ(result.at("different_plans"), true);
+  EXPECT_EQ(result.at("combined").at("curve")[0].at("pnl"), nullptr);
+  EXPECT_EQ(result.at("combined").at("curve")[1].at("cumulative"), nullptr);
+  EXPECT_EQ(result.at("combined").at("max_drawdown"), nullptr);
+}
+void saved_fixture(const std::filesystem::path& directory, const std::string& id, bool keep = false, const std::string& status = "completed") {
+  std::filesystem::create_directories(directory / id);
+  server::write_backtest_report(directory / id / "state.json", {{"id", id}, {"status", status}, {"keep", keep},
+      {"phase", "finished"}, {"completed", 0}, {"total", 0}, {"label", server::kBacktestLabel}, {"report", nullptr}});
+}
+TEST(BacktestApi, RetentionRemovesOldestUnpinnedAndKeepsInterruptedPinsAcrossRestart) {
+  test::RecordingFile storage;
+  const auto directory = storage.directory / "reports";
+  saved_fixture(directory, "000001", true, "running");
+  saved_fixture(directory, "000002"); saved_fixture(directory, "000003"); saved_fixture(directory, "000004");
+  server::BacktestHost::Options options{directory, storage.directory, {}, {}, {}, true, 1};
+  {
+    server::BacktestHost host(options);
+    const auto listing = json::parse(call(host, {"GET", "/api/backtests"}).body);
+    EXPECT_EQ(listing.at("runs")[3].at("status"), "interrupted");
+    const auto started = call(host, {"POST", "/api/backtests", json{{"playbook", "batch"}, {"plan", "eod-50k"},
+        {"days", {{{"file", recorded_day(storage.directory, {2026, 9, 14}).filename().string()}}}}}.dump()});
+    ASSERT_EQ(started.status, 202) << started.body;
+    EXPECT_EQ(json::parse(started.body).at("id"), "000005");
+    EXPECT_TRUE(std::filesystem::exists(directory / "000001"));
+    EXPECT_FALSE(std::filesystem::exists(directory / "000002"));
+    EXPECT_FALSE(std::filesystem::exists(directory / "000003"));
+    EXPECT_TRUE(std::filesystem::exists(directory / "000004"));
+  }
+  server::BacktestHost reopened(options);
+  EXPECT_EQ(json::parse(call(reopened, {"GET", "/api/backtests/000001"}).body).at("keep"), true);
+  EXPECT_EQ(call(reopened, {"PUT", "/api/backtests/000004", "{\"keep\":true}"}).status, 200);
+  EXPECT_EQ(call(reopened, {"PUT", "/api/backtests/000004", "{\"keep\":1}"}).status, 400);
+  EXPECT_EQ(call(reopened, {"DELETE", "/api/backtests/000005?purge=true"}).status, 200);
+  options.keep = 0;
+  server::BacktestHost unlimited(options);
+  const auto started = call(unlimited, {"POST", "/api/backtests", json{{"playbook", "batch"}, {"plan", "eod-50k"},
+      {"days", {{{"file", "2026-09-14.oprec"}}}}}.dump()});
+  EXPECT_EQ(json::parse(started.body).at("id"), "000006");
+  EXPECT_TRUE(std::filesystem::exists(directory / "000004"));
+}
+TEST(BacktestApi, PurgeAndKeepRefuseSymlinkEscapesAndUnknownRuns) {
+  test::RecordingFile storage;
+  const auto directory = storage.directory / "reports";
+  saved_fixture(directory, "000001");
+  saved_fixture(storage.directory / "outside", "000002");
+  std::filesystem::create_directory_symlink(storage.directory / "outside/000002", directory / "000002");
+  server::BacktestHost host({directory, {}, {}, {}, {}, true});
+  EXPECT_EQ(call(host, {"DELETE", "/api/backtests/000002?purge=true"}).status, 409);
+  EXPECT_EQ(call(host, {"PUT", "/api/backtests/000002", "{\"keep\":true}"}).status, 409);
+  std::filesystem::create_directory_symlink(storage.directory / "outside", directory / "000001/escape");
+  EXPECT_EQ(call(host, {"DELETE", "/api/backtests/000001?purge=true"}).status, 409);
+  EXPECT_TRUE(std::filesystem::exists(storage.directory / "outside/000002/state.json"));
+  EXPECT_EQ(call(host, {"DELETE", "/api/backtests/000009?purge=true"}).status, 404);
+  EXPECT_EQ(call(host, {"DELETE", "/api/backtests/../outside?purge=true"}, false).status, 404);
+  EXPECT_EQ(call(host, {"DELETE", "/api/backtests?purge=true"}).status, 400);
+}
+TEST(BacktestApi, ComparisonAcceptsLegacyReportsAndRejectsInvalidSelection) {
+  test::RecordingFile storage;
+  const auto file = recorded_day(storage.directory, {2026, 9, 14});
+  const std::atomic_bool cancel{false};
+  auto report = server::run_backtest(request_for({file}), storage.directory / "source", cancel);
+  report["schema"] = 1; report.erase("input_set");
+  for (auto& attempt : report["attempts"]) attempt.erase("day_rows");
+  for (const auto* id : {"000001", "000002"}) {
+    saved_fixture(storage.directory, id);
+    server::write_backtest_report(storage.directory / id / "report.json", report);
+  }
+  server::BacktestHost host({storage.directory, {}, {}, {}, {}, true});
+  const auto saved = json::parse(call(host, {"GET", "/api/backtests/000001"}).body);
+  EXPECT_EQ(saved.at("report"), report);
+  std::uintmax_t size = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(storage.directory / "000001"))
+    if (entry.is_regular_file()) size += entry.file_size();
+  EXPECT_EQ(saved.at("bytes"), size);
+  const auto compared = call(host, {"GET", "/api/backtests/compare?ids=000001,000002"});
+  ASSERT_EQ(compared.status, 200) << compared.body;
+  EXPECT_EQ(json::parse(compared.body).at("apples_to_oranges"), false);
+  for (const auto* query : {"", "?ids=", "?ids=000001", "?ids=000001,000001", "?ids=000001,000002,", "?ids=../../escape,000001",
+      "?ids=000001,000002,000003,000004,000005,000006,000007,000008,000009"}) {
+    EXPECT_EQ(call(host, {"GET", std::string("/api/backtests/compare") + query}).status, 400);
+  }
+  EXPECT_EQ(call(host, {"GET", "/api/backtests/compare?ids=000001,000099"}).status, 404);
+  saved_fixture(storage.directory, "000003");
+  EXPECT_EQ(call(host, {"GET", "/api/backtests/compare?ids=000001,000003"}).status, 422);
 }
 }  // namespace

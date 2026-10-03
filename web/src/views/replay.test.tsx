@@ -213,3 +213,15 @@ describe("the replay banner", () => {
     expect(html).toContain("Back to live")
   })
 })
+
+it("backtest comparison and saved-run mutations keep global routes in replay history", async () => {
+  const fetcher = vi.fn(async () => new Response("{}", { status: 200 }))
+  vi.stubGlobal("fetch", fetcher)
+  dataSource.set("history:saved")
+  await api.compareBacktests(["000001", "000002"])
+  expect(fetcher).toHaveBeenLastCalledWith("/api/backtests/compare?ids=000001,000002", expect.anything())
+  await api.keepBacktest("000001", true, "open")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/backtests/000001", expect.objectContaining({ method: "PUT", body: '{"keep":true}' }))
+  await api.deleteBacktest("000002", "open")
+  expect(fetcher).toHaveBeenLastCalledWith("/api/backtests/000002?purge=true", expect.objectContaining({ method: "DELETE" }))
+})

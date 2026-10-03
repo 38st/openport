@@ -417,6 +417,18 @@ an evaluation failure unless the reducer's evaluation rules fail the account.
 
 ### Reports and reproducibility
 
+Report schema 2 adds optional `input_set` and attempt `day_rows`; schema 1 reports
+remain readable. Each attempt has one row per consumed supplied day, captured at
+the last replay observation (or the decision batch). Rows contain the date and
+zero-based input index, start/end closed balance and equity, equity-change P&L,
+valuation completeness, current floor and distance, profit target and progress,
+peak, daily lock, decision code/status, trips and counts of trades opened/closed.
+These read the session snapshot and shared reducer evaluation helpers. They do not
+advance the clock or ratchet an end-of-day floor early: that still happens at the
+next observed plan-day rollover. Equity fields are last-mark estimates; incomplete
+marks make P&L/floor distance null. Target progress follows the plan's balance or
+equity basis. The terminal expands each attempt into its daily evaluation table.
+
 Each daily result includes marked P&L, maximum observed peak-to-later-trough equity
 drawdown, the smallest observed equity-minus-floor distance, rule trips (evaluation
 failures, plan daily-loss locks, kill latches and order rejections), strategy
@@ -482,7 +494,10 @@ updates. Both are recorded in the report; neither path fetches additional histor
 | `POST /api/backtests` | Start `{playbook:"ID@VERSION",plan:"eod-50k",days:[…]}` or `{playbook,plan,scenarios:N,seed:"S"}`; optional `scenario` and `workers`; returns 202 |
 | `GET /api/backtests` | Saved run summaries and the active ID; optional `playbook: {id,version}` and `summary` for reports |
 | `GET /api/backtests/{id}` | Progress and the completed or partial report |
-| `DELETE /api/backtests/{id}` | Request cancellation; `DELETE /api/backtests` cancels the active run |
+| `GET /api/backtests/compare?ids=A,B` | Compare 2–8 distinct finished reports, including partial reports, and their combined independent daily P&L |
+| `DELETE /api/backtests/{id}` | Request cancellation; `DELETE /api/backtests` cancels the active run (unchanged) |
+| `DELETE /api/backtests/{id}?purge=true` | Permanently delete all saved files; 409 while active: cancel first and wait |
+| `PUT /api/backtests/{id}` | Set `{"keep":true}` to exempt from retention, or false to release the pin; works while active too |
 
 Only one batch job runs at a time per server; another start returns 409. Mutations
 need `replay` scope (or `admin`); reads follow the existing `read` token policy.
@@ -492,7 +507,39 @@ Reports, journals and progress files live in `backtests/ID/` beside the main pap
 journal. The response's `directory` resolves its relative journal paths. Saved
 reports remain readable after restart; unfinished runs are marked `interrupted`
 and do not resume automatically. The terminal shows saved reports and progress
-without switching the active trading account.
+without switching the active trading account. Listings include `bytes` (logical file
+sizes, not allocated filesystem blocks) and `keep` (false for older runs). Purge
+removes reports, journals and progress, including pinned runs; unknown IDs return
+404. Paths stay inside the backtests root; symlink roots, runs or children are
+refused with 409 `BACKTEST_UNSAFE_PATH`. The terminal asks before permanent deletion.
+
+`--backtest-keep N` defaults to **20**, with **0 = unlimited**. Before starting a new
+run, remove the oldest finished unpinned runs beyond N, in creation/ID order.
+Pinned runs do not count against N. Cancelled, failed and interrupted runs count;
+active runs never do. Thus a completed new run can leave N+1 unpinned reports until
+the next start. Pins survive restart. Keep important reports before starting more
+runs. CLI output directories are outside this server retention policy.
+
+Comparison returns each run's playbook@version, full plan configuration in the
+report's existing journal encoding, input identities and summary. `daily` aligns
+independent daily P&L over the union of supplied dates; a missing or unfinished day
+is null. `different_inputs`, `different_plans` and `incomplete_inputs` flag
+apples-to-oranges comparisons. Legacy reports derive identities from completed
+days and flag missing identities in partial reports. A selected active run returns
+409, a missing ID 404, and a finished run without a report 422
+`BACKTEST_REPORT_UNAVAILABLE`. Invalid or duplicate selections return 400.
+Exact-money overflow returns 422 `BACKTEST_COMPARISON_UNAVAILABLE`.
+
+`combined` is a **sum of independent single-playbook days**, not a joint simulation
+on one account: there is no shared buying power, risk limit or plan floor. Missing
+dates contribute nothing; supplied unfinished/unmarked days make that combined day
+null and the cumulative curve unknown from then on. Its distribution and worst
+days omit those unknown daily totals. The curve begins at zero; maximum drawdown
+is its peak-to-later-trough decline (null if incomplete), not intraday drawdown.
+The exact-money distribution uses the existing quartile and mean conventions;
+day win rate excludes breakevens. Worst-day ties use date order. The terminal
+shows the comparison table, combined curve and distribution. True multi-playbook
+runs sharing one account are not implemented.
 
 ## Practising strategies with shares
 

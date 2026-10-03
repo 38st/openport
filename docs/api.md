@@ -66,7 +66,8 @@ The web terminal uses these routes, so anything it does can be scripted:
 | `POST /api/positions/close/preview` | A flatten's dry run: what it would cancel and close now, and the account after it, without doing it |
 | `GET/POST /api/playbooks`, `GET/PUT/DELETE /api/playbooks/{id}` | Versioned definitions, archive, account stages, forward-test windows/results and adherence/expectancy reports; `?version=N` reads an old version |
 | `PUT /api/playbooks/{id}/mode`, `POST /api/playbooks/staged/{stage}/send`, `/dismiss` | Enable staging or automatic live paper/replay trading; send or dismiss a current stage |
-| `GET/POST/DELETE /api/backtests`, `GET/DELETE /api/backtests/{id}` | Start one batch job, watch progress, read kept reports or cancel; mutations need replay scope |
+| `GET /api/backtests/compare?ids=A,B` | Compare 2–8 finished/partial reports and sum independent daily P&L; input/plan mismatches are flagged |
+| `GET/POST/DELETE /api/backtests`, `GET/PUT/DELETE /api/backtests/{id}` | Start a batch, watch progress, read reports, pin, cancel or purge (`?purge=true`); mutations need replay scope |
 | `GET /api/account/pass-odds?days=N&samples=M&playbook=ID&seed=S` | Seeded estimate from historical equity days, not a prediction; needs ten days with intraday extremes (422 `PASS_ODDS_UNAVAILABLE` otherwise) |
 | `GET /api/strategy-template?symbol=SPX&expiry=ID&template=JSON` | Shared server leg selection for terminal templates and playbooks |
 | `GET /api/account/equity?from=&to=` | Persisted minute and fill equity, floor, high-water mark and target; optional UTC ISO time bounds |

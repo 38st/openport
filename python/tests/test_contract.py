@@ -56,7 +56,7 @@ def test_real_cpp_handler_responses_without_network(tmp_path):
     binary = ROOT / "build/tests/openport_tests"
     if not binary.exists():
         pytest.skip("Build the C++ test executable to check its real handler responses")
-    result = subprocess.run([str(binary), "--gtest_filter=Api.ContractFixture:PaperEngine.ContractFixture:ReplayRun.ContractFixture:BacktestApi.ContractFixture:Backtest.AttemptsCarryBalancesDecidePassAndFailureAndLeaveOpenTail:PlaybookApi.LiveForwardPublicationIncludesWindowsAndJournalStats:BacktestApi.ListingSummarizesSavedReportIdentityWithoutCopyingTrades"],
+    result = subprocess.run([str(binary), "--gtest_filter=Api.ContractFixture:PaperEngine.ContractFixture:ReplayRun.ContractFixture:BacktestApi.ContractFixture:Backtest.AttemptsCarryBalancesDecidePassAndFailureAndLeaveOpenTail:PlaybookApi.LiveForwardPublicationIncludesWindowsAndJournalStats:BacktestApi.ListingSummarizesSavedReportIdentityWithoutCopyingTrades:BacktestApi.ComparisonAcceptsLegacyReportsAndRejectsInvalidSelection"],
                             env={**os.environ, "OPENPORT_CONTRACT_OUTPUT": str(tmp_path)},
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stdout + result.stderr

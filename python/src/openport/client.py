@@ -342,6 +342,15 @@ class Client:
     def get_backtest(self, run_id: str) -> JSON:
         return self._request("GET", "/backtests/" + quote(run_id, safe=""), control=True)
 
+    def compare_backtests(self, run_ids: list[str]) -> JSON:
+        return self._request("GET", "/backtests/compare", params={"ids": ",".join(run_ids)}, control=True)
+
+    def keep_backtest(self, run_id: str, keep: bool = True) -> JSON:
+        return self._request("PUT", "/backtests/" + quote(run_id, safe=""), {"keep": keep}, control=True)
+
+    def delete_backtest(self, run_id: str) -> JSON:
+        return self._request("DELETE", "/backtests/" + quote(run_id, safe=""), params={"purge": "true"}, control=True)
+
     def cancel_backtest(self, run_id: str) -> JSON:
         return self._request("DELETE", "/backtests/" + quote(run_id, safe=""), control=True)
 

@@ -1309,3 +1309,22 @@ or accepted command may finish. Legacy and sandbox tokens remain valid. No
 restart is needed and sandboxes remain alive. `GET /api/status` reports
 `tokens: {loaded_at, count}` for the last successful load. Reload never changes
 `--require-token` or the server's open/token/disabled write policy.
+
+### Backtest storage and retention
+
+API backtests save reports, journals and progress under `backtests/ID/` beside the
+main paper journal. `--backtest-keep N` (default 20; 0 unlimited) prunes the oldest
+finished unpinned runs beyond N before a new start. Pinned runs are exempt and do
+not count toward N. The newly started run can bring the total to N+1 until the
+next start. Cancelled, failed and interrupted runs count as finished; active runs
+are never purged. `PUT /api/backtests/ID {"keep":true}` persists a pin across
+restart. Listings expose logical directory `bytes`, including journals and reports.
+`DELETE /api/backtests/ID?purge=true` removes the entire saved directory, including
+pinned runs, and refuses an active run (cancel and wait first). Plain DELETE still
+only cancels. Run roots and children may not be symlinks. A small `sequence.json`
+keeps new server IDs increasing after purge/retention. CLI reports are not pruned.
+See [saved runs](playbooks.md#api-and-saved-runs) for comparison and partial results.
+
+F52 report schema 2 adds per-attempt day rows and supplied input identities.
+Schema 1 reports still load. Snapshot reads and comparison do not add reducer
+commands or change any journal bytes; driver 6 and scenario revisions are unchanged.

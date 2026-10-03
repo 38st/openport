@@ -1,4 +1,4 @@
-import type { BacktestListing, BacktestState, BacktestStart } from "./backtest-types"
+import type { BacktestComparison, BacktestListing, BacktestState, BacktestStart } from "./backtest-types"
 import type { Playbook, PlaybooksResponse, PassOdds } from "./playbook-types"
 import type { StrategyTemplate, TemplateResult } from "../lib/strategy"
 import type { Volatility, VolatilitySeries } from "./types"
@@ -127,6 +127,9 @@ export const api = {
   backtest: (id: string, signal?: AbortSignal) => get<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, signal),
   startBacktest: (body: BacktestStart, mode: WriteMode) => write<BacktestState>("/api/backtests", "POST", mode, body),
   cancelBacktest: (id: string, mode: WriteMode) => write<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, "DELETE", mode),
+  compareBacktests: (ids: string[], signal?: AbortSignal) => get<BacktestComparison>(`/api/backtests/compare?ids=${ids.map(encodeURIComponent).join(",")}`, signal),
+  keepBacktest: (id: string, keep: boolean, mode: WriteMode) => write<BacktestState>(`/api/backtests/${encodeURIComponent(id)}`, "PUT", mode, { keep }),
+  deleteBacktest: (id: string, mode: WriteMode) => write<{ id: string; deleted: true }>(`/api/backtests/${encodeURIComponent(id)}?purge=true`, "DELETE", mode),
   backtestPlans: (signal?: AbortSignal) => request<PlansResponse>("/api/plans", { signal, headers: readHeaders() }),
   backtestPlaybooks: (signal?: AbortSignal) => request<PlaybooksResponse>("/api/playbooks", { signal, headers: readHeaders() }),
   testNotification: (channel: string, mode: WriteMode) => write<{ queued: boolean }>("/api/notifications/test", "POST", mode, { channel }),

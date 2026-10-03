@@ -73,6 +73,7 @@ struct Settings {
   unsigned short port = 8080;
   std::filesystem::path web_root;
   std::filesystem::path scenario_dir;
+  unsigned backtest_keep = 20;
   std::filesystem::path record_file;
   std::filesystem::path record_dir;
   std::optional<std::filesystem::path> candle_dir;
@@ -121,7 +122,7 @@ int usage(const char* error = nullptr) {
       "                 [--scenario-dir DIR] [--web-root DIR] [--expiries N] [--window F] [--poll-seconds N]\n"
       "                 [--record FILE] [--record-dir DIR] [--rate R] [--option KEY=VALUE]... [--allowed-origin ORIGIN]...\n"
       "                 [--allowed-host NAME]... [--token-file FILE] [--require-token]\n"
-      "                 [--notify-config FILE]\n"
+      "                 [--notify-config FILE] [--backtest-keep N] (default 20, 0 unlimited)\n"
       "                 [--paper-journal PATH] [--plan ID] [--paper-cash DECIMAL] [--paper-fee DECIMAL]\n"
       "                 [--paper-fill-model as_displayed|conservative|midpoint]\n"
       "                 [--paper-slippage-ticks N] [--paper-fill-latency-ms N] [--paper-impact-ticks N]\n"
@@ -483,6 +484,8 @@ int run(int argc, char** argv) {
       } catch (const std::invalid_argument& error) {
         return usage(error.what());
       }
+    } else if (arg == "--backtest-keep") {
+      settings.backtest_keep = providers::parse_integer(value, "--backtest-keep");
     } else if (arg == "--scenario-dir") {
       settings.scenario_dir = value;
     } else if (arg == "--web-root") {
@@ -681,7 +684,7 @@ int run(int argc, char** argv) {
   server::ReplayHost replays(replay_options);
   server::BacktestHost backtests({settings.paper_journal.parent_path() / "backtests", replay_options.recordings,
       settings.scenario_dir, engine_options.analytics, engine_options.dividends,
-      settings.paper_enabled && engine_options.write_mode != "disabled"});
+      settings.paper_enabled && engine_options.write_mode != "disabled", settings.backtest_keep});
   // Dividends from Massive reach the live engine and replays started after them.
   std::unique_ptr<providers::MassiveDividends> dividends;
   if (settings.massive_dividends) {

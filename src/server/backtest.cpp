@@ -179,6 +179,23 @@ json result_for(Desk& desk, const BacktestRequest& request, const std::filesyste
       {"entry_reasons", entries.reasons},
       {"open_positions", snapshot.positions.size() + snapshot.stocks.size()}, {"journal", journal}, {"journal_head", recovery.head}};
 }
+json evaluation_day(const trading::TradingSnapshot& start, const trading::TradingSnapshot& end,
+    const trading::AccountRules& rules, const BacktestDay& day, std::size_t index) {
+  const auto before = trading::plan_inputs(start), now = trading::plan_inputs(end);
+  const auto& evaluation = end.evaluation;
+  const bool floor = rules.max_drawdown > Money{};
+  return {{"date", md::format_date(day.date)}, {"day_index", index}, {"ended", md::format_timestamp(end.time)},
+      {"start_balance", before.balance.str()}, {"end_balance", now.balance.str()},
+      {"start_equity", start.equity.str()}, {"end_equity", end.equity.str()},
+      {"pnl", start.valuation_complete && end.valuation_complete ? json((end.equity - start.equity).str()) : json(nullptr)},
+      {"valuation_complete", end.valuation_complete}, {"floor", floor ? json(evaluation.floor.str()) : json(nullptr)},
+      {"floor_distance", floor && end.valuation_complete ? json((end.equity - evaluation.floor).str()) : json(nullptr)},
+      {"target", rules.profit_target.str()}, {"target_progress", trading::attempt_profit(evaluation, rules, now).str()},
+      {"peak", evaluation.peak.str()}, {"day_lock", trading::to_string(evaluation.day_lock)},
+      {"outcome", outcome(evaluation.status)}, {"decision", evaluation.decision},
+      {"decision_code", trading::to_string(evaluation.decision_code)}, {"rule_trips", json::array()},
+      {"trades_opened", 0}, {"trades_closed", 0}};
+}
 json distribution(std::vector<Money> values) {
   std::sort(values.begin(), values.end());
   json sorted = json::array();
@@ -237,6 +254,85 @@ json aggregate(const json& days, const json& attempts) {
       {"pass_rate", decided ? json(static_cast<double>(passed) / static_cast<double>(decided)) : json(nullptr)}};
 }
 }  // namespace
+
+json compare_backtests(const json& runs) {
+  json result{{"runs", json::array()}, {"daily", json::array()}, {"label", kBacktestLabel}};
+  std::map<std::string, std::map<std::string, json>> dates;
+  json first_inputs, first_plan;
+  bool different_inputs = false, different_plans = false, incomplete_inputs = false;
+  for (const auto& run : runs) {
+    const auto id = run.at("id").get<std::string>();
+    const auto& report = run.at("report");
+    json inputs = report.value("input_set", json::array());
+    if (!report.contains("input_set")) {
+      for (const auto& day : report.at("days")) {
+        if (day.is_null()) { incomplete_inputs = true; continue; }
+        inputs.push_back({{"date", day.at("date")}, {"input", day.at("input")}});
+      }
+    }
+    for (const auto& input : inputs) {
+      dates[input.at("date").get<std::string>()][id] = nullptr;
+      if (input.at("input").is_null()) incomplete_inputs = true;
+    }
+    for (const auto& day : report.at("days"))
+      if (!day.is_null()) dates[day.at("date").get<std::string>()][id] = day.at("pnl");
+    const auto& plan = report.at("config");
+    if (result["runs"].empty()) { first_inputs = inputs; first_plan = plan; }
+    else { different_inputs = different_inputs || inputs != first_inputs; different_plans = different_plans || plan != first_plan; }
+    result["runs"].push_back({{"id", id}, {"status", run.at("status")},
+        {"playbook", {{"id", report.at("playbook").at("id")}, {"version", report.at("playbook").at("version")}}},
+        {"plan", plan}, {"input_set", inputs}, {"summary", report.at("summary")}});
+  }
+  result["different_inputs"] = different_inputs;
+  result["different_plans"] = different_plans;
+  result["incomplete_inputs"] = incomplete_inputs;
+  result["apples_to_oranges"] = different_inputs || different_plans || incomplete_inputs;
+  json curve = json::array();
+  std::vector<Money> pnls;
+  std::vector<std::size_t> worst;
+  Money cumulative, peak, drawdown;
+  std::size_t wins = 0, losses = 0;
+  bool curve_complete = true;
+  for (const auto& [date, values] : dates) {
+    json row{{"date", date}, {"pnl", json::object()}};
+    Money total;
+    bool complete = true;
+    std::size_t contributors = 0;
+    for (const auto& run : runs) {
+      const auto id = run.at("id").get<std::string>();
+      const auto found = values.find(id);
+      row["pnl"][id] = found == values.end() ? json(nullptr) : found->second;
+      if (found == values.end()) continue; // No supplied day contributes nothing.
+      if (found->second.is_null()) { complete = false; continue; }
+      total = total + Money::parse(found->second.get<std::string>());
+      ++contributors;
+    }
+    result["daily"].push_back(row);
+    if (complete) {
+      pnls.push_back(total);
+      worst.push_back(curve.size());
+      if (total > Money{}) ++wins;
+      if (total < Money{}) ++losses;
+    } else curve_complete = false;
+    if (curve_complete) {
+      cumulative = cumulative + total;
+      peak = std::max(peak, cumulative);
+      drawdown = std::max(drawdown, peak - cumulative);
+    }
+    curve.push_back({{"date", date}, {"pnl", complete ? json(total.str()) : json(nullptr)},
+        {"cumulative", curve_complete ? json(cumulative.str()) : json(nullptr)}, {"contributors", contributors}});
+  }
+  std::stable_sort(worst.begin(), worst.end(), [&](std::size_t a, std::size_t b) {
+    return Money::parse(curve[a].at("pnl").get<std::string>()) < Money::parse(curve[b].at("pnl").get<std::string>());
+  });
+  if (worst.size() > 10) worst.resize(10);
+  json worst_days = json::array();
+  for (const auto index : worst) worst_days.push_back(curve[index]);
+  result["combined"] = {{"label", "Sum of independent single-playbook days. No shared buying power, risk limits or plan floor; not a joint account simulation."},
+      {"daily_pnl", distribution(pnls)}, {"curve", curve}, {"max_drawdown", curve_complete ? json(drawdown.str()) : json(nullptr)},
+      {"worst_days", worst_days}, {"day_win_rate", wins + losses ? json(static_cast<double>(wins) / static_cast<double>(wins + losses)) : json(nullptr)}};
+  return result;
+}
 
 BacktestRequest parse_backtest(const json& body, const json& catalogue,
     const std::vector<providers::Scenario>& scenarios, const std::filesystem::path& recordings, bool confined) {
@@ -459,9 +555,19 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
       });
     }
   }
-  json report{{"schema", 1}, {"simulated", true}, {"label", kBacktestLabel}, {"actor", request.actor}, {"playbook", definition},
+  json report{{"schema", 2}, {"simulated", true}, {"label", kBacktestLabel}, {"actor", request.actor}, {"playbook", definition},
       {"config", request.config}, {"analytics", request.analytics}, {"dividends", request.dividends},
       {"days", results}, {"attempts", json::array()}, {"errors", json::array()}, {"status", "completed"}};
+  report["input_set"] = json::array();
+  for (std::size_t index = 0; index < request.days.size(); ++index) {
+    // Preserve supplied dates even when a day was cancelled before preparation.
+    const auto& day = request.days[index];
+    json input = nullptr;
+    if (day.scenario) input = json::parse(scenario_input(*day.scenario, day.date, day.seed));
+    else if (!prepared[index].identity.empty()) input = json::parse(prepared[index].identity);
+    if (input.is_object() && input.contains("seed")) input["seed"] = std::to_string(day.seed);
+    report["input_set"].push_back({{"date", md::format_date(day.date)}, {"input", input}});
+  }
   for (std::size_t index = 0; index < errors.size(); ++index)
     if (!errors[index].empty()) report["errors"].push_back({{"day", index}, {"message", errors[index]}});
   if (cancel.load()) report["status"] = "cancelled";
@@ -489,8 +595,10 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
             options_for(request, prepared[index], directory / journal, measurements));
         desk.start_trading();
         check_desk(desk);
+        json rows = json::array();
         while (index < request.days.size()) {
           check_cancel(cancel);
+          const auto start = desk.trading_view()->snapshot;
           if (index != first) {
             prepared[index] = prepare(request.days[index], directory, index);
             md::RecordingReader next_reader(prepared[index].file);
@@ -498,11 +606,32 @@ json run_backtest(const BacktestRequest& request, const std::filesystem::path& d
           }
           const TemporaryRecording day_generated{request.days[index].scenario ? prepared[index].file : std::filesystem::path{}};
           consume(desk, prepared[index], request.days[index], true, subscription, entries);
+          rows.push_back(evaluation_day(*start, *desk.trading_view()->snapshot, request.config.rules, request.days[index], index));
           ++index;
           advance("attempts");
           if (desk.trading_view()->snapshot->evaluation.status != trading::EvaluationStatus::Active) break;
         }
         auto result = result_for(desk, request, directory, journal, measurements, entries);
+        for (auto& row : rows) {
+          const auto date = row.at("date").get<std::string>();
+          for (const auto& trip : result.at("rule_trips")) {
+            const auto time = md::parse_datetime(trip.at("time").get<std::string>(), md::Zone::Utc);
+            if (time && md::format_date(md::trading_date(*time)) == date) row["rule_trips"].push_back(trip);
+          }
+          for (const auto* collection : {"trades", "stock_trades"}) {
+            for (const auto& trade : result.at(collection)) {
+              for (const auto* key : {"opened", "closed"}) {
+                if (trade.at(key).is_null()) continue;
+                const auto time = md::parse_datetime(trade.at(key).get<std::string>(), md::Zone::Utc);
+                if (time && md::format_date(md::trading_date(*time)) == date) {
+                  auto& count = row[std::string(key) == "opened" ? "trades_opened" : "trades_closed"];
+                  count = count.get<std::size_t>() + 1;
+                }
+              }
+            }
+          }
+        }
+        result["day_rows"] = std::move(rows);
         result["first_day"] = first;
         result["last_day"] = index - 1;
         result["days"] = index - first;
