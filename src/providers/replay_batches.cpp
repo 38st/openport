@@ -20,6 +20,7 @@ md::Timestamp market_time(const md::Event& event) {
 ReplayBatches::ReplayBatches(md::RecordingReader& reader, const md::Subscription& subscription, bool instants)
     : reader_(reader), symbols_(subscription.underlyings.begin(), subscription.underlyings.end()),
       snapshots_(false), instants_(instants) {
+  if (const auto mode = reader_.indexed_snapshot_mode()) { snapshots_ = *mode; return; }
   // Older recordings predate SnapshotComplete. They use the streaming clock
   // even when their header describes a polling provider.
   while (const auto record = reader_.next()) {

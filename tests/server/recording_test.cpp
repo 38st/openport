@@ -321,7 +321,7 @@ TEST(ReplayHost, PlaysTheSimulatedDemoMarketWithItsOwnAccount) {
   ASSERT_EQ(bought.status, 201) << bought.body;
   EXPECT_EQ(json::parse(bought.body)["order"]["status"], "filled");
   EXPECT_EQ(json::parse(host.tick())["replay"]["demo"], true);
-  host.stop();
+  ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
   // Started again, the day is already generated.
   const auto again = std::chrono::steady_clock::now();
   ASSERT_EQ(call(host, "POST", "/api/replay", R"({"demo": true, "seed": "scenario"})", 60s).status, 201);
@@ -570,7 +570,7 @@ TEST(ReplayHost, DrillsReachTheEngineBeforeTradingAndKeepTheirJournalsAcrossRest
     EXPECT_EQ(json::parse(bought.body)["order"]["status"], "filled");
     expected = json::parse(call(host, "GET", "/api/replay/fills").body);
     EXPECT_TRUE(json::parse(call(host, "GET", "/api/replay").body)["history"].empty());
-    host.stop();
+    ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
     const auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];
     ASSERT_EQ(history.size(), 1U) << history;
     EXPECT_FALSE(history[0].contains("error")) << history;
@@ -637,7 +637,7 @@ TEST(ReplayHost, HistoryDeletesDamagedRunsWithTheirSidecarsAndAnswersUnknownIds)
     ids.push_back(json::parse(started.body)["replay"]["id"]);
     ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
     ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"10:30"})").status, 200);
-    host.stop();
+    ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
   }
   for (const auto& id : ids) {
     ASSERT_TRUE(std::filesystem::exists(replays / (id + ".json")));
@@ -653,6 +653,10 @@ TEST(ReplayHost, HistoryDeletesDamagedRunsWithTheirSidecarsAndAnswersUnknownIds)
   { std::ofstream out(replays / (ids[2] + ".jsonl"), std::ios::app); out << "{\"seq\":"; }
   const auto history = json::parse(call(host, "GET", "/api/replay").body)["history"];
   ASSERT_EQ(history.size(), 3U);
+  for (const auto& entry : history) {
+    EXPECT_GT(entry.at("journal_size").at("bytes").get<std::uint64_t>(), 0u);
+    EXPECT_GT(entry.at("verification_cost").at("estimated_seconds").get<std::uint64_t>(), 0u);
+  }
   EXPECT_EQ(call(host, "GET", "/api/replay/history/" + ids[1]).status, 422);
   for (const auto& id : ids) {
     const auto deleted = call(host, "DELETE", "/api/replay/history/" + id);
@@ -785,7 +789,7 @@ TEST(ReplayHost, AnInterruptedDriverSixRunResumesWhereItStoppedWithTheSameJourna
   EXPECT_EQ(account[0]["client_order_id"], "before-crash");
   EXPECT_EQ(call(host, "POST", "/api/replay", json{{"resume", id}}.dump()).status, 409);
   ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"11:00"})").status, 200);
-  host.stop();
+  ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
   std::string continued;
   { std::ifstream in(crashed / "replays" / (id + ".jsonl")); continued.assign(std::istreambuf_iterator<char>(in), {}); }
   EXPECT_EQ(continued, uninterrupted);
@@ -897,7 +901,7 @@ TEST(ReplayHost, AResumedRunThatDiffersFromItsRecordingStopsAndWritesNothing) {
   const std::string id = json::parse(started.body)["replay"]["id"];
   ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
   ASSERT_EQ(call(host, "PUT", "/api/replay", R"({"until":"10:00"})").status, 200);
-  host.stop();
+  ASSERT_EQ(call(host, "DELETE", "/api/replay").status, 200);
   // A boundary that names another batch than the recording's: re-executing reaches it.
   auto recovery = trading::FileJournal::read((replays / (id + ".jsonl")).string());
   const auto changed = file.directory / "changed.jsonl";
@@ -1139,6 +1143,17 @@ TEST(ReplayHost, FinishedRunsServeTheirEquityHistoryWithoutRewritingIt) {
   EXPECT_EQ(body["samples"][1]["fill"], "1");
   EXPECT_EQ(body["samples"][2]["time"], md::format_timestamp(market.time + md::kNanosPerMinute));
   EXPECT_TRUE(body["error"].is_string());  // the torn row is reported, not repaired
+  EXPECT_TRUE(body["error_time"].is_string());
+  EXPECT_FALSE(body["error_recovered"].get<bool>());
+  const auto first = json::parse(call(host, "GET", "/api/replay/history/finished/account/equity?limit=1").body);
+  ASSERT_TRUE(first["next"].is_string());
+  const auto second = json::parse(call(host, "GET", "/api/replay/history/finished/account/equity?limit=2&cursor=" +
+      first["next"].get<std::string>()).body);
+  ASSERT_EQ(second["samples"].size(), 2U);
+  EXPECT_EQ(first["samples"][0], body["samples"][0]);
+  EXPECT_EQ(second["samples"][0], body["samples"][1]);
+  EXPECT_EQ(second["samples"][1], body["samples"][2]);
+  EXPECT_TRUE(second["next"].is_null());
   const auto bounded = json::parse(call(host, "GET", "/api/replay/history/finished/account/equity?from=" +
       md::format_timestamp(market.time + md::kNanosPerMinute)).body);
   EXPECT_EQ(bounded["samples"].size(), 1U);

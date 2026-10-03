@@ -43,7 +43,8 @@ json recordings_json(const std::filesystem::path& directory) {
   if (directory.empty() || !std::filesystem::is_directory(directory, ec)) return list;
   std::vector<std::filesystem::path> files;
   for (const auto& entry : std::filesystem::directory_iterator(directory, ec))
-    if (entry.is_regular_file(ec) && plain_name(entry.path().filename().string())) files.push_back(entry.path());
+    if (entry.is_regular_file(ec) && plain_name(entry.path().filename().string()) &&
+        entry.path().extension() != ".end" && !entry.path().string().ends_with(".end.tmp")) files.push_back(entry.path());
   // Recordings are named by when they started: newest first.
   std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.filename() > b.filename(); });
   for (const auto& file : files) {
@@ -268,7 +269,11 @@ class ReplayHost::DemoRecordings {
         if (it->first != key && it->second.file.wait_for(std::chrono::seconds(0)) == std::future_status::ready &&
             (oldest == days_.end() || it->second.number < oldest->second.number)) oldest = it;
       if (oldest == days_.end()) break;
-      try { std::filesystem::remove(oldest->second.file.get()); } catch (const std::exception&) {}
+      try {
+        const auto expired = oldest->second.file.get();
+        std::filesystem::remove(expired);
+        std::filesystem::remove(expired.string() + ".end");
+      } catch (const std::exception&) {}
       days_.erase(oldest);
     }
     return attempt;
@@ -336,7 +341,7 @@ struct ReplayHost::Session {
 class ArchivedReplay final : public MetricsSource {
  public:
   explicit ArchivedReplay(const std::filesystem::path& file, json* diagnostic = nullptr) {
-    const auto recovery = trading::FileJournal::read(file.string());
+    const auto recovery = trading::FileJournal::read_prefix(file.string());
     integrity_ = {{"journal_found", {{"transactions", recovery.records.size()}, {"head", recovery.head},
                                       {"bytes", std::filesystem::file_size(file)}}}};
     if (recovery.truncated_final_line) {
@@ -345,7 +350,13 @@ class ArchivedReplay final : public MetricsSource {
       integrity_["integrity_message"] = file.filename().string() + ": torn final line; --repair-journals would cut " +
           std::to_string(recovery.bytes_cut) + " bytes (stop the server first)";
     }
+    const auto bytes = std::filesystem::file_size(file);
+    const auto warning = journal_warning(bytes, recovery.records.size(), true);
+    integrity_["journal_size"] = {{"bytes", bytes}, {"records", recovery.records.size()}, {"warning", warning.empty() ? json(nullptr) : json(warning)}};
+    integrity_["verification_cost"] = verification_cost(bytes, recovery.records.size());
     if (diagnostic) *diagnostic = integrity_;
+    if (!recovery.damage.empty() && !recovery.truncated_final_line)
+      throw trading::TradingError(trading::Reason::JOURNAL_CORRUPT, recovery.damage);
     const auto session = trading::TradingSession::recover(recovery);
     view_ = std::make_shared<TradingView>();
     view_->snapshot = end_open_orders(session.snapshot());
@@ -355,6 +366,10 @@ class ArchivedReplay final : public MetricsSource {
     view_->valuations = session.valuations();
     // The equity history beside the journal, read as it is: an archive never compacts it.
     view_->equity_samples = read_equity_history(file.string() + ".equity.csv", view_->equity_error);
+    if (!view_->equity_error.empty()) view_->equity_error_time = md::now();
+    view_->journal_transactions = recovery.records.size();
+    view_->journal_bytes = std::filesystem::file_size(file);
+    view_->journal_head = recovery.head;
     // Replay definitions are journaled as inputs. Archives do not depend on the
     // current live catalogue or a mutable sidecar to explain historical trades.
     std::unique_ptr<Playbooks> playbooks;
@@ -399,7 +414,7 @@ class ArchivedReplay final : public MetricsSource {
     out.trading.fee_per_contract = view_->config.fee_per_contract;
     out.trading.plan = view_->config.rules.plan;
     out.trading.plan_id = preset_id(view_->config.initial_cash, view_->config.rules);
-    out.accounts.push_back({"main", "Replay (read-only)", out.trading});
+    out.accounts.push_back({"main", "Replay (read-only)", out.trading, 0, false, {}, view_->journal_bytes, view_->journal_transactions, true});
     return out;
   }
  private:
@@ -421,8 +436,10 @@ class ReplayHost::History {
     const auto path = directory_ / (session.id + ".jsonl");
     // The journal's exclusive create also prevents overwriting an earlier run.
     if (std::filesystem::exists(path)) throw std::runtime_error("Replay journal already exists");
+    const auto data = session.state().dump();
+    trading::check_storage_space(path, data.size() + 1);
     std::ofstream metadata(directory_ / (session.id + ".json"));
-    metadata << session.state().dump() << '\n';
+    metadata << data << '\n';
     metadata.close();
     if (!metadata) throw std::runtime_error("Cannot write replay metadata for " + session.id);
     return path;
@@ -446,10 +463,12 @@ class ReplayHost::History {
   void save(const std::string& id, const json& value) const {
     const auto file = directory_ / (id + ".json");
     const auto staged = directory_ / (id + ".json.tmp");
+    const auto data = value.dump();
+    trading::check_storage_space(file, data.size() + 1);
     std::error_code ec;
     {
       std::ofstream metadata(staged);
-      metadata << value.dump() << '\n';
+      metadata << data << '\n';
       metadata.close();
       if (!metadata) {
         std::filesystem::remove(staged, ec);
@@ -566,13 +585,20 @@ class ReplayHost::History {
   json verification(const std::string& id) const {
     auto saved = metadata(id);
     auto value = verifying_ == id ? verification_ : saved.is_object() ? saved.value("verification", json::object()) : json::object();
-    if (value.empty()) return {{"status", "idle"}, {"message", "This run has not been verified"}};
+    if (value.empty()) value = {{"status", "idle"}, {"message", "This run has not been verified"}};
+    if (value.at("status") == "idle") { value["cost"] = cost(id); return value; }
     if (!value.contains("stamp") || value.at("stamp") != stamp(id))
-      return {{"status", "idle"}, {"message", "Journal changed since verification; verify it again"}};
+      return {{"status", "idle"}, {"message", "Journal changed since verification; verify it again"}, {"cost", cost(id)}};
     if (value.value("status", "") == "running" && verifying_ != id)
-      return {{"status", "idle"}, {"message", "Verification was interrupted; verify it again"}};
+      return {{"status", "idle"}, {"message", "Verification was interrupted; verify it again"}, {"cost", cost(id)}};
     value.erase("stamp");
+    value["cost"] = cost(id);
     return value;
+  }
+  json cost(const std::string& id) const {
+    const auto saved = metadata(id);
+    const auto checkpoint = saved.is_object() ? saved.value("journal", json::object()) : json::object();
+    return verification_cost(std::filesystem::file_size(journal(id)), checkpoint.value("transactions", std::uint64_t{0}));
   }
   void begin_verification(const std::string& id, const json& fingerprint) {
     auto value = metadata(id);
@@ -623,6 +649,8 @@ class ReplayHost::History {
   json details(const std::string& id) const {
     const auto value = summary(id, journal(id));
     auto out = integrity(id, value);
+    if (value.contains("journal_size")) out["journal_size"] = value.at("journal_size");
+    if (value.contains("verification_cost")) out["verification_cost"] = value.at("verification_cost");
     out["verification"] = verification(id);
     if (value.contains("error")) out["error"] = value.at("error");
     return out;
@@ -757,6 +785,12 @@ void ReplayHost::work() {
       jobs_.pop_front();
     }
     const std::lock_guard control_lock(control_mutex_);
+    bool closing;
+    { const std::lock_guard lock(jobs_mutex_); closing = closing_; }
+    if (closing) {
+      job.complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
+      continue;
+    }
     if (std::string_view(job.request.target).starts_with("/api/replay/history/")) history(job.request, job.complete);
     else control(job.request, job.complete);
   }
@@ -775,6 +809,14 @@ void ReplayHost::set_dividends(std::vector<trading::Dividend> dividends) {
 }
 
 void ReplayHost::stop() {
+  std::deque<Job> refused;
+  {
+    const std::lock_guard lock(jobs_mutex_);
+    closing_ = true;
+    refused.swap(jobs_);
+  }
+  jobs_ready_.notify_all();
+  for (auto& job : refused) job.complete(api_error(503, "ENGINE_STOPPING", "The replay host is stopping"));
   const std::lock_guard control_lock(control_mutex_);
   verifier_.request_stop();
   if (verifier_.joinable()) verifier_.join();
@@ -1069,6 +1111,7 @@ void ReplayHost::resume(const std::string& id, int speed, bool paused, const Api
     providers::ReplayProvider::Options playback;
     playback.file = day ? demos_->get(*day, date, seed) : recording;
     playback.speed = speed;
+    if (!session->windows.empty()) playback.known_end = session->windows.back().last;
     // The recorded batches replay unpaced, and playback continues from the last one.
     playback.start_at = target;
     playback.paused = paused;
@@ -1262,6 +1305,7 @@ void ReplayHost::control(const ApiRequest& request, const ApiCompletion& complet
       providers::ReplayProvider::Options playback;
       playback.file = demo ? demos_->get(*day, date, seed) : path;
       playback.speed = speed;
+      if (!session->windows.empty()) playback.known_end = session->windows.back().last;
       playback.start_at = session->target;
       playback.paused = paused;
       // A run of several sessions passes the closed market between them in a step.

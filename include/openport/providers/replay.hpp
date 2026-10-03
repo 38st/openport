@@ -41,6 +41,7 @@ class ReplayProvider final : public md::Provider {
     /// closed market between sessions passes in one step; zero waits every gap out.
     md::Timestamp max_gap = 0;
     std::function<std::future<void>()> synchronize = {};
+    md::Timestamp known_end = 0;  ///< Trusted generated scenario window, avoiding a discovery scan.
   };
 
   /// 0 (as fast as possible), 1, 2, 5, 10, 30, 60, 120 or 300 times real time.

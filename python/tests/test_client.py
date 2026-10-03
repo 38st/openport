@@ -37,6 +37,25 @@ def test_errors_carry_reason_and_do_not_retry_422(stub):
     assert len(stub.requests) == 1
 
 
+def test_damaged_account_remains_readable_and_writes_do_not_retry(stub, monkeypatch):
+    from conftest import shaped
+    original = stub.respond
+    damage = {"reason": "JOURNAL_CORRUPT: restore a verified backup", "last_good_seq": 2, "last_good_time": TIME}
+    def respond(method, target, headers, body):
+        if method == "GET" and urlsplit(target).path == "/api/account":
+            return 200, {**shaped("Account"), "damaged": damage}
+        return original(method, target, headers, body)
+    monkeypatch.setattr(stub, "respond", respond)
+    client = Client(stub.url)
+    assert client.account()["damaged"] == damage
+    stub.failures = [(409, "ACCOUNT_DAMAGED")]
+    before = len(stub.requests)
+    with pytest.raises(ApiError) as caught:
+        client.place_order(quantity=1)
+    assert caught.value.reason_code == "ACCOUNT_DAMAGED"
+    assert len(stub.requests) == before + 1
+
+
 def test_bounded_retry_reuses_id_and_body(stub, monkeypatch):
     sleeps = []
     monkeypatch.setattr("openport.client.time.sleep", sleeps.append)

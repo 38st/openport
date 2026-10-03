@@ -311,7 +311,6 @@ special opening quotation; live providers keep manual imports.
 
 - [x] Technical, VIX and gap playbook entries; trailing, DTE, trading-day and debit exits (F52, part 1)
 - [ ] Backtest comparison/combination, per-day evaluation rows and saved-run retention (F52, next part)
-- [x] Operational robustness (F68): damaged-account reads, repair inspection, storage diagnostics and equity paging
 
 - [x] F72: held-size close tickets, confirmed cancellations with persistent results,
       fresh finished runs in the switcher, held-strategy gamma and vega, and sizing labels

@@ -155,7 +155,7 @@ std::uint64_t FileJournal::bytes() const {
 std::pair<std::shared_ptr<FileJournal>, JournalRecovery> FileJournal::inspect(const std::string& path) {
   const int fd = open_locked(path, false, true);
   try {
-    auto recovery = verify_prefix(read_file(path), {}, true);
+    auto recovery = read_prefix(path);
     auto journal = std::shared_ptr<FileJournal>(new FileJournal(fd, recovery.records.size(), recovery.head,
         recovery.records.empty() ? 0 : recovery.records.back().time, {}, directory_name(path)));
     journal->failed_ = true;
@@ -176,6 +176,11 @@ JournalRecovery FileJournal::read(const std::string& path, std::string_view expe
   struct stat info {};
   if (::stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) io("Journal must be a readable regular file");
   return verify_journal(read_file(path), expected_head);
+}
+JournalRecovery FileJournal::read_prefix(const std::string& path) {
+  struct stat info {};
+  if (::stat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) io("Journal must be a readable regular file");
+  return verify_prefix(read_file(path), {}, true);
 }
 std::shared_ptr<FileJournal> FileJournal::resume(const std::string& path) {
   return resume(path, Options{});
@@ -210,19 +215,19 @@ JournalRepair FileJournal::repair(const std::string& path, bool dry_run) {
   std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%SZ", &utc);
   JournalRepair result{contents.size() - keep, path + ".torn-" + stamp, keep == 0, recovery.records.size()};
   const int copy = ::open(result.backup.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-  if (copy < 0) io("Cannot create " + result.backup + ": " + std::strerror(errno));
+  if (copy < 0) io("Cannot create journal repair backup: " + std::string(std::strerror(errno)));
   std::size_t done = 0;
   while (done < contents.size()) {
     const auto count = ::write(copy, contents.data() + done, contents.size() - done);
     if (count < 0 && errno == EINTR) continue;
-    if (count <= 0) { ::close(copy); io("Cannot write " + result.backup + ": " + std::strerror(errno)); }
+    if (count <= 0) { ::close(copy); io("Cannot write journal repair backup: " + std::string(std::strerror(errno))); }
     done += static_cast<std::size_t>(count);
   }
   const bool copied = full_sync(copy);
   ::close(copy);
-  if (!copied) io("Cannot sync " + result.backup);
+  if (!copied) io("Cannot sync journal repair backup");
   if (::ftruncate(fd, static_cast<off_t>(keep)) != 0 || !full_sync(fd))
-    io("Cannot cut the torn line off " + path + ": " + std::strerror(errno));
+    io("Cannot cut the torn journal line: " + std::string(std::strerror(errno)));
   return result;
 }
 void FileJournal::remove(const std::string& path) {

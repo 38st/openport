@@ -11,6 +11,9 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <sstream>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -328,7 +331,7 @@ struct FileDescriptor {
 struct RecordingSink::Impl {
   Impl(const std::filesystem::path& path, const RecordingHeader& header, EventSink& sink,
        Options opts)
-      : downstream(sink), options(std::move(opts)) {
+      : downstream(sink), options(std::move(opts)), path_(path) {
     if (options.frame_bytes == 0 || options.frame_bytes > 4 * 1024 * 1024 ||
         options.flush_interval <= std::chrono::milliseconds(0) ||
         options.flush_interval > std::chrono::seconds(1))
@@ -397,6 +400,23 @@ struct RecordingSink::Impl {
       const int fd = file.fd;
       file.fd = -1;
       if (::close(fd) != 0) invalid(std::string("close failed: ") + std::strerror(errno));
+      // Optional acceleration only: the recording remains usable if its index cannot be saved.
+      if (failure.empty() && index_valid) {
+        try {
+          struct stat info {};
+          if (::stat(path_.c_str(), &info) != 0) return;
+          struct statvfs space {};
+          if (::statvfs(path_.c_str(), &space) == 0 && static_cast<std::uint64_t>(space.f_bavail) * space.f_frsize < 65ull * 1024 * 1024) return;
+          const auto modified = std::chrono::duration_cast<std::chrono::nanoseconds>(std::filesystem::last_write_time(path_).time_since_epoch()).count();
+          const auto temporary = path_.string() + ".end.tmp";
+          std::ofstream out(temporary, std::ios::trunc);
+          out << "OPENPORT-END-1 " << info.st_dev << ' ' << info.st_ino << ' ' << info.st_size << ' ' << modified << ' ' << snapshots << ' ' << market_ends.size() << '\n';
+          for (const auto& [symbol, time] : market_ends) out << symbol << ' ' << time << '\n';
+          out.close();
+          if (out) std::filesystem::rename(temporary, path_.string() + ".end");
+          else std::filesystem::remove(temporary);
+        } catch (...) { /* A missing index falls back to startup discovery. */ }
+      }
     } catch (const std::exception& error) {
       const std::lock_guard lock(mutex);
       fail(error.what());
@@ -419,6 +439,23 @@ struct RecordingSink::Impl {
   bool closing = false;
   bool writing = false;
   std::thread worker;
+  std::filesystem::path path_;
+  std::map<InstrumentId, std::string> symbols;
+  std::map<std::string, Timestamp> market_ends;
+  bool snapshots = false, index_valid = true;
+  void index(const Event& event) {
+    std::visit([&](const auto& value) {
+      using T = std::decay_t<decltype(value)>;
+      if constexpr (std::is_same_v<T, ContractDefinition>) symbols[value.id] = value.contract.underlying;
+      else if constexpr (std::is_same_v<T, SnapshotComplete>) snapshots = true;
+      else if constexpr (std::is_same_v<T, UnderlyingQuote>) market_ends[value.symbol] = std::max(market_ends[value.symbol], value.ts);
+      else if constexpr (std::is_same_v<T, OptionQuote> || std::is_same_v<T, OptionTrade>) {
+        const auto found = symbols.find(value.id);
+        if (found == symbols.end()) index_valid = false;
+        else market_ends[found->second] = std::max(market_ends[found->second], value.ts);
+      }
+    }, event);
+  }
 };
 
 RecordingSink::RecordingSink(const std::filesystem::path& path, const RecordingHeader& header,
@@ -440,6 +477,7 @@ void RecordingSink::publish(Event event) {
     const auto previous = p.pending.size();
     try {
       encode_event(p.pending, p.options.clock(), event);
+      p.index(event);
       ++p.counters.events;
     } catch (const std::exception& error) {
       p.pending.resize(previous);
@@ -472,7 +510,7 @@ RecordingStats RecordingSink::stats() const {
 
 struct RecordingReader::Impl {
   explicit Impl(const std::filesystem::path& path) : file(path, std::ios::binary) {
-    if (!file) invalid("cannot open " + path.string());
+    if (!file) invalid("cannot open " + path.filename().string());
     std::array<char, 16> prefix{};
     file.read(prefix.data(), prefix.size());
     if (file.gcount() != static_cast<std::streamsize>(prefix.size())) invalid("truncated header");
@@ -487,6 +525,34 @@ struct RecordingReader::Impl {
     if (file.gcount() != static_cast<std::streamsize>(length)) invalid("truncated header");
     header = decode_header(data, version);
     body = file.tellg();
+    try {
+      const auto index_path = path.string() + ".end";
+      std::ifstream index;
+      if (std::filesystem::file_size(index_path) <= 128 * 1024) index.open(index_path);
+      std::string magic, symbol;
+      std::uint64_t device = 0, inode = 0, bytes = 0, count = 0;
+      std::int64_t modified = 0;
+      bool snapshots = false;
+      struct stat info {};
+      if (index >> magic >> device >> inode >> bytes >> modified >> snapshots >> count && count <= 1024 && magic == "OPENPORT-END-1" &&
+          ::stat(path.c_str(), &info) == 0 && device == static_cast<std::uint64_t>(info.st_dev) &&
+          inode == static_cast<std::uint64_t>(info.st_ino) && bytes == static_cast<std::uint64_t>(info.st_size) &&
+          modified == std::chrono::duration_cast<std::chrono::nanoseconds>(std::filesystem::last_write_time(path).time_since_epoch()).count()) {
+        std::map<std::string, Timestamp> ends;
+        Timestamp time = 0;
+        std::string row;
+        std::getline(index, row);
+        if (!row.empty()) index.setstate(std::ios::badbit);
+        while (std::getline(index, row)) {
+          std::istringstream fields(row);
+          std::string extra;
+          if (!(fields >> symbol >> time) || fields >> extra || symbol.size() > 64 || time < 0 ||
+              ends.size() >= 1024 || ends.contains(symbol)) { index.setstate(std::ios::badbit); break; }
+          ends[symbol] = time;
+        }
+        if (index.eof() && !index.bad() && ends.size() == count) { indexed_ends = std::move(ends); indexed_snapshots = snapshots; }
+      }
+    } catch (...) { /* Old and moved recordings discover their end once at startup. */ }
     if (!context) invalid("cannot allocate zstd decoder");
     check_zstd(ZSTD_DCtx_setParameter(context.get(), ZSTD_d_windowLogMax, 24));
   }
@@ -542,6 +608,8 @@ struct RecordingReader::Impl {
   Bytes record;
   std::string diagnostic;
   bool ended = false;
+  std::optional<std::map<std::string, Timestamp>> indexed_ends;
+  bool indexed_snapshots = false;
 };
 
 RecordingReader::RecordingReader(const std::filesystem::path& path)
@@ -549,6 +617,17 @@ RecordingReader::RecordingReader(const std::filesystem::path& path)
 RecordingReader::~RecordingReader() = default;
 const RecordingHeader& RecordingReader::header() const {
   return impl_->header;
+}
+std::optional<bool> RecordingReader::indexed_snapshot_mode() const {
+  return impl_->indexed_ends ? std::optional<bool>(impl_->indexed_snapshots) : std::nullopt;
+}
+std::optional<Timestamp> RecordingReader::indexed_end(const Subscription& subscription) const {
+  if (!impl_->indexed_ends) return {};
+  Timestamp end = 0;
+  for (const auto& symbol : subscription.underlyings)
+    if (const auto found = impl_->indexed_ends->find(symbol); found != impl_->indexed_ends->end()) end = std::max(end, found->second);
+  if (!impl_->indexed_snapshots && end > 0) end = ((end - 1) / kNanosPerSecond + 1) * kNanosPerSecond;
+  return end;
 }
 const std::string& RecordingReader::diagnostic() const {
   return impl_->diagnostic;

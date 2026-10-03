@@ -203,8 +203,7 @@ TEST(Cli, DaemonReportsJournalLockedByAnotherProcessBeforeWebStartupFails) {
   const auto command = "--provider replay --symbols SPX,SPY --option file='" + source.path.string() +
       "' --option speed=max --paper-journal '" + journal_file.path.string() +
       "' --address invalid-address";
-  rejects("openportd", command, "JOURNAL_LOCKED: paper journal '" + journal_file.path.string() +
-      "' is in use by another openportd; use --paper-journal to choose another file or --no-paper");
+  rejects("openportd", command, "JOURNAL_LOCKED: paper journal is in use by another openportd; use --paper-journal to choose another file or --no-paper");
   const auto recovery = trading::FileJournal::read(journal_file.path.string(), head);
   EXPECT_EQ(recovery.records.size(), 1u);
   EXPECT_FALSE(recovery.truncated_final_line);
@@ -443,4 +442,29 @@ TEST(Cli, SandboxesRequireDemoAndPaperTrading) {
   rejects("openportd", "--provider demo --sandboxes -1", "--sandboxes");
   rejects("openportd", "--provider demo --sandbox-idle-seconds 0", "--sandbox-idle-seconds");
   rejects("openportd", "--provider demo --client-ip-header 'X Real IP'", "--client-ip-header");
+}
+
+TEST(Cli, RepairDryRunAndSingleFileModePreserveOtherJournals) {
+  using namespace openport;
+  test::RecordingFile directory;
+  const auto first = directory.directory / "first.jsonl";
+  const auto second = directory.directory / "second.jsonl";
+  for (const auto& file : {first, second}) {
+    { auto journal = trading::FileJournal::create(file.string()); journal->append(1, "test", "{}"); }
+    std::ofstream(file, std::ios::app) << "torn";
+  }
+  const auto size = std::filesystem::file_size(first);
+  const auto args = "--repair-journals --file '" + first.string() + "'";
+  const auto dry = run_daemon(args + " --dry-run");
+  EXPECT_EQ(dry.status, 0) << dry.output;
+  EXPECT_NE(dry.output.find("would cut 4 bytes; 1 records kept"), std::string::npos);
+  EXPECT_EQ(std::filesystem::file_size(first), size);
+  EXPECT_EQ(std::filesystem::file_size(second), size);
+  EXPECT_EQ(std::distance(std::filesystem::directory_iterator(directory.directory), std::filesystem::directory_iterator{}), 2);
+  const auto repaired = run_daemon(args);
+  EXPECT_EQ(repaired.status, 0) << repaired.output;
+  EXPECT_EQ(std::filesystem::file_size(first), size - 4);
+  EXPECT_EQ(std::filesystem::file_size(second), size);
+  EXPECT_EQ(run_daemon("--repair-journals --file '" + (directory.directory / "missing").string() + "'").status, 1);
+  rejects("openportd", "--dry-run", "require --repair-journals");
 }

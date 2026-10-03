@@ -59,6 +59,7 @@ class ReplayHost {
   /// The replay's WebSocket message, a tick typed "replay_tick" with the replay's
   /// state, or empty while none runs.
   [[nodiscard]] std::string tick() const;
+  /// Terminal shutdown: closes the job queue. DELETE /api/replay stops only the session.
   void stop();
   /// The dividends replays started from now on pay (Options::engine.dividends at first).
   void set_dividends(std::vector<trading::Dividend> dividends);

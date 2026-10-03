@@ -1280,7 +1280,8 @@ TEST(ReproducibleRun, ScenarioDayHasIdenticalBytesAcrossSpeedsFastForwardAndVeri
   // The CLI takes the same path without starting a feed, HTTP or user directories.
   const auto cli = std::string(OPENPORT_APPS_DIR) + "/openportd --verify-run " + journal.string() + " > " + (file.directory / "verify.txt").string() + " 2>&1";
   EXPECT_EQ(std::system(cli.c_str()), 0);
-  EXPECT_TRUE(read_file(file.directory / "verify.txt").starts_with("Run run-0 (run-0.jsonl)"));
+  EXPECT_NE(read_file(file.directory / "verify.txt").find("Run run-0 (run-0.jsonl)"), std::string::npos);
+  EXPECT_TRUE(read_file(file.directory / "verify.txt").starts_with("Verification estimate:"));
   const auto recovered = trading::FileJournal::read(journal.string());
   const auto sidecar = std::filesystem::path(journal).replace_extension(".json");
   { std::ofstream out(sidecar); out << json{{"plan", "practice"}, {"journal", {{"head", recovered.head},
@@ -2442,4 +2443,49 @@ TEST(ReproducibleRun, OpeningShareCommandsRecordTheirPriceAndRecoverCoveredCalls
   EXPECT_TRUE(closing);
 }
 
+TEST(ReplayRun, StopRefusesStartsQueuedBehindAStep) {
+  test::RecordingFile file;
+  write_stream(file.path, true);
+  std::promise<void> entered, release;
+  auto waiting = entered.get_future();
+  const auto released = release.get_future().share();
+  std::atomic<bool> hold{false};
+  server::Engine::Options options;
+  options.paper_journal = file.directory / "main.jsonl";
+  options.journal_io.clock = [] { return std::chrono::steady_clock::time_point{}; };
+  options.journal_io.sync = [&](int) { if (hold.exchange(false)) { entered.set_value(); released.wait(); } return true; };
+  server::ReplayHost host({file.directory, options, false});
+  ASSERT_EQ(replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}, {"paused", true}}).status, 201);
+  ASSERT_TRUE(test::recording_eventually([&] { return !json::parse(host.tick())["replay"]["fast_forwarding"].get<bool>(); }));
+  hold = true;
+  const test::ScriptedMarket market;
+  auto step = std::async(std::launch::async, [&] { return replay_call(host, "PUT", "/api/replay", {{"until", md::format_timestamp(market.time + 4 * md::kNanosPerSecond)}}); });
+  const auto ready = waiting.wait_for(5min);
+  EXPECT_EQ(ready, std::future_status::ready);
+  if (ready != std::future_status::ready) { release.set_value(); (void)step.get(); return; }
+  std::promise<server::ApiResponse> queued;
+  auto queued_response = queued.get_future();
+  server::ApiRequest start{"POST", "/api/replay", json{{"file", "session.oprec"}, {"paused", true}}.dump()};
+  start.content_type = "application/json";
+  ASSERT_TRUE(host.handle(start, [&](auto result) { queued.set_value(std::move(result)); }));
+  auto stopping = std::async(std::launch::async, [&] { host.stop(); });
+  const auto refused = queued_response.wait_for(5min);
+  EXPECT_EQ(refused, std::future_status::ready);
+  release.set_value();
+  (void)step.get(); stopping.get();
+  if (refused == std::future_status::ready) {
+    const auto response = queued_response.get();
+    EXPECT_EQ(response.status, 503);
+    EXPECT_EQ(json::parse(response.body)["error"]["code"], "ENGINE_STOPPING");
+  }
+  EXPECT_EQ(replay_call(host, "POST", "/api/replay", {{"file", "session.oprec"}}).status, 503);
+  EXPECT_EQ(json::parse(replay_call(host, "GET", "/api/replay").body)["replay"], nullptr);
+}
+TEST(ReplayRun, JournalAndVerificationWarningsHaveDocumentedThresholds) {
+  EXPECT_TRUE(server::journal_warning(1, 1, false).empty());
+  EXPECT_NE(server::journal_warning(server::kLargeJournalBytes, 1, false).find("--compact-journals"), std::string::npos);
+  EXPECT_NE(server::journal_warning(1, server::kLargeJournalRecords, true).find("breaks exact"), std::string::npos);
+  EXPECT_EQ(server::verification_cost(1).at("warning"), nullptr);
+  EXPECT_FALSE(server::verification_cost(300ull * 1024 * 1024).at("warning").is_null());
+}
 }  // namespace

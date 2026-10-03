@@ -144,6 +144,8 @@ int usage(const char* error = nullptr) {
       "         original as FILE.bak, then exit; stop openportd first\n"
       "repair: cut a torn last line, as a full disk leaves, off each journal, keeping the\n"
       "        original as FILE.torn-TIME, then exit; stop openportd first\n"
+      "        --dry-run reports bytes cut and records kept without changes; --file selects one journal\n"
+      "        exit 0: inspected/repaired; 1: a journal failed; 2: invalid options\n"
       "plan: rules for a new journal (practice, intraday-25k|50k|100k, eod-25k|50k|100k,\n"
       "      funded-intraday-25k|50k|100k, funded-eod-25k|50k|100k); default practice;\n"
       "      --paper-cash then overrides its starting balance\n"
@@ -257,16 +259,18 @@ int repair_journals(const std::filesystem::path& journal, const std::filesystem:
                     bool dry_run, const std::filesystem::path& single) {
   std::vector<std::filesystem::path> files;
   std::error_code ec;
-  if (std::filesystem::is_regular_file(journal, ec)) files.push_back(journal);
-  std::vector<std::filesystem::path> named;
-  for (const auto& directory : {accounts, std::filesystem::absolute(journal).parent_path() / "replays"}) {
-    if (!std::filesystem::is_directory(directory, ec)) continue;
-    for (const auto& entry : std::filesystem::directory_iterator(directory, ec))
-      if (entry.path().extension() == ".jsonl") named.push_back(entry.path());
-  }
-  std::sort(named.begin(), named.end());
-  files.insert(files.end(), named.begin(), named.end());
   if (!single.empty()) files = {single};
+  else {
+    if (std::filesystem::is_regular_file(journal, ec)) files.push_back(journal);
+    std::vector<std::filesystem::path> named;
+    for (const auto& directory : {accounts, std::filesystem::absolute(journal).parent_path() / "replays"}) {
+      if (!std::filesystem::is_directory(directory, ec)) continue;
+      for (const auto& entry : std::filesystem::directory_iterator(directory, ec))
+        if (entry.path().extension() == ".jsonl") named.push_back(entry.path());
+    }
+    std::sort(named.begin(), named.end());
+    files.insert(files.end(), named.begin(), named.end());
+  }
   if (files.empty()) std::printf("no paper journals at %s\n", journal.c_str());
   bool failed = false;
   for (const auto& file : files) {
@@ -849,6 +853,14 @@ int backtest_cli(int argc, char** argv) {
 
 int main(int argc, char** argv) {
   if (argc == 3 && std::string_view(argv[1]) == "--verify-run") {
+    std::error_code ec;
+    const auto bytes = std::filesystem::file_size(argv[2], ec);
+    if (!ec) {
+      const auto estimate = openport::server::verification_cost(bytes);
+      std::fprintf(stderr, "Verification estimate: %llu seconds or more (hardware and input dependent)\n",
+          static_cast<unsigned long long>(estimate.at("estimated_seconds").get<std::uint64_t>()));
+      if (!estimate.at("warning").is_null()) std::fprintf(stderr, "%s\n", estimate.at("warning").get<std::string>().c_str());
+    }
     const auto result = openport::server::verify_run(argv[2]);
     std::fprintf(result.matched ? stdout : stderr, "%s\n", result.message.c_str());
     return result.matched ? 0 : 1;

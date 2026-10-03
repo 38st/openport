@@ -583,4 +583,36 @@ TEST(Replay, PlaysVersionOneAndVersionTwoWithVolume) {
   }
 }
 
+TEST(Replay, EndIndexAvoidsScanningAndRejectsStaleIndexes) {
+  for (const bool snapshots : {false, true}) {
+    test::RecordingFile file;
+    test::DiscardEvents sink;
+    auto header = test::recording_header();
+    const auto first = md::kNanosPerDay;
+    const auto last = first + 9999 * md::kNanosPerSecond + 123;
+    {
+      md::RecordingSink writer(file.path, header, sink, {});
+      for (int i = 0; i < 10000; ++i) {
+        const auto time = first + i * md::kNanosPerSecond + 123;
+        writer.publish(md::UnderlyingQuote{"SPX", time, 5000, 5001, 5000});
+        if (snapshots) writer.publish(md::SnapshotComplete{"SPX", time});
+      }
+      writer.close();
+      ASSERT_TRUE(writer.error().empty());
+    }
+    md::RecordingReader indexed(file.path);
+    const auto expected = snapshots ? last : last + md::kNanosPerSecond - 123;
+    EXPECT_EQ(indexed.indexed_end({{"SPX"}}), expected);
+    EXPECT_EQ(indexed.indexed_snapshot_mode(), snapshots);
+    providers::ReplayProvider::Options options;
+    options.file = file.path;
+    providers::ReplayProvider replay(options);
+    // A new scan would fail to open the path: the indexed answer belongs to the reader already open.
+    std::filesystem::rename(file.path, file.directory / "moved.oprec");
+    EXPECT_EQ(replay.end_time({{"SPX"}}), expected);
+    std::filesystem::rename(file.directory / "moved.oprec", file.path);
+    { std::ofstream out(file.path, std::ios::app); out << 'x'; }
+    EXPECT_FALSE(md::RecordingReader(file.path).indexed_end({{"SPX"}}));
+  }
+}
 }  // namespace
