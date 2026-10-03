@@ -85,6 +85,7 @@ struct Settings {
   trading::SessionConfig paper;
   std::vector<trading::Dividend> dividends;
   bool massive_dividends = false;
+  bool dividends_source = false;
   std::vector<analytics::EventLabel> events;
   const server::PlanPreset* plan = server::find_plan("practice");
   std::optional<trading::Money> paper_cash;
@@ -436,7 +437,9 @@ int run(int argc, char** argv) {
       catch (const std::exception& e) { return usage(e.what()); }
     } else if (arg == "--dividends" && value == "massive") {
       settings.massive_dividends = true;
+      settings.dividends_source = true;
     } else if (arg == "--dividends") {
+      settings.dividends_source = true;
       std::ifstream file(value);
       if (!file) return usage(("--dividends: cannot read " + value).c_str());
       try {
@@ -576,6 +579,7 @@ int run(int argc, char** argv) {
   if (settings.paper.initial_cash <= trading::Money{}) return usage("--paper-cash must be positive");
   engine_options.paper = settings.paper;
   engine_options.dividends = settings.dividends;
+  engine_options.demo_dividends = !settings.dividends_source;
   engine_options.events = settings.events;
   engine_options.write_mode = server::write_mode({settings.address, settings.write_token, settings.allowed_origins, settings.tokens, settings.require_token, engine_options.sandboxes, settings.client_ip_header});
   server::Engine engine(*provider, settings.subscription, engine_options);

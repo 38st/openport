@@ -103,6 +103,8 @@ class Engine final : public MetricsSource {
     std::shared_ptr<Notifications> notifications;
     std::chrono::milliseconds analytics_interval{1000};
     std::size_t command_capacity = 256;
+    /// Revision 4 demo accounts use the generated calendar unless a source is explicit.
+    bool demo_dividends = true;
     std::filesystem::path record_file;
     md::RecordingSink::Options recording;
     /// Volatility history written by the live engine only; replays and the demo reset it.

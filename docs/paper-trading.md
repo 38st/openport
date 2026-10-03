@@ -107,7 +107,8 @@ closed evaluation (`EVALUATION_CLOSED`).
 they did better exercising than holding it at the close, as exercise notices are due
 that evening. That is when its closing mark is below its intrinsic value at the
 underlying's close (a deep put whose time value is gone), or, for a call, when its
-time value is less than a dividend going ex on the new day (from `--dividends`). The OCC allocates exercises to short positions at random, and
+time value is less than a dividend going ex on the new day in the account calendar.
+The OCC allocates exercises to short positions at random, and
 openport cannot know how many holders exercise, so each such contract is assigned
 with even odds, drawn from the account's attempt, the contract and the date: a
 position can be assigned in part, or not that night, and a replay assigns the same
@@ -117,7 +118,13 @@ close (`StockSource::Assignment`), together the strike; the new day takes the
 difference from the marks, and the shares' move from the close. Options expiring
 that day settle instead.
 
-**Dividends** come from a file or from Massive. `openportd --dividends FILE` reads
+Revision 4 scenarios generate American SPY/QQQ option prices using known cash
+dividends and an early-exercise premium; index prices remain European. Simulated
+ETF prices drop on their generated or explicit ex-dates, keeping the preceding
+close cum-dividend. See the [calendar and pricing rules](scenarios.md).
+
+**Dividends** come from a file, from Massive or from the simulated scenario calendar.
+`openportd --dividends FILE` reads
 `SYMBOL,YYYY-MM-DD,AMOUNT` lines (the ex-date and dollars a share; blank lines, `#`
 comments and a `symbol,...` header are skipped) with `parse_dividends`. `--dividends
 massive` reads the stock and ETF symbols' cash dividends in US dollars from Massive's
@@ -129,6 +136,12 @@ one. New ones reach the live accounts, and replays started after them. The same
 schedule supplies known cash payments to American option analytics, with revised
 or removed payments refreshing analytics even without new quotes; see
 [American analytics](american-analytics.md#known-cash-dividends).
+Revision 4 Replay runs merge their generated calendar over matching server payments,
+then explicit session entries over matching generated payments. The merged schedule
+is saved in the start record, so resume and verification use the same payments.
+The revision 4 demo feed uses its generated calendar when no `--dividends` source
+was supplied, including American analytics and dividend/assignment warnings. An
+explicit source replaces the demo account calendar, without changing its prices.
 `roll_day(time, dividends)` takes those going ex after the last trading date and
 on or before the new one (`dividends_due`, so a server that was down
 across an ex-date still pays it), after the night's assignments: shares held into the
@@ -144,7 +157,8 @@ cutoff would capture them. Analytics, by contrast, treat the ex-date as effectiv
 round trip holding the shares adds it to its net. The payment keeps the number of
 stock fills before it (`after_stock_fill`), so the round trip takes it even when the
 shares are sold at the rollover's own market time; a payment recorded before that
-comes after the night's assignments and deliveries at its time and before any trade. Without a file, shares held through
+comes after the night's assignments and deliveries at its time and before any trade.
+Without a dividend source (or a revision 4 simulated calendar), shares held through
 an ex-date lose the dividend in price without the cash. Evaluation plans close
 positions five minutes before their last trade, so expiry delivery only reaches
 accounts without an expiry cutoff. Greeks and

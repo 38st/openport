@@ -208,7 +208,8 @@ dividends and trade review. The chain and Positions have a share ticket; strateg
 templates offer explicit share-first, option-second covered calls and collars.
 Dividends are paid on them from a file you give the server (`--dividends FILE`), or
 from Massive's API with a key from any of its stocks plans (`--dividends massive`),
-whichever provider supplies the quotes.
+whichever provider supplies the quotes. Revision 4 scenarios include a simulated
+quarterly SPY/QQQ calendar; the demo feed uses it without an explicit dividend source.
 
 Buying power follows each order's real margin: a naked short holds the usual
 20%-of-spot requirement, while spreads, condors, butterflies, calendars and diagonals
@@ -374,6 +375,7 @@ the simulation's limits.
 - [x] F69 demo and replay coverage: XSP, NDX/NDXP, RUT/RUTW and VIX/VIXW,
       product ticks and sessions, AM last-trade cutoffs beside same-date PM series,
       VIX driven by SPX volatility and mean-reverting forwards
-- [ ] F69 remaining: American ETF option generation and dividends reflected in option prices
+- [x] F69: American ETF option generation and quarterly cash dividends reflected in
+      spot and option prices, Replay accounts and the demo feed
 - [x] F35, F53, F54: risk profile of the held book on later dates and IV offsets with room to the floor,
       beta weighting to SPY or SPX, and probability cones with odds of reaching a price by a date

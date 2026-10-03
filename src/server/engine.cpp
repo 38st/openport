@@ -22,8 +22,10 @@ Engine::Options driver_options(md::Provider& provider, Engine::Options options) 
   }
   if (options.sandboxes && (provider.name() != "demo" || !options.paper_enabled || options.paper_journal.empty()))
     throw std::invalid_argument("Sandboxes require --provider demo and a paper journal");
-  if (auto* demo = dynamic_cast<providers::DemoProvider*>(&provider))
+  if (auto* demo = dynamic_cast<providers::DemoProvider*>(&provider)) {
     options.clock = [demo] { return demo->time(); };
+    options.demo_dividends = options.demo_dividends && options.dividends.empty() && demo->revision() >= 4;
+  }
   if (options.replay || provider.name().starts_with("replay") || provider.name() == "demo") options.series.reset();
   if (options.replay || provider.name().starts_with("replay") || providers::simulated_provider(provider.name()))
     options.notifications.reset();
@@ -293,6 +295,8 @@ void Engine::run() {
   last_rate_time_ = last_analytics;
   auto last_health = options_.monotonic_clock();
   constexpr auto kHealthInterval = std::chrono::milliseconds(100);
+  md::Date dividend_date;
+  const auto dividend_first = md::trading_date(desk_.market_time() > 0 ? desk_.market_time() : options_.clock());
 
   while (true) {
     if (stopping_ && queue_.status().depth == 0) {
@@ -317,6 +321,7 @@ void Engine::run() {
     {
       const std::lock_guard lock(dividends_mutex_);
       if (pending_dividends_) {
+        options_.demo_dividends = false;
         desk_.set_dividends(std::move(*pending_dividends_));
         pending_dividends_.reset();
       }
@@ -330,6 +335,16 @@ void Engine::run() {
       }
       for (auto& pending : replay_batches) {
         try {
+          if (demo_ && options_.demo_dividends) {
+            const auto date = md::trading_date(pending.batch.time);
+            if (date != dividend_date) {
+              // Install before rollover and analytics; keep payments since recovery
+              // and a year's lookahead for assignment and ex-dividend warnings.
+              desk_.set_dividends(providers::demo_dividends(dividend_first,
+                  md::date_from_days(md::days_since_epoch(date) + 366)));
+              dividend_date = date;
+            }
+          }
           desk_.replay_batch(pending.batch.events, pending.batch.received, pending.batch.time);
           for (const auto& event : pending.batch.events) update_health(event, pending.batch.received);
           events_ += pending.batch.events.size();
