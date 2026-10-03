@@ -130,6 +130,7 @@ TEST(TradeGroups, LeggedInRoundTripsGroupIntoOneTradeAndLeaveIt) {
   EXPECT_EQ(*whole.since, m.a.time);
   ASSERT_TRUE(whole.worst);
   EXPECT_EQ(whole.worst->time, m.a.time);
+  EXPECT_EQ(whole.planned_risk, dollars("220"));
   // Grouping again changes nothing.
   ASSERT_TRUE(s.group_trades({1, 2}, true, m.a.time).decision.ok());
   ASSERT_TRUE(s.group_trades({2}, false, m.a.time).decision.ok());
@@ -139,6 +140,75 @@ TEST(TradeGroups, LeggedInRoundTripsGroupIntoOneTradeAndLeaveIt) {
   // Only open round trips change trades.
   ASSERT_TRUE(s.submit(m.b.market("cover"), m.a.time).decision.ok());
   EXPECT_EQ(s.group_trades({1, 2}, true, m.a.time).decision.code, Reason::INVALID_GROUP);
+}
+
+TEST(TradeGroups, AGroupedCalendarPlansItsCoveredDebit) {
+  Calls m;
+  m.a.contract = *md::parse_osi("SPXW261029C05000000");
+  TradingSession s({}, m.a.time);
+  m.seed(s);
+  ASSERT_TRUE(s.submit(m.a.market("long"), m.a.time).decision.ok());
+  ASSERT_TRUE(s.submit(m.b.market("short", 1, Side::Sell), m.a.time).decision.ok());
+  ASSERT_TRUE(s.group_trades({1, 2}, true, m.a.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->group_reviews.at("1").planned_risk, dollars("220"));
+}
+
+TEST(TradeGroups, GroupingAnUnboundedAdjustmentKeepsItsEarlierPlannedRisk) {
+  for (const bool rolled : {false, true}) {
+    SCOPED_TRACE(rolled);
+    Calls m;
+    TradingSession s({}, m.a.time);
+    m.seed(s);
+    ASSERT_TRUE(s.submit(m.open(), m.a.time).decision.ok());
+    if (rolled) {
+      ASSERT_TRUE(s.submit(m.roll(), m.a.time).decision.ok());
+      EXPECT_EQ(s.snapshot()->group_reviews.at("1").planned_risk, dollars("220"));
+    }
+    auto& single = rolled ? m.a : m.c;
+    ASSERT_TRUE(s.submit(single.market("short", 1, Side::Sell), m.a.time).decision.ok());
+    const auto id = s.snapshot()->recent_fills.back().id;
+    m.quote(s, "4.00", "2.00");
+    ASSERT_TRUE(s.group_trades({1, id}, true, m.a.time).decision.ok());
+    const auto& whole = s.snapshot()->group_reviews.at("1");
+    EXPECT_EQ(whole.planned_risk, dollars("220"));
+    EXPECT_EQ(whole.since, m.a.time);
+    ASSERT_TRUE(whole.worst);
+    EXPECT_EQ(whole.worst->time, m.a.time);
+    ASSERT_TRUE(s.submit(single.market("cover"), m.a.time).decision.ok());
+    const auto close = rolled
+        ? m.order("close", {{m.c.symbol(), Side::Sell, 1}, {m.d.symbol(), Side::Buy, 1}})
+        : m.order("close", {{m.a.symbol(), Side::Sell, 1}, {m.b.symbol(), Side::Buy, 1}});
+    ASSERT_TRUE(s.submit(close, m.a.time).decision.ok());
+    EXPECT_TRUE(s.snapshot()->group_reviews.at("1").finished);
+    EXPECT_EQ(s.snapshot()->group_reviews.at("1").planned_risk, dollars("220"));
+  }
+}
+
+TEST(TradeGroups, UngroupingPlansFromTheRemainingOpenLegsThenKeepsThatRiskWithoutACover) {
+  Calls m;
+  TradingSession s({}, m.a.time);
+  m.seed(s);
+  ASSERT_TRUE(s.submit(m.open(), m.a.time).decision.ok());
+  ASSERT_TRUE(s.submit(m.roll(), m.a.time).decision.ok());
+  ASSERT_TRUE(s.submit(m.a.market("single"), m.a.time).decision.ok());
+  const auto id = s.snapshot()->recent_fills.back().id;
+  ASSERT_TRUE(s.group_trades({1, id}, true, m.a.time).decision.ok());
+  // Only the current vertical and the new long plan risk; the old vertical is closed.
+  EXPECT_EQ(s.snapshot()->group_reviews.at("1").planned_risk, dollars("500"));
+  m.quote(s, "4.00", "2.00");
+  ASSERT_TRUE(s.group_trades({id}, false, m.a.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->group_reviews.at("1").planned_risk, dollars("80"));
+  EXPECT_EQ(s.snapshot()->group_reviews.at("1").since, m.a.time);
+  const auto lives = lifecycles(s.snapshot()->recent_fills, s.snapshot()->closures, s.contracts());
+  const auto long_leg = std::find_if(lives.begin(), lives.end(), [&](const Lifecycle& life) { return life.symbol == m.c.symbol(); });
+  ASSERT_NE(long_leg, lives.end());
+  m.quote(s, "4.00", "2.00");
+  ASSERT_TRUE(s.group_trades({long_leg->first_fill}, false, m.a.time).decision.ok());
+  EXPECT_EQ(s.snapshot()->group_reviews.at("1").planned_risk, dollars("80"));
+  EXPECT_EQ(s.snapshot()->group_reviews.at("1").since, m.a.time);
+  ASSERT_TRUE(s.submit(m.d.market("cover"), m.a.time).decision.ok());
+  EXPECT_TRUE(s.snapshot()->group_reviews.at("1").finished);
+  EXPECT_EQ(s.snapshot()->group_reviews.at("1").planned_risk, dollars("80"));
 }
 
 TEST(TradeGroups, ARecoveredSessionGroupsARollAsTheLiveOneDoes) {
