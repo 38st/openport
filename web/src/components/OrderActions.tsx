@@ -138,6 +138,27 @@ export function EditOrderDialog({ order, trading, onClose, onDone }: {
   )
 }
 
+/** Confirm a single cancellation, including the protection an exit removes. */
+export function CancelOrderDialog({ order, trading, onClose, onDone }: {
+  order: Order; trading: TradingStatus; onClose: () => void; onDone: (message: string) => void
+}) {
+  const write = useWrite(trading)
+  return <Dialog title={`Cancel order #${order.id}`} onClose={onClose}>
+    <p className="text-sm">Cancel the remaining {order.remaining_quantity} units of {orderLabel(order)}?</p>
+    {order.role && <p className="text-sm text-warn">This bracket exit protects a position; the position stays open without it.</p>}
+    <WriteAccess trading={trading} />
+    <TradingError error={write.error} />
+    <div className="flex flex-wrap gap-2">
+      <button type="button" className="trade-button" disabled={write.pending} onClick={onClose}>Keep order</button>
+      <button type="button" className="trade-button" disabled={write.pending || write.blocked || !isOpen(order)}
+        onClick={() => void write.run(() => api.cancelOrder(order.id, trading.write),
+          ({ order: result }) => onDone(`${orderLabel(result)}: ${result.status}`))}>
+        {write.pending ? "Cancelling…" : "Cancel order"}
+      </button>
+    </div>
+  </Dialog>
+}
+
 /** Cancel every working and armed order, or one underlying's. */
 export function CancelAllDialog({ orders, trading, onClose, onDone }: {
   orders: readonly Order[]; trading: TradingStatus; onClose: () => void; onDone: (message: string) => void

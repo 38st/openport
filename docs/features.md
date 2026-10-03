@@ -40,7 +40,8 @@ simulation's limits.
   IV ratio) or a time of day (close at 15:30), stop-limits, and brackets whose stop-loss (a stop or a stop-limit) and take-profit
   cancel each other, keeping a partly filled position protected. GTC orders wait
   outside the regular session and last until the contract's last trade or auto-close.
-  Working orders change in place: size, limit or trigger level. Each order keeps its
+  Cancelling one order or all working orders asks for confirmation; the result stays
+  visible when the last working order disappears. Working orders change in place: size, limit or trigger level. Each order keeps its
   history (accepted, triggered, every change and refused change, and when and why it
   ended, with the check's numbers), and a working order says what it is waiting for:
   its limit, trigger, the regular session, a fresh quote or fill latency. Entry notes and tags

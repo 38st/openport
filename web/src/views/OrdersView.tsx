@@ -1,11 +1,10 @@
 import { FeeAmount } from "../components/FeeAmount"
-import { useMemo, useRef, useState } from "react"
-import { api } from "../api/client"
+import { useMemo, useState } from "react"
 import { useLive } from "../api/live"
-import { useAllOrders, useFills, useRefreshTrading, useTradingSession } from "../api/trading"
+import { useAllOrders, useFills } from "../api/trading"
 import type { Fill, Order, TradingStatus } from "../api/trading-types"
 import { FillBook } from "../components/FillBook"
-import { CancelAllDialog, EditOrderDialog } from "../components/OrderActions"
+import { CancelAllDialog, CancelOrderDialog, EditOrderDialog } from "../components/OrderActions"
 import { OrderDetailDialog } from "../components/OrderDetail"
 import { TradingError, WriteAccess, writeBlocked } from "../components/TradingControls"
 import { Badge, Empty, PageHeader, Panel, Segmented, type Tone } from "../components/ui"
@@ -104,36 +103,20 @@ function OrdersAccount({ trading }: { trading: TradingStatus }) {
       : <Panel title={tab === "working" ? "Working orders" : "Order history"} actions={tab === "working" && trading.enabled && working.length > 0
           ? <button type="button" className="trade-button" onClick={() => { setNotice(null); setCancelAll(true) }}>Cancel all</button> : undefined}>
         {notice && <p className="mb-2 text-xs text-muted" role="status">{notice}</p>}
-        {orders.data ? <OrdersTable orders={visible} trading={trading} empty={tab === "working" ? "No working orders." : "No orders match."} /> : <Empty>Loading orders…</Empty>}
+        {orders.data ? <OrdersTable orders={visible} trading={trading} onDone={setNotice} empty={tab === "working" ? "No working orders." : "No orders match."} /> : <Empty>Loading orders…</Empty>}
       </Panel>}
     {cancelAll && <CancelAllDialog orders={working} trading={trading} onClose={() => setCancelAll(false)}
       onDone={(message) => { setNotice(message); setCancelAll(false) }} />}
   </div>
 }
 
-function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: TradingStatus; empty: string }) {
+function OrdersTable({ orders, trading, empty, onDone }: { orders: Order[]; trading: TradingStatus; empty: string; onDone: (message: string | null) => void }) {
   const token = useWriteToken()
-  const refresh = useRefreshTrading()
-  const sameSession = useTradingSession()
-  const [pending, setPending] = useState<string | null>(null)
-  const [error, setError] = useState<unknown>()
-  const [result, setResult] = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState<Order | null>(null)
   const [editing, setEditing] = useState<Order | null>(null)
   const [detail, setDetail] = useState<Order | null>(null)
-  const busy = useRef(false)
-  async function cancel(id: string) {
-    if (busy.current || writeBlocked(trading, token)) return
-    busy.current = true; setPending(id); setError(undefined)
-    try {
-      const response = await api.cancelOrder(id, trading.write)
-      if (sameSession()) setResult(`${orderLabel(response.order)}: ${response.order.status}`)
-    } catch (failure) { if (sameSession()) setError(failure) }
-    finally { busy.current = false; if (sameSession()) setPending(null); void refresh() }
-  }
-  if (!orders.length) return <p className="text-sm text-muted">{empty}</p>
   return <div className="space-y-2">
-    <TradingError error={error} />
-    {result && <p className="text-xs text-muted" role="status">{result}</p>}
+    {!orders.length ? <p className="text-sm text-muted">{empty}</p> :
     <Table label="Orders" left={2} headers={["Time", "Contract", "Side", "Type", "Filled / qty", "Limit", "Avg fill", "Status", ""]}>
       {groupByDay(orders, (o) => o.accepted_at).flatMap((group) => [
         <tr key={`day-${group.day}`} className="bg-raised/40"><td colSpan={9} className="!py-1 text-[10px] uppercase tracking-wide text-muted">{group.label}</td></tr>,
@@ -164,16 +147,18 @@ function OrdersTable({ orders, trading, empty }: { orders: Order[]; trading: Tra
             <button type="button" className="trade-button" aria-label={`Details of order ${order.id} for ${orderLabel(order)}`}
               onClick={() => setDetail(order)}>Details</button>
             {editable(order) && <button type="button" className="trade-button" aria-label={`Edit order ${order.id} for ${orderLabel(order)}`}
-              disabled={pending != null || writeBlocked(trading, token)} onClick={() => { setResult(null); setEditing(order) }}>Edit</button>}
+              disabled={writeBlocked(trading, token)} onClick={() => { onDone(null); setEditing(order) }}>Edit</button>}
             {open(order) && order.origin !== "system" && <button type="button" className="trade-button" aria-label={`Cancel order ${order.id} for ${orderLabel(order)}`}
-              disabled={pending != null || writeBlocked(trading, token)} onClick={() => void cancel(order.id)}>{pending === order.id ? "Cancelling…" : "Cancel"}</button>}
+              disabled={writeBlocked(trading, token)} onClick={() => { onDone(null); setCancelling(order) }}>Cancel</button>}
           </div></td>
         </tr>),
       ])}
-    </Table>
+    </Table>}
+    {cancelling && <CancelOrderDialog order={orders.find((o) => o.id === cancelling.id) ?? cancelling} trading={trading}
+      onClose={() => setCancelling(null)} onDone={(message) => { onDone(message); setCancelling(null) }} />}
     {detail && <OrderDetailDialog order={orders.find((o) => o.id === detail.id) ?? detail} onClose={() => setDetail(null)} />}
     {editing && <EditOrderDialog order={editing} trading={trading} onClose={() => setEditing(null)}
-      onDone={(order) => { setResult(`${orderLabel(order)}: changed, ${order.status === "partially_filled" ? "partially filled" : order.status}`); setEditing(null) }} />}
+      onDone={(order) => { onDone(`${orderLabel(order)}: changed, ${order.status === "partially_filled" ? "partially filled" : order.status}`); setEditing(null) }} />}
   </div>
 }
 
