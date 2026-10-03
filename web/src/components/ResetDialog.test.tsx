@@ -9,7 +9,6 @@ import { tradingQueries } from "../api/trading"
 import { account, plans, status } from "../test/trading-fixtures"
 import { NewAccountDialog } from "./AccountSwitcher"
 import { ResetDialog } from "./ResetDialog"
-import { NewAccountDialog } from "./AccountSwitcher"
 
 vi.mock("../api/live", async (original) => ({ ...await original<typeof import("../api/live")>(), useLive: vi.fn() }))
 let host: HTMLDivElement
@@ -102,7 +101,7 @@ it("creates an account with the selected margin settings", async () => {
     <NewAccountDialog trading={{ ...status.trading!, write: "open" }} onCreated={created} onClose={() => {}} />
   </QueryClientProvider>))
   await act(async () => (host.querySelector('input[value="practice"]') as HTMLInputElement).click())
-  const type = host.querySelector("select")!
+  const type = host.querySelector('option[value="ira"]')!.closest("select")!
   await act(async () => { type.value = "ira"; type.dispatchEvent(new Event("change", { bubbles: true })) })
   await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })))
   expect(api.createAccount).toHaveBeenCalledWith(expect.objectContaining({ plan: "practice", account_type: "ira" }), "open")
