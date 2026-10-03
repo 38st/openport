@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <functional>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -24,13 +25,19 @@ struct JournalRecovery {
   bool truncated_final_line = false;
   std::size_t bytes_cut = 0;  ///< Bytes a repair would remove from the torn final line.
   std::string head;
+  std::string damage = {};  ///< Read-only inspection stops at the first unverified record.
 };
 /// What FileJournal::repair did.
 struct JournalRepair {
   std::size_t bytes_cut = 0;  ///< the torn final line's length; 0 when the journal was whole
   std::string backup;         ///< where the original was copied, when a line was cut
   bool empty = false;         ///< it holds no record now, so its account starts afresh
+  std::size_t records_kept = 0;
 };
+
+inline constexpr std::uint64_t kMinimumFreeBytes = 64ull * 1024 * 1024;
+/// Path-free diagnostic naming the directory and filesystem device, for API use too.
+void check_storage_space(const std::filesystem::path& file, std::uint64_t bytes);
 
 /// Optional durable sink; all other trading components are filesystem-free.
 /// One reducer transaction per newline contains all typed outcomes plus the
@@ -46,6 +53,7 @@ class Journal {
   virtual void flush() {}
   [[nodiscard]] virtual std::uint64_t sequence() const = 0;
   [[nodiscard]] virtual std::string head() const = 0;
+  [[nodiscard]] virtual std::uint64_t bytes() const { return 0; }
 };
 
 /// Exclusive single-writer file, O_EXCL on creation, immediate writes with optional
@@ -60,6 +68,7 @@ class FileJournal final : public Journal {
     /// Empty uses full disk sync. Injectable for counting and failure tests.
     std::function<bool(int)> sync;
     std::function<std::chrono::steady_clock::time_point()> clock = std::chrono::steady_clock::now;
+    std::function<std::uint64_t(int)> free_bytes = {};  ///< Empty uses fstatvfs.
   };
   struct Options {
     SyncPolicy sync_policy = SyncPolicy::PerRecord;
@@ -71,12 +80,14 @@ class FileJournal final : public Journal {
   static std::shared_ptr<FileJournal> resume(const std::string& path);
   static std::shared_ptr<FileJournal> resume(const std::string& path, Options options);
   static JournalRecovery read(const std::string& path, std::string_view expected_head = {});
+  /// Holds the file's lock without writing; returns only the verified prefix.
+  static std::pair<std::shared_ptr<FileJournal>, JournalRecovery> inspect(const std::string& path);
   /// Cuts a torn final line, as a write the disk ran out for leaves, off a journal so
   /// that it resumes, after copying the original beside it as FILE.torn-YYYYMMDDTHHMMSSZ.
   /// A torn first record leaves the journal empty. It takes the writer's lock, so
   /// openportd must be stopped. A journal that verifies is left alone; damage before
   /// the last line throws JOURNAL_CORRUPT, changing nothing.
-  static JournalRepair repair(const std::string& path);
+  static JournalRepair repair(const std::string& path, bool dry_run = false);
   /// Deletes a journal whatever its contents, torn or edited ones included, under the
   /// writer's lock: a file another open is writing throws JOURNAL_LOCKED and stays.
   static void remove(const std::string& path);
@@ -87,8 +98,9 @@ class FileJournal final : public Journal {
   void flush() override;
   [[nodiscard]] std::uint64_t sequence() const override { return sequence_; }
   [[nodiscard]] std::string head() const override { return head_; }
+  [[nodiscard]] std::uint64_t bytes() const override;
  private:
-  FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time, Options options);
+  FileJournal(int fd, std::uint64_t sequence, std::string head, Timestamp last_time, Options options, std::string directory);
   int fd_ = -1;
   std::uint64_t sequence_ = 0;
   std::string head_;
@@ -98,6 +110,7 @@ class FileJournal final : public Journal {
   std::chrono::steady_clock::time_point last_sync_{};
   bool synced_ = false;
   bool pending_ = false;
+  std::string directory_;
 };
 
 /// Same verifier for in-memory captured JSONL; useful for imported audit files.

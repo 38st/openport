@@ -1795,8 +1795,7 @@ TEST(PaperAvailability, LockedJournalDisablesEveryWriteButKeepsAnalyticsAndOwner
     PaperProvider second_provider;
     server::Engine second(second_provider, {{"SPX"}}, options);
     second.start();
-    const auto reason = "JOURNAL_LOCKED: paper journal '" + path.string() +
-        "' is in use by another openportd; use --paper-journal to choose another file or --no-paper";
+    const auto reason = "JOURNAL_LOCKED: paper journal is in use by another openportd; use --paper-journal to choose another file or --no-paper";
     const auto status = read(second, "/api/status")["trading"];
     EXPECT_FALSE(status["enabled"].get<bool>());
     EXPECT_EQ(status["write"], "disabled");
