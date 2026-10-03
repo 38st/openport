@@ -50,6 +50,7 @@ export function objectiveFacts(rules: AccountRules): string[] {
     rules.profitable_day_profit ? ` of ${formatMoney(rules.profitable_day_profit, 0)}+` : ""}`)
   if (rules.consistency_percent) facts.push(`Best day at most ${rules.consistency_percent}% of ${
     rules.consistency_basis === "positive_days" ? "the profitable days' total" : "the total profit"}`)
+  if (rules.phase !== "funded" && rules.trade_consistency_percent) facts.push(`Best closed whole trade at most ${rules.trade_consistency_percent}% of attempt profit`)
   return facts
 }
 export function targetFact(rules: AccountRules): string {
@@ -65,11 +66,12 @@ export const objectiveLabels: Record<string, string> = {
   MIN_TRADING_DAYS: "Trading days",
   MIN_PROFITABLE_DAYS: "Profitable days",
   CONSISTENCY: "Consistency",
+  TRADE_CONSISTENCY: "Trade consistency",
 }
 /** An objective's standing in a few characters: dollars, days or percent. */
 export function objectiveValue(o: Objective): string {
   if (o.code === "PROFIT_TARGET") return `${formatMoney(o.actual?.toFixed(2))} of ${formatMoney(o.required.toFixed(2), 0)}`
-  if (o.code === "CONSISTENCY") return `${o.actual == null ? "—" : `${Math.round(o.actual)}%`} of ${o.required}% max`
+  if (o.code === "CONSISTENCY" || o.code === "TRADE_CONSISTENCY") return `${o.actual == null ? "—" : `${Math.round(o.actual)}%`} of ${o.required}% max`
   return `${o.actual ?? 0} of ${o.required}`
 }
 export const decisionLabels: Record<string, string> = {

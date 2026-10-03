@@ -87,6 +87,7 @@ export interface AccountRules {
   /** lock: flatten and refuse opening orders until the next trading day; fail: fail the attempt. */
   daily_loss_action?: "lock" | "fail"
   /** The best day may be at most this percent of the basis; 0 is off. */
+  trade_consistency_percent?: number
   consistency_percent?: number
   consistency_basis?: "total" | "positive_days"
   min_trading_days?: number
@@ -300,6 +301,7 @@ export interface Evaluation {
   objectives?: Objective[]
   trading_days?: number | null
   profitable_days?: number
+  best_trade?: { id: string; pnl: Money } | null
   best_day?: { day: string; profit: Money } | null
   consistency_target?: Money | null
   daily_loss?: DailyLossStatus | null

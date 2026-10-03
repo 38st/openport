@@ -225,3 +225,12 @@ it("keeps combined rules while switching phase-specific time and size scaling", 
   const funded = customPlan({ ...form, phase: "funded" }, base)
   expect("error" in funded ? funded : funded.rules).toMatchObject({ ...shared, time_limit_days: 0, size_scaling: base.size_scaling })
 })
+
+it("edits and explains trade consistency with integer validation", () => {
+  const form = { ...planForm({ initial_cash: "100000", rules }), trade_consistency_percent: "40" }
+  const result = customPlan(form, rules)
+  expect("error" in result ? null : result.rules.trade_consistency_percent).toBe(40)
+  expect(objectiveFacts({ ...rules, trade_consistency_percent: 40 })).toContain("Best closed whole trade at most 40% of attempt profit")
+  for (const value of ["-1", "101", "1.5"]) expect(customPlan({ ...form, trade_consistency_percent: value }, rules)).toHaveProperty("error")
+  expect(objectiveValue({ code: "TRADE_CONSISTENCY", met: false, actual: 75, required: 40, message: "" })).toBe("75% of 40% max")
+})
