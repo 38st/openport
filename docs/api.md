@@ -39,6 +39,16 @@ Expiry ids are the date plus settlement, for example `2026-10-16AM`.
 
 ## Paper trading
 
+Custom account/reset `rules` optionally accept `time_limit_days`, `inactivity_days`
+(0–366, zero off), `underlyings` (up to 32 uppercase symbols; empty allows all),
+and `trading_start`/`trading_end` (both `HH:MM` New York or null). The time limit is
+refused in funded plans. Account `evaluation` reports `time_limit_days`, `deadline`,
+`days_left`, `last_activity`, `inactive_days`, `inactivity_deadline` (null when off).
+`TIME_LIMIT` and `INACTIVITY` fail overdue attempts; `INSTRUMENT_NOT_ALLOWED` and
+`OUTSIDE_PLAN_HOURS` refuse openings while permitting reductions. Hours refusals
+include `actual`/`limit` in New York minutes and the underlying `scope`.
+See [time rules](paper-trading.md#evaluation-time-inactivity-and-opening-restrictions).
+
 With paper trading on, the same API is the account.
 
 Create/reset accepts optional `fee_model: "flat" | "itemized"` or custom

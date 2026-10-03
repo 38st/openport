@@ -272,6 +272,10 @@ mixing contracts from different strategies can make attribution incomplete.
 
 ## Pass odds
 
+Configured time and inactivity deadlines are checked on projected plan trading
+dates before each projected day’s assumed own execution; weekends and holidays
+count toward these calendar-day limits.
+
 `GET /api/account/pass-odds?days=20&samples=1000&playbook=morning-put&seed=81723`
 returns `pass`, `fail`, `neither`, `median_days_to_pass`, `historical_days`, `seed`,
 `days`, `samples`, `block_days`, `history_basis`, `path_assumption` and `label`.
@@ -374,7 +378,10 @@ nanoseconds. The plan objectives and daily loss rules take their journal names a
 `daily_loss_basis`, `daily_loss_action` and `consistency_basis` their API words,
 `lock_at_start` true or false, and `consistency_percent`, `min_trading_days`,
 `min_profitable_days` and `day_end_minutes` (minutes after New York midnight) whole
-numbers. `max_contracts_held` (0–100000) caps held options plus working opening contracts. `require_stop_loss` is a boolean; `max_trade_risk` is decimal-string dollars and `max_trade_risk_percent` a whole percentage (0–100). Normal preview and entry checks enforce them for automatic entries too. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
+numbers. `max_contracts_held` (0–100000) caps held options plus working opening contracts. `require_stop_loss` is a boolean; `max_trade_risk` is decimal-string dollars and `max_trade_risk_percent` a whole percentage (0–100). Normal preview and entry checks enforce them for automatic entries too. Time and instrument rules accept `time_limit_days` and `inactivity_days`
+(0–366 calendar days), `underlyings` (up to 32 unique uppercase symbols; empty
+allows all), and `trading_start`/`trading_end` (both `HH:MM` New York or null).
+They apply through the same reducer checks as manual trading. Omitted rules use `AccountRules` defaults. Positive starting cash and a profit target are
 required for evaluation plans; practice and funded preset IDs are refused. Custom
 funded plans may instead set `phase: "funded"`, no profit target, and `payouts` with
 at least one qualifying day. Payout fields use their account API names; money

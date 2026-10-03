@@ -2482,7 +2482,9 @@ TEST(PaperPlans, PresetsListExactRules) {
                   {"daily_loss_basis", "equity"}, {"daily_loss_action", "lock"}, {"consistency_percent", 0},
                   {"consistency_basis", "total"}, {"min_trading_days", 0}, {"min_profitable_days", 0},
                   {"profitable_day_profit", nullptr}, {"day_end", "17:00"}, {"max_contracts_held", 0},
-                  {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0}});
+                  {"require_stop_loss", false}, {"max_trade_risk", nullptr}, {"max_trade_risk_percent", 0},
+                  {"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
+                  {"trading_start", nullptr}, {"trading_end", nullptr}});
     return rules;
   };
   const auto intraday = plans[3];
@@ -4256,3 +4258,52 @@ TEST_F(PaperEngine, StopAndRiskRulesRoundTripWithPreviewAndRefusalEvidence) {
     expect_error(reset(invalid), 400, "INVALID_REQUEST");
   }
 }
+
+namespace {
+TEST_F(PaperEngine, TimeRulesRoundTripProgressRefusalsAndValidation) {
+  seed();
+  auto rules = read(*engine, "/api/account")["rules"];
+  rules.update({{"plan", "Time rules"}, {"time_limit_days", 30}, {"inactivity_days", 14},
+                {"underlyings", {"SPX"}}, {"trading_start", "09:30"}, {"trading_end", "11:00"}});
+  const auto reset = [&](const json& r) {
+    return write(*engine, "POST", "/api/account/reset", {{"initial_cash", "100000"}, {"rules", r}, {"reason", "test time rules"}});
+  };
+  auto response = reset(rules);
+  ASSERT_EQ(response.status, 200) << response.body;
+  auto account = json::parse(response.body);
+  EXPECT_EQ(account["rules"], rules);
+  EXPECT_EQ(account["evaluation"]["time_limit_days"], 30);
+  EXPECT_EQ(account["evaluation"]["deadline"], "2026-10-22");
+  EXPECT_EQ(account["evaluation"]["days_left"], 30);
+  EXPECT_EQ(account["evaluation"]["inactive_days"], 0);
+  EXPECT_EQ(account["evaluation"]["inactivity_deadline"], "2026-10-06");
+  EXPECT_EQ(account["evaluation"]["last_activity"], account["evaluation"]["started"]);
+  ASSERT_EQ(write(*engine, "POST", "/api/orders", order(market, "allowed", "4.20")).status, 201);
+  rules["underlyings"] = {"SPY"};
+  ASSERT_EQ(reset(rules).status, 200);
+  response = write(*engine, "POST", "/api/orders", order(market, "disallowed"));
+  ASSERT_EQ(response.status, 422) << response.body;
+  auto error = json::parse(response.body)["error"];
+  EXPECT_EQ(error["code"], "INSTRUMENT_NOT_ALLOWED");
+  EXPECT_EQ(error["scope"], "SPX");
+  rules["underlyings"] = {"SPX"}; rules["trading_start"] = "10:30";
+  ASSERT_EQ(reset(rules).status, 200);
+  response = write(*engine, "POST", "/api/orders", order(market, "outside"));
+  ASSERT_EQ(response.status, 422) << response.body;
+  error = json::parse(response.body)["error"];
+  EXPECT_EQ(error["code"], "OUTSIDE_PLAN_HOURS");
+  EXPECT_EQ(error["actual"], 600); EXPECT_EQ(error["limit"], 630); EXPECT_EQ(error["scope"], "SPX");
+  for (const auto& patch : std::vector<json>{{{"time_limit_days", 367}}, {{"inactivity_days", -1}},
+      {{"underlyings", {"SPX", "SPX"}}}, {{"underlyings", {"spx"}}}, {{"trading_end", nullptr}},
+      {{"trading_start", "11:00"}}, {{"trading_start", "09:60"}}, {{"underlyings", "SPX"}}, {{"inactivity_days", 1.5}}}) {
+    auto bad = rules; bad.update(patch);
+    EXPECT_EQ(reset(bad).status, 400) << patch.dump();
+  }
+  rules.update({{"time_limit_days", 0}, {"inactivity_days", 0}, {"underlyings", json::array()},
+                {"trading_start", nullptr}, {"trading_end", nullptr}});
+  response = reset(rules); ASSERT_EQ(response.status, 200) << response.body;
+  account = json::parse(response.body);
+  for (const auto* field : {"time_limit_days", "deadline", "days_left", "last_activity", "inactive_days", "inactivity_deadline"})
+    EXPECT_TRUE(account["evaluation"][field].is_null()) << field;
+}
+}  // namespace

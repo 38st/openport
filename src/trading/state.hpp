@@ -283,7 +283,9 @@ inline Json optional_rule_defaults() {
               {"pm_vol_shock", d.pm_vol_shock},
               {"max_contracts_held", d.max_contracts_held},
               {"require_stop_loss", d.require_stop_loss}, {"max_trade_risk", d.max_trade_risk},
-              {"max_trade_risk_percent", d.max_trade_risk_percent}};
+              {"max_trade_risk_percent", d.max_trade_risk_percent},
+              {"time_limit_days", d.time_limit_days}, {"inactivity_days", d.inactivity_days},
+              {"underlyings", d.underlyings}, {"trading_start", d.trading_start}, {"trading_end", d.trading_end}};
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(FeeSchedule, open, close, leg_cap, clearing, regulatory, index, exercise)
 inline void to_json(Json& j, const AccountRules& r) {
@@ -302,7 +304,9 @@ inline void to_json(Json& j, const AccountRules& r) {
                  {"pm_vol_shock", r.pm_vol_shock},
                  {"max_contracts_held", r.max_contracts_held},
                  {"require_stop_loss", r.require_stop_loss}, {"max_trade_risk", r.max_trade_risk},
-                 {"max_trade_risk_percent", r.max_trade_risk_percent}};
+                 {"max_trade_risk_percent", r.max_trade_risk_percent},
+                 {"time_limit_days", r.time_limit_days}, {"inactivity_days", r.inactivity_days},
+                 {"underlyings", r.underlyings}, {"trading_start", r.trading_start}, {"trading_end", r.trading_end}};
   static const auto defaults = optional_rule_defaults();
   for (auto it = all.begin(); it != all.end(); ++it)
     if (it.value() != defaults.at(it.key())) j[it.key()] = it.value();
@@ -325,7 +329,8 @@ inline void from_json(const Json& j, AccountRules& r) {
   r.impact_ticks = j.value("impact_ticks", std::int64_t{0});
   added_field(j, "inside_fill_percent", r.inside_fill_percent);
   for (const auto* key : {"consistency_percent", "min_trading_days", "min_profitable_days", "day_end_minutes",
-                          "house_margin_percent", "pm_vol_shock", "max_contracts_held", "max_trade_risk_percent"})
+                          "house_margin_percent", "pm_vol_shock", "max_contracts_held", "max_trade_risk_percent",
+                          "time_limit_days", "inactivity_days"})
     if (const auto it = j.find(key); it != j.end() && !it->is_number_integer())
       throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded rule counts must be integers");
   added_field(j, "lock_at_start", r.lock_at_start); added_field(j, "profit_basis", r.profit_basis);
@@ -340,6 +345,12 @@ inline void from_json(const Json& j, AccountRules& r) {
   added_field(j, "max_contracts_held", r.max_contracts_held);
   added_field(j, "require_stop_loss", r.require_stop_loss); added_field(j, "max_trade_risk", r.max_trade_risk);
   added_field(j, "max_trade_risk_percent", r.max_trade_risk_percent);
+  added_field(j, "time_limit_days", r.time_limit_days); added_field(j, "inactivity_days", r.inactivity_days);
+  added_field(j, "underlyings", r.underlyings);
+  for (const auto* key : {"trading_start", "trading_end"})
+    if (const auto it = j.find(key); it != j.end() && !it->is_null() && !it->is_number_integer())
+      throw TradingError(Reason::JOURNAL_CORRUPT, "Recorded trading hours must be integer minutes");
+  added_field(j, "trading_start", r.trading_start); added_field(j, "trading_end", r.trading_end);
 }
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_ONLY_SERIALIZE(SessionConfig, initial_cash, fee_per_contract, limits, scenarios, rules, guardrails)
 inline void from_json(const Json& j, SessionConfig& c) {
@@ -398,6 +409,7 @@ inline void to_json(Json& j, const Evaluation& e) {
   if (!implied_code(e.status, e.decision_code)) j["decision_code"] = e.decision_code;
   if (e.day_lock != Reason::NONE) { j["day_lock"] = e.day_lock; j["day_locked_at"] = e.day_locked_at; }
   if (e.day_executions != 0) j["day_executions"] = e.day_executions;
+  if (e.last_activity != 0) j["last_activity"] = e.last_activity;
 }
 inline void from_json(const Json& j, Evaluation& e) {
   j.at("attempt").get_to(e.attempt); j.at("started").get_to(e.started); j.at("starting_balance").get_to(e.starting_balance);
@@ -415,6 +427,7 @@ inline void from_json(const Json& j, Evaluation& e) {
   e.decision_code = decision_code_of(e.status, e.decision_code);
   added_field(j, "day_lock", e.day_lock); added_field(j, "day_locked_at", e.day_locked_at);
   added_field(j, "day_executions", e.day_executions);
+  added_field(j, "last_activity", e.last_activity);
 }
 inline void to_json(Json& j, const AttemptSummary& a) {
   j = Json{{"attempt", a.attempt}, {"plan", a.plan}, {"started", a.started}, {"ended", a.ended},

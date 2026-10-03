@@ -33,10 +33,11 @@ enum class Reason {
   // and what a pass still waits for.
   PROFIT_TARGET, DRAWDOWN_FLOOR, DAILY_LOSS_LIMIT, MIN_TRADING_DAYS, MIN_PROFITABLE_DAYS, CONSISTENCY,
   ACCOUNT_TYPE, INVALID_ALERT, UNKNOWN_ALERT, PLAYBOOK_TIME_STOP, PLAYBOOK_TRAILING_STOP, PLAYBOOK_DTE_STOP, PLAYBOOK_DAYS_IN_TRADE_STOP,
-  MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK
+  MAX_CONTRACTS_HELD, STOP_REQUIRED, MAX_TRADE_RISK,
+  TIME_LIMIT, INACTIVITY, INSTRUMENT_NOT_ALLOWED, OUTSIDE_PLAN_HOURS
 };
 /// The last Reason; recorded codes are strings, so new codes append here.
-inline constexpr Reason kLastReason = Reason::MAX_TRADE_RISK;
+inline constexpr Reason kLastReason = Reason::OUTSIDE_PLAN_HOURS;
 [[nodiscard]] std::string_view to_string(Reason reason) noexcept;
 
 class TradingError : public std::runtime_error {
@@ -634,8 +635,15 @@ struct AccountRules {
   bool require_stop_loss = false;  ///< Opening option orders need a protective bracket stop.
   Money max_trade_risk;            ///< Per-order loss at its stop or bounded expiry payoff, excluding fees; zero disables.
   std::int64_t max_trade_risk_percent = 0;  ///< Percent of equity less the plan floor, 0-100; zero disables.
+  // Optional time and instrument plan rules; defaults preserve older attempts.
+  std::int64_t time_limit_days = 0;  ///< Calendar days from the start; evaluation phase only.
+  std::int64_t inactivity_days = 0;  ///< Calendar days since an own execution, or the start.
+  std::vector<std::string> underlyings;  ///< Empty allows all; options use their underlying, not root.
+  std::optional<std::int64_t> trading_start;  ///< New York minutes; both set or both off.
+  std::optional<std::int64_t> trading_end;    ///< Start inclusive, end exclusive.
   [[nodiscard]] bool evaluation() const {
-    return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{};
+    return profit_target > Money{} || max_drawdown > Money{} || daily_loss_limit > Money{} ||
+           time_limit_days > 0 || inactivity_days > 0;
   }
   bool operator==(const AccountRules&) const = default;
 };

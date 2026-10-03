@@ -42,8 +42,8 @@ struct Payout {
   Money balance;  ///< Equity when requested, before the withdrawal.
 };
 
-/// Rule progress for the current attempt. Only fully marked equity (every
-/// position has a mark, fresh or not) ratchets the peak or decides the outcome.
+/// Rule progress for the current attempt. Fully marked equity (every position
+/// has a mark, fresh or not) drives equity rules; calendar deadlines need no marks.
 struct Evaluation {
   std::uint64_t attempt = 1;
   Timestamp started = 0;
@@ -80,6 +80,7 @@ struct Evaluation {
   Reason day_lock = Reason::NONE;
   Timestamp day_locked_at = 0;
   std::uint64_t day_executions = 0;  ///< Today's, as EvaluationDay::executions.
+  Timestamp last_activity = 0;  ///< Own execution, only when inactivity is set; zero uses started.
 };
 
 /// Shared plan arithmetic. Observations check the floor before the target; rollover
@@ -108,6 +109,7 @@ struct PlanInputs {
   Money balance;       ///< Closed balance: cash plus the positions' cost, open P&L left out.
   Money net_realised;  ///< The ledger's realised P&L less fees (Evaluation::day_open_realised's measure).
   bool flat = true;    ///< No option positions and no shares.
+  Timestamp time = 0;  ///< Observation market time; zero skips calendar checks in timeless callers.
 };
 /// Whether the rules read each day's executions, so the reducer counts them
 /// (accounts without such a rule keep their journal unchanged).
@@ -176,10 +178,23 @@ struct PlanVerdict {
   [[nodiscard]] bool decided() const { return status != EvaluationStatus::Active; }
 };
 /// The plan's rules on one fully marked observation of an active attempt, in
-/// order: ratchet an intraday peak; fail on the floor; lock or fail on the daily
-/// loss limit (once a day); pass once every objective is met. Pure: the caller
+/// order: fail overdue time rules; ratchet an intraday peak; fail on the floor;
+/// lock or fail on the daily loss limit; pass once every objective is met. The caller
 /// applies the verdict (the reducer decides, or locks and liquidates).
 [[nodiscard]] PlanVerdict evaluate_plan(Evaluation& evaluation, const AccountRules& rules, const PlanInputs& now);
+/// Time-only failures, checked before executions even when marks are missing.
+[[nodiscard]] PlanVerdict evaluate_time_rules(const Evaluation& evaluation, const AccountRules& rules, Timestamp time);
+/// Last allowed trading dates and nonnegative calendar-day counts; absent while off or not started.
+struct TimeRuleProgress {
+  std::optional<md::Date> deadline;
+  std::optional<std::int64_t> days_left;
+  Timestamp last_activity = 0;
+  std::optional<std::int64_t> inactive_days;
+  std::optional<md::Date> inactivity_deadline;
+};
+[[nodiscard]] TimeRuleProgress time_rule_progress(const Evaluation& evaluation, const AccountRules& rules, Timestamp time);
+/// Opening restrictions, bypassed by the caller for reductions and system orders.
+[[nodiscard]] Decision plan_entry_check(const AccountRules& rules, std::string_view underlying, Timestamp time);
 /// Why opening orders are refused while the day is locked.
 [[nodiscard]] std::string day_lock_message(Reason lock);
 

@@ -214,6 +214,12 @@ simulation's limits.
 - **F60 entry protection and risk:** custom plans require bracket stops and cap per-order risk in dollars or a percentage of room to the floor. Preview shows risk against the limit; required stops cannot be cancelled while their position is held.
 - **F15 contracts held cap:** custom plans cap held option contracts plus working opening quantities across orders, with numeric refusals and preview sizing; shares are excluded.
 
+Custom plans can set an evaluation time window (F62), an inactivity deadline based
+on the trader’s own executions (F58), and allowed underlyings and New York opening
+hours (F31). Dashboard reports deadlines; tickets explain and block restricted
+openings. Reducing orders and exits stay available. These optional rules persist
+and work in replay and custom backtests.
+
 The engine simulates orders on European cash-settled index options (SPX, XSP, NDX,
 RUT and their weeklies) and American equity and ETF options (SPY, QQQ, single stocks)
 against displayed quotes: market and marketable orders take the far side up to the
@@ -329,6 +335,7 @@ special opening quotation; live providers keep manual imports.
 
 - [x] F38 payout buffer: retain starting balance plus a safety net for every payout or the first N
 - [x] F37 payout consistency: net realised best-day limits per payout cycle, escalating percentages and remaining profit
+- [x] F62 evaluation time windows, F58 inactivity limits, and F31 instrument whitelists and trading hours per plan
 
 - [x] F26 stress-scenario authoring: abnormal books, quote stalls and stale marks,
   authored previous closes and market halts, all three circuit-breaker levels,

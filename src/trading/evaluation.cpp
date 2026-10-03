@@ -199,6 +199,7 @@ namespace {
 PlanVerdict evaluate_with(Evaluation& e, const AccountRules& rules, const PlanInputs& now, const DayStats* finished) {
   PlanVerdict verdict;
   if (e.status != EvaluationStatus::Active) return verdict;
+  if (const auto timed = evaluate_time_rules(e, rules, now.time); timed.decided()) return timed;
   ratchet(e, rules, now.equity);
   if (!rules.evaluation()) return verdict;
   if (rules.max_drawdown > Money{} && now.equity <= e.floor) {
@@ -239,6 +240,53 @@ PlanVerdict evaluate_with(Evaluation& e, const AccountRules& rules, const PlanIn
 }  // namespace
 PlanVerdict evaluate_plan(Evaluation& evaluation, const AccountRules& rules, const PlanInputs& now) {
   return evaluate_with(evaluation, rules, now, nullptr);
+}
+TimeRuleProgress time_rule_progress(const Evaluation& e, const AccountRules& rules, Timestamp time) {
+  TimeRuleProgress progress;
+  if (e.started <= 0 || time <= 0) return progress;
+  const auto day = md::days_since_epoch(plan_trading_date(rules, time));
+  if (rules.time_limit_days > 0) {
+    const auto deadline = md::days_since_epoch(plan_trading_date(rules, e.started)) + rules.time_limit_days;
+    progress.deadline = md::date_from_days(deadline);
+    progress.days_left = std::max<std::int64_t>(0, deadline - day);
+  }
+  if (rules.inactivity_days > 0) {
+    progress.last_activity = e.last_activity > 0 ? e.last_activity : e.started;
+    const auto activity = md::days_since_epoch(plan_trading_date(rules, progress.last_activity));
+    progress.inactive_days = std::max<std::int64_t>(0, day - activity);
+    progress.inactivity_deadline = md::date_from_days(activity + rules.inactivity_days);
+  }
+  return progress;
+}
+PlanVerdict evaluate_time_rules(const Evaluation& e, const AccountRules& rules, Timestamp time) {
+  if (e.status != EvaluationStatus::Active || (rules.time_limit_days == 0 && rules.inactivity_days == 0)) return {};
+  const auto progress = time_rule_progress(e, rules, time);
+  if (progress.deadline && plan_trading_date(rules, time) > *progress.deadline)
+    return {EvaluationStatus::Failed, false, Reason::TIME_LIMIT, {}, "The evaluation's " +
+        std::to_string(rules.time_limit_days) + "-day window ended on " + md::format_date(*progress.deadline)};
+  if (progress.inactive_days && *progress.inactive_days > rules.inactivity_days)
+    return {EvaluationStatus::Failed, false, Reason::INACTIVITY, {}, "No own execution for " +
+        std::to_string(*progress.inactive_days) + " calendar days; the " + std::to_string(rules.inactivity_days) +
+        "-day inactivity window ended on " + md::format_date(*progress.inactivity_deadline)};
+  return {};
+}
+Decision plan_entry_check(const AccountRules& rules, std::string_view underlying, Timestamp time) {
+  const std::string scope(underlying);
+  if (!rules.underlyings.empty() && std::find(rules.underlyings.begin(), rules.underlyings.end(), underlying) == rules.underlyings.end())
+    return {Reason::INSTRUMENT_NOT_ALLOWED, scope + " is not an allowed underlying for this plan", {}, {}, scope};
+  if (rules.trading_start && time > 0) {
+    const auto minute = md::new_york_time(time).seconds / 60;
+    if (minute < *rules.trading_start || minute >= *rules.trading_end) {
+      const auto clock = [](std::int64_t m) {
+        const auto two = [](std::int64_t v) { return (v < 10 ? "0" : "") + std::to_string(v); };
+        return two(m / 60) + ":" + two(m % 60);
+      };
+      return {Reason::OUTSIDE_PLAN_HOURS, "Opening orders are allowed from " + clock(*rules.trading_start) + " to " +
+          clock(*rules.trading_end) + " New York time", static_cast<double>(minute),
+          static_cast<double>(minute < *rules.trading_start ? *rules.trading_start : *rules.trading_end), scope};
+    }
+  }
+  return {};
 }
 std::string day_lock_message(Reason lock) {
   if (lock == Reason::DAILY_LOSS_LIMIT)
@@ -303,6 +351,16 @@ PassOdds pass_odds(const Evaluation& current, const AccountRules& rules, Money e
       const auto& day = usable[index];
       index = (index + 1) % usable.size();
       evaluation.day = md::date_from_days(md::days_since_epoch(evaluation.day) + 1);
+      Timestamp projected_time = 0;
+      if (rules.time_limit_days > 0 || rules.inactivity_days > 0) {
+        evaluation.day = plan_trading_date(rules, md::new_york_to_utc(evaluation.day, 10, 0));
+        projected_time = md::new_york_to_utc(evaluation.day, 10, 0);
+        if (const auto timed = evaluate_time_rules(evaluation, rules, projected_time); timed.decided()) {
+          evaluation.status = timed.status;
+          break;
+        }
+        if (rules.inactivity_days > 0) evaluation.last_activity = projected_time;
+      }
       evaluation.day_open_equity = balance;
       evaluation.day_high_equity = balance;
       evaluation.day_lock = Reason::NONE;
@@ -312,7 +370,7 @@ PassOdds pass_odds(const Evaluation& current, const AccountRules& rules, Money e
         if (evaluation.status != EvaluationStatus::Active || evaluation.day_lock != Reason::NONE) return;
         const auto value = balance + historical - day.open;
         evaluation.day_high_equity = std::max(*evaluation.day_high_equity, value);
-        const auto verdict = evaluate_with(evaluation, rules, {value, value, value - evaluation.day_open_equity, true}, &stats);
+        const auto verdict = evaluate_with(evaluation, rules, {value, value, value - evaluation.day_open_equity, true, projected_time}, &stats);
         if (verdict.decided()) evaluation.status = verdict.status;
         // A lock closes the account at its level for the rest of the day.
         if (verdict.lock) { evaluation.day_lock = verdict.code; close = verdict.level; }

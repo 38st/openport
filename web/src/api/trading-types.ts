@@ -66,6 +66,14 @@ export interface AccountRules {
   profitable_day_profit?: Money | null
   /** "HH:MM" New York time the plan's trading day ends, 16:15 to 24:00. */
   day_end?: string
+  /** Calendar days; zero disables. The evaluation time limit is evaluation-only. */
+  time_limit_days?: number
+  inactivity_days?: number
+  /** By underlying, so SPX includes SPXW options; empty allows all. */
+  underlyings?: string[]
+  /** HH:MM New York; both null or a start-inclusive, end-exclusive window. */
+  trading_start?: string | null
+  trading_end?: string | null
   buy_only: boolean
   /** Every short option needs a long of its type expiring with it or later; absent from older servers. */
   defined_risk?: boolean
@@ -209,6 +217,12 @@ export interface PayoutStatus {
   split_percent: number
 }
 export interface Evaluation {
+  time_limit_days?: number | null
+  deadline?: string | null
+  days_left?: number | null
+  last_activity?: string | null
+  inactive_days?: number | null
+  inactivity_deadline?: string | null
   enabled: boolean
   attempt: number
   status: EvaluationStatus
