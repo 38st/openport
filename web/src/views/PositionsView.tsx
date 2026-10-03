@@ -4,6 +4,7 @@ import { api } from "../api/client"
 import { marketNow, useLive } from "../api/live"
 import { useAccount, useAllOrders, useRefreshTrading, useTradingQueries } from "../api/trading"
 import type { ClosedAttribution, Lifetime, Order, Position, Risk, StockHolding, TradingStatus } from "../api/trading-types"
+import { DecisionPositionsNotice } from "../components/DecisionPositionsNotice"
 import { Dialog } from "../components/Dialog"
 import { KillSwitch } from "../components/KillSwitch"
 import { LimitsEditor } from "../components/LimitsEditor"
@@ -229,6 +230,7 @@ function PositionsAccount({ trading }: { trading: TradingStatus }) {
       return notice && <p key={u.symbol} role="status" className="text-sm text-warn">{notice}</p>
     })}
     {!trading.enabled && <p className="rounded-md border border-warn p-3 text-sm text-warn">{trading.reason ?? "Paper trading is unavailable."}</p>}
+    <DecisionPositionsNotice account={account} portfolio={data} />
     <TradingError error={portfolio.error} />
     {data ? <>
       {!data.valuation_complete && <div role="status" className="rounded-md border border-warn p-3 text-sm text-warn">Valuation incomplete · equity and P&amp;L may omit unpriced positions.{data.quality_flags.length > 0 && <div className="mt-1 break-words text-xs">{data.quality_flags.join(" · ")}</div>}</div>}

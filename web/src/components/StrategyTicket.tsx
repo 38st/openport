@@ -176,7 +176,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
     const held = positions?.find((p) => p.symbol === leg.symbol)?.quantity ?? 0
     return held !== 0 && (held > 0) !== (leg.side === "buy") && q * leg.ratio <= Math.abs(held)
   })
-  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked) && !reduces) || !!untradable || !!notice || !!closed || (!!rules?.buy_only && !reduces)
+  const blocked = writeBlocked(trading, token) || ((trading.kill_latched || dayLocked || closed) && !reduces) || !!untradable || !!notice || (!!rules?.buy_only && !reduces)
   const walk = useWalk(type === "limit" && ["day", "gtc"].includes(tif), limitText, true, (tick / 100).toFixed(2), quote.ask?.toFixed(2) ?? "")
   const valid = walk.valid && (type === "market" || tif !== "gtd" || good_till != null) && legs.length >= 2 && validUnits && (type === "market" || validAmount) && (!exitable || exits.valid)
 
@@ -293,7 +293,7 @@ function StrategyBody({ legs, onLegs, expiries, underlying, spot, trading, initi
       {limitOnly && <p role="status" className="text-xs text-muted">{limitOnly}</p>}
       {untradable && <p role="status" className="text-sm text-warn">{untradable.strike} {untradable.type}: {untradable.quote?.untradable_reason ?? "unavailable for paper trading"}</p>}
       {trading.kill_latched && <p role="status" className="text-sm text-warn">Kill switch latched · reduce-only: closing orders and exits still work.</p>}
-      {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Start a new attempt from the Dashboard to trade again.</p>}
+      {closed && <p role="status" className="text-sm text-warn">The evaluation has {account?.evaluation.status}. Closing orders are allowed; start a new attempt from the Dashboard to open positions.</p>}
       {dayLocked && <p role="status" className="text-sm text-warn">{dayLockNotice}</p>}
       {rules?.buy_only && !reduces && <p role="status" className="text-sm text-warn">{rules.plan ?? "This plan"} is buy-only. Multi-leg orders may only close held positions.</p>}
       <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit() }}>

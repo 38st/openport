@@ -92,6 +92,22 @@ describe("simulator pages", () => {
     expect(html).not.toContain("Evaluation failed")
     expect(html).not.toContain("NaN")
   })
+  it.each(["passed", "failed"] as const)("explains leftovers after an attempt %s and shows archived decision provenance", (status) => {
+    const decided: Account = { ...account, evaluation: { ...account.evaluation, status },
+      attempts: [{ ...account.attempts[0]!, status, decided_at: "2026-09-22T14:00:00Z", decided_equity: "98123.45",
+        rules: { ...account.rules, slippage_ticks: 2, fill_latency_ms: 1000 } }] }
+    for (const view of [<DashboardView />, <PositionsView />]) {
+      const html = render(view, decided)
+      for (const text of ["Positions remain open", "system close keeps retrying", "closing liquidity", "place closing orders", "new attempt"])
+        expect(html.toLowerCase()).toContain(text.toLowerCase())
+    }
+    const positions = render(<PositionsView />, decided)
+    expect(positions).toContain("Close all")
+    const history = render(<DashboardView />, decided)
+    for (const text of ["Decided", "$98,123.45", "2 ticks of slippage", "1000 ms fill latency", "profit target", "drawdown"])
+      expect(history).toContain(text)
+    expect(render(<DashboardView />)).toContain("Rules were not recorded for this attempt.")
+  })
   it("explains today's P&L by Greek on the dashboard and each position", () => {
     const attribution = { delta: 120, gamma: 4.5, vega: -30, theta: -12.25, other: 1.75, costs: -10.65, total: 73.35 }
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity, gcTime: Infinity } } })
