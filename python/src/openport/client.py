@@ -370,6 +370,10 @@ class Client:
     def step_replay(self, until: str) -> ReplayResult:
         return self.control_replay(until=until)
 
+    def play_replay_until(self, until: str, *, speed: int | None = None) -> ReplayResult:
+        """Play at the current/selected speed, then pause through the target; returns now."""
+        return self.control_replay(play_until=until, **({"speed": speed} if speed is not None else {}))
+
     def abort_replay(self) -> ReplayResult:
         """Pause at the next settled batch, interrupting a running step."""
         return self.control_replay(abort=True)

@@ -312,6 +312,10 @@ Relative steps (`until:"+15s"`, `"+1m"`, `"+1h"`) and `until:"next"` make repeat
 small advances. Abort, pause and stop interrupt a long step after its current batch
 settles. A paused skip is queued visibly as `skip_pending`; `skip:false` cancels it.
 
+`play_until:"14:30:15"` with optional `speed:60` watches an advance and pauses at
+the same settled target as `until`; state shows `pause_at` while it plays. Manual
+speed, pause, until, abort or stop clears that target.
+
 ## Saved runs
 
 When paper trading and writes are enabled, every run gets a `FileJournal` in

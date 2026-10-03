@@ -63,6 +63,10 @@ class ReplayProvider final : public md::Provider {
   [[nodiscard]] bool skip_pending() const noexcept { return skip_.load(); }
   /// Interrupt a step at a complete, synchronized batch boundary.
   void abort();
+  void wait_paused();
+  /// Paced asynchronous playback; optional speed and target validate before mutation.
+  void play_until(md::Timestamp target, std::optional<int> speed = {});
+  [[nodiscard]] md::Timestamp pause_at() const noexcept { return pause_at_.load(); }
   [[nodiscard]] md::Timestamp next_time() const noexcept { return next_time_.load(); }
   /// Install before start. Each completed batch waits for its consumer; no queue
   /// coalescing or playback-clock scheduling can change its contents.
@@ -97,6 +101,7 @@ class ReplayProvider final : public md::Provider {
   /// what is left of the wait, including one chosen while paused.
   bool pace(ReplayClock::TimePoint& deadline, int basis);
   bool synchronize();
+  void validate_target(md::Timestamp target);  // control_mutex_ held; end checked by caller
   void wake();
   Options options_;
   md::RecordingReader reader_;
@@ -127,6 +132,8 @@ class ReplayProvider final : public md::Provider {
   bool step_pending_ = false;  // control_mutex_
   bool abort_requested_ = false;  // control_mutex_
   bool step_aborted_ = false;  // control_mutex_
+  bool pause_settled_ = false;  // control_mutex_
+  std::atomic<md::Timestamp> pause_at_{0};
   std::atomic<md::Timestamp> next_time_{0};
   std::atomic<bool> stepping_{false};
   std::string playback_error_;

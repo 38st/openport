@@ -1853,7 +1853,7 @@ TEST(ReproducibleRun, LockstepSmallAndLargeStepsMatchContinuousCommandsAndVerify
   const test::ScriptedMarket market;
   std::string golden;
   // Continuous headless run is the reference, including identical command instants.
-  for (const int step : {0, 1, 4, -1, -2}) {
+  for (const int step : {0, 1, 4, -1, -2, -3}) {
     const auto directory = file.directory / std::to_string(step);
     std::filesystem::create_directory(directory);
     std::filesystem::path journal;
@@ -1895,9 +1895,16 @@ TEST(ReproducibleRun, LockstepSmallAndLargeStepsMatchContinuousCommandsAndVerify
       for (int second = std::max(1, step); second <= 12; second += std::max(1, step)) {
         const auto time = market.time + second * md::kNanosPerSecond;
         const auto target = step == -1 ? std::string("+1s") : step == -2 ? std::string("next") : second % 2 == 0 ? md::format_timestamp(time) : "10:00:" + (second < 10 ? std::string("0") : std::string()) + std::to_string(second);
-        const auto stepped = replay_call(host, "PUT", "/api/replay", {{"until", target}});
+        const auto stepped = replay_call(host, "PUT", "/api/replay", {{step == -3 ? "play_until" : "until", target}});
         ASSERT_EQ(stepped.status, 200) << stepped.body;
-        EXPECT_EQ(json::parse(stepped.body).at("settled_through"), md::format_timestamp(time));
+        if (step == -3) {
+          ASSERT_TRUE(test::recording_eventually([&] {
+            const auto state = json::parse(host.tick()).at("replay");
+            return state.at("paused") == true && state.at("pause_at").is_null() && state.at("settled_through") == md::format_timestamp(time);
+          }));
+        } else {
+          EXPECT_EQ(json::parse(stepped.body).at("settled_through"), md::format_timestamp(time));
+        }
         if (second == 4) {
           const auto bought = replay_call(host, "POST", "/api/replay/orders", {{"client_order_id", "lockstep"}, {"symbol", market.symbol()},
               {"side", "buy"}, {"type", "market"}, {"quantity", 1}, {"time_in_force", "ioc"}});

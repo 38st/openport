@@ -348,6 +348,7 @@ export interface ReplayState {
   /** A lockstep step (PUT until) is playing; writes wait for it. Absent from older servers. */
   stepping?: boolean
   skip_pending?: boolean
+  pause_at?: string | null
   settled_through?: string | null
   progress?: number
   file: string
