@@ -672,7 +672,8 @@ paper account. It verifies the journal chain, opens the original recording or
 regenerates the scenario, repeats its boundaries and commands, and checks every
 transaction hash, final equity and head hash. Exit 0 means a match. Exit 1 names the
 first differing transaction, or reports a damaged journal or missing/changed input.
-Exit 2 is a command-line usage/startup error. Every verification report starts with
+Exit 2 is a command-line usage/startup error. A size-based cost estimate is printed
+first on stderr. Every verification report starts with
 the run id/file, scenario or recording and date, scenario seed/revision, and plan.
 When the sidecar has a final checkpoint, the report prints its head/count and checks
 that the journal agrees; a cleanly shortened journal fails instead of verifying only
@@ -1270,6 +1271,22 @@ selected journals were inspected/repaired; exit 1 means at least one failed
 (including damage before the last line, which is never cut). `--dry-run` and
 `--file` require `--repair-journals`; invalid options exit 2. Repair preserves the
 original in a timestamped sibling backup.
+
+Replay verification reports an estimated cost before work starts: the slower of
+10 MiB of journal per second or 2,000 transactions per second, with at least one
+second. The CLI initially estimates from file size; saved-run HTTP responses can
+also use transaction counts. At 30 seconds, a warning is shown. Hardware,
+analytics and input generation can take longer. `ReplayHost::stop()` closes its
+control queue and refuses queued or subsequent starts with 503 `ENGINE_STOPPING`.
+
+Newly closed recordings have an optional `.oprec.end` index, bound to device,
+inode, size and modification time. It records each underlying's final market
+clock and whether the file contains snapshot boundaries; end lookup and streaming
+mode detection need no event scan. A missing/stale index (including moved or older
+recordings) falls back to discovery at run startup and caches the end before
+controls run. Generated scenarios use their known final window. A target after
+the cached end still returns 400 naming that end before any playback. The index
+never changes recording or journal bytes and is not part of run provenance.
 
 ## Reloading named tokens
 

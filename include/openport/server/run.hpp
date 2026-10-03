@@ -24,6 +24,9 @@ namespace openport::server {
 [[nodiscard]] std::shared_ptr<trading::Journal> resuming_journal(const trading::JournalRecovery& expected,
                                                                  std::shared_ptr<trading::Journal> file);
 
+/// Coarse estimate at 10 MiB/s or 2,000 reducer records/s, whichever is slower.
+[[nodiscard]] nlohmann::json verification_cost(std::uint64_t bytes, std::uint64_t records = 0);
+
 struct RunVerification {
   nlohmann::json run;  ///< Shareable identity and inputs; contains no absolute paths.
   md::Timestamp time = 0;  ///< Final recorded market time.

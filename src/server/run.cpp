@@ -177,6 +177,7 @@ class ResumingJournal final : public trading::Journal {
     ++sequence_;
   }
   void flush() override { file_->flush(); }
+  std::uint64_t bytes() const override { return file_->bytes(); }
   std::uint64_t sequence() const override { return sequence_; }
   std::string head() const override { return head_; }
  private:
@@ -234,6 +235,11 @@ RunIdentity run_identity(std::string_view input, std::string id) {
       run.date = md::format_date(md::new_york_time(started->get<md::Timestamp>()).date);
   }
   return run;
+}
+nlohmann::json verification_cost(std::uint64_t bytes, std::uint64_t records) {
+  const auto seconds = std::max<std::uint64_t>(1, std::max(bytes ? 1 + (bytes - 1) / (10 * 1024 * 1024) : 0, records ? 1 + (records - 1) / 2000 : 0));
+  return {{"estimated_seconds", seconds}, {"warning", seconds >= 30 ? nlohmann::json(
+      "Long verification: roughly " + std::to_string(seconds) + " seconds or more; recording generation and hardware can take longer") : nlohmann::json(nullptr)}};
 }
 RunVerification verify_run(const std::filesystem::path& journal, std::stop_token stop,
     const std::function<void(std::uint64_t, std::uint64_t)>& progress) {

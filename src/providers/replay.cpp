@@ -66,6 +66,7 @@ ReplayProvider::ReplayProvider(Options options)
   preparing_ = seeking_.load();
   if (options_.start_at == 0 && options_.paused) options_.start_at = reader_.header().started;
   set_paused(options_.paused);
+  if (options_.known_end > 0) end_ = options_.known_end;
 }
 
 void ReplayProvider::wake() {
@@ -270,11 +271,13 @@ void ReplayProvider::set_driver(Driver driver, std::function<std::future<void>()
 md::Timestamp ReplayProvider::end_time(const md::Subscription& subscription) {
   const std::lock_guard lock(end_mutex_);
   if (end_) return *end_;
+  const auto& selected = subscription.underlyings.empty() ? (subscription_.underlyings.empty() ? reader_.header().subscription : subscription_) : subscription;
+  if (const auto indexed = reader_.indexed_end(selected)) { end_ = *indexed; return *end_; }
   // A reader of its own batches the file as playback will, without touching playback.
   md::Timestamp last = 0;
   try {
     md::RecordingReader reader(options_.file);
-    ReplayBatches batches(reader, subscription.underlyings.empty() ? subscription_ : subscription);
+    ReplayBatches batches(reader, selected);
     while (!stopping_.load()) {
       const auto batch = batches.next();
       if (!batch) break;

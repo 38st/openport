@@ -588,8 +588,7 @@ TEST(TradingJournal, ExclusiveWriterAndInvalidPathsFailLoudly) {
 }
 TEST(TradingJournal, LockRejectsSeparateOpensAndIsReleasedOnDestruction) {
   TemporaryJournal file;
-  const auto message = "paper journal '" + file.path +
-      "' is in use by another openportd; use --paper-journal to choose another file or --no-paper";
+  const std::string message = "paper journal is in use by another openportd; use --paper-journal to choose another file or --no-paper";
   auto expect_locked = [&](bool create) {
     try {
       const auto second = create ? FileJournal::create(file.path) : FileJournal::resume(file.path);

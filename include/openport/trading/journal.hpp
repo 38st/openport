@@ -80,6 +80,8 @@ class FileJournal final : public Journal {
   static std::shared_ptr<FileJournal> resume(const std::string& path);
   static std::shared_ptr<FileJournal> resume(const std::string& path, Options options);
   static JournalRecovery read(const std::string& path, std::string_view expected_head = {});
+  /// Read-only diagnostics, stopping before the first damaged record; holds no writer lock.
+  static JournalRecovery read_prefix(const std::string& path);
   /// Holds the file's lock without writing; returns only the verified prefix.
   static std::pair<std::shared_ptr<FileJournal>, JournalRecovery> inspect(const std::string& path);
   /// Cuts a torn final line, as a write the disk ran out for leaves, off a journal so

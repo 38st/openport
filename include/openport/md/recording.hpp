@@ -39,6 +39,9 @@ class RecordingReader {
   [[nodiscard]] const std::string& diagnostic() const;
   /// Reuses the open file, so looping cannot switch to a replaced pathname.
   void rewind();
+  /// Optional close-time sidecar bound to this recording; no event scan.
+  [[nodiscard]] std::optional<Timestamp> indexed_end(const Subscription& subscription) const;
+  [[nodiscard]] std::optional<bool> indexed_snapshot_mode() const;
 
  private:
   struct Impl;
